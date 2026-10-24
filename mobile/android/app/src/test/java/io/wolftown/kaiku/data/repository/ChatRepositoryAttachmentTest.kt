@@ -25,6 +25,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import kotlinx.serialization.json.jsonObject
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -40,32 +41,46 @@ class ChatRepositoryAttachmentTest {
 
     private class FakeReader(
         var size: Long? = 10,
-        val data: ByteArray? = ByteArray(10),
+        val data: ByteArray = ByteArray(10),
+        val mime: String? = "image/jpeg",
+        val openFails: Boolean = false,
     ) : AttachmentReader {
-        var readCalls = 0
-        var lastMax = -1L
+        var openCalls = 0
         override fun size(uri: Uri) = size
         override fun displayName(uri: Uri) = "cat.jpg"
-        override fun mimeType(uri: Uri) = "image/jpeg"
-        override fun read(uri: Uri, maxBytes: Long): ByteArray? {
-            readCalls++
-            lastMax = maxBytes
-            return data?.copyOf(minOf(data.size.toLong(), maxBytes).toInt())
+        override fun mimeType(uri: Uri) = mime
+        override fun open(uri: Uri): java.io.InputStream? {
+            openCalls++
+            return if (openFails) null else data.inputStream()
+        }
+    }
+
+    private val events = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 8)
+
+    /** Stands in for the real API: reads the stream the way Ktor would. */
+    private fun streamingApi(onRead: ((ByteArray) -> Unit)? = null) {
+        coEvery { api.uploadMessageWithFile(any(), any(), any(), any(), any(), any()) } coAnswers {
+            val open = arg<() -> java.io.InputStream>(4)
+            onRead?.invoke(open().use { it.readBytes() })
+            sent
         }
     }
 
     private fun kotlinx.coroutines.test.TestScope.repository(reader: AttachmentReader): ChatRepository {
         val webSocket = mockk<KaikuWebSocket>(relaxed = true)
-        every { webSocket.events } returns MutableSharedFlow<ServerEvent>()
+        every { webSocket.events } returns events
         val authState = mockk<AuthState>(relaxed = true)
         every { authState.currentUserId } returns MutableStateFlow<String?>("me")
         coEvery { api.getUploadLimits() } returns UploadLimits(maxUploadSize = 100)
+        val dispatcher = UnconfinedTestDispatcher(testScheduler)
         return ChatRepository(
             api, webSocket, KaikuJson, mockk<GuildRepository>(relaxed = true), authState,
-            CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)),
-            WallClock { 0L }, reader,
+            CoroutineScope(SupervisorJob() + dispatcher),
+            WallClock { 0L }, reader, dispatcher,
         )
     }
+
+    private fun anyUpload() = api.uploadMessageWithFile(any(), any(), any(), any(), any(), any())
 
     @Test
     fun `oversized file rejected before upload`() = runTest {
@@ -73,58 +88,107 @@ class ChatRepositoryAttachmentTest {
         val result = repository(reader).sendAttachment("c1", uri, null)
 
         assertTrue(result.exceptionOrNull() is ChatRepository.AttachmentException.TooLarge)
-        assertEquals(0, reader.readCalls)
-        coVerify(exactly = 0) { api.uploadMessageWithFile(any(), any(), any(), any(), any()) }
+        assertEquals(0, reader.openCalls)
+        coVerify(exactly = 0) { anyUpload() }
     }
 
     @Test
-    fun `unknown size is read with a cap of limit plus one`() = runTest {
+    fun `unknown size is capped while streaming`() = runTest {
         val reader = FakeReader(size = null, data = ByteArray(500))
+        coEvery { anyUpload() } coAnswers {
+            arg<() -> java.io.InputStream>(4)().use { it.readBytes() }
+            sent
+        }
         val result = repository(reader).sendAttachment("c1", uri, null)
 
-        assertEquals(101L, reader.lastMax)
         assertTrue(result.exceptionOrNull() is ChatRepository.AttachmentException.TooLarge)
-        coVerify(exactly = 0) { api.uploadMessageWithFile(any(), any(), any(), any(), any()) }
     }
 
     @Test
-    fun `successful upload merges the message once`() = runTest {
-        coEvery { api.uploadMessageWithFile("c1", any(), "cat.jpg", "image/jpeg", "hi") } returns sent
-        val repo = repository(FakeReader())
+    fun `successful upload streams the file and merges the message once`() = runTest {
+        var received: ByteArray? = null
+        streamingApi { received = it }
+        val repo = repository(FakeReader(data = ByteArray(10) { it.toByte() }))
 
         val result = repo.sendAttachment("c1", uri, "hi")
 
         assertEquals(sent, result.getOrNull())
+        assertEquals(ByteArray(10) { it.toByte() }.toList(), received?.toList())
         assertEquals(listOf(sent), repo.getMessages("c1").value)
     }
 
     @Test
-    fun `server 413 maps to too large and other errors to failed`() = runTest {
+    fun `websocket echo of the uploaded message is deduplicated`() = runTest {
+        streamingApi()
         val repo = repository(FakeReader())
-        coEvery { api.uploadMessageWithFile(any(), any(), any(), any(), any()) } throws
-            ApiException(HttpStatusCode.PayloadTooLarge, "x")
+        repo.sendAttachment("c1", uri, null)
+
+        events.emit(ServerEvent.MessageNew("c1", KaikuJson.encodeToJsonElement(Message.serializer(), sent).jsonObject))
+
+        assertEquals(listOf(sent), repo.getMessages("c1").value)
+    }
+
+    @Test
+    fun `unsupported mime rejected before opening the file`() = runTest {
+        val reader = FakeReader(mime = "image/heic")
+        val result = repository(reader).sendAttachment("c1", uri, null)
+
+        assertTrue(result.exceptionOrNull() is ChatRepository.AttachmentException.UnsupportedType)
+        assertEquals(0, reader.openCalls)
+    }
+
+    @Test
+    fun `unknown mime is rejected`() = runTest {
+        val result = repository(FakeReader(mime = null)).sendAttachment("c1", uri, null)
+        assertTrue(result.exceptionOrNull() is ChatRepository.AttachmentException.UnsupportedType)
+    }
+
+    @Test
+    fun `file that cannot be opened maps to failed`() = runTest {
+        val result = repository(FakeReader(openFails = true)).sendAttachment("c1", uri, null)
+        assertTrue(result.exceptionOrNull() is ChatRepository.AttachmentException.Failed)
+        coVerify(exactly = 0) { anyUpload() }
+    }
+
+    @Test
+    fun `out of memory maps to failed`() = runTest {
+        coEvery { anyUpload() } throws OutOfMemoryError()
+        val result = repository(FakeReader()).sendAttachment("c1", uri, null)
+        assertTrue(result.exceptionOrNull() is ChatRepository.AttachmentException.Failed)
+    }
+
+    @Test
+    fun `server errors map to the matching exception`() = runTest {
+        val repo = repository(FakeReader())
+        coEvery { anyUpload() } throws ApiException(HttpStatusCode.PayloadTooLarge, "x")
         assertTrue(repo.sendAttachment("c1", uri, null).exceptionOrNull()
             is ChatRepository.AttachmentException.TooLarge)
 
-        coEvery { api.uploadMessageWithFile(any(), any(), any(), any(), any()) } throws
-            ApiException(HttpStatusCode.BadRequest, "x")
+        coEvery { anyUpload() } throws ApiException(HttpStatusCode.UnsupportedMediaType, "x", "INVALID_MIME_TYPE")
+        assertTrue(repo.sendAttachment("c1", uri, null).exceptionOrNull()
+            is ChatRepository.AttachmentException.UnsupportedType)
+
+        coEvery { anyUpload() } throws ApiException(HttpStatusCode.BadRequest, "x")
         assertTrue(repo.sendAttachment("c1", uri, null).exceptionOrNull()
             is ChatRepository.AttachmentException.Failed)
 
-        coEvery { api.uploadMessageWithFile(any(), any(), any(), any(), any()) } throws
-            java.io.IOException("net")
+        coEvery { anyUpload() } throws java.io.IOException("net")
         assertTrue(repo.sendAttachment("c1", uri, null).exceptionOrNull()
             is ChatRepository.AttachmentException.Failed)
     }
 
     @Test
-    fun `limits are fetched once per session`() = runTest {
-        coEvery { api.uploadMessageWithFile(any(), any(), any(), any(), any()) } returns sent
+    fun `limits are fetched once per session and dropped after a 413`() = runTest {
+        streamingApi()
         val repo = repository(FakeReader())
 
         repo.sendAttachment("c1", uri, null)
         repo.sendAttachment("c1", uri, null)
-
         coVerify(exactly = 1) { api.getUploadLimits() }
+
+        coEvery { anyUpload() } throws ApiException(HttpStatusCode.PayloadTooLarge, "x")
+        repo.sendAttachment("c1", uri, null)
+        repo.sendAttachment("c1", uri, null)
+        coVerify(exactly = 2) { api.getUploadLimits() }
     }
 }

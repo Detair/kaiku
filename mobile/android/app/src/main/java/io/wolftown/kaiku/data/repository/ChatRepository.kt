@@ -16,7 +16,10 @@ import io.wolftown.kaiku.domain.withReactionAdded
 import io.wolftown.kaiku.domain.withReactionRemoved
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.domain.model.Reaction
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -60,6 +63,8 @@ class ChatRepository internal constructor(
     /** Time source for typing expiry; tests pass virtual time. */
     private val clock: WallClock,
     private val attachments: AttachmentReader? = null,
+    /** Dispatcher for blocking file access; tests pass a test dispatcher. */
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
 
     @Inject
@@ -76,11 +81,17 @@ class ChatRepository internal constructor(
         // Monotonic: typing expiry only compares differences.
         WallClock { System.nanoTime() / 1_000_000L },
         attachments,
+        Dispatchers.IO,
     )
 
     companion object {
         private val logger = Logger.getLogger("ChatRepository")
         private const val TYPING_DEBOUNCE_MS = 3_000L
+
+        /** Photo/video types the server accepts from the picker (its default allowlist). */
+        private val UPLOAD_MIME_TYPES = setOf(
+            "image/jpeg", "image/png", "image/gif", "image/webp", "video/mp4", "video/webm",
+        )
 
         /** A typing indicator disappears this long after the user's last typing event. */
         const val TYPING_EXPIRY_MS = 8_000L
@@ -308,10 +319,42 @@ class ChatRepository internal constructor(
     /** Why [sendAttachment] failed; the UI maps it to a string resource. */
     sealed class AttachmentException(cause: Throwable? = null) : Exception(cause) {
         class TooLarge : AttachmentException()
+        class UnsupportedType : AttachmentException()
         class Failed(cause: Throwable? = null) : AttachmentException(cause)
     }
 
-    /** Upload limits of the current session, keyed by the signed-in user id. */
+    /** Thrown by [LimitedInputStream] when an unsized file turns out to exceed the limit. */
+    private class StreamTooLargeException : java.io.IOException("attachment exceeds upload limit")
+
+    /** Passes bytes through and fails once more than [limit] were read. */
+    private class LimitedInputStream(
+        private val delegate: java.io.InputStream,
+        private val limit: Long,
+    ) : java.io.InputStream() {
+        private var total = 0L
+
+        override fun read(): Int {
+            val b = delegate.read()
+            if (b >= 0 && ++total > limit) throw StreamTooLargeException()
+            return b
+        }
+
+        override fun read(buffer: ByteArray, off: Int, len: Int): Int {
+            val n = delegate.read(buffer, off, len)
+            if (n > 0) {
+                total += n
+                if (total > limit) throw StreamTooLargeException()
+            }
+            return n
+        }
+
+        override fun close() = delegate.close()
+    }
+
+    /**
+     * Upload limits of the current session, keyed by the signed-in user id
+     * (logout and login as someone else miss the cache); also dropped after a 413.
+     */
     @Volatile
     private var cachedLimits: Pair<String?, UploadLimits>? = null
 
@@ -323,45 +366,72 @@ class ChatRepository internal constructor(
 
     /**
      * Sends the picked photo/video [uri] to [channelId] with an optional
-     * [caption]. Files above the server's attachment limit are rejected
-     * before any bytes are read ([AttachmentException.TooLarge]); every other
-     * failure is [AttachmentException.Failed]. The created message is merged
-     * into the channel list; the WebSocket echo is deduplicated by id.
+     * [caption]. The file is streamed, never held in memory, and all file
+     * access runs on the IO dispatcher. Files above the server's attachment
+     * limit are rejected before the file is opened when the size is known,
+     * otherwise while streaming ([AttachmentException.TooLarge]); types the
+     * server would refuse are rejected early ([AttachmentException.UnsupportedType]);
+     * every other failure is [AttachmentException.Failed]. The created message
+     * is merged into the channel list; the WebSocket echo is deduplicated by id.
      */
     suspend fun sendAttachment(channelId: String, uri: Uri, caption: String?): Result<Message> {
         val reader = attachments ?: return Result.failure(AttachmentException.Failed())
         return try {
             val limit = uploadLimits().maxUploadSize
-            val declared = reader.size(uri)
-            if (declared != null && declared > limit) {
-                return Result.failure(AttachmentException.TooLarge())
+            val message = withContext(ioDispatcher) {
+                val declared = reader.size(uri)
+                if (declared != null && declared > limit) {
+                    return@withContext Result.failure<Message>(AttachmentException.TooLarge())
+                }
+                val mime = reader.mimeType(uri)?.lowercase() ?: "application/octet-stream"
+                if (mime !in UPLOAD_MIME_TYPES) {
+                    return@withContext Result.failure<Message>(AttachmentException.UnsupportedType())
+                }
+                val name = reader.displayName(uri)?.takeIf { it.isNotBlank() } ?: "upload"
+                // Fail before the request if the file cannot be opened at all.
+                val probe = reader.open(uri)
+                    ?: return@withContext Result.failure<Message>(AttachmentException.Failed())
+                var probeUsed = false
+                val sent = messageApi.uploadMessageWithFile(
+                    channelId = channelId,
+                    fileName = name,
+                    mimeType = mime,
+                    size = declared,
+                    open = {
+                        val stream = if (!probeUsed) probe.also { probeUsed = true }
+                        else reader.open(uri) ?: throw java.io.IOException("cannot open attachment")
+                        LimitedInputStream(stream, limit)
+                    },
+                    content = caption?.takeIf { it.isNotBlank() },
+                )
+                if (!probeUsed) probe.close()
+                Result.success(sent)
             }
-            // Unknown or untrusted size: read at most limit + 1 bytes to detect overflow.
-            val bytes = reader.read(uri, limit + 1)
-                ?: return Result.failure(AttachmentException.Failed())
-            if (bytes.size > limit) return Result.failure(AttachmentException.TooLarge())
-            val message = messageApi.uploadMessageWithFile(
-                channelId = channelId,
-                bytes = bytes,
-                fileName = reader.displayName(uri)?.takeIf { it.isNotBlank() } ?: "upload",
-                mimeType = reader.mimeType(uri) ?: "application/octet-stream",
-                content = caption?.takeIf { it.isNotBlank() },
-            )
-            getOrCreateMessagesFlow(channelId).update { current ->
-                MessageOrdering.merge(current, listOf(message))
+            message.onSuccess { sent ->
+                getOrCreateMessagesFlow(channelId).update { current ->
+                    MessageOrdering.merge(current, listOf(sent))
+                }
             }
-            Result.success(message)
         } catch (e: kotlin.coroutines.cancellation.CancellationException) {
             throw e
-        } catch (e: ApiException) {
-            logger.info("attachment upload rejected: status=${e.status.value}")
-            Result.failure(
-                if (e.status == HttpStatusCode.PayloadTooLarge) AttachmentException.TooLarge()
-                else AttachmentException.Failed(e)
-            )
+        } catch (e: OutOfMemoryError) {
+            logger.warning("attachment upload ran out of memory")
+            Result.failure(AttachmentException.Failed())
         } catch (e: Exception) {
-            logger.log(Level.WARNING, "attachment upload failed (${e::class.simpleName})")
-            Result.failure(AttachmentException.Failed(e))
+            val status = (e as? ApiException)?.status
+            val tooLarge = status == HttpStatusCode.PayloadTooLarge ||
+                generateSequence<Throwable>(e) { it.cause }.any { it is StreamTooLargeException }
+            if (tooLarge) cachedLimits = null
+            if (e is ApiException) logger.info("attachment upload rejected: status=${e.status.value}")
+            else logger.log(Level.WARNING, "attachment upload failed (${e::class.simpleName})")
+            Result.failure(
+                when {
+                    tooLarge -> AttachmentException.TooLarge()
+                    status == HttpStatusCode.UnsupportedMediaType || (e as? ApiException)?.code == "INVALID_MIME_TYPE" ->
+                        AttachmentException.UnsupportedType()
+                    else -> AttachmentException.Failed(e)
+                }
+            )
         }
     }
 
