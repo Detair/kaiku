@@ -138,6 +138,7 @@ class ChatRepositoryCatchUpTest {
             guildRepository,
             authState,
             CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
+            mockk<AttachmentReader>(relaxed = true),
         )
     }
 

@@ -2,6 +2,7 @@ package io.wolftown.kaiku.data.repository
 
 import android.net.Uri
 import io.ktor.http.HttpStatusCode
+import io.mockk.MockKMatcherScope
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -86,7 +87,7 @@ class ChatRepositoryAttachmentTest {
         )
     }
 
-    private fun anyUpload() = api.uploadMessageWithFile(any(), any(), any(), any(), any(), any())
+    private suspend fun MockKMatcherScope.anyUpload() = api.uploadMessageWithFile(any(), any(), any(), any(), any(), any())
 
     @Test
     fun `oversized file rejected before upload`() = runTest {
