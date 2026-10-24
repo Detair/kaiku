@@ -8,14 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Roadmap Alignment
-- Current roadmap phase: Phase 6 (Competitive Differentiators & Mastery) - Near complete
-- Roadmap last updated: 2026-05-07
+- Current roadmap phase: v1.0 Family Release — target Christmas 2026 (see `../developer-guide/project/goals.md` Goal 8 and `../reviews/2026-10-22-v1-family-release-readiness.md`)
+- Roadmap last updated: 2026-10-22
 
 ### Milestone Metadata
-- Milestone: Phase 6 - Competitive Differentiators & Mastery
+- Milestone: v1.0 Family Release (Goal 8)
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- The server can deliver Android push notifications through Firebase Cloud Messaging when an FCM service account is configured.
 - People signing in with a temporary password are asked to choose their own password first.
 - Admins can create accounts with a temporary password from the admin dashboard, so registration can stay closed.
 - Releases now include a signed Android app (`Kaiku-<version>.apk`) that updates in place over earlier installs.
@@ -25,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Apps can fetch messages they missed while offline (`GET /api/messages/channel/{id}?after=…`), and the realtime connection now reports the server time on connect so reconnecting apps catch up reliably.
 - **Incoming webhooks (Discord-compatible)**: paste a Kaiku webhook URL anywhere a Discord webhook URL is expected — game-server plugins, Grafana, Uptime-Kuma, CI notifiers — and it just works, no adapter needed. Admins create webhooks per channel (new **Manage Webhooks** permission); each webhook gets a secret URL (`/api/webhooks/{id}/{token}`, token encrypted at rest) that accepts Discord-format payloads: message content, per-message username/avatar overrides, and up to 10 rich embeds (unknown fields like `tts`/`components`/`polls` are safely ignored). Includes the `/slack` compatibility endpoint (Slack-format `text`/`attachments` payloads), forum-channel support (`thread_name` creates a post, `thread_id` replies into one), Discord-matching error bodies and status codes so client libraries behave, and Discord's rate limit (5 posts per 2s per webhook with a proper `retry_after` 429). Webhook messages render with the posted name/avatar and never trigger @everyone pings; guild content filters still apply. File uploads and the `/github` endpoint are not yet supported.
 - **Membership screening (rules gate)**: a guild can require new members to read and accept its rules before participating. Newly-joined members enter a **pending** state — enforced server-side (no channel read/send/voice/subscribe, not just hidden) until they accept a rules screen. Admins set the rules text and toggle screening; disabling it promotes any pending members. Existing members are unaffected.
-- **Mobile push notifications (server foundation)**: a provider-agnostic, **content-free** push dispatcher so mobile clients can be woken while backgrounded. Users register device endpoints (`/api/me/push-subscriptions`); a DM triggers a wake signal carrying only a type + channel id + count (never message text, so E2EE is preserved) — the app wakes and syncs locally. UnifiedPush is the default transport (FCM pluggable later); user-supplied endpoints pass through the same SSRF guard as webhooks, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
+- **Mobile push notifications (server foundation)**: a provider-agnostic, **content-free** push dispatcher so mobile clients can be woken while backgrounded. Users register device endpoints (`/api/me/push-subscriptions`); a DM triggers a wake signal carrying only a type + channel id + count (never message text, so E2EE is preserved) — the app wakes and syncs locally. Delivery goes through FCM (when the operator configures a service account) or UnifiedPush; user-supplied endpoints pass through the same SSRF guard as webhooks, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
 - **Scheduled events**: guilds can schedule events (game nights, streams, meetings) with a name, time, and location (a voice channel or an external link). Members RSVP **interested** or **going** and see live counts; a new **Manage Events** permission gates create/edit/cancel. An **Events** panel (calendar button in the server header) lists upcoming events, and a reminder notification fires shortly before an event you've RSVP'd to starts.
 - **Announcement channels**: a new channel type for broadcasts. Posting requires a dedicated **Send Announcements** permission (distinct from Send Messages). Any guild can **follow** an announcement channel so its posts **crosspost** into a chosen channel in the follower's guild — the fan-out runs asynchronously (a slow follower can't hold up the post) and crossposts are flagged so they never loop back.
 - **Forum channels**: a new channel type that organizes discussion into posts. Create a forum channel, start posts (title + body, optionally tagged), browse them as a card list sorted by recent activity, and filter by tag. Replies reuse the existing thread system, and each reply bumps the post's activity. Moderators (new **Manage Posts** permission) can pin, lock, and delete posts and manage the channel's tag set; authors can delete their own posts.
@@ -52,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Each phone now holds one push registration; signing in with another account on the same phone stops notifications for the previous account.
 - **End-to-end encryption paused for 1.0**: End-to-end encryption setup is no longer offered and the DM padlock is removed; direct messages are protected in transit (TLS) and on the server, and end-to-end encryption will return in a later release.
 - Windows releases ship a single `-setup.exe` installer (MSI dropped)
 - Upgrading the self-hosting compose stack: `VALKEY_PASSWORD` and `CORS_ALLOWED_ORIGINS` are now required (compose refuses to start without them); a base64 Valkey password containing `/`, `+` or `=` must be replaced with a hex one (`openssl rand -hex 24`); set `PUBLIC_IP` for voice; TURN over TCP relay is no longer offered; `RATE_LIMIT_TRUST_PROXY` is replaced by `RATE_LIMIT_TRUSTED_PROXIES` (derived from `KAIKU_NET_SUBNET`). See "Upgrading existing deployments" in the self-hosting guide.

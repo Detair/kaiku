@@ -26,6 +26,11 @@
 //!   - Called from: `server/src/pages/handlers.rs`
 //! - 63 = `bot_install` (per-guild bot installation limit)
 //!   - Called from: `server/src/guild/handlers.rs`
+//! - 65 = `push_register_user` (per-user push registration serialization)
+//!   - Called from: `server/src/push/mod.rs`
+//! - 67 = `push_register_endpoint` (per-(provider, endpoint) registration serialization, always
+//!   taken after the user lock)
+//!   - Called from: `server/src/push/mod.rs`
 
 mod models;
 mod queries;

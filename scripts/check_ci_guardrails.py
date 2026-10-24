@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 TAURI_WORKFLOW = ROOT / ".github/workflows/tauri-build.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
+WORKFLOW_DIR = ROOT / ".github/workflows"
+ACTIONS_DIR = ROOT / ".github/actions"
 NATIVE_DEPS_ACTION = ROOT / ".github/actions/setup-native-deps/action.yml"
 NATIVE_DEPS_ACTION_REF = "./.github/actions/setup-native-deps"
 SETUP_INTEGRATION = ROOT / "server/tests/integration/setup_integration.rs"
@@ -88,6 +90,63 @@ SIGNING_KEY_TOKEN = "TAURI_SIGNING_PRIVATE_KEY"
 EXPRESSION_RE = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 SECRET_REF_RE = re.compile(r"\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)")
 PUBLISH_GATE = "needs.prepare-release.outputs.publish == 'true'"
+
+
+USES_RE = re.compile(r"""^\s*-?\s*uses:\s*["']?([^\s#"']+)["']?""", re.MULTILINE)
+PINNED_RE = re.compile(r"@[0-9a-f]{40}$")
+
+
+def _truthy(value: Any) -> bool:
+    """YAML `true` or an expression such as `${{ matrix.allow_failure }}` counts as set."""
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "false")
+    return bool(value)
+
+
+def check_workflow_permissions(workflows: dict[str, dict], errors: list[str]) -> None:
+    """Every workflow declares top-level permissions; nothing grants write-all."""
+    for name, wf in workflows.items():
+        if "permissions" not in wf:
+            errors.append(f"{name}: missing top-level permissions (use `permissions: contents: read`)")
+        elif wf["permissions"] == "write-all":
+            errors.append(f"{name}: top-level permissions must not be write-all")
+        for job_name, job in (wf.get("jobs") or {}).items():
+            if isinstance(job, dict) and job.get("permissions") == "write-all":
+                errors.append(f"{name}: job '{job_name}' grants write-all")
+
+
+def check_actions_pinned(workflow_texts: dict[str, str], errors: list[str]) -> None:
+    """Every non-local `uses:` is pinned to a full 40-character commit SHA."""
+    for name, text in workflow_texts.items():
+        for ref in USES_RE.findall(text):
+            if ref.startswith("./"):
+                continue
+            if not PINNED_RE.search(ref):
+                errors.append(f"{name}: action not pinned to a commit SHA: {ref}")
+
+
+def check_no_advisory_gates(ci: dict, errors: list[str]) -> None:
+    """Gitleaks, Android unit tests and the Windows Tauri build must block."""
+    for job_name, job in (ci.get("jobs") or {}).items():
+        if not isinstance(job, dict):
+            continue
+        job_advisory = _truthy(job.get("continue-on-error"))
+        for step in _job_steps(job):
+            advisory = job_advisory or _truthy(step.get("continue-on-error"))
+            uses = str(step.get("uses") or "")
+            run = str(step.get("run") or "")
+            if advisory and "gitleaks" in uses:
+                errors.append(f"{job_name}: gitleaks step must not set continue-on-error")
+            if advisory and "testDebugUnitTest" in run:
+                errors.append(f"{job_name}: Android unit tests must not set continue-on-error")
+        if not job_advisory:
+            continue
+        for entry in ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []:
+            target = str(entry.get("platform") or entry.get("os") or "")
+            if target.startswith("windows") and _truthy(entry.get("allow_failure")):
+                errors.append(f"{job_name}: Windows Tauri build must not be allowed to fail ({target})")
+        if str(job.get("runs-on") or "").startswith("windows"):
+            errors.append(f"{job_name}: Windows job must not set continue-on-error")
 
 
 def check_windows_libvpx_guardrails(action_text: str, errors: list[str]) -> None:
@@ -577,6 +636,25 @@ def main() -> int:
         check_uploads_guardrails(uploads_http_text, errors)
 
     check_macos_bundle(errors)
+
+    workflow_texts: dict[str, str] = {}
+    workflow_docs: dict[str, dict] = {}
+    for wf_path in sorted(WORKFLOW_DIR.glob("*.yml")):
+        text = read_text(wf_path, errors)
+        workflow_texts[wf_path.name] = text
+        try:
+            workflow_docs[wf_path.name] = yaml.safe_load(text) or {}
+        except yaml.YAMLError as exc:
+            errors.append(f"{wf_path.name}: invalid YAML: {exc}")
+    # Composite actions are scanned for pinning only (they have no permissions/jobs).
+    pin_texts = dict(workflow_texts)
+    for action_path in sorted(ACTIONS_DIR.glob("**/action.yml")):
+        pin_texts[str(action_path.relative_to(ROOT))] = read_text(action_path, errors)
+    check_workflow_permissions(workflow_docs, errors)
+    check_actions_pinned(pin_texts, errors)
+    for gated in ("ci.yml", "tauri-build.yml", "security.yml"):
+        if gated in workflow_docs:
+            check_no_advisory_gates(workflow_docs[gated], errors)
 
     if errors:
         print("CI guardrails check failed:")
