@@ -133,6 +133,9 @@ class AuthRepository @Inject constructor(
             if (tokenStorage.getServerUrl() != serverUrl) return supersededResult()
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
+
             // Persist only for the latest attempt and the server it went to: a
             // server change mid-login must not store server A's tokens under B.
             val persisted = synchronized(pendingLock) {
@@ -195,6 +198,9 @@ class AuthRepository @Inject constructor(
 
             val user = authApi.authenticatedGetMe(pending.accessToken, pending.serverUrl)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
+
             // Check and persist under the lock: a cancel can't slip in between.
             val persisted = synchronized(pendingLock) {
                 if (pendingPasswordChange !== changed || !isSameServer(pending)) {
@@ -244,6 +250,8 @@ class AuthRepository @Inject constructor(
 
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken,
@@ -270,11 +278,12 @@ class AuthRepository @Inject constructor(
      * 2. session teardown ([SessionTeardownRunner]) for the captured session:
      *    leave voice, close the realtime connection, clear caches; shared with
      *    the LoggedOut observer, so it runs once
-     * 3. server logout, best effort and bounded by [SERVER_LOGOUT_TIMEOUT_MS]:
-     *    if the captured session is still the stored one, `POST /auth/logout`
-     *    with its current refresh token (bearer-only retry, C25); if a newer
-     *    login replaced it meanwhile, only the old session is ended with its
-     *    captured tokens, and nothing local is touched
+     * 3. server logout, best effort and bounded by [SERVER_LOGOUT_TIMEOUT_MS],
+     *    with the captured session's own tokens only ([AuthApi.logoutSession]:
+     *    explicit bearer, no interceptor, no refresh, body/bearer-only/body-only
+     *    attempts). If a refresh rotated the session's tokens during the
+     *    teardown, the rotated ones are used, read under a generation check so
+     *    a newer login's tokens can never be picked up
      * 4. clear the stored tokens only if they still belong to the captured
      *    session (session generation), and set LoggedOut only if the captured
      *    session is still current
@@ -297,13 +306,24 @@ class AuthRepository @Inject constructor(
         // Push Task 7: pushRegistrar.unregisterForLogout() — keep it the first step.
         sessionTeardown.tearDown(session?.sessionId).join()
 
+        // The captured session's tokens, rotated if a refresh ran meanwhile.
+        // Read between two generation checks: a login landing in between
+        // changes the generation, and then the captured tokens are kept.
+        var access = capturedAccess
+        var refresh = capturedRefresh
+        if (tokenStorage.getSessionGeneration() == generation) {
+            val rotatedAccess = tokenStorage.getAccessToken()
+            val rotatedRefresh = tokenStorage.getRefreshToken()
+            if (tokenStorage.getSessionGeneration() == generation) {
+                access = rotatedAccess ?: capturedAccess
+                refresh = rotatedRefresh ?: capturedRefresh
+            }
+        }
+
         try {
             val finished = withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) {
-                if (tokenStorage.getSessionGeneration() == generation) {
-                    // Read now: a refresh may have rotated it during the teardown.
-                    authApi.logout(tokenStorage.getRefreshToken())
-                } else if (serverUrl != null && capturedAccess != null && isNewerLogin(session)) {
-                    authApi.logoutSession(serverUrl, capturedAccess, capturedRefresh)
+                if (serverUrl != null && (access != null || refresh != null)) {
+                    authApi.logoutSession(serverUrl, access, refresh)
                 }
                 true
             }
@@ -315,12 +335,6 @@ class AuthRepository @Inject constructor(
 
         tokenStorage.clearIfGeneration(generation)
         if (session != null) authState.setLoggedOutIf(session.sessionId)
-    }
-
-    /** A different session than [captured] is current now (a login landed meanwhile). */
-    private fun isNewerLogin(captured: AuthSession.LoggedIn?): Boolean {
-        val now = authState.session.value
-        return now is AuthSession.LoggedIn && now.sessionId != captured?.sessionId
     }
 
     suspend fun getCurrentUser(): Result<User> {
@@ -349,6 +363,8 @@ class AuthRepository @Inject constructor(
         return try {
             val user = authApi.authenticatedGetMe(accessToken)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
             tokenStorage.saveTokens(
                 accessToken = accessToken,
                 refreshToken = refreshToken,
@@ -380,6 +396,8 @@ class AuthRepository @Inject constructor(
 
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken,
@@ -413,6 +431,8 @@ class AuthRepository @Inject constructor(
 
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken,

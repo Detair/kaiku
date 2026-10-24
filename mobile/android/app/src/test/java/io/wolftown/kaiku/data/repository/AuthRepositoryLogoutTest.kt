@@ -3,6 +3,7 @@ package io.wolftown.kaiku.data.repository
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.toByteArray
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -18,6 +19,7 @@ import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.session.SessionTeardown
 import io.wolftown.kaiku.data.session.SessionTeardownRunner
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -50,8 +52,7 @@ class AuthRepositoryLogoutTest {
     }
 
     private val authApi: AuthApi = mockk {
-        coEvery { logout(any()) } answers { log += "server-logout" }
-        coEvery { logoutSession(any(), any(), any()) } answers { log += "server-logout-old-session" }
+        coEvery { logoutSession(any(), any(), any()) } answers { log += "server-logout" }
     }
 
     private class Step(
@@ -170,9 +171,8 @@ class AuthRepositoryLogoutTest {
         repository.logout()
 
         // Only the old session is ended server-side, with its own captured tokens.
-        assertEquals(listOf("teardown-10", "server-logout-old-session"), log)
+        assertEquals(listOf("teardown-10", "server-logout"), log)
         coVerify(exactly = 1) { authApi.logoutSession("https://kaiku.example.com", ACCESS, REFRESH) }
-        coVerify(exactly = 0) { authApi.logout(any()) }
         verify(exactly = 0) { tokenStorage.clear() }
         assertTrue(authState.session.value is AuthSession.LoggedIn)
     }
@@ -181,7 +181,7 @@ class AuthRepositoryLogoutTest {
     fun `server logout failure still clears the session`() = runTest {
         val authState = AuthState(backgroundScope)
         authState.setLoggedIn("user-1")
-        coEvery { authApi.logout(any()) } throws java.io.IOException("offline")
+        coEvery { authApi.logoutSession(any(), any(), any()) } throws java.io.IOException("offline")
         val repository = AuthRepository(
             authApi, tokenStorage, authState,
             SessionTeardownRunner(setOf(Step(10, log)), authState, backgroundScope),
@@ -212,9 +212,11 @@ class AuthRepositoryLogoutTest {
     fun `logout sends the refresh token`() = runTest {
         var path: String? = null
         var body: String? = null
+        var authorization: String? = null
         val engine = MockEngine { request ->
             path = request.url.encodedPath
             body = String(request.body.toByteArray())
+            authorization = request.headers[HttpHeaders.Authorization]
             respond(content = "", status = HttpStatusCode.NoContent)
         }
         val authState = AuthState(backgroundScope)
@@ -229,23 +231,91 @@ class AuthRepositoryLogoutTest {
         repository.logout()
 
         assertEquals("/auth/logout", path)
+        assertEquals("Bearer $ACCESS", authorization)
         assertTrue(body.orEmpty(), body.orEmpty().contains("\"refresh_token\":\"$REFRESH\""))
         assertEquals(listOf("clear"), log)
     }
 
     @Test
-    fun `logout without a refresh token sends no body`() = runTest {
-        every { tokenStorage.getRefreshToken() } returns null
-        var body: String? = null
+    fun `a login landing during the logout call never sees its tokens sent`() = runTest {
+        val sentAuthorizations = mutableListOf<String?>()
+        val sentBodies = mutableListOf<String>()
+        var accessToken = ACCESS
+        var refreshToken = REFRESH
+        every { tokenStorage.getAccessToken() } answers { accessToken }
+        every { tokenStorage.getRefreshToken() } answers { refreshToken }
         val engine = MockEngine { request ->
-            body = String(request.body.toByteArray())
-            respond(content = "", status = HttpStatusCode.NoContent)
+            sentAuthorizations += request.headers[HttpHeaders.Authorization]
+            sentBodies += String(request.body.toByteArray())
+            if (sentAuthorizations.size == 1) {
+                // Login B lands while the first logout request is in flight.
+                generation++
+                accessToken = "session-b-access"
+                refreshToken = "session-b-refresh"
+            }
+            // Refuse every attempt, so all retries are sent.
+            respond(content = "", status = HttpStatusCode.Unauthorized)
         }
         val authState = AuthState(backgroundScope)
-        val api = AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient())
+        authState.setLoggedIn("user-1")
+        val repository = AuthRepository(
+            AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
+            tokenStorage,
+            authState,
+            SessionTeardownRunner(emptySet(), authState, backgroundScope),
+        )
 
-        api.logout(null)
+        repository.logout()
 
-        assertFalse(body.orEmpty().contains("refresh_token"))
+        assertEquals(3, sentAuthorizations.size) // body+bearer, bearer only, body only
+        assertTrue(sentAuthorizations.none { it?.contains("session-b") == true })
+        assertTrue(sentBodies.none { it.contains("session-b") })
+        assertEquals(listOf("Bearer $ACCESS", "Bearer $ACCESS", null), sentAuthorizations)
+        assertTrue(log.isEmpty()) // the newer session's tokens are not cleared
+    }
+
+    @Test
+    fun `login waits until the previous session's teardown has finished`() = runTest {
+        val authState = AuthState(backgroundScope)
+        authState.setLoggedIn("user-a")
+        val sessionA = authState.session.value as AuthSession.LoggedIn
+        val release = CompletableDeferred<Unit>()
+        val sessionAtLastStep = mutableListOf<AuthSession>()
+        val runner = SessionTeardownRunner(
+            setOf(
+                Step(10, log) { release.await() },
+                Step(20, log) { sessionAtLastStep += authState.session.value },
+            ),
+            authState,
+            backgroundScope,
+        )
+        coEvery { authApi.login("b", "pw", null) } returns io.wolftown.kaiku.domain.model.AuthResponse(
+            accessToken = "session-b-access",
+            refreshToken = "session-b-refresh",
+            expiresIn = 900,
+            tokenType = "Bearer",
+        )
+        coEvery { authApi.authenticatedGetMe(any(), any()) } returns
+            io.wolftown.kaiku.domain.model.User(id = "user-b", username = "b", displayName = "B")
+        every { tokenStorage.saveTokens(any(), any(), any(), any()) } answers { generation++ }
+        val repository = AuthRepository(authApi, tokenStorage, authState, runner)
+
+        val logout = launch { repository.logout() }
+        runCurrent() // session a's teardown is in step 10
+        val login = async { repository.login("b", "pw") }
+        runCurrent()
+        assertTrue(authState.session.value == sessionA) // login b is waiting
+
+        release.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(login.await().isSuccess)
+        logout.join()
+        // Every step of a ran, and before b was logged in.
+        assertEquals(listOf("teardown-10", "teardown-20"), log.filter { it.startsWith("teardown") })
+        assertEquals(1, sessionAtLastStep.size)
+        assertFalse(sessionAtLastStep.single() is AuthSession.LoggedIn &&
+            (sessionAtLastStep.single() as AuthSession.LoggedIn).userId == "user-b")
+        assertEquals("user-b", (authState.session.value as AuthSession.LoggedIn).userId)
     }
 }

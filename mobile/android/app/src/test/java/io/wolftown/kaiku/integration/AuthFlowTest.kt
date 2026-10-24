@@ -131,7 +131,7 @@ class AuthFlowTest {
         // First login
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
         coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
-        coEvery { authApi.logout(any()) } just Runs
+        coEvery { authApi.logoutSession(any(), any(), any()) } just Runs
         authRepository.login("testuser", "pass")
 
         assertTrue(authState.isLoggedIn.value)
@@ -149,7 +149,7 @@ class AuthFlowTest {
         // First login
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
         coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
-        coEvery { authApi.logout(any()) } throws Exception("Network error")
+        coEvery { authApi.logoutSession(any(), any(), any()) } throws Exception("Network error")
         authRepository.login("testuser", "pass")
 
         // Logout should still clear local state
