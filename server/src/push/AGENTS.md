@@ -55,12 +55,16 @@ URLs or the repo. FCM logs carry only the HTTP status and the FCM `errorCode`.
 
 Cross-user cleanup on registration matches only an exact (provider, endpoint):
 possessing the token proves the phone changed hands. A `device_id` is
-client-asserted, so it never deletes another user's rows.
+client-asserted, so it never deletes another user's rows. A UnifiedPush endpoint
+on a guessable topic (e.g. ntfy) is a weaker possession proof than an FCM token;
+registering the same URL from another account evicts the first account's row
+(C19 mandates this).
 
 Endpoints (FCM tokens included) are capped at 2048 bytes: they sit in btree
 indexes, whose entries are limited to about 2.7 KB. Registration takes two
-advisory locks in a fixed order: the per-user lock (seed 0), then the
-(provider, endpoint) lock (seed 65, not in the `db/mod.rs` registry).
+advisory locks in a fixed order: the per-user lock (seed 65,
+`push_register_user`), then the (provider, endpoint) lock (seed 67,
+`push_register_endpoint`); both are in the `db/mod.rs` registry.
 
 ## Single replica
 

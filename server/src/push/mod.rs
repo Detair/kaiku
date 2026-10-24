@@ -207,7 +207,8 @@ async fn send_one(state: &AppState, sub: &PushSubscription, signal: &WakeSignal)
                 client.send(&sub.endpoint, signal).await
             } else {
                 // Keep the row: FCM may be configured again later.
-                tracing::warn!("push: fcm subscription but FCM is not configured; skipping");
+                // debug: this fires once per fcm row on every delivery.
+                tracing::debug!("push: fcm subscription but FCM is not configured; skipping");
                 Delivery::Failed
             }
         }
@@ -398,6 +399,12 @@ pub async fn create_subscription(
     body.validate()
         .map_err(|e| PushError::Validation(crate::validation::format_validation_errors(&e)))?;
 
+    // Byte length, for every provider: the validator above counts chars, but
+    // the btree index limit applies to bytes.
+    if body.endpoint.len() > 2048 {
+        return Err(PushError::Validation("endpoint is too long".into()));
+    }
+
     match body.provider.as_str() {
         "unifiedpush" => {
             let parsed = reqwest::Url::parse(&body.endpoint)
@@ -426,12 +433,12 @@ pub async fn create_subscription(
 
     let mut tx = state.db.begin().await?;
     // Serialize registrations per user (cap race, same-endpoint races).
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 65))")
         .bind(auth.id)
         .execute(&mut *tx)
         .await?;
     // Serialize the same endpoint across users (always after the user lock).
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2, 65))")
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2, 67))")
         .bind(&body.provider)
         .bind(&body.endpoint)
         .execute(&mut *tx)

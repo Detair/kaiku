@@ -577,6 +577,25 @@ async fn test_device_registration_adopts_legacy_row_with_same_endpoint(pool: PgP
 }
 
 #[sqlx::test]
+async fn test_multibyte_endpoint_over_2048_bytes_is_rejected(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+    // 1500 chars (<= 2048) but 3000+ bytes.
+    let endpoint = format!("https://push.example/{}", "\u{00e4}".repeat(1500));
+    assert!(endpoint.chars().count() <= 2048 && endpoint.len() > 2048);
+    let resp = app
+        .oneshot(req(
+            Method::POST,
+            "/api/me/push-subscriptions",
+            &token,
+            Some(json!({ "provider": "unifiedpush", "endpoint": endpoint })),
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test]
 async fn test_fcm_token_length_cap_is_2048(pool: PgPool) {
     use rand::{Rng, SeedableRng};
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_:-";

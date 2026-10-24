@@ -117,7 +117,7 @@ Android push notifications can go through Firebase Cloud Messaging (FCM HTTP v1)
 service account, FCM is off and UnifiedPush keeps working. When FCM is on, the server needs
 outbound HTTPS to `oauth2.googleapis.com` and `fcm.googleapis.com`. If both variables are set,
 or the key is invalid (not JSON, a `token_uri` other than `https://oauth2.googleapis.com/token`,
-or a `private_key` that is not an RSA private key), the server refuses to start.
+a `private_key` that is not an RSA private key, or a `project_id` that is not a valid Google Cloud project id), the server refuses to start.
 
 | Variable | Required / default | Purpose |
 |----------|--------------------|---------|

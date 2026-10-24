@@ -843,6 +843,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn successful_token_fetch_clears_retry_after() {
+        let m = Mock::default();
+        let base = spawn_mock(m.clone()).await;
+        let client = FcmClient::new(key(format!("{base}/token")), &base).unwrap();
+        let sig = WakeSignal::dm(Uuid::now_v7(), 1);
+        // A previous failure whose cooldown has elapsed.
+        client.token.lock().await.retry_after = Some(Instant::now());
+        assert_eq!(client.send("t", &sig).await, Delivery::Sent);
+        assert_eq!(m.token_hits.load(Ordering::SeqCst), 1);
+        assert!(client.token.lock().await.retry_after.is_none());
+    }
+
+    #[tokio::test]
     async fn failed_refresh_keeps_using_unexpired_token() {
         let m = Mock {
             token_status: Some(503),
