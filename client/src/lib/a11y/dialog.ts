@@ -45,6 +45,8 @@ function focusableIn(root: HTMLElement): HTMLElement[] {
   );
 }
 
+const OVERLAY = "[role=menu], [role=listbox], [role=dialog], [data-overlay]";
+
 interface OpenDialog {
   el: () => HTMLElement | undefined;
   handleKey: (e: KeyboardEvent) => void;
@@ -102,6 +104,9 @@ export function createDialog(opts: DialogOptions): DialogHandle {
     const first = items[0];
     const last = items[items.length - 1];
     const active = document.activeElement;
+    // Focus inside some other overlay (portaled menu, picker): leave it alone.
+    const overlay = active && !el.contains(active) ? active.closest(OVERLAY) : null;
+    if (overlay && !openDialogs.some((d) => d.el() === overlay)) return;
     if (!active || !el.contains(active) || active === el) {
       e.preventDefault();
       (e.shiftKey ? last : first).focus();

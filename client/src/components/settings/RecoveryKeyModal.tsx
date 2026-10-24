@@ -5,7 +5,7 @@
  * User must acknowledge saving the key before continuing.
  */
 
-import { Component, createSignal, Show, For, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, Show, For } from "solid-js";
 import { Portal } from "solid-js/web";
 import {
   Copy,
@@ -17,6 +17,8 @@ import {
   AlertTriangle,
 } from "lucide-solid";
 import { secureCopy } from "@/lib/clipboard";
+import { createDialog } from "@/lib/a11y/dialog";
+import { t } from "@/i18n";
 
 interface RecoveryKeyModalProps {
   /** The recovery key chunks to display. */
@@ -38,13 +40,7 @@ interface RecoveryKeyModalProps {
 }
 
 const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
-  });
+  const dialog = createDialog({ onClose: () => props.onClose() });
 
   const [confirmed, setConfirmed] = createSignal(false);
   const [copied, setCopied] = createSignal(false);
@@ -71,6 +67,8 @@ const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
     <Portal>
       <div class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
         <div
+          {...dialog.dialogProps}
+          ref={dialog.ref}
           class="border border-white/10 rounded-2xl w-[500px] shadow-2xl animate-[fadeIn_0.15s_ease-out]"
           style={{"background-color":"var(--color-surface-layer1)"}}
         >
@@ -78,12 +76,14 @@ const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
           <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">
             <div class="flex items-center gap-3">
               <Shield class="w-6 h-6 text-accent-primary" />
-              <h2 class="text-xl font-bold text-text-primary">
+              <h2 id={dialog.titleId} class="text-xl font-bold text-text-primary">
                 Secure Your Messages
               </h2>
             </div>
             <Show when={!props.isInitialSetup}>
               <button
+                type="button"
+                aria-label={t("common.close")}
                 onClick={props.onClose}
                 class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
               >

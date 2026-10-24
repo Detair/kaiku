@@ -185,3 +185,21 @@ describe("createDialog focus loss and stacking", () => {
     expect(document.activeElement).toBe(screen.getByText("a"));
   });
 });
+
+describe("createDialog and other overlays", () => {
+  it("Tab with focus inside a portaled listbox is not pulled into the dialog", () => {
+    render(() => <TestDialog onClose={() => {}} />);
+    const portal = document.createElement("div");
+    portal.setAttribute("role", "listbox");
+    portal.innerHTML = '<button type="button" id="opt">opt</button>';
+    document.body.appendChild(portal);
+    try {
+      portal.querySelector<HTMLElement>("#opt")!.focus();
+      const notPrevented = fireEvent.keyDown(portal.querySelector("#opt")!, { key: "Tab" });
+      expect(notPrevented).toBe(true);
+      expect(document.activeElement?.id).toBe("opt");
+    } finally {
+      portal.remove();
+    }
+  });
+});
