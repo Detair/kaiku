@@ -49,14 +49,20 @@ class AndroidNotificationPresenter @Inject constructor(
         get() = context.getSystemService(NotificationManager::class.java)
 
     @Synchronized
-    override fun show(n: ChannelNotification, isStillValid: () -> Boolean): Boolean {
+    override fun show(prepare: () -> ChannelNotification?): Boolean {
         val manager = manager ?: return false
         if (!canPost(manager)) {
             logger.info("message notification skipped: notifications disabled")
             return false
         }
-        if (!isStillValid()) return false
+        // Final checks and the post form one critical section with cancel/cancelAll.
+        val n = prepare() ?: return false
+        manager.notify(n.channelId, MESSAGE_ID, build(manager, n))
+        manager.notify(SUMMARY_ID, summary())
+        return true
+    }
 
+    private fun build(manager: NotificationManager, n: ChannelNotification): Notification {
         val channel = if (n.isDm) NotificationChannels.DM else NotificationChannels.MENTIONS
         val title = n.title ?: context.getString(R.string.notif_new_message)
 
@@ -82,7 +88,7 @@ class AndroidNotificationPresenter @Inject constructor(
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .build()
 
-        val notification = NotificationCompat.Builder(context, channel)
+        return NotificationCompat.Builder(context, channel)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setStyle(style)
             .setContentTitle(title)
@@ -97,10 +103,6 @@ class AndroidNotificationPresenter @Inject constructor(
             .setShowWhen(true)
             .addExtras(Bundle().apply { putString(EXTRA_USER_ID, n.userId) })
             .build()
-
-        manager.notify(n.channelId, MESSAGE_ID, notification)
-        manager.notify(SUMMARY_ID, summary())
-        return true
     }
 
     @Synchronized

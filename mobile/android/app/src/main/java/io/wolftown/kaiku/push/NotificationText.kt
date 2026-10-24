@@ -48,11 +48,13 @@ data class ChannelNotification(
 /** Posts and clears per-channel message notifications. */
 interface NotificationSink {
     /**
-     * Posts [n] if [isStillValid] holds. The check runs under the same lock as
-     * [cancelAll], so a notification is never posted after a logout cleared
-     * them. Returns whether it was posted.
+     * Posts the notification [prepare] returns, or nothing when it returns
+     * null. [prepare] runs inside the same critical section as the post and
+     * as [cancel]/[cancelAll], immediately before posting, so it can make the
+     * final checks (session, visibility, read cursor) atomically with them.
+     * Returns whether a notification was posted.
      */
-    fun show(n: ChannelNotification, isStillValid: () -> Boolean): Boolean
+    fun show(prepare: () -> ChannelNotification?): Boolean
 
     fun cancel(channelId: String)
 
