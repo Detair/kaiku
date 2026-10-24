@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: message attachments now display — images render as inline thumbnails, other files as a chip with name and size (previously attachments were invisible)
 - Android: unread channels now show a count badge and bolder name in the channel list, clearing when you open the channel and re-raising on new messages
 - Android: messages now render inline markdown (bold, italic, strikethrough, inline code, and click-to-reveal spoilers) instead of plain text
+- Android: messages sent while you were offline appear after reconnecting; new DMs show up without reopening the app.
+- Android: accounts created by the server admin are asked to choose their own password on first sign-in.
 - Desktop auto-update: the app checks GitHub Releases for new signed builds shortly after startup, downloads updates in the background, and offers a one-click restart to apply — release artifacts are now cryptographically signed and ship with an updater manifest
 - Desktop system tray: Kaiku now lives in the tray with a Show/Quit menu, closing the window hides it to the tray instead of quitting (use the tray's "Quit Kaiku" to exit), and the tray shows your total unread count (tooltip everywhere, number badge on macOS and most Linux trays)
 - Desktop client now reports live voice connection quality (latency, packet loss, jitter) in the quality indicator, matching the browser client — previously the desktop always showed "unknown"
@@ -62,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Accept RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5 timing variability) with a dated justification until the `elliptic-curve` 0.14 ecosystem lands in `dtls`, `jsonwebtoken` and `openidconnect`; Kaiku signs its own tokens with EdDSA and is not affected on that path
 - Update `tokio` 1.52.3 → 1.54.1 (RUSTSEC-2026-0386, unsound `AsyncFd::new`; lockfile-only), restoring the License Compliance / Security Audit checks to green
 - Logging out (or revoking a session from account settings) now immediately invalidates that session's access token. Previously the stateless access token kept working for up to its 15-minute lifetime after logout, so a captured token stayed usable on a shared or compromised device even after the user signed out. Access tokens now carry the session id and are checked against a short-lived server-side revocation list on every request and WebSocket connection
 - WebSocket connections now enforce a per-connection flood ceiling across every message type. Previously only component-interaction clicks were rate-limited; typing, channel subscribe/unsubscribe, presence/status updates, and voice-signaling frames had no per-message limit, so a single misbehaving or malicious client could flood the message dispatcher. The ceiling sits far above any legitimate client's rate (including voice call-setup bursts); excess messages are dropped silently

@@ -9,11 +9,15 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.DmRepository
+import io.wolftown.kaiku.data.ws.KaikuWebSocket
+import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.domain.model.DmConversation
 import io.wolftown.kaiku.domain.model.LastMessagePreview
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -23,6 +27,9 @@ class DmApiTest {
 
     private val tokenStorage: TokenStorage = mockk(relaxed = true)
     private val authState: AuthState = mockk(relaxed = true)
+    private val webSocket: KaikuWebSocket = mockk(relaxed = true) {
+        every { events } returns MutableSharedFlow<ServerEvent>()
+    }
 
     init {
         every { tokenStorage.getServerUrl() } returns "https://kaiku.example.com"
@@ -53,7 +60,7 @@ class DmApiTest {
         val api: DmApi = mockk(relaxed = true)
         val dm = DmConversation(id = "dm-1", unreadCount = 2, lastMessage = null)
         coEvery { api.getDms() } returns listOf(dm)
-        val repository = DmRepository(api)
+        val repository = DmRepository(api, webSocket, KaikuJson, backgroundScope)
         repository.loadDms()
 
         repository.markAsRead("dm-1")
@@ -71,7 +78,7 @@ class DmApiTest {
             lastMessage = LastMessagePreview(id = "m1", content = "hi"),
         )
         coEvery { api.getDms() } returns listOf(dm)
-        val repository = DmRepository(api)
+        val repository = DmRepository(api, webSocket, KaikuJson, backgroundScope)
         repository.loadDms()
 
         repository.markAsRead("dm-1")

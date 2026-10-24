@@ -176,3 +176,9 @@ id = "GHSA-238p-pmpm-9mq7"
 # separate prototype-pollution primitive first; none known in the client.
 # Re-evaluate when mermaid moves to katex 0.18.
 reason = "katex 0.16.x via mermaid (pins ^0.16); requires a pre-existing prototype pollution, fix only in 0.18.2."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0387"
+# crypto-bigint 0.5.5 timing variability (2026-10-24). Fix only in 0.7.6;
+# pulled via elliptic-curve 0.13 (dtls, jsonwebtoken, openidconnect).
+reason = "Accepted via deny.toml; no 0.5.x fix, upstream crates not on elliptic-curve 0.14 yet."

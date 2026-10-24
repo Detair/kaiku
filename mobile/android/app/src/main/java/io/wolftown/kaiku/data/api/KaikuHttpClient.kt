@@ -7,6 +7,7 @@ import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
+import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.util.*
@@ -37,6 +38,9 @@ internal data class RefreshRequest(val refreshToken: String)
  * - Transparent 401 -> refresh -> retry flow
  * - Mutex-guarded refresh to prevent concurrent refresh storms
  * - [TokenRefresher] for proactive refreshes (shares the same mutex)
+ * - C4 fallback: a 403 `PASSWORD_CHANGE_REQUIRED` (or a refresh response with
+ *   `password_change_required`) ends the stored session, so the user signs in
+ *   again and gets the change-password screen
  *
  * The refresh request itself is issued through [activeClient] (with
  * [SkipAuthInterceptor] set), so it uses the configured server URL and JSON
@@ -51,8 +55,15 @@ class KaikuHttpClient @Inject constructor(
     internal companion object {
         private val logger = Logger.getLogger("KaikuHttpClient")
 
-        /** Attribute key to mark requests that should skip the auth interceptor. */
-        private val SkipAuthInterceptor = AttributeKey<Boolean>("SkipAuthInterceptor")
+        /** C4 error code for a session that must change its password first. */
+        internal const val PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED"
+
+        /**
+         * Attribute key to mark requests that skip the auth interceptor: no stored
+         * Bearer token is attached (an explicit one stays), no 401 refresh/retry
+         * and no C4 handling. Used by the refresh call and by explicit-bearer calls.
+         */
+        internal val SkipAuthInterceptor = AttributeKey<Boolean>("SkipAuthInterceptor")
 
         /**
          * Creates a [KaikuHttpClient] with a custom engine (for testing with MockEngine).
@@ -117,6 +128,10 @@ class KaikuHttpClient @Inject constructor(
 
             val originalCall = execute(request)
 
+            if (handledPasswordChangeRequired(originalCall.response, generationAtRequest, serverUrlAtRequest)) {
+                return@intercept originalCall
+            }
+
             if (originalCall.response.status != HttpStatusCode.Unauthorized) {
                 return@intercept originalCall
             }
@@ -152,7 +167,10 @@ class KaikuHttpClient @Inject constructor(
                 return@intercept originalCall
             }
             request.headers[HttpHeaders.Authorization] = "Bearer $newToken"
-            execute(request)
+            val retryCall = execute(request)
+            // The retry is terminal too: a C4 refusal ends the session, no further retry.
+            handledPasswordChangeRequired(retryCall.response, generationAtRequest, serverUrlAtRequest)
+            retryCall
         }
 
         return client
@@ -192,6 +210,53 @@ class KaikuHttpClient @Inject constructor(
         AUTH_REJECTED(RefreshResult.AUTH_REJECTED),
         NETWORK_ERROR(RefreshResult.NETWORK_ERROR),
         NO_SESSION(RefreshResult.NO_SESSION),
+    }
+
+    /**
+     * True if a 403 body carries the C4 code `PASSWORD_CHANGE_REQUIRED`. Ktor 3
+     * keeps the response body in memory, so the caller can still read it.
+     */
+    private suspend fun isPasswordChangeRequired(response: HttpResponse): Boolean =
+        try {
+            KaikuJson.decodeFromString<ApiErrorResponse>(response.bodyAsText()).error ==
+                PASSWORD_CHANGE_REQUIRED
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+
+    /**
+     * If [response] is a C4 refusal, ends the request's session (see
+     * [endSessionForPasswordChange]) and returns true.
+     */
+    private suspend fun handledPasswordChangeRequired(
+        response: HttpResponse,
+        generation: Long,
+        serverUrl: String?
+    ): Boolean {
+        if (response.status != HttpStatusCode.Forbidden || !isPasswordChangeRequired(response)) return false
+        endSessionForPasswordChange(generation, serverUrl)
+        return true
+    }
+
+    /**
+     * The server says the stored session can't be used until the password is
+     * changed (it changed server-side after login). Clear it and log out; the
+     * user signs in again and is sent to the change-password screen. Nothing is
+     * done when no session is stored or the request belonged to an older
+     * session: the refresh token is read before the session check and the clear
+     * is conditional on it, so a login landing at any point is never wiped.
+     */
+    private suspend fun endSessionForPasswordChange(generation: Long, serverUrl: String?) {
+        refreshMutex.withLock {
+            val refreshToken = tokenStorage.getRefreshToken()
+            if (!isSameSession(generation, serverUrl)) return@withLock
+            if (refreshToken == null && tokenStorage.getAccessToken() == null) return@withLock
+            if (!tokenStorage.clearIfRefreshTokenIs(refreshToken)) return@withLock
+            logger.warning("Server requires a password change, ending the session")
+            authState.setLoggedOut()
+        }
     }
 
     private fun isSameSession(generation: Long, serverUrl: String?): Boolean =
@@ -271,6 +336,13 @@ class KaikuHttpClient @Inject constructor(
             }
 
             val authResponse = response.body<AuthResponse>()
+
+            if (authResponse.passwordChangeRequired) {
+                // C4: the session can't be used until the password is changed.
+                // Signing in again leads to the change-password screen.
+                logger.warning("Token refresh reports a pending password change, ending the session")
+                return endSessionIfStill(refreshToken, Outcome.AUTH_REJECTED)
+            }
 
             // Use existing userId since the refresh response does not include it
             val userId = tokenStorage.getUserId()

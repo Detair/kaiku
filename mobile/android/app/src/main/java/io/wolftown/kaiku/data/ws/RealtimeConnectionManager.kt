@@ -74,6 +74,17 @@ class RealtimeConnectionManager internal constructor(
         const val REFRESH_LEAD_MS = 60_000L
         const val MAX_CONSECUTIVE_AUTH_REJECTS = 3
 
+        /** C4 `error` event code: the password must be changed before connecting. */
+        internal const val PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED"
+
+        /**
+         * After the app returns to the foreground while Connected, a Ping is sent
+         * at once and the socket is dropped if no Pong arrives within this time,
+         * so a socket that died during doze is found in seconds instead of after
+         * up to [PONG_TIMEOUT_MS].
+         */
+        const val FOREGROUND_PONG_TIMEOUT_MS = 10_000L
+
         /** Retry delay for the proactive refresh after a network error. */
         internal const val REFRESH_RETRY_MS = 30_000L
 
@@ -91,6 +102,7 @@ class RealtimeConnectionManager internal constructor(
         data class RetryDue(val generation: Int) : Input
         data class PingDue(val generation: Int) : Input
         data class WatchdogDue(val generation: Int) : Input
+        data class ForegroundProbeDue(val generation: Int, val pongsAtSend: Long) : Input
         data class ConnectTimeoutDue(val generation: Int) : Input
         data class RefreshDue(val generation: Int) : Input
     }
@@ -106,7 +118,13 @@ class RealtimeConnectionManager internal constructor(
     /** True between our socket.connect() and the socket's terminal state or our socket.disconnect(). */
     private var socketActive = false
     private var consecutiveAuthRejects = 0
+
+    /** Session generation of the token the current socket authenticated with. */
+    private var socketSessionGeneration = -1L
     private var lastPongAt = 0L
+
+    /** Pongs received on the current socket; the foreground probe checks it moved. */
+    private var pongCount = 0L
     private var lastNetworkId: Long? = null
 
     private var retryJob: Job? = null
@@ -163,6 +181,9 @@ class RealtimeConnectionManager internal constructor(
             }
             is Input.PingDue -> if (input.generation == heartbeatGeneration) onPingDue()
             is Input.WatchdogDue -> if (input.generation == heartbeatGeneration) onWatchdogDue()
+            is Input.ForegroundProbeDue -> if (input.generation == heartbeatGeneration) {
+                onForegroundProbeDue(input.pongsAtSend)
+            }
             is Input.ConnectTimeoutDue -> if (input.generation == connectTimeoutGeneration) onConnectTimeout()
             is Input.RefreshDue -> if (input.generation == refreshGeneration) onRefreshDue()
         }
@@ -233,6 +254,8 @@ class RealtimeConnectionManager internal constructor(
             setStatus(RealtimeStatus.Offline)
             return
         }
+        // Read the generation before the token (same rule as the HTTP client).
+        val generation = tokenStorage.getSessionGeneration()
         val token = tokenStorage.getAccessToken() ?: run {
             logger.warning("no access token after refresh, not connecting")
             stopAfterSessionEnded()
@@ -242,6 +265,7 @@ class RealtimeConnectionManager internal constructor(
         socket.connect(url, token)
         // Only after connect() returned: if it threw, the actor's catch schedules a retry.
         socketActive = true
+        socketSessionGeneration = generation
         armConnectTimeout()
     }
 
@@ -309,9 +333,33 @@ class RealtimeConnectionManager internal constructor(
                 setStatus(RealtimeStatus.Connected)
                 startHeartbeat()
             }
-            ServerEvent.Pong -> lastPongAt = clock.nowMillis()
+            ServerEvent.Pong -> {
+                lastPongAt = clock.nowMillis()
+                pongCount++
+            }
+            is ServerEvent.Error -> if (event.code == PASSWORD_CHANGE_REQUIRED) onPasswordChangeRequired()
             else -> Unit
         }
+    }
+
+    /**
+     * C4: the server refused the socket because the password must be changed
+     * first (it follows with close 1008). The session is unusable: stop without
+     * a retry, clear the tokens and log out, so the user signs in again and
+     * gets the change-password screen. LoggedOut keeps everything stopped.
+     */
+    private fun onPasswordChangeRequired() {
+        if (!isLoggedIn()) return
+        // Read the refresh token before the session check and clear only if it is
+        // still stored: a newer login (new generation / token) is never wiped.
+        val refreshToken = tokenStorage.getRefreshToken()
+        if (tokenStorage.getSessionGeneration() != socketSessionGeneration) {
+            logger.info("password-change refusal from an older session, ignored")
+            return
+        }
+        logger.warning("server requires a password change, logging out")
+        stopAfterSessionEnded()
+        if (tokenStorage.clearIfRefreshTokenIs(refreshToken)) authState.setLoggedOut()
     }
 
     /** Step 6: offline pauses, online reconnects now. */
@@ -361,7 +409,11 @@ class RealtimeConnectionManager internal constructor(
             stopHeartbeat()
         } else {
             val current = _status.value
-            if (current == RealtimeStatus.Connected || current == RealtimeStatus.Connecting) return
+            if (current == RealtimeStatus.Connected) {
+                probeAfterForeground()
+                return
+            }
+            if (current == RealtimeStatus.Connecting) return
         }
         logger.info("app foreground, connecting now")
         backoff.reset()
@@ -432,6 +484,38 @@ class RealtimeConnectionManager internal constructor(
         enterReconnecting()
     }
 
+    /** Ping now and arm a short watchdog: the socket may have died while the app was in the background. */
+    private fun probeAfterForeground() {
+        logger.info("app foreground while Connected, probing socket")
+        val pongsAtSend = pongCount
+        socket.send(ClientEvent.Ping)
+        val generation = heartbeatGeneration
+        heartbeatJobs = heartbeatJobs.filter { it.isActive } + scope.launch {
+            delay(FOREGROUND_PONG_TIMEOUT_MS)
+            inbox.send(Input.ForegroundProbeDue(generation, pongsAtSend))
+        }
+    }
+
+    private fun onForegroundProbeDue(pongsAtSend: Long) {
+        if (_status.value != RealtimeStatus.Connected) return
+        if (pongCount != pongsAtSend) return
+        dropSocketAndReconnect("no pong after foreground probe, reconnecting")
+    }
+
+    /** The socket is considered dead: close it and reconnect (or wait, if offline or logged out). */
+    private fun dropSocketAndReconnect(reason: String) {
+        logger.warning(reason)
+        stopHeartbeat()
+        socketActive = false
+        socket.disconnect()
+        if (!isLoggedIn()) return
+        if (!connectivity.isConnected.value) {
+            setStatus(RealtimeStatus.Offline)
+            return
+        }
+        enterReconnecting()
+    }
+
     private fun onPingDue() {
         if (_status.value == RealtimeStatus.Connected) socket.send(ClientEvent.Ping)
     }
@@ -440,11 +524,7 @@ class RealtimeConnectionManager internal constructor(
         if (_status.value != RealtimeStatus.Connected) return
         val silentFor = clock.nowMillis() - lastPongAt
         if (silentFor > PONG_TIMEOUT_MS) {
-            logger.warning("no pong within timeout, reconnecting")
-            stopHeartbeat()
-            socketActive = false
-            socket.disconnect()
-            enterReconnecting()
+            dropSocketAndReconnect("no pong within timeout, reconnecting")
         } else {
             val generation = heartbeatGeneration
             heartbeatJobs = heartbeatJobs.filter { it.isActive } +

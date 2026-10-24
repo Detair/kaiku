@@ -57,6 +57,17 @@ class GuildRepository @Inject constructor(
     }
 
     /**
+     * Reloads the channels (and their server-side unread counts) of the
+     * selected server, e.g. after a reconnect. Does nothing when no server is
+     * selected. The open channel stays marked read.
+     */
+    suspend fun reloadSelectedGuildChannels() {
+        val guildId = _selectedGuildId.value ?: return
+        loadChannels(guildId)
+        _activeChannelId.value?.let { _channels.value = clearUnread(_channels.value, it) }
+    }
+
+    /**
      * Mark a channel as the active (open) one: clears its unread count and
      * records it so incoming messages there don't re-raise the badge.
      */

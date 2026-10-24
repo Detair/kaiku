@@ -16,14 +16,20 @@ sealed class ServerEvent {
 
     // -- Connection -----------------------------------------------------------
 
+    /**
+     * The socket is authenticated and its server-side pub/sub is live.
+     * [serverTime] (C2, RFC 3339 UTC) is the catch-up watermark; null on
+     * servers that predate it.
+     */
     @Serializable
     @SerialName("ready")
-    data class Ready(val userId: String) : ServerEvent()
+    data class Ready(val userId: String, val serverTime: String? = null) : ServerEvent()
 
     @Serializable
     @SerialName("pong")
     data object Pong : ServerEvent()
 
+    /** Ack for a client `subscribe`: live events for [channelId] flow from here on. */
     @Serializable
     @SerialName("subscribed")
     data class Subscribed(val channelId: String) : ServerEvent()
@@ -72,6 +78,18 @@ sealed class ServerEvent {
         val userId: String,
         val emoji: String
     ) : ServerEvent()
+
+    // -- Direct messages ------------------------------------------------------
+
+    /**
+     * A DM the user takes part in was created (C3). [channel] is exactly one
+     * `GET /api/dm` element; decode it as
+     * [io.wolftown.kaiku.domain.model.DmConversation]. Sockets open at creation
+     * are already subscribed to it (without a `subscribed` ack).
+     */
+    @Serializable
+    @SerialName("dm_created")
+    data class DmCreated(val channel: JsonObject) : ServerEvent()
 
     // -- Typing ---------------------------------------------------------------
 
