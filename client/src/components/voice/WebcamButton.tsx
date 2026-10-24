@@ -1,6 +1,7 @@
 import { Component, Show, createSignal } from "solid-js";
 import { Camera, CameraOff } from "lucide-solid";
 import { voiceState, startWebcam, stopWebcam } from "@/stores/voice";
+import { t } from "@/i18n";
 
 /**
  * Webcam toggle button for voice controls.
@@ -36,6 +37,8 @@ const WebcamButton: Component = () => {
   return (
     <div class="relative">
       <button
+        type="button"
+        aria-label={voiceState.webcamActive ? t("voice.webcamStop") : t("voice.webcamStart")}
         onClick={handleClick}
         disabled={voiceState.state !== "connected" || loading()}
         class={`p-2 rounded-full transition-colors ${

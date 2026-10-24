@@ -5,7 +5,7 @@
 import type { Message, ThreadInfo } from "@/lib/types";
 import { playNotification } from "@/lib/sound";
 import type { MentionType, SoundEventType } from "@/lib/sound/types";
-import type { NotificationContext } from "@/lib/notifications";
+import { isAppFocused, type NotificationContext } from "@/lib/notifications";
 
 import { currentUser } from "../auth";
 import { getChannel, channelsState } from "../channels";
@@ -30,7 +30,7 @@ import {
 /**
  * Handle notification sound for incoming message.
  */
-export function handleMessageNotification(message: Message): void {
+export async function handleMessageNotification(message: Message): Promise<void> {
   const user = currentUser();
 
   // Don't notify for own messages
@@ -38,12 +38,12 @@ export function handleMessageNotification(message: Message): void {
     return;
   }
 
-  // Don't notify for currently focused channel when the window is visible
-  if (channelsState.selectedChannelId === message.channel_id && !document.hidden) {
-    return;
-  }
-
-  if (dmsState.selectedDMId === message.channel_id && !dmsState.isShowingFriends && !document.hidden) {
+  // Stay quiet only when Kaiku is focused AND the message's channel is open.
+  // Visible-but-unfocused (e.g. on another screen) still notifies.
+  const channelOpen =
+    channelsState.selectedChannelId === message.channel_id ||
+    (dmsState.selectedDMId === message.channel_id && !dmsState.isShowingFriends);
+  if (channelOpen && (await isAppFocused())) {
     return;
   }
 

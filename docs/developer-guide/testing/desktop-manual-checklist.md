@@ -97,6 +97,8 @@ once per OS before a release and record the result in the table at the bottom.
 ## All platforms (and the web client)
 
 - [ ] Reconnect catch-up: user A has a channel open; cut A's network for 30 s; meanwhile B sends 3 messages and starts a brand-new DM with A; restore A's network: the 3 messages appear in order, without duplicates and without a scroll jump, and the new DM is in A's list without a reload
+- [ ] Notifications while unfocused (desktop): Kaiku visible on a second screen with channel X open, focus another app; the browser participant posts in X: an OS notification appears; click into Kaiku and post again: no notification
+- [ ] Push-to-talk game safety (desktop): binding plain `V` is refused with "Choose a key with Ctrl, Alt or ⌘, or F13–F24, so your game still gets the key."; bind Alt+B (or F13), focus another app: holding it transmits; in Kaiku, holding the key while typing in the message box does not transmit; an older plain binding shows one "Push-to-talk works only in Kaiku" toast and still works while Kaiku is focused
 
 ## Results
 

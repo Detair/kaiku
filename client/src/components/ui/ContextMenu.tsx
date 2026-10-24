@@ -194,7 +194,7 @@ const ContextMenuItemButton: Component<{
           props.item.disabled
             ? "opacity-40 cursor-not-allowed"
             : props.item.danger
-              ? "text-accent-error hover:bg-accent-error/10"
+              ? "text-accent-danger hover:bg-accent-danger/10"
               : "text-text-primary hover:bg-white/5"
         }
         ${props.focused && !props.item.disabled ? "bg-white/10" : ""}

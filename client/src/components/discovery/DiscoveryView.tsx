@@ -180,7 +180,7 @@ const DiscoveryView: Component = () => {
             <Show when={!isPermanentError()}>
               <button
                 onClick={fetchGuilds}
-                class="mt-3 px-4 py-2 text-sm bg-accent-primary text-on-accent rounded-lg hover:bg-accent-hover"
+                class="mt-3 px-4 py-2 text-sm bg-accent-primary text-on-accent rounded-lg hover:bg-primary-hover"
               >
                 Retry
               </button>
