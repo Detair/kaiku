@@ -29,10 +29,6 @@ object MessageOrdering {
             .map { it.first }
     }
 
-    /** Whether [message] sorts after [other] in the list order used by [merge]. */
-    fun isNewer(message: Message, other: Message): Boolean =
-        ORDER.compare(message to parseInstant(message.createdAt), other to parseInstant(other.createdAt)) > 0
-
     private val ORDER: Comparator<Pair<Message, Instant?>> =
         compareBy<Pair<Message, Instant?>, Instant?>(nullsLast<Instant>()) { it.second }
             .thenBy { it.first.id }

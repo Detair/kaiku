@@ -40,7 +40,8 @@ class ResyncCoordinatorTest {
     private val chat: ChatRepository = mockk(relaxed = true) {
         every { resubscribeAll() } returns setOf("a")
         every { isDmChannelTracked(any()) } returns false
-        every { setDmChannels(any()) } returns emptySet()
+        every { setDmChannels(any(), any()) } returns emptySet()
+        every { dmTrackingMark() } returns 7L
     }
     private val guilds: GuildRepository = mockk(relaxed = true)
     private val dms: DmRepository = mockk(relaxed = true) {
@@ -124,7 +125,7 @@ class ResyncCoordinatorTest {
         emit(ready)
 
         coVerify(exactly = 1) { dms.loadDms() }
-        verify(exactly = 1) { chat.setDmChannels(listOf("dm-1", "dm-2")) }
+        verify(exactly = 1) { chat.setDmChannels(listOf("dm-1", "dm-2"), any()) }
 
         ackAll()
         advanceTimeBy(1_000)
@@ -193,7 +194,7 @@ class ResyncCoordinatorTest {
         advanceTimeBy(2_000)
         runCurrent()
 
-        verify(exactly = 1) { chat.setDmChannels(any()) }
+        verify(exactly = 1) { chat.setDmChannels(any(), any()) }
     }
 
     @Test
@@ -229,7 +230,7 @@ class ResyncCoordinatorTest {
 
         coVerify(exactly = 1) { chat.catchUp("a") }
         coVerify(exactly = 1) { dms.loadDms() }
-        verify(exactly = 1) { chat.setDmChannels(listOf("dm-1", "dm-2")) }
+        verify(exactly = 1) { chat.setDmChannels(listOf("dm-1", "dm-2"), any()) }
 
         // The coordinator keeps working on the next reconnect.
         emit(ready)
@@ -243,5 +244,14 @@ class ResyncCoordinatorTest {
         emit(WsJson.decodeFromString<ServerEvent>(Golden.load("ws_dm_created.json")))
 
         verify(exactly = 1) { chat.trackDmChannel("00000000-0000-4000-8000-00000000d101") }
+    }
+
+    @Test
+    fun `dm subscriptions keep dms tracked after the ready mark`() = runTest {
+        startCoordinator()
+
+        emit(ready)
+
+        verify(exactly = 1) { chat.setDmChannels(listOf("dm-1", "dm-2"), 7L) }
     }
 }

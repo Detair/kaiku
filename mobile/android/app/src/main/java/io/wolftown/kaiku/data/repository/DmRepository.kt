@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import java.util.logging.Logger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -45,8 +47,28 @@ class DmRepository @Inject constructor(
         }
     }
 
+    /** Sequence of dm_created events, and the position each live DM arrived at. */
+    private val liveSeq = AtomicLong(0)
+    private val liveCreatedAt = ConcurrentHashMap<String, Long>()
+
+    /**
+     * Replaces the list with the server's, in server order. Conversations a
+     * `dm_created` added while the request was in flight and that the
+     * fetched list does not contain yet are kept, first. Anything else that
+     * is missing from the server's list is dropped.
+     */
     suspend fun loadDms() {
-        _conversations.value = dmApi.getDms()
+        val startedAt = liveSeq.get()
+        val fetched = dmApi.getDms()
+        val fetchedIds = fetched.mapTo(HashSet()) { it.id }
+        _conversations.update { current ->
+            val liveOnly = current.filter {
+                it.id !in fetchedIds && (liveCreatedAt[it.id] ?: 0L) > startedAt
+            }
+            liveOnly + fetched
+        }
+        // The server knows these now; no need to remember them as live.
+        fetchedIds.forEach { liveCreatedAt.remove(it) }
     }
 
     /**
@@ -68,6 +90,7 @@ class DmRepository @Inject constructor(
             logger.warning("Failed to decode dm_created payload (${e::class.simpleName})")
             return
         }
+        liveCreatedAt[dm.id] = liveSeq.incrementAndGet()
         _conversations.update { upsertAtTop(it, dm) }
     }
 

@@ -132,6 +132,9 @@ class ResyncCoordinator @Inject constructor(
         }
         previousJobs.forEach { it.cancel() }
 
+        // DMs tracked from dm_created after this point may be missing from the
+        // DM list fetched below; setDmChannels must not unsubscribe them.
+        val dmMark = chat.dmTrackingMark()
         val resubscribed = step("resubscribe") { chat.resubscribeAll() }.orEmpty()
         awaitAck(resubscribed, gen)
 
@@ -150,7 +153,7 @@ class ResyncCoordinator @Inject constructor(
                 val ids = dms.conversations.value.map { it.id }
                 // Register before sending so a fast ack cannot be missed.
                 awaitAck(ids.filterNot(chat::isDmChannelTracked), gen)
-                chat.setDmChannels(ids)
+                chat.setDmChannels(ids, keepTrackedAfter = dmMark)
             }
         }
         resyncJobs = listOf(reloadChannels, reloadDms)

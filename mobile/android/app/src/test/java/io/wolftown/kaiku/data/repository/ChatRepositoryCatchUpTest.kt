@@ -349,4 +349,67 @@ class ChatRepositoryCatchUpTest {
 
         assertEquals(listOf(OLDER_ID, NEWER_ID), repository.ids())
     }
+
+    // -- Fix round 2 ----------------------------------------------------------
+
+    @Test
+    fun `set dm channels does not unsubscribe a dm tracked after the mark`() = runTest {
+        val repository = createRepository()
+        repository.setDmChannels(listOf("dm-1"))
+        val mark = repository.dmTrackingMark()
+        repository.trackDmChannel("dm-new") // dm_created while GET /api/dm was in flight
+        clearMocks(webSocket, answers = false, recordedCalls = true)
+
+        repository.setDmChannels(listOf("dm-1"), keepTrackedAfter = mark)
+
+        verify(exactly = 0) { webSocket.send(ClientEvent.Unsubscribe("dm-new")) }
+        assertEquals(setOf("dm-1", "dm-new"), repository.resubscribeAll())
+    }
+
+    @Test
+    fun `unconsumed anchor survives a second ready`() = runTest {
+        val repository = createRepository { _, _ -> CursorPage(listOf(missed(1)), hasMore = false) }
+        repository.loadMessages(CHANNEL_ID)
+
+        // Socket 1: Ready, a live message, then the socket drops before catch-up.
+        eventsFlow.emit(ServerEvent.Ready(userId = "user-1"))
+        eventsFlow.emit(WsJson.decodeFromString<ServerEvent>(Golden.load("ws_message_new.json")))
+        // Socket 2.
+        eventsFlow.emit(ServerEvent.Ready(userId = "user-1"))
+        repository.catchUp(CHANNEL_ID)
+
+        assertEquals(NEWER_ID, afterRequests().single().url.parameters["after"])
+    }
+
+    @Test
+    fun `completed catch up releases its anchor for the next reconnect`() = runTest {
+        val repository = createRepository { _, index ->
+            CursorPage(if (index == 0) listOf(missed(1)) else emptyList(), hasMore = false)
+        }
+        repository.loadMessages(CHANNEL_ID)
+        eventsFlow.emit(ServerEvent.Ready(userId = "user-1"))
+        repository.catchUp(CHANNEL_ID)
+
+        eventsFlow.emit(ServerEvent.Ready(userId = "user-1"))
+        repository.catchUp(CHANNEL_ID)
+
+        assertEquals(listOf(NEWER_ID, missed(1).id), afterRequests().map { it.url.parameters["after"] })
+    }
+
+    @Test
+    fun `initial load keeps a live message with the same timestamp and a smaller id`() = runTest {
+        // Same createdAt as the golden page's newest item (e002), smaller id.
+        val sameTime = missed(0).copy(
+            id = "00000000-0000-4000-8000-00000000e000",
+            createdAt = "2026-03-12T10:01:00Z",
+        )
+        val payload = KaikuJson.encodeToJsonElement(Message.serializer(), sameTime).jsonObject
+        val repository = createRepository(
+            onLatestPageRequest = { eventsFlow.tryEmit(ServerEvent.MessageNew(CHANNEL_ID, payload)) }
+        )
+
+        repository.loadMessages(CHANNEL_ID)
+
+        assertEquals(listOf(OLDER_ID, sameTime.id, NEWER_ID), repository.ids())
+    }
 }

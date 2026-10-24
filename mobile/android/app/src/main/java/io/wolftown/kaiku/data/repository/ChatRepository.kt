@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -86,9 +87,14 @@ class ChatRepository @Inject constructor(
      */
     private val dmChannels: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+    /** Sequence of [trackDmChannel] calls, and the position each DM was tracked at. */
+    private val dmTrackSeq = AtomicLong(0)
+    private val dmTrackedAt = ConcurrentHashMap<String, Long>()
+
     /**
-     * Newest message id per channel as it was when the last `Ready` arrived,
-     * i.e. before any event of the new socket. [catchUp] pages from here, so a
+     * Newest message id per channel as it was when the first `Ready` since
+     * the channel's last completed catch-up arrived, i.e. before any event of
+     * that socket. An unconsumed anchor survives further reconnects. [catchUp] pages from here, so a
      * live message that lands before the catch-up starts cannot hide the gap.
      */
     private val catchUpAnchors = ConcurrentHashMap<String, String>()
@@ -116,9 +122,9 @@ class ChatRepository @Inject constructor(
      * messages exist on the server (`has_more`).
      *
      * Without [before] the page replaces the current list (initial load),
-     * except for messages newer than the page's newest item: those arrived
-     * live while the request was in flight and are kept. For an empty page,
-     * messages that arrived during the request are kept.
+     * except for messages that arrived live while the request was in flight
+     * and are not in the page: those are kept. The fresh page also supersedes
+     * any unconsumed catch-up anchor of the channel.
      * With [before] the older page is merged into the current list.
      * Either way the list ends up oldest-to-newest (see [MessageOrdering]).
      */
@@ -130,18 +136,15 @@ class ChatRepository @Inject constructor(
         if (before != null) {
             flow.update { existing -> MessageOrdering.merge(existing, page.items) }
         } else {
-            val latest = MessageOrdering.merge(emptyList(), page.items)
-            val newest = latest.lastOrNull()
+            val pageIds = page.items.mapTo(HashSet()) { it.id }
             flow.update { existing ->
-                val live = existing.filter { message ->
-                    if (newest != null) {
-                        MessageOrdering.isNewer(message, newest)
-                    } else {
-                        message.id !in idsBeforeRequest
-                    }
-                }
-                MessageOrdering.merge(latest, live)
+                // Arrived during the request; compared by id, not by time, so
+                // a live message with the same timestamp as the page's newest
+                // item is not lost.
+                val live = existing.filter { it.id !in idsBeforeRequest && it.id !in pageIds }
+                MessageOrdering.merge(page.items, live)
             }
+            catchUpAnchors.remove(channelId)
         }
         return page.hasMore
     }
@@ -166,8 +169,16 @@ class ChatRepository @Inject constructor(
      */
     suspend fun catchUp(channelId: String) {
         val flow = channelMessages[channelId] ?: return
-        val anchor = catchUpAnchors.remove(channelId)
-        var after = anchor ?: flow.value.lastOrNull()?.id ?: return
+        // The anchor is only removed once the catch-up completed: if it fails
+        // or the socket drops first, the next reconnect starts from it again.
+        val anchor = catchUpAnchors[channelId]
+        val start = anchor ?: flow.value.lastOrNull()?.id ?: return
+        catchUpFrom(channelId, flow, start)
+        if (anchor != null) catchUpAnchors.remove(channelId, anchor)
+    }
+
+    private suspend fun catchUpFrom(channelId: String, flow: MutableStateFlow<List<Message>>, start: String) {
+        var after = start
 
         repeat(CATCH_UP_MAX_PAGES) { pageIndex ->
             val page = try {
@@ -214,12 +225,17 @@ class ChatRepository @Inject constructor(
     /**
      * Makes [channelIds] the background DM subscriptions. Sends `subscribe`
      * for ids that were not tracked yet and `unsubscribe` for dropped ids that
-     * no screen has open. Returns the ids a `subscribe` was sent for.
+     * no screen has open, except ids [trackDmChannel] added after the
+     * [dmTrackingMark] passed as [keepTrackedAfter]. Returns the ids a
+     * `subscribe` was sent for.
      */
-    fun setDmChannels(channelIds: Collection<String>): Set<String> {
+    fun setDmChannels(channelIds: Collection<String>, keepTrackedAfter: Long = Long.MAX_VALUE): Set<String> {
         val next = channelIds.toSet()
         val added = next - dmChannels
-        val removed = dmChannels - next
+        // A DM tracked from dm_created after [keepTrackedAfter] may simply be
+        // missing from a DM list fetched before it existed: keep it.
+        val removed = (dmChannels - next).filterNot { (dmTrackedAt[it] ?: 0L) > keepTrackedAfter }.toSet()
+        removed.forEach { dmTrackedAt.remove(it) }
         dmChannels.addAll(added)
         dmChannels.removeAll(removed)
         added.forEach { webSocket.send(ClientEvent.Subscribe(it)) }
@@ -233,8 +249,12 @@ class ChatRepository @Inject constructor(
      * anything: the server already subscribed every open socket (C3).
      */
     fun trackDmChannel(channelId: String) {
+        dmTrackedAt[channelId] = dmTrackSeq.incrementAndGet()
         dmChannels.add(channelId)
     }
+
+    /** Current position of [trackDmChannel] calls; pass it to [setDmChannels] later. */
+    fun dmTrackingMark(): Long = dmTrackSeq.get()
 
     /** Whether [channelId] is tracked as a background DM subscription. */
     fun isDmChannelTracked(channelId: String): Boolean = channelId in dmChannels
@@ -351,9 +371,10 @@ class ChatRepository @Inject constructor(
      */
     private fun handleReady(event: ServerEvent.Ready) {
         event.serverTime?.let { _lastServerTime.value = it }
-        catchUpAnchors.clear()
         channelMessages.forEach { (channelId, flow) ->
-            flow.value.lastOrNull()?.let { catchUpAnchors[channelId] = it.id }
+            // Keep an anchor whose catch-up has not completed yet: re-anchoring
+            // at a live message of the dropped socket would skip the gap.
+            flow.value.lastOrNull()?.let { catchUpAnchors.putIfAbsent(channelId, it.id) }
         }
     }
 
