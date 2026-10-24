@@ -676,7 +676,7 @@ Branch `fix/ci-hygiene`. After #658 (merged); rebase over sibling `ci.yml` edits
 - Push for DMs/mentions/photos, notification channels, device subscriptions and their cap → push plan. Call ringing by push (B-09 push half) → post-1.0.
 - String extraction and the i18n runtime → i18n plan. Tasks here only add strings in the catalog format.
 - Backups, alerting, image pins, live configuration, restore drill → the production server plan.
-- Post-1.0: CSP tightening, non-consuming global PTT hook, event reminder fixes, Android invite-code dialog, security ignore-list unification, QR-redeem value binding.
+- Post-1.0: CSP tightening, non-consuming global PTT hook, event reminder fixes, Android invite-code dialog, security ignore-list unification, S-01 residual hardening.
 
 ## Self-review notes
 
