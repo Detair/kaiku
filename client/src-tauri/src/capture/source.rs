@@ -94,15 +94,18 @@ pub fn find_target_by_id(source_id: &str) -> Option<scap::Target> {
     None
 }
 
-/// Build `scap::capturer::Options` for a given target at specified resolution and FPS.
+/// Build `scap::capturer::Options` for a given target at the given FPS.
+///
+/// `max_width` x `max_height` is the tier's largest encode size. Backends
+/// that can scale natively (macOS) are asked for the matching resolution;
+/// on the others frames arrive at the source's own size and the converter
+/// scales them (see `convert::encode_dimensions`).
 pub fn build_capture_options(
     target: scap::Target,
     fps: u32,
-    _output_width: u32,
-    _output_height: u32,
+    max_width: u32,
+    max_height: u32,
 ) -> Options {
-    let crop = None; // Full capture, encoder handles resolution
-
     Options {
         fps,
         target: Some(target),
@@ -110,8 +113,38 @@ pub fn build_capture_options(
         show_highlight: false,
         excluded_targets: None,
         output_type: scap::frame::FrameType::BGRAFrame,
-        output_resolution: scap::capturer::Resolution::_1080p,
-        crop_area: crop,
+        output_resolution: output_resolution(max_width, max_height),
+        crop_area: None,
         ..Default::default()
+    }
+}
+
+/// Smallest `scap` resolution that covers a `max_width` x `max_height` tier.
+///
+/// `scap` never upscales with it (it takes the minimum of this and the
+/// source size), so a small window keeps its own size.
+const fn output_resolution(max_width: u32, max_height: u32) -> scap::capturer::Resolution {
+    use scap::capturer::Resolution;
+    if max_width <= 640 && max_height <= 480 {
+        Resolution::_480p
+    } else if max_width <= 1280 && max_height <= 720 {
+        Resolution::_720p
+    } else {
+        Resolution::_1080p
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use scap::capturer::Resolution;
+
+    use super::*;
+
+    #[test]
+    fn output_resolution_covers_tier() {
+        assert!(matches!(output_resolution(854, 480), Resolution::_720p));
+        assert!(matches!(output_resolution(1280, 720), Resolution::_720p));
+        assert!(matches!(output_resolution(1920, 1080), Resolution::_1080p));
+        assert!(matches!(output_resolution(320, 240), Resolution::_480p));
     }
 }

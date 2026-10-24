@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
-use super::convert::RgbToI420Converter;
+use super::convert::{I420Converter, PixelLayout};
 use super::I420Frame;
 
 /// A webcam device available for capture.
@@ -59,7 +59,9 @@ impl WebcamCapturer {
     /// Create a new webcam capturer.
     ///
     /// `device_index` selects the camera (0 = first camera).
-    /// `width`/`height`/`fps` are requested; the camera may use the closest supported format.
+    /// `width`/`height` are the largest encode size and `fps` the target rate.
+    /// The camera may deliver another resolution; frames are converted at
+    /// their actual size and scaled down to fit `width` x `height`.
     pub const fn new(device_index: u32, fps: u32, width: u32, height: u32) -> Self {
         Self {
             device_index,
@@ -116,7 +118,9 @@ impl WebcamCapturer {
                 "Webcam capture started"
             );
 
-            let mut converter = RgbToI420Converter::new(actual_width, actual_height);
+            let mut converter = I420Converter::new(PixelLayout::RGB, width, height);
+            // Size of the last malformed frame warned about (warn once per size).
+            let mut warned_malformed: Option<(u32, u32)> = None;
 
             // Calculate frame interval for target FPS
             let frame_interval = std::time::Duration::from_millis(1000 / u64::from(fps));
@@ -132,11 +136,22 @@ impl WebcamCapturer {
                 match camera.frame() {
                     Ok(frame) => match frame.decode_image::<RgbFormat>() {
                         Ok(decoded) => {
-                            let rgb_data = decoded.into_raw();
-                            let i420 = converter.convert_owned(&rgb_data);
-
-                            if frame_tx.try_send(i420).is_err() {
-                                debug!("Webcam frame dropped (receiver behind)");
+                            // The decoded image's own size is authoritative:
+                            // it can differ from the negotiated format.
+                            let (frame_w, frame_h) = decoded.dimensions();
+                            let stride = frame_w as usize * PixelLayout::RGB.bytes_per_pixel();
+                            match converter.convert(decoded.as_raw(), frame_w, frame_h, stride) {
+                                Some(i420) => {
+                                    if frame_tx.try_send(i420).is_err() {
+                                        debug!("Webcam frame dropped (receiver behind)");
+                                    }
+                                }
+                                None => {
+                                    if warned_malformed != Some((frame_w, frame_h)) {
+                                        warn!(frame_w, frame_h, "Skipping malformed webcam frames");
+                                        warned_malformed = Some((frame_w, frame_h));
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
