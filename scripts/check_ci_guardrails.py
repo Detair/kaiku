@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
+import plistlib
 import re
 import sys
 from pathlib import Path
@@ -17,6 +19,14 @@ NATIVE_DEPS_ACTION = ROOT / ".github/actions/setup-native-deps/action.yml"
 NATIVE_DEPS_ACTION_REF = "./.github/actions/setup-native-deps"
 SETUP_INTEGRATION = ROOT / "server/tests/integration/setup_integration.rs"
 UPLOADS_HTTP = ROOT / "server/tests/integration/uploads_http.rs"
+TAURI_DIR = ROOT / "client/src-tauri"
+TAURI_CONF = TAURI_DIR / "tauri.conf.json"
+INFO_PLIST = TAURI_DIR / "Info.plist"
+MACOS_ENTITLEMENT_KEYS = [
+    "com.apple.security.device.audio-input",
+    "com.apple.security.device.camera",
+]
+MACOS_USAGE_KEYS = ["NSMicrophoneUsageDescription", "NSCameraUsageDescription"]
 CONFIG_RS = ROOT / "server/src/config.rs"
 ENV_DOC = ROOT / "docs/admin-guide/configuration/environment.md"
 SERVER_IMAGE = "ghcr.io/detair/kaiku-server"
@@ -470,6 +480,55 @@ def check_uploads_guardrails(content: str, errors: list[str]) -> None:
     )
 
 
+def load_plist(path: Path, label: str, errors: list[str]) -> dict:
+    text = read_text(path, errors)
+    if not text:
+        if path.exists():
+            errors.append(f"{label}: file is empty")
+        return {}
+    try:
+        data = plistlib.loads(text.encode("utf-8"))
+    except Exception as exc:  # plistlib raises several unrelated exception types
+        errors.append(f"{label}: not a valid plist: {exc}")
+        return {}
+    if not isinstance(data, dict):
+        errors.append(f"{label}: top-level value must be a dict")
+        return {}
+    return data
+
+
+def check_macos_bundle(errors: list[str], tauri_dir: Path = TAURI_DIR) -> None:
+    """macOS kills the app on first mic/camera use without usage strings."""
+    info = load_plist(tauri_dir / "Info.plist", "Info.plist", errors)
+    if (tauri_dir / "Info.plist").exists():
+        for key in MACOS_USAGE_KEYS:
+            value = info.get(key)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"Info.plist: {key} missing or not a non-empty string")
+
+    conf_path = tauri_dir / "tauri.conf.json"
+    conf_text = read_text(conf_path, errors)
+    if not conf_text:
+        return
+    try:
+        conf = json.loads(conf_text)
+    except json.JSONDecodeError as exc:
+        errors.append(f"tauri.conf.json: invalid JSON: {exc}")
+        return
+    entitlements = conf.get("bundle", {}).get("macOS", {}).get("entitlements")
+    if not entitlements:
+        errors.append("tauri.conf.json: bundle.macOS.entitlements not set")
+        return
+    ent_path = tauri_dir / entitlements
+    if not ent_path.is_file():
+        errors.append(f"tauri.conf.json: entitlements file not found: {entitlements}")
+        return
+    ent = load_plist(ent_path, entitlements, errors)
+    for key in MACOS_ENTITLEMENT_KEYS:
+        if ent.get(key) is not True:
+            errors.append(f"{entitlements}: {key} not set to true")
+
+
 def main() -> int:
     errors: list[str] = []
 
@@ -516,6 +575,8 @@ def main() -> int:
         check_setup_integration_guardrails(setup_integration_text, errors)
     if uploads_http_text:
         check_uploads_guardrails(uploads_http_text, errors)
+
+    check_macos_bundle(errors)
 
     if errors:
         print("CI guardrails check failed:")

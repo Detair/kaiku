@@ -12,11 +12,10 @@ import type {
   UpdatePinRequest,
 } from "../types";
 import {
-  browserState,
   fetchApi,
   getUploadAuth,
   httpRequest,
-  isTauri,
+  httpRequestWithStatus,
   validateFileSize,
 } from "./common";
 
@@ -53,11 +52,6 @@ export async function getMessages(
   limit?: number,
   around?: string,
 ): Promise<PaginatedMessages> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_messages", { channelId, before, limit, around });
-  }
-
   const params = new URLSearchParams();
   if (around) params.set("around", around);
   else if (before) params.set("before", before);
@@ -89,57 +83,16 @@ export async function sendMessageWithStatus(
   content: string,
   options?: { encrypted?: boolean; nonce?: string },
 ): Promise<SendMessageResult> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const message = await invoke<Message>("send_message", {
-      channelId,
-      content,
-      encrypted: options?.encrypted,
-      nonce: options?.nonce,
-    });
-
-    // Tauri command interface currently does not expose HTTP status.
-    return { message, status: 201 };
-  }
-
-  const token = browserState.accessToken;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
-  }
-
-  const baseUrl = browserState.serverUrl.replace(/\/+$/, "");
-  const response = await fetch(`${baseUrl}/api/messages/channel/${channelId}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
+  const { data, status } = await httpRequestWithStatus<Message>(
+    "POST",
+    `/api/messages/channel/${channelId}`,
+    {
       content,
       encrypted: options?.encrypted ?? false,
       nonce: options?.nonce,
-    }),
-  });
-
-  if (!response.ok) {
-    let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-    const rawErrorBody = await response.text();
-
-    try {
-      const errorBody = rawErrorBody ? JSON.parse(rawErrorBody) : null;
-      errorMessage = errorBody.message || errorBody.error || errorMessage;
-    } catch (_parseError) {
-      if (rawErrorBody.length > 0 && rawErrorBody.length < 500) {
-        errorMessage = rawErrorBody;
-      }
-    }
-
-    throw new Error(errorMessage);
-  }
-
-  const message = (await response.json()) as Message;
-  return { message, status: response.status };
+    },
+  );
+  return { message: data, status };
 }
 
 // ============================================================================
@@ -151,11 +104,6 @@ export async function getThreadReplies(
   after?: string,
   limit?: number,
 ): Promise<PaginatedMessages> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_thread_replies", { parentId, after, limit });
-  }
-
   const params = new URLSearchParams();
   if (after) params.set("after", after);
   if (limit) params.set("limit", limit.toString());
@@ -173,17 +121,6 @@ export async function sendThreadReply(
   content: string,
   options?: { encrypted?: boolean; nonce?: string },
 ): Promise<Message> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("send_thread_reply", {
-      parentId,
-      channelId,
-      content,
-      encrypted: options?.encrypted,
-      nonce: options?.nonce,
-    });
-  }
-
   return httpRequest<Message>("POST", `/api/messages/channel/${channelId}`, {
     content,
     encrypted: options?.encrypted ?? false,
@@ -193,11 +130,6 @@ export async function sendThreadReply(
 }
 
 export async function markThreadRead(parentId: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mark_thread_read", { parentId });
-  }
-
   return httpRequest<void>("POST", `/api/messages/${parentId}/thread/read`);
 }
 
@@ -339,20 +271,10 @@ export async function uploadMessageWithFile(
 // ============================================================================
 
 export async function fetchPins(): Promise<Pin[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("fetch_pins");
-  }
-
   return httpRequest<Pin[]>("GET", "/api/me/pins");
 }
 
 export async function createPin(request: CreatePinRequest): Promise<Pin> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_pin", { request });
-  }
-
   return httpRequest<Pin>("POST", "/api/me/pins", request);
 }
 
@@ -360,29 +282,14 @@ export async function updatePin(
   pinId: string,
   request: UpdatePinRequest,
 ): Promise<Pin> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_pin", { pin_id: pinId, request });
-  }
-
   return httpRequest<Pin>("PUT", `/api/me/pins/${pinId}`, request);
 }
 
 export async function deletePin(pinId: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("delete_pin", { pin_id: pinId });
-  }
-
   await httpRequest<void>("DELETE", `/api/me/pins/${pinId}`);
 }
 
 export async function reorderPins(pinIds: string[]): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("reorder_pins", { pin_ids: pinIds });
-  }
-
   await httpRequest<void>("PUT", "/api/me/pins/reorder", { pin_ids: pinIds });
 }
 
@@ -394,11 +301,6 @@ export async function reorderPins(pinIds: string[]): Promise<void> {
  * List pinned messages for a channel.
  */
 export async function listChannelPins(channelId: string): Promise<ChannelPin[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<ChannelPin[]>("list_channel_pins", { channelId });
-  }
-
   return httpRequest<ChannelPin[]>("GET", `/api/channels/${channelId}/pins`);
 }
 
@@ -406,11 +308,6 @@ export async function listChannelPins(channelId: string): Promise<ChannelPin[]> 
  * Pin a message to a channel.
  */
 export async function pinMessage(channelId: string, messageId: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("pin_message", { channelId, messageId });
-  }
-
   await httpRequest<void>("PUT", `/api/channels/${channelId}/messages/${messageId}/pin`);
 }
 
@@ -418,11 +315,6 @@ export async function pinMessage(channelId: string, messageId: string): Promise<
  * Unpin a message from a channel.
  */
 export async function unpinMessage(channelId: string, messageId: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("unpin_message", { channelId, messageId });
-  }
-
   await httpRequest<void>("DELETE", `/api/channels/${channelId}/messages/${messageId}/pin`);
 }
 
@@ -438,11 +330,6 @@ export async function addReaction(
   messageId: string,
   emoji: string,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("add_reaction", { channelId, messageId, emoji });
-  }
-
   await httpRequest<void>(
     "PUT",
     `/api/channels/${channelId}/messages/${messageId}/reactions`,
@@ -458,11 +345,6 @@ export async function removeReaction(
   messageId: string,
   emoji: string,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("remove_reaction", { channelId, messageId, emoji });
-  }
-
   await httpRequest<void>(
     "DELETE",
     `/api/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`,
@@ -473,11 +355,6 @@ export async function removeReaction(
  * Delete a message (soft delete, own messages only).
  */
 export async function deleteMessage(messageId: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("delete_message", { messageId });
-  }
-
   await httpRequest<void>("DELETE", `/api/messages/${messageId}`);
 }
 
@@ -488,11 +365,6 @@ export async function editMessage(
   messageId: string,
   content: string,
 ): Promise<Message> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("edit_message", { messageId, content });
-  }
-
   return httpRequest<Message>("PATCH", `/api/messages/${messageId}`, {
     content,
   });

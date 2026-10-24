@@ -5,7 +5,6 @@
 
 import type {
   IdentityListResponse,
-  OidcLoginResult,
   RevokeAllResponse,
   ServerSettings,
   SessionListResponse,
@@ -14,21 +13,62 @@ import type {
 import {
   browserState,
   clearBrowserTokens,
+  expireNativeSession,
   fetchApi,
   getServerUrl,
   getUploadAuth,
   HttpError,
   httpRequest,
   isTauri,
+  loadNativeAuthInfo,
+  NATIVE_SESSION_EXPIRED,
   refreshAccessToken,
   scheduleTokenRefresh,
+  setNativeAuthInfo,
   setSessionRestoreBlocked,
   validateFileSize,
   type AuthResponse,
   type AuthResult,
   type SessionRestoreResult,
 } from "./common";
-import { getBrowserWebSocket } from "./websocket";
+import { getBrowserWebSocket, wsSend } from "./websocket";
+
+type InvokeFn = typeof import("@tauri-apps/api/core").invoke;
+
+/**
+ * Native mode: call a Rust auth command and cache the session's auth info.
+ * The caller names the command with a literal so `lint:tauri-commands` sees it.
+ */
+async function invokeNativeAuth<T>(
+  call: (invoke: InvokeFn) => Promise<T>,
+): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const result = await call(invoke);
+  await loadNativeAuthInfo();
+  return result;
+}
+
+/** Native mode: session-management request sent by Rust with the refresh token. */
+async function nativeSessionRequest<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke<T>("session_request", {
+      method,
+      path,
+      body: body ?? null,
+    });
+  } catch (error) {
+    // Rust ended the session (refresh token rejected during the request).
+    if (String(error) === NATIVE_SESSION_EXPIRED) {
+      expireNativeSession();
+    }
+    throw error;
+  }
+}
 
 export async function login(
   serverUrl: string,
@@ -36,16 +76,17 @@ export async function login(
   password: string,
   mfaCode?: string,
 ): Promise<AuthResult> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("login", {
-      request: {
-        server_url: serverUrl,
-        username,
-        password,
-        mfa_code: mfaCode ?? null,
-      },
-    });
+  if (isTauri()) {
+    return invokeNativeAuth((invoke) =>
+      invoke<AuthResult>("login", {
+        request: {
+          server_url: serverUrl,
+          username,
+          password,
+          mfa_code: mfaCode ?? null,
+        },
+      }),
+    );
   }
 
   // Browser mode
@@ -62,12 +103,6 @@ export async function login(
 
   // Store access token in memory; browser relies on HttpOnly cookie for refresh
   browserState.accessToken = response.access_token;
-  if (isTauri) {
-    if (!response.refresh_token) {
-      throw new Error("Login response missing refresh token");
-    }
-    browserState.refreshToken = response.refresh_token;
-  }
   browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
 
   // Schedule automatic token refresh
@@ -83,6 +118,7 @@ export async function login(
   return {
     user,
     setup_required: response.setup_required,
+    password_change_required: response.password_change_required ?? false,
   };
 }
 
@@ -92,11 +128,6 @@ export async function login(
 export async function updateStatus(
   status: "online" | "idle" | "dnd" | "invisible" | "offline",
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("update_status", { status });
-  }
-
   // Map client status names to server enum values
   const statusMap: Record<string, string> = {
     online: "online",
@@ -105,9 +136,12 @@ export async function updateStatus(
     invisible: "offline",
     offline: "offline",
   };
-  getBrowserWebSocket()?.send(
-    JSON.stringify({ type: "set_status", status: statusMap[status] ?? "online" }),
-  );
+  const message = { type: "set_status", status: statusMap[status] ?? "online" };
+  if (isTauri()) {
+    await wsSend(message);
+    return;
+  }
+  getBrowserWebSocket()?.send(JSON.stringify(message));
 }
 
 export async function register(
@@ -117,17 +151,18 @@ export async function register(
   email?: string,
   displayName?: string,
 ): Promise<AuthResult> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("register", {
-      request: {
-        server_url: serverUrl,
-        username,
-        email,
-        password,
-        display_name: displayName,
-      },
-    });
+  if (isTauri()) {
+    return invokeNativeAuth((invoke) =>
+      invoke<AuthResult>("register", {
+        request: {
+          server_url: serverUrl,
+          username,
+          email,
+          password,
+          display_name: displayName,
+        },
+      }),
+    );
   }
 
   // Browser mode
@@ -144,12 +179,6 @@ export async function register(
 
   // Store access token in memory; browser relies on HttpOnly cookie for refresh
   browserState.accessToken = response.access_token;
-  if (isTauri) {
-    if (!response.refresh_token) {
-      throw new Error("Registration response missing refresh token");
-    }
-    browserState.refreshToken = response.refresh_token;
-  }
   browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
 
   // Schedule automatic token refresh
@@ -165,13 +194,19 @@ export async function register(
   return {
     user,
     setup_required: response.setup_required,
+    password_change_required: response.password_change_required ?? false,
   };
 }
 
 export async function logout(): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("logout");
+    try {
+      await invoke("logout");
+    } finally {
+      setNativeAuthInfo(null);
+    }
+    return;
   }
 
   let logoutError: unknown = null;
@@ -212,9 +247,10 @@ export async function logout(): Promise<void> {
 }
 
 export async function getCurrentUser(): Promise<SessionRestoreResult> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<SessionRestoreResult>("get_current_user");
+  if (isTauri()) {
+    return invokeNativeAuth((invoke) =>
+      invoke<SessionRestoreResult>("get_current_user"),
+    );
   }
 
   // Browser mode - check if we have a token
@@ -286,6 +322,13 @@ export async function updatePassword(
   new_password: string,
   revoke_others: boolean = false,
 ): Promise<{ success: boolean; message: string; revoked_count: number }> {
+  if (isTauri()) {
+    return nativeSessionRequest("POST", "/auth/me/password", {
+      current_password,
+      new_password,
+      revoke_others,
+    });
+  }
   return fetchApi("/auth/me/password", {
     method: "POST",
     body: { current_password, new_password, revoke_others },
@@ -300,6 +343,9 @@ export async function updatePassword(
  * List all active sessions for the current user.
  */
 export async function listSessions(): Promise<SessionListResponse> {
+  if (isTauri()) {
+    return nativeSessionRequest<SessionListResponse>("GET", "/auth/sessions");
+  }
   return fetchApi<SessionListResponse>("/auth/sessions");
 }
 
@@ -307,6 +353,10 @@ export async function listSessions(): Promise<SessionListResponse> {
  * Revoke a specific session by ID.
  */
 export async function revokeSession(sessionId: string): Promise<void> {
+  if (isTauri()) {
+    await nativeSessionRequest<unknown>("DELETE", `/auth/sessions/${sessionId}`);
+    return;
+  }
   await fetchApi<void>(`/auth/sessions/${sessionId}`, { method: "DELETE" });
 }
 
@@ -314,6 +364,9 @@ export async function revokeSession(sessionId: string): Promise<void> {
  * Revoke all sessions except the current one.
  */
 export async function revokeAllOtherSessions(): Promise<RevokeAllResponse> {
+  if (isTauri()) {
+    return nativeSessionRequest<RevokeAllResponse>("DELETE", "/auth/sessions");
+  }
   return fetchApi<RevokeAllResponse>("/auth/sessions", { method: "DELETE" });
 }
 
@@ -355,7 +408,7 @@ export async function linkIdentity(
   providerSlug: string,
 ): Promise<{ mode: "tauri" } | { mode: "browser"; authUrl: string }> {
   const baseUrl = getServerUrl().replace(/\/+$/, "");
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("oidc_link_identity", { serverUrl: baseUrl, providerSlug });
     return { mode: "tauri" };
@@ -392,46 +445,26 @@ export interface MfaBackupCodeCountResponse {
 
 /** Setup MFA — returns TOTP secret and QR code URL. */
 export async function mfaSetup(): Promise<MfaSetupResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mfa_setup");
-  }
   return httpRequest<MfaSetupResponse>("POST", "/auth/mfa/setup");
 }
 
 /** Verify MFA code (TOTP or backup). Returns backup codes on first verify. */
 export async function mfaVerify(code: string): Promise<MfaVerifyResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mfa_verify", { code });
-  }
   return httpRequest<MfaVerifyResponse>("POST", "/auth/mfa/verify", { code });
 }
 
 /** Disable MFA (requires valid TOTP or backup code). */
 export async function mfaDisable(code: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mfa_disable", { code });
-  }
   await httpRequest<unknown>("POST", "/auth/mfa/disable", { code });
 }
 
 /** Generate (or regenerate) MFA backup codes. */
 export async function mfaGenerateBackupCodes(): Promise<MfaBackupCodesResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mfa_generate_backup_codes");
-  }
   return httpRequest<MfaBackupCodesResponse>("POST", "/auth/mfa/backup-codes");
 }
 
 /** Get remaining MFA backup code count. */
 export async function mfaBackupCodeCount(): Promise<MfaBackupCodeCountResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mfa_backup_code_count");
-  }
   return httpRequest<MfaBackupCodeCountResponse>(
     "GET",
     "/auth/mfa/backup-codes/count",
@@ -449,10 +482,6 @@ export interface QrLoginCreateResponse {
 
 /** Create a QR login token for mobile scanning. */
 export async function qrLoginCreate(): Promise<QrLoginCreateResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("qr_login_create");
-  }
   return httpRequest<QrLoginCreateResponse>("POST", "/auth/qr/create");
 }
 
@@ -541,8 +570,8 @@ export async function fetchServerSettings(
 /**
  * Initiate OIDC login flow.
  *
- * In Tauri mode: handles the entire flow (opens browser, waits for callback,
- * returns tokens). Returns { mode: "tauri", tokens }.
+ * In Tauri mode: Rust handles the entire flow (opens browser, waits for
+ * callback, keeps the tokens). Returns { mode: "tauri", result }.
  *
  * In browser mode: returns the authorize URL for popup flow.
  * Returns { mode: "browser", authUrl }.
@@ -551,18 +580,19 @@ export async function oidcAuthorize(
   serverUrl: string,
   providerSlug: string,
 ): Promise<
-  | { mode: "tauri"; tokens: OidcLoginResult }
+  | { mode: "tauri"; result: AuthResult }
   | { mode: "browser"; authUrl: string }
 > {
   const baseUrl = serverUrl.replace(/\/+$/, "");
 
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const tokens = await invoke<OidcLoginResult>("oidc_authorize", {
-      serverUrl: baseUrl,
-      providerSlug,
-    });
-    return { mode: "tauri", tokens };
+  if (isTauri()) {
+    const result = await invokeNativeAuth((invoke) =>
+      invoke<AuthResult>("oidc_authorize", {
+        serverUrl: baseUrl,
+        providerSlug,
+      }),
+    );
+    return { mode: "tauri", result };
   }
 
   // Browser: return the authorize endpoint URL for popup flow
@@ -571,26 +601,19 @@ export async function oidcAuthorize(
 }
 
 /**
- * Complete OIDC login after callback.
- * In browser mode, tokens are delivered via postMessage from the callback page.
+ * Complete OIDC login after callback (browser mode).
+ * The access token arrives via postMessage from the callback page; the
+ * refresh token is an HttpOnly cookie.
  */
 export async function oidcCompleteLogin(
   serverUrl: string,
   accessToken: string,
-  refreshToken: string | undefined,
   expiresIn: number,
 ): Promise<void> {
   const baseUrl = serverUrl.replace(/\/+$/, "");
 
-  // Store tokens; browser relies on HttpOnly cookie for refresh
   browserState.serverUrl = baseUrl;
   browserState.accessToken = accessToken;
-  if (isTauri) {
-    if (!refreshToken) {
-      throw new Error("OIDC login missing refresh token");
-    }
-    browserState.refreshToken = refreshToken;
-  }
   browserState.tokenExpiresAt = Date.now() + expiresIn * 1000;
 
   localStorage.setItem("serverUrl", baseUrl);

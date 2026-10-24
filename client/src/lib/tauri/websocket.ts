@@ -42,7 +42,7 @@ export function setBrowserSocketHooks(hooks: BrowserSocketHooks): void {
 // ============================================================================
 
 export async function wsConnect(): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("ws_connect");
   }
@@ -107,7 +107,7 @@ export async function wsConnect(): Promise<void> {
 
 /** Close the socket on purpose (logout, session end); never auto-reconnects. */
 export async function wsDisconnect(): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("ws_disconnect");
   }
@@ -123,7 +123,7 @@ export async function wsDisconnect(): Promise<void> {
 }
 
 export async function wsStatus(): Promise<ConnectionStatus> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("ws_status");
   }
@@ -136,7 +136,7 @@ export async function wsStatus(): Promise<ConnectionStatus> {
 // ============================================================================
 
 export async function wsSubscribe(channelId: string): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("ws_subscribe", { channelId });
   }
@@ -145,7 +145,7 @@ export async function wsSubscribe(channelId: string): Promise<void> {
 }
 
 export async function wsUnsubscribe(channelId: string): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("ws_unsubscribe", { channelId });
   }
@@ -156,7 +156,7 @@ export async function wsUnsubscribe(channelId: string): Promise<void> {
 }
 
 export async function wsTyping(channelId: string): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("ws_typing", { channelId });
   }
@@ -165,7 +165,7 @@ export async function wsTyping(channelId: string): Promise<void> {
 }
 
 export async function wsStopTyping(channelId: string): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("ws_stop_typing", { channelId });
   }
@@ -176,7 +176,7 @@ export async function wsStopTyping(channelId: string): Promise<void> {
 }
 
 export async function wsPing(): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("ws_ping");
   }
@@ -186,16 +186,17 @@ export async function wsPing(): Promise<void> {
 
 // Export browser WebSocket for event handling
 export function getBrowserWebSocket(): WebSocket | null {
-  return isTauri ? null : browserWs;
+  return isTauri() ? null : browserWs;
 }
 
 /**
  * Send a WebSocket message (works in both browser and Tauri modes).
  */
 export async function wsSend(message: any): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
+    // Rust accepts a JSON object with a string `type` and forwards it as is.
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("ws_send", { message: JSON.stringify(message) });
+    return invoke("ws_send", { message: JSON.stringify(message) });
   } else {
     if (!browserWs || browserWs.readyState !== WebSocket.OPEN) {
       throw new Error(
@@ -205,6 +206,17 @@ export async function wsSend(message: any): Promise<void> {
     }
     browserWs.send(JSON.stringify(message));
   }
+}
+
+/**
+ * Native only: skip the Rust reconnect backoff and try now (network back,
+ * window visible, "Retry now"). No-op in the browser, where the supervisor
+ * opens sockets itself.
+ */
+export async function wsReconnectNow(): Promise<void> {
+  if (!isTauri()) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("ws_reconnect_now");
 }
 
 // ============================================================================

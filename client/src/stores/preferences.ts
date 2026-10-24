@@ -23,9 +23,6 @@ import { DEFAULT_DISPLAY_PREFERENCES, THEME_NAMES } from "@/lib/types";
 const STORAGE_KEY = "vc:preferences";
 const DEBOUNCE_MS = 500;
 
-// Detect if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
-
 // ============================================================================
 // Default Focus Modes
 // ============================================================================
@@ -327,34 +324,18 @@ function saveToLocalStorage(prefs: UserPreferences, updatedAt: string): void {
 
 /**
  * Fetch preferences from server.
- * Uses Tauri invoke when available, falls back to HTTP API.
  */
 async function fetchPreferences(): Promise<PreferencesResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<PreferencesResponse>("fetch_preferences");
-  }
-
-  // Browser mode - use HTTP API
   const { fetchApi } = await import("@/lib/tauri");
   return fetchApi<PreferencesResponse>("/api/me/preferences");
 }
 
 /**
  * Push preferences to server.
- * Uses Tauri invoke when available, falls back to HTTP API.
  */
 async function pushPreferences(
   prefs: UserPreferences,
 ): Promise<PreferencesResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<PreferencesResponse>("update_preferences", {
-      preferences: prefs,
-    });
-  }
-
-  // Browser mode - use HTTP API
   const { fetchApi } = await import("@/lib/tauri");
   return fetchApi<PreferencesResponse>("/api/me/preferences", {
     method: "PUT",

@@ -22,9 +22,7 @@ import { getBrowserWebSocket, updateStatus } from "@/lib/tauri";
 import { preferences } from "./preferences";
 import { currentUser, updateUser } from "./auth";
 import { setFriendsState } from "./friends";
-
-// Detect if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+import { isTauri } from "@/lib/tauri/common";
 
 // Type for unlisten function
 type UnlistenFn = () => void;
@@ -40,7 +38,6 @@ const [presenceState, setPresenceState] = createStore<PresenceState>({
 });
 
 // Event listener cleanup
-let unlistener: UnlistenFn | null = null;
 let activityUnlistener: UnlistenFn | null = null;
 
 /**
@@ -48,52 +45,42 @@ let activityUnlistener: UnlistenFn | null = null;
  */
 export async function initPresence(): Promise<void> {
   // Clean up existing listener
-  if (unlistener) {
-    unlistener();
+  if (activityUnlistener) {
+    activityUnlistener();
+    activityUnlistener = null;
   }
 
-  // Only set up Tauri listeners in Tauri mode
-  // In browser mode, presence updates are handled by the websocket store
-  if (isTauri) {
+  // Presence updates from the server reach the websocket store in both
+  // modes (native: via `ws:server_event`). Native also reports local activity.
+  if (isTauri()) {
     const { listen } = await import("@tauri-apps/api/event");
-    const [presenceListener, activityListener] = await Promise.all([
-      listen<{ user_id: string; status: UserStatus }>(
-        "ws:presence_update",
-        (event) => {
-          const { user_id, status } = event.payload;
-          updateUserPresence(user_id, status);
-        },
-      ),
-      listen<Activity | null>(
-        "presence:activity_changed",
-        async (event) => {
-          // Notify focus engine of activity category change for auto-activation
-          const VALID_TRIGGER_CATEGORIES: ReadonlySet<string> = new Set([
-            "game",
-            "coding",
-            "listening",
-            "watching",
-          ]);
-          const { handleActivityChange } = await import("./focus");
-          const rawType = event.payload?.type;
-          const category =
-            typeof rawType === "string" && VALID_TRIGGER_CATEGORIES.has(rawType)
-              ? (rawType as FocusTriggerCategory)
-              : null;
-          handleActivityChange(category);
+    activityUnlistener = await listen<Activity | null>(
+      "presence:activity_changed",
+      async (event) => {
+        // Notify focus engine of activity category change for auto-activation
+        const VALID_TRIGGER_CATEGORIES: ReadonlySet<string> = new Set([
+          "game",
+          "coding",
+          "listening",
+          "watching",
+        ]);
+        const { handleActivityChange } = await import("./focus");
+        const rawType = event.payload?.type;
+        const category =
+          typeof rawType === "string" && VALID_TRIGGER_CATEGORIES.has(rawType)
+            ? (rawType as FocusTriggerCategory)
+            : null;
+        handleActivityChange(category);
 
-          // Send activity to server via WebSocket command
-          try {
-            const { invoke } = await import("@tauri-apps/api/core");
-            await invoke("ws_send_activity", { activity: event.payload });
-          } catch (e) {
-            console.error("Failed to send activity to server:", e);
-          }
-        },
-      ),
-    ]);
-    unlistener = presenceListener;
-    activityUnlistener = activityListener;
+        // Send activity to server via WebSocket command
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          await invoke("ws_send_activity", { activity: event.payload });
+        } catch (e) {
+          console.error("Failed to send activity to server:", e);
+        }
+      },
+    );
   }
 }
 
@@ -105,10 +92,6 @@ export async function initPresence(): Promise<void> {
  * in between, so the deactivation always resolves before re-initialization.
  */
 export function cleanupPresence(): void {
-  if (unlistener) {
-    unlistener();
-    unlistener = null;
-  }
   if (activityUnlistener) {
     activityUnlistener();
     activityUnlistener = null;
@@ -421,7 +404,7 @@ export async function setMyCustomStatus(
 
   try {
     // Send via WebSocket
-    if (isTauri) {
+    if (isTauri()) {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("ws_send_custom_status", {
         customStatus: status,

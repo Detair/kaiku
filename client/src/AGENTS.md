@@ -125,7 +125,7 @@ import { For, Show } from "solid-js";
 The app runs in two modes:
 
 1. **Tauri Native (production):**
-   - Commands via `@tauri-apps/api/core` `invoke()`
+   - REST via `httpRequest` (same path as the browser); native commands via `@tauri-apps/api/core` `invoke()`
    - WebSocket via Tauri backend
    - Voice via native Rust WebRTC
 
@@ -135,7 +135,7 @@ The app runs in two modes:
    - Voice not available (requires native app)
    - JWT token management in localStorage with auto-refresh
 
-**Detection:** `lib/tauri.ts` checks `window.__TAURI__` to branch logic.
+**Detection:** always call `isTauri()` from `@/lib/tauri/common` (contract C6; it wraps `@tauri-apps/api/core` `isTauri()`). Never check the Tauri global on `window` and never define a local detection constant — ESLint rejects the global, and `bun run lint:tauri-commands` rejects an uncalled `isTauri` (a function reference is always truthy).
 
 ### Store Organization
 

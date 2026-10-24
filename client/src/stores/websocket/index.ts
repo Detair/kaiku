@@ -6,17 +6,7 @@
 
 import { createStore } from "solid-js/store";
 import * as tauri from "@/lib/tauri";
-import type {
-  Activity,
-  CustomStatus,
-  GuildEmoji,
-  Message,
-  ScreenShareServerInfo,
-  ServerEvent,
-  ThreadInfo,
-  UserStatus,
-  VoiceParticipant,
-} from "@/lib/types";
+import type { Message, ServerEvent } from "@/lib/types";
 import {
   updateUserActivity,
   updateUserCustomStatus,
@@ -131,10 +121,9 @@ import {
   type ConnectionState,
   type ConnectionSupervisor,
 } from "./connection";
+import { isTauri } from "@/lib/tauri/common";
 
 export type { ConnectionState } from "./connection";
-// Detect if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
 // Type for unlisten function
 type UnlistenFn = () => void;
@@ -174,9 +163,9 @@ const TYPING_TIMEOUT = 5000; // 5 seconds
 // Track connection start time for WS connect duration
 let connectStartTime = 0;
 
-// Browser mode: reconnect supervisor and the one message handler attached to
-// the current socket.
-let browserSupervisor: ConnectionSupervisor | null = null;
+// Reconnect supervisor (browser: managed, native: mirrors Rust) and, in the
+// browser, the one message handler attached to the current socket.
+let supervisor: ConnectionSupervisor | null = null;
 let detachBrowserMessageHandler: (() => void) | null = null;
 
 /**
@@ -187,719 +176,43 @@ export async function initWebSocket(): Promise<void> {
   // Clean up existing listeners
   await cleanupWebSocket();
 
-  if (isTauri) {
-    // Tauri mode - use Tauri event system
+  if (isTauri()) {
+    // Native mode: Rust owns the socket and its retries. Every server frame
+    // arrives once as `ws:server_event` and goes through the same handler as
+    // in the browser; the status events drive the supervisor.
     const { listen } = await import("@tauri-apps/api/event");
-    const pending: Promise<UnlistenFn>[] = [];
-
-    // Connection status events
-    pending.push(
-      listen("ws:connecting", () => {
-        setWsState({ status: "connecting", error: null });
-      }),
-    );
-
-    pending.push(
-      listen("ws:connected", () => {
-        const connectDuration = Date.now() - connectStartTime;
-        Sentry.addBreadcrumb({ category: "ws", message: "connected", data: { duration_ms: connectDuration }, level: "info" });
-        if (wsState.reconnectAttempt > 0) {
-          handleReconnect();
-        } else {
-          setWsState({ status: "connected", reconnectAttempt: 0, error: null });
-          window.dispatchEvent(new Event("ws-connected"));
-        }
-      }),
-    );
-
-    pending.push(
-      listen("ws:disconnected", () => {
-        setWsState({ status: "disconnected" });
-      }),
-    );
-
-    // The ConnectionIndicator renders this state (replaces the old toast).
-    pending.push(
-      listen<number>("ws:reconnecting", (event) => {
-        setWsState({ status: "reconnecting", reconnectAttempt: event.payload });
-      }),
-    );
-
-    // Message events
-    pending.push(
-      listen<{ channel_id: string; message: Message }>("ws:message_new", async (event) => {
-        await addMessage(event.payload.message);
-        updateDMLastMessage(event.payload.channel_id, event.payload.message);
-        handleMessageNotification(event.payload.message);
-        // Increment unread count if message is not in the selected channel
-        const isActiveGuildChannel = event.payload.channel_id === channelsState.selectedChannelId;
-        const isActiveDM =
-          event.payload.channel_id === dmsState.selectedDMId && !dmsState.isShowingFriends;
-
-        if (!isActiveGuildChannel && !isActiveDM) {
-          const channel = getChannel(event.payload.channel_id);
-          if (
-            channel &&
-            channel.guild_id &&
-            channel.channel_type === "text"
-          ) {
-            incrementUnreadCount(event.payload.channel_id);
+    const supervisor = getSupervisor();
+    unlisteners.push(
+      ...(await Promise.all([
+        listen<ServerEvent>("ws:server_event", (event) => {
+          handleServerEvent(event.payload).catch((err) =>
+            console.error("[WS] Failed to handle server event:", err),
+          );
+        }),
+        listen("ws:connecting", () => {
+          Sentry.addBreadcrumb({ category: "ws", message: "connecting", level: "info" });
+        }),
+        listen("ws:connected", () => {
+          Sentry.addBreadcrumb({
+            category: "ws",
+            message: "connected",
+            data: { duration_ms: Date.now() - connectStartTime },
+            level: "info",
+          });
+          // After ws:reconnecting this runs handleReconnect (onRecovered).
+          supervisor.notifyOpened();
+        }),
+        listen<number>("ws:reconnecting", (event) => {
+          supervisor.notifyClosed(false);
+          if (wsState.status === "reconnecting") {
+            setWsState({ reconnectAttempt: event.payload });
           }
-          const guildId = getGuildIdForChannel(event.payload.channel_id);
-          if (guildId && guildId !== guildsState.activeGuildId) {
-            incrementGuildUnread(guildId);
-          }
-          // Notify unread module of new message
-          window.dispatchEvent(new CustomEvent("unread-update"));
-        }
-        // Always update last_message_id for the channel, even if it's the active channel
-        updateChannelLastMessageId(event.payload.channel_id, event.payload.message.id);
-      }),
+        }),
+        // Rust ended the loop by itself (no session any more).
+        listen("ws:disconnected", () => supervisor.stop()),
+        listen("ws:auth_rejected", () => handleNativeAuthRejected()),
+      ])),
     );
-
-    pending.push(
-      listen<{
-        channel_id: string;
-        message_id: string;
-        content: string;
-        edited_at: string;
-      }>("ws:message_edit", async (event) => {
-        const { channel_id, message_id, content, edited_at } = event.payload;
-        await applyMessageEdit(channel_id, message_id, content, edited_at);
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; message_id: string }>("ws:message_delete", (event) => {
-        removeMessage(event.payload.channel_id, event.payload.message_id);
-      }),
-    );
-
-    // Typing events
-    pending.push(
-      listen<{ channel_id: string; user_id: string }>("ws:typing_start", (event) => {
-        const { channel_id, user_id } = event.payload;
-        addTypingUser(channel_id, user_id);
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; user_id: string }>("ws:typing_stop", (event) => {
-        const { channel_id, user_id } = event.payload;
-        removeTypingUser(channel_id, user_id);
-      }),
-    );
-
-    // Presence events
-    pending.push(
-      listen<{ user_id: string; status: UserStatus }>("ws:presence_update", (event) => {
-        updateUserPresence(event.payload.user_id, event.payload.status);
-      }),
-    );
-
-    // Rich presence events
-    pending.push(
-      listen<{ user_id: string; activity: Activity | null }>("ws:rich_presence_update", (event) => {
-        console.log(
-          "Rich presence update:",
-          event.payload.user_id,
-          event.payload.activity,
-        );
-        updateUserActivity(event.payload.user_id, event.payload.activity);
-      }),
-    );
-
-    // Custom status events
-    pending.push(
-      listen<{ user_id: string; custom_status: CustomStatus | null }>("ws:custom_status_update", (event) => {
-        updateUserCustomStatus(event.payload.user_id, event.payload.custom_status);
-      }),
-    );
-
-    // Error events
-    pending.push(
-      listen<{ code: string; message: string }>("ws:error", (event) => {
-        console.error("WebSocket error:", event.payload);
-        setWsState({ error: event.payload.message });
-      }),
-    );
-
-    // Call events
-    pending.push(
-      listen<{
-        channel_id: string;
-        initiator: string;
-        initiator_name: string;
-      }>("ws:incoming_call", (event) => {
-        const me = currentUser();
-        if (me && event.payload.initiator === me.id) {
-          return;
-        }
-        receiveIncomingCall(
-          event.payload.channel_id,
-          event.payload.initiator,
-          event.payload.initiator_name,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{
-        channel_id: string;
-        reason: string;
-        duration_secs: number | null;
-      }>("ws:call_ended", (event) => {
-        callEndedExternally(
-          event.payload.channel_id,
-          event.payload.reason as EndReason,
-          event.payload.duration_secs ?? undefined,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; user_id: string; username: string }>("ws:call_participant_joined", (event) => {
-        participantJoined(event.payload.channel_id, event.payload.user_id);
-        // Only transition to connected on the first join (not on subsequent participants)
-        const status = callState.currentCall.status;
-        if (status === "outgoing_ringing" || status === "connecting") {
-          callConnected(event.payload.channel_id, [event.payload.user_id]);
-        }
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; user_id: string }>("ws:call_participant_left", (event) => {
-        participantLeft(event.payload.channel_id, event.payload.user_id);
-      }),
-    );
-
-    // Voice events (Tauri → frontend parity with browser mode) — dual PeerConnection
-    pending.push(
-      listen<{ channel_id: string; sdp: string }>("ws:voice_publisher_answer", async (event) => {
-        await handleVoicePublisherAnswer(event.payload.channel_id, event.payload.sdp);
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; sdp: string }>("ws:voice_subscriber_offer", async (event) => {
-        await handleVoiceSubscriberOffer(event.payload.channel_id, event.payload.sdp);
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; candidate: string; pc_type?: string }>("ws:voice_ice_candidate", async (event) => {
-        await handleVoiceIceCandidate(
-          event.payload.channel_id,
-          event.payload.candidate,
-          event.payload.pc_type || "publisher",
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{
-        channel_id: string;
-        user_id: string;
-        username: string;
-        display_name: string;
-      }>("ws:voice_user_joined", async (event) => {
-        await handleVoiceUserJoined(
-          event.payload.channel_id,
-          event.payload.user_id,
-          event.payload.username,
-          event.payload.display_name,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; user_id: string }>("ws:voice_user_left", async (event) => {
-        await handleVoiceUserLeft(
-          event.payload.channel_id,
-          event.payload.user_id,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; user_id: string }>("ws:voice_user_muted", async (event) => {
-        await handleVoiceUserMuted(
-          event.payload.channel_id,
-          event.payload.user_id,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; user_id: string }>("ws:voice_user_unmuted", async (event) => {
-        await handleVoiceUserUnmuted(
-          event.payload.channel_id,
-          event.payload.user_id,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{
-        channel_id: string;
-        participants: VoiceParticipant[];
-        screen_shares: ScreenShareServerInfo[];
-      }>("ws:voice_room_state", async (event) => {
-        await handleVoiceRoomState(
-          event.payload.channel_id,
-          event.payload.participants,
-          event.payload.screen_shares,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{ code: string; message: string }>("ws:voice_error", (event) => {
-        console.error(
-          "Voice error:",
-          event.payload.code,
-          event.payload.message,
-        );
-      }),
-    );
-
-    // Reaction events (Tauri → frontend parity with browser mode)
-    pending.push(
-      listen<{
-        channel_id: string;
-        message_id: string;
-        user_id: string;
-        emoji: string;
-      }>("ws:reaction_add", (event) => {
-        handleReactionAdd(
-          event.payload.channel_id,
-          event.payload.message_id,
-          event.payload.user_id,
-          event.payload.emoji,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{
-        channel_id: string;
-        message_id: string;
-        user_id: string;
-        emoji: string;
-      }>("ws:reaction_remove", (event) => {
-        handleReactionRemove(
-          event.payload.channel_id,
-          event.payload.message_id,
-          event.payload.user_id,
-          event.payload.emoji,
-        );
-      }),
-    );
-
-    // Channel pin events (Tauri → frontend parity with browser mode)
-    pending.push(
-      listen<{
-        channel_id: string;
-        message_id: string;
-        pinned_by: string;
-        pinned_at: string;
-      }>("ws:channel_pin_added", (event) => {
-        handlePinAdded(
-          event.payload.channel_id,
-          event.payload.message_id,
-          event.payload.pinned_by,
-          event.payload.pinned_at,
-        );
-        updateMessagePinStatus(event.payload.channel_id, event.payload.message_id, true);
-      }),
-    );
-
-    pending.push(
-      listen<{
-        channel_id: string;
-        message_id: string;
-      }>("ws:channel_pin_removed", (event) => {
-        handlePinRemoved(event.payload.channel_id, event.payload.message_id);
-        updateMessagePinStatus(event.payload.channel_id, event.payload.message_id, false);
-      }),
-    );
-
-    // Guild emoji events
-    pending.push(
-      listen<{ guild_id: string; emojis: GuildEmoji[] }>("ws:guild_emoji_updated", (event) => {
-        handleGuildEmojiUpdated(event.payload.guild_id, event.payload.emojis);
-      }),
-    );
-
-    // Member role changes (reaction-roles + admin assign/remove)
-    pending.push(
-      listen<{ guild_id: string; user_id: string; role_ids: string[] }>(
-        "ws:member_roles_updated",
-        (event) => {
-          void import("@/stores/members").then(({ applyMemberRoles }) =>
-            applyMemberRoles(
-              event.payload.guild_id,
-              event.payload.user_id,
-              event.payload.role_ids,
-            ),
-          );
-        },
-      ),
-    );
-
-    // Read sync events (Tauri → frontend parity with browser mode)
-    pending.push(
-      listen<{ channel_id: string; last_read_message_id?: string }>("ws:channel_read", (event) => {
-        handleChannelReadEvent(event.payload.channel_id, event.payload.last_read_message_id);
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; last_read_message_id?: string }>("ws:dm_read", (event) => {
-        handleDMReadEvent(event.payload.channel_id, event.payload.last_read_message_id);
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; name: string }>("ws:dm_name_updated", (event) => {
-        handleDMNameUpdated(event.payload.channel_id, event.payload.name);
-      }),
-    );
-
-    // Call events (Tauri → complete call support)
-    // Note: These were partially implemented in earlier commits
-    // This completes the full call event coverage
-    pending.push(
-      listen<{ channel_id: string }>("ws:call_started", (event) => {
-        console.log(
-          "[WebSocket] Call started in channel:",
-          event.payload.channel_id,
-        );
-        // Call started means the initiator is now connected
-      }),
-    );
-
-    pending.push(
-      listen<{ channel_id: string; user_id: string }>("ws:call_declined", (event) => {
-        console.log("[WebSocket] Call declined by:", event.payload.user_id);
-        // The call store will handle this through the API response
-      }),
-    );
-
-    // Screen share events (Tauri → frontend parity with browser mode)
-    pending.push(
-      listen<Omit<Extract<ServerEvent, { type: "screen_share_started" }>, "type">>(
-        "ws:screen_share_started", async (event) => {
-          await handleScreenShareStarted(event.payload);
-        },
-      ),
-    );
-
-    pending.push(
-      listen<Omit<Extract<ServerEvent, { type: "screen_share_stopped" }>, "type">>(
-        "ws:screen_share_stopped", async (event) => {
-          await handleScreenShareStopped(event.payload);
-        },
-      ),
-    );
-
-    pending.push(
-      listen<Omit<Extract<ServerEvent, { type: "screen_share_quality_changed" }>, "type">>(
-        "ws:screen_share_quality_changed", async (event) => {
-          await handleScreenShareQualityChanged(event.payload);
-        },
-      ),
-    );
-
-    // Webcam events (Tauri → frontend parity with browser mode)
-    pending.push(
-      listen<Omit<Extract<ServerEvent, { type: "webcam_started" }>, "type">>(
-        "ws:webcam_started", async (event) => {
-          await handleWebcamStarted(event.payload);
-        },
-      ),
-    );
-
-    pending.push(
-      listen<Omit<Extract<ServerEvent, { type: "webcam_stopped" }>, "type">>(
-        "ws:webcam_stopped", async (event) => {
-          await handleWebcamStopped(event.payload);
-        },
-      ),
-    );
-
-    // Voice stats events
-    pending.push(
-      listen<{
-        channel_id: string;
-        user_id: string;
-        latency: number;
-        packet_loss: number;
-        jitter: number;
-        quality: number;
-      }>("ws:voice_user_stats", async (event) => {
-        await handleVoiceUserStatsEvent(event.payload);
-      }),
-    );
-
-    // Simulcast layer events
-    pending.push(
-      listen<{
-        channel_id: string;
-        source_user_id: string;
-        track_source: string;
-        active_layer: "high" | "medium" | "low";
-      }>("ws:voice_layer_changed", async (event) => {
-        await handleVoiceLayerChanged(event.payload);
-      }),
-    );
-
-    // Admin events
-    pending.push(
-      listen<{ user_id: string; username: string }>("ws:admin_user_banned", async (event) => {
-        await handleAdminUserBanned(
-          event.payload.user_id,
-          event.payload.username,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{ user_id: string; username: string }>("ws:admin_user_unbanned", async (event) => {
-        await handleAdminUserUnbanned(
-          event.payload.user_id,
-          event.payload.username,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{ guild_id: string; guild_name: string }>("ws:admin_guild_suspended", async (event) => {
-        await handleAdminGuildSuspended(
-          event.payload.guild_id,
-          event.payload.guild_name,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{ guild_id: string; guild_name: string }>("ws:admin_guild_unsuspended", async (event) => {
-        await handleAdminGuildUnsuspended(
-          event.payload.guild_id,
-          event.payload.guild_name,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{
-        report_id: string;
-        category: string;
-        target_type: string;
-      }>("ws:admin_report_created", async (event) => {
-        await handleAdminReportCreated(
-          event.payload.report_id,
-          event.payload.category,
-          event.payload.target_type,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{ report_id: string }>("ws:admin_report_resolved", async (event) => {
-        await handleAdminReportResolved(event.payload.report_id);
-      }),
-    );
-
-    pending.push(
-      listen<{ user_id: string; username: string }>("ws:admin_user_deleted", async (event) => {
-        await handleAdminUserDeleted(
-          event.payload.user_id,
-          event.payload.username,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{ guild_id: string; guild_name: string }>("ws:admin_guild_deleted", async (event) => {
-        await handleAdminGuildDeleted(
-          event.payload.guild_id,
-          event.payload.guild_name,
-        );
-      }),
-    );
-
-    // Friend events
-    pending.push(
-      listen("ws:friend_request_received", () => {
-        loadPendingRequests();
-      }),
-    );
-
-    pending.push(
-      listen("ws:friend_request_accepted", () => {
-        Promise.all([loadFriends(), loadPendingRequests()]);
-      }),
-    );
-
-    pending.push(
-      listen("ws:friend_request_rejected", () => {
-        loadPendingRequests();
-      }),
-    );
-
-    // Block events
-    pending.push(
-      listen<{ user_id: string }>("ws:user_blocked", (event) => {
-        handleUserBlocked(event.payload.user_id);
-      }),
-    );
-
-    pending.push(
-      listen<{ user_id: string }>("ws:user_unblocked", (event) => {
-        handleUserUnblocked(event.payload.user_id);
-      }),
-    );
-
-    // Thread events
-    pending.push(
-      listen<{
-        channel_id: string;
-        parent_id: string;
-        message: Message;
-        thread_info: ThreadInfo;
-      }>("ws:thread_reply_new", (event) => {
-        handleThreadReplyNew(
-          event.payload.channel_id,
-          event.payload.parent_id,
-          event.payload.message,
-          event.payload.thread_info,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{
-        channel_id: string;
-        parent_id: string;
-        message_id: string;
-        thread_info: ThreadInfo;
-      }>("ws:thread_reply_delete", (event) => {
-        handleThreadReplyDelete(
-          event.payload.channel_id,
-          event.payload.parent_id,
-          event.payload.message_id,
-          event.payload.thread_info,
-        );
-      }),
-    );
-
-    pending.push(
-      listen<{
-        thread_parent_id: string;
-        last_read_message_id: string | null;
-      }>("ws:thread_read", (event) => {
-        handleThreadRead(
-          event.payload.thread_parent_id,
-          event.payload.last_read_message_id,
-        );
-      }),
-    );
-
-    // Preferences sync
-    pending.push(
-      listen<any>("ws:preferences_updated", (event) => {
-        handlePreferencesUpdated(event.payload);
-      }),
-    );
-
-    // State sync (patch)
-    pending.push(
-      listen<{
-        entity_type: string;
-        entity_id: string;
-        diff: Record<string, unknown>;
-      }>("ws:patch", async (event) => {
-        await handlePatchEvent(
-          event.payload.entity_type,
-          event.payload.entity_id,
-          event.payload.diff,
-        );
-      }),
-    );
-
-    // Bot command response events
-    pending.push(
-      listen<{
-        interaction_id: string;
-        content: string;
-        command_name: string;
-        bot_name: string;
-        channel_id: string;
-        ephemeral: boolean;
-      }>("ws:command_response", async (event) => {
-        if (event.payload.ephemeral) {
-          console.log(
-            "[WebSocket] Ephemeral command response:",
-            event.payload.command_name,
-            event.payload.content,
-          );
-          const syntheticMessage: Message = {
-            id: crypto.randomUUID(),
-            channel_id: event.payload.channel_id,
-            author: {
-              id: "system",
-              username: event.payload.bot_name,
-              display_name: event.payload.bot_name,
-              avatar_url: null,
-              status: "online",
-            },
-            content: event.payload.content,
-            encrypted: false,
-            attachments: [],
-            reply_to: null,
-            parent_id: null,
-            thread_reply_count: 0,
-            thread_last_reply_at: null,
-            edited_at: null,
-            created_at: new Date().toISOString(),
-            mention_type: null,
-            pinned: false,
-            message_type: "user",
-          };
-          await addMessage(syntheticMessage);
-        } else {
-          console.log(
-            "[WebSocket] Non-ephemeral command response (handled via message_new):",
-            event.payload.command_name,
-          );
-        }
-      }),
-    );
-
-    pending.push(
-      listen<{
-        interaction_id: string;
-        command_name: string;
-        channel_id: string;
-      }>("ws:command_response_timeout", async (event) => {
-        console.warn(
-          "[WebSocket] Command response timeout:",
-          event.payload.command_name,
-        );
-        const { showToast } = await import("@/components/ui/Toast");
-        showToast({
-          type: "warning",
-          title: "Command Timeout",
-          message: `Command /${event.payload.command_name} did not respond within 30 seconds.`,
-          duration: 5000,
-          id: `cmd-timeout-${event.payload.command_name}`,
-        });
-      }),
-    );
-
-    unlisteners.push(...await Promise.all(pending));
   } else {
     // Browser mode: the handler is (re-)attached on every open by the
     // reconnect supervisor's driver; attach now if a socket already exists.
@@ -1405,6 +718,11 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       // Watchdog ping reply; liveness is tracked by the socket hooks.
       break;
 
+    case "error":
+      console.error("WebSocket error:", event.code, event.message);
+      setWsState({ error: event.message });
+      break;
+
     default:
       console.log("Unhandled server event:", event.type);
   }
@@ -1428,15 +746,39 @@ export async function cleanupWebSocket(): Promise<void> {
 }
 
 /**
- * Handle post-reconnect recovery: re-subscribe channels, reload messages.
- * Snapshots current subscribed channels before resetting state, then re-subscribes and reloads.
+ * Text channels of the active guild that are in the channel list. A guild
+ * opened while the socket was down got its channels over REST, but
+ * `loadChannelsForGuild` skipped the subscriptions; they are not in the
+ * subscribed set, so the reconnect must add them.
  */
+function activeGuildTextChannelIds(): string[] {
+  const guildId = guildsState.activeGuildId;
+  if (!guildId || guildId === DISCOVERY_SENTINEL) return [];
+  return (channelsState.channels ?? [])
+    .filter((c) => c.guild_id === guildId && c.channel_type === "text")
+    .map((c) => c.id);
+}
+
+function subscribeAll(ids: Iterable<string>): Promise<unknown> {
+  return Promise.all(
+    [...ids].map((id) =>
+      subscribeChannel(id).catch((err) =>
+        console.error("[WS] Failed to re-subscribe channel", id, err),
+      ),
+    ),
+  );
+}
+
 /**
  * Refresh channel/DM unread metadata after a reconnect. Exported for tests.
  *
  * - Active guild: re-fetch its channel list (selection-preserving) so the
- *   sidebar unread dots reflect what happened while offline.
- * - DMs: reload the DM list, which carries per-conversation unread state.
+ *   sidebar unread dots reflect what happened while offline, then subscribe
+ *   its text channels (no-op for the ones already subscribed; picks up
+ *   channels created while offline).
+ * - DMs: reload `GET /api/dm`, which carries per-conversation unread state;
+ *   `loadDMs` subscribes every DM (the server's `DmCreated` auto-subscribe
+ *   only covers sockets that were open at the time).
  *
  * Failures are logged and swallowed — reconnect recovery must not abort
  * because one refresh call failed.
@@ -1447,9 +789,11 @@ export async function refreshUnreadStateAfterReconnect(): Promise<void> {
   const guildId = guildsState.activeGuildId;
   if (guildId && guildId !== DISCOVERY_SENTINEL) {
     tasks.push(
-      refreshChannelsForGuild(guildId).catch((err) =>
-        console.error("[WS] Failed to refresh guild channels", guildId, err),
-      ),
+      refreshChannelsForGuild(guildId)
+        .then(() => subscribeAll(activeGuildTextChannelIds()))
+        .catch((err) =>
+          console.error("[WS] Failed to refresh guild channels", guildId, err),
+        ),
     );
   }
 
@@ -1462,8 +806,16 @@ export async function refreshUnreadStateAfterReconnect(): Promise<void> {
   await Promise.all(tasks);
 }
 
+/**
+ * Handle post-reconnect recovery: re-subscribe channels, reload messages.
+ * Snapshots the subscribed channels (plus the active guild's text channels,
+ * which a guild opened while offline never subscribed) before resetting
+ * state; subscribes first, then reloads (C2: subscribe before catch-up).
+ */
 async function handleReconnect(): Promise<void> {
-  const channelsToResubscribe = [...wsState.subscribedChannels];
+  const channelsToResubscribe = [
+    ...new Set([...wsState.subscribedChannels, ...activeGuildTextChannelIds()]),
+  ];
   const channelsToReload = Object.keys(messagesState.byChannel).filter(
     (id) => (messagesState.byChannel[id]?.length ?? 0) > 0,
   );
@@ -1472,19 +824,13 @@ async function handleReconnect(): Promise<void> {
   setWsState("subscribedChannels", new Set());
   setWsState({ status: "connected", reconnectAttempt: 0, error: null });
 
-  // Re-subscribe, reload messages, and refresh unread metadata in parallel.
-  // The metadata refresh is what clears stale unread dots: messages that
+  // Re-subscribe first, then reload messages and refresh unread metadata in
+  // parallel. The metadata refresh is what clears stale unread dots: messages that
   // arrived (or were read on another device) while disconnected changed
   // last_read_message_id / last_message_id server-side, and no WS event
   // replays them after reconnect.
+  await subscribeAll(channelsToResubscribe);
   await Promise.all([
-    Promise.all(
-      channelsToResubscribe.map((id) =>
-        subscribeChannel(id).catch((err) =>
-          console.error("[WS] Failed to re-subscribe channel", id, err),
-        ),
-      ),
-    ),
     Promise.all(
       channelsToReload.map((id) =>
         loadInitialMessages(id).catch((err) =>
@@ -1520,10 +866,53 @@ const browserDriver: ConnectionDriver = {
   },
 };
 
-function getBrowserSupervisor(): ConnectionSupervisor {
-  browserSupervisor ??= createConnectionSupervisor({
-    driver: browserDriver,
-    mode: "managed",
+/**
+ * Native transport: Rust retries, pings and watches for silence itself; the
+ * supervisor only mirrors its status events and forwards "try now" triggers.
+ */
+const nativeDriver: ConnectionDriver = {
+  async open() {
+    connectStartTime = Date.now();
+    // Resolves once Rust is connected; rejects if the first attempt failed
+    // (Rust keeps retrying and reports ws:connected later).
+    await tauri.wsConnect();
+    window.dispatchEvent(new Event("ws-connected"));
+  },
+  close() {
+    tauri.wsDisconnect().catch((err) =>
+      console.error("[WS] Failed to close socket:", err),
+    );
+  },
+  sendPing() {
+    // Rust sends the pings.
+  },
+  reconnectNow: () => tauri.wsReconnectNow(),
+};
+
+/**
+ * Native: the server refused the socket even with a freshly refreshed token,
+ * so retrying cannot help. Stop the supervisor and the Rust retry loop (the
+ * native driver's close → `ws_disconnect`) instead of showing "Reconnecting…"
+ * forever, and send the user down the "session expired → sign in again" path.
+ *
+ * Known gap: once server C4 refuses pending-password users at the upgrade
+ * (HTTP 403), those users land here too. The forced password-change screen
+ * (plan Task 13) must ship together with server C4 and route them to the
+ * change screen instead of this generic sign-in prompt.
+ */
+function handleNativeAuthRejected(): void {
+  console.warn("[WS] Server rejected a fresh token — ending the session");
+  supervisor?.stop();
+  nativeDriver.close();
+  // Clears the cached bearer and shares the dedupe flag with the other
+  // expiry paths, so exactly one `kaiku:session-expired` fires.
+  tauri.expireNativeSession();
+}
+
+function getSupervisor(): ConnectionSupervisor {
+  supervisor ??= createConnectionSupervisor({
+    driver: isTauri() ? nativeDriver : browserDriver,
+    mode: isTauri() ? "external" : "managed",
     onStatus: (status, attempt) => {
       setWsState({
         status,
@@ -1534,48 +923,34 @@ function getBrowserSupervisor(): ConnectionSupervisor {
     onRecovered: handleReconnect,
     ensureFreshToken: () => tauri.ensureFreshAccessToken(),
   });
-  return browserSupervisor;
+  return supervisor;
 }
 
-/**
- * Retry the connection immediately (ConnectionIndicator "Retry now").
- * Native mode has no supervisor yet; its Rust client retries on its own.
- */
+/** Retry the connection immediately (ConnectionIndicator "Retry now"). */
 export function retryConnectionNow(): void {
-  browserSupervisor?.triggerNow("user");
+  supervisor?.triggerNow("user");
 }
 
-/** Whether "Retry now" can do anything in this runtime (browser only, for now). */
+/** Whether "Retry now" can do anything in this runtime. */
 export function canRetryConnectionNow(): boolean {
-  return !isTauri;
+  return true;
 }
 
 /**
  * Connect to the WebSocket server.
  */
 export async function connect(): Promise<void> {
-  if (isTauri) {
-    // Tauri mode updates state via the ws:* event listeners.
-    try {
-      setWsState({ status: "connecting", error: null });
-      connectStartTime = Date.now();
-      await tauri.wsConnect();
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      setWsState({ status: "disconnected", error });
-      throw err;
-    }
-    return;
-  }
-
-  // Browser mode: the supervisor opens the socket and keeps it alive.
+  // The supervisor opens the connection; in the browser it also keeps it
+  // alive, natively it mirrors the Rust loop.
   try {
     setWsState({ error: null });
-    tauri.setBrowserSocketHooks({
-      onClose: (intentional) => browserSupervisor?.notifyClosed(intentional),
-      onFrame: () => browserSupervisor?.notifyFrame(),
-    });
-    const opened = await getBrowserSupervisor().start();
+    if (!isTauri()) {
+      tauri.setBrowserSocketHooks({
+        onClose: (intentional) => supervisor?.notifyClosed(intentional),
+        onFrame: () => supervisor?.notifyFrame(),
+      });
+    }
+    const opened = await getSupervisor().start();
     // Only after this call opened a fresh socket. When the supervisor was
     // already running (connected, or retrying) it owns recovery itself;
     // running it here would fake "connected" on a socket that isn't open.
@@ -1584,8 +959,10 @@ export async function connect(): Promise<void> {
     }
   } catch (err) {
     // Status stays as the supervisor set it ("reconnecting": it retries).
+    // Natively the first attempt's failure can arrive after a retry already
+    // connected (ws:connected); don't show a stale error over a live socket.
     const error = err instanceof Error ? err.message : String(err);
-    setWsState({ error });
+    if (wsState.status !== "connected") setWsState({ error });
     throw err;
   }
 }
@@ -1615,7 +992,7 @@ export function waitForConnection(timeoutMs = 5000): Promise<boolean> {
  */
 export async function disconnect(): Promise<void> {
   try {
-    browserSupervisor?.stop();
+    supervisor?.stop();
     await tauri.wsDisconnect();
     detachBrowserMessageHandler?.();
     detachBrowserMessageHandler = null;

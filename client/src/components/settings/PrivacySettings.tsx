@@ -5,8 +5,7 @@
  */
 
 import { Component, createSignal, onMount } from "solid-js";
-
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+import { isTauri } from "@/lib/tauri/common";
 
 const PrivacySettings: Component = () => {
   const [activitySharingEnabled, setActivitySharingEnabled] =
@@ -14,7 +13,7 @@ const PrivacySettings: Component = () => {
   const [isLoading, setIsLoading] = createSignal(true);
 
   onMount(async () => {
-    if (!isTauri) {
+    if (!isTauri()) {
       setIsLoading(false);
       return;
     }
@@ -31,7 +30,7 @@ const PrivacySettings: Component = () => {
   });
 
   const handleActivitySharingChange = async (enabled: boolean) => {
-    if (!isTauri) {
+    if (!isTauri()) {
       setActivitySharingEnabled(enabled);
       return;
     }

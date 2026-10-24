@@ -8,6 +8,7 @@ mod commands;
 mod crypto;
 mod network;
 mod presence;
+mod session;
 mod tray;
 mod video;
 mod voice;
@@ -72,6 +73,9 @@ pub fn run() {
 
             tracing::info!("Kaiku Client starting");
 
+            // Pick the TLS crypto provider once, before any `wss://` handshake.
+            network::websocket::install_crypto_provider();
+
             // Initialize keyring's default credential store. keyring 4 split into
             // `keyring` (store selection) and `keyring-core` (Entry/Error), and
             // requires explicit store selection before any Entry::new. Choosing
@@ -85,7 +89,10 @@ pub fn run() {
             }
 
             // Store app state
-            app.manage(AppState::new());
+            let state = AppState::new();
+            // Keep the access token fresh in the background (Rust-owned session).
+            session::spawn_refresh_scheduler(app.handle().clone(), state.session.clone());
+            app.manage(state);
 
             // Store clipboard guard
             app.manage(Arc::new(ClipboardGuard::new()));
@@ -117,23 +124,11 @@ pub fn run() {
             commands::auth::logout,
             commands::auth::get_current_user,
             commands::auth::get_auth_info,
+            commands::auth::refresh_session,
+            commands::auth::session_request,
             commands::auth::register,
             commands::auth::oidc_authorize,
             commands::auth::oidc_link_identity,
-            commands::auth::mfa_setup,
-            commands::auth::mfa_verify,
-            commands::auth::mfa_disable,
-            commands::auth::mfa_generate_backup_codes,
-            commands::auth::mfa_backup_code_count,
-            commands::auth::qr_login_create,
-            // Chat commands
-            commands::chat::get_channels,
-            commands::chat::get_messages,
-            commands::chat::send_message,
-            commands::chat::edit_message,
-            commands::chat::get_thread_replies,
-            commands::chat::send_thread_reply,
-            commands::chat::mark_thread_read,
             // Voice commands
             commands::voice::join_voice,
             commands::voice::leave_voice,
@@ -166,6 +161,7 @@ pub fn run() {
             commands::webcam::stop_webcam,
             commands::webcam::enumerate_webcam_devices_cmd,
             // Settings commands
+            commands::settings::get_default_server_url,
             commands::settings::get_settings,
             commands::settings::update_settings,
             commands::settings::get_ui_state,
@@ -174,6 +170,8 @@ pub fn run() {
             commands::websocket::ws_connect,
             commands::websocket::ws_disconnect,
             commands::websocket::ws_status,
+            commands::websocket::ws_send,
+            commands::websocket::ws_reconnect_now,
             commands::websocket::ws_subscribe,
             commands::websocket::ws_unsubscribe,
             commands::websocket::ws_typing,
@@ -181,62 +179,6 @@ pub fn run() {
             commands::websocket::ws_ping,
             commands::websocket::ws_send_activity,
             commands::websocket::ws_send_custom_status,
-            // Pages commands
-            commands::pages::list_platform_pages,
-            commands::pages::get_platform_page,
-            commands::pages::create_platform_page,
-            commands::pages::update_platform_page,
-            commands::pages::delete_platform_page,
-            commands::pages::reorder_platform_pages,
-            commands::pages::list_guild_pages,
-            commands::pages::get_guild_page,
-            commands::pages::create_guild_page,
-            commands::pages::update_guild_page,
-            commands::pages::delete_guild_page,
-            commands::pages::reorder_guild_pages,
-            commands::pages::accept_page,
-            commands::pages::get_pending_acceptance,
-            commands::pages::list_page_revisions,
-            commands::pages::get_page_revision,
-            commands::pages::restore_page_revision,
-            commands::pages::list_page_categories,
-            commands::pages::create_page_category,
-            commands::pages::update_page_category,
-            commands::pages::delete_page_category,
-            commands::pages::reorder_page_categories,
-            // Role commands
-            commands::roles::get_guild_roles,
-            commands::roles::create_guild_role,
-            commands::roles::update_guild_role,
-            commands::roles::delete_guild_role,
-            commands::roles::get_guild_member_roles,
-            commands::roles::assign_member_role,
-            commands::roles::remove_member_role,
-            commands::roles::get_channel_overrides,
-            commands::roles::set_channel_override,
-            commands::roles::delete_channel_override,
-            // Admin commands
-            commands::admin::check_admin_status,
-            commands::admin::get_admin_stats,
-            commands::admin::admin_list_users,
-            commands::admin::admin_list_guilds,
-            commands::admin::admin_get_audit_log,
-            commands::admin::admin_elevate,
-            commands::admin::admin_de_elevate,
-            commands::admin::admin_ban_user,
-            commands::admin::admin_unban_user,
-            commands::admin::admin_delete_user,
-            commands::admin::admin_suspend_guild,
-            commands::admin::admin_unsuspend_guild,
-            commands::admin::admin_delete_guild,
-            // Admin observability commands
-            commands::admin::admin_obs_summary,
-            commands::admin::admin_obs_trends,
-            commands::admin::admin_obs_top_routes,
-            commands::admin::admin_obs_top_errors,
-            commands::admin::admin_obs_logs,
-            commands::admin::admin_obs_traces,
-            commands::admin::admin_obs_links,
             // Crypto commands
             commands::crypto::get_server_settings,
             commands::crypto::get_backup_status,
@@ -274,31 +216,6 @@ pub fn run() {
             commands::clipboard::get_clipboard_status,
             commands::clipboard::update_clipboard_settings,
             commands::clipboard::get_clipboard_settings,
-            // Call commands
-            commands::calls::start_dm_call,
-            commands::calls::join_dm_call,
-            commands::calls::decline_dm_call,
-            commands::calls::leave_dm_call,
-            commands::calls::get_dm_call,
-            // Preferences commands
-            commands::preferences::fetch_preferences,
-            commands::preferences::update_preferences,
-            // Channel Pins commands
-            commands::channel_pins::list_channel_pins,
-            commands::channel_pins::pin_message,
-            commands::channel_pins::unpin_message,
-            // Pins commands
-            commands::pins::fetch_pins,
-            commands::pins::create_pin,
-            commands::pins::update_pin,
-            commands::pins::delete_pin,
-            commands::pins::reorder_pins,
-            // Favorites commands
-            commands::favorites::fetch_favorites,
-            commands::favorites::add_favorite,
-            commands::favorites::remove_favorite,
-            commands::favorites::reorder_favorite_channels,
-            commands::favorites::reorder_favorite_guilds,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -327,11 +244,13 @@ pub struct User {
     pub mfa_enabled: bool,
 }
 
-/// Authentication state.
+/// Authentication state read by the REST proxy commands.
+///
+/// Tokens are written only by [`session::SessionManager`], which also owns the refresh
+/// token (never stored here).
 #[derive(Debug, Default)]
 pub struct AuthState {
     pub access_token: Option<String>,
-    pub refresh_token: Option<String>,
     pub user: Option<User>,
     pub server_url: Option<String>,
 }
@@ -391,8 +310,10 @@ impl VoiceState {
 pub struct AppState {
     /// HTTP client for API requests.
     pub http: HttpClient,
-    /// Authentication state.
+    /// Authentication state (mirror of the session for older commands).
     pub auth: Arc<RwLock<AuthState>>,
+    /// Owner of tokens, keyring entry and refresh.
+    pub session: Arc<session::SessionManager>,
     /// WebSocket connection manager.
     pub websocket: Arc<RwLock<Option<WebSocketManager>>>,
     /// Voice state.
@@ -411,9 +332,17 @@ impl AppState {
             .build()
             .expect("Failed to create HTTP client");
 
+        let auth = Arc::new(RwLock::new(AuthState::default()));
+        let session = Arc::new(session::SessionManager::new(
+            http.clone(),
+            Arc::new(session::KeyringTokenStore),
+            auth.clone(),
+        ));
+
         Self {
             http,
-            auth: Arc::new(RwLock::new(AuthState::default())),
+            auth,
+            session,
             websocket: Arc::new(RwLock::new(None)),
             voice: Arc::new(RwLock::new(None)),
             crypto: Arc::new(Mutex::new(None)),

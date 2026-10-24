@@ -14,7 +14,7 @@
 import { Component, createSignal, createEffect, Show } from "solid-js";
 import { authState, clearSetupRequired } from "@/stores/auth";
 import { AlertCircle, CheckCircle, Server } from "lucide-solid";
-import { getAccessToken } from "@/lib/tauri";
+import { getAuthContext, getServerUrl } from "@/lib/tauri";
 
 // Setup config interface (matches server API)
 interface SetupConfig {
@@ -22,20 +22,6 @@ interface SetupConfig {
   registration_policy: "open" | "invite_only" | "closed";
   terms_url?: string;
   privacy_url?: string;
-}
-
-// Detect if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
-
-// Get server URL from auth state or localStorage
-function getServerUrl(): string {
-  if (authState.serverUrl) {
-    return authState.serverUrl;
-  }
-  if (typeof localStorage !== "undefined") {
-    return localStorage.getItem("serverUrl") || window.location.origin;
-  }
-  return window.location.origin;
 }
 
 // Fetch setup config from server
@@ -82,14 +68,7 @@ async function fetchSetupConfig(): Promise<SetupConfig> {
 async function completeSetup(config: SetupConfig): Promise<void> {
   const serverUrl = getServerUrl();
 
-  // Get access token
-  let accessToken: string | null;
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    accessToken = await invoke<string>("get_access_token");
-  } else {
-    accessToken = getAccessToken();
-  }
+  const { accessToken } = await getAuthContext();
 
   if (!accessToken) {
     throw new Error("No access token available. Please log in again.");

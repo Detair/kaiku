@@ -1,6 +1,12 @@
 import { Component, createSignal, createResource, Show, For, onCleanup } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
-import { register, loginWithOidc, authState, clearError } from "@/stores/auth";
+import {
+  register,
+  loginWithOidc,
+  completeNativeOidcLogin,
+  authState,
+  clearError,
+} from "@/stores/auth";
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
 import type { OidcProvider } from "@/lib/types";
 import { KeyRound, ShieldAlert } from "lucide-solid";
@@ -106,14 +112,8 @@ const Register: Component = () => {
       const result = await oidcAuthorize(serverUrl(), provider.slug);
 
       if (result.mode === "tauri") {
-        // Tauri: tokens returned directly from the command
-        await loginWithOidc(
-          serverUrl(),
-          result.tokens.access_token,
-          result.tokens.refresh_token,
-          result.tokens.expires_in || 900,
-          result.tokens.setup_required ?? false,
-        );
+        // Tauri: Rust kept the tokens and returned the user
+        await completeNativeOidcLogin(serverUrl(), result.result);
         navigate("/", { replace: true });
         setOidcLoading(null);
         return;

@@ -22,8 +22,8 @@ Shared utility libraries, type definitions, and platform abstraction layer. Prov
 
 The `tauri.ts` file detects runtime environment and provides unified API:
 
-- **Tauri mode**: Invokes native Rust commands via `@tauri-apps/api/core`
-- **Browser mode**: Falls back to HTTP REST API with token management
+- **REST (both modes)**: `httpRequest` in `tauri/common.ts`; in Tauri mode the base URL and access token come from the Rust session (`getAuthContext()`). Never add a Rust command that only proxies a REST call.
+- **Tauri mode**: native Rust commands via `@tauri-apps/api/core` `invoke()` only for session/auth, WebSocket, voice/media, tray, local settings, crypto, presence scanning, sound and clipboard. Name the command with a string literal; `bun run lint:tauri-commands` fails on any name missing from `generate_handler!`.
 
 ### Type Safety
 
@@ -46,13 +46,14 @@ Browser mode includes automatic token refresh (60s before expiry):
 ### Common Patterns
 
 ```typescript
-// Check if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+// Check if running in Tauri (contract C6) — always call it, never inline a check
+import { isTauri } from "@/lib/tauri/common";
+if (isTauri()) { /* native path */ }
 
 // Call platform-agnostic API
-import { login, getChannels } from "@/lib/tauri";
+import { login, getGuildChannels } from "@/lib/tauri";
 const user = await login(serverUrl, username, password);
-const channels = await getChannels();
+const channels = await getGuildChannels(guildId);
 ```
 
 ### File Uploads

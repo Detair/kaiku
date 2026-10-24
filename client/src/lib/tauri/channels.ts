@@ -7,16 +7,7 @@ import type {
   ChannelOverride,
   SetChannelOverrideRequest,
 } from "../types";
-import { httpRequest, isTauri } from "./common";
-
-export async function getChannels(): Promise<Channel[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_channels");
-  }
-
-  return httpRequest<Channel[]>("GET", "/api/channels");
-}
+import { httpRequest } from "./common";
 
 export async function createChannel(
   name: string,
@@ -25,17 +16,6 @@ export async function createChannel(
   topic?: string,
   categoryId?: string,
 ): Promise<Channel> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("create_channel", {
-      name,
-      channelType,
-      guildId,
-      topic,
-      categoryId,
-    });
-  }
-
   return httpRequest<Channel>("POST", "/api/channels", {
     name,
     channel_type: channelType,
@@ -54,11 +34,6 @@ export async function markChannelAsRead(
   channelId: string,
   lastReadMessageId: string,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("mark_channel_as_read", { channelId, lastReadMessageId });
-  }
-
   await httpRequest<void>("POST", `/api/channels/${channelId}/read`, {
     last_read_message_id: lastReadMessageId,
   });
@@ -74,11 +49,6 @@ export async function markChannelAsRead(
 export async function getChannelOverrides(
   channelId: string,
 ): Promise<ChannelOverride[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_channel_overrides", { channelId });
-  }
-
   return httpRequest<ChannelOverride[]>(
     "GET",
     `/api/channels/${channelId}/overrides`,
@@ -93,11 +63,6 @@ export async function setChannelOverride(
   roleId: string,
   request: SetChannelOverrideRequest,
 ): Promise<ChannelOverride> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("set_channel_override", { channelId, roleId, request });
-  }
-
   return httpRequest<ChannelOverride>(
     "PUT",
     `/api/channels/${channelId}/overrides/${roleId}`,
@@ -112,11 +77,6 @@ export async function deleteChannelOverride(
   channelId: string,
   roleId: string,
 ): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("delete_channel_override", { channelId, roleId });
-  }
-
   await httpRequest<void>(
     "DELETE",
     `/api/channels/${channelId}/overrides/${roleId}`,

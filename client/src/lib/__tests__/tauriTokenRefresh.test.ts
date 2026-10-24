@@ -82,4 +82,31 @@ describe("token refresh failure handling", () => {
       window.removeEventListener("kaiku:session-expired", expired);
     }
   });
+
+  it("a scheduled refresh that hits a 503 keeps the session and retries", async () => {
+    vi.useFakeTimers();
+    const expired = vi.fn();
+    window.addEventListener("kaiku:session-expired", expired);
+    try {
+      fetchMock.mockResolvedValue(respond(503));
+      common.scheduleTokenRefresh();
+
+      // Token is within 60 s of expiry: the timer fires after the 10 s floor.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(expired).not.toHaveBeenCalled();
+      expect(common.browserState.accessToken).toBe("old-token");
+
+      // Retried 30 s later; a 401 then ends the session.
+      fetchMock.mockResolvedValue(respond(401));
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(expired).toHaveBeenCalledTimes(1);
+      expect(common.browserState.accessToken).toBeNull();
+    } finally {
+      window.removeEventListener("kaiku:session-expired", expired);
+    }
+  });
 });

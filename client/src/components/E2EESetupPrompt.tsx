@@ -19,6 +19,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { initE2EE } from "@/lib/tauri";
 import RecoveryKeyModal from "./settings/RecoveryKeyModal";
 import { AlertTriangle } from "lucide-solid";
+import { isTauri } from "@/lib/tauri/common";
 
 // Type for backup status (matches Tauri command response)
 interface BackupStatus {
@@ -33,12 +34,9 @@ interface ServerSettings {
   oidc_enabled: boolean;
 }
 
-// Detect if running in Tauri
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
-
 // Fetch server settings
 async function fetchServerSettings(): Promise<ServerSettings> {
-  if (isTauri) {
+  if (isTauri()) {
     return invoke<ServerSettings>("get_server_settings");
   }
   // Browser mode - assume not required
@@ -47,7 +45,7 @@ async function fetchServerSettings(): Promise<ServerSettings> {
 
 // Fetch backup status
 async function fetchBackupStatus(): Promise<BackupStatus> {
-  if (isTauri) {
+  if (isTauri()) {
     return invoke<BackupStatus>("get_backup_status");
   }
   // Browser mode - E2EE not available
@@ -101,7 +99,7 @@ const E2EESetupPrompt: Component = () => {
     if (status?.has_backup) return;
 
     // Skip if not in Tauri (E2EE not available)
-    if (!isTauri) return;
+    if (!isTauri()) return;
 
     // Show modal
     setIsRequired(settings?.require_e2ee_setup ?? false);

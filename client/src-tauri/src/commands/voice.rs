@@ -2,7 +2,7 @@
 //!
 //! Tauri commands for voice chat functionality.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tauri::{command, AppHandle, Emitter, State};
@@ -20,6 +20,71 @@ use crate::voice::audio_mixer::AudioMixer;
 use crate::webrtc::IceServerConfig;
 use crate::{voice, AppState};
 
+#[derive(serde::Deserialize)]
+struct IceServersResponse {
+    ice_servers: Vec<IceServerEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct IceServerEntry {
+    urls: Vec<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    credential: Option<String>,
+}
+
+/// Per-request timeout so an unresponsive server cannot stall voice join.
+const ICE_SERVERS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Fetch STUN/TURN configuration from the server (`GET /api/voice/ice-servers`).
+///
+/// Falls back to the default public STUN server on any error or an empty list,
+/// so voice still starts (without TURN relay) when the server is unreachable.
+pub async fn fetch_ice_servers(
+    http: &reqwest::Client,
+    server_url: &str,
+    token: &str,
+) -> Vec<IceServerConfig> {
+    let url = format!("{}/api/voice/ice-servers", server_url.trim_end_matches('/'));
+    let result: Result<Vec<IceServerConfig>, String> = async {
+        let resp = http
+            .get(&url)
+            .bearer_auth(token)
+            .timeout(ICE_SERVERS_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status()));
+        }
+        let body: IceServersResponse = resp.json().await.map_err(|e| e.to_string())?;
+        Ok(body
+            .ice_servers
+            .into_iter()
+            .filter(|s| !s.urls.is_empty())
+            .map(|s| IceServerConfig {
+                urls: s.urls,
+                username: s.username,
+                credential: s.credential,
+            })
+            .collect())
+    }
+    .await;
+
+    match result {
+        Ok(servers) if !servers.is_empty() => servers,
+        Ok(_) => {
+            warn!("Server returned no ICE servers; TURN unavailable, using default STUN");
+            vec![IceServerConfig::default()]
+        }
+        Err(e) => {
+            warn!("ICE server fetch failed ({e}); TURN unavailable, using default STUN");
+            vec![IceServerConfig::default()]
+        }
+    }
+}
+
 /// Join a voice channel.
 ///
 /// Initializes audio pipeline and WebRTC, sends `VoiceJoin` to server.
@@ -36,6 +101,15 @@ pub async fn join_voice(
     // Initialize voice state if needed
     state.ensure_voice().await?;
 
+    // Server-provided STUN/TURN config (falls back to a public STUN server).
+    // Fetched before taking the voice lock so a slow server cannot block it.
+    let ice_servers = if let Some(info) = state.session.auth_info() {
+        fetch_ice_servers(&state.http, &info.server_url, &info.access_token).await
+    } else {
+        warn!("No active session; using default STUN only, TURN unavailable");
+        vec![IceServerConfig::default()]
+    };
+
     let mut voice = state.voice.write().await;
     let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
 
@@ -46,9 +120,6 @@ pub async fn join_voice(
     if voice_state.channel_id.is_some() {
         return Err("Already in a voice channel. Leave first.".into());
     }
-
-    // Default ICE servers (can be configured from server later)
-    let ice_servers = vec![IceServerConfig::default()];
 
     // Connect WebRTC (creates peer connection)
     voice_state
@@ -130,10 +201,9 @@ pub async fn join_voice(
             let (user_id, source_type) = voice::subscriber::parse_stream_id(&stream);
 
             if voice::subscriber::is_audio_track(&source_type) {
-                let track = track.clone();
                 let app = app_clone.clone();
                 let voice_arc = voice_arc.clone();
-                let track_id = format!("{}:{}", user_id, source_type);
+                let track_id = format!("{user_id}:{source_type}");
 
                 tokio::spawn(async move {
                     // Get the mixer and stats registry from voice state
@@ -230,15 +300,10 @@ pub async fn join_voice(
                     );
 
                     // Drain track to prevent webrtc-rs backpressure
-                    let drain_track = track.clone();
+                    let drain_track = track;
                     tokio::spawn(async move {
                         let mut buf = vec![0u8; 4096];
-                        loop {
-                            match drain_track.read(&mut buf).await {
-                                Ok(_) => {} // discard
-                                Err(_) => break,
-                            }
-                        }
+                        while drain_track.read(&mut buf).await.is_ok() {}
                     });
 
                     return;
@@ -246,7 +311,7 @@ pub async fn join_voice(
 
                 // Count already incremented by fetch_update — proceed with decode.
                 let handle = voice::video_decoder::spawn_video_decode_task(
-                    track.clone(),
+                    track,
                     user_id,
                     source_type,
                     extracted_stream_id,
@@ -585,7 +650,7 @@ pub async fn set_vad_config(
     Ok(())
 }
 
-/// Set noise suppression (uses RNNoise denoised output when enabled).
+/// Set noise suppression (uses `RNNoise` denoised output when enabled).
 #[command]
 pub async fn set_noise_suppression(
     enabled: bool,
@@ -715,7 +780,7 @@ pub async fn is_in_voice(state: State<'_, AppState>) -> Result<bool, String> {
 
 /// Native connection quality stats, serialized to the frontend adapter.
 ///
-/// Wire format (snake_case per project convention). The TS layer converts
+/// Wire format (`snake_case` per project convention). The TS layer converts
 /// this into the shared `ConnectionMetrics` shape, computing interval loss
 /// from the cumulative counters (delta between polls, like the browser
 /// adapter does with WebRTC's inbound-rtp counters) and the quality tier
@@ -830,17 +895,17 @@ async fn send_audio_to_track(
     track: Arc<TrackLocalStaticRTP>,
     mut audio_rx: mpsc::Receiver<Vec<u8>>,
 ) {
-    // Per RFC 3550 §5.1: start seq and timestamp at random values for each session.
-    // SSRC is already per-session (derived from SystemTime at spawn), so combining
-    // with a random seq start ensures receivers see a fresh stream after reconnect.
-    let mut seq: u16 = rand::random();
-    let mut timestamp: u32 = rand::random();
-
     // Calculate samples per frame (20ms at 48kHz)
     const SAMPLES_PER_FRAME: u32 = SAMPLE_RATE / 1000 * FRAME_SIZE_MS as u32;
 
     // RTP payload type for Opus (as configured in webrtc/mod.rs)
     const OPUS_PAYLOAD_TYPE: u8 = 111;
+
+    // Per RFC 3550 §5.1: start seq and timestamp at random values for each session.
+    // SSRC is already per-session (derived from SystemTime at spawn), so combining
+    // with a random seq start ensures receivers see a fresh stream after reconnect.
+    let mut seq: u16 = rand::random();
+    let mut timestamp: u32 = rand::random();
 
     // Generate SSRC (Synchronization Source identifier) from timestamp
     // This provides a unique value per stream session
@@ -966,5 +1031,107 @@ async fn decode_remote_audio_track(
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn ice_servers_parsed_from_server() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/voice/ice-servers"))
+            .and(header("authorization", "Bearer tok"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ice_servers": [
+                    { "urls": ["stun:stun.example.org:3478"] },
+                    {
+                        "urls": ["turn:turn.example.org:3478"],
+                        "username": "u",
+                        "credential": "c"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let servers = fetch_ice_servers(&reqwest::Client::new(), &server.uri(), "tok").await;
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0].urls, vec!["stun:stun.example.org:3478"]);
+        assert!(servers[0].username.is_none());
+        assert_eq!(servers[1].username.as_deref(), Some("u"));
+        assert_eq!(servers[1].credential.as_deref(), Some("c"));
+    }
+
+    #[tokio::test]
+    async fn ice_servers_fall_back_to_default_on_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/voice/ice-servers"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let servers = fetch_ice_servers(&reqwest::Client::new(), &server.uri(), "tok").await;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].urls, IceServerConfig::default().urls);
+    }
+
+    #[tokio::test]
+    async fn ice_servers_fall_back_on_empty_list() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/voice/ice-servers"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "ice_servers": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let servers = fetch_ice_servers(&reqwest::Client::new(), &server.uri(), "tok").await;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].urls, IceServerConfig::default().urls);
+    }
+
+    #[tokio::test]
+    async fn ice_servers_drop_entries_with_empty_urls() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/voice/ice-servers"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "ice_servers": [{ "urls": [] }] })),
+            )
+            .mount(&server)
+            .await;
+
+        let servers = fetch_ice_servers(&reqwest::Client::new(), &server.uri(), "tok").await;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].urls, IceServerConfig::default().urls);
+    }
+
+    #[tokio::test]
+    async fn ice_servers_fall_back_on_timeout() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/voice/ice-servers"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(ICE_SERVERS_TIMEOUT + std::time::Duration::from_secs(1))
+                    .set_body_json(serde_json::json!({
+                        "ice_servers": [{ "urls": ["stun:slow.example:3478"] }]
+                    })),
+            )
+            .mount(&server)
+            .await;
+
+        let servers = fetch_ice_servers(&reqwest::Client::new(), &server.uri(), "tok").await;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].urls, IceServerConfig::default().urls);
     }
 }

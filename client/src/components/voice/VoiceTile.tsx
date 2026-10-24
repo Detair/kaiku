@@ -10,8 +10,7 @@ import { MicOff, Monitor, ExternalLink, Undo2, MonitorOff } from "lucide-solid";
 import { getTrack as getWebcamTrack } from "@/stores/webcamViewer";
 import { viewerState as screenShareViewerState } from "@/stores/screenShareViewer";
 import TauriVideoFrame from "./TauriVideoFrame";
-
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+import { isTauri } from "@/lib/tauri/common";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -59,7 +58,7 @@ const ParticipantTile: Component<{
   /** Browser mode: real MediaStreamTrack available */
   const hasBrowserVideo = () => !!track();
   /** Tauri mode: webcam entry registered (track is null, video renders via canvas frames) */
-  const hasTauriVideo = () => isTauri && track() === null;
+  const hasTauriVideo = () => isTauri() && track() === null;
   const hasVideo = () => hasBrowserVideo() || hasTauriVideo();
 
   createEffect(() => {
@@ -90,7 +89,7 @@ const ParticipantTile: Component<{
       {/* Webcam video (fills tile) */}
       <Show when={hasVideo()}>
         <Show
-          when={!isTauri}
+          when={!isTauri()}
           fallback={
             <div class="absolute inset-0">
               <TauriVideoFrame userId={props.tile.userId} streamId="webcam" />

@@ -8,14 +8,13 @@
  * release builds).
  */
 import { showToast } from "@/components/ui/Toast";
-
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+import { isTauri } from "@/lib/tauri/common";
 
 /** Delay before the startup check so it never competes with app boot. */
 const STARTUP_CHECK_DELAY_MS = 10_000;
 
 export function initUpdater(): void {
-  if (!isTauri) return;
+  if (!isTauri()) return;
 
   window.setTimeout(() => {
     void checkForUpdate();

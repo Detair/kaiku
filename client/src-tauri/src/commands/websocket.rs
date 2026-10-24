@@ -5,49 +5,64 @@
 use tauri::{command, AppHandle, State};
 use tracing::{debug, info};
 
-use crate::network::{ClientEvent, ConnectionStatus, WebSocketManager};
+use crate::network::{ClientEvent, ConnectionStatus, WebSocketManager, WsTimings};
 use crate::AppState;
 
-/// Connect to the WebSocket server.
+/// Connect to the WebSocket server with the current session.
+///
+/// Resolves once the first attempt has an outcome. On failure the Rust loop
+/// keeps retrying (`ws:reconnecting` … `ws:connected`) and the error only
+/// reports that the first attempt did not succeed.
 #[command]
 pub async fn ws_connect(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let (server_url, token) = {
-        let auth = state.auth.read().await;
-        (auth.server_url.clone(), auth.access_token.clone())
-    };
+    let manager = WebSocketManager::connect(app, state.session.clone(), WsTimings::default())?;
+    info!("WebSocket connection loop started");
 
-    let server_url = server_url.ok_or("Not authenticated")?;
-    let token = token.ok_or("Not authenticated")?;
-
-    info!("Connecting WebSocket to {}", server_url);
-
-    let manager = WebSocketManager::connect(app, server_url, token).await?;
-
-    // Store the manager
+    let first = manager.first_outcome();
     let mut ws = state.websocket.write().await;
-    *ws = Some(manager);
-
-    Ok(())
+    if let Some(old) = ws.replace(manager) {
+        old.disconnect();
+    }
+    drop(ws);
+    first.await
 }
 
 /// Disconnect from the WebSocket server.
 #[command]
 pub async fn ws_disconnect(state: State<'_, AppState>) -> Result<(), String> {
     let mut ws = state.websocket.write().await;
-    if let Some(ref mut manager) = *ws {
-        manager.disconnect().await;
+    if let Some(manager) = ws.as_ref() {
+        manager.disconnect();
     }
     *ws = None;
     Ok(())
+}
+
+/// Skip the reconnect backoff and try now (network back, window visible, "Retry now").
+#[command]
+pub async fn ws_reconnect_now(state: State<'_, AppState>) -> Result<(), String> {
+    let ws = state.websocket.read().await;
+    ws.as_ref()
+        .map(WebSocketManager::reconnect_now)
+        .ok_or_else(|| "WebSocket not started".to_string())
 }
 
 /// Get the current WebSocket connection status.
 #[command]
 pub async fn ws_status(state: State<'_, AppState>) -> Result<ConnectionStatus, String> {
     let ws = state.websocket.read().await;
+    Ok(ws
+        .as_ref()
+        .map_or(ConnectionStatus::Disconnected, WebSocketManager::status))
+}
+
+/// Send a JSON message from the webview: an object with a string `type`.
+#[command]
+pub async fn ws_send(state: State<'_, AppState>, message: String) -> Result<(), String> {
+    let ws = state.websocket.read().await;
     match &*ws {
-        Some(manager) => Ok(manager.status().await),
-        None => Ok(ConnectionStatus::Disconnected),
+        Some(manager) => manager.send_raw(&message),
+        None => Err("WebSocket not connected".to_string()),
     }
 }
 

@@ -27,7 +27,7 @@ import type {
   UserDetailsResponse,
   UserSummary,
 } from "../types";
-import { getAccessToken, getServerUrl, httpRequest, isTauri } from "./common";
+import { getAccessToken, getServerUrl, httpRequest } from "./common";
 
 // ============================================================================
 // Admin Reports
@@ -126,11 +126,6 @@ export async function adminGetReportStats(): Promise<ReportStatsResponse> {
  * Check if current user is a system admin.
  */
 export async function checkAdminStatus(): Promise<AdminStatus> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AdminStatus>("check_admin_status");
-  }
-
   return httpRequest<AdminStatus>("GET", "/api/admin/status");
 }
 
@@ -138,11 +133,6 @@ export async function checkAdminStatus(): Promise<AdminStatus> {
  * Get admin statistics.
  */
 export async function getAdminStats(): Promise<AdminStats> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AdminStats>("get_admin_stats");
-  }
-
   return httpRequest<AdminStats>("GET", "/api/admin/stats");
 }
 
@@ -158,15 +148,6 @@ export async function adminListUsers(
   offset?: number,
   search?: string,
 ): Promise<PaginatedResponse<UserSummary>> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<PaginatedResponse<UserSummary>>("admin_list_users", {
-      limit,
-      offset,
-      search,
-    });
-  }
-
   const params = new URLSearchParams();
   if (limit !== undefined) params.set("limit", limit.toString());
   if (offset !== undefined) params.set("offset", offset.toString());
@@ -187,15 +168,6 @@ export async function adminListGuilds(
   offset?: number,
   search?: string,
 ): Promise<PaginatedResponse<GuildSummary>> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<PaginatedResponse<GuildSummary>>("admin_list_guilds", {
-      limit,
-      offset,
-      search,
-    });
-  }
-
   const params = new URLSearchParams();
   if (limit !== undefined) params.set("limit", limit.toString());
   if (offset !== undefined) params.set("offset", offset.toString());
@@ -214,13 +186,6 @@ export async function adminListGuilds(
 export async function adminGetUserDetails(
   userId: string,
 ): Promise<UserDetailsResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<UserDetailsResponse>("admin_get_user_details", {
-      user_id: userId,
-    });
-  }
-
   return httpRequest<UserDetailsResponse>(
     "GET",
     `/api/admin/users/${userId}/details`,
@@ -233,13 +198,6 @@ export async function adminGetUserDetails(
 export async function adminGetGuildDetails(
   guildId: string,
 ): Promise<GuildDetailsResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<GuildDetailsResponse>("admin_get_guild_details", {
-      guild_id: guildId,
-    });
-  }
-
   return httpRequest<GuildDetailsResponse>(
     "GET",
     `/api/admin/guilds/${guildId}/details`,
@@ -276,18 +234,6 @@ export async function adminGetAuditLog(
   const filterObj: AuditLogFilters =
     typeof filters === "string" ? { action: filters } : filters || {};
 
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<PaginatedResponse<AuditLogEntry>>("admin_get_audit_log", {
-      limit,
-      offset,
-      action_filter: filterObj.action,
-      action_type: filterObj.actionType,
-      from_date: filterObj.fromDate,
-      to_date: filterObj.toDate,
-    });
-  }
-
   const params = new URLSearchParams();
   if (limit !== undefined) params.set("limit", limit.toString());
   if (offset !== undefined) params.set("offset", offset.toString());
@@ -313,13 +259,6 @@ export async function adminGetAuditLog(
 export async function adminElevate(
   reason?: string,
 ): Promise<ElevateResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<ElevateResponse>("admin_elevate", {
-      reason,
-    });
-  }
-
   return httpRequest<ElevateResponse>("POST", "/api/admin/elevate", {
     reason,
   });
@@ -329,12 +268,7 @@ export async function adminElevate(
  * De-elevate admin session.
  */
 export async function adminDeElevate(): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<void>("admin_de_elevate");
-  }
-
-  await httpRequest<void>("POST", "/api/admin/de-elevate");
+  await httpRequest<void>("DELETE", "/api/admin/elevate");
 }
 
 /**
@@ -345,15 +279,6 @@ export async function adminBanUser(
   reason: string,
   expiresAt?: string,
 ): Promise<{ banned: boolean; user_id: string }> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("admin_ban_user", {
-      user_id: userId,
-      reason,
-      expires_at: expiresAt,
-    });
-  }
-
   return httpRequest<{ banned: boolean; user_id: string }>(
     "POST",
     `/api/admin/users/${userId}/ban`,
@@ -367,11 +292,6 @@ export async function adminBanUser(
 export async function adminUnbanUser(
   userId: string,
 ): Promise<{ banned: boolean; user_id: string }> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("admin_unban_user", { user_id: userId });
-  }
-
   return httpRequest<{ banned: boolean; user_id: string }>(
     "POST",
     `/api/admin/users/${userId}/unban`,
@@ -385,11 +305,6 @@ export async function adminSuspendGuild(
   guildId: string,
   reason: string,
 ): Promise<{ suspended: boolean; guild_id: string }> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("admin_suspend_guild", { guild_id: guildId, reason });
-  }
-
   return httpRequest<{ suspended: boolean; guild_id: string }>(
     "POST",
     `/api/admin/guilds/${guildId}/suspend`,
@@ -403,11 +318,6 @@ export async function adminSuspendGuild(
 export async function adminUnsuspendGuild(
   guildId: string,
 ): Promise<{ suspended: boolean; guild_id: string }> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("admin_unsuspend_guild", { guild_id: guildId });
-  }
-
   return httpRequest<{ suspended: boolean; guild_id: string }>(
     "POST",
     `/api/admin/guilds/${guildId}/unsuspend`,
@@ -420,11 +330,6 @@ export async function adminUnsuspendGuild(
 export async function adminDeleteUser(
   userId: string,
 ): Promise<{ deleted: boolean; id: string }> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("admin_delete_user", { user_id: userId });
-  }
-
   return httpRequest<{ deleted: boolean; id: string }>(
     "DELETE",
     `/api/admin/users/${userId}`,
@@ -437,11 +342,6 @@ export async function adminDeleteUser(
 export async function adminDeleteGuild(
   guildId: string,
 ): Promise<{ deleted: boolean; id: string }> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("admin_delete_guild", { guild_id: guildId });
-  }
-
   return httpRequest<{ deleted: boolean; id: string }>(
     "DELETE",
     `/api/admin/guilds/${guildId}`,
@@ -522,15 +422,6 @@ export async function adminBulkBanUsers(
   reason: string,
   expiresAt?: string,
 ): Promise<BulkBanResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("admin_bulk_ban_users", {
-      user_ids: userIds,
-      reason,
-      expires_at: expiresAt,
-    });
-  }
-
   return httpRequest<BulkBanResponse>("POST", "/api/admin/users/bulk-ban", {
     user_ids: userIds,
     reason,
@@ -545,14 +436,6 @@ export async function adminBulkSuspendGuilds(
   guildIds: string[],
   reason: string,
 ): Promise<BulkSuspendResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("admin_bulk_suspend_guilds", {
-      guild_ids: guildIds,
-      reason,
-    });
-  }
-
   return httpRequest<BulkSuspendResponse>(
     "POST",
     "/api/admin/guilds/bulk-suspend",
@@ -571,10 +454,6 @@ export async function adminBulkSuspendGuilds(
  * Get admin auth settings (requires elevation).
  */
 export async function adminGetAuthSettings(): Promise<AuthSettingsResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AuthSettingsResponse>("admin_get_auth_settings");
-  }
   return httpRequest<AuthSettingsResponse>("GET", "/api/admin/auth-settings");
 }
 
@@ -585,10 +464,6 @@ export async function adminUpdateAuthSettings(body: {
   auth_methods?: AuthMethodsConfig;
   registration_policy?: string;
 }): Promise<AuthSettingsResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AuthSettingsResponse>("admin_update_auth_settings", { body });
-  }
   return httpRequest<AuthSettingsResponse>(
     "PUT",
     "/api/admin/auth-settings",
@@ -600,10 +475,6 @@ export async function adminUpdateAuthSettings(body: {
  * List all OIDC providers (admin, requires elevation).
  */
 export async function adminListOidcProviders(): Promise<AdminOidcProvider[]> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AdminOidcProvider[]>("admin_list_oidc_providers");
-  }
   return httpRequest<AdminOidcProvider[]>("GET", "/api/admin/oidc-providers");
 }
 
@@ -623,10 +494,6 @@ export async function adminCreateOidcProvider(body: {
   client_secret: string;
   scopes?: string;
 }): Promise<AdminOidcProvider> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AdminOidcProvider>("admin_create_oidc_provider", { body });
-  }
   return httpRequest<AdminOidcProvider>(
     "POST",
     "/api/admin/oidc-providers",
@@ -652,13 +519,6 @@ export async function adminUpdateOidcProvider(
     enabled: boolean;
   },
 ): Promise<AdminOidcProvider> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<AdminOidcProvider>("admin_update_oidc_provider", {
-      id,
-      body,
-    });
-  }
   return httpRequest<AdminOidcProvider>(
     "PUT",
     `/api/admin/oidc-providers/${id}`,
@@ -670,10 +530,6 @@ export async function adminUpdateOidcProvider(
  * Delete an OIDC provider (admin, requires elevation).
  */
 export async function adminDeleteOidcProvider(id: string): Promise<void> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<void>("admin_delete_oidc_provider", { id });
-  }
   await httpRequest<{ success: boolean }>(
     "DELETE",
     `/api/admin/oidc-providers/${id}`,
@@ -685,10 +541,6 @@ export async function adminDeleteOidcProvider(id: string): Promise<void> {
 // ============================================================================
 
 export async function adminObsSummary(): Promise<ObservabilitySummary> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<ObservabilitySummary>("admin_obs_summary");
-  }
   return httpRequest<ObservabilitySummary>(
     "GET",
     "/api/admin/observability/summary",
@@ -699,10 +551,6 @@ export async function adminObsTrends(
   range: ObsTimeRange,
   metrics: string[],
 ): Promise<TrendsResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<TrendsResponse>("admin_obs_trends", { range, metrics });
-  }
   const params = new URLSearchParams();
   params.set("range", range);
   for (const m of metrics) {
@@ -719,14 +567,6 @@ export async function adminObsTopRoutes(
   sort?: "latency" | "errors",
   limit?: number,
 ): Promise<TopRoutesResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<TopRoutesResponse>("admin_obs_top_routes", {
-      range,
-      sort,
-      limit,
-    });
-  }
   const params = new URLSearchParams();
   params.set("range", range);
   if (sort) params.set("sort", sort);
@@ -741,10 +581,6 @@ export async function adminObsTopErrors(
   range: ObsTimeRange,
   limit?: number,
 ): Promise<TopErrorsResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<TopErrorsResponse>("admin_obs_top_errors", { range, limit });
-  }
   const params = new URLSearchParams();
   params.set("range", range);
   if (limit) params.set("limit", String(limit));
@@ -761,16 +597,6 @@ export async function adminObsLogs(
   cursor?: string,
   limit?: number,
 ): Promise<LogsResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<LogsResponse>("admin_obs_logs", {
-      level,
-      domain,
-      search,
-      cursor,
-      limit,
-    });
-  }
   const params = new URLSearchParams();
   if (level) params.set("level", level);
   if (domain) params.set("domain", domain);
@@ -790,15 +616,6 @@ export async function adminObsTraces(
   cursor?: string,
   limit?: number,
 ): Promise<TracesResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<TracesResponse>("admin_obs_traces", {
-      status,
-      domain,
-      cursor,
-      limit,
-    });
-  }
   const params = new URLSearchParams();
   if (status) params.set("status", status);
   if (domain) params.set("domain", domain);
@@ -812,10 +629,6 @@ export async function adminObsTraces(
 }
 
 export async function adminObsLinks(): Promise<ObsLinksResponse> {
-  if (isTauri) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke<ObsLinksResponse>("admin_obs_links");
-  }
   return httpRequest<ObsLinksResponse>(
     "GET",
     "/api/admin/observability/links",

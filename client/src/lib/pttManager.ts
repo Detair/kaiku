@@ -6,6 +6,8 @@
  * release-delay timers, and a callback into the audio subsystem.
  */
 
+import { isTauri } from "@/lib/tauri/common";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -268,8 +270,6 @@ export function createBrowserPttListeners(controller: PttController): () => void
 // Tauri global-shortcut listeners
 // ---------------------------------------------------------------------------
 
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
-
 /**
  * Register Tauri global shortcuts for PTT/PTM keys (works even when the
  * window is not focused) and fall back to browser-only listeners when
@@ -280,7 +280,7 @@ export async function createTauriPttListeners(
   config: PttFullConfig,
 ): Promise<() => void> {
   const cleanupBrowser = createBrowserPttListeners(controller);
-  if (!isTauri) return cleanupBrowser;
+  if (!isTauri()) return cleanupBrowser;
 
   try {
     const { register, unregister } = await import("@tauri-apps/plugin-global-shortcut");

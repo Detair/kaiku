@@ -7,6 +7,7 @@
  */
 
 import type { SoundEvent, SoundEventType } from "./sound/types";
+import { isTauri } from "@/lib/tauri/common";
 
 // ============================================================================
 // Types
@@ -22,14 +23,6 @@ export interface NotificationContext {
 interface FormattedNotification {
   title: string;
   body: string;
-}
-
-// ============================================================================
-// Platform Detection
-// ============================================================================
-
-function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI__" in window;
 }
 
 // ============================================================================

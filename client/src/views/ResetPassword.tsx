@@ -2,11 +2,11 @@ import { Component, createSignal, Show, onCleanup } from "solid-js";
 import { A } from "@solidjs/router";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
+import { isTauri } from "@/lib/tauri/common";
 
 const ResetPassword: Component = () => {
   document.title = "Reset Password | Kaiku";
   onCleanup(() => { document.title = "Kaiku"; });
-  const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const [serverUrl] = createSignal(defaultServerUrl);
   const [token, setToken] = createSignal("");
@@ -56,7 +56,7 @@ const ResetPassword: Component = () => {
       setSuccess(true);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "An error occurred";
-      setError(isTauri ? message : `${message} (server: ${serverUrl()})`);
+      setError(isTauri() ? message : `${message} (server: ${serverUrl()})`);
     } finally {
       setIsLoading(false);
     }

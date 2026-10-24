@@ -23,6 +23,8 @@ import { initPreferences } from "./preferences";
 import { clearAllDrafts, cleanupDrafts } from "./drafts";
 import { resetE2EEState } from "./e2ee";
 import { showToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
+import { isTauri } from "@/lib/tauri/common";
 
 // Auth state interface
 interface AuthState {
@@ -34,6 +36,12 @@ interface AuthState {
   setupRequired: boolean;
   mfaRequired: boolean;
   sessionExpired: boolean;
+  /**
+   * A stored login exists but the server could not be reached at start.
+   * The login is kept and the restore retried; the UI shows a
+   * "can't reach the server" state instead of the login form.
+   */
+  restorePending: boolean;
 }
 
 // Create the store
@@ -46,13 +54,12 @@ const [authState, setAuthState] = createStore<AuthState>({
   setupRequired: false,
   mfaRequired: false,
   sessionExpired: false,
+  restorePending: false,
 });
 
 // Derived state
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
-
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 
 // Session-expired listener (registered once globally to prevent leaks)
 let sessionExpiredListenerRegistered = false;
@@ -64,14 +71,18 @@ function registerSessionExpiredListener() {
     // Ignore if not authenticated
     if (!authState.user) return;
 
-    console.warn("[Kaiku:Auth] Session expired: attempting silent retry...");
-
-    const success = await tauri.refreshAccessToken();
+    // Native mode: Rust already tried the refresh and the server rejected it;
+    // retrying would only report the same expiry again.
+    let success = false;
+    if (!isTauri()) {
+      console.warn("[Kaiku:Auth] Session expired: attempting silent retry...");
+      success = await tauri.refreshAccessToken();
+    }
     if (success) {
       console.log("[Kaiku:Auth] Silent retry: success — session recovered");
       // The browser reconnect supervisor stops when it reports an expired
       // session; restart it (no-op while it is still running).
-      if (!isTauri) {
+      if (!isTauri()) {
         try {
           await wsConnect();
         } catch (err) {
@@ -108,81 +119,221 @@ function registerSessionExpiredListener() {
 // Register immediately — the listener checks auth state internally
 registerSessionExpiredListener();
 
-// Actions
+/** Native mode: follow token refreshes and expiry from the Rust session. */
+async function initNativeSession(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await tauri.initNativeAuthEvents();
+  } catch (err) {
+    console.error("[Auth] Native auth event setup failed:", err);
+  }
+}
+
+/** Tell the user when the OS keyring could not keep their login. */
+function warnIfNotRemembered(result: tauri.AuthResult): void {
+  if (result.persisted === false) {
+    showToast({
+      type: "warning",
+      title: t("auth.notRememberedTitle"),
+      message: t("auth.notRemembered"),
+    });
+  }
+}
 
 /**
- * Initialize auth state by checking for existing session.
+ * Shared post-sign-in setup: WebSocket, presence, preferences, idle
+ * detection. Used after session restore, login, registration and both OIDC
+ * flows. `showWsError: false` keeps registration's behaviour of not showing
+ * the "real-time unavailable" banner when the first connect fails.
  */
-export async function initAuth(): Promise<void> {
-  if (authState.isInitialized) return;
+async function startSessionServices(
+  options: { showWsError?: boolean } = {},
+): Promise<void> {
+  const { showWsError = true } = options;
 
-  setAuthState({ isLoading: true, error: null });
+  // Initialize WebSocket listeners and presence in parallel (independent)
+  await Promise.all([initWebSocket(), initPresence()]);
 
+  // Connect WebSocket and sync preferences in parallel (independent)
+  await Promise.all([
+    wsConnect()
+      .then(() => console.log("[Auth] WebSocket connected"))
+      .catch((wsErr) => {
+        console.error("[Auth] WebSocket connection failed:", wsErr);
+        if (showWsError) {
+          setAuthState({
+            error: "Real-time messaging temporarily unavailable. Reconnecting...",
+          });
+        }
+      }),
+    initPreferences()
+      .then(() => console.log("[Auth] Preferences initialized"))
+      .catch((prefErr) => {
+        console.error("[Auth] Preferences initialization failed:", prefErr);
+      }),
+  ]);
+
+  // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
+  initIdleDetection();
+}
+
+// Actions
+
+// Session restore retry (stored login, server unreachable at start).
+// Backoff doubles from 5 s and is capped at 30 s; `online` and the window
+// becoming visible retry at once. Only the server rejecting the stored
+// login (`session_expired`) or the user choosing to sign in ends it.
+const RESTORE_RETRY_BASE_MS = 5_000;
+const RESTORE_RETRY_MAX_MS = 30_000;
+let restoreRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let restoreRetryAttempt = 0;
+let restoreInFlight = false;
+let restoreTriggersAttached = false;
+
+/** Delay before restore retry `attempt` (1-based). Exported for tests. */
+export function restoreRetryDelayMs(attempt: number): number {
+  return Math.min(
+    RESTORE_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1),
+    RESTORE_RETRY_MAX_MS,
+  );
+}
+
+function onRestoreTrigger(): void {
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+    return;
+  }
+  retryRestoreNow();
+}
+
+function attachRestoreTriggers(): void {
+  if (restoreTriggersAttached || typeof window === "undefined") return;
+  restoreTriggersAttached = true;
+  window.addEventListener("online", onRestoreTrigger);
+  document.addEventListener("visibilitychange", onRestoreTrigger);
+}
+
+function stopRestoreRetry(): void {
+  if (restoreRetryTimer) {
+    clearTimeout(restoreRetryTimer);
+    restoreRetryTimer = null;
+  }
+  restoreRetryAttempt = 0;
+  if (restoreTriggersAttached) {
+    window.removeEventListener("online", onRestoreTrigger);
+    document.removeEventListener("visibilitychange", onRestoreTrigger);
+    restoreTriggersAttached = false;
+  }
+}
+
+function scheduleRestoreRetry(): void {
+  attachRestoreTriggers();
+  if (restoreRetryTimer) clearTimeout(restoreRetryTimer);
+  restoreRetryAttempt += 1;
+  const delay = restoreRetryDelayMs(restoreRetryAttempt);
+  console.warn(
+    `[Auth] Server unreachable during session restore — retrying in ${Math.round(delay / 1000)}s`,
+  );
+  restoreRetryTimer = setTimeout(() => {
+    restoreRetryTimer = null;
+    void attemptRestore();
+  }, delay);
+}
+
+/** Try the pending session restore now ("Try again", `online`, focus). */
+export function retryRestoreNow(): void {
+  if (!authState.restorePending || restoreInFlight) return;
+  if (restoreRetryTimer) {
+    clearTimeout(restoreRetryTimer);
+    restoreRetryTimer = null;
+  }
+  void attemptRestore();
+}
+
+/**
+ * Give up waiting for the server and show the login form. The stored login
+ * stays; a successful sign-in replaces it.
+ */
+export function abandonRestore(): void {
+  if (!authState.restorePending) return;
+  stopRestoreRetry();
+  setAuthState({ restorePending: false, isInitialized: true, isLoading: false });
+}
+
+/** One restore attempt; reschedules itself while the server is unreachable. */
+async function attemptRestore(): Promise<void> {
+  if (restoreInFlight) return;
+  restoreInFlight = true;
   try {
     const result = await tauri.getCurrentUser();
+    // The user chose to sign in while this attempt was running.
+    if (authState.isInitialized) return;
 
     if (result.user) {
+      stopRestoreRetry();
       setAuthState({
         user: result.user,
         serverUrl: tauri.getServerUrl() || null,
         isLoading: false,
         isInitialized: true,
+        restorePending: false,
       });
 
-      // Initialize WebSocket listeners and presence in parallel (independent)
-      await Promise.all([initWebSocket(), initPresence()]);
-
-      // Connect WebSocket and sync preferences in parallel (independent)
-      await Promise.all([
-        wsConnect()
-          .then(() => console.log("[Auth] WebSocket reconnected after session restore"))
-          .catch((wsErr) => {
-            console.error("[Auth] WebSocket reconnection failed:", wsErr);
-            setAuthState(
-              "error",
-              "Real-time messaging temporarily unavailable. Reconnecting...",
-            );
-          }),
-        initPreferences()
-          .then(() => console.log("[Auth] Preferences initialized after session restore"))
-          .catch((prefErr) => {
-            console.error("[Auth] Preferences initialization failed:", prefErr);
-          }),
-      ]);
-
-      // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
-      initIdleDetection();
-    } else {
-      setAuthState({
-        user: null,
-        isLoading: false,
-        isInitialized: true,
-      });
-
-      // Show toast for failed restore (only when there WAS a stored session)
-      if (result.error_reason === "session_expired") {
-        showToast({
-          type: "warning",
-          title: "Session Expired",
-          message: "Please log in again.",
-        });
-      } else if (result.error_reason === "network_error") {
-        showToast({
-          type: "error",
-          title: "Connection Failed",
-          message: "Could not connect to server.",
-        });
-      }
+      await startSessionServices();
+      return;
     }
-  } catch (err) {
-    console.error("Failed to restore session:", err);
+
+    // Native mode reports `network_error` only when a stored login exists
+    // and the server could not be reached (offline, timeout, 5xx). Keep the
+    // login and retry instead of dropping the user on the login form.
+    if (result.error_reason === "network_error") {
+      setAuthState({ isLoading: false, restorePending: true });
+      scheduleRestoreRetry();
+      return;
+    }
+
+    stopRestoreRetry();
     setAuthState({
       user: null,
       isLoading: false,
       isInitialized: true,
+      restorePending: false,
+    });
+
+    // Show toast for failed restore (only when there WAS a stored session)
+    if (result.error_reason === "session_expired") {
+      showToast({
+        type: "warning",
+        title: "Session Expired",
+        message: "Please log in again.",
+      });
+    }
+  } catch (err) {
+    console.error("Failed to restore session:", err);
+    stopRestoreRetry();
+    setAuthState({
+      user: null,
+      isLoading: false,
+      isInitialized: true,
+      restorePending: false,
       error: null,
     });
+  } finally {
+    restoreInFlight = false;
   }
+}
+
+/**
+ * Initialize auth state by checking for existing session.
+ */
+export async function initAuth(): Promise<void> {
+  if (authState.isInitialized || authState.restorePending || restoreInFlight) {
+    return;
+  }
+
+  setAuthState({ isLoading: true, error: null });
+
+  await initNativeSession();
+  await attemptRestore();
 }
 
 /**
@@ -199,8 +350,12 @@ export async function login(
   setAuthState({ isLoading: true, error: null });
 
   try {
+    await initNativeSession();
     const result = await tauri.login(serverUrl, username, password, mfaCode);
+    warnIfNotRemembered(result);
+    stopRestoreRetry();
     setAuthState({
+      restorePending: false,
       user: result.user,
       serverUrl,
       isLoading: false,
@@ -211,26 +366,7 @@ export async function login(
       sessionExpired: false,
     });
 
-    // Initialize WebSocket listeners and presence in parallel (independent)
-    await Promise.all([initWebSocket(), initPresence()]);
-
-    // Connect WebSocket and sync preferences in parallel (independent)
-    await Promise.all([
-      wsConnect().catch((wsErr) => {
-        console.error("WebSocket connection failed:", wsErr);
-        setAuthState({
-          error: "Real-time messaging temporarily unavailable. Reconnecting...",
-        });
-      }),
-      initPreferences()
-        .then(() => console.log("[Auth] Preferences initialized after login"))
-        .catch((prefErr) => {
-          console.error("[Auth] Preferences initialization failed:", prefErr);
-        }),
-    ]);
-
-    // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
-    initIdleDetection();
+    await startSessionServices();
 
     return result.user;
   } catch (err) {
@@ -265,6 +401,7 @@ export async function register(
   setAuthState({ isLoading: true, error: null });
 
   try {
+    await initNativeSession();
     const result = await tauri.register(
       serverUrl,
       username,
@@ -272,7 +409,10 @@ export async function register(
       email,
       displayName,
     );
+    warnIfNotRemembered(result);
+    stopRestoreRetry();
     setAuthState({
+      restorePending: false,
       user: result.user,
       serverUrl,
       isLoading: false,
@@ -282,23 +422,7 @@ export async function register(
       sessionExpired: false,
     });
 
-    // Initialize WebSocket listeners and presence in parallel (independent)
-    await Promise.all([initWebSocket(), initPresence()]);
-
-    // Connect WebSocket and sync preferences in parallel (independent)
-    await Promise.all([
-      wsConnect().catch((wsErr) => {
-        console.error("WebSocket connection failed:", wsErr);
-      }),
-      initPreferences()
-        .then(() => console.log("[Auth] Preferences initialized after registration"))
-        .catch((prefErr) => {
-          console.error("[Auth] Preferences initialization failed:", prefErr);
-        }),
-    ]);
-
-    // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
-    initIdleDetection();
+    await startSessionServices({ showWsError: false });
 
     return result.user;
   } catch (err) {
@@ -309,26 +433,46 @@ export async function register(
 }
 
 /**
- * Complete OIDC login after receiving tokens from the callback.
- * This is called after the OIDC provider redirects back with tokens.
+ * Complete a native (Tauri) OIDC login: Rust already holds the tokens and
+ * returned the user.
+ */
+export async function completeNativeOidcLogin(
+  serverUrl: string,
+  result: tauri.AuthResult,
+): Promise<void> {
+  await initNativeSession();
+  warnIfNotRemembered(result);
+  stopRestoreRetry();
+  setAuthState({
+    restorePending: false,
+    user: result.user,
+    serverUrl: tauri.getServerUrl() || serverUrl,
+    isLoading: false,
+    isInitialized: true,
+    error: null,
+    setupRequired: result.setup_required,
+    mfaRequired: false,
+    sessionExpired: false,
+  });
+  await startSessionServices();
+}
+
+/**
+ * Complete a browser OIDC login after receiving the access token from the
+ * callback page. The refresh token is an HttpOnly cookie, so
+ * `_refreshToken` is ignored.
  */
 export async function loginWithOidc(
   serverUrl: string,
   accessToken: string,
-  refreshToken: string | undefined,
+  _refreshToken: string | undefined,
   expiresIn: number,
   setupRequired: boolean = false,
 ): Promise<void> {
   setAuthState({ isLoading: true, error: null });
 
   try {
-    // Store tokens
-    await tauri.oidcCompleteLogin(
-      serverUrl,
-      accessToken,
-      refreshToken,
-      expiresIn,
-    );
+    await tauri.oidcCompleteLogin(serverUrl, accessToken, expiresIn);
 
     // Fetch the current user with the new token
     const result = await tauri.getCurrentUser();
@@ -346,23 +490,7 @@ export async function loginWithOidc(
       sessionExpired: false,
     });
 
-    // Initialize WebSocket listeners and presence in parallel (independent)
-    await Promise.all([initWebSocket(), initPresence()]);
-
-    // Connect WebSocket and sync preferences in parallel (independent)
-    await Promise.all([
-      wsConnect().catch((wsErr) => {
-        console.error("WebSocket connection failed:", wsErr);
-        setAuthState({
-          error: "Real-time messaging temporarily unavailable. Reconnecting...",
-        });
-      }),
-      initPreferences().catch((prefErr) => {
-        console.error("[Auth] Preferences initialization failed:", prefErr);
-      }),
-    ]);
-
-    initIdleDetection();
+    await startSessionServices();
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     setAuthState({ isLoading: false, error });

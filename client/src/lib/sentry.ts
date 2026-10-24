@@ -1,10 +1,11 @@
 // Sentry browser wrapper for Tauri webview
-// Only active when running inside Tauri (window.__TAURI__ present) and VITE_SENTRY_DSN set.
+// Only active when running inside Tauri (isTauri()) and VITE_SENTRY_DSN set.
 import * as Sentry from "@sentry/browser";
+import { isTauri } from "@/lib/tauri/common";
 
 export function initSentry(): void {
   const dsn = import.meta.env.VITE_SENTRY_DSN as string | undefined;
-  if (!dsn || !("__TAURI__" in window)) return;
+  if (!dsn || !isTauri()) return;
 
   Sentry.init({
     dsn,

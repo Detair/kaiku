@@ -11,6 +11,7 @@ vi.mock("@/stores/dms", () => ({
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
+  isTauri: () => false,
 }));
 
 import { computeTotalUnread } from "../trayBadge";

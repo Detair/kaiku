@@ -11,6 +11,17 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::{command, Manager};
 
+/// Tester override for the server address (`KAIKU_SERVER_URL`).
+///
+/// Lets CI-built packages point at a dev stack. Unset (or blank) for normal users.
+#[command]
+pub fn get_default_server_url() -> Option<String> {
+    std::env::var("KAIKU_SERVER_URL")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 // ============================================================================
 // Settings Types
 // ============================================================================
@@ -265,4 +276,28 @@ pub async fn update_category_collapse(
     // Write to disk while holding the lock to prevent interleaving.
     // File is < 1KB so blocking duration is negligible.
     save_ui_state_to_file(&path, ui_state)
+}
+
+#[cfg(test)]
+mod default_server_url_tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// Serializes tests that mutate the process environment.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn default_server_url_reads_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("KAIKU_SERVER_URL", "https://dev.example.org");
+        assert_eq!(
+            get_default_server_url().as_deref(),
+            Some("https://dev.example.org")
+        );
+        std::env::set_var("KAIKU_SERVER_URL", "   ");
+        assert_eq!(get_default_server_url(), None);
+        std::env::remove_var("KAIKU_SERVER_URL");
+        assert_eq!(get_default_server_url(), None);
+    }
 }

@@ -87,7 +87,7 @@ Views trigger data loading on mount:
 ```typescript
 onMount(async () => {
   await loadGuilds();
-  await loadChannels();
+  await loadChannelsForGuild(guildId);
 });
 ```
 

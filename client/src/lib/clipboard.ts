@@ -8,8 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-
-const isTauri = "__TAURI__" in window;
+import { isTauri } from "@/lib/tauri/common";
 
 /** Context for what's being copied (affects sensitivity). */
 export type CopyContext =
@@ -102,7 +101,7 @@ export async function secureCopy(
   content: string,
   context: CopyContext,
 ): Promise<CopyResult> {
-  if (isTauri) {
+  if (isTauri()) {
     return invoke<CopyResult>("secure_copy", { content, context });
   }
 
@@ -148,7 +147,7 @@ export async function secureCopy(
  * Paste from clipboard with tamper detection.
  */
 export async function securePaste(): Promise<PasteResult> {
-  if (isTauri) {
+  if (isTauri()) {
     return invoke<PasteResult>("secure_paste");
   }
 
@@ -172,7 +171,7 @@ export async function securePaste(): Promise<PasteResult> {
  * Clear clipboard immediately.
  */
 export async function clearClipboard(): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     return invoke("clear_clipboard");
   }
 
@@ -193,7 +192,7 @@ export async function clearClipboard(): Promise<void> {
 export async function extendClipboardTimeout(
   additionalSecs: number = 30,
 ): Promise<number> {
-  if (isTauri) {
+  if (isTauri()) {
     return invoke<number>("extend_clipboard_timeout", {
       additional_secs: additionalSecs,
     });
@@ -207,7 +206,7 @@ export async function extendClipboardTimeout(
  * Get current clipboard status.
  */
 export async function getClipboardStatus(): Promise<ClipboardStatusEvent> {
-  if (isTauri) {
+  if (isTauri()) {
     return invoke<ClipboardStatusEvent>("get_clipboard_status");
   }
 
@@ -228,7 +227,7 @@ export async function getClipboardStatus(): Promise<ClipboardStatusEvent> {
 export async function updateClipboardSettings(
   settings: ClipboardSettings,
 ): Promise<void> {
-  if (isTauri) {
+  if (isTauri()) {
     return invoke("update_clipboard_settings", { settings });
   }
   // Browser mode doesn't persist settings
@@ -238,7 +237,7 @@ export async function updateClipboardSettings(
  * Get current clipboard protection settings.
  */
 export async function getClipboardSettings(): Promise<ClipboardSettings> {
-  if (isTauri) {
+  if (isTauri()) {
     return invoke<ClipboardSettings>("get_clipboard_settings");
   }
 
@@ -257,7 +256,7 @@ export async function getClipboardSettings(): Promise<ClipboardSettings> {
 export async function onClipboardStatus(
   callback: (event: ClipboardStatusEvent) => void,
 ): Promise<UnlistenFn> {
-  if (isTauri) {
+  if (isTauri()) {
     return listen<ClipboardStatusEvent>("clipboard-status", (event) => {
       callback(event.payload);
     });
@@ -273,7 +272,7 @@ export async function onClipboardStatus(
 export async function onClipboardTamper(
   callback: (context: CopyContext) => void,
 ): Promise<UnlistenFn> {
-  if (isTauri) {
+  if (isTauri()) {
     return listen<{ context: CopyContext }>(
       "clipboard-tamper-detected",
       (event) => {

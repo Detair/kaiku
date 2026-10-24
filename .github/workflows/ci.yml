@@ -318,6 +318,10 @@ jobs:
       - name: Lint (fails on errors; warnings allowed)
         run: bun run lint
 
+      - name: Check Tauri invoke registration
+        working-directory: client
+        run: bun run lint:tauri-commands
+
       - name: Run tests
         run: bun run test:run
 
@@ -418,6 +422,11 @@ jobs:
       - name: Build Tauri app
         working-directory: client
         run: bun run tauri build --config src-tauri/tauri.ci.conf.json
+
+      # Rust unit tests of the desktop shell (session manager, native WebSocket).
+      - name: Test Tauri client library (Ubuntu)
+        if: matrix.platform == 'ubuntu-latest'
+        run: cargo test -p vc-client --lib
 
       - name: Upload artifacts (Ubuntu)
         if: matrix.platform == 'ubuntu-latest'
