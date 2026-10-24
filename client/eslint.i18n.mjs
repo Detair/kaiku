@@ -54,7 +54,7 @@ export const I18N_SELECTORS = [
   ...TAURI_DETECTION_SELECTORS,
   { selector: "JSXText[value=/[A-Za-z]/]", message: MESSAGE },
   {
-    selector: "JSXAttribute[name.name=/^(placeholder|title|aria-label|alt|label)$/] > Literal",
+    selector: "JSXAttribute[name.name=/^(placeholder|title|aria-label|aria-description|alt|label)$/] > Literal",
     message: MESSAGE,
   },
 ];

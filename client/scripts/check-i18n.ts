@@ -90,6 +90,7 @@ export function checkPlaceholders(source: Catalog, locales: Record<string, Catal
  */
 export function findUnusedKeys(keys: string[], sources: Map<string, string>): string[] {
   const counted = [...sources]
+    .map(([file, text]) => [file.replaceAll("\\", "/"), text] as const)
     .filter(
       ([file]) =>
         !/(^|\/)src\/i18n\/(en|locales)\//.test(file) && !/(^|\/)__tests__\//.test(file),
@@ -100,8 +101,12 @@ export function findUnusedKeys(keys: string[], sources: Map<string, string>): st
   );
 }
 
+/** Throws on malformed XML (jsdom returns a parsererror document instead). */
 export function parseAndroidStrings(xml: string): AndroidStrings {
   const doc = new (new JSDOM("").window.DOMParser)().parseFromString(xml, "text/xml");
+  if (doc.getElementsByTagName("parsererror").length > 0 || doc.documentElement?.nodeName !== "resources") {
+    throw new Error("malformed XML (expected a <resources> document)");
+  }
   const names = (tag: string) =>
     [...doc.getElementsByTagName(tag)]
       .filter((el) => el.getAttribute("translatable") !== "false")
@@ -147,6 +152,20 @@ export const UNUSED_ALLOWLIST: readonly string[] = [
   "connection.attempt.other",
 ];
 
+/** The allowlist must shrink: entries that are now used or no longer exist are errors. */
+export function checkUnusedAllowlist(
+  keys: string[],
+  sources: Map<string, string>,
+  allowlist: readonly string[],
+): string[] {
+  const unused = new Set(findUnusedKeys(keys, sources));
+  return allowlist.flatMap((key) => {
+    if (!keys.includes(key)) return [`UNUSED_ALLOWLIST entry ${key} no longer exists in en`];
+    if (!unused.has(key)) return [`UNUSED_ALLOWLIST entry ${key} is now used; remove it`];
+    return [];
+  });
+}
+
 /** Per locale: sorted en keys, existing non-empty values kept, new keys "", removed keys dropped. */
 export function syncLocaleFiles(
   source: Catalog,
@@ -179,10 +198,21 @@ function readLocales(dir: string): Record<string, Catalog> {
   return locales;
 }
 
-function readAndroid(resDir: string): { def: AndroidStrings; locales: Record<string, AndroidStrings> } {
+function readAndroid(resDir: string): {
+  def: AndroidStrings;
+  locales: Record<string, AndroidStrings>;
+  errors: string[];
+} {
+  const errors: string[] = [];
   const read = (folder: string) => {
     const file = join(resDir, folder, "strings.xml");
-    return existsSync(file) ? parseAndroidStrings(readFileSync(file, "utf8")) : undefined;
+    if (!existsSync(file)) return undefined;
+    try {
+      return parseAndroidStrings(readFileSync(file, "utf8"));
+    } catch (err) {
+      errors.push(`${folder}/strings.xml: ${(err as Error).message}`);
+      return undefined;
+    }
   };
   const def = read("values") ?? { strings: [], plurals: [] };
   const locales: Record<string, AndroidStrings> = {};
@@ -193,7 +223,7 @@ function readAndroid(resDir: string): { def: AndroidStrings; locales: Record<str
       if (parsed) locales[folder.slice("values-".length)] = parsed;
     }
   }
-  return { def, locales };
+  return { def, locales, errors };
 }
 
 function writeLocale(dir: string, lang: string, catalog: Catalog): void {
@@ -245,6 +275,8 @@ function main(argv: string[]): number {
     ...findUnusedKeys(keys, sources)
       .filter((key) => !UNUSED_ALLOWLIST.includes(key))
       .map((key) => `unused key ${key}`),
+    ...checkUnusedAllowlist(keys, sources, UNUSED_ALLOWLIST),
+    ...android.errors,
     ...checkAndroidLocales(android.def, android.locales),
   ];
   for (const error of errors) console.error(error);

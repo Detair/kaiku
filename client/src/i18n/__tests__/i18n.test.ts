@@ -90,6 +90,10 @@ describe("i18n", () => {
     expect(await lintCount('setError("auth.forcedChange.failed");')).toBe(0);
   }, LINT_TIMEOUT_MS);
 
+  it("flags aria-description literals", async () => {
+    expect(await lintCount('export const X = () => <p aria-description="Help text" />;')).toBe(1);
+  }, LINT_TIMEOUT_MS);
+
   it("does not flag class ternaries or t() args", async () => {
     expect(
       await lintCount(

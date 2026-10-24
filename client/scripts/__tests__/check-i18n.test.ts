@@ -4,6 +4,8 @@ import {
   checkAndroidNameCollisions,
   checkKeyFormat,
   checkLocaleKeySets,
+  checkUnusedAllowlist,
+  parseAndroidStrings,
   checkPlaceholders,
   findUnusedKeys,
   syncLocaleFiles,
@@ -58,5 +60,24 @@ describe("check-i18n", () => {
     const out = syncLocaleFiles(en, { de: { "b.x": "B", "old.k": "O" } });
     expect(out.de).toEqual({ "a.y": "", "b.x": "B" });
     expect(Object.keys(out.de)).toEqual(["a.y", "b.x"]);
+  });
+
+  it("malformed Android XML is an error, not an empty locale", () => {
+    expect(() => parseAndroidStrings('<resources><string name="a">x</resources>')).toThrow();
+    expect(() => parseAndroidStrings("<other/>")).toThrow();
+    expect(parseAndroidStrings('<resources><string name="a">x</string></resources>').strings).toEqual(["a"]);
+  });
+
+  it("unused key detection normalizes Windows paths", () => {
+    const sources = new Map([["src\\i18n\\en\\a.ts", '"a.c": "C"']]);
+    expect(findUnusedKeys(["a.c"], sources)).toEqual(["a.c"]);
+  });
+
+  it("allowlist entries must still be unused and exist", () => {
+    const sources = new Map([["src/x.tsx", 't("a.b")']]);
+    const errors = checkUnusedAllowlist(["a.b", "a.c"], sources, ["a.b", "a.c", "gone.key"]);
+    expect(errors).toHaveLength(2);
+    expect(errors.join("\n")).toContain("a.b");
+    expect(errors.join("\n")).toContain("gone.key");
   });
 });
