@@ -8,7 +8,6 @@ import io.wolftown.kaiku.di.ChatCoroutineScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
-import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -50,10 +49,10 @@ class ReadSyncObserver @Inject constructor(
         // the read cursor or is cancelled right after it was posted.
         val userId = tokenStorage.getUserId()
         if (userId != null && lastReadMessageId != null) {
-            // Exact when the message is cached; otherwise stored by id plus the
-            // receive time (resolved against the next fetch, C20).
+            // Exact when the message is cached; otherwise kept by id only, as a
+            // boundary for the next fetch.
             val createdAt = chat.cachedCreatedAt(channelId, lastReadMessageId)
-            ledger.markRead(userId, channelId, lastReadMessageId, createdAt, Instant.now().toString())
+            ledger.markRead(userId, channelId, lastReadMessageId, createdAt)
             if (createdAt != null) ledger.markSeen(userId, channelId, lastReadMessageId, createdAt)
         }
         enqueuer.cancel(channelId)

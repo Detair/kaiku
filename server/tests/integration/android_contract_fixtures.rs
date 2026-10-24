@@ -24,7 +24,7 @@ use vc_server::chat::types::{
     AttachmentInfo, AuthorProfile, CursorPaginatedResponse, DMListResponse, DMParticipant,
     LastMessagePreview, MessageResponse,
 };
-use vc_server::db::{Channel, ChannelType};
+use vc_server::db::{Channel, ChannelType, ChannelUnread, GuildUnreadSummary, UnreadAggregate};
 use vc_server::guild::categories::{Category, CategoryType};
 use vc_server::guild::settings::ChannelWithUnread;
 use vc_server::ws::ServerEvent;
@@ -443,5 +443,34 @@ fn android_golden_ws_dm_read() {
     check_golden(
         "ws_dm_read.json",
         serde_json::to_value(&event).expect("serialize dm_read"),
+    );
+}
+
+/// `GET /api/me/unread`: Android's wake fetch reads the server's unread count
+/// of the woken channel (guild channels count all authors, DMs only others).
+#[test]
+fn android_golden_unread_aggregate() {
+    let aggregate = UnreadAggregate {
+        guilds: vec![GuildUnreadSummary {
+            guild_id: GUILD_ID,
+            guild_name: "Family".to_string(),
+            channels: vec![ChannelUnread {
+                channel_id: CHANNEL_ID,
+                channel_name: "general".to_string(),
+                unread_count: 3,
+            }],
+            total_unread: 3,
+        }],
+        dms: vec![ChannelUnread {
+            channel_id: DM_CHANNEL_ID,
+            channel_name: String::new(),
+            unread_count: 2,
+        }],
+        total: 5,
+    };
+
+    check_golden(
+        "unread_aggregate.json",
+        serde_json::to_value(&aggregate).expect("serialize unread aggregate"),
     );
 }
