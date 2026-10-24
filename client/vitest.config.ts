@@ -10,8 +10,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    include: ["src/**/*.test.ts", "scripts/**/*.test.ts"],
-    exclude: ["src/**/*.test.tsx", "node_modules"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "scripts/**/*.test.ts"],
+    exclude: ["node_modules"],
     server: {
       deps: {
         // Ensure solid-js store uses the same browser build as user code

@@ -14,6 +14,7 @@ import {
   For,
 } from "solid-js";
 import { fetchApi } from "../../lib/tauri";
+import { formatShortDate, formatTime } from "@/i18n/format";
 
 interface SessionSummary {
   id: string;
@@ -66,11 +67,6 @@ export const SessionList: Component = () => {
     );
   });
 
-  const formatTime = (iso: string) => {
-    const d = new Date(iso);
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  };
-
   const formatDate = (iso: string) => {
     const d = new Date(iso);
     const today = new Date();
@@ -79,7 +75,7 @@ export const SessionList: Component = () => {
 
     if (d.toDateString() === today.toDateString()) return "Today";
     if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+    return formatShortDate(d, today);
   };
 
   const formatDuration = (start: string, end: string) => {

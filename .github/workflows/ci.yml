@@ -328,6 +328,10 @@ jobs:
         working-directory: client
         run: bun run lint:tauri-commands
 
+      - name: Check i18n catalogs
+        working-directory: client
+        run: bun run i18n:check
+
       - name: Run tests
         run: bun run test:run
 
