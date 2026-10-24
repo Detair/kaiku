@@ -2,10 +2,19 @@
 //! dispatcher.
 //!
 //! A push never carries message text — only a type + routing (`channel_id`, count)
-//! — so the transport (a self-hosted `UnifiedPush` distributor, later FCM) never
-//! sees content. The app wakes and syncs over its normal authenticated (and
-//! E2EE-decrypting) channel. User-supplied endpoints go through the shared SSRF
-//! guard before every send, identical to webhooks.
+//! — so the transport never sees content. The app wakes and syncs over its
+//! normal authenticated (and E2EE-decrypting) channel.
+//!
+//! Transports (`send_one` dispatches on the subscription's `provider`):
+//! - `unifiedpush`: a user-supplied distributor URL. It goes through the shared SSRF guard before
+//!   every send, identical to webhooks.
+//! - `fcm`: Firebase Cloud Messaging HTTP v1 ([`fcm`]), enabled only when a service account is
+//!   configured ([`service::PushService`]). Its hosts are fixed, so the SSRF guard does not apply.
+//!
+//! Wire format: contract C20 (`dm`, `mention`, `read`; `call` reserved).
+
+pub mod fcm;
+pub mod service;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -13,6 +22,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+pub use service::PushService;
 use sqlx::FromRow;
 use uuid::Uuid;
 use validator::Validate;
@@ -43,12 +53,27 @@ impl WakeSignal {
             count,
         }
     }
+    /// The channel was read on another device: clear its notification.
+    pub const fn read(channel_id: Uuid) -> Self {
+        Self {
+            t: "read",
+            channel_id,
+            count: 0,
+        }
+    }
     pub const fn call(channel_id: Uuid) -> Self {
         Self {
             t: "call",
             channel_id,
             count: 1,
         }
+    }
+
+    /// Whether the transport should deliver this signal with high priority
+    /// (wake the device immediately). Only `read` is normal priority.
+    #[must_use]
+    pub fn is_high_priority(&self) -> bool {
+        self.t != "read"
     }
 }
 
@@ -84,17 +109,25 @@ pub enum Delivery {
 // ============================================================================
 
 /// Deliver a wake signal to all of a user's devices. Spawned off the hot path so
-/// push latency never blocks message handling. Prunes subscriptions that report
-/// `Gone`.
+/// push latency never blocks message handling.
 pub fn spawn_dispatch(state: AppState, user_id: Uuid, signal: WakeSignal) {
     tokio::spawn(async move {
-        if let Err(e) = dispatch(&state, user_id, &signal).await {
+        if let Err(e) = deliver(&state, user_id, &signal).await {
             tracing::warn!(error = %e, user_id = %user_id, "push dispatch failed");
         }
     });
 }
 
-async fn dispatch(state: &AppState, user_id: Uuid, signal: &WakeSignal) -> Result<(), sqlx::Error> {
+/// Deliver a wake signal to every subscription of `user_id`. Subscriptions that
+/// report `Gone` are pruned; successful ones get `last_used_at` updated.
+///
+/// # Errors
+/// Loading the user's subscriptions failed.
+pub async fn deliver(
+    state: &AppState,
+    user_id: Uuid,
+    signal: &WakeSignal,
+) -> Result<(), sqlx::Error> {
     let subs: Vec<PushSubscription> = sqlx::query_as(
         "SELECT id, user_id, provider, endpoint, public_key, auth_key, device_label,
                 created_at, last_used_at
@@ -105,7 +138,15 @@ async fn dispatch(state: &AppState, user_id: Uuid, signal: &WakeSignal) -> Resul
     .await?;
 
     for sub in subs {
-        let delivery = send_one(&sub, signal).await;
+        let delivery = send_one(state, &sub, signal).await;
+        crate::observability::metrics::record_push_delivery(
+            provider_label(&sub.provider),
+            match delivery {
+                Delivery::Sent => "sent",
+                Delivery::Gone => "gone",
+                Delivery::Failed => "failed",
+            },
+        );
         match delivery {
             Delivery::Gone => {
                 let _ = sqlx::query("DELETE FROM push_subscriptions WHERE id = $1")
@@ -126,13 +167,31 @@ async fn dispatch(state: &AppState, user_id: Uuid, signal: &WakeSignal) -> Resul
     Ok(())
 }
 
-/// Send to one subscription, dispatching on its provider. New providers (FCM,
-/// APNs) add a match arm here.
-async fn send_one(sub: &PushSubscription, signal: &WakeSignal) -> Delivery {
-    // Any new provider arm (e.g. FCM) must validate its endpoint the same way
-    // (https only, SSRF guard, pinned client) before sending.
+/// Bounded metric label for a provider string read from the database.
+fn provider_label(provider: &str) -> &'static str {
+    match provider {
+        "unifiedpush" => "unifiedpush",
+        "fcm" => "fcm",
+        _ => "other",
+    }
+}
+
+/// Send to one subscription, dispatching on its provider. New providers (APNs)
+/// add a match arm here.
+async fn send_one(state: &AppState, sub: &PushSubscription, signal: &WakeSignal) -> Delivery {
+    // A user-supplied endpoint (UnifiedPush) must be validated (https only,
+    // SSRF guard, pinned client) before sending. FCM talks to fixed hosts.
     match sub.provider.as_str() {
         "unifiedpush" => send_unifiedpush(&sub.endpoint, signal).await,
+        "fcm" => {
+            if let Some(client) = state.push.fcm() {
+                client.send(&sub.endpoint, signal).await
+            } else {
+                // Keep the row: FCM may be configured again later.
+                tracing::warn!("push: fcm subscription but FCM is not configured; skipping");
+                Delivery::Failed
+            }
+        }
         other => {
             tracing::warn!(provider = %other, "unknown push provider; skipping");
             Delivery::Failed
@@ -399,6 +458,11 @@ mod tests {
     #[test]
     fn wake_signal_kinds() {
         assert_eq!(WakeSignal::mention(Uuid::nil(), 2).t, "mention");
+        let read = WakeSignal::read(Uuid::nil());
+        assert_eq!((read.t, read.count), ("read", 0));
+        assert!(!read.is_high_priority());
+        assert!(WakeSignal::dm(Uuid::nil(), 1).is_high_priority());
+        assert!(WakeSignal::mention(Uuid::nil(), 1).is_high_priority());
         assert_eq!(WakeSignal::call(Uuid::nil()).t, "call");
     }
 }

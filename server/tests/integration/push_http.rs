@@ -190,3 +190,117 @@ async fn test_create_push_subscription_rejects_unknown_provider(pool: PgPool) {
         .await;
     assert!(body_to_json(list).await.as_array().unwrap().is_empty());
 }
+
+// ============================================================================
+// FCM delivery (local FCM mock on 127.0.0.1; no network)
+// ============================================================================
+
+use uuid::Uuid;
+use vc_server::config::Config;
+use vc_server::push::{deliver, WakeSignal};
+
+use crate::helpers::{spawn_fcm_mock, test_service_account, FcmMockResponse};
+
+/// FCM rows are inserted with SQL: registration of `fcm` lands in Task 2.
+async fn insert_fcm_row(pool: &PgPool, user: Uuid, token: &str) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO push_subscriptions (user_id, provider, endpoint)
+         VALUES ($1, 'fcm', $2) RETURNING id",
+    )
+    .bind(user)
+    .bind(token)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn fcm_row(pool: &PgPool, id: Uuid) -> Option<Option<chrono::DateTime<chrono::Utc>>> {
+    sqlx::query_scalar("SELECT last_used_at FROM push_subscriptions WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+async fn fcm_app(pool: PgPool, responder: FcmMockResponse) -> (TestApp, crate::helpers::FcmMock) {
+    let mock = spawn_fcm_mock(responder).await;
+    let mut config = Config::default_for_test();
+    config.fcm_service_account = Some(test_service_account(mock.token_uri()));
+    config.fcm_api_base = mock.base_url.clone();
+    (TestApp::with_pool_and_config(pool, config).await, mock)
+}
+
+const FCM_TOKEN: &str = "fcm-registration-token-abc:DEF-ghi_0123456789";
+
+#[sqlx::test]
+async fn test_fcm_delivery_sends_data_message(pool: PgPool) {
+    let (app, mock) = fcm_app(pool.clone(), FcmMockResponse::Ok).await;
+    assert!(app.state.push.fcm().is_some());
+    let (user, _) = create_test_user(&pool).await;
+    let row = insert_fcm_row(&pool, user, FCM_TOKEN).await;
+    let ch = Uuid::now_v7();
+
+    deliver(&app.state, user, &WakeSignal::dm(ch, 1))
+        .await
+        .unwrap();
+
+    let received = mock.received.lock().unwrap().clone();
+    assert_eq!(received.len(), 1);
+    let msg = &received[0]["message"];
+    assert_eq!(msg["token"], FCM_TOKEN);
+    assert!(msg.get("notification").is_none());
+    assert_eq!(
+        msg["data"],
+        json!({"t": "dm", "channel_id": ch.to_string(), "count": "1"})
+    );
+    assert_eq!(msg["android"]["priority"], "HIGH");
+    assert!(
+        fcm_row(&pool, row).await.unwrap().is_some(),
+        "last_used_at set"
+    );
+}
+
+#[sqlx::test]
+async fn test_unregistered_fcm_token_is_pruned(pool: PgPool) {
+    let body: &'static str = r#"{"error":{"code":404,"status":"NOT_FOUND","details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"UNREGISTERED"}]}}"#;
+    let (app, mock) = fcm_app(pool.clone(), FcmMockResponse::Status(404, body)).await;
+    let (user, _) = create_test_user(&pool).await;
+    let row = insert_fcm_row(&pool, user, FCM_TOKEN).await;
+
+    deliver(&app.state, user, &WakeSignal::dm(Uuid::now_v7(), 1))
+        .await
+        .unwrap();
+
+    assert_eq!(mock.received.lock().unwrap().len(), 1);
+    assert!(fcm_row(&pool, row).await.is_none(), "row must be deleted");
+}
+
+#[sqlx::test]
+async fn test_fcm_400_keeps_subscription(pool: PgPool) {
+    let body: &'static str = r#"{"error":{"code":400,"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"INVALID_ARGUMENT"}]}}"#;
+    let (app, mock) = fcm_app(pool.clone(), FcmMockResponse::Status(400, body)).await;
+    let (user, _) = create_test_user(&pool).await;
+    let row = insert_fcm_row(&pool, user, FCM_TOKEN).await;
+
+    deliver(&app.state, user, &WakeSignal::dm(Uuid::now_v7(), 1))
+        .await
+        .unwrap();
+
+    assert_eq!(mock.received.lock().unwrap().len(), 1);
+    let kept = fcm_row(&pool, row).await.expect("row must be kept");
+    assert!(kept.is_none(), "a failed send must not touch last_used_at");
+}
+
+#[sqlx::test]
+async fn test_fcm_row_without_fcm_config_is_kept(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    assert!(app.state.push.fcm().is_none());
+    let (user, _) = create_test_user(&pool).await;
+    let row = insert_fcm_row(&pool, user, FCM_TOKEN).await;
+
+    deliver(&app.state, user, &WakeSignal::dm(Uuid::now_v7(), 1))
+        .await
+        .unwrap();
+
+    assert!(fcm_row(&pool, row).await.is_some(), "row must be kept");
+}

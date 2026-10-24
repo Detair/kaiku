@@ -111,6 +111,19 @@ Rate limiting also uses Valkey; see [rate-limiting.md](rate-limiting.md).
 | `VOICE_ICE_INTERFACES` | unset (all interfaces) | Comma-separated list of network interface names allowed for voice ICE candidates (e.g. the public interface, `eth0`). Names are exact and case-sensitive; a name that matches no interface on the host means no ICE candidates, so voice will fail (a warning is logged at startup). Other interfaces (VPN, container bridges) are not advertised to clients, and filtering also reduces the number of ports consumed from the `VOICE_UDP_PORT_MIN`-`VOICE_UDP_PORT_MAX` range |
 | `VOICE_ICE_IP_FAMILY` | `both` | IP family for voice ICE candidates: `v4`, `v6` or `both` (case-insensitive). Invalid values fail startup. Restricting the family also reduces ports consumed from the UDP range. If `PUBLIC_IP` is of the excluded family it is ignored (a warning is logged) |
 
+## Push notifications (FCM)
+
+Android push notifications can go through Firebase Cloud Messaging (FCM HTTP v1). Without a
+service account, FCM is off and UnifiedPush keeps working. When FCM is on, the server needs
+outbound HTTPS to `oauth2.googleapis.com` and `fcm.googleapis.com`. If both variables are set,
+or the key is invalid (not JSON, a `token_uri` other than `https://oauth2.googleapis.com/token`,
+or a `private_key` that is not an RSA private key), the server refuses to start.
+
+| Variable | Required / default | Purpose |
+|----------|--------------------|---------|
+| `FCM_SERVICE_ACCOUNT_FILE` | unset (empty = unset) | Path to the Google service-account JSON key for the Firebase project. Preferred, e.g. a Kubernetes secret mounted as a file |
+| `FCM_SERVICE_ACCOUNT_JSON` | unset (empty = unset) | The same service-account JSON key, inline. Use only one of the two variables |
+
 ## Observability
 
 | Variable | Required / default | Purpose |
