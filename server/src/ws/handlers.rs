@@ -585,6 +585,17 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     // VoiceLeave path also calls `forget_peer`; calling it here too is idempotent.
     state.sfu.voice_rate_limiter().forget_peer(user_id);
 
+    // Remove this socket's voice peer so the room never keeps a ghost
+    // participant. Runs before presence goes offline.
+    crate::voice::leave::leave_voice_on_socket_close(
+        &state.sfu,
+        &state.db,
+        user_id,
+        &tx,
+        state.screen_share_limiter.as_ref(),
+    )
+    .await;
+
     // Update user presence to offline
     if let Err(e) = update_presence(&state, user_id, "offline").await {
         warn!("Failed to update presence on disconnect: {}", e);

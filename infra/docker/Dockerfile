@@ -82,7 +82,10 @@ USER 1001
 # Expose HTTP port
 EXPOSE 8080
 
-# Expose WebRTC UDP ports (configurable via RTP_PORT_MIN/MAX)
+# Expose the default WebRTC UDP range. The server binds inside
+# VOICE_UDP_PORT_MIN/MAX; compose sets both from RTP_PORT_MIN/MAX and publishes
+# that range, which must be forwarded 1:1. Sizing: see
+# docs/admin-guide/configuration/environment.md.
 EXPOSE 10000-10100/udp
 
 # Health check

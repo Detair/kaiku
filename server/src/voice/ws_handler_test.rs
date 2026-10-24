@@ -12,6 +12,8 @@ mod tests {
 
     use crate::config::Config;
     use crate::ratelimit::{LimitConfig, RateLimitConfig, RateLimiter, RateLimits};
+    use crate::voice::leave::leave_voice_on_socket_close;
+    use crate::voice::sfu::StalePeer;
     use crate::voice::{error, sfu, ws_handler};
     use crate::ws::{ClientEvent, OutboundMsg, ServerEvent};
 
@@ -220,7 +222,7 @@ mod tests {
             enabled: true,
             redis_key_prefix: format!("test:vj:{}", uuid::Uuid::new_v4()),
             fail_open: false,
-            trust_proxy: false,
+            trusted_proxies: crate::ratelimit::TrustedProxies::default(),
             allowlist: HashSet::new(),
             limits: RateLimits {
                 voice_join: LimitConfig {
@@ -330,6 +332,255 @@ mod tests {
         let participants = room.get_participant_info().await;
         assert_eq!(participants.len(), 2);
 
+        Ok(())
+    }
+
+    /// Two users in one voice channel, each with its own socket queue.
+    struct TwoInRoom {
+        sfu: Arc<sfu::SfuServer>,
+        channel_id: Uuid,
+        guild_id: Uuid,
+        u1: Uuid,
+        u2: Uuid,
+        tx1: mpsc::Sender<OutboundMsg>,
+        tx2: mpsc::Sender<OutboundMsg>,
+        _rx1: mpsc::Receiver<OutboundMsg>,
+        rx2: mpsc::Receiver<OutboundMsg>,
+    }
+
+    async fn join(
+        sfu: &Arc<sfu::SfuServer>,
+        pool: &PgPool,
+        user_id: Uuid,
+        channel_id: Uuid,
+        tx: &mpsc::Sender<OutboundMsg>,
+    ) -> Result<(), error::VoiceError> {
+        ws_handler::handle_voice_event(
+            sfu,
+            pool,
+            user_id,
+            ClientEvent::VoiceJoin { channel_id },
+            tx,
+            None,
+        )
+        .await
+    }
+
+    async fn two_in_room(pool: &PgPool) -> Result<TwoInRoom, Box<dyn std::error::Error>> {
+        let u1 = create_test_user(pool, "ghost1", "Ghost One").await?;
+        let u2 = create_test_user(pool, "ghost2", "Ghost Two").await?;
+        let guild_id = create_test_guild_with_voice_permissions(pool, u1).await?;
+        add_user_to_guild(pool, guild_id, u2).await?;
+        let channel_id = create_test_channel(pool, "Ghost Test", guild_id).await?;
+        let sfu = Arc::new(sfu::SfuServer::new(
+            Arc::new(Config::default_for_test()),
+            None,
+        )?);
+        let (tx1, rx1) = mpsc::channel::<OutboundMsg>(32);
+        let (tx2, rx2) = mpsc::channel::<OutboundMsg>(32);
+        join(&sfu, pool, u1, channel_id, &tx1).await?;
+        join(&sfu, pool, u2, channel_id, &tx2).await?;
+        Ok(TwoInRoom {
+            sfu,
+            channel_id,
+            guild_id,
+            u1,
+            u2,
+            tx1,
+            tx2,
+            _rx1: rx1,
+            rx2,
+        })
+    }
+
+    fn drain(rx: &mut mpsc::Receiver<OutboundMsg>) -> Vec<ServerEvent> {
+        let mut events = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            if let OutboundMsg::Event(e) = msg {
+                events.push(e);
+            }
+        }
+        events
+    }
+
+    async fn peer_present(sfu: &sfu::SfuServer, channel_id: Uuid, user_id: Uuid) -> bool {
+        match sfu.get_room(channel_id).await {
+            Some(room) => room.get_peer(user_id).await.is_some(),
+            None => false,
+        }
+    }
+
+    #[sqlx::test]
+    async fn test_socket_close_removes_peer_and_notifies_room(
+        pool: PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut t = two_in_room(&pool).await?;
+        drain(&mut t.rx2);
+
+        leave_voice_on_socket_close(&t.sfu, &pool, t.u1, &t.tx1, None).await;
+
+        assert!(!peer_present(&t.sfu, t.channel_id, t.u1).await);
+        assert!(peer_present(&t.sfu, t.channel_id, t.u2).await);
+        let events = drain(&mut t.rx2);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                ServerEvent::VoiceUserLeft { user_id, channel_id }
+                    if *user_id == t.u1 && *channel_id == t.channel_id
+            )),
+            "remaining peer must be told the user left, got {events:?}"
+        );
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn test_leave_when_not_in_room_sends_no_user_left(
+        pool: PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut t = two_in_room(&pool).await?;
+        drain(&mut t._rx1);
+        drain(&mut t.rx2);
+
+        let outsider = Uuid::new_v4();
+        let removed = crate::voice::leave::leave_voice_internal(
+            &t.sfu,
+            &pool,
+            outsider,
+            t.channel_id,
+            None,
+            None,
+        )
+        .await?;
+
+        assert!(!removed);
+        assert!(peer_present(&t.sfu, t.channel_id, t.u1).await);
+        assert!(peer_present(&t.sfu, t.channel_id, t.u2).await);
+        for events in [drain(&mut t._rx1), drain(&mut t.rx2)] {
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, ServerEvent::VoiceUserLeft { .. })),
+                "no VoiceUserLeft expected, got {events:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn test_socket_close_only_removes_peer_owned_by_that_socket(
+        pool: PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let t = two_in_room(&pool).await?;
+        let (tx_other, _rx_other) = mpsc::channel::<OutboundMsg>(4);
+
+        // Another socket of the same user closing must not drop the call.
+        leave_voice_on_socket_close(&t.sfu, &pool, t.u1, &tx_other, None).await;
+        // A different user's socket queue never matches.
+        leave_voice_on_socket_close(&t.sfu, &pool, t.u1, &t.tx2, None).await;
+
+        assert!(peer_present(&t.sfu, t.channel_id, t.u1).await);
+        assert!(peer_present(&t.sfu, t.channel_id, t.u2).await);
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn test_leave_succeeds_after_access_revoked(
+        pool: PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let t = two_in_room(&pool).await?;
+        sqlx::query("DELETE FROM guild_member_roles WHERE guild_id = $1 AND user_id = $2")
+            .bind(t.guild_id)
+            .bind(t.u2)
+            .execute(&pool)
+            .await?;
+        sqlx::query("DELETE FROM guild_members WHERE guild_id = $1 AND user_id = $2")
+            .bind(t.guild_id)
+            .bind(t.u2)
+            .execute(&pool)
+            .await?;
+
+        ws_handler::handle_voice_event(
+            &t.sfu,
+            &pool,
+            t.u2,
+            ClientEvent::VoiceLeave {
+                channel_id: t.channel_id,
+            },
+            &t.tx2,
+            None,
+        )
+        .await?;
+
+        assert!(!peer_present(&t.sfu, t.channel_id, t.u2).await);
+        Ok(())
+    }
+
+    async fn wait_until_gone(sfu: &sfu::SfuServer, channel_id: Uuid, user_id: Uuid) -> bool {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            if !peer_present(sfu, channel_id, user_id).await {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[sqlx::test]
+    async fn test_reaper_removes_matching_session(
+        pool: PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let t = two_in_room(&pool).await?;
+        let reaper = t.sfu.spawn_stale_peer_reaper(pool.clone(), None);
+        let room = t.sfu.get_room(t.channel_id).await.expect("room exists");
+        let session_id = room.get_peer(t.u1).await.expect("peer").session_id;
+
+        t.sfu.stale_peer_sender().send(StalePeer {
+            user_id: t.u1,
+            channel_id: t.channel_id,
+            session_id,
+        })?;
+
+        assert!(
+            wait_until_gone(&t.sfu, t.channel_id, t.u1).await,
+            "reaper must remove the stale peer within 2s"
+        );
+        assert!(peer_present(&t.sfu, t.channel_id, t.u2).await);
+        reaper.abort();
+        Ok(())
+    }
+
+    #[sqlx::test]
+    async fn test_reaper_ignores_rejoined_session(
+        pool: PgPool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let t = two_in_room(&pool).await?;
+        let reaper = t.sfu.spawn_stale_peer_reaper(pool.clone(), None);
+        let room = t.sfu.get_room(t.channel_id).await.expect("room exists");
+        let old_session = room.get_peer(t.u1).await.expect("peer").session_id;
+
+        // u1 re-joins (e.g. after a network switch): a new session replaces the old one.
+        join(&t.sfu, &pool, t.u1, t.channel_id, &t.tx1).await?;
+        let new_session = room.get_peer(t.u1).await.expect("peer").session_id;
+        assert_ne!(old_session, new_session);
+
+        t.sfu.stale_peer_sender().send(StalePeer {
+            user_id: t.u1,
+            channel_id: t.channel_id,
+            session_id: old_session,
+        })?;
+        // Then a matching item for u2, so we know the reaper processed the queue.
+        let u2_session = room.get_peer(t.u2).await.expect("peer").session_id;
+        t.sfu.stale_peer_sender().send(StalePeer {
+            user_id: t.u2,
+            channel_id: t.channel_id,
+            session_id: u2_session,
+        })?;
+        assert!(wait_until_gone(&t.sfu, t.channel_id, t.u2).await);
+
+        let current = room.get_peer(t.u1).await.expect("rejoined peer must stay");
+        assert_eq!(current.session_id, new_session);
+        reaper.abort();
         Ok(())
     }
 }

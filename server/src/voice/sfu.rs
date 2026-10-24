@@ -3,10 +3,12 @@
 //! Manages voice rooms and WebRTC peer connections for real-time audio and video.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use sqlx::PgPool;
 use tokio::sync::{mpsc, RwLock};
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use vc_common::protocol::PcType;
@@ -15,6 +17,7 @@ use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
 use webrtc::api::{APIBuilder, API};
 use webrtc::ice::network_type::NetworkType;
+use webrtc::ice::udp_network::{EphemeralUDP, UDPNetwork};
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
@@ -29,13 +32,13 @@ use webrtc::rtp_transceiver::RTCPFeedback;
 use super::error::VoiceError;
 use super::peer::Peer;
 use super::rate_limit::{VoiceRateLimiter, VoiceStatsLimiter};
-use super::screen_share::ScreenShareInfo;
+use super::screen_share::{ScreenShareInfo, ScreenShareLimiter};
 use super::track::{spawn_rtp_forwarder, spawn_subscriber_remb_reader, TrackRouter};
 use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
-use crate::config::Config;
+use crate::config::{Config, IceIpFamily};
 use crate::ratelimit::{RateLimitCategory, RateLimiter};
-use crate::ws::handlers::send_outbound_within;
+use crate::ws::handlers::{send_outbound, send_outbound_within, OutboundSendError};
 use crate::ws::{OutboundMsg, ServerEvent};
 
 /// How long a send to *another* peer's socket may wait for room in its queue.
@@ -59,6 +62,21 @@ async fn fan_out(senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)>, event: &Server
         }
     });
     futures::future::join_all(sends).await;
+}
+
+/// How long a peer connection may stay `Failed` before the peer is removed
+/// from its room. Gives ICE restarts and brief network switches a chance.
+pub const PEER_FAILED_GRACE: Duration = Duration::from_secs(15);
+
+/// A peer whose connection failed and did not recover within
+/// [`PEER_FAILED_GRACE`]. Handled by the reaper from
+/// [`SfuServer::spawn_stale_peer_reaper`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StalePeer {
+    pub user_id: Uuid,
+    pub channel_id: Uuid,
+    /// Only this session is removed; a newer session of the same user stays.
+    pub session_id: Uuid,
 }
 
 /// Default maximum participants per room.
@@ -139,7 +157,30 @@ impl Room {
 
     /// Remove a peer from the room.
     pub async fn remove_peer(&self, user_id: Uuid) -> Option<Arc<Peer>> {
+        self.remove_peer_matching(user_id, None).await
+    }
+
+    /// Remove a peer only if it is still the given session. Check and removal
+    /// happen under one lock, so a newer session of the same user is never hit.
+    pub async fn remove_peer_if_session(
+        &self,
+        user_id: Uuid,
+        session_id: Uuid,
+    ) -> Option<Arc<Peer>> {
+        self.remove_peer_matching(user_id, Some(session_id)).await
+    }
+
+    async fn remove_peer_matching(
+        &self,
+        user_id: Uuid,
+        session_id: Option<Uuid>,
+    ) -> Option<Arc<Peer>> {
         let mut peers = self.peers.write().await;
+        if let Some(expected) = session_id {
+            if peers.get(&user_id).map(|p| p.session_id) != Some(expected) {
+                return None;
+            }
+        }
         let peer = peers.remove(&user_id);
 
         if peer.is_some() {
@@ -306,6 +347,81 @@ pub struct SfuServer {
     stats_limiter: Arc<VoiceStatsLimiter>,
     /// Per-peer, per-event-class token bucket limiter for voice signaling events.
     voice_rate_limiter: Arc<VoiceRateLimiter>,
+    /// Peers whose connection failed for longer than [`PEER_FAILED_GRACE`].
+    stale_tx: mpsc::UnboundedSender<StalePeer>,
+    /// Receiving end of `stale_tx`, taken once by the reaper.
+    stale_rx: Mutex<Option<mpsc::UnboundedReceiver<StalePeer>>>,
+}
+
+/// Result of combining `VOICE_ICE_IP_FAMILY` with `PUBLIC_IP`.
+#[derive(Debug, PartialEq, Eq)]
+struct IceNetworkPlan {
+    /// Network types to set on the `SettingEngine` (`None` = webrtc-ice default).
+    network_types: Option<Vec<NetworkType>>,
+    /// Whether NAT 1:1 mapping with `PUBLIC_IP` should be applied.
+    use_public_ip: bool,
+    /// `PUBLIC_IP` was set but its family is excluded by the family filter.
+    public_ip_ignored: bool,
+}
+
+/// Single place deciding family / `PUBLIC_IP` behaviour. A `PUBLIC_IP` of an
+/// excluded family is ignored; an unparseable one is kept (legacy behaviour).
+/// Without a family restriction, `PUBLIC_IP` keeps its previous effect of
+/// enabling both Udp4 and Udp6.
+fn ice_network_plan(family: IceIpFamily, public_ip: Option<&str>) -> IceNetworkPlan {
+    let ip_family_ok = public_ip.is_none_or(|ip| {
+        !matches!(
+            (ip.parse::<std::net::IpAddr>(), family),
+            (Ok(std::net::IpAddr::V4(_)), IceIpFamily::V6)
+                | (Ok(std::net::IpAddr::V6(_)), IceIpFamily::V4)
+        )
+    });
+    let network_types = match family {
+        IceIpFamily::V4 => Some(vec![NetworkType::Udp4]),
+        IceIpFamily::V6 => Some(vec![NetworkType::Udp6]),
+        IceIpFamily::Both if public_ip.is_some() => {
+            Some(vec![NetworkType::Udp4, NetworkType::Udp6])
+        }
+        IceIpFamily::Both => None,
+    };
+    IceNetworkPlan {
+        network_types,
+        use_public_ip: public_ip.is_some() && ip_family_ok,
+        public_ip_ignored: public_ip.is_some() && !ip_family_ok,
+    }
+}
+
+/// Configured interface names that do not exist on this host.
+fn unmatched_interface_names<'a>(allowed: &'a [String], available: &[&str]) -> Vec<&'a str> {
+    allowed
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !available.contains(name))
+        .collect()
+}
+
+/// Warn about configured interface names missing on this host, and when none of
+/// the allowed interface names exists on this host (a typo
+/// would otherwise yield zero ICE candidates and voice joins fail silently).
+fn warn_if_no_interface_matches(allowed: &[String]) {
+    match webrtc::util::ifaces::ifaces() {
+        Ok(found) => {
+            let mut names: Vec<&str> = found.iter().map(|i| i.name.as_str()).collect();
+            names.sort_unstable();
+            names.dedup();
+            for name in unmatched_interface_names(allowed, &names) {
+                warn!(interface = %name, available = ?names,
+                    "VOICE_ICE_INTERFACES entry matches no interface on this host");
+            }
+            if !found.iter().any(|i| allowed.contains(&i.name)) {
+                warn!(configured = ?allowed, available = ?names,
+                    "VOICE_ICE_INTERFACES matches no interface on this host; voice will have no ICE candidates");
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "could not list network interfaces to validate VOICE_ICE_INTERFACES");
+        }
+    }
 }
 
 impl SfuServer {
@@ -374,13 +490,37 @@ impl SfuServer {
 
         // Configure SettingEngine for NAT traversal behind Docker/VPS
         let mut setting_engine = SettingEngine::default();
-        if let Some(ref public_ip) = config.public_ip {
+        // Family / PUBLIC_IP interaction lives in `ice_network_plan`.
+        let plan = ice_network_plan(config.voice_ice_ip_family, config.public_ip.as_deref());
+        if plan.public_ip_ignored {
+            warn!(public_ip = ?config.public_ip, family = ?config.voice_ice_ip_family,
+                "PUBLIC_IP ignored: address family excluded by VOICE_ICE_IP_FAMILY");
+        }
+        if let Some(types) = plan.network_types {
+            setting_engine.set_network_types(types);
+        }
+        if let (true, Some(public_ip)) = (plan.use_public_ip, config.public_ip.as_deref()) {
             setting_engine.set_nat_1to1_ips(
-                vec![public_ip.clone()],
+                vec![public_ip.to_owned()],
                 webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType::Host,
             );
-            setting_engine.set_network_types(vec![NetworkType::Udp4, NetworkType::Udp6]);
             info!(public_ip = %public_ip, "SFU NAT 1:1 IP configured");
+        }
+
+        // Restrict ICE to the configured interfaces.
+        if let Some(allowed) = config.voice_ice_interfaces.clone() {
+            info!(interfaces = ?allowed, "SFU ICE interface filter configured");
+            warn_if_no_interface_matches(&allowed);
+            setting_engine
+                .set_interface_filter(Box::new(move |name| allowed.iter().any(|a| a == name)));
+        }
+
+        // Pin ICE/media to the configured UDP range (firewall-friendly).
+        if let (Some(min), Some(max)) = (config.voice_udp_port_min, config.voice_udp_port_max) {
+            let ephemeral = EphemeralUDP::new(min, max)
+                .map_err(|e| VoiceError::WebRtc(format!("invalid UDP port range: {e}")))?;
+            setting_engine.set_udp_network(UDPNetwork::Ephemeral(ephemeral));
+            info!(min, max, "SFU UDP port range configured");
         }
 
         // Build WebRTC API
@@ -392,6 +532,8 @@ impl SfuServer {
 
         info!("SFU server initialized");
 
+        let (stale_tx, stale_rx) = mpsc::unbounded_channel();
+
         Ok(Self {
             rooms: Arc::new(RwLock::new(HashMap::new())),
             api: Arc::new(api),
@@ -399,7 +541,85 @@ impl SfuServer {
             rate_limiter: rate_limiter.map(Arc::new),
             stats_limiter: Arc::new(VoiceStatsLimiter::default()),
             voice_rate_limiter: Arc::new(VoiceRateLimiter::new()),
+            stale_tx,
+            stale_rx: Mutex::new(Some(stale_rx)),
         })
+    }
+
+    /// Sender for reporting stale peers to the reaper.
+    #[must_use]
+    pub fn stale_peer_sender(&self) -> mpsc::UnboundedSender<StalePeer> {
+        self.stale_tx.clone()
+    }
+
+    /// Start the task that removes peers reported as stale (see
+    /// [`PEER_FAILED_GRACE`]). Call once after startup; later calls only log.
+    /// The task holds a weak reference, so it ends when the SFU is dropped.
+    pub fn spawn_stale_peer_reaper(
+        self: &Arc<Self>,
+        pool: PgPool,
+        limiter: Option<ScreenShareLimiter>,
+    ) -> JoinHandle<()> {
+        let rx = self
+            .stale_rx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let sfu = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let Some(mut rx) = rx else {
+                warn!("Stale voice peer reaper already running");
+                return;
+            };
+            while let Some(stale) = rx.recv().await {
+                let Some(sfu) = sfu.upgrade() else { break };
+                match super::leave::leave_voice_internal(
+                    &sfu,
+                    &pool,
+                    stale.user_id,
+                    stale.channel_id,
+                    limiter.as_ref(),
+                    Some(stale.session_id),
+                )
+                .await
+                {
+                    Ok(true) => info!(
+                        user_id = %stale.user_id,
+                        channel_id = %stale.channel_id,
+                        "Removed voice peer after failed connection"
+                    ),
+                    Ok(false) => debug!(
+                        user_id = %stale.user_id,
+                        session_id = %stale.session_id,
+                        "Stale voice peer already gone or replaced"
+                    ),
+                    Err(e) => warn!(
+                        user_id = %stale.user_id,
+                        channel_id = %stale.channel_id,
+                        error = %e,
+                        "Failed to remove stale voice peer"
+                    ),
+                }
+            }
+        })
+    }
+
+    /// Find the voice peer of `user_id` whose signaling queue is `tx`, i.e. the
+    /// peer that belongs to that WebSocket. Returns `(channel_id, session_id)`.
+    pub async fn find_peer_owned_by(
+        &self,
+        user_id: Uuid,
+        tx: &mpsc::Sender<OutboundMsg>,
+    ) -> Option<(Uuid, Uuid)> {
+        let rooms: Vec<Arc<Room>> = self.rooms.read().await.values().cloned().collect();
+        for room in rooms {
+            if let Some(peer) = room.get_peer(user_id).await {
+                if peer.signal_tx.same_channel(tx) {
+                    return Some((room.channel_id, peer.session_id));
+                }
+            }
+        }
+        None
     }
 
     /// Start background cleanup task for voice stats rate limiter.
@@ -523,8 +743,8 @@ impl SfuServer {
         ));
 
         // Set up connection state handlers for both PCs
-        Self::register_pc_state_handler(&publisher_pc, &peer, user_id, channel_id, "publisher");
-        Self::register_pc_state_handler(&subscriber_pc, &peer, user_id, channel_id, "subscriber");
+        Self::register_pc_state_handler(&publisher_pc, &peer, self.stale_tx.clone(), "publisher");
+        Self::register_pc_state_handler(&subscriber_pc, &peer, self.stale_tx.clone(), "subscriber");
 
         Ok(peer)
     }
@@ -790,16 +1010,27 @@ impl SfuServer {
     }
 
     /// Register a connection state change handler on a single `PeerConnection`.
+    ///
+    /// `Failed` starts a [`PEER_FAILED_GRACE`] timer; if the connection is
+    /// still `Failed` afterwards, the peer is reported to the stale-peer
+    /// reaper. `Disconnected` is only logged (it often recovers by itself).
+    /// The callback holds only weak references to the peer and the PC, so it
+    /// does not keep either alive.
     fn register_pc_state_handler(
         pc: &Arc<RTCPeerConnection>,
         peer: &Arc<Peer>,
-        user_id: Uuid,
-        channel_id: Uuid,
+        stale_tx: mpsc::UnboundedSender<StalePeer>,
         pc_label: &'static str,
     ) {
         let peer_weak = Arc::downgrade(peer);
+        let pc_weak = Arc::downgrade(pc);
+        let user_id = peer.user_id;
+        let channel_id = peer.channel_id;
+        let session_id = peer.session_id;
         pc.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
             let pw = peer_weak.clone();
+            let pcw = pc_weak.clone();
+            let stale_tx = stale_tx.clone();
             Box::pin(async move {
                 debug!(
                     user_id = %user_id,
@@ -809,12 +1040,23 @@ impl SfuServer {
                     "Peer connection state changed"
                 );
 
-                if matches!(
-                    state,
-                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Disconnected
-                ) && pw.upgrade().is_some()
-                {
-                    warn!(user_id = %user_id, pc = pc_label, "Peer connection failed/disconnected");
+                if pw.upgrade().is_none() {
+                    return;
+                }
+                match state {
+                    RTCPeerConnectionState::Failed => {
+                        warn!(user_id = %user_id, pc = pc_label, "Peer connection failed");
+                        let stale = StalePeer {
+                            user_id,
+                            channel_id,
+                            session_id,
+                        };
+                        tokio::spawn(report_if_still_failed(pw, pcw, stale_tx, stale, pc_label));
+                    }
+                    RTCPeerConnectionState::Disconnected => {
+                        warn!(user_id = %user_id, pc = pc_label, "Peer connection disconnected");
+                    }
+                    _ => {}
                 }
             })
         }));
@@ -843,25 +1085,42 @@ impl SfuServer {
         Ok(())
     }
 
-    /// Trigger renegotiation on the subscriber PC by creating a new offer
-    /// and sending it to the peer. Used after dynamically adding/removing tracks.
+    /// Trigger renegotiation on the subscriber PC of *another* peer by creating
+    /// a new offer and sending it to that peer. Used after dynamically
+    /// adding/removing tracks. Runs from the sender's socket loop, so the wait
+    /// is bounded by the short per-peer [`PEER_SIGNAL_SEND_TIMEOUT`].
     pub async fn renegotiate(peer: &Arc<Peer>) -> Result<(), VoiceError> {
+        let event = Self::create_subscriber_offer(peer).await?;
+        let sent = send_outbound_within(&peer.signal_tx, event, PEER_SIGNAL_SEND_TIMEOUT).await;
+        Self::check_offer_sent(peer, sent)
+    }
+
+    /// [`Self::renegotiate`] for the peer of the socket that is handling the
+    /// current event (e.g. the joiner's first subscriber offer). Uses the
+    /// socket's own full slow-client bound, so a briefly busy queue does not
+    /// drop the offer.
+    pub async fn renegotiate_own(peer: &Arc<Peer>) -> Result<(), VoiceError> {
+        let event = Self::create_subscriber_offer(peer).await?;
+        let sent = send_outbound(&peer.signal_tx, event).await;
+        Self::check_offer_sent(peer, sent)
+    }
+
+    async fn create_subscriber_offer(peer: &Arc<Peer>) -> Result<OutboundMsg, VoiceError> {
         let offer = peer.subscriber_pc.create_offer(None).await?;
         peer.subscriber_pc
             .set_local_description(offer.clone())
             .await?;
-        // Often called for *other* peers from the sender's socket loop, so the
-        // wait is bounded by the short per-peer timeout.
-        send_outbound_within(
-            &peer.signal_tx,
-            OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
-                channel_id: peer.channel_id,
-                sdp: offer.sdp,
-            }),
-            PEER_SIGNAL_SEND_TIMEOUT,
-        )
-        .await
-        .map_err(|e| {
+        Ok(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
+            channel_id: peer.channel_id,
+            sdp: offer.sdp,
+        }))
+    }
+
+    fn check_offer_sent(
+        peer: &Arc<Peer>,
+        sent: Result<(), OutboundSendError>,
+    ) -> Result<(), VoiceError> {
+        sent.map_err(|e| {
             tracing::error!(
                 user_id = %peer.user_id,
                 channel_id = %peer.channel_id,
@@ -922,6 +1181,36 @@ impl SfuServer {
     /// Get active room count.
     pub async fn room_count(&self) -> usize {
         self.rooms.read().await.len()
+    }
+}
+
+/// After [`PEER_FAILED_GRACE`], report the peer as stale if it still exists
+/// and this PC is still `Failed`.
+async fn report_if_still_failed(
+    peer: Weak<Peer>,
+    pc: Weak<RTCPeerConnection>,
+    stale_tx: mpsc::UnboundedSender<StalePeer>,
+    stale: StalePeer,
+    pc_label: &'static str,
+) {
+    tokio::time::sleep(PEER_FAILED_GRACE).await;
+    if peer.upgrade().is_none() {
+        return;
+    }
+    let still_failed = pc
+        .upgrade()
+        .is_some_and(|pc| pc.connection_state() == RTCPeerConnectionState::Failed);
+    if !still_failed {
+        return;
+    }
+    warn!(
+        user_id = %stale.user_id,
+        channel_id = %stale.channel_id,
+        pc = pc_label,
+        "Peer connection did not recover, removing peer"
+    );
+    if stale_tx.send(stale).is_err() {
+        warn!(user_id = %stale.user_id, "Stale voice peer reaper is not running");
     }
 }
 
@@ -987,5 +1276,237 @@ mod fan_out_tests {
         )
         .await;
         assert!(healthy_rx.try_recv().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod renegotiate_tests {
+    use super::*;
+
+    /// The joiner's own subscriber offer must survive a briefly busy queue:
+    /// it gets the full slow-client bound, not the short fan-out bound.
+    #[tokio::test]
+    async fn own_offer_waits_past_fan_out_timeout() {
+        let sfu = SfuServer::new(Arc::new(Config::default_for_test()), None).expect("sfu");
+        let (tx, mut rx) = mpsc::channel(1);
+        let peer = sfu
+            .create_peer(
+                Uuid::from_u128(1),
+                "joiner".into(),
+                "Joiner".into(),
+                Uuid::from_u128(2),
+                tx.clone(),
+            )
+            .await
+            .expect("peer");
+        tx.try_send(OutboundMsg::Ping).expect("fill queue");
+
+        // Drain the queue only after the fan-out bound has passed.
+        let drain = tokio::spawn(async move {
+            tokio::time::sleep(PEER_SIGNAL_SEND_TIMEOUT * 2).await;
+            assert!(matches!(rx.recv().await, Some(OutboundMsg::Ping)));
+            rx.recv().await
+        });
+
+        SfuServer::renegotiate_own(&peer)
+            .await
+            .expect("own offer must not be dropped by the fan-out bound");
+        assert!(matches!(
+            drain.await.expect("drain task"),
+            Some(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer { .. }))
+        ));
+        peer.close().await;
+    }
+}
+
+#[cfg(test)]
+mod udp_range_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sfu_candidates_use_configured_port_range() {
+        let mut config = Config::default_for_test();
+        config.voice_udp_port_min = Some(50000);
+        config.voice_udp_port_max = Some(50010);
+        let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
+
+        let pc = sfu
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("pc");
+        pc.create_data_channel("probe", None).await.expect("dc");
+        let offer = pc.create_offer(None).await.expect("offer");
+        let mut gathered = pc.gathering_complete_promise().await;
+        pc.set_local_description(offer).await.expect("local desc");
+        let _ = tokio::time::timeout(Duration::from_secs(10), gathered.recv()).await;
+
+        let sdp = pc.local_description().await.expect("local description").sdp;
+        let ports: Vec<u16> = sdp
+            .lines()
+            .filter_map(|l| l.strip_prefix("a=candidate:"))
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                (f.get(2).is_some_and(|p| p.eq_ignore_ascii_case("udp")))
+                    .then(|| f.get(5)?.parse().ok())
+                    .flatten()
+            })
+            .collect();
+        let _ = pc.close().await;
+        assert!(!ports.is_empty(), "no UDP host candidates gathered:\n{sdp}");
+        for p in ports {
+            assert!(
+                (50000..=50010).contains(&p),
+                "candidate port {p} outside range"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod ice_filter_tests {
+    use super::*;
+
+    /// Gather host candidate IPs for an SFU built from `config`.
+    async fn gather_ips(config: Config) -> Vec<std::net::IpAddr> {
+        let sfu = SfuServer::new(Arc::new(config), None).expect("sfu");
+        let pc = sfu
+            .api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .expect("pc");
+        pc.create_data_channel("probe", None).await.expect("dc");
+        let offer = pc.create_offer(None).await.expect("offer");
+        let mut gathered = pc.gathering_complete_promise().await;
+        pc.set_local_description(offer).await.expect("local desc");
+        let _ = tokio::time::timeout(Duration::from_secs(10), gathered.recv()).await;
+        let sdp = pc.local_description().await.expect("desc").sdp;
+        let _ = pc.close().await;
+        sdp.lines()
+            .filter_map(|l| l.strip_prefix("a=candidate:"))
+            .filter_map(|l| l.split_whitespace().nth(4)?.parse().ok())
+            .collect()
+    }
+
+    /// Does the host have a non-loopback address of the given family?
+    async fn has_family(v6: bool) -> bool {
+        webrtc::util::vnet::net::Net::new(None)
+            .get_interfaces()
+            .await
+            .iter()
+            .flat_map(|i| i.addrs().iter().map(|a| a.addr()))
+            .any(|a| !a.is_loopback() && a.is_ipv6() == v6)
+    }
+
+    #[tokio::test]
+    async fn sfu_candidates_respect_ip_family() {
+        let mut config = Config::default_for_test();
+        config.voice_ice_ip_family = IceIpFamily::V4;
+        let ips = gather_ips(config).await;
+        if has_family(false).await {
+            assert!(!ips.is_empty(), "host has IPv4 but no candidates gathered");
+        } else {
+            eprintln!("SKIP non-empty v4 assertion: host has no non-loopback IPv4");
+        }
+        assert!(ips.iter().all(std::net::IpAddr::is_ipv4), "{ips:?}");
+
+        // Opposite family: nothing of the excluded family may appear (on a
+        // host without global IPv6 this also yields no candidates at all).
+        let mut config = Config::default_for_test();
+        config.voice_ice_ip_family = IceIpFamily::V6;
+        let ips = gather_ips(config).await;
+        assert!(ips.iter().all(std::net::IpAddr::is_ipv6), "{ips:?}");
+    }
+
+    /// Approach: loopback is suppressed by webrtc-ice, so pick a real
+    /// interface from the host (the first one that has a non-loopback IPv4
+    /// address) and assert all candidate IPs belong to it; a nonexistent
+    /// name must yield no host candidates.
+    #[tokio::test]
+    async fn sfu_candidates_respect_interface_filter() {
+        let ifaces = webrtc::util::vnet::net::Net::new(None)
+            .get_interfaces()
+            .await;
+        let Some(chosen) = ifaces.iter().find(|i| {
+            i.addrs()
+                .iter()
+                .any(|a| a.addr().is_ipv4() && !a.addr().is_loopback())
+        }) else {
+            eprintln!("SKIP: host has no non-loopback IPv4 interface");
+            return;
+        };
+        let own: Vec<std::net::IpAddr> = chosen.addrs().iter().map(|a| a.addr()).collect();
+
+        let mut config = Config::default_for_test();
+        config.voice_ice_interfaces = Some(vec![chosen.name().to_owned()]);
+        let ips = gather_ips(config).await;
+        assert!(!ips.is_empty(), "expected candidates on {}", chosen.name());
+        assert!(
+            ips.iter().all(|ip| own.contains(ip)),
+            "{ips:?} not in {own:?}"
+        );
+
+        let mut config = Config::default_for_test();
+        config.voice_ice_interfaces = Some(vec!["no-such-if0".to_owned()]);
+        let ips = gather_ips(config).await;
+        assert!(ips.is_empty(), "{ips:?}");
+    }
+
+    #[test]
+    fn unmatched_interface_names_lists_each_missing_name() {
+        let allowed = vec!["eth0".to_string(), "typo0".to_string(), "wg9".to_string()];
+        assert_eq!(
+            unmatched_interface_names(&allowed, &["eth0", "lo"]),
+            vec!["typo0", "wg9"]
+        );
+        assert!(unmatched_interface_names(&allowed, &["eth0", "typo0", "wg9"]).is_empty());
+    }
+
+    #[test]
+    fn network_plan_covers_family_and_public_ip() {
+        use NetworkType::{Udp4, Udp6};
+        let v4 = Some("203.0.113.5");
+        let v6 = Some("2001:db8::1");
+        let plan = |t: Option<Vec<NetworkType>>, use_ip, ign| IceNetworkPlan {
+            network_types: t,
+            use_public_ip: use_ip,
+            public_ip_ignored: ign,
+        };
+        // Both
+        assert_eq!(
+            ice_network_plan(IceIpFamily::Both, None),
+            plan(None, false, false)
+        );
+        let both = Some(vec![Udp4, Udp6]);
+        assert_eq!(
+            ice_network_plan(IceIpFamily::Both, v4),
+            plan(both.clone(), true, false)
+        );
+        assert_eq!(
+            ice_network_plan(IceIpFamily::Both, v6),
+            plan(both, true, false)
+        );
+        // V4
+        let t4 = Some(vec![Udp4]);
+        assert_eq!(
+            ice_network_plan(IceIpFamily::V4, None),
+            plan(t4.clone(), false, false)
+        );
+        assert_eq!(
+            ice_network_plan(IceIpFamily::V4, v4),
+            plan(t4.clone(), true, false)
+        );
+        assert_eq!(ice_network_plan(IceIpFamily::V4, v6), plan(t4, false, true));
+        // V6
+        let t6 = Some(vec![Udp6]);
+        assert_eq!(
+            ice_network_plan(IceIpFamily::V6, None),
+            plan(t6.clone(), false, false)
+        );
+        assert_eq!(
+            ice_network_plan(IceIpFamily::V6, v6),
+            plan(t6.clone(), true, false)
+        );
+        assert_eq!(ice_network_plan(IceIpFamily::V6, v4), plan(t6, false, true));
     }
 }

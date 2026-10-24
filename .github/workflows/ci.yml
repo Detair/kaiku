@@ -83,6 +83,12 @@ jobs:
       - name: Validate release version consistency
         run: python3 scripts/release_version.py check
 
+      - name: Validate compose hardening
+        run: python3 scripts/check_compose_hardening.py
+
+      - name: Test ops scripts
+        run: bash infra/scripts/tests/run.sh
+
   # ===========================================================================
   # Rust Tests (with database services)
   # ===========================================================================

@@ -105,7 +105,7 @@ async fn dispatch(state: &AppState, user_id: Uuid, signal: &WakeSignal) -> Resul
     .await?;
 
     for sub in subs {
-        let delivery = send_one(&state.http_client, &sub, signal).await;
+        let delivery = send_one(&sub, signal).await;
         match delivery {
             Delivery::Gone => {
                 let _ = sqlx::query("DELETE FROM push_subscriptions WHERE id = $1")
@@ -128,13 +128,11 @@ async fn dispatch(state: &AppState, user_id: Uuid, signal: &WakeSignal) -> Resul
 
 /// Send to one subscription, dispatching on its provider. New providers (FCM,
 /// APNs) add a match arm here.
-async fn send_one(
-    client: &reqwest::Client,
-    sub: &PushSubscription,
-    signal: &WakeSignal,
-) -> Delivery {
+async fn send_one(sub: &PushSubscription, signal: &WakeSignal) -> Delivery {
+    // Any new provider arm (e.g. FCM) must validate its endpoint the same way
+    // (https only, SSRF guard, pinned client) before sending.
     match sub.provider.as_str() {
-        "unifiedpush" => send_unifiedpush(client, &sub.endpoint, signal).await,
+        "unifiedpush" => send_unifiedpush(&sub.endpoint, signal).await,
         other => {
             tracing::warn!(provider = %other, "unknown push provider; skipping");
             Delivery::Failed
@@ -142,22 +140,40 @@ async fn send_one(
     }
 }
 
+fn endpoint_is_https(endpoint: &str) -> bool {
+    reqwest::Url::parse(endpoint).is_ok_and(|u| u.scheme() == "https")
+}
+
 /// `UnifiedPush`: POST the content-free JSON to the distributor endpoint. The
 /// endpoint is user-supplied, so it goes through the SSRF guard (private-IP /
 /// DNS-rebind protection) before the request — identical to webhook delivery.
-async fn send_unifiedpush(
-    client: &reqwest::Client,
-    endpoint: &str,
-    signal: &WakeSignal,
-) -> Delivery {
-    // SSRF guard: reject internal/private targets.
-    if crate::webhooks::ssrf::verify_resolved_ip(endpoint)
-        .await
-        .is_err()
-    {
-        tracing::warn!("push endpoint blocked by SSRF guard");
-        return Delivery::Failed;
+async fn send_unifiedpush(endpoint: &str, signal: &WakeSignal) -> Delivery {
+    // Legacy rows may hold plain-http endpoints; never deliver to them and let
+    // the caller prune the subscription.
+    if !endpoint_is_https(endpoint) {
+        tracing::warn!("push endpoint is not https; dropping subscription");
+        return Delivery::Gone;
     }
+    // SSRF guard: reject internal/private targets and connect only to the
+    // address that passed validation; redirects are never followed.
+    let verified = match crate::webhooks::ssrf::verify_resolved_ip(endpoint).await {
+        Ok(v) => v,
+        Err(crate::webhooks::ssrf::SsrfError::Blocked(_)) => {
+            // Malformed or private/reserved target: it will never become valid,
+            // so let the caller prune the subscription.
+            tracing::warn!("push endpoint blocked by SSRF guard; dropping subscription");
+            return Delivery::Gone;
+        }
+        Err(crate::webhooks::ssrf::SsrfError::Resolution(_)) => {
+            tracing::warn!("push endpoint could not be resolved; will retry later");
+            return Delivery::Failed;
+        }
+    };
+    let Ok(client) =
+        crate::webhooks::ssrf::pinned_client(&verified, std::time::Duration::from_secs(10))
+    else {
+        return Delivery::Failed;
+    };
 
     let body = match serde_json::to_vec(signal) {
         Ok(b) => b,
@@ -174,6 +190,9 @@ async fn send_unifiedpush(
             let status = resp.status();
             if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
                 Delivery::Gone
+            } else if status.is_redirection() {
+                tracing::warn!("push endpoint answered with a redirect; not followed");
+                Delivery::Failed
             } else if status.is_success() {
                 Delivery::Sent
             } else {
@@ -249,6 +268,20 @@ pub async fn create_subscription(
     body.validate()
         .map_err(|e| PushError::Validation(crate::validation::format_validation_errors(&e)))?;
 
+    // Only providers that `send_one` can deliver to are accepted.
+    if body.provider != "unifiedpush" {
+        return Err(PushError::Validation("unsupported push provider".into()));
+    }
+    let parsed = reqwest::Url::parse(&body.endpoint)
+        .map_err(|_| PushError::Validation("endpoint must be a valid URL".into()))?;
+    if parsed.scheme() != "https" {
+        return Err(PushError::Validation("endpoint must use https".into()));
+    }
+    match parsed.host_str() {
+        Some(h) if !crate::webhooks::ssrf::is_blocked_host(h) => {}
+        _ => return Err(PushError::Validation("endpoint host is not allowed".into())),
+    }
+
     let sub: PushSubscription = sqlx::query_as(
         "INSERT INTO push_subscriptions (user_id, provider, endpoint, public_key, auth_key, device_label)
          VALUES ($1, $2, $3, $4, $5, $6)
@@ -315,6 +348,35 @@ pub fn router() -> axum::Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn non_https_endpoint_is_gone() {
+        let sig = WakeSignal::dm(Uuid::nil(), 1);
+        assert!(matches!(
+            send_unifiedpush("http://push.example/x", &sig).await,
+            Delivery::Gone
+        ));
+        assert!(matches!(
+            send_unifiedpush("not a url", &sig).await,
+            Delivery::Gone
+        ));
+    }
+
+    #[tokio::test]
+    async fn private_endpoint_is_gone() {
+        let sig = WakeSignal::dm(Uuid::nil(), 1);
+        for ep in [
+            "https://127.0.0.1/x",
+            "https://10.0.0.5/x",
+            "https://[::1]/x",
+            "https://[ff02::1]/x",
+        ] {
+            assert!(
+                matches!(send_unifiedpush(ep, &sig).await, Delivery::Gone),
+                "{ep} must be pruned"
+            );
+        }
+    }
 
     #[test]
     fn wake_signal_is_content_free() {

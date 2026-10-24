@@ -39,7 +39,7 @@ async fn create_rate_limited_app(
         enabled: true,
         redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
         fail_open: false,
-        trust_proxy: false,
+        trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
         allowlist: HashSet::new(),
         limits,
     };

@@ -69,29 +69,37 @@ if [ -z "$latest_backup" ]; then
     fail "no postgres backup found in $BACKUP_DIR — run infra/scripts/backup.sh first"
 else
     age_hours=$(( ($(date +%s) - $(stat -c %Y "$latest_backup")) / 3600 ))
-    if [ "$age_hours" -lt "$MAX_BACKUP_AGE_HOURS" ] && gzip -t "$latest_backup" 2>/dev/null; then
-        pass "latest backup ${age_hours}h old, gzip intact ($(basename "$latest_backup"))"
+    if [ "$age_hours" -lt "$MAX_BACKUP_AGE_HOURS" ] && gzip -t "$latest_backup" 2>/dev/null \
+        && grep -q "PostgreSQL database dump complete" <<<"$(zcat "$latest_backup" | tail -n 5)"; then
+        pass "latest backup ${age_hours}h old, gzip intact, dump complete ($(basename "$latest_backup"))"
     else
-        fail "latest backup is ${age_hours}h old or corrupt — take a fresh one before upgrading"
+        fail "latest backup is ${age_hours}h old, corrupt or incomplete — take a fresh one before upgrading"
     fi
 fi
 
 # --- 5. Pending migrations (informational gate) --------------------------------
 echo "[5/6] Migration delta (repo vs database)"
-repo_migrations=$(find "$MIGRATIONS_DIR" -name '*.sql' 2>/dev/null | wc -l)
-db_migrations=$(docker exec "$PG" psql -U voicechat -d voicechat -tAc \
-    "SELECT count(*) FROM _sqlx_migrations" 2>/dev/null || echo "?")
-if [ "$db_migrations" = "?" ]; then
-    fail "could not read _sqlx_migrations from the database"
-elif [ "$repo_migrations" -lt "$db_migrations" ]; then
-    fail "repo has FEWER migrations ($repo_migrations) than the DB ($db_migrations) — checkout is older than the running data; git pull first"
-else
-    pending=$((repo_migrations - db_migrations))
-    pass "$pending pending migration(s) will apply on server start ($db_migrations applied, $repo_migrations in repo)"
-    if [ "$pending" -gt 0 ]; then
-        echo "    NOTE: there are NO down-migrations — rollback after a migration"
-        echo "    means restoring the database from backup (see the playbook)."
+# Compare versions (numeric filename prefixes vs _sqlx_migrations.version),
+# not counts: a renamed or missing migration must not hide behind equal totals.
+repo_versions=$(find "$MIGRATIONS_DIR" -maxdepth 1 -name '*.sql' -printf '%f\n' 2>/dev/null \
+    | sed -n 's/^\([0-9][0-9]*\)_.*/\1/p' | sed 's/^0*\([0-9]\)/\1/' | sort -u)
+if db_versions=$(docker exec "$PG" sh -c \
+    'PGPASSWORD="$POSTGRESQL_PASSWORD" psql -U "$POSTGRESQL_USERNAME" -d "$POSTGRESQL_DATABASE" -tAc "SELECT version FROM _sqlx_migrations"' 2>/dev/null); then
+    db_versions=$(printf '%s\n' "$db_versions" | sed '/^$/d' | sort -u)
+    unknown=$(comm -13 <(printf '%s\n' "$repo_versions") <(printf '%s\n' "$db_versions") | sed '/^$/d')
+    pending=$(comm -23 <(printf '%s\n' "$repo_versions") <(printf '%s\n' "$db_versions") | sed '/^$/d')
+    if [ -n "$unknown" ]; then
+        fail "database has migration version(s) missing from the repo ($(echo "$unknown" | tr '\n' ' ')) — checkout is older than the running data; git pull first"
+    else
+        pending_count=$(printf '%s' "$pending" | grep -c . || true)
+        pass "$pending_count pending migration(s) will apply on server start"
+        if [ "$pending_count" -gt 0 ]; then
+            echo "    NOTE: there are NO down-migrations — rollback after a migration"
+            echo "    means restoring the database from backup (see the playbook)."
+        fi
     fi
+else
+    fail "could not read _sqlx_migrations from the database"
 fi
 
 # --- 6. Compose config + rollback reference -------------------------------------
@@ -101,7 +109,14 @@ if (cd "$COMPOSE_DIR" && docker compose config -q 2>/dev/null); then
 else
     fail "docker compose config is invalid — fix before deploying"
 fi
-current_image=$(docker inspect --format '{{index .RepoDigests 0}}' canis-server 2>/dev/null || echo "unknown")
+server_image=$(docker inspect -f '{{.Config.Image}}' canis-server 2>/dev/null || true)
+current_image=""
+if [ -n "$server_image" ]; then
+    current_image=$(docker image inspect --format '{{index .RepoDigests 0}}' "$server_image" 2>/dev/null || true)
+    # Locally built images have no RepoDigests: fall back to the image id.
+    [ -n "$current_image" ] || current_image=$(docker image inspect --format '{{.Id}}' "$server_image" 2>/dev/null || true)
+fi
+[ -n "$current_image" ] || current_image="unknown"
 echo "    Current server image (pin this for rollback): $current_image"
 
 echo

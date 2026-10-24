@@ -59,11 +59,8 @@ async fn main() -> Result<()> {
     let redis_webhook = db::create_redis_client(&config.redis_url).await?;
 
     // Initialize S3 client (optional - file uploads will be disabled if not configured)
-    // Skip initialization if S3 credentials aren't available (Config fields or env vars)
-    let has_s3_credentials = (config.s3_access_key.is_some() && config.s3_secret_key.is_some())
-        || (std::env::var("AWS_ACCESS_KEY_ID").is_ok()
-            && std::env::var("AWS_SECRET_ACCESS_KEY").is_ok());
-    let s3 = if has_s3_credentials {
+    // Skip initialization if S3 credentials aren't configured (blank = unset)
+    let s3 = if config.has_s3_credentials() {
         match chat::S3Client::new(&config) {
             Ok(client) => {
                 // Verify bucket access
@@ -387,6 +384,11 @@ async fn main() -> Result<()> {
             .expect("Failed to create HTTP client"),
     });
 
+    // Remove voice peers whose connection failed and did not recover.
+    let stale_peer_reaper_handle = state
+        .sfu
+        .spawn_stale_peer_reaper(state.db.clone(), state.screen_share_limiter.clone());
+
     // Build router
     let app = api::create_router(state);
 
@@ -417,6 +419,7 @@ async fn main() -> Result<()> {
 
     // 1. Abort non-draining background tasks
     voice_cleanup_handle.abort();
+    stale_peer_reaper_handle.abort();
     db_cleanup_handle.abort();
     webhook_worker_handle.abort();
     rtp_flush_handle.abort();
@@ -424,6 +427,7 @@ async fn main() -> Result<()> {
     voice_health_handle.abort();
     custom_status_sweep_handle.abort();
     let _ = voice_cleanup_handle.await;
+    let _ = stale_peer_reaper_handle.await;
     let _ = db_cleanup_handle.await;
     let _ = webhook_worker_handle.await;
     let _ = rtp_flush_handle.await;

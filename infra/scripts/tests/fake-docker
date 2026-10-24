@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Test shim for `docker`: records argv and emulates the Bitnami Postgres
+# container's `exec ... sh -c '<cmd>'` just enough for the ops-script tests.
+#   FAKE_DOCKER_LOG   file that receives one line per invocation
+#   FAKE_DOCKER_MODE  "fail" => print nothing, exit 1 for `exec`
+set -u
+[ -n "${FAKE_DOCKER_LOG:-}" ] && echo "$*" >> "$FAKE_DOCKER_LOG"
+
+case "${1:-}" in
+    exec)
+        # Find the `sh -c <cmd>` part; the command must authenticate and must
+        # reference the variable literally (expanded inside the container).
+        shift
+        cmd=""
+        while [ $# -gt 0 ]; do
+            if [ "$1" = "sh" ] && [ "${2:-}" = "-c" ]; then
+                cmd="${3:-}"
+                break
+            fi
+            shift
+        done
+        case "$cmd" in
+            *PGPASSWORD=*'$POSTGRESQL_PASSWORD'*) ;;
+            *)
+                echo "fake-docker: exec without PGPASSWORD=\$POSTGRESQL_PASSWORD (cmd: '$cmd')" >&2
+                exit 2
+                ;;
+        esac
+        if [ "${FAKE_DOCKER_MODE:-ok}" = "fail" ]; then
+            exit 1
+        fi
+        if [ "${FAKE_DOCKER_MODE:-ok}" = "truncated" ]; then
+            printf -- '-- PostgreSQL database dump\n\nSELECT 1;\n'
+            exit 0
+        fi
+        case "$cmd" in
+            *pg_dump*)
+                # Real pg_dump output: the marker is followed by more lines.
+                printf -- '-- PostgreSQL database dump\n\nSELECT 1;\n\n--\n-- PostgreSQL database dump complete\n--\n\n'
+                ;;
+            *_sqlx_migrations*)
+                printf '%s\n' ${FAKE_DOCKER_MIGRATIONS:-1 2}
+                ;;
+        esac
+        ;;
+    volume) exit 1 ;;
+    inspect) echo "fake-container" ;;
+    image) echo "fake-image" ;;
+    *) ;;
+esac

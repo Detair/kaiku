@@ -196,37 +196,12 @@ pub async fn unblock_ip(&self, ip: &str) -> Result<(), RateLimitError> {
 
 **Challenge**: Clients behind proxies/load balancers have proxy IP, not real client IP.
 
-**Header Priority** (in `ip.rs`):
-1. `X-Forwarded-For` — Comma-separated list, take last (rightmost) IP (appended by trusted proxy)
-2. `X-Real-IP` — Single IP from proxy
-3. `Forwarded` — RFC 7239 standard header (parse `for=` parameter)
-4. Connection remote address (fallback, may be proxy)
+**Trust rule** (in `ip.rs`, `extract_client_ip(headers, connect_info, &TrustedProxies)`):
+1. If the TCP peer is not in `RATE_LIMIT_TRUSTED_PROXIES` (default: empty), forwarded headers are ignored and the peer IP is used.
+2. Otherwise all `X-Forwarded-For` values are walked right-to-left, skipping trusted proxies; the first untrusted IP is the client. An unparseable entry (e.g. `ip:port`, garbage) or non-text header value ends the walk.
+3. Then `X-Real-IP` (peer is trusted), then the peer IP.
 
-**Extraction Logic**:
-```rust
-pub fn extract_client_ip(headers: &HeaderMap) -> Option<String> {
-    // Try X-Forwarded-For (take last/rightmost IP — appended by closest trusted proxy)
-    if let Some(xff) = headers.get("x-forwarded-for") {
-        if let Ok(value) = xff.to_str() {
-            if let Some(last_ip) = value.rsplit(',').next() {
-                return Some(last_ip.trim().to_string());
-            }
-        }
-    }
-
-    // Try X-Real-IP
-    if let Some(xri) = headers.get("x-real-ip") {
-        if let Ok(value) = xri.to_str() {
-            return Some(value.to_string());
-        }
-    }
-
-    // No headers found
-    None
-}
-```
-
-**Security Warning**: If running behind untrusted proxies, validate `X-Forwarded-For` to prevent IP spoofing. Use proxy/load balancer configuration to set trusted headers.
+`RATE_LIMIT_TRUST_PROXY` is deprecated: it only logs a startup warning and trusts nothing.
 
 ### Response Headers
 

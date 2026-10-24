@@ -26,8 +26,8 @@ variables marked "empty = unset".
 | `BIND_ADDRESS` | `0.0.0.0:8080` | Address and port the HTTP server listens on |
 | `KAIKU_ENV` | `production` | Deployment environment name |
 | `PUBLIC_BASE_URL` | unset (empty = unset) | Public base URL for absolute URLs handed to external services (webhook execute URLs); falls back to the request Host header |
-| `PUBLIC_IP` | unset (empty = unset) | Public IP advertised for voice (WebRTC) connections |
-| `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins |
+| `PUBLIC_IP` | unset (empty = unset) | Public IP advertised for voice (WebRTC) connections (NAT 1:1 mapping). Required when the server runs behind NAT or in a container so clients can reach the SFU. The advertised candidate port is the bound port (no port translation), so the firewall/NAT must forward the identical UDP port numbers 1:1, including the `VOICE_UDP_PORT_MIN`-`VOICE_UDP_PORT_MAX` range. A `PUBLIC_IP` of the family excluded by `VOICE_ICE_IP_FAMILY` is ignored (a warning is logged) |
+| `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. The desktop app origins `tauri://localhost`, `http://tauri.localhost` and `https://tauri.localhost` are added automatically to an explicit list |
 | `ENABLE_API_DOCS` | `false` in release builds | Serve the OpenAPI docs |
 | `ENABLE_GUILD_DISCOVERY` | `true` | Enable public guild discovery |
 | `GEOIP_API_URL` | `http://ip-api.com/json/{ip}?fields=city,country` | GeoIP lookup endpoint for session locations; `{ip}` is replaced |
@@ -106,6 +106,10 @@ Rate limiting also uses Valkey; see [rate-limiting.md](rate-limiting.md).
 | `TURN_CREDENTIAL` | unset | Static TURN credential |
 | `TURN_SHARED_SECRET` | unset | Shared secret for time-limited TURN credentials (coturn `use-auth-secret`) |
 | `TURN_CREDENTIAL_TTL` | `3600` | Lifetime of generated TURN credentials in seconds |
+| `VOICE_UDP_PORT_MIN` | unset (ephemeral ports) | Lowest UDP port the voice SFU may use for peer connections. Must be set together with `VOICE_UDP_PORT_MAX`; the server refuses to start if only one is set or if min > max. Open/forward this UDP range in your firewall. The shipped compose file sets it from `RTP_PORT_MIN` (default `10000`) |
+| `VOICE_UDP_PORT_MAX` | unset (ephemeral ports) | Highest UDP port of the range. Each port in the range serves peer connections. Size it generously: each participant uses two peer connections (publisher and subscriber), and the ICE stack binds one UDP socket per usable local interface address (IPv4/IPv6; more under hostNetwork) per connection. You need at least 2 × concurrent participants × local addresses, plus headroom. Example: 10 participants on a host with 2 addresses need at least 40 ports; 100 is a sensible choice. If the range is too small, joining voice fails under load. Ports must be 1-65535. The shipped compose file sets it from `RTP_PORT_MAX` (default `10100`) |
+| `VOICE_ICE_INTERFACES` | unset (all interfaces) | Comma-separated list of network interface names allowed for voice ICE candidates (e.g. the public interface, `eth0`). Names are exact and case-sensitive; a name that matches no interface on the host means no ICE candidates, so voice will fail (a warning is logged at startup). Other interfaces (VPN, container bridges) are not advertised to clients, and filtering also reduces the number of ports consumed from the `VOICE_UDP_PORT_MIN`-`VOICE_UDP_PORT_MAX` range |
+| `VOICE_ICE_IP_FAMILY` | `both` | IP family for voice ICE candidates: `v4`, `v6` or `both` (case-insensitive). Invalid values fail startup. Restricting the family also reduces ports consumed from the UDP range. If `PUBLIC_IP` is of the excluded family it is ignored (a warning is logged) |
 
 ## Observability
 
@@ -130,11 +134,7 @@ These are read outside `server/src/config.rs`:
 | `PUBLIC_URL` | unset | `auth/login.rs` | Public URL of the server; required for the OIDC browser login flow (callback is `$PUBLIC_URL/auth/oidc/callback`) |
 | `AWS_REGION` | `us-east-1` | `chat/s3.rs` | S3 region |
 | `DEPLOYMENT_ENVIRONMENT` | `local` | `observability/` | Environment label on telemetry |
+| `RATE_LIMIT_TRUSTED_PROXIES` | unset (trust none) | `ratelimit/config.rs` | Comma-separated CIDRs or bare IPs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted for rate limiting, e.g. `10.42.0.0/16` (k3s pod network) or your compose network subnet. Requests from other peers use the peer address. Invalid entries are skipped with a startup warning |
+| `RATE_LIMIT_TRUST_PROXY` | - | `ratelimit/config.rs` | **Deprecated, ignored.** Setting it to `true` logs a startup warning and trusts nothing; set `RATE_LIMIT_TRUSTED_PROXIES` instead |
 | `RATE_LIMIT_*` | see [rate-limiting.md](rate-limiting.md) | `ratelimit/config.rs` | Rate limiting |
 
-## Planned additions
-
-The server release plan adds `RATE_LIMIT_TRUSTED_PROXIES` (contract C9) and
-`VOICE_UDP_PORT_MIN` / `VOICE_UDP_PORT_MAX` (contract C13). The CI guardrail
-(`scripts/check_ci_guardrails.py`) fails when a variable read in `server/src/config.rs`
-is missing from this page, so those pull requests must document them here.

@@ -27,7 +27,7 @@ async fn create_test_limiter(redis: fred::clients::Client) -> RateLimiter {
         enabled: true,
         redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
         fail_open: false,
-        trust_proxy: false,
+        trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
         allowlist: HashSet::new(),
         limits: RateLimits {
             auth_login: LimitConfig {
@@ -212,7 +212,7 @@ async fn test_failed_auth_blocks_ip_after_threshold() {
         enabled: true,
         redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
         fail_open: false,
-        trust_proxy: false,
+        trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
         allowlist: HashSet::new(),
         limits: RateLimits {
             failed_auth: FailedAuthConfig {
@@ -287,7 +287,7 @@ async fn test_clear_failed_auth_removes_block() {
         enabled: true,
         redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
         fail_open: false,
-        trust_proxy: false,
+        trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
         allowlist: HashSet::new(),
         limits: RateLimits {
             failed_auth: FailedAuthConfig {
@@ -342,7 +342,7 @@ async fn test_allowlist_bypasses_rate_limiting() {
         enabled: true,
         redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
         fail_open: false,
-        trust_proxy: false,
+        trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
         allowlist: HashSet::from([allowlisted_ip.to_string()]),
         limits: RateLimits {
             auth_login: LimitConfig {
@@ -401,7 +401,7 @@ async fn test_allowlist_bypasses_failed_auth_blocking() {
         enabled: true,
         redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
         fail_open: false,
-        trust_proxy: false,
+        trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
         allowlist: HashSet::from([allowlisted_ip.to_string()]),
         limits: RateLimits {
             failed_auth: FailedAuthConfig {
@@ -528,7 +528,7 @@ async fn test_disabled_rate_limiter_allows_all() {
         enabled: false, // Disabled
         redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
         fail_open: false,
-        trust_proxy: false,
+        trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
         allowlist: HashSet::new(),
         limits: RateLimits {
             auth_login: LimitConfig {
@@ -589,7 +589,7 @@ async fn test_concurrent_requests_are_atomic() {
         enabled: true,
         redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
         fail_open: false,
-        trust_proxy: false,
+        trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
         allowlist: HashSet::new(),
         limits: RateLimits {
             auth_login: LimitConfig {
@@ -666,7 +666,7 @@ async fn test_concurrent_failed_auth_is_atomic() {
         enabled: true,
         redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
         fail_open: false,
-        trust_proxy: false,
+        trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
         allowlist: HashSet::new(),
         limits: RateLimits {
             failed_auth: FailedAuthConfig {

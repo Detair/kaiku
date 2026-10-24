@@ -166,6 +166,46 @@ impl TestApp {
         }
     }
 
+    /// Pool-injecting constructor with S3 configured against an endpoint
+    /// nothing listens on (`127.0.0.1:9`), so every object upload fails.
+    ///
+    /// Use this to exercise storage-failure paths without `RustFS`.
+    pub async fn with_pool_and_unreachable_s3(pool: PgPool) -> Self {
+        let mut config = Config::default_for_test();
+        config.s3_endpoint = Some("http://127.0.0.1:9".to_string());
+        config.s3_bucket = "unreachable".to_string();
+        config.s3_access_key = Some("dummy-access-key".to_string());
+        config.s3_secret_key = Some("dummy-secret-key".to_string());
+        let s3 = S3Client::new(&config).expect("Failed to create S3 client for test");
+
+        let redis = db::create_redis_client(&config.redis_url)
+            .await
+            .expect("Failed to connect to test Redis");
+        let sfu =
+            SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SfuServer");
+
+        let state = AppState::new(AppStateConfig {
+            db: pool.clone(),
+            redis,
+            config: config.clone(),
+            s3: Some(s3),
+            sfu,
+            rate_limiter: None,
+            screen_share_limiter: None,
+            email: None,
+            oidc_manager: None,
+            http_client: reqwest::Client::new(),
+        });
+        let router = create_router(state);
+        let config = Arc::new(config);
+
+        Self {
+            router,
+            pool,
+            config,
+        }
+    }
+
     /// Build an HTTP request with the given method and URI.
     pub fn request(method: Method, uri: &str) -> http::request::Builder {
         Request::builder().method(method).uri(uri)

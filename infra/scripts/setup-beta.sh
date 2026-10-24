@@ -129,7 +129,7 @@ if [[ "${SKIP_ENV:-0}" != "1" ]]; then
     rm -f "$JWT_PEM_FILE"
 
     MFA_ENCRYPTION_KEY=$(openssl rand -hex 32)
-    VALKEY_PASSWORD=$(openssl rand -base64 16)
+    VALKEY_PASSWORD=$(openssl rand -hex 24)
     GRAFANA_ADMIN_PASSWORD=$(openssl rand -base64 16)
     TURN_SHARED_SECRET=$(openssl rand -hex 32)
 

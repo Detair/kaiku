@@ -144,6 +144,20 @@ pub struct Config {
     /// advertise the reachable IP instead of the container-internal IP.
     pub public_ip: Option<String>,
 
+    /// Lowest UDP port the SFU may bind for ICE/media (`VOICE_UDP_PORT_MIN`).
+    /// Set together with `voice_udp_port_max`, or not at all (ephemeral ports).
+    pub voice_udp_port_min: Option<u16>,
+
+    /// Highest UDP port the SFU may bind for ICE/media (`VOICE_UDP_PORT_MAX`).
+    pub voice_udp_port_max: Option<u16>,
+
+    /// Allowed network interface names for ICE host candidates
+    /// (`VOICE_ICE_INTERFACES`). `None` = all interfaces.
+    pub voice_ice_interfaces: Option<Vec<String>>,
+
+    /// IP family used for ICE candidates (`VOICE_ICE_IP_FAMILY`, default both).
+    pub voice_ice_ip_family: IceIpFamily,
+
     /// Public base URL of this instance (e.g. "<https://kaiku.example.com>").
     /// Used to build absolute URLs handed to external services (incoming
     /// webhook execute URLs). Falls back to request Host headers when unset.
@@ -270,9 +284,59 @@ pub struct Config {
     pub geoip_api_url: Option<String>,
 }
 
+/// Origins presented by the Tauri desktop webview (per platform/webview
+/// flavour). They are added to every explicit CORS allow-list automatically.
+pub const TAURI_ORIGINS: [&str; 3] = [
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
+
 impl Config {
+    /// Whether object-storage credentials are configured.
+    ///
+    /// Blank values count as unset, so an empty `AWS_ACCESS_KEY_ID=` from a
+    /// compose template disables uploads instead of probing the default AWS
+    /// endpoint at startup.
+    #[must_use]
+    pub fn has_s3_credentials(&self) -> bool {
+        s3_credentials_present(self.s3_access_key.as_deref(), self.s3_secret_key.as_deref())
+    }
+
+    /// CORS origins the server actually allows.
+    ///
+    /// A wildcard configuration is returned unchanged (`["*"]`). An explicit
+    /// list is extended with [`TAURI_ORIGINS`] (deduplicated), so self-hosters
+    /// restricting origins do not have to know the desktop webview origins.
+    #[must_use]
+    pub fn effective_cors_origins(&self) -> Vec<String> {
+        if self.cors_allowed_origins.iter().any(|o| o == "*") {
+            return vec!["*".to_string()];
+        }
+        let mut origins: Vec<String> = Vec::new();
+        for origin in self
+            .cors_allowed_origins
+            .iter()
+            .map(String::as_str)
+            .chain(TAURI_ORIGINS)
+        {
+            if !origins.iter().any(|o| o == origin) {
+                origins.push(origin.to_string());
+            }
+        }
+        origins
+    }
+
     /// Load configuration from environment variables.
     pub fn from_env() -> Result<Self> {
+        let (voice_udp_port_min, voice_udp_port_max) = parse_voice_udp_port_range(
+            env_opt("VOICE_UDP_PORT_MIN").as_deref(),
+            env_opt("VOICE_UDP_PORT_MAX").as_deref(),
+        )?;
+        let voice_ice_interfaces =
+            parse_voice_ice_interfaces(env_opt("VOICE_ICE_INTERFACES").as_deref());
+        let voice_ice_ip_family =
+            parse_voice_ice_ip_family(env_opt("VOICE_ICE_IP_FAMILY").as_deref())?;
         let config = Self {
             bind_address: env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
             database_url: env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
@@ -333,6 +397,10 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3600),
             public_ip: env_opt("PUBLIC_IP"),
+            voice_udp_port_min,
+            voice_udp_port_max,
+            voice_ice_interfaces,
+            voice_ice_ip_family,
             public_base_url: env_opt("PUBLIC_BASE_URL"),
             mfa_encryption_key: env_opt("MFA_ENCRYPTION_KEY"),
             require_e2ee_setup: env::var("REQUIRE_E2EE_SETUP")
@@ -539,6 +607,10 @@ impl Config {
             turn_shared_secret: None,
             turn_credential_ttl: 3600,
             public_ip: None,
+            voice_udp_port_min: None,
+            voice_udp_port_max: None,
+            voice_ice_interfaces: None,
+            voice_ice_ip_family: IceIpFamily::Both,
             public_base_url: None,
             mfa_encryption_key: Some(TEST_MFA_ENCRYPTION_KEY.into()),
             require_e2ee_setup: false,
@@ -609,6 +681,172 @@ fn env_opt(name: &str) -> Option<String> {
     env::var(name).ok().filter(|v| !v.trim().is_empty())
 }
 
+/// IP family allowed for ICE candidates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IceIpFamily {
+    V4,
+    V6,
+    #[default]
+    Both,
+}
+
+/// Parse `VOICE_ICE_INTERFACES`: comma-separated names, trimmed, empty entries
+/// dropped; an empty list means unset (all interfaces).
+fn parse_voice_ice_interfaces(raw: Option<&str>) -> Option<Vec<String>> {
+    let names: Vec<String> = raw?
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
+/// Parse `VOICE_ICE_IP_FAMILY`: `v4` | `v6` | `both` (case-insensitive).
+fn parse_voice_ice_ip_family(raw: Option<&str>) -> Result<IceIpFamily> {
+    match raw.map(|v| v.trim().to_lowercase()).as_deref() {
+        None | Some("both") => Ok(IceIpFamily::Both),
+        Some("v4") => Ok(IceIpFamily::V4),
+        Some("v6") => Ok(IceIpFamily::V6),
+        Some(other) => anyhow::bail!(
+            "Invalid VOICE_ICE_IP_FAMILY value '{other}'. Must be one of: v4, v6, both"
+        ),
+    }
+}
+
+/// Both S3 credential halves present and non-blank.
+fn s3_credentials_present(access: Option<&str>, secret: Option<&str>) -> bool {
+    let present = |v: Option<&str>| v.is_some_and(|v| !v.trim().is_empty());
+    present(access) && present(secret)
+}
+
+#[cfg(test)]
+mod s3_credentials_tests {
+    use super::s3_credentials_present;
+
+    #[test]
+    fn blank_s3_credentials_count_as_unset() {
+        assert!(!s3_credentials_present(None, None));
+        assert!(!s3_credentials_present(Some(""), Some("")));
+        assert!(!s3_credentials_present(Some("  "), Some("secret")));
+        assert!(!s3_credentials_present(Some("key"), Some("")));
+        assert!(!s3_credentials_present(Some("key"), None));
+        assert!(s3_credentials_present(Some("key"), Some("secret")));
+    }
+}
+
+#[cfg(test)]
+mod voice_ice_filter_tests {
+    use super::*;
+
+    #[test]
+    fn interfaces_are_trimmed_and_empty_means_unset() {
+        assert_eq!(parse_voice_ice_interfaces(None), None);
+        assert_eq!(parse_voice_ice_interfaces(Some(" , ,")), None);
+        assert_eq!(
+            parse_voice_ice_interfaces(Some(" eth0, ,wt0 ")),
+            Some(vec!["eth0".to_string(), "wt0".to_string()])
+        );
+    }
+
+    #[test]
+    fn ip_family_parses_case_insensitively() {
+        assert_eq!(parse_voice_ice_ip_family(None).unwrap(), IceIpFamily::Both);
+        assert_eq!(
+            parse_voice_ice_ip_family(Some("V4")).unwrap(),
+            IceIpFamily::V4
+        );
+        assert_eq!(
+            parse_voice_ice_ip_family(Some("v6")).unwrap(),
+            IceIpFamily::V6
+        );
+        assert_eq!(
+            parse_voice_ice_ip_family(Some("Both")).unwrap(),
+            IceIpFamily::Both
+        );
+    }
+
+    #[test]
+    fn ip_family_rejects_invalid_value() {
+        let err = parse_voice_ice_ip_family(Some("ipv4"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("VOICE_ICE_IP_FAMILY") && err.contains("v4, v6, both"),
+            "{err}"
+        );
+    }
+}
+
+const VOICE_UDP_RANGE_ERROR: &str =
+    "VOICE_UDP_PORT_MIN and VOICE_UDP_PORT_MAX must be set together and min <= max";
+
+/// Parse the optional SFU UDP port range. Both bounds or neither; `min <= max`.
+/// Pure over its inputs so it is testable without touching process env.
+fn parse_voice_udp_port_range(
+    min: Option<&str>,
+    max: Option<&str>,
+) -> Result<(Option<u16>, Option<u16>)> {
+    match (min, max) {
+        (None, None) => Ok((None, None)),
+        (Some(min), Some(max)) => {
+            let min: u16 = min.trim().parse().context(VOICE_UDP_RANGE_ERROR)?;
+            let max: u16 = max.trim().parse().context(VOICE_UDP_RANGE_ERROR)?;
+            anyhow::ensure!(
+                min >= 1,
+                "{VOICE_UDP_RANGE_ERROR} (ports must be within 1-65535)"
+            );
+            anyhow::ensure!(min <= max, VOICE_UDP_RANGE_ERROR);
+            Ok((Some(min), Some(max)))
+        }
+        _ => anyhow::bail!(VOICE_UDP_RANGE_ERROR),
+    }
+}
+
+#[cfg(test)]
+mod voice_udp_range_tests {
+    use super::parse_voice_udp_port_range;
+
+    #[test]
+    fn config_rejects_half_set_udp_range() {
+        for (min, max) in [(Some("50000"), None), (None, Some("50010"))] {
+            let err = parse_voice_udp_port_range(min, max).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "VOICE_UDP_PORT_MIN and VOICE_UDP_PORT_MAX must be set together and min <= max"
+            );
+        }
+    }
+
+    #[test]
+    fn config_rejects_inverted_udp_range() {
+        let err = parse_voice_udp_port_range(Some("50010"), Some("50000")).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "VOICE_UDP_PORT_MIN and VOICE_UDP_PORT_MAX must be set together and min <= max"
+        );
+    }
+
+    #[test]
+    fn udp_range_rejects_port_zero() {
+        let err = parse_voice_udp_port_range(Some("0"), Some("50010")).unwrap_err();
+        assert!(err.to_string().contains("1-65535"), "{err}");
+        assert!(parse_voice_udp_port_range(Some("0"), Some("0")).is_err());
+    }
+
+    #[test]
+    fn udp_range_accepts_valid_and_unset() {
+        assert_eq!(
+            parse_voice_udp_port_range(None, None).unwrap(),
+            (None, None)
+        );
+        assert_eq!(
+            parse_voice_udp_port_range(Some("50000"), Some("50000")).unwrap(),
+            (Some(50000), Some(50000))
+        );
+    }
+}
+
 #[cfg(test)]
 mod env_opt_tests {
     use super::env_opt;
@@ -666,5 +904,37 @@ mod stun_sovereignty_tests {
             "stun:stun.l.google.com:19302",
             None,
         ));
+    }
+}
+
+#[cfg(test)]
+mod cors_origin_tests {
+    use super::{Config, TAURI_ORIGINS};
+
+    fn config_with(origins: &[&str]) -> Config {
+        let mut config = Config::default_for_test();
+        config.cors_allowed_origins = origins.iter().map(|o| (*o).to_string()).collect();
+        config
+    }
+
+    #[test]
+    fn effective_origins_add_tauri_to_explicit_list() {
+        let origins = config_with(&["https://a"]).effective_cors_origins();
+        assert!(origins.contains(&"https://a".to_string()));
+        for o in TAURI_ORIGINS {
+            assert!(origins.contains(&o.to_string()), "missing {o}");
+        }
+        assert_eq!(origins.len(), 1 + TAURI_ORIGINS.len());
+    }
+
+    #[test]
+    fn effective_origins_deduplicate_tauri_entries() {
+        let origins = config_with(&["tauri://localhost", "https://a"]).effective_cors_origins();
+        assert_eq!(origins.len(), 1 + TAURI_ORIGINS.len());
+    }
+
+    #[test]
+    fn effective_origins_keep_wildcard() {
+        assert_eq!(config_with(&["*"]).effective_cors_origins(), vec!["*"]);
     }
 }
