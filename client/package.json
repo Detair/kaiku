@@ -72,6 +72,7 @@
     "postcss": "^8.5.23",
     "uuid": "^11.1.1",
     "dompurify": "^3.4.17",
+    "katex": "^0.18.2",
     "undici": "^7.29.1",
     "@babel/core": "^7.29.6",
     "source-map-js": "^1.2.2",

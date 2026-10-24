@@ -68,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Updated the Markdown sanitizer, diagram renderer and UI runtime libraries to versions without known vulnerabilities; the frontend dependency audit now blocks CI on production advisories.
 - Accept RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5 timing variability) with a dated justification until the `elliptic-curve` 0.14 ecosystem lands in `dtls`, `jsonwebtoken` and `openidconnect`; Kaiku signs its own tokens with EdDSA and is not affected on that path
 - Update `tokio` 1.52.3 → 1.54.1 (RUSTSEC-2026-0386, unsound `AsyncFd::new`; lockfile-only), restoring the License Compliance / Security Audit checks to green
 - The self-hosting compose file now isolates the TURN server, requires a Valkey password, forwards the CORS allow-list and trusted-proxy settings, and passes storage credentials to the server.
