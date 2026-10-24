@@ -125,7 +125,7 @@ import {
   type ConnectionState,
   type ConnectionSupervisor,
 } from "./connection";
-import { isTauri } from "@/lib/tauri/common";
+import { isTauri, PASSWORD_CHANGE_REQUIRED_EVENT } from "@/lib/tauri/common";
 
 export type { ConnectionState } from "./connection";
 
@@ -163,9 +163,14 @@ let unlisteners: UnlistenFn[] = [];
 // registrations settle after a cleanup (or after a newer init, which cleans
 // up first) was superseded and must drop the handles it obtained.
 let listenerGeneration = 0;
-// Bumped by every `connect()`/`disconnect()`: a disconnect that settles after
-// a newer connect must not reset the state that connect established.
-let connectionGeneration = 0;
+// Two epochs, so that overlapping calls of the same kind never cancel each
+// other (a no-op `connect()` must not make the one that opened skip recovery):
+// - `disconnectEpoch`, bumped by `disconnect()`: a `connect()` whose open
+//   settles after a disconnect took over reports nothing and skips recovery.
+// - `connectEpoch`, bumped by `connect()`: a `disconnect()` whose close
+//   settles after a newer connect began must not reset that connect's state.
+let disconnectEpoch = 0;
+let connectEpoch = 0;
 
 // Typing debounce timers
 const typingTimers: Record<string, NodeJS.Timeout> = {};
@@ -849,6 +854,16 @@ export async function cleanupWebSocket(): Promise<void> {
   detachBrowserMessageHandler?.();
   detachBrowserMessageHandler = null;
 
+  // Resync state is per session: the next session's first `ready` must not
+  // be compared with this session's watermark, and its frames must not
+  // resolve this session's waiters. Dropped waiters still settle as "not
+  // arrived" on their own bounded timer (their cleanup is a no-op then).
+  resyncWatermark = null;
+  previousWatermark = null;
+  readyReceived = false;
+  readyWaiters = [];
+  subscribeAckWaiters.clear();
+
   // Clear typing timers
   for (const timer of Object.values(typingTimers)) {
     clearTimeout(timer);
@@ -1094,7 +1109,7 @@ async function handleNativeAuthRejected(): Promise<void> {
     console.warn("[WS] Account check after auth rejection failed:", err);
   }
   if (passwordChangePending) {
-    window.dispatchEvent(new CustomEvent("kaiku:password-change-required"));
+    window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_REQUIRED_EVENT));
     return;
   }
   // Clears the cached bearer and shares the dedupe flag with the other
@@ -1137,7 +1152,10 @@ export function canRetryConnectionNow(): boolean {
 export async function connect(): Promise<void> {
   // The supervisor opens the connection; in the browser it also keeps it
   // alive, natively it mirrors the Rust loop.
-  const generation = ++connectionGeneration;
+  // Mark that a connect began (a disconnect still closing must leave its
+  // state alone) and remember which disconnect it follows.
+  connectEpoch += 1;
+  const epoch = disconnectEpoch;
   try {
     setWsState({ error: null });
     if (!isTauri()) {
@@ -1147,9 +1165,10 @@ export async function connect(): Promise<void> {
       });
     }
     const opened = await getSupervisor().start();
-    // A disconnect (or another connect) took over while the open was in
-    // flight: that owner's state stands, this call reports nothing.
-    if (generation !== connectionGeneration) return;
+    // A disconnect took over while the open was in flight: its state
+    // stands, this call reports nothing. An overlapping connect does not
+    // count: it was a no-op (`start()` → false) and recovery stays here.
+    if (epoch !== disconnectEpoch) return;
     // Only after this call opened a fresh socket. When the supervisor was
     // already running (connected, or retrying) it owns recovery itself;
     // running it here would fake "connected" on a socket that isn't open.
@@ -1157,7 +1176,7 @@ export async function connect(): Promise<void> {
       await handleReconnect();
     }
   } catch (err) {
-    if (generation !== connectionGeneration) return;
+    if (epoch !== disconnectEpoch) return;
     // Status stays as the supervisor set it ("reconnecting": it retries).
     // Natively the first attempt's failure can arrive after a retry already
     // connected (ws:connected); don't show a stale error over a live socket.
@@ -1191,13 +1210,14 @@ export function waitForConnection(timeoutMs = 5000): Promise<boolean> {
  * Disconnect from the WebSocket server.
  */
 export async function disconnect(): Promise<void> {
-  const generation = ++connectionGeneration;
+  disconnectEpoch += 1;
+  const epoch = connectEpoch;
   try {
     supervisor?.stop();
     await tauri.wsDisconnect();
     // A newer connect established its own state while the close was in
     // flight: resetting it here would show that live socket as disconnected.
-    if (generation !== connectionGeneration) return;
+    if (epoch !== connectEpoch) return;
     detachBrowserMessageHandler?.();
     detachBrowserMessageHandler = null;
     setWsState({ status: "disconnected", subscribedChannels: new Set() });

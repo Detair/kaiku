@@ -344,6 +344,19 @@ describe("websocket store", () => {
     it("does not throw", async () => {
       await expect(cleanupWebSocket()).resolves.not.toThrow();
     });
+
+    it("a new session does not inherit the previous session's watermark", async () => {
+      await handleServerEvent({
+        type: "ready",
+        user_id: "a",
+        server_time: "2026-11-01T10:00:00Z",
+      });
+      expect(getResyncWatermark()).toBe("2026-11-01T10:00:00Z");
+
+      await cleanupWebSocket();
+
+      expect(getResyncWatermark()).toBeNull();
+    });
   });
 
   describe("refreshUnreadStateAfterReconnect", () => {
@@ -880,6 +893,42 @@ describe("websocket store", () => {
       await fire("ws:disconnected");
 
       expect(ws.wsState.status).toBe("disconnected");
+    });
+
+    it("two overlapping connect() calls after ws:disconnected recover the retained subscription once", async () => {
+      const { loadDMs } = await import("@/stores/dms");
+      vi.mocked(nativeTauri.wsSubscribe).mockResolvedValue(undefined);
+      vi.mocked(nativeTauri.wsConnect).mockResolvedValue(undefined);
+      await ws.connect();
+      await ws.subscribeChannel("c1");
+      await fire("ws:disconnected");
+      expect(ws.wsState.status).toBe("disconnected");
+      expect(ws.wsState.subscribedChannels.has("c1")).toBe(true);
+      vi.mocked(nativeTauri.wsSubscribe).mockClear();
+      vi.mocked(nativeTauri.wsConnect).mockClear();
+      vi.mocked(loadDMs).mockClear();
+
+      // The first call opens the socket; the second one overlaps it while
+      // the open is in flight (supervisor already opening → no-op).
+      let open!: () => void;
+      vi.mocked(nativeTauri.wsConnect).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          open = resolve;
+        }),
+      );
+      const first = ws.connect();
+      const second = ws.connect();
+      await second;
+      open();
+      await first;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(nativeTauri.wsConnect).toHaveBeenCalledTimes(1);
+      expect(nativeTauri.wsSubscribe).toHaveBeenCalledTimes(1);
+      expect(nativeTauri.wsSubscribe).toHaveBeenCalledWith("c1");
+      expect(loadDMs).toHaveBeenCalledTimes(1);
+      expect(ws.wsState.subscribedChannels.has("c1")).toBe(true);
+      expect(ws.isConnected()).toBe(true);
     });
 
     it("a late ws_connect failure after Rust reconnected leaves the live connection alone", async () => {
