@@ -103,6 +103,12 @@ function invalidateSessionServices(): void {
   servicesGeneration += 1;
 }
 
+/**
+ * Id of the newest `startSessionServices()` run; that run owns the services.
+ * A cancelled older run never tears down what a newer run started.
+ */
+let latestServicesRun = 0;
+
 /** Serializes teardowns, so a late one never interleaves with another. */
 let teardownChain: Promise<void> = Promise.resolve();
 
@@ -232,22 +238,32 @@ async function startSessionServices(
   options: { showWsError?: boolean } = {},
 ): Promise<void> {
   const { showWsError = true } = options;
+  // A late teardown from a cancelled run must not hit this one.
+  await teardownChain;
   const generation = servicesGeneration;
+  const run = ++latestServicesRun;
   // Cancelled (pending password change, logout, expiry) while a step ran:
-  // undo what this run started and stop. The canceller's own teardown may
-  // already have run before this step finished.
+  // undo what this run started, unless a newer run owns the services by
+  // now. The canceller's own teardown may have run before this step ended.
   const cancelled = async (): Promise<boolean> => {
     if (generation === servicesGeneration) return false;
-    await teardownSessionServices();
+    if (run === latestServicesRun) await teardownSessionServices();
     return true;
   };
 
-  // Initialize WebSocket listeners and presence in parallel (independent)
-  await Promise.all([initWebSocket(), initPresence()]);
+  // Initialize WebSocket listeners and presence in parallel (independent).
+  // allSettled: a rejection must not skip the cancellation check while the
+  // other init is still running.
+  const initResults = await Promise.allSettled([initWebSocket(), initPresence()]);
   if (await cancelled()) return;
+  const initFailure = initResults.find(
+    (r): r is PromiseRejectedResult => r.status === "rejected",
+  );
+  if (initFailure) throw initFailure.reason;
 
-  // Connect WebSocket and sync preferences in parallel (independent)
-  await Promise.all([
+  // Connect WebSocket and sync preferences in parallel (independent; both
+  // handle their own errors, so this never rejects)
+  await Promise.allSettled([
     wsConnect()
       .then(() => console.log("[Auth] WebSocket connected"))
       .catch((wsErr) => {
