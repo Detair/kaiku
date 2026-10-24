@@ -196,6 +196,8 @@ class TextChannelViewModel @Inject constructor(
 
     public override fun onCleared() {
         chatRepository.unsubscribeFromChannel(channelId)
+        guildRepository.clearActiveChannel(channelId)
+        dmRepository.clearActiveChannel(channelId)
         super.onCleared()
     }
 

@@ -9,6 +9,12 @@ import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.data.ws.WsJson
 import io.wolftown.kaiku.domain.model.DmConversation
+import io.wolftown.kaiku.domain.model.LastMessagePreview
+import io.wolftown.kaiku.domain.model.Message
+import io.wolftown.kaiku.domain.model.User
+import io.mockk.coVerify
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.encodeToJsonElement
 import io.wolftown.kaiku.testutil.Golden
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -105,5 +111,80 @@ class DmRepositoryTest {
         repository.loadDms()
 
         assertEquals(emptyList<String>(), repository.conversations.value.map { it.id })
+    }
+
+    private fun messageEvent(channelId: String, id: String, content: String) = ServerEvent.MessageNew(
+        channelId,
+        KaikuJson.encodeToJsonElement(
+            Message(
+                id = id,
+                channelId = channelId,
+                author = User(id = "u2", username = "bob", displayName = "Bob"),
+                content = content,
+                createdAt = "2026-10-24T10:00:00Z",
+            )
+        ) as JsonObject,
+    )
+
+    @Test
+    fun `message in an inactive DM increments unread and updates the preview`() = runTest {
+        coEvery { api.getDms() } returns listOf(
+            DmConversation(id = "dm-1", unreadCount = 1, lastMessage = LastMessagePreview("m0", "old")),
+            DmConversation(id = "dm-2"),
+        )
+        val repository = repository()
+        repository.loadDms()
+
+        events.emit(messageEvent("dm-1", "m1", "hello"))
+        runCurrent()
+
+        val dm = repository.conversations.value.first { it.id == "dm-1" }
+        assertEquals(2, dm.unreadCount)
+        assertEquals("m1", dm.lastMessage?.id)
+        assertEquals("hello", dm.lastMessage?.content)
+        assertEquals(0, repository.conversations.value.first { it.id == "dm-2" }.unreadCount)
+        coVerify(exactly = 0) { api.markAsRead(any(), any()) }
+    }
+
+    @Test
+    fun `message in the active DM marks read`() = runTest {
+        coEvery { api.getDms() } returns listOf(DmConversation(id = "dm-1"))
+        val repository = repository()
+        repository.loadDms()
+        repository.setActiveChannel("dm-1")
+
+        events.emit(messageEvent("dm-1", "m1", "hello"))
+        runCurrent()
+
+        val dm = repository.conversations.value.single()
+        assertEquals(0, dm.unreadCount)
+        assertEquals("m1", dm.lastMessage?.id)
+        coVerify(exactly = 1) { api.markAsRead("dm-1", "m1") }
+    }
+
+    @Test
+    fun `message in a channel that is not a DM is ignored`() = runTest {
+        coEvery { api.getDms() } returns listOf(DmConversation(id = "dm-1"))
+        val repository = repository()
+        repository.loadDms()
+
+        events.emit(messageEvent("guild-channel", "m1", "hello"))
+        runCurrent()
+
+        assertEquals(0, repository.conversations.value.single().unreadCount)
+    }
+
+    @Test
+    fun `leaving the active DM re-enables unread`() = runTest {
+        coEvery { api.getDms() } returns listOf(DmConversation(id = "dm-1"))
+        val repository = repository()
+        repository.loadDms()
+        repository.setActiveChannel("dm-1")
+        repository.clearActiveChannel("dm-1")
+
+        events.emit(messageEvent("dm-1", "m1", "hello"))
+        runCurrent()
+
+        assertEquals(1, repository.conversations.value.single().unreadCount)
     }
 }

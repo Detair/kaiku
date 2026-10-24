@@ -5,6 +5,9 @@ import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.di.ChatCoroutineScope
 import io.wolftown.kaiku.domain.model.DmConversation
+import io.wolftown.kaiku.domain.model.LastMessagePreview
+import io.wolftown.kaiku.domain.model.Message
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,9 +45,25 @@ class DmRepository @Inject constructor(
         // UNDISPATCHED: subscribe to the replay-0 SharedFlow before init returns.
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             webSocket.events.collect { event ->
-                if (event is ServerEvent.DmCreated) onDmCreated(event)
+                when (event) {
+                    is ServerEvent.DmCreated -> onDmCreated(event)
+                    is ServerEvent.MessageNew -> onMessageNew(event)
+                    else -> Unit
+                }
             }
         }
+    }
+
+    /** The DM the user has open; its new messages count as read. */
+    private val activeChannelId = MutableStateFlow<String?>(null)
+
+    fun setActiveChannel(channelId: String) {
+        activeChannelId.value = channelId
+    }
+
+    /** Resets the active DM only if it is still [channelId]. */
+    fun clearActiveChannel(channelId: String) {
+        activeChannelId.compareAndSet(channelId, null)
     }
 
     /** Sequence of dm_created events, and the position each live DM arrived at. */
@@ -81,6 +100,56 @@ class DmRepository @Inject constructor(
         _conversations.value = clearUnread(_conversations.value, channelId)
         // The server marks read up to a message id; with no message there is nothing to send.
         if (lastMessageId != null) dmApi.markAsRead(channelId, lastMessageId)
+    }
+
+    /**
+     * A message in a known DM updates its preview and raises its unread badge,
+     * unless that DM is open: then it is marked read instead. Messages for
+     * channels that are not DMs in the list are ignored.
+     */
+    private fun onMessageNew(event: ServerEvent.MessageNew) {
+        if (_conversations.value.none { it.id == event.channelId }) return
+        val message = try {
+            json.decodeFromJsonElement<Message>(event.message)
+        } catch (e: Exception) {
+            logger.warning("Failed to decode message_new payload (${e::class.simpleName})")
+            return
+        }
+        val preview = LastMessagePreview(
+            id = message.id,
+            content = message.content,
+            userId = message.author.id,
+            username = message.author.username,
+            createdAt = message.createdAt,
+        )
+        val active = event.channelId == activeChannelId.value
+        var duplicate = false
+        _conversations.update { current ->
+            current.map {
+                when {
+                    it.id != event.channelId -> it
+                    it.lastMessage?.id == message.id -> {
+                        duplicate = true
+                        it
+                    }
+                    else -> it.copy(
+                        lastMessage = preview,
+                        unreadCount = if (active) 0 else it.unreadCount + 1,
+                    )
+                }
+            }
+        }
+        if (active && !duplicate) {
+            scope.launch {
+                try {
+                    markAsRead(event.channelId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    logger.warning("Failed to mark DM read (${e::class.simpleName})")
+                }
+            }
+        }
     }
 
     private fun onDmCreated(event: ServerEvent.DmCreated) {

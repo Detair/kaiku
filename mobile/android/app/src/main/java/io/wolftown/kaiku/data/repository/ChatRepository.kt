@@ -197,6 +197,12 @@ class ChatRepository @Inject constructor(
             val known = previous.mapTo(HashSet()) { it.id }
             val added = page.items.mapTo(HashSet()) { it.id }.count { it !in known }
             repeat(added) { guildRepository.onMessageReceived(channelId) }
+            if (added > 0) {
+                // An open channel is marked read (debounced) instead of unread.
+                page.items.lastOrNull { it.id !in known }?.let {
+                    guildRepository.onActiveChannelMessage(channelId, it.id)
+                }
+            }
 
             // Follow the server's cursor, not the newest returned item: the
             // server computes `next_cursor` before filtering out messages of
@@ -390,6 +396,7 @@ class ChatRepository @Inject constructor(
             if (isNew) {
                 // Raise the unread badge for non-active channels.
                 guildRepository.onMessageReceived(event.channelId)
+                guildRepository.onActiveChannelMessage(event.channelId, message.id)
             }
         } catch (e: Exception) {
             logger.log(Level.WARNING, "Failed to deserialize MessageNew payload (${e::class.simpleName})")

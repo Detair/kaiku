@@ -2,20 +2,27 @@ package io.wolftown.kaiku.data.repository
 
 import io.wolftown.kaiku.data.api.ChannelApi
 import io.wolftown.kaiku.data.api.GuildApi
+import io.wolftown.kaiku.di.ChatCoroutineScope
 import io.wolftown.kaiku.domain.model.Category
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.Guild
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import java.util.logging.Logger
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class GuildRepository @Inject constructor(
     private val guildApi: GuildApi,
-    private val channelApi: ChannelApi
+    private val channelApi: ChannelApi,
+    @ChatCoroutineScope private val scope: CoroutineScope,
 ) {
     private val _guilds = MutableStateFlow<List<Guild>>(emptyList())
     val guilds: StateFlow<List<Guild>> = _guilds.asStateFlow()
@@ -68,13 +75,66 @@ class GuildRepository @Inject constructor(
     }
 
     /**
-     * Mark a channel as the active (open) one: clears its unread count and
-     * records it so incoming messages there don't re-raise the badge.
+     * Mark a channel as the active (open) one: clears its unread count,
+     * records it so incoming messages there don't re-raise the badge, and
+     * tells the server the channel is read up to its latest message.
      */
     fun setActiveChannel(channelId: String?) {
         _activeChannelId.value = channelId
         if (channelId != null) {
+            val channel = _channels.value.find { it.id == channelId }
             _channels.value = clearUnread(_channels.value, channelId)
+            val lastMessageId = channel?.lastMessageId
+            if (lastMessageId != null) scope.launch { sendRead(channelId, lastMessageId) }
+        }
+    }
+
+    /**
+     * The user left [channelId]. Resets the active channel only if it is still
+     * the active one (a newer channel may already have taken over), so later
+     * messages in [channelId] raise its unread badge again.
+     */
+    fun clearActiveChannel(channelId: String) {
+        _activeChannelId.compareAndSet(channelId, null)
+    }
+
+    /**
+     * A message arrived in (or was caught up for) [channelId]; [messageId] is
+     * the newest one. No-op unless the channel is open. Marks it read on the
+     * server, at most once per [READ_DEBOUNCE_MS], always with the newest id.
+     */
+    fun onActiveChannelMessage(channelId: String, messageId: String) {
+        if (channelId != _activeChannelId.value) return
+        synchronized(readLock) {
+            pendingReadId = messageId
+            pendingReadChannel = channelId
+            if (readJob?.isActive == true) return
+            readJob = scope.launch {
+                delay(READ_DEBOUNCE_MS)
+                val (channel, id) = synchronized(readLock) {
+                    val pair = pendingReadChannel to pendingReadId
+                    pendingReadId = null
+                    pendingReadChannel = null
+                    pair
+                }
+                if (channel != null && id != null) sendRead(channel, id)
+            }
+        }
+    }
+
+    private val readLock = Any()
+    private var readJob: Job? = null
+    private var pendingReadId: String? = null
+    private var pendingReadChannel: String? = null
+
+    /** Best effort: unread is corrected by the next channel reload if this fails. */
+    private suspend fun sendRead(channelId: String, lastMessageId: String) {
+        try {
+            channelApi.markAsRead(channelId, lastMessageId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warning("Failed to mark channel read (${e::class.simpleName})")
         }
     }
 
@@ -88,6 +148,11 @@ class GuildRepository @Inject constructor(
     }
 
     companion object {
+        private val logger = Logger.getLogger("GuildRepository")
+
+        /** Minimum gap between read marks sent for the open channel. */
+        const val READ_DEBOUNCE_MS = 1_000L
+
         /** Increment unread for one channel in the list (pure, testable). */
         fun incrementUnread(channels: List<Channel>, channelId: String): List<Channel> =
             channels.map {
