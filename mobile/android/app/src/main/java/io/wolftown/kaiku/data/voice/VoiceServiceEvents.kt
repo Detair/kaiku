@@ -10,6 +10,9 @@ import javax.inject.Singleton
 sealed class VoiceServiceEvent {
     data object MuteToggle : VoiceServiceEvent()
     data object Disconnect : VoiceServiceEvent()
+
+    /** The foreground service could not start (missing permission or not allowed). */
+    data object StartFailed : VoiceServiceEvent()
 }
 
 @Singleton

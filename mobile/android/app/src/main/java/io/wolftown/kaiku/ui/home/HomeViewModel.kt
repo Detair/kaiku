@@ -3,9 +3,12 @@ package io.wolftown.kaiku.ui.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
-import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.repository.GuildRepository
-import io.wolftown.kaiku.data.ws.KaikuWebSocket
+import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
+import io.wolftown.kaiku.data.ws.RealtimeStatus
+import io.wolftown.kaiku.domain.ChannelSection
+import io.wolftown.kaiku.domain.groupChannels
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.Guild
@@ -19,8 +22,7 @@ import javax.inject.Inject
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val guildRepository: GuildRepository,
-    private val webSocket: KaikuWebSocket,
-    private val tokenStorage: TokenStorage
+    realtimeConnectionManager: RealtimeConnectionManager
 ) : ViewModel() {
 
     companion object {
@@ -29,6 +31,9 @@ class HomeViewModel @Inject constructor(
 
     val guilds: StateFlow<List<Guild>> = guildRepository.guilds
 
+    /** Realtime connection state, for the reconnect banner. */
+    val connectionStatus: StateFlow<RealtimeStatus> = realtimeConnectionManager.status
+
     val selectedGuild: StateFlow<Guild?> = combine(
         guildRepository.guilds,
         guildRepository.selectedGuildId
@@ -36,16 +41,30 @@ class HomeViewModel @Inject constructor(
         guilds.find { it.id == selectedId }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    /** Channels for the selected guild, sorted by position. */
+    /**
+     * Channels for the selected server, sorted by position. Channel types this
+     * client does not know (forum, announcement, ...) and DMs are dropped here,
+     * so every consumer sees only channels it can open.
+     */
     val channels: StateFlow<List<Channel>> = guildRepository.channels
-        .map { list -> list.sortedBy { it.position } }
+        .map { list ->
+            list
+                .filter { it.channelType == ChannelType.TEXT || it.channelType == ChannelType.VOICE }
+                .sortedBy { it.position }
+        }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** [channels] grouped under their category headers. */
+    val sections: StateFlow<List<ChannelSection>> = combine(channels, guildRepository.categories) { list, categories ->
+        groupChannels(list, categories)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
+    /** `@StringRes` of the current load error, or null. */
+    private val _error = MutableStateFlow<Int?>(null)
+    val error: StateFlow<Int?> = _error.asStateFlow()
 
     /**
      * One-shot navigation event for channel selection.
@@ -55,19 +74,31 @@ class HomeViewModel @Inject constructor(
     val navigateToChannel = _navigateToChannel.receiveAsFlow()
 
     init {
-        connectWebSocket()
+        // The realtime connection is owned by RealtimeConnectionManager, started by KaikuApplication.
         loadGuilds()
     }
 
     fun onGuildSelected(guildId: String) {
         guildRepository.selectGuild(guildId)
+        loadChannels(guildId)
+    }
+
+    /** Retries whatever failed: the selected server's channels, else the server list. */
+    fun retry() {
+        val guildId = guildRepository.selectedGuildId.value
+        if (guildId != null) loadChannels(guildId) else loadGuilds()
+    }
+
+    private fun loadChannels(guildId: String) {
+        _error.value = null
         viewModelScope.launch {
             try {
                 guildRepository.loadChannels(guildId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _error.value = e.message ?: "Failed to load channels"
+                logger.warning("Failed to load channels: ${e.javaClass.simpleName}")
+                _error.value = R.string.home_channels_load_failed
             }
         }
     }
@@ -87,14 +118,6 @@ class HomeViewModel @Inject constructor(
         loadGuilds()
     }
 
-    private fun connectWebSocket() {
-        val serverUrl = tokenStorage.getServerUrl() ?: run {
-            logger.warning("Server URL not configured, cannot connect WebSocket")
-            return
-        }
-        webSocket.connect(serverUrl)
-    }
-
     private fun loadGuilds() {
         _isLoading.value = true
         _error.value = null
@@ -104,7 +127,8 @@ class HomeViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _error.value = e.message ?: "Failed to load guilds"
+                logger.warning("Failed to load servers: ${e.javaClass.simpleName}")
+                _error.value = R.string.home_servers_load_failed
             } finally {
                 _isLoading.value = false
             }

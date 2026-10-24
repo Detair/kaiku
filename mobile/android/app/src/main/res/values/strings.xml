@@ -1,4 +1,93 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Kaiku</string>
+
+    <!-- Common -->
+    <string name="common_back">Back</string>
+    <string name="common_retry">Retry</string>
+    <string name="common_error_generic">Something went wrong.</string>
+    <string name="common_avatar_description">%1$s\'s avatar</string>
+
+    <!-- Chat -->
+    <string name="chat_load_earlier">Load earlier messages</string>
+    <string name="chat_empty">No messages yet. Start the conversation!</string>
+    <string name="chat_message_encrypted_placeholder">This message is end-to-end encrypted and can\'t be shown on this device yet.</string>
+    <string name="chat_replying_to">Replying to a message</string>
+    <string name="chat_edited">(edited)</string>
+    <string name="chat_react">React</string>
+    <string name="chat_edit">Edit</string>
+    <string name="chat_delete">Delete</string>
+    <string name="chat_title_loading">Conversation</string>
+    <string name="chat_title_channel">#%1$s</string>
+    <string name="chat_message_placeholder_channel">Message #%1$s</string>
+    <string name="chat_message_placeholder_dm">Message %1$s</string>
+    <string name="chat_message_placeholder_loading">Message</string>
+    <string name="chat_send">Send message</string>
+    <string name="chat_typing_one">%1$s is typing…</string>
+    <string name="chat_typing_two">%1$s and %2$s are typing…</string>
+    <string name="chat_typing_many">Several people are typing…</string>
+    <string name="chat_send_failed">Couldn\'t send your message.</string>
+    <string name="chat_edit_failed">Couldn\'t edit your message.</string>
+    <string name="chat_delete_failed">Couldn\'t delete your message.</string>
+    <string name="chat_load_failed">Couldn\'t load messages.</string>
+    <string name="chat_reaction_failed">Couldn\'t update your reaction.</string>
+    <string name="chat_edit_title">Edit message</string>
+    <string name="chat_edit_save">Save</string>
+    <string name="chat_edit_cancel">Cancel</string>
+    <string name="chat_edit_label">Message</string>
+
+    <!-- Connection banner -->
+    <string name="connection_reconnecting">Reconnecting…</string>
+    <string name="connection_offline">You\'re offline</string>
+
+    <!-- Channel list -->
+    <string name="channel_prefix_text">#</string>
+    <string name="channel_prefix_voice">🔊</string>
+    <string name="channel_unread_overflow">99+</string>
+    <string name="channel_user_limit">/%1$d</string>
+
+    <!-- Direct messages -->
+    <string name="dm_title">Direct messages</string>
+    <string name="dm_empty">No direct messages yet</string>
+    <string name="dm_last_message_preview">%1$s: %2$s</string>
+    <string name="dm_unread_overflow">99+</string>
+    <string name="dm_load_failed">Couldn\'t load your direct messages.</string>
+
+    <!-- Home -->
+    <string name="home_open_servers">Open servers</string>
+    <string name="home_direct_messages">Direct messages</string>
+    <string name="home_refresh">Refresh</string>
+    <string name="home_settings">Settings</string>
+    <string name="home_select_server">Select a server to get started</string>
+    <string name="home_select_server_named">Select server %1$s</string>
+    <string name="home_open_server_list">Open server list</string>
+    <string name="home_no_servers">No servers yet</string>
+    <string name="home_servers_load_failed">Couldn\'t load your servers.</string>
+    <string name="home_channels_load_failed">Couldn\'t load this server\'s channels.</string>
+
+    <!-- Voice -->
+    <string name="voice_leave_and_go_back">Leave and go back</string>
+    <string name="voice_no_one_here">No one else is here yet</string>
+    <string name="voice_join">Join voice</string>
+    <string name="voice_muted">Muted</string>
+    <string name="voice_unknown_user">Unknown</string>
+    <string name="voice_disconnect">Disconnect</string>
+    <string name="voice_mute">Mute</string>
+    <string name="voice_in_channel">In voice channel</string>
+    <string name="voice_default_channel_name">Voice channel</string>
+    <string name="voice_notification_channel_name">Voice calls</string>
+    <string name="voice_notification_channel_description">Active voice call notifications</string>
+    <string name="voice_route_speaker">Speaker</string>
+    <string name="voice_route_earpiece">Earpiece</string>
+    <string name="voice_route_bluetooth">Bluetooth</string>
+    <string name="voice_route_wired_headset">Wired headset</string>
+    <string name="voice_permission_rationale">Kaiku needs microphone access so others can hear you in voice channels.</string>
+    <string name="voice_permission_continue">Continue</string>
+    <string name="voice_permission_needed">Microphone access is turned off. Allow it in the app settings to join voice channels.</string>
+    <string name="voice_permission_open_settings">Open settings</string>
+    <string name="voice_permission_try_again">Try again</string>
+    <string name="voice_mic_permission_required">Microphone access is required to join voice.</string>
+    <string name="voice_join_failed">Couldn\'t join the voice channel.</string>
+    <string name="voice_start_failed">Couldn\'t start the voice call. Check that Kaiku may use the microphone and run in the background.</string>
+    <string name="voice_connection_error">Voice connection problem.</string>
 </resources>

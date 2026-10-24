@@ -7,6 +7,7 @@ import dagger.hilt.components.SingletonComponent
 import io.ktor.client.*
 import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.api.KaikuHttpClient
+import io.wolftown.kaiku.data.auth.TokenRefresher
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import kotlinx.serialization.json.Json
@@ -35,6 +36,10 @@ object NetworkModule {
     ): KaikuHttpClient {
         return KaikuHttpClient(tokenStorage, authState, tls13Spec)
     }
+
+    @Provides
+    @Singleton
+    fun provideTokenRefresher(kaikuHttpClient: KaikuHttpClient): TokenRefresher = kaikuHttpClient
 
     @Provides
     @Singleton

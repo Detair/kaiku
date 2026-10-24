@@ -3,6 +3,7 @@ package io.wolftown.kaiku.ui.dm
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.repository.DmRepository
 import io.wolftown.kaiku.domain.model.DmConversation
@@ -37,8 +38,9 @@ class DmListViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
+    /** `@StringRes` of the current load error, or null. */
+    private val _error = MutableStateFlow<Int?>(null)
+    val error: StateFlow<Int?> = _error.asStateFlow()
 
     init {
         refresh()
@@ -53,7 +55,7 @@ class DmListViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _error.value = "Failed to load direct messages"
+                _error.value = R.string.dm_load_failed
                 logger.log(Level.WARNING, "Failed to load DMs", e)
             } finally {
                 _isLoading.value = false

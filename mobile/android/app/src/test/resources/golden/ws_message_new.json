@@ -1,0 +1,26 @@
+{
+  "channel_id": "00000000-0000-4000-8000-00000000c001",
+  "message": {
+    "attachments": [],
+    "author": {
+      "avatar_url": null,
+      "display_name": "Alice",
+      "id": "00000000-0000-4000-8000-00000000a001",
+      "status": "online",
+      "username": "alice"
+    },
+    "channel_id": "00000000-0000-4000-8000-00000000c001",
+    "content": "Hello from WebSocket!",
+    "created_at": "2026-03-12T10:02:00.500Z",
+    "edited_at": null,
+    "encrypted": false,
+    "id": "00000000-0000-4000-8000-00000000e003",
+    "message_type": "user",
+    "parent_id": null,
+    "pinned": false,
+    "reply_to": null,
+    "thread_last_reply_at": null,
+    "thread_reply_count": 0
+  },
+  "type": "message_new"
+}

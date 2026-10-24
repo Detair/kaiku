@@ -10,13 +10,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import io.wolftown.kaiku.R
 
 /**
  * Message composition area with typing indicators and send button.
  *
  * @param input Current message text
- * @param channelName Channel name shown in placeholder
+ * @param placeholder Hint shown while the input is empty
  * @param typingUsers Set of user display names currently typing
  * @param onInputChanged Callback when text changes
  * @param onSend Callback when the send button is pressed
@@ -24,7 +26,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun MessageInput(
     input: String,
-    channelName: String,
+    placeholder: String,
     typingUsers: Set<String>,
     onInputChanged: (String) -> Unit,
     onSend: () -> Unit,
@@ -38,7 +40,7 @@ fun MessageInput(
             exit = fadeOut()
         ) {
             Text(
-                text = formatTypingIndicator(typingUsers),
+                text = typingIndicatorText(typingUsers),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
@@ -58,7 +60,7 @@ fun MessageInput(
                 TextField(
                     value = input,
                     onValueChange = onInputChanged,
-                    placeholder = { Text("Message #$channelName") },
+                    placeholder = { Text(placeholder) },
                     modifier = Modifier.weight(1f),
                     singleLine = false,
                     maxLines = 5,
@@ -76,7 +78,7 @@ fun MessageInput(
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send message",
+                        contentDescription = stringResource(R.string.chat_send),
                         tint = if (input.isNotBlank()) {
                             MaterialTheme.colorScheme.primary
                         } else {
@@ -90,20 +92,19 @@ fun MessageInput(
 }
 
 /**
- * Formats typing indicator text from a set of usernames.
+ * Typing indicator text for a set of usernames.
  *
  * - 1 user: "Alice is typing..."
  * - 2 users: "Alice and Bob are typing..."
  * - 3+ users: "Several people are typing..."
  */
-private fun formatTypingIndicator(typingUsers: Set<String>): String {
-    return when (typingUsers.size) {
+@Composable
+private fun typingIndicatorText(typingUsers: Set<String>): String {
+    val users = typingUsers.toList()
+    return when (users.size) {
         0 -> ""
-        1 -> "${typingUsers.first()} is typing..."
-        2 -> {
-            val users = typingUsers.toList()
-            "${users[0]} and ${users[1]} are typing..."
-        }
-        else -> "Several people are typing..."
+        1 -> stringResource(R.string.chat_typing_one, users[0])
+        2 -> stringResource(R.string.chat_typing_two, users[0], users[1])
+        else -> stringResource(R.string.chat_typing_many)
     }
 }

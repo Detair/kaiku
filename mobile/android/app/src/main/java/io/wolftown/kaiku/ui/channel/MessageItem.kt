@@ -9,19 +9,24 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import io.wolftown.kaiku.R
+import io.wolftown.kaiku.domain.MessageBody
+import io.wolftown.kaiku.domain.messageDisplayContent
 import io.wolftown.kaiku.domain.model.Message
+import io.wolftown.kaiku.ui.shared.resolveServerUrl
 
 /**
  * Displays a single chat message with author info, content, and metadata.
  *
  * Features:
  * - Author avatar (circular, loaded via Coil) + display name + timestamp
- * - Message content
+ * - Message content (or a placeholder for end-to-end encrypted messages)
  * - "(edited)" indicator when editedAt is not null
  * - Reply-to indicator when replyTo is not null
  * - Long-press context menu for Edit/Delete/React actions
@@ -50,7 +55,7 @@ fun MessageItem(
         // Reply indicator
         if (message.replyTo != null) {
             Text(
-                text = "Replying to a message",
+                text = stringResource(R.string.chat_replying_to),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(start = 48.dp, bottom = 2.dp)
@@ -63,8 +68,11 @@ fun MessageItem(
         ) {
             // Avatar
             AsyncImage(
-                model = message.author.avatarUrl,
-                contentDescription = "${message.author.displayName}'s avatar",
+                model = resolveServerUrl(message.author.avatarUrl),
+                contentDescription = stringResource(
+                    R.string.common_avatar_description,
+                    message.author.displayName
+                ),
                 modifier = Modifier
                     .size(36.dp)
                     .clip(CircleShape)
@@ -99,12 +107,21 @@ fun MessageItem(
                 }
 
                 // Message content (inline markdown: bold/italic/strike/code/spoiler)
-                CompositionLocalProvider(
-                    LocalTextStyle provides MaterialTheme.typography.bodyMedium.copy(
-                        color = MaterialTheme.colorScheme.onSurface,
+                when (val body = messageDisplayContent(message)) {
+                    is MessageBody.Text -> CompositionLocalProvider(
+                        LocalTextStyle provides MaterialTheme.typography.bodyMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    ) {
+                        MessageContent(content = body.markdown)
+                    }
+
+                    MessageBody.EncryptedPlaceholder -> Text(
+                        text = stringResource(R.string.chat_message_encrypted_placeholder),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontStyle = FontStyle.Italic,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                ) {
-                    MessageContent(content = message.content)
                 }
 
                 // Attachments (image thumbnails + file chips)
@@ -113,7 +130,7 @@ fun MessageItem(
                 // Edited indicator
                 if (message.editedAt != null) {
                     Text(
-                        text = "(edited)",
+                        text = stringResource(R.string.chat_edited),
                         style = MaterialTheme.typography.labelSmall,
                         fontStyle = FontStyle.Italic,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -129,7 +146,7 @@ fun MessageItem(
             onDismissRequest = { showContextMenu = false }
         ) {
             DropdownMenuItem(
-                text = { Text("React") },
+                text = { Text(stringResource(R.string.chat_react)) },
                 onClick = {
                     showContextMenu = false
                     onReact(message.id)
@@ -137,14 +154,14 @@ fun MessageItem(
             )
             if (isOwnMessage) {
                 DropdownMenuItem(
-                    text = { Text("Edit") },
+                    text = { Text(stringResource(R.string.chat_edit)) },
                     onClick = {
                         showContextMenu = false
                         onEdit(message.id)
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Delete") },
+                    text = { Text(stringResource(R.string.chat_delete)) },
                     onClick = {
                         showContextMenu = false
                         onDelete(message.id)

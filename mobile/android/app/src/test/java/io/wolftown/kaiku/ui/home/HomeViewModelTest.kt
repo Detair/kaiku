@@ -2,9 +2,11 @@ package io.wolftown.kaiku.ui.home
 
 import app.cash.turbine.test
 import io.mockk.*
-import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.repository.GuildRepository
-import io.wolftown.kaiku.data.ws.KaikuWebSocket
+import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
+import io.wolftown.kaiku.data.ws.RealtimeStatus
+import io.wolftown.kaiku.domain.model.Category
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.Guild
@@ -21,15 +23,16 @@ import org.junit.Test
 class HomeViewModelTest {
 
     private lateinit var guildRepository: GuildRepository
-    private lateinit var webSocket: KaikuWebSocket
-    private lateinit var tokenStorage: TokenStorage
     private lateinit var viewModel: HomeViewModel
+    private lateinit var realtimeManager: RealtimeConnectionManager
+    private val statusFlow = MutableStateFlow(RealtimeStatus.Connected)
 
     private val testDispatcher = StandardTestDispatcher()
 
     private val guildsFlow = MutableStateFlow<List<Guild>>(emptyList())
     private val selectedGuildIdFlow = MutableStateFlow<String?>(null)
     private val channelsFlow = MutableStateFlow<List<Channel>>(emptyList())
+    private val categoriesFlow = MutableStateFlow<List<Category>>(emptyList())
 
     private val sampleGuilds = listOf(
         Guild(id = "guild-1", name = "Guild One", memberCount = 10),
@@ -46,12 +49,12 @@ class HomeViewModelTest {
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
         guildRepository = mockk(relaxed = true)
-        webSocket = mockk(relaxed = true)
-        tokenStorage = mockk(relaxed = true)
+        realtimeManager = mockk(relaxed = true)
+        every { realtimeManager.status } returns statusFlow
         every { guildRepository.guilds } returns guildsFlow
         every { guildRepository.selectedGuildId } returns selectedGuildIdFlow
         every { guildRepository.channels } returns channelsFlow
-        every { tokenStorage.getServerUrl() } returns "https://example.com"
+        every { guildRepository.categories } returns categoriesFlow
     }
 
     @After
@@ -69,7 +72,7 @@ class HomeViewModelTest {
             guildsFlow.value = sampleGuilds
         }
 
-        viewModel = HomeViewModel(guildRepository, webSocket, tokenStorage)
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
         advanceUntilIdle()
 
         coVerify { guildRepository.loadGuilds() }
@@ -92,7 +95,7 @@ class HomeViewModelTest {
             selectedGuildIdFlow.value = "guild-1"
         }
 
-        viewModel = HomeViewModel(guildRepository, webSocket, tokenStorage)
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
         advanceUntilIdle()
 
         viewModel.onGuildSelected("guild-1")
@@ -124,7 +127,7 @@ class HomeViewModelTest {
             selectedGuildIdFlow.value = "guild-1"
         }
 
-        viewModel = HomeViewModel(guildRepository, webSocket, tokenStorage)
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
         advanceUntilIdle()
 
         viewModel.onGuildSelected("guild-1")
@@ -147,7 +150,7 @@ class HomeViewModelTest {
             guildsFlow.value = sampleGuilds
         }
 
-        viewModel = HomeViewModel(guildRepository, webSocket, tokenStorage)
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
 
         viewModel.isLoading.test {
             // Initial loading state should be true (loading started in init)
@@ -172,11 +175,11 @@ class HomeViewModelTest {
     fun `error state on API failure`() = runTest {
         coEvery { guildRepository.loadGuilds() } throws RuntimeException("Network error")
 
-        viewModel = HomeViewModel(guildRepository, webSocket, tokenStorage)
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
         advanceUntilIdle()
 
         assertNotNull(viewModel.error.value)
-        assertEquals("Network error", viewModel.error.value)
+        assertEquals(R.string.home_servers_load_failed, viewModel.error.value)
         assertFalse(viewModel.isLoading.value)
     }
 
@@ -194,7 +197,7 @@ class HomeViewModelTest {
             selectedGuildIdFlow.value = "guild-2"
         }
 
-        viewModel = HomeViewModel(guildRepository, webSocket, tokenStorage)
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
         advanceUntilIdle()
 
         assertNull(viewModel.selectedGuild.value)
@@ -215,7 +218,7 @@ class HomeViewModelTest {
             guildsFlow.value = sampleGuilds
         }
 
-        viewModel = HomeViewModel(guildRepository, webSocket, tokenStorage)
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
         advanceUntilIdle()
 
         viewModel.refresh()
@@ -241,7 +244,7 @@ class HomeViewModelTest {
             }
         }
 
-        viewModel = HomeViewModel(guildRepository, webSocket, tokenStorage)
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
         advanceUntilIdle()
 
         assertNotNull(viewModel.error.value)
@@ -251,5 +254,71 @@ class HomeViewModelTest {
 
         assertNull(viewModel.error.value)
         assertEquals(sampleGuilds, viewModel.guilds.value)
+    }
+
+    // ========================================================================
+    // 9. Unknown channel types are hidden (C5)
+    // ========================================================================
+
+    @Test
+    fun `unknown channel types are hidden from channel list`() = runTest {
+        coEvery { guildRepository.loadGuilds() } just Runs
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        advanceUntilIdle()
+
+        channelsFlow.value = listOf(
+            Channel(id = "t", name = "general", channelType = ChannelType.TEXT, position = 0),
+            Channel(id = "f", name = "ideas", channelType = ChannelType.UNKNOWN, position = 1),
+            Channel(id = "v", name = "lounge", channelType = ChannelType.VOICE, position = 2),
+            Channel(id = "d", name = "dm", channelType = ChannelType.DM, position = 3),
+        )
+        advanceUntilIdle()
+
+        assertEquals(listOf("t", "v"), viewModel.channels.value.map { it.id })
+    }
+
+    // ========================================================================
+    // 10. Channel load error is shown when guilds exist
+    // ========================================================================
+
+    @Test
+    fun `channel load error is exposed when guilds exist`() = runTest {
+        guildsFlow.value = sampleGuilds
+        coEvery { guildRepository.loadGuilds() } just Runs
+        coEvery { guildRepository.loadChannels("guild-1") } throws RuntimeException("boom")
+
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        advanceUntilIdle()
+        viewModel.onGuildSelected("guild-1")
+        advanceUntilIdle()
+
+        assertEquals(R.string.home_channels_load_failed, viewModel.error.value)
+        assertTrue(viewModel.guilds.value.isNotEmpty())
+    }
+
+    @Test
+    fun `sections group filtered channels under category names`() = runTest {
+        categoriesFlow.value = listOf(Category(id = "cat-1", name = "News"))
+        channelsFlow.value = sampleChannels + Channel(
+            id = "ch-dm", name = "dm", channelType = ChannelType.DM, position = 9
+        )
+
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        advanceUntilIdle()
+
+        val sections = viewModel.sections.value
+        assertEquals(listOf<String?>(null, "News"), sections.map { it.title })
+        assertEquals(listOf("ch-2", "ch-1"), sections[0].channels.map { it.id })
+        assertEquals(listOf("ch-3"), sections[1].channels.map { it.id })
+    }
+
+    @Test
+    fun `connection status mirrors realtime manager`() = runTest {
+        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        advanceUntilIdle()
+        assertEquals(RealtimeStatus.Connected, viewModel.connectionStatus.value)
+
+        statusFlow.value = RealtimeStatus.Offline
+        assertEquals(RealtimeStatus.Offline, viewModel.connectionStatus.value)
     }
 }

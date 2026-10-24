@@ -10,9 +10,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.model.ChannelType
+import io.wolftown.kaiku.ui.shared.ConnectionBanner
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -26,9 +29,10 @@ fun HomeScreen(
 ) {
     val guilds by viewModel.guilds.collectAsState()
     val selectedGuild by viewModel.selectedGuild.collectAsState()
-    val channels by viewModel.channels.collectAsState()
+    val sections by viewModel.sections.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val error by viewModel.error.collectAsState()
+    val connectionStatus by viewModel.connectionStatus.collectAsState()
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -64,31 +68,46 @@ fun HomeScreen(
             topBar = {
                 TopAppBar(
                     title = {
-                        Text(selectedGuild?.name ?: "Kaiku")
+                        Text(selectedGuild?.name ?: stringResource(R.string.app_name))
                     },
                     navigationIcon = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(Icons.Default.Menu, contentDescription = "Open guilds")
+                            Icon(Icons.Default.Menu, contentDescription = stringResource(R.string.home_open_servers))
                         }
                     },
                     actions = {
                         IconButton(onClick = onNavigateToDms) {
-                            Icon(Icons.Default.Email, contentDescription = "Direct messages")
+                            Icon(Icons.Default.Email, contentDescription = stringResource(R.string.home_direct_messages))
                         }
                         IconButton(onClick = { viewModel.refresh() }) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                            Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.home_refresh))
                         }
                         IconButton(onClick = onNavigateToSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                            Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.home_settings))
                         }
                     }
                 )
             }
         ) { paddingValues ->
-            Box(
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
+            ) {
+            ConnectionBanner(status = connectionStatus)
+            // A failed load is shown inline while there is still something to
+            // display; the full-screen error below is only for the empty case.
+            val errorRes = error
+            if (errorRes != null && guilds.isNotEmpty()) {
+                ErrorRow(
+                    message = stringResource(errorRes),
+                    onRetry = { viewModel.retry() }
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
             ) {
                 when {
                     isLoading && guilds.isEmpty() -> {
@@ -103,13 +122,13 @@ fun HomeScreen(
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                text = error ?: "An error occurred",
+                                text = stringResource(error ?: R.string.home_servers_load_failed),
                                 color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Spacer(modifier = Modifier.height(16.dp))
-                            Button(onClick = { viewModel.refresh() }) {
-                                Text("Retry")
+                            Button(onClick = { viewModel.retry() }) {
+                                Text(stringResource(R.string.common_retry))
                             }
                         }
                     }
@@ -120,20 +139,20 @@ fun HomeScreen(
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
-                                text = "Select a guild to get started",
+                                text = stringResource(R.string.home_select_server),
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             TextButton(onClick = { scope.launch { drawerState.open() } }) {
-                                Text("Open guild list")
+                                Text(stringResource(R.string.home_open_server_list))
                             }
                         }
                     }
 
                     selectedGuild == null && guilds.isEmpty() && !isLoading -> {
                         Text(
-                            text = "No guilds available",
+                            text = stringResource(R.string.home_no_servers),
                             modifier = Modifier.align(Alignment.Center),
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -142,7 +161,7 @@ fun HomeScreen(
 
                     else -> {
                         ChannelList(
-                            channels = channels,
+                            sections = sections,
                             onChannelSelected = { channelId, channelType ->
                                 viewModel.onChannelSelected(channelId, channelType)
                             }
@@ -150,6 +169,27 @@ fun HomeScreen(
                     }
                 }
             }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ErrorRow(message: String, onRetry: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = message,
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        TextButton(onClick = onRetry) {
+            Text(stringResource(R.string.common_retry))
         }
     }
 }

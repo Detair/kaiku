@@ -215,9 +215,9 @@ class AuthFlowTest {
         authRepository.login("testuser", "pass")
 
         // After login, the app would call webSocket.connect()
-        webSocket.connect("https://kaiku.example.com")
+        webSocket.connect("https://kaiku.example.com", "access-token-abc")
 
-        verify { webSocket.connect("https://kaiku.example.com") }
+        verify { webSocket.connect("https://kaiku.example.com", "access-token-abc") }
     }
 
     // ========================================================================

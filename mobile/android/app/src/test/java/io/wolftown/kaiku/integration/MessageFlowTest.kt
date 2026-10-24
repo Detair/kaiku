@@ -1,307 +1,307 @@
 package io.wolftown.kaiku.integration
 
+import io.ktor.client.engine.mock.*
+import io.ktor.client.request.*
+import io.ktor.http.*
 import io.mockk.*
-import io.wolftown.kaiku.data.api.MessageApi
+import io.wolftown.kaiku.data.KaikuJson
+import io.wolftown.kaiku.data.api.KaikuHttpClient
+import io.wolftown.kaiku.data.api.MessageApiImpl
+import io.wolftown.kaiku.data.local.AuthState
+import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.ChatRepository
+import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
+import io.wolftown.kaiku.data.ws.WsJson
+import io.wolftown.kaiku.domain.model.CursorPage
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.domain.model.User
+import io.wolftown.kaiku.testutil.Golden
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import java.util.Collections
 
 /**
- * Integration test verifying the message flow:
- * subscribe → receive messages → display → send → optimistic update.
+ * Integration test for the message flow through the real HTTP stack:
+ * [MessageApiImpl] over a Ktor [MockEngine] serving the server-generated
+ * golden page, feeding the real [ChatRepository].
  *
- * Uses mocked API and WebSocket but exercises real ChatRepository logic.
+ * Only the WebSocket and [GuildRepository] are mocked.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class MessageFlowTest {
 
-    private lateinit var messageApi: MessageApi
+    private companion object {
+        // Ids from server/tests/integration/android_contract_fixtures.rs
+        const val CHANNEL_ID = "00000000-0000-4000-8000-00000000c001"
+        const val OLDER_ID = "00000000-0000-4000-8000-00000000e001"
+        const val NEWER_ID = "00000000-0000-4000-8000-00000000e002"
+        const val LIVE_ID = "00000000-0000-4000-8000-00000000e003"
+
+        const val OLDEST_ID = "00000000-0000-4000-8000-00000000e000"
+    }
+
     private lateinit var webSocket: KaikuWebSocket
-    private lateinit var chatRepository: ChatRepository
+    private lateinit var guildRepository: GuildRepository
+    private lateinit var tokenStorage: TokenStorage
+    private lateinit var authState: AuthState
 
     private val eventsFlow = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 64)
-    private val json = Json { ignoreUnknownKeys = true }
 
-    private val testAuthor = User(
-        id = "user-1",
-        username = "alice",
-        displayName = "Alice"
+    /** Every request the MockEngine received, in order. */
+    private val requests: MutableList<HttpRequestData> =
+        Collections.synchronizedList(mutableListOf())
+
+    private val author = User(id = "user-1", username = "alice", displayName = "Alice")
+
+    private val oldestMessage = Message(
+        id = OLDEST_ID,
+        channelId = CHANNEL_ID,
+        author = author,
+        content = "Very old message",
+        createdAt = "2026-03-12T09:00:00Z"
     )
 
-    private val initialMessages = listOf(
-        Message(
-            id = "msg-1",
-            channelId = "ch-1",
-            author = testAuthor,
-            content = "First message",
-            createdAt = "2026-03-12T10:00:00Z"
-        ),
-        Message(
-            id = "msg-2",
-            channelId = "ch-1",
-            author = testAuthor,
-            content = "Second message",
-            createdAt = "2026-03-12T10:01:00Z"
-        )
+    private val sentMessage = Message(
+        id = "00000000-0000-4000-8000-00000000e00f",
+        channelId = CHANNEL_ID,
+        author = author,
+        content = "My new message",
+        createdAt = "2026-03-12T10:05:00Z"
     )
 
     @Before
     fun setUp() {
-        messageApi = mockk(relaxed = true)
         webSocket = mockk(relaxed = true)
+        guildRepository = mockk(relaxed = true)
+        tokenStorage = mockk(relaxed = true)
+        authState = mockk(relaxed = true)
         every { webSocket.events } returns eventsFlow
+        every { tokenStorage.getServerUrl() } returns "https://kaiku.example.com"
+        every { tokenStorage.getAccessToken() } returns "test-access-token"
+        requests.clear()
+    }
+
+    private fun jsonResponse(scope: MockRequestHandleScope, body: String) = scope.respond(
+        content = body,
+        status = HttpStatusCode.OK,
+        headers = headersOf(HttpHeaders.ContentType, "application/json")
+    )
+
+    /**
+     * Serves the golden page for the initial load, [olderPage] for
+     * `before=<cursor>` requests and echoes [sentMessage] for POSTs.
+     */
+    private fun createRepository(
+        olderPage: CursorPage<Message> = CursorPage(emptyList(), hasMore = false)
+    ): ChatRepository {
+        val engine = MockEngine { request ->
+            requests += request
+            when {
+                request.method == HttpMethod.Post ->
+                    jsonResponse(this, KaikuJson.encodeToString(Message.serializer(), sentMessage))
+
+                request.url.parameters["before"] != null ->
+                    jsonResponse(
+                        this,
+                        KaikuJson.encodeToString(
+                            CursorPage.serializer(Message.serializer()),
+                            olderPage
+                        )
+                    )
+
+                else -> jsonResponse(this, Golden.load("messages_page.json"))
+            }
+        }
+        val httpClient = KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()
 
         // UnconfinedTestDispatcher runs the WebSocket event-collector
-        // continuations synchronously on the calling thread, so `.value`
-        // reflects emitted ServerEvents after `advanceUntilIdle()`. See
-        // app/src/test/AGENTS.md ("inject the scope").
-        chatRepository = ChatRepository(
-            messageApi,
+        // continuations synchronously, so `.value` reflects emitted
+        // ServerEvents after `advanceUntilIdle()` (app/src/test/AGENTS.md).
+        return ChatRepository(
+            MessageApiImpl(httpClient),
             webSocket,
-            json,
+            KaikuJson,
+            guildRepository,
             CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
         )
     }
 
+    private fun ChatRepository.ids(): List<String> = getMessages(CHANNEL_ID).value.map { it.id }
+
     // ========================================================================
-    // Subscribe and load
+    // History (REST)
     // ========================================================================
 
     @Test
-    fun `subscribe sends WebSocket event and loads messages`() = runTest {
-        coEvery { messageApi.getMessages("ch-1", null) } returns initialMessages
+    fun `initial load shows server page oldest first`() = runTest {
+        val repository = createRepository()
 
-        chatRepository.subscribeToChannel("ch-1")
-        chatRepository.loadMessages("ch-1")
+        repository.subscribeToChannel(CHANNEL_ID)
+        val hasMore = repository.loadMessages(CHANNEL_ID)
 
         verify { webSocket.send(match { it is ClientEvent.Subscribe }) }
+        assertTrue(hasMore)
+        // The golden page is newest first; the list must be oldest first.
+        assertEquals(listOf(OLDER_ID, NEWER_ID), repository.ids())
 
-        val messages = chatRepository.getMessages("ch-1").value
-        assertEquals(2, messages.size)
-        assertEquals("msg-1", messages[0].id)
-        assertEquals("msg-2", messages[1].id)
+        val request = requests.single()
+        assertEquals("/api/messages/channel/$CHANNEL_ID", request.url.encodedPath)
+        assertEquals("50", request.url.parameters["limit"])
+        assertNull(request.url.parameters["before"])
+        assertNull(request.url.parameters["after"])
+    }
+
+    @Test
+    fun `load older merges before cursor and reports hasMore`() = runTest {
+        val repository = createRepository(
+            olderPage = CursorPage(listOf(oldestMessage), hasMore = false)
+        )
+
+        repository.loadMessages(CHANNEL_ID)
+        val firstId = repository.getMessages(CHANNEL_ID).value.first().id
+        val hasMore = repository.loadMessages(CHANNEL_ID, before = firstId)
+
+        assertEquals(OLDER_ID, firstId)
+        assertEquals(OLDER_ID, requests.last().url.parameters["before"])
+        assertNull(requests.last().url.parameters["after"])
+        assertFalse(hasMore)
+        assertEquals(listOf(OLDEST_ID, OLDER_ID, NEWER_ID), repository.ids())
+    }
+
+    @Test
+    fun `getMessages rejects before and after together`() = runTest {
+        val engine = MockEngine { error("must not send a request") }
+        val api = MessageApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient())
+
+        try {
+            api.getMessages(CHANNEL_ID, before = OLDER_ID, after = NEWER_ID)
+            fail("Expected IllegalArgumentException")
+        } catch (expected: IllegalArgumentException) {
+            // ok
+        }
     }
 
     // ========================================================================
-    // Receive message via WebSocket
+    // Live messages (WebSocket)
     // ========================================================================
 
     @Test
-    fun `new WebSocket message appears in message list`() = runTest {
-        coEvery { messageApi.getMessages("ch-1", null) } returns initialMessages
+    fun `live message is appended after loaded history`() = runTest {
+        val repository = createRepository()
+        repository.subscribeToChannel(CHANNEL_ID)
+        repository.loadMessages(CHANNEL_ID)
 
-        chatRepository.subscribeToChannel("ch-1")
-        chatRepository.loadMessages("ch-1")
-
-        assertEquals(2, chatRepository.getMessages("ch-1").value.size)
-
-        // Simulate a new message from WebSocket
-        val newMessage = Message(
-            id = "msg-3",
-            channelId = "ch-1",
-            author = User(id = "user-2", username = "bob", displayName = "Bob"),
-            content = "Hello from WebSocket!",
-            createdAt = "2026-03-12T10:02:00Z"
-        )
-        val messageJson = json.encodeToJsonElement(newMessage).jsonObject
-        eventsFlow.emit(ServerEvent.MessageNew(channelId = "ch-1", message = messageJson))
+        eventsFlow.emit(WsJson.decodeFromString<ServerEvent>(Golden.load("ws_message_new.json")))
         advanceUntilIdle()
 
-        val messages = chatRepository.getMessages("ch-1").value
-        assertEquals(3, messages.size)
-        assertEquals("msg-3", messages[2].id)
-        assertEquals("Hello from WebSocket!", messages[2].content)
+        assertEquals(listOf(OLDER_ID, NEWER_ID, LIVE_ID), repository.ids())
+        verify(exactly = 1) { guildRepository.onMessageReceived(CHANNEL_ID) }
     }
 
     @Test
     fun `duplicate WebSocket message is not added twice`() = runTest {
-        coEvery { messageApi.getMessages("ch-1", null) } returns initialMessages
+        val repository = createRepository()
+        repository.loadMessages(CHANNEL_ID)
 
-        chatRepository.subscribeToChannel("ch-1")
-        chatRepository.loadMessages("ch-1")
-
-        // Re-emit an existing message
-        val existingMessage = initialMessages[0]
-        val messageJson = json.encodeToJsonElement(existingMessage).jsonObject
-        eventsFlow.emit(ServerEvent.MessageNew(channelId = "ch-1", message = messageJson))
+        val event = WsJson.decodeFromString<ServerEvent>(Golden.load("ws_message_new.json"))
+        eventsFlow.emit(event)
+        eventsFlow.emit(event)
         advanceUntilIdle()
 
-        // Should still be 2, not 3
-        assertEquals(2, chatRepository.getMessages("ch-1").value.size)
+        assertEquals(listOf(OLDER_ID, NEWER_ID, LIVE_ID), repository.ids())
+        verify(exactly = 1) { guildRepository.onMessageReceived(CHANNEL_ID) }
     }
-
-    // ========================================================================
-    // Send message → optimistic update
-    // ========================================================================
 
     @Test
-    fun `sending message calls API and adds to list optimistically`() = runTest {
-        val sentMessage = Message(
-            id = "msg-new",
-            channelId = "ch-1",
-            author = testAuthor,
-            content = "My new message",
-            createdAt = "2026-03-12T10:05:00Z"
-        )
-        coEvery { messageApi.getMessages("ch-1", null) } returns initialMessages
-        coEvery { messageApi.sendMessage("ch-1", "My new message") } returns sentMessage
+    fun `sending message adds it after loaded history`() = runTest {
+        val repository = createRepository()
+        repository.loadMessages(CHANNEL_ID)
 
-        chatRepository.subscribeToChannel("ch-1")
-        chatRepository.loadMessages("ch-1")
+        repository.sendMessage(CHANNEL_ID, "My new message")
 
-        chatRepository.sendMessage("ch-1", "My new message")
-
-        coVerify { messageApi.sendMessage("ch-1", "My new message") }
-
-        val messages = chatRepository.getMessages("ch-1").value
-        assertEquals(3, messages.size)
-        assertEquals("msg-new", messages[2].id)
+        val post = requests.last()
+        assertEquals(HttpMethod.Post, post.method)
+        assertEquals("/api/messages/channel/$CHANNEL_ID", post.url.encodedPath)
+        assertEquals(listOf(OLDER_ID, NEWER_ID, sentMessage.id), repository.ids())
     }
-
-    // ========================================================================
-    // Edit message via WebSocket
-    // ========================================================================
 
     @Test
     fun `edit event updates message content in list`() = runTest {
-        coEvery { messageApi.getMessages("ch-1", null) } returns initialMessages
-
-        chatRepository.subscribeToChannel("ch-1")
-        chatRepository.loadMessages("ch-1")
+        val repository = createRepository()
+        repository.loadMessages(CHANNEL_ID)
 
         eventsFlow.emit(
             ServerEvent.MessageEdit(
-                channelId = "ch-1",
-                messageId = "msg-1",
+                channelId = CHANNEL_ID,
+                messageId = OLDER_ID,
                 content = "Updated content",
                 editedAt = "2026-03-12T10:10:00Z"
             )
         )
         advanceUntilIdle()
 
-        val messages = chatRepository.getMessages("ch-1").value
-        assertEquals("Updated content", messages[0].content)
-        assertEquals("2026-03-12T10:10:00Z", messages[0].editedAt)
+        val edited = repository.getMessages(CHANNEL_ID).value.single { it.id == OLDER_ID }
+        assertEquals("Updated content", edited.content)
+        assertEquals("2026-03-12T10:10:00Z", edited.editedAt)
     }
-
-    // ========================================================================
-    // Delete message via WebSocket
-    // ========================================================================
 
     @Test
     fun `delete event removes message from list`() = runTest {
-        coEvery { messageApi.getMessages("ch-1", null) } returns initialMessages
+        val repository = createRepository()
+        repository.loadMessages(CHANNEL_ID)
 
-        chatRepository.subscribeToChannel("ch-1")
-        chatRepository.loadMessages("ch-1")
-
-        assertEquals(2, chatRepository.getMessages("ch-1").value.size)
-
-        eventsFlow.emit(
-            ServerEvent.MessageDelete(channelId = "ch-1", messageId = "msg-1")
-        )
+        eventsFlow.emit(ServerEvent.MessageDelete(channelId = CHANNEL_ID, messageId = OLDER_ID))
         advanceUntilIdle()
 
-        val messages = chatRepository.getMessages("ch-1").value
-        assertEquals(1, messages.size)
-        assertEquals("msg-2", messages[0].id)
+        assertEquals(listOf(NEWER_ID), repository.ids())
     }
 
     // ========================================================================
-    // Pagination (load more)
+    // Typing indicators and subscriptions
     // ========================================================================
 
     @Test
-    fun `loading older messages prepends to list`() = runTest {
-        val olderMessages = listOf(
-            Message(
-                id = "msg-0",
-                channelId = "ch-1",
-                author = testAuthor,
-                content = "Very old message",
-                createdAt = "2026-03-12T09:00:00Z"
-            )
-        )
-        coEvery { messageApi.getMessages("ch-1", null) } returns initialMessages
-        coEvery { messageApi.getMessages("ch-1", "msg-1") } returns olderMessages
+    fun `typing start and stop update typing set`() = runTest {
+        val repository = createRepository()
+        repository.subscribeToChannel(CHANNEL_ID)
 
-        chatRepository.subscribeToChannel("ch-1")
-        chatRepository.loadMessages("ch-1")
-        chatRepository.loadMessages("ch-1", before = "msg-1")
-
-        val messages = chatRepository.getMessages("ch-1").value
-        assertEquals(3, messages.size)
-        assertEquals("msg-0", messages[0].id)
-        assertEquals("msg-1", messages[1].id)
-    }
-
-    // ========================================================================
-    // Typing indicators
-    // ========================================================================
-
-    @Test
-    fun `typing start adds user to typing set`() = runTest {
-        chatRepository.subscribeToChannel("ch-1")
-
-        eventsFlow.emit(ServerEvent.TypingStart(channelId = "ch-1", userId = "user-2"))
+        eventsFlow.emit(ServerEvent.TypingStart(channelId = CHANNEL_ID, userId = "user-2"))
         advanceUntilIdle()
+        assertTrue(repository.getTypingUsers(CHANNEL_ID).value.contains("user-2"))
 
-        val typing = chatRepository.getTypingUsers("ch-1").value
-        assertTrue(typing.contains("user-2"))
-    }
-
-    @Test
-    fun `typing stop removes user from typing set`() = runTest {
-        chatRepository.subscribeToChannel("ch-1")
-
-        eventsFlow.emit(ServerEvent.TypingStart(channelId = "ch-1", userId = "user-2"))
+        eventsFlow.emit(ServerEvent.TypingStop(channelId = CHANNEL_ID, userId = "user-2"))
         advanceUntilIdle()
-        assertTrue(chatRepository.getTypingUsers("ch-1").value.contains("user-2"))
-
-        eventsFlow.emit(ServerEvent.TypingStop(channelId = "ch-1", userId = "user-2"))
-        advanceUntilIdle()
-
-        assertFalse(chatRepository.getTypingUsers("ch-1").value.contains("user-2"))
+        assertFalse(repository.getTypingUsers(CHANNEL_ID).value.contains("user-2"))
     }
 
     @Test
     fun `send typing indicator debounces within 3 seconds`() = runTest {
-        chatRepository.subscribeToChannel("ch-1")
+        val repository = createRepository()
+        repository.subscribeToChannel(CHANNEL_ID)
 
-        chatRepository.sendTypingIndicator("ch-1")
-        chatRepository.sendTypingIndicator("ch-1") // Should be debounced
-        chatRepository.sendTypingIndicator("ch-1") // Should be debounced
+        repository.sendTypingIndicator(CHANNEL_ID)
+        repository.sendTypingIndicator(CHANNEL_ID) // debounced
+        repository.sendTypingIndicator(CHANNEL_ID) // debounced
 
-        // Only one Typing event should be sent
         verify(exactly = 1) { webSocket.send(match { it is ClientEvent.Typing }) }
     }
 
-    // ========================================================================
-    // Unsubscribe
-    // ========================================================================
-
     @Test
     fun `unsubscribe sends WebSocket event`() = runTest {
-        chatRepository.subscribeToChannel("ch-1")
-        chatRepository.unsubscribeFromChannel("ch-1")
+        val repository = createRepository()
+        repository.subscribeToChannel(CHANNEL_ID)
+        repository.unsubscribeFromChannel(CHANNEL_ID)
 
         verify { webSocket.send(match { it is ClientEvent.Unsubscribe }) }
     }

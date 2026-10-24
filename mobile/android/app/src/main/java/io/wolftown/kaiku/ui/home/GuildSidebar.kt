@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -21,7 +22,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.model.Guild
+import io.wolftown.kaiku.ui.shared.resolveServerUrl
 
 @Composable
 fun GuildSidebar(
@@ -68,6 +71,8 @@ private fun GuildIcon(
         MaterialTheme.colorScheme.onSurface
     }
 
+    val iconUrl = resolveServerUrl(guild.iconUrl)
+
     Box(
         modifier = modifier
             .size(48.dp)
@@ -76,13 +81,13 @@ private fun GuildIcon(
             .semantics { role = Role.Button }
             .clickable(
                 onClick = onClick,
-                onClickLabel = "Select ${guild.name}"
+                onClickLabel = stringResource(R.string.home_select_server_named, guild.name)
             ),
         contentAlignment = Alignment.Center
     ) {
-        if (guild.iconUrl != null) {
+        if (iconUrl != null) {
             AsyncImage(
-                model = guild.iconUrl,
+                model = iconUrl,
                 contentDescription = guild.name,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop

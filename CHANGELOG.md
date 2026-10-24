@@ -100,6 +100,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Realtime updates now recover by themselves after a network drop, sleep or server restart, and a small indicator shows while the app reconnects.
 - The first direct message to someone now appears immediately on all of their open devices, instead of only after reloading the conversation list.
 - Realtime updates no longer stop silently when the server's internal event stream hiccups — the connection is closed so apps reconnect and catch up.
+- Android: shared photos, avatars and server icons now load; encrypted messages show a clear note instead of raw data.
+- Android: joining voice asks for microphone access instead of crashing; audio defaults to speaker or your headset.
+- Android: the channel list no longer goes blank when a server has forum or announcement channels; load errors are now shown.
+- Android: message history now loads when opening a channel and shows oldest-to-newest.
+- Android: you no longer get stuck about 15 minutes after signing in.
+- Android: live updates now resume on their own after the phone sleeps, changes network or the session renews.
+- Android: DMs show the person's name instead of an ID, channel groups show their category names, and opening a DM clears its unread badge on the server.
+- Android: failed sends, edits and deletes now show a message (with Retry); editing your own messages works; a banner shows when the app is reconnecting.
 - Admin Command Center showed no data (empty vital signs and charts) once telemetry had accumulated. Several fixes: (1) the **summary** endpoint returned 500 and the **top-routes/top-errors** panels failed because their `SUM()` aggregates over a `bigint` column come back as `NUMERIC` and could not decode into an integer — they now cast back to `bigint` (this was invisible on an empty database, where `SUM` is `NULL`); (2) the **trend charts** returned 400 because the endpoint could not parse its repeated `metric=` query parameters into a list — it now uses a multi-value query parser; (3) the **7-day and 30-day** rollups were additionally empty because their materialized view could never `REFRESH … CONCURRENTLY` (its unique index was on an expression, which PostgreSQL rejects) — the view now uses a plain-column unique index and the refresh job falls back to a blocking refresh if a concurrent one can't proceed.
 - Links in chat messages are now visible as links: they render in the theme's accent color with a soft underline (solid on hover), instead of looking identical to surrounding text. The styling is drawn from each theme's link color, so it adapts automatically across themes
 - Microphone test (voice settings): the level meter now fills from empty as you speak, instead of always showing a full green→red gradient. The overlay that reveals the bar was invisible because its background utility generated no CSS

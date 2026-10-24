@@ -1,14 +1,32 @@
 package io.wolftown.kaiku.domain.model
 
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-@Serializable
+/**
+ * Channel kinds the client understands. Any other server value (forum,
+ * announcement, ...) decodes to [UNKNOWN] and is hidden from the channel list.
+ */
+@Serializable(with = ChannelTypeSerializer::class)
 enum class ChannelType {
-    @SerialName("text") TEXT,
-    @SerialName("voice") VOICE,
-    @SerialName("dm") DM;
+    TEXT,
+    VOICE,
+    DM,
+    UNKNOWN;
 }
+
+object ChannelTypeSerializer : LenientEnumSerializer<ChannelType>(
+    serialName = "ChannelType",
+    values = ChannelType.values(),
+    unknown = ChannelType.UNKNOWN,
+    wireName = { type ->
+        when (type) {
+            ChannelType.TEXT -> "text"
+            ChannelType.VOICE -> "voice"
+            ChannelType.DM -> "dm"
+            ChannelType.UNKNOWN -> "unknown"
+        }
+    },
+)
 
 @Serializable
 data class Channel(
