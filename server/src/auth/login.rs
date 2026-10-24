@@ -309,6 +309,15 @@ pub async fn refresh_token(
         return Err(AuthError::InvalidToken);
     }
 
+    // A session whose id is denylisted has ended even if its row survived
+    // (e.g. ending it in Valkey succeeded but a later step failed): refuse,
+    // since every access token issued for it would be refused anyway. Fails
+    // closed (503) when Valkey cannot answer, like the access-token check.
+    if super::revocation::is_session_revoked(&state.redis, &session.id.to_string()).await? {
+        crate::observability::metrics::record_token_refresh(false);
+        return Err(AuthError::InvalidToken);
+    }
+
     // Verify user still exists
     let user = find_user_by_id(&state.db, user_id)
         .await?
@@ -415,9 +424,9 @@ pub async fn logout(
         return Err(AuthError::InvalidToken);
     }
 
-    // Delete the sessions (no more refreshes) and end them (their access
-    // tokens and sockets stop working now) before committing, so a failure
-    // to end them leaves the sessions in place for a retry.
+    // Delete the sessions (no more refreshes) and commit first: signing out
+    // never leaves a refreshable session. Then end them (their access tokens
+    // and sockets stop now); a Valkey failure answers 500 and a retry is safe.
     let mut tx = state.db.begin().await?;
     let mut ended = Vec::with_capacity(session_ids.len());
     for session_id in session_ids {
@@ -433,8 +442,8 @@ pub async fn logout(
             ended.push(own);
         }
     }
-    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
     tx.commit().await?;
+    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
 
     tracing::info!(user_id = %auth_user.id, "User logged out");
 
@@ -1293,13 +1302,14 @@ pub async fn reset_password(
             tracing::error!(error = ?e, user_id = %reset_token.user_id, "Failed to delete sessions");
             AuthError::Database(e)
         })?;
-    // End them now too: their access tokens and open sockets stop working.
-    super::revocation::end_sessions(&state, reset_token.user_id, &ended).await?;
-
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, "Failed to commit password reset transaction");
         AuthError::Database(e)
     })?;
+
+    // End them now too: their access tokens and every open socket of the
+    // user stop working.
+    super::revocation::end_all_sessions(&state, reset_token.user_id, &ended).await?;
 
     tracing::info!(user_id = %reset_token.user_id, "Password reset successful, all sessions invalidated");
 

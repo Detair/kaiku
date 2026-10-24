@@ -378,16 +378,6 @@ pub async fn schedule_account_deletion(
     Ok(())
 }
 
-/// Delete every session for a user (force logout everywhere).
-#[tracing::instrument(skip(pool))]
-pub async fn delete_all_user_sessions(pool: &PgPool, user_id: Uuid) -> Result<(), GovernanceError> {
-    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 /// Cancel a pending account deletion. Returns the number of rows affected.
 #[tracing::instrument(skip(pool))]
 pub async fn cancel_account_deletion(pool: &PgPool, user_id: Uuid) -> Result<u64, GovernanceError> {

@@ -669,7 +669,7 @@ pub async fn download(
                 crate::auth::revocation::is_session_revoked(&state.redis, sid).await,
                 Ok(true)
             ) {
-                return Err(ChatError::Forbidden);
+                return Err(ChatError::SessionEnded);
             }
         }
         let caller: Option<(bool, bool)> = sqlx::query_as(

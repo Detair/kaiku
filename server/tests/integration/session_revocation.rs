@@ -393,7 +393,195 @@ async fn test_attachment_download_token_respects_revocation(pool: PgPool) {
         .expect("POST /auth/logout");
     assert_eq!(resp.status(), StatusCode::OK);
 
+    // An ended session is an authentication failure (C25): 401.
     let resp = reqwest::get(&download).await.expect("download");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(error_code(resp).await, "INVALID_TOKEN");
+}
+
+/// A ban closes every open socket of the user, also one whose session row is
+/// already gone.
+#[sqlx::test]
+async fn test_ban_closes_socket_without_session_rows(pool: PgPool) {
+    let fx = setup(&pool).await;
+    let (user_id, _) = create_test_user(&pool).await;
+    // A valid token whose session has no row.
+    let token = generate_access_token(&fx.app.config, user_id);
+    let mut ws = connect_ready(&fx.server, &token).await;
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+
+    ban(&fx, user_id).await;
+
+    expect_session_revoked(&mut ws).await;
+    let resp = reqwest::Client::new()
+        .get(format!("{}/auth/me", fx.server.url))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    assert_eq!(error_code(resp).await, "FORBIDDEN");
+    assert_eq!(error_code(resp).await, "ACCOUNT_BANNED");
+}
+
+#[sqlx::test]
+async fn test_bulk_ban_ends_sessions_and_sockets(pool: PgPool) {
+    let fx = setup(&pool).await;
+    let (user_a, name_a) = create_password_user(&pool).await;
+    let (user_b, name_b) = create_password_user(&pool).await;
+    let a = login(&fx.server, &name_a).await;
+    let b = login(&fx.server, &name_b).await;
+    let mut ws_a = connect_ready(&fx.server, &a.access).await;
+    let mut ws_b = connect_ready(&fx.server, &b.access).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/admin/users/bulk-ban", fx.server.url))
+        .bearer_auth(&fx.admin_token)
+        .json(&serde_json::json!({
+            "user_ids": [user_a, user_b],
+            "reason": "test",
+            "expires_at": null,
+        }))
+        .send()
+        .await
+        .expect("POST bulk-ban");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["banned_count"], 2, "{body}");
+
+    expect_session_revoked(&mut ws_a).await;
+    expect_session_revoked(&mut ws_b).await;
+    for s in [&a, &b] {
+        assert_eq!(
+            me_status(&fx.server, &s.access).await,
+            StatusCode::UNAUTHORIZED
+        );
+        let resp = refresh(&fx.server, &s.refresh).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(error_code(resp).await, "ACCOUNT_BANNED");
+    }
+}
+
+#[sqlx::test]
+async fn test_password_reset_ends_sessions_and_sockets(pool: PgPool) {
+    let fx = setup(&pool).await;
+    let (user_id, username) = create_password_user(&pool).await;
+    let session = login(&fx.server, &username).await;
+    let mut ws = connect_ready(&fx.server, &session.access).await;
+
+    let raw = format!("reset-{}", Uuid::new_v4());
+    db::create_password_reset_token(
+        &pool,
+        user_id,
+        &vc_server::auth::hash_token(&raw),
+        chrono::Utc::now() + chrono::Duration::minutes(30),
+    )
+    .await
+    .expect("reset token");
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/auth/reset-password", fx.server.url))
+        .json(&serde_json::json!({ "token": raw, "new_password": "reset-pass-789" }))
+        .send()
+        .await
+        .expect("POST /auth/reset-password");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    expect_session_revoked(&mut ws).await;
+    assert_eq!(
+        me_status(&fx.server, &session.access).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        refresh(&fx.server, &session.refresh).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// With `revoke_others` the caller's own session must be identifiable;
+/// otherwise the request is refused and nothing changes.
+#[sqlx::test]
+async fn test_password_change_revoke_others_requires_current_session(pool: PgPool) {
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use vc_server::auth::jwt::{Claims, TokenType};
+
+    let fx = setup(&pool).await;
+    let (user_id, username) = create_password_user(&pool).await;
+    let other = login(&fx.server, &username).await;
+
+    // An access token without a `sid` claim, and no refresh token sent.
+    let now = chrono::Utc::now().timestamp();
+    let claims = Claims {
+        sub: user_id.to_string(),
+        exp: now + 600,
+        iat: now,
+        typ: TokenType::Access,
+        jti: None,
+        sid: None,
+    };
+    let pem = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        &fx.app.config.jwt_private_key,
+    )
+    .unwrap();
+    let token = encode(
+        &Header::new(Algorithm::EdDSA),
+        &claims,
+        &EncodingKey::from_ed_pem(&pem).unwrap(),
+    )
+    .unwrap();
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/auth/me/password", fx.server.url))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "current_password": PASSWORD,
+            "new_password": "another-pass-456",
+            "revoke_others": true,
+        }))
+        .send()
+        .await
+        .expect("POST /auth/me/password");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(resp).await, "VALIDATION_ERROR");
+
+    // Nothing changed: the old password still works, the other session too.
+    assert_eq!(
+        login_raw(&fx.server, &username).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(me_status(&fx.server, &other.access).await, StatusCode::OK);
+}
+
+/// A session whose id is denylisted cannot be refreshed even if its row is
+/// still there.
+#[sqlx::test]
+async fn test_refresh_refused_for_denylisted_session(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+
+    let fx = setup(&pool).await;
+    let (_user_id, username) = create_password_user(&pool).await;
+    let session = login(&fx.server, &username).await;
+    let sid = session_id(&fx.app, &session.access);
+    fx.app
+        .state
+        .redis
+        .set::<(), _, _>(
+            format!("canis:revoked_sid:{sid}"),
+            "1",
+            Some(fred::types::Expiration::EX(60)),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        refresh(&fx.server, &session.refresh).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
 }

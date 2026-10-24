@@ -284,8 +284,10 @@ pub async fn ban_user(
         return Err(AdminError::Validation("Cannot ban yourself".to_string()));
     }
 
-    // Create or update the ban and end every session of the user in one
-    // transaction: their tokens and open sockets stop working right away.
+    // Create or update the ban and delete every session of the user in one
+    // transaction, then end them (tokens and every open socket stop now).
+    // The ban is durable before Valkey is involved: every request re-checks
+    // it, so a Valkey failure (500) cannot undo it and a retry is safe.
     let mut tx = state.db.begin().await?;
     queries::upsert_global_ban(
         &mut tx,
@@ -295,8 +297,9 @@ pub async fn ban_user(
         body.expires_at,
     )
     .await?;
-    end_all_sessions(&state, &mut tx, user_id).await?;
+    let ended = crate::auth::queries::delete_user_sessions_except(&mut tx, user_id, None).await?;
     tx.commit().await?;
+    end_all_sessions(&state, user_id, &ended).await?;
 
     // Log the action
     let ip_address = addr.ip().to_string();
@@ -441,23 +444,36 @@ pub async fn bulk_ban_users(
             continue;
         }
 
-        // Check if already banned
+        // Check if already banned. Its sockets are told again, so repeating a
+        // bulk ban after a Valkey failure still closes them.
         if queries::is_user_banned(&state.db, *user_id).await? {
             already_banned += 1;
+            if end_all_sessions(&state, *user_id, &[]).await.is_err() {
+                failed.push(BulkActionFailure {
+                    id: *user_id,
+                    reason: "Banned, but open connections could not be closed; retry".to_string(),
+                });
+            }
             continue;
         }
 
-        // Ban the user and end their sessions
-        match ban_and_end_sessions(&state, *user_id, admin.user_id, &body).await {
-            Ok(()) => {
-                banned_count += 1;
-            }
+        // Ban the user (durable first), then end their sessions
+        let ended = match ban_and_delete_sessions(&state, *user_id, admin.user_id, &body).await {
+            Ok(ended) => ended,
             Err(e) => {
                 failed.push(BulkActionFailure {
                     id: *user_id,
                     reason: format!("Database error: {e}"),
                 });
+                continue;
             }
+        };
+        banned_count += 1;
+        if end_all_sessions(&state, *user_id, &ended).await.is_err() {
+            failed.push(BulkActionFailure {
+                id: *user_id,
+                reason: "Banned, but open connections could not be closed; retry".to_string(),
+            });
         }
     }
 
@@ -608,29 +624,29 @@ pub async fn export_users_csv(
     ))
 }
 
-/// Delete every session of `user_id` and end them immediately (C25).
+/// End every session of `user_id` right away (C25): denylist `ended` and
+/// close all of the user's open sockets. Runs after the ban is committed.
 async fn end_all_sessions(
     state: &AppState,
-    tx: &mut sqlx::PgConnection,
     user_id: Uuid,
+    ended: &[Uuid],
 ) -> Result<(), AdminError> {
-    let ended = crate::auth::queries::delete_user_sessions_except(tx, user_id, None).await?;
-    crate::auth::revocation::end_sessions(state, user_id, &ended)
+    crate::auth::revocation::end_all_sessions(state, user_id, ended)
         .await
         .map_err(|e| AdminError::Internal(e.to_string()))
 }
 
-/// Bulk-ban step for one user: insert the ban and end the user's sessions in
-/// one transaction.
-async fn ban_and_end_sessions(
+/// Bulk-ban step for one user: insert the ban and delete the user's sessions
+/// in one transaction; returns the deleted session ids.
+async fn ban_and_delete_sessions(
     state: &AppState,
     user_id: Uuid,
     banned_by: Uuid,
     body: &BulkBanRequest,
-) -> Result<(), AdminError> {
+) -> Result<Vec<Uuid>, AdminError> {
     let mut tx = state.db.begin().await?;
     queries::insert_global_ban(&mut tx, user_id, banned_by, &body.reason, body.expires_at).await?;
-    end_all_sessions(state, &mut tx, user_id).await?;
+    let ended = crate::auth::queries::delete_user_sessions_except(&mut tx, user_id, None).await?;
     tx.commit().await?;
-    Ok(())
+    Ok(ended)
 }

@@ -337,42 +337,47 @@ pub async fn update_password(
 
     let new_hash = hash_password(&body.new_password).map_err(|_| AuthError::PasswordHash)?;
 
-    // Identify the caller's own session before the transaction (the access
-    // token's `sid`, or the refresh token sent as cookie/header).
+    // Identify the caller's own session before changing anything (the access
+    // token's `sid`, or the refresh token sent as cookie/header). Without it
+    // the other sessions cannot be told apart from the caller's, so the
+    // request is refused rather than silently keeping them.
     let keep = if body.revoke_others {
-        super::sessions::current_session_id(&state, &auth_user, &headers, &jar).await?
+        let current = super::sessions::current_session_id(&state, &auth_user, &headers, &jar)
+            .await?
+            .ok_or_else(|| {
+                tracing::warn!(
+                    user_id = %auth_user.id,
+                    "Cannot identify current session for password-change revocation"
+                );
+                AuthError::Validation(
+                    "Cannot identify current session. Please provide a refresh token via cookie or X-Refresh-Token header.".to_string(),
+                )
+            })?;
+        Some(current)
     } else {
         None
     };
 
     // Transaction: update password (clearing a pending forced change) +
-    // optionally end the other sessions
+    // optionally delete the other sessions
     let mut tx = state.db.begin().await.map_err(AuthError::Database)?;
 
     queries::update_password_hash_tx(&mut tx, auth_user.id, &new_hash).await?;
 
-    let revoked_count = if body.revoke_others {
-        if let Some(keep) = keep {
-            let ended =
-                queries::delete_user_sessions_except(&mut tx, auth_user.id, Some(keep)).await?;
-            // End them before committing: a failure leaves password and
-            // sessions unchanged for a retry.
-            super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
-            ended.len() as u64
-        } else {
-            // Cannot identify current session — skip revocation rather than
-            // accidentally deleting all sessions (including the caller's own).
-            tracing::warn!(
-                user_id = %auth_user.id,
-                "Cannot identify current session for password-change revocation; skipping"
-            );
-            0u64
+    let ended = match keep {
+        Some(keep) => {
+            queries::delete_user_sessions_except(&mut tx, auth_user.id, Some(keep)).await?
         }
-    } else {
-        0u64
+        None => Vec::new(),
     };
 
     tx.commit().await.map_err(AuthError::Database)?;
+
+    // End the deleted sessions now that the change is committed (their access
+    // tokens and sockets stop); a Valkey failure answers 500, retry is safe.
+    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
+    let revoked_count = ended.len() as u64;
+
     tracing::info!(user_id = %auth_user.id, revoked_others = body.revoke_others, revoked_count, "Password updated");
 
     Ok(Json(serde_json::json!({

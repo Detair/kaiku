@@ -609,22 +609,47 @@ async fn handle_socket(
         }
     }
 
-    // The session may have ended between authentication and the moment the
-    // subscriptions went live (its notice would have been missed): check the
-    // denylist once more before announcing `Ready`. Fails closed like the
-    // authentication check: an unreachable denylist closes with 1013.
+    // The session may have ended, or the account been banned, between
+    // authentication and the moment the subscriptions went live (the notice
+    // would have been missed): check both once more before announcing `Ready`.
+    // The denylist check fails closed like the authentication check: an
+    // unreachable denylist closes with 1013.
     if exit.is_none() {
-        if let Some(sid) = session_id {
-            match check_session(&state, &sid.to_string()).await {
-                SessionCheck::Active => {}
-                SessionCheck::Revoked => {
-                    exit = Some(match send_outbound(&tx, session_revoked_event()).await {
-                        Ok(()) => PubsubExit::SessionRevoked,
-                        Err(err) => err.into(),
-                    });
-                }
-                SessionCheck::Unavailable => exit = Some(PubsubExit::SessionCheckUnavailable),
+        let session = match session_id {
+            Some(sid) => check_session(&state, &sid.to_string()).await,
+            None => SessionCheck::Active,
+        };
+        let refusal = match session {
+            SessionCheck::Revoked => Some((session_revoked_event(), PubsubExit::SessionRevoked)),
+            SessionCheck::Unavailable => {
+                exit = Some(PubsubExit::SessionCheckUnavailable);
+                None
             }
+            SessionCheck::Active => {
+                match tokio::time::timeout(AUTH_FRAME_TIMEOUT, account_status(&state, user_id))
+                    .await
+                {
+                    Ok(Ok(AccountStatus::Banned)) => {
+                        Some((account_banned_event(), PubsubExit::AccountBanned))
+                    }
+                    Ok(Ok(AccountStatus::Missing)) => {
+                        Some((session_revoked_event(), PubsubExit::SessionRevoked))
+                    }
+                    // Pending password change cannot appear after a successful
+                    // handshake; a DB error or timeout keeps the handshake's
+                    // verdict.
+                    Ok(
+                        Ok(AccountStatus::Active | AccountStatus::PasswordChangeRequired) | Err(_),
+                    )
+                    | Err(_) => None,
+                }
+            }
+        };
+        if let Some((event, reason)) = refusal {
+            exit = Some(match send_outbound(&tx, event).await {
+                Ok(()) => reason,
+                Err(err) => err.into(),
+            });
         }
     }
 
@@ -1428,6 +1453,9 @@ pub(crate) enum PubsubExit {
     /// The session denylist could not be checked after the subscriptions went
     /// live (Valkey unavailable); the client retries later.
     SessionCheckUnavailable,
+    /// The account was found banned during socket setup; the client was told
+    /// with an `error` event `ACCOUNT_BANNED`.
+    AccountBanned,
 }
 
 impl PubsubExit {
@@ -1438,7 +1466,7 @@ impl PubsubExit {
     /// pipeline failed. Both mean "reconnect and catch up".
     pub(crate) const fn close_code(self) -> Option<u16> {
         match self {
-            Self::SessionRevoked => Some(CLOSE_POLICY_VIOLATION),
+            Self::SessionRevoked | Self::AccountBanned => Some(CLOSE_POLICY_VIOLATION),
             Self::SlowClient | Self::SessionCheckUnavailable => Some(CLOSE_TRY_AGAIN_LATER),
             Self::ClientGone => None,
             Self::ConnectFailed | Self::SubscribeFailed | Self::StreamEnded | Self::Lagged => {
@@ -1446,16 +1474,24 @@ impl PubsubExit {
             }
         }
     }
-}
 
-impl PubsubExit {
     /// Close reason sent with [`Self::close_code`] (1011/1013: "resync").
     pub(crate) const fn close_reason(self) -> &'static str {
         match self {
             Self::SessionRevoked => SESSION_REVOKED,
+            Self::AccountBanned => ACCOUNT_BANNED,
             _ => CLOSE_REASON_RESYNC,
         }
     }
+}
+
+/// The `error` event sent before a socket of a banned account closes (found
+/// by the setup re-check; a ban notice itself uses [`session_revoked_event`]).
+fn account_banned_event() -> OutboundMsg {
+    OutboundMsg::Event(ServerEvent::Error {
+        code: ACCOUNT_BANNED.to_string(),
+        message: REFUSE_ACCOUNT_BANNED.message.to_string(),
+    })
 }
 
 /// The `error` event sent before a socket of an ended session closes.
@@ -1710,12 +1746,14 @@ pub(crate) async fn forward_pubsub_messages(
                 if let Ok(notice) =
                     serde_json::from_str::<crate::auth::revocation::SessionNotice>(&payload)
                 {
-                    let crate::auth::revocation::SessionNotice::SessionRevoked { session_ids } =
-                        notice;
-                    if params
-                        .session_id
-                        .is_some_and(|sid| session_ids.contains(&sid))
-                    {
+                    use crate::auth::revocation::SessionNotice;
+                    let ends_this_socket = match notice {
+                        SessionNotice::SessionRevoked { session_ids } => params
+                            .session_id
+                            .is_some_and(|sid| session_ids.contains(&sid)),
+                        SessionNotice::AllSessionsRevoked => true,
+                    };
+                    if ends_this_socket {
                         if let Err(err) = send_outbound(&params.tx, session_revoked_event()).await {
                             return err.into();
                         }
@@ -2003,6 +2041,37 @@ mod pubsub_tests {
         }
         assert_eq!(PubsubExit::SessionRevoked.close_code(), Some(1008));
         assert_eq!(PubsubExit::SessionRevoked.close_reason(), "SESSION_REVOKED");
+    }
+
+    #[tokio::test]
+    async fn all_sessions_revoked_ends_every_socket() {
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        let (mut params, mut rx) = test_params(16);
+        // Also a socket whose token carried no session id.
+        params.session_id = None;
+        let notice = crate::auth::revocation::SessionNotice::AllSessionsRevoked;
+        btx.send(PubsubMessage {
+            channel: channels::user_events(params.user_id).into(),
+            value: PubsubValue::from(serde_json::to_string(&notice).expect("serialize")),
+            kind: MessageKind::Message,
+            server: Server::new("127.0.0.1", 6379),
+        })
+        .unwrap();
+
+        assert_eq!(
+            forward_pubsub_messages(brx, &params).await,
+            PubsubExit::SessionRevoked
+        );
+        match rx.recv().await {
+            Some(OutboundMsg::Event(ServerEvent::Error { code, .. })) => {
+                assert_eq!(code, "SESSION_REVOKED");
+            }
+            other => panic!("expected SESSION_REVOKED error, got {other:?}"),
+        }
+        assert_eq!(
+            serde_json::to_value(&notice).unwrap(),
+            serde_json::json!({ "type": "all_sessions_revoked" })
+        );
     }
 
     #[tokio::test]
@@ -2394,5 +2463,7 @@ mod pubsub_tests {
         assert_eq!(PubsubExit::SubscribeFailed.close_code(), Some(1011));
         assert_eq!(PubsubExit::ClientGone.close_code(), None);
         assert_eq!(PubsubExit::SessionRevoked.close_code(), Some(1008));
+        assert_eq!(PubsubExit::AccountBanned.close_code(), Some(1008));
+        assert_eq!(PubsubExit::AccountBanned.close_reason(), "ACCOUNT_BANNED");
     }
 }

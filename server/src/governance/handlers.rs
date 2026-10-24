@@ -261,8 +261,16 @@ pub async fn request_deletion(
 
     queries::schedule_account_deletion(&state.db, auth.id, now, scheduled_at).await?;
 
-    // Invalidate all sessions (force logout everywhere)
-    queries::delete_all_user_sessions(&state.db, auth.id).await?;
+    // Invalidate all sessions (force logout everywhere): delete the rows,
+    // then end them right away (access tokens and every open socket). A
+    // Valkey failure answers 500; the deletion stands and a retry is safe.
+    let ended = {
+        let mut conn = state.db.acquire().await?;
+        crate::auth::queries::delete_user_sessions_except(&mut conn, auth.id, None).await?
+    };
+    crate::auth::revocation::end_all_sessions(&state, auth.id, &ended)
+        .await
+        .map_err(|e| GovernanceError::Internal(e.to_string()))?;
 
     tracing::info!(
         user_id = %auth.id,

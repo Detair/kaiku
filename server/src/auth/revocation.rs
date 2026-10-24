@@ -64,23 +64,34 @@ pub async fn is_session_revoked(redis: &Client, sid: &str) -> Result<bool, Valke
     }
 }
 
+/// Extra denylist lifetime beyond the access-token expiry, covering clock
+/// skew between the server that issued a token and the one checking it.
+const DENYLIST_LEEWAY_SECS: i64 = 60;
+
 /// Internal `user:{id}` message telling that user's sockets which sessions
 /// ended. Sockets consume it and never forward it to clients.
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionNotice {
-    /// These sessions ended; a socket of one of them closes with 1008.
+    /// These sessions ended; a socket of one of them sends `error`
+    /// `SESSION_REVOKED` and closes with 1008.
     SessionRevoked { session_ids: Vec<uuid::Uuid> },
+    /// Every session of the user ended (ban, password reset, account
+    /// deletion): every socket of the user sends `error` `SESSION_REVOKED` and
+    /// closes with 1008, whatever session it belongs to.
+    AllSessionsRevoked,
 }
 
 /// End `session_ids` of `user_id` immediately.
 ///
-/// Denylists each id for the access-token lifetime (so every access token of
-/// those sessions is refused) and tells the user's open sockets, which close
-/// with 1008 when their own session is listed. Unlike the denylist *check*,
-/// this fails closed: a Valkey error is returned so callers can abort the
-/// surrounding transaction instead of reporting a revocation that did not
-/// take effect.
+/// Denylists each id for the access-token lifetime plus a small leeway (so
+/// every access token of those sessions is refused) and tells the user's open
+/// sockets, which close with 1008 when their own session is listed.
+///
+/// Call it **after** the session rows are deleted and committed. Unlike the
+/// denylist *check*, this fails closed: a Valkey error is logged and returned
+/// (500). The durable change stays committed, and repeating the request is
+/// safe.
 pub async fn end_sessions(
     state: &crate::api::AppState,
     user_id: uuid::Uuid,
@@ -89,11 +100,40 @@ pub async fn end_sessions(
     if session_ids.is_empty() {
         return Ok(());
     }
+    denylist(state, user_id, session_ids).await?;
+    publish_notice(
+        state,
+        user_id,
+        &SessionNotice::SessionRevoked {
+            session_ids: session_ids.to_vec(),
+        },
+    )
+    .await
+}
+
+/// End every session of `user_id` immediately: denylists `session_ids` (the
+/// rows just deleted) and closes **all** of the user's open sockets, also
+/// those whose session row no longer exists. Same ordering and failure rules
+/// as [`end_sessions`].
+pub async fn end_all_sessions(
+    state: &crate::api::AppState,
+    user_id: uuid::Uuid,
+    session_ids: &[uuid::Uuid],
+) -> Result<(), super::AuthError> {
+    denylist(state, user_id, session_ids).await?;
+    publish_notice(state, user_id, &SessionNotice::AllSessionsRevoked).await
+}
+
+async fn denylist(
+    state: &crate::api::AppState,
+    user_id: uuid::Uuid,
+    session_ids: &[uuid::Uuid],
+) -> Result<(), super::AuthError> {
     for sid in session_ids {
         revoke_session(
             &state.redis,
             &sid.to_string(),
-            state.config.jwt_access_expiry,
+            state.config.jwt_access_expiry + DENYLIST_LEEWAY_SECS,
         )
         .await
         .map_err(|e| {
@@ -101,11 +141,15 @@ pub async fn end_sessions(
             super::AuthError::Internal("Failed to end session".to_string())
         })?;
     }
+    Ok(())
+}
 
-    let notice = SessionNotice::SessionRevoked {
-        session_ids: session_ids.to_vec(),
-    };
-    let payload = serde_json::to_string(&notice)
+async fn publish_notice(
+    state: &crate::api::AppState,
+    user_id: uuid::Uuid,
+    notice: &SessionNotice,
+) -> Result<(), super::AuthError> {
+    let payload = serde_json::to_string(notice)
         .map_err(|e| super::AuthError::Internal(format!("JSON error: {e}")))?;
     state
         .redis

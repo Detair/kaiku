@@ -39,6 +39,9 @@ pub enum GovernanceError {
 
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+
+    #[error("Internal server error")]
+    Internal(String),
 }
 
 impl IntoResponse for GovernanceError {
@@ -64,6 +67,11 @@ impl IntoResponse for GovernanceError {
             Self::Validation(_) => (
                 StatusCode::BAD_REQUEST,
                 "VALIDATION_ERROR",
+                self.to_string(),
+            ),
+            Self::Internal(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
                 self.to_string(),
             ),
             Self::Database(e) => {
