@@ -573,7 +573,7 @@ Branch `feature/android-forced-password-change`. Depends on **server C4** being 
 
 ---
 
-## Maintainer device checklist (manual, after the tasks merge; local dev stack via `docker-compose.dev.yml` or a later athene test instance)
+## Maintainer device checklist (manual, after the tasks merge; local dev stack via `docker-compose.dev.yml` or a later production test instance)
 
 - [ ] Open a channel with more than 50 messages: the newest message is at the bottom, and "Load earlier" pages backwards (Task 1).
 - [ ] Stay signed in for 20 minutes or more, and lock the phone overnight (doze): live messages still arrive after unlocking, with no app restart (Tasks 2 and 4).

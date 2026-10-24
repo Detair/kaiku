@@ -21,7 +21,7 @@
 - `bun run tauri build` gets **no `--` separator** (bun passes args through. `release.yml:136` currently passes `--`).
 - Branch per task: `fix/<name>` or `feature/<name>` per CLAUDE.md. Squash-merge. Commit format `type(infra): subject` (≤72 chars).
 - CHANGELOG `[Unreleased]` entry only where users see a change (Tasks 3 and 6).
-- Do not touch `infra/scripts/backup.sh`, `upgrade-preflight.sh` or `docs/ops/backup-restore-runbook.md`. The server plan fixes psql auth (B-06/R-04), and the athene plan owns backup and restore.
+- Do not touch `infra/scripts/backup.sh`, `upgrade-preflight.sh` or `docs/ops/backup-restore-runbook.md`. The server plan fixes psql auth (B-06/R-04), and the the production server plan owns backup and restore.
 - Review gate for every task: Fable 5.1 plus one external model (Gemini 4 Argon via `agy`, or Codex), per `docs/developer-guide/agents/multi-model-workflow.md`.
 - Local verification baseline for every task: `python3 -m unittest discover -s scripts/tests -v` and `python3 scripts/check_ci_guardrails.py` both pass. Each workflow file must load with `python3 -c "import yaml,sys;[yaml.safe_load(open(f)) for f in sys.argv[1:]]" .github/workflows/*.yml .github/actions/*/action.yml`.
 
@@ -33,7 +33,7 @@ Every task below merges without these. The runbook (Task 7) documents each one s
 |---|---|---|
 | M1 | Create GitHub Environment `release`. Deployment rule: tags `v*` plus branch `main`. Move `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` into it and delete the repo-level copies. | Signed updater artifacts. The key leaves PR builds for good. |
 | M2 | Generate the Android release keystore offline and keep 2 off-host backups. Add the 4 Environment secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. | Signed APK on tag builds |
-| M3 | After the first image push, set GHCR package `kaiku-server` visibility (public, or a pull token for athene) | athene deployment |
+| M3 | After the first image push, set GHCR package `kaiku-server` visibility (public, or a pull token for the production server) | production deployment |
 | M4 | (Optional, cost decision) Apple Developer Program. Add `APPLE_*` secrets and set repo variable `MACOS_SIGNING_ENABLED=true`. | Gatekeeper-clean macOS |
 | M5 | (Optional, cost decision) Windows signing via Azure Trusted Signing. Add `AZURE_*` secrets and variables, and set `WINDOWS_SIGNING_ENABLED=true`. | SmartScreen-clean Windows |
 | M6 | Rehearsal: push throwaway tag `v0.9.0-rc.1` from an unmerged branch `release/rehearsal`. Inspect the draft, then delete the draft, the tag and the image tag. | Proves the publish path before `v1.0.0-rc.1` |
@@ -401,7 +401,7 @@ Branch `docs/release-runbook`. Can be written after Task 3. Merge it last, so it
 
 - [ ] **Step 1: Write the runbook.** One section per heading, using imperative steps, with every command copy-pasteable:
   1. *Versioning rules.* Cover C7, the versionCode table for `0.9.0-rc.1`, `1.0.0-rc.1`, `1.0.0` and `1.0.1-rc.1`, and the rule "never reuse or lower a version".
-  2. *One-time maintainer setup M1–M5.* Include the offline keystore command (`keytool -genkeypair -v -keystore kaiku-release.jks -alias kaiku -keyalg RSA -keysize 4096 -validity 10000`), `base64 -w0`, two backup locations (matching the off-host backup decision in the athene plan), the Environment deployment rule, and the GHCR visibility setting.
+  2. *One-time maintainer setup M1–M5.* Include the offline keystore command (`keytool -genkeypair -v -keystore kaiku-release.jks -alias kaiku -keyalg RSA -keysize 4096 -validity 10000`), `base64 -w0`, two backup locations (matching the off-host backup decision in the the production server plan), the Environment deployment rule, and the GHCR visibility setting.
   3. *Dry run* via `gh workflow run release.yml -f tag=… -f dry_run=true`, and what to check.
   4. *Rehearsal M6* with `v0.9.0-rc.1`, including cleanup: `gh release delete`, `git push --delete origin v0.9.0-rc.1`, and deleting the GHCR package version.
   5. *Cut an RC:* `scripts/bump-version.sh 1.0.0-rc.1`, PR, merge, `git tag -s v1.0.0-rc.1 <merge-sha>`, push the tag. Then the verification checklist: all assets present, `latest.json` has 4 platforms, the APK verifies, the image is pullable, and an older build offers the update (see M7). Then publish the draft.
@@ -425,7 +425,7 @@ Branch `docs/release-runbook`. Can be written after Task 3. Merge it last, so it
 - **Spec coverage:**
   - Scope 4 (signed APK, versioning, sideload upgrades) is covered by Tasks 1, 5 and 6.
   - Scope 7 (`v1.0.0-rc` dry run with signed desktop, updater manifest and APK; updater key handling) is covered by Tasks 2, 3, 6, 7 and M6.
-  - The restore drill and off-host backups are out of this stream (athene plan, server plan B-06/R-04).
+  - The restore drill and off-host backups are out of this stream (the production server plan, server plan B-06/R-04).
   - The curated changelog is covered by Task 3 `extract_section` and Task 7 §6.
 - **Not here:**
   - Making `ci.yml` Android unit tests blocking (A-16 part) belongs to the Android stream, which owns those tests.

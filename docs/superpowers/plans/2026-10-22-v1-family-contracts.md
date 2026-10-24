@@ -62,7 +62,7 @@ X.Y.Z[-rc.N]` updates `client/src-tauri/tauri.conf.json`, root
 `versionName`/`versionCode` in `mobile/android/version.properties` (`MAJOR*1_000_000 + MINOR*10_000 + PATCH*100 +
 rc`, rc 1–98, 99 for final). CI fails a tag build whose files disagree.
 
-## C8 — Server container image (release → athene deployment)
+## C8 — Server container image (release → production deployment)
 
 `ghcr.io/detair/kaiku-server:<version>` (`<version>` = tag without the
 leading `v`; multi-arch not required, amd64),
@@ -103,7 +103,7 @@ tree — the server stream must not create a conflicting file of that name.
 - **C11 — WebSocket close codes:** 1011 and 1013 from the server mean
   "reconnect with backoff, then catch up"; 1008 means "auth problem — refresh,
   or show login / password change".
-- **C12 — Desktop origins (server config + athene deployment):**
+- **C12 — Desktop origins (server config + production deployment):**
   `CORS_ALLOWED_ORIGINS` for the family server includes
   `https://kaiku.pmind.de`, `tauri://localhost`, `http://tauri.localhost`
   (and the compose file forwards the variable). Refresh-token delivery to
@@ -112,7 +112,7 @@ tree — the server stream must not create a conflicting file of that name.
 - **Shared files:** `ci.yml` is edited by release Tasks 1/2/4/5 and desktop
   Tasks 9/10 — the later-merging stream rebases; never reformat unrelated jobs.
 
-## C13 — Fixed SFU UDP port range (server → athene deployment) — added 2026-10-22
+## C13 — Fixed SFU UDP port range (server → production deployment) — added 2026-10-22
 
 The SFU (webrtc-rs) must bind ICE/media only within a configurable UDP port
 range so the host firewall can open exactly that range:
@@ -123,7 +123,7 @@ NAT 1:1 announcement if not already present. Documented per C9. Server
 stream: add as **Task 13** (after Task 6), with a test that a peer
 connection's local candidates use ports inside the range.
 
-## C14 — Multiple TURN URLs (server → athene, OPTIONAL, post-1.0 unless needed)
+## C14 — Multiple TURN URLs (server → the production server, OPTIONAL, post-1.0 unless needed)
 
 To enable the prepared TURNS-on-443 component, the server must hand out
 several ICE/TURN URLs (`turn:…:3478?transport=udp`, `…?transport=tcp`,
@@ -147,14 +147,14 @@ member cannot join voice from a restrictive network.
   close frame. Clients treat HTTP 401/403 at the WS handshake like 1008
   (refresh, or show login / password change) — never a blind retry loop.
 
-## C13b — SFU ICE interface filter (server → athene) — added 2026-10-23
+## C13b — SFU ICE interface filter (server → the production server) — added 2026-10-23
 
 With `hostNetwork`, webrtc-ice binds one UDP port per local address per peer
 connection (2 PCs per participant), exhausting the range and advertising
 internal addresses (overlay/pod networks) as host candidates. Optional:
 `VOICE_ICE_INTERFACES` (comma list of allowed interface names) and
 `VOICE_ICE_IP_FAMILY` (`v4`|`v6`|`both`, default `both`). Unset = current
-behaviour. athene sets `VOICE_ICE_INTERFACES=eth0`, `VOICE_ICE_IP_FAMILY=v4`.
+behaviour. the production server sets `VOICE_ICE_INTERFACES=eth0`, `VOICE_ICE_IP_FAMILY=v4`.
 Note: the advertised IP is `PUBLIC_IP` (existing var); ports are advertised
 unchanged, so the firewall forwards the same UDP port numbers 1:1.
 

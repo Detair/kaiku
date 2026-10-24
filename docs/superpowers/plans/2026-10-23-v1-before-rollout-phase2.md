@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close every review finding rated *Before rollout* that Phase 1 (PRs #658, #660–#666) and the other Phase-2 plans (push, i18n, athene deployment) do not already close, so the family can be onboarded without a known security gap, a misleading UI or a voice path that fails silently.
+**Goal:** Close every review finding rated *Before rollout* that Phase 1 (PRs #658, #660–#666) and the other Phase-2 plans (push, i18n, production deployment) do not already close, so the family can be onboarded without a known security gap, a misleading UI or a voice path that fails silently.
 
 **Architecture:** 24 PR-sized tasks (1–23 plus 11b) in six batches (server security, server, desktop UI, desktop native voice, Android UI/UX, ops). The batches are file-disjoint across areas and can run in parallel worktrees; order inside a batch is given per task. July features that are not family-critical (forum and announcement channels, scheduled events, membership screening) are **hidden behind a server flag** instead of being fixed or given UI (spec freeze rule). Four new cross-stream contracts (C22–C25) are proposed below.
 
@@ -11,7 +11,7 @@
 **Spec:** `docs/superpowers/specs/2026-10-20-v1-family-release-goal-design.md`
 **Review:** `docs/reviews/2026-10-22-v1-family-release-readiness.md` (Before-rollout list; full IDs in the maintainer's private archive — this plan names IDs and fixes, never exploit paths)
 **Contracts:** `docs/superpowers/plans/2026-10-22-v1-family-contracts.md` (C1–C14, C11/C12 clarifications) plus the proposals below.
-**Builds on:** `origin/main` @ `047bd54e` (#658 release pipeline merged) and the open Phase-1 PRs #660/#662 (Android), #661/#665 (desktop), #663/#666 (server). Every task here starts after the PRs it names are merged. Sibling Phase-2 plans: `2026-10-23-v1-push-phase2.md` (push), `2026-10-23-v1-i18n-phase2.md` (strings), and the private athene deployment plan (`kaiku-reviews-private/plans/2026-10-22-athene-kaiku-deploy.md`: backups, alerting, image pins, live config).
+**Builds on:** `origin/main` @ `047bd54e` (#658 release pipeline merged) and the open Phase-1 PRs #660/#662 (Android), #661/#665 (desktop), #663/#666 (server). Every task here starts after the PRs it names are merged. Sibling Phase-2 plans: `2026-10-23-v1-push-phase2.md` (push), `2026-10-23-v1-i18n-phase2.md` (strings), and the private production deployment plan (`kaiku-reviews-private/plans/2026-10-22-the production server-kaiku-deploy.md`: backups, alerting, image pins, live config).
 
 ---
 
@@ -24,18 +24,18 @@ Status: **FIXED** = closed by a merged/open Phase-1 PR; **OTHER** = owned by a s
 | ID | Finding (short) | Status | Decision | Reason / owner |
 |---|---|---|---|---|
 | S-03 | SSRF redirects, push DNS re-resolve, http push, no subscription cap | FIXED #666 T9 (no-redirect pinned client, https only) + OTHER push T2 (10 devices/user) | — | Fully covered between #666 and the push plan |
-| S-04 | Backend port possibly public, XFF trusted from anyone | FIXED #666 T10 (`RATE_LIMIT_TRUSTED_PROXIES`) + athene (Traefik only) | — | — |
+| S-04 | Backend port possibly public, XFF trusted from anyone | FIXED #666 T10 (`RATE_LIMIT_TRUSTED_PROXIES`) + the production server (Traefik only) | — | — |
 | S-05 | Admin elevation without re-auth, not bound to session | OPEN | **keep → Task 2** | Stolen admin token must not reach the admin API |
 | S-06 | Backup codes regenerable with only an access token | OPEN | **keep → Task 2** | Same re-auth helper as S-05 |
 | S-07 | No reliable kill switch for a stolen phone | OPEN | **keep → Task 1** | Threat #2 of the spec; ban/revoke/logout must end sessions and sockets |
 | S-08 | Public file endpoint serves any key | FIXED #666 T8 | — | — |
 | S-09 | `EVERYONE_FORBIDDEN` misses the four July permission bits | OPEN | **keep → Task 3** | One-line fix plus a classification test |
 | S-10 | Updater key in PR builds, no least privilege, mutable action refs | FIXED #658 (key only in `release.yml` + Environment, `createUpdaterArtifacts=false` in CI) | **keep rest → Task 23** | `ci.yml`/`security.yml`/`tauri-build.yml` lack top-level `permissions:`; `@master`/`@main` refs remain |
-| S-11 | Unsigned `:latest` deploys, broken release image, client built as root | FIXED #658 (C8 image, no `latest` from main) + athene (pinned `<ver>`, no browser SPA per athene D1) | — | — |
+| S-11 | Unsigned `:latest` deploys, broken release image, client built as root | FIXED #658 (C8 image, no `latest` from main) + the production server (pinned `<ver>`, no browser SPA per the production server D1) | — | — |
 | S-12 | mermaid/DOMPurify advisories; CSP `connect-src https:` | OPEN | **keep advisories → Task 22**; **defer CSP** | `bun audit --prod` today: dompurify ≤3.4.11, seroval ≤1.5.2, katex, mermaid <11.16.1. CSP must allow a user-chosen server; mermaid already runs `securityLevel: "strict"` |
-| S-13 | Backups unencrypted, on-host, `.env` not escrowed | OTHER athene T6–T7 | — | rclone crypt + off-host pull + SOPS |
-| S-14 | Unpinned stateful images | OTHER athene T1–T3 | — | postgres 16 / valkey 8.1 / RustFS pinned with renovate |
-| S-15 | Repo compose cannot reproduce live | FIXED #666 T11 + athene owns live config | — | — |
+| S-13 | Backups unencrypted, on-host, `.env` not escrowed | OTHER the production server T6–T7 | — | rclone crypt + off-host pull + SOPS |
+| S-14 | Unpinned stateful images | OTHER the production server T1–T3 | — | postgres 16 / valkey 8.1 / RustFS pinned with renovate |
+| S-15 | Repo compose cannot reproduce live | FIXED #666 T11 + the production server owns live config | — | — |
 | S-16 | Protected `/auth/*` routes unlimited, sync Argon2 | OPEN | **keep → Task 2** | Brute force of the current password with a stolen token |
 | S-17 | Forum endpoints guild-level checks; pending members; filter bypass | OPEN | **keep via flag → Task 4** | Forum and screening off on the server; their endpoints answer 404 |
 | B-07 | Presence clobbered across devices, friends-only | OPEN | **keep → Task 7** (cut 2nd) | "Dad shows offline while gaming" confuses evening voice |
@@ -79,7 +79,7 @@ Status: **FIXED** = closed by a merged/open Phase-1 PR; **OTHER** = owned by a s
 | U-05 | Solarized themes fail contrast, offered in onboarding | OPEN | **keep → Task 10** (hide) | — |
 | U-06 | Wrong on-colour pairs on solid fills (+ Android `NordOnError`) | OPEN | **keep → Task 10** | CLAUDE.md contrast rules |
 | U-07 | Non-existent colour tokens | OPEN | **keep → Task 10** | Delete/Leave items unstyled |
-| U-08 | Invite link flow broken (`tauri://` links) | OPEN | **keep reduced → Task 11** | athene serves no browser SPA (D1), so links cannot work: copy the code |
+| U-08 | Invite link flow broken (`tauri://` links) | OPEN | **keep reduced → Task 11** | the production server serves no browser SPA (D1), so links cannot work: copy the code |
 | U-09 | Register shown when registration is closed | OPEN | **keep → Task 11** (desktop), **Task 17** (Android) | — |
 | U-10 | Empty Home after onboarding | OPEN | **keep → Tasks 5, 12** | Auto-join + land on the family server |
 | U-11 | Voice-join toast has no reason | OPEN | **keep → Task 11** | Mic denied → user gives up |
@@ -89,18 +89,18 @@ Status: **FIXED** = closed by a merged/open Phase-1 PR; **OTHER** = owned by a s
 | U-15 | Escape in a modal marks read; error-dismiss submits form | OPEN | **keep → Task 11b** (with a11y basics) | Functional bugs |
 | R-06 | `tauri-build.yml` releases on tags | FIXED #658 | — | — |
 | R-07 | Updater endpoint ignores pre-releases | FIXED #658 + maintainer M7 | — | — |
-| R-08 | Prod runs `:latest` = main | FIXED #658 + athene `<ver>` pin | — | — |
-| R-09 | Nothing notifies the maintainer | OTHER athene T5–T7 (blackbox probe, backup alerts) | — | — |
-| R-10 | Repo compose ≠ live | FIXED #666 T11; live = athene | — | — |
-| R-11 | Backups same disk, plaintext, secrets not backed up | OTHER athene T6–T7 + maintainer escrow | — | — |
+| R-08 | Prod runs `:latest` = main | FIXED #658 + the production server `<ver>` pin | — | — |
+| R-09 | Nothing notifies the maintainer | OTHER the production server T5–T7 (blackbox probe, backup alerts) | — | — |
+| R-10 | Repo compose ≠ live | FIXED #666 T11; live = the production server | — | — |
+| R-11 | Backups same disk, plaintext, secrets not backed up | OTHER the production server T6–T7 + maintainer escrow | — | — |
 | R-12 | Desktop code signing | maintainer decision (M4/M5 hooks in #658) | — | — |
 | R-13 | Security audit drift, unpinned actions, no Dependabot | partly (#659/#664 keep-green) | **keep → Task 23**; **defer** ignore-list unification | — |
 | R-14 | Advisory gates (gitleaks, Android tests, Windows) | key part FIXED #658 | **keep → Task 23** | Windows is a family platform; Android tests now pass (249/249 in #660, 314/314 in #662) |
 | R-15 | Stale release body | FIXED #658 | — | — |
-| R-16 | Stateful images on rolling tags | OTHER athene | — | — |
+| R-16 | Stateful images on rolling tags | OTHER the production server | — | — |
 | U-01, S-08 | (downgraded Blockers) | FIXED #661 T5, #666 T8 | — | — |
 
-Not *Before rollout*, recorded for the coordinator: the QR-redeem value binding (residual of Blocker S-01) is **deferred** — Valkey is now password-protected and isolated (#666 T11, athene T2). D-15 (updater init not idempotent, rated Post-1.0) is folded into Task 14 because the updater is live since #665.
+Not *Before rollout*, recorded for the coordinator: a residual hardening item of Blocker S-01 is **deferred** (the blocker itself is closed by #666 and the production deployment plan). D-15 (updater init not idempotent, rated Post-1.0) is folded into Task 14 because the updater is live since #665.
 
 ---
 
@@ -127,7 +127,7 @@ A global ban, an admin ban, a single-session revoke, "revoke all other sessions"
 - Repo rules (`CLAUDE.md`): never commit to `main`; one branch + worktree per task (`fix/…`, `feature/…`, `refactor/…`); squash-merge PRs. Commit `type(scope): subject`, ≤72 chars, imperative, scopes only `auth, voice, chat, db, api, ws, ratelimit, infra, client, crypto`; end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - **Spec freeze:** no new features. A July feature that is broken is hidden behind C22, not fixed and not given UI.
 - **Public repo:** security changes are described by behaviour and test only — no exploit narratives in code, commits, PR bodies or CHANGELOG.
-- **Infrastructure is the maintainer's.** No task needs a live server, a secret, an Environment or a repo setting; every task merges green without the maintainer actions in §4. Deploying to athene needs the maintainer's explicit OK.
+- **Infrastructure is the maintainer's.** No task needs a live server, a secret, an Environment or a repo setting; every task merges green without the maintainer actions in §4. Deploying to the production server needs the maintainer's explicit OK.
 - **i18n-ready (spec + i18n plan C15/C16):** every new or changed user-facing string goes through `t()` (web, key `area.screen.purpose`, area files `client/src/i18n/en/<area>.ts` once i18n Task 1 lands) or `strings.xml` (Android, mirrored snake_case name). Error text only via `errorText()` (i18n C16) once it exists. Copy says **"server"**, never "guild".
 - UI colours only from tokens (`CLAUDE.md` "UI Contrast Rules"): readable text `text-text-primary`/`text-text-secondary`, on-colour text `text-on-accent`/`text-on-danger`/`text-on-success`, never accent-on-accent, no text opacity below 50 %. Android: `MaterialTheme.colorScheme` only.
 - License: only MIT, Apache-2.0, BSD-2/3, ISC, Zlib, MPL-2.0 (+ the others allowed in `CLAUDE.md`); `cargo deny check licenses` whenever a crate is added. The only new crate in this plan is `rubato` (MIT) in Task 15, if the implementer does not keep the in-tree resampler.
@@ -665,7 +665,7 @@ Branch `fix/ci-hygiene`. After #658 (merged); rebase over sibling `ci.yml` edits
 ## 4. Maintainer actions (none block merging)
 
 1. **Confirm the July-feature decision** (Task 4): forum/announcement channels, events and screening stay **off** on the family server (no env var needed). Veto before Task 4 merges if any should stay on.
-2. **Deploy approvals** on athene for the server batch (Tasks 1–8), with a backup first (athene runbook).
+2. **Deploy approvals** on the production server for the server batch (Tasks 1–8), with a backup first (the production server runbook).
 3. **Release M1 is still pending** (from #658): move `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)` into the `release` Environment and delete the repo-level copies.
 4. **Repo settings** after Task 23: enable "Dependabot alerts" and "Dependabot security updates" (Settings → Code security). Optional: branch protection requiring the Windows and Android jobs.
 5. **Per-OS manual checks** for Tasks 13–16 on one Windows, Linux and macOS PC using `docs/developer-guide/testing/desktop-manual-checklist.md` (new rows added by those tasks), and the Android rows for Tasks 17–21 on one phone.
@@ -675,7 +675,7 @@ Branch `fix/ci-hygiene`. After #658 (merged); rebase over sibling `ci.yml` edits
 
 - Push for DMs/mentions/photos, notification channels, device subscriptions and their cap → push plan. Call ringing by push (B-09 push half) → post-1.0.
 - String extraction and the i18n runtime → i18n plan. Tasks here only add strings in the catalog format.
-- Backups, alerting, image pins, live configuration, restore drill → athene plan.
+- Backups, alerting, image pins, live configuration, restore drill → the production server plan.
 - Post-1.0: CSP tightening, non-consuming global PTT hook, event reminder fixes, Android invite-code dialog, security ignore-list unification, QR-redeem value binding.
 
 ## Self-review notes

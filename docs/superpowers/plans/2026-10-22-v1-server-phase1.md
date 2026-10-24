@@ -22,11 +22,11 @@
 - Every user-relevant change gets a `CHANGELOG.md` entry under `[Unreleased]` (Keep a Changelog sections), user perspective.
 - **Public repo:** security fixes are described neutrally (what changes, what test proves it). No exploit narratives in code comments, commits, PR bodies or CHANGELOG.
 - **Review gate (every task):** Fable 5.1 + one external model (Gemini 4 Argon via `agy`, or Codex) review each PR before merge.
-- No task may require access to a live server; athene (k3s/Flux) deployment is out of scope — compose changes are for self-hosters.
+- No task may require access to a live server; the production cluster (k3s/Flux) deployment is out of scope — compose changes are for self-hosters.
 - C9: every new env var is documented in `docs/admin-guide/configuration/environment.md` (append a section; create the file with an `# Environment variables` heading if the release stream has not landed it yet).
 - C10: do **not** create `server/tests/integration/android_contract_fixtures.rs` — it belongs to the Android stream. New test modules added here (`ws_e2e.rs`, `admin_create_user.rs`, `files_http.rs`) each add one `mod` line to `server/tests/integration/main.rs` in alphabetical order; resolve trivial conflicts there by keeping all lines.
 - WebSocket close codes the server uses: **1011** (server-side event pipeline failed) and **1013** (client too slow, try again later) — both mean "reconnect and run catch-up". **1008** stays reserved for auth rejection (Android suppresses reconnect on 1008).
-- Out of scope: FCM push (Phase 2), Android/desktop client code, S-01 QR-redeem binding, session revocation (S-07), image pinning (S-14).
+- Out of scope: FCM push (Phase 2), Android/desktop client code, S-01 residual hardening (deferred), session revocation (S-07), image pinning (S-14).
 
 ## Review Focus
 
@@ -588,7 +588,7 @@ Scope note: session/audit IPs (`ConnectInfo` in auth/admin handlers) are unchang
 - [ ] **Step 2: Run to verify failure** — `cargo test -p vc-server --lib ratelimit`.
 - [ ] **Step 3: Implement**; `cargo deny check licenses`.
 - [ ] **Step 4: Run to verify pass** + `cargo nextest run -p vc-server -E 'test(ratelimit)'`.
-- [ ] **Step 5: Docs** — rate-limiting.md + environment.md: `RATE_LIMIT_TRUSTED_PROXIES` with examples (compose network subnet; k3s Traefik pod CIDR `10.42.0.0/16` for the athene deployment plan). CHANGELOG `### Changed`: "Rate limiting now only trusts `X-Forwarded-For` from proxies listed in `RATE_LIMIT_TRUSTED_PROXIES`. `RATE_LIMIT_TRUST_PROXY` is no longer used — self-hosters behind a reverse proxy must set the new variable."
+- [ ] **Step 5: Docs** — rate-limiting.md + environment.md: `RATE_LIMIT_TRUSTED_PROXIES` with examples (compose network subnet; k3s Traefik pod CIDR `10.42.0.0/16` for the production deployment plan). CHANGELOG `### Changed`: "Rate limiting now only trusts `X-Forwarded-For` from proxies listed in `RATE_LIMIT_TRUSTED_PROXIES`. `RATE_LIMIT_TRUST_PROXY` is no longer used — self-hosters behind a reverse proxy must set the new variable."
 - [ ] **Step 6: Gates + commit** — `git commit -m "fix(ratelimit): honor forwarded headers only from trusted proxies"`
 
 ---
@@ -629,7 +629,7 @@ Run (optional local smoke, dev machine only): `cd infra/compose && docker compos
 
 Branch `fix/backup-psql-auth`. Independent.
 
-> These scripts serve compose self-hosters. The athene deployment will replace them with a k8s CronJob (separate infra plan); do not invest beyond correctness.
+> These scripts serve compose self-hosters. The production deployment will replace them with a k8s CronJob (separate infra plan); do not invest beyond correctness.
 
 **Files:**
 - Modify: `infra/scripts/backup.sh:43-56`, `infra/scripts/upgrade-preflight.sh:64-105`
@@ -670,7 +670,7 @@ Expected: FAIL (current script calls `pg_dump` without `PGPASSWORD`, shim exits 
 
 ### Task 13: Fixed SFU UDP port range (contract C13) — added by coordinator 2026-10-22
 
-**Why:** the athene deployment (host firewall, hostNetwork) can only open a
+**Why:** the production deployment (host firewall, hostNetwork) can only open a
 fixed UDP range; today the SFU uses ephemeral ports.
 
 **Files:** `server/src/config.rs` (two new env vars), `server/src/voice/sfu.rs`
