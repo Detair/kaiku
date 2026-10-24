@@ -822,3 +822,29 @@ pub async fn delete_channel_override(
             .await?;
     Ok(result.rows_affected() > 0)
 }
+
+/// Which of `others` are blocked with `author` in either direction.
+///
+/// Postgres is the source of truth for blocks (the Redis cache expires), so callers that
+/// must not rely on the cache use this single batched query.
+pub async fn blocked_among(
+    db: &sqlx::PgPool,
+    author: Uuid,
+    others: &[Uuid],
+) -> Result<std::collections::HashSet<Uuid>, sqlx::Error> {
+    if others.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT CASE WHEN requester_id = $1 THEN addressee_id ELSE requester_id END \
+         FROM friendships \
+         WHERE status = 'blocked' \
+           AND ((requester_id = $1 AND addressee_id = ANY($2)) \
+             OR (addressee_id = $1 AND requester_id = ANY($2)))",
+    )
+    .bind(author)
+    .bind(others)
+    .fetch_all(db)
+    .await?;
+    Ok(ids.into_iter().collect())
+}

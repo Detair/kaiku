@@ -440,6 +440,12 @@ mod tests {
             assert_eq!(c.admit(u, ch, t0 + ms(2)), Admit::SendNow);
         }
         assert_eq!(c.flush(u, channels[0], t0 + WINDOW), None, "cap reached");
+        // The lost trailing push must not leave its count behind.
+        assert_eq!(
+            c.lock().entries.get(&(u, channels[0])).map(|e| e.pending),
+            Some(0),
+            "pending cleared after cap-dropped flush"
+        );
 
         // A trailing flush itself consumes budget.
         let (c, u, ch, t0) = ids();

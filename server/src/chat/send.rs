@@ -99,6 +99,28 @@ pub async fn authorize_send(
                 }
             }
         }
+
+        // The cache expires and a miss allows the send, so confirm in Postgres.
+        let others: Vec<Uuid> = participants
+            .iter()
+            .copied()
+            .filter(|&p| p != user_id)
+            .collect();
+        match queries::blocked_among(&state.db, user_id, &others).await {
+            Ok(blocked) if !blocked.is_empty() => return Err(ChatError::Blocked),
+            Ok(_) => {}
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    user_id = %user_id,
+                    fail_open = state.config.block_check_fail_open,
+                    "DB block check failed, using failsafe policy"
+                );
+                if !state.config.block_check_fail_open {
+                    return Err(ChatError::Blocked);
+                }
+            }
+        }
     }
 
     // Check for @everyone/@here mentions in guild channels. `ctx` comes from

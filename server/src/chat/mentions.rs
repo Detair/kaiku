@@ -214,24 +214,14 @@ pub async fn resolve_mention_targets(
 
     // Postgres is the source of truth for blocks (the Redis cache expires).
     // One batched query covers both directions; any error fails closed.
-    let blocked: HashSet<Uuid> = match sqlx::query_scalar::<_, Uuid>(
-        "SELECT CASE WHEN requester_id = $1 THEN addressee_id ELSE requester_id END \
-         FROM friendships \
-         WHERE status = 'blocked' \
-           AND ((requester_id = $1 AND addressee_id = ANY($2)) \
-             OR (addressee_id = $1 AND requester_id = ANY($2)))",
-    )
-    .bind(author_id)
-    .bind(&candidates)
-    .fetch_all(&state.db)
-    .await
-    {
-        Ok(ids) => ids.into_iter().collect(),
-        Err(e) => {
-            tracing::warn!(error = %e, "Block lookup failed; no mention targets");
-            return Vec::new();
-        }
-    };
+    let blocked: HashSet<Uuid> =
+        match super::queries::blocked_among(&state.db, author_id, &candidates).await {
+            Ok(set) => set,
+            Err(e) => {
+                tracing::warn!(error = %e, "Block lookup failed; no mention targets");
+                return Vec::new();
+            }
+        };
 
     let mut targets = Vec::new();
     for uid in candidates {

@@ -119,6 +119,46 @@ async fn test_dm_text_message_pushes_recipient_not_author(pool: PgPool) {
     assert_eq!(m["android"]["priority"], "HIGH");
 }
 
+/// Wake targeting reads blocks from Postgres, not the expiring Redis cache: a
+/// DB-only block means no push for the blocker.
+#[sqlx::test]
+async fn test_dm_from_blocked_user_does_not_push(pool: PgPool) {
+    let (app, mock) = fcm_app(pool).await;
+    let (a, _, token_a, _) = phone_user(&app).await;
+    let (b, _, _, _) = phone_user(&app).await;
+    let dm = create_dm_channel(&app.pool, a, b).await;
+    // Seed a block row without touching the Redis cache; target resolution must
+    // still drop the blocker. (The send itself is refused by the send path, so
+    // the wake logic is exercised directly.)
+    sqlx::query(
+        "INSERT INTO friendships (requester_id, addressee_id, status) VALUES ($1, $2, 'blocked')",
+    )
+    .bind(b)
+    .bind(a)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    let channel = vc_server::db::get_channel_by_id(&app.pool, dm)
+        .await
+        .unwrap()
+        .expect("channel");
+    let targets =
+        vc_server::push::targets::wake_targets(&app.state, &channel, a, "hi", false).await;
+    assert!(targets.is_empty(), "{targets:?}");
+
+    // And end to end the send is refused, so nothing is pushed.
+    let (status, _) = post_json(
+        &app,
+        &token_a,
+        &format!("/api/messages/channel/{dm}"),
+        &json!({ "content": "hi" }),
+    )
+    .await;
+    assert_eq!(status, 403);
+    assert!(settle(&mock, 1).await.is_empty());
+}
+
 /// Guild with A (owner), B and C as members of one text channel.
 struct GuildFixture {
     guild_id: Uuid,

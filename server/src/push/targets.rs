@@ -14,8 +14,8 @@ use crate::db;
 
 /// Recipients and signals for a new message by `author_id` in `channel`.
 ///
-/// - DM / group DM: every participant except the author gets `dm`, encrypted or not (the signal
-///   carries no content).
+/// - DM / group DM: every participant except the author and blocked users gets `dm`, encrypted or
+///   not (the signal carries no content).
 /// - Guild channel, not encrypted: resolved `@mention` targets get `mention`.
 /// - Anything else: nobody.
 pub async fn wake_targets(
@@ -26,17 +26,29 @@ pub async fn wake_targets(
     encrypted: bool,
 ) -> Vec<(Uuid, WakeSignal)> {
     if channel.channel_type == db::ChannelType::Dm {
-        return match queries::list_dm_participant_ids(&state.db, channel.id).await {
+        let ids = match queries::list_dm_participant_ids(&state.db, channel.id).await {
             Ok(ids) => ids
                 .into_iter()
                 .filter(|&id| id != author_id)
-                .map(|id| (id, WakeSignal::dm(channel.id, 1)))
-                .collect(),
+                .collect::<Vec<_>>(),
             Err(e) => {
                 tracing::warn!(error = %e, channel_id = %channel.id, "push: DM participants lookup failed");
-                Vec::new()
+                return Vec::new();
             }
         };
+        // Blocked participants are never woken; a failed lookup wakes nobody.
+        let blocked = match queries::blocked_among(&state.db, author_id, &ids).await {
+            Ok(set) => set,
+            Err(e) => {
+                tracing::warn!(error = %e, channel_id = %channel.id, "push: DM block lookup failed");
+                return Vec::new();
+            }
+        };
+        return ids
+            .into_iter()
+            .filter(|id| !blocked.contains(id))
+            .map(|id| (id, WakeSignal::dm(channel.id, 1)))
+            .collect();
     }
     if channel.guild_id.is_none() || encrypted {
         return Vec::new();

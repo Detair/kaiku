@@ -45,9 +45,15 @@ authenticated channel.
   lost; the next message pushes immediately instead of waiting forever.
 - Ordering on the device is not guaranteed: FCM does not order messages, and
   target resolution and delivery are asynchronous, so a `read` can arrive
-  before or after a wake for the same channel. Clients must, on a wake, fetch
-  and show only messages after the server's read cursor (none means no
-  notification), and must clear the channel's notification on `read`.
+  before or after a wake for the same channel. `read` and wakes share
+  `collapse_key` = channel id, so FCM may drop a `read` while the phone is
+  offline. Clients must therefore, on every wake, fetch the messages after the
+  server's read cursor; if none are unread, they must clear any existing
+  notification for that channel (the `read` may have been collapsed or
+  reordered). They should also clear the channel's notification on `read`.
+- `/api/me/read-all` and guild read-all mark only text channels, so a mention
+  wake in an announcement or forum channel is cleared only by a per-channel
+  read.
 - Concurrency: the coalescer state is a `std::sync::Mutex` that is never held
   across `.await`; timers are spawned `sleep_until` tasks that call `flush`.
 - Memory: every 256th `admit` sweeps entries idle for 1 h that hold no
