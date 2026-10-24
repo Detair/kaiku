@@ -6,8 +6,10 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import io.wolftown.kaiku.data.api.VoiceApi
 import io.wolftown.kaiku.data.api.VoiceApiImpl
+import io.wolftown.kaiku.data.voice.AndroidMicPermissionChecker
 import io.wolftown.kaiku.data.voice.DefaultEglBaseProvider
 import io.wolftown.kaiku.data.voice.EglBaseProvider
+import io.wolftown.kaiku.data.voice.MicPermissionChecker
 import javax.inject.Singleton
 
 @Module
@@ -21,4 +23,8 @@ abstract class VoiceModule {
     @Binds
     @Singleton
     abstract fun bindEglBaseProvider(impl: DefaultEglBaseProvider): EglBaseProvider
+
+    @Binds
+    @Singleton
+    abstract fun bindMicPermissionChecker(impl: AndroidMicPermissionChecker): MicPermissionChecker
 }

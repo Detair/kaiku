@@ -16,18 +16,35 @@ import javax.inject.Singleton
 /**
  * Observes device network connectivity via Android's [ConnectivityManager].
  *
- * Exposes [isConnected] as a [StateFlow] so that [KaikuWebSocket] can
- * pause/resume reconnection attempts based on actual network availability.
+ * Exposes [isConnected] and the default network's [networkId] so that
+ * [RealtimeConnectionManager] can pause reconnects while offline and force a
+ * reconnect when the device switches networks (e.g. Wi-Fi to cellular).
  */
 @Singleton
 class ConnectivityMonitor @Inject constructor(
     @ApplicationContext private val context: Context
-) : Closeable {
+) : ConnectivitySignal, Closeable {
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
     private val _isConnected = MutableStateFlow(checkCurrentConnectivity())
-    val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+    override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+    private val _networkId = MutableStateFlow(connectivityManager.activeNetwork?.networkHandle)
+    override val networkId: StateFlow<Long?> = _networkId.asStateFlow()
+
+    /** Tracks the system default network, whose handle identifies "the" network we are on. */
+    private val defaultNetworkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            _networkId.value = network.networkHandle
+        }
+
+        override fun onLost(network: Network) {
+            if (_networkId.value == network.networkHandle) {
+                _networkId.value = null
+            }
+        }
+    }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -43,10 +60,15 @@ class ConnectivityMonitor @Inject constructor(
             network: Network,
             networkCapabilities: NetworkCapabilities
         ) {
-            val hasInternet = networkCapabilities
-                .hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                && networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-            _isConnected.value = hasInternet
+            // Only the default network decides; a secondary network changing its
+            // capabilities must not mark the device offline (the realtime manager
+            // drops the socket when offline).
+            _isConnected.value = if (network == connectivityManager.activeNetwork) {
+                networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            } else {
+                checkCurrentConnectivity()
+            }
         }
     }
 
@@ -56,6 +78,7 @@ class ConnectivityMonitor @Inject constructor(
             .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
             .build()
         connectivityManager.registerNetworkCallback(request, networkCallback)
+        connectivityManager.registerDefaultNetworkCallback(defaultNetworkCallback)
     }
 
     private fun checkCurrentConnectivity(): Boolean {
@@ -66,11 +89,14 @@ class ConnectivityMonitor @Inject constructor(
     }
 
     override fun close() {
-        try {
-            connectivityManager.unregisterNetworkCallback(networkCallback)
-        } catch (_: IllegalArgumentException) {
-            // Already unregistered
+        for (callback in listOf(networkCallback, defaultNetworkCallback)) {
+            try {
+                connectivityManager.unregisterNetworkCallback(callback)
+            } catch (_: IllegalArgumentException) {
+                // Already unregistered
+            }
         }
         _isConnected.value = false
+        _networkId.value = null
     }
 }

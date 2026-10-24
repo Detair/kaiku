@@ -24,6 +24,7 @@ use vc_server::chat::types::{
     AttachmentInfo, AuthorProfile, CursorPaginatedResponse, MessageResponse,
 };
 use vc_server::db::{Channel, ChannelType};
+use vc_server::guild::categories::{Category, CategoryType};
 use vc_server::guild::settings::ChannelWithUnread;
 use vc_server::ws::ServerEvent;
 
@@ -243,5 +244,35 @@ fn android_golden_guild_channels() {
     check_golden(
         "guild_channels.json",
         serde_json::to_value(&channels).expect("serialize guild channels"),
+    );
+}
+
+/// `GET /api/guilds/{id}/categories`: one top-level category and one nested
+/// under it (`parent_id`); `category_type` is on the wire but ignored by Android.
+#[test]
+fn android_golden_guild_categories() {
+    let top = Category {
+        id: Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_9001),
+        guild_id: GUILD_ID,
+        name: "Text Channels".to_string(),
+        position: 0,
+        parent_id: None,
+        category_type: CategoryType::Mixed,
+        created_at: ts("2026-03-12T09:00:00Z"),
+    };
+    let nested = Category {
+        id: Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_9002),
+        guild_id: GUILD_ID,
+        name: "Voice".to_string(),
+        position: 1,
+        parent_id: Some(top.id),
+        category_type: CategoryType::Voice,
+        created_at: ts("2026-03-12T09:05:00Z"),
+    };
+
+    let categories = vec![top, nested];
+    check_golden(
+        "guild_categories.json",
+        serde_json::to_value(&categories).expect("serialize guild categories"),
     );
 }

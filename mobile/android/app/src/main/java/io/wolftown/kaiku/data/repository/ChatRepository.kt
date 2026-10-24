@@ -193,7 +193,7 @@ class ChatRepository @Inject constructor(
                 guildRepository.onMessageReceived(event.channelId)
             }
         } catch (e: Exception) {
-            logger.log(Level.WARNING, "Failed to deserialize MessageNew payload", e)
+            logger.log(Level.WARNING, "Failed to deserialize MessageNew payload (${e::class.simpleName})")
         }
     }
 

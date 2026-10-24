@@ -12,13 +12,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.repository.DmRepository
 import io.wolftown.kaiku.domain.model.DmConversation
+import io.wolftown.kaiku.ui.shared.resolveServerUrl
 
 /**
  * Direct-message conversation list.
@@ -43,12 +46,12 @@ fun DmListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Direct Messages") },
+                title = { Text(stringResource(R.string.dm_title)) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back"
+                            contentDescription = stringResource(R.string.common_back)
                         )
                     }
                 }
@@ -71,20 +74,20 @@ fun DmListScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = error ?: "An error occurred",
+                            text = stringResource(error ?: R.string.common_error_generic),
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodyLarge
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Button(onClick = { viewModel.refresh() }) {
-                            Text("Retry")
+                            Text(stringResource(R.string.common_retry))
                         }
                     }
                 }
 
                 conversations.isEmpty() -> {
                     Text(
-                        text = "No direct messages yet",
+                        text = stringResource(R.string.dm_empty),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.Center)
@@ -118,7 +121,7 @@ private fun DmConversationRow(
     onClick: () -> Unit
 ) {
     val title = DmRepository.conversationTitle(dm, currentUserId)
-    val avatarUrl = DmRepository.conversationAvatarUrl(dm, currentUserId)
+    val avatarUrl = resolveServerUrl(DmRepository.conversationAvatarUrl(dm, currentUserId))
     val hasUnread = dm.unreadCount > 0
 
     Row(
@@ -130,7 +133,7 @@ private fun DmConversationRow(
     ) {
         AsyncImage(
             model = avatarUrl,
-            contentDescription = "$title avatar",
+            contentDescription = stringResource(R.string.common_avatar_description, title),
             modifier = Modifier
                 .size(44.dp)
                 .clip(CircleShape)
@@ -148,8 +151,9 @@ private fun DmConversationRow(
                 overflow = TextOverflow.Ellipsis
             )
             val preview = dm.lastMessage?.let { last ->
-                val sender = last.username?.let { "$it: " } ?: ""
-                "$sender${last.content}"
+                last.username?.let { sender ->
+                    stringResource(R.string.dm_last_message_preview, sender, last.content)
+                } ?: last.content
             }
             if (preview != null) {
                 Text(
@@ -165,7 +169,13 @@ private fun DmConversationRow(
         if (hasUnread) {
             Spacer(modifier = Modifier.width(8.dp))
             Badge {
-                Text(text = if (dm.unreadCount > 99) "99+" else dm.unreadCount.toString())
+                Text(
+                    text = if (dm.unreadCount > 99) {
+                        stringResource(R.string.dm_unread_overflow)
+                    } else {
+                        dm.unreadCount.toString()
+                    }
+                )
             }
         }
     }

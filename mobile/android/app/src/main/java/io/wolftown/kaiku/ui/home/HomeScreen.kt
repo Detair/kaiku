@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.model.ChannelType
+import io.wolftown.kaiku.ui.shared.ConnectionBanner
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -28,9 +29,10 @@ fun HomeScreen(
 ) {
     val guilds by viewModel.guilds.collectAsState()
     val selectedGuild by viewModel.selectedGuild.collectAsState()
-    val channels by viewModel.channels.collectAsState()
+    val sections by viewModel.sections.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val error by viewModel.error.collectAsState()
+    val connectionStatus by viewModel.connectionStatus.collectAsState()
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -92,6 +94,7 @@ fun HomeScreen(
                     .fillMaxSize()
                     .padding(paddingValues)
             ) {
+            ConnectionBanner(status = connectionStatus)
             // A failed load is shown inline while there is still something to
             // display; the full-screen error below is only for the empty case.
             val errorRes = error
@@ -158,7 +161,7 @@ fun HomeScreen(
 
                     else -> {
                         ChannelList(
-                            channels = channels,
+                            sections = sections,
                             onChannelSelected = { channelId, channelType ->
                                 viewModel.onChannelSelected(channelId, channelType)
                             }

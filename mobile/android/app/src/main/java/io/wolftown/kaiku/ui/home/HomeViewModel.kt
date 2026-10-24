@@ -4,9 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
-import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.GuildRepository
-import io.wolftown.kaiku.data.ws.KaikuWebSocket
+import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
+import io.wolftown.kaiku.data.ws.RealtimeStatus
+import io.wolftown.kaiku.domain.ChannelSection
+import io.wolftown.kaiku.domain.groupChannels
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.Guild
@@ -20,8 +22,7 @@ import javax.inject.Inject
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val guildRepository: GuildRepository,
-    private val webSocket: KaikuWebSocket,
-    private val tokenStorage: TokenStorage
+    realtimeConnectionManager: RealtimeConnectionManager
 ) : ViewModel() {
 
     companion object {
@@ -29,6 +30,9 @@ class HomeViewModel @Inject constructor(
     }
 
     val guilds: StateFlow<List<Guild>> = guildRepository.guilds
+
+    /** Realtime connection state, for the reconnect banner. */
+    val connectionStatus: StateFlow<RealtimeStatus> = realtimeConnectionManager.status
 
     val selectedGuild: StateFlow<Guild?> = combine(
         guildRepository.guilds,
@@ -50,6 +54,11 @@ class HomeViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    /** [channels] grouped under their category headers. */
+    val sections: StateFlow<List<ChannelSection>> = combine(channels, guildRepository.categories) { list, categories ->
+        groupChannels(list, categories)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
@@ -65,7 +74,7 @@ class HomeViewModel @Inject constructor(
     val navigateToChannel = _navigateToChannel.receiveAsFlow()
 
     init {
-        connectWebSocket()
+        // The realtime connection is owned by RealtimeConnectionManager, started by KaikuApplication.
         loadGuilds()
     }
 
@@ -107,14 +116,6 @@ class HomeViewModel @Inject constructor(
 
     fun refresh() {
         loadGuilds()
-    }
-
-    private fun connectWebSocket() {
-        val serverUrl = tokenStorage.getServerUrl() ?: run {
-            logger.warning("Server URL not configured, cannot connect WebSocket")
-            return
-        }
-        webSocket.connect(serverUrl)
     }
 
     private fun loadGuilds() {

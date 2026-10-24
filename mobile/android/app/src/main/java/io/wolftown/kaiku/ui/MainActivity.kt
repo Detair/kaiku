@@ -10,14 +10,20 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
 import dagger.hilt.android.AndroidEntryPoint
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.ui.auth.LoginViewModel
 import io.wolftown.kaiku.ui.auth.OidcHandler
 import io.wolftown.kaiku.ui.shared.KaikuTheme
+import io.wolftown.kaiku.ui.shared.LocalServerBaseUrl
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -31,6 +37,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var tokenStorage: TokenStorage
+
+    @Inject
+    lateinit var realtimeConnectionManager: RealtimeConnectionManager
 
     private val loginViewModel: LoginViewModel by viewModels()
 
@@ -47,9 +56,16 @@ class MainActivity : ComponentActivity() {
             KaikuApp(
                 startDestination = startDestination,
                 authState = authState,
-                appVersion = appVersion
+                appVersion = appVersion,
+                serverBaseUrl = tokenStorage::getServerUrl
             )
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Reconnect right away when returning to the app instead of waiting out the backoff.
+        realtimeConnectionManager.onAppForeground()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -83,24 +99,36 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * Root composable. [serverBaseUrl] reads the configured server URL; it is
+ * re-read whenever the login state changes (the URL is saved before login)
+ * and provided as [LocalServerBaseUrl] so screens can resolve the relative
+ * image URLs the server sends.
+ */
 @Composable
 fun KaikuApp(
     authState: AuthState,
     startDestination: String = "server_url",
-    appVersion: String = ""
+    appVersion: String = "",
+    serverBaseUrl: () -> String? = { null }
 ) {
-    KaikuTheme(darkTheme = true) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background,
-        ) {
-            val navController = rememberNavController()
-            KaikuNavGraph(
-                navController = navController,
-                startDestination = startDestination,
-                authState = authState,
-                appVersion = appVersion
-            )
+    val isLoggedIn by authState.isLoggedIn.collectAsState()
+    val baseUrl = remember(isLoggedIn) { serverBaseUrl() }
+
+    CompositionLocalProvider(LocalServerBaseUrl provides baseUrl) {
+        KaikuTheme(darkTheme = true) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background,
+            ) {
+                val navController = rememberNavController()
+                KaikuNavGraph(
+                    navController = navController,
+                    startDestination = startDestination,
+                    authState = authState,
+                    appVersion = appVersion
+                )
+            }
         }
     }
 }

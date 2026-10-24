@@ -10,10 +10,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.ui.shared.ConnectionBanner
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterNotNull
 
 /**
  * Full-screen text channel view.
@@ -32,12 +36,32 @@ fun TextChannelScreen(
     onNavigateBack: () -> Unit,
     viewModel: TextChannelViewModel = hiltViewModel()
 ) {
-    val channelName by viewModel.channelName.collectAsState()
+    val title by viewModel.title.collectAsState()
     val messages by viewModel.messages.collectAsState()
     val typingUsers by viewModel.typingUsers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val canLoadMore by viewModel.canLoadMore.collectAsState()
     val messageInput by viewModel.messageInput.collectAsState()
+    val editingMessage by viewModel.editingMessage.collectAsState()
+    val connectionStatus by viewModel.connectionStatus.collectAsState()
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    // Not keyed on the error value: clearing it would re-key the effect and cancel the
+    // snackbar. Clearing first lets a repeated identical error re-emit; collectLatest
+    // replaces a showing snackbar with the newest error.
+    LaunchedEffect(Unit) {
+        viewModel.error.filterNotNull().collectLatest { res ->
+            viewModel.clearError()
+            val retry = res == R.string.chat_send_failed
+            val result = snackbarHostState.showSnackbar(
+                message = context.getString(res),
+                actionLabel = if (retry) context.getString(R.string.common_retry) else null,
+                withDismissAction = true
+            )
+            if (retry && result == SnackbarResult.ActionPerformed) viewModel.onSendMessage()
+        }
+    }
 
     val listState = rememberLazyListState()
 
@@ -70,10 +94,24 @@ fun TextChannelScreen(
         }
     }
 
+    val titleText = when (val t = title) {
+        null -> stringResource(R.string.chat_title_loading)
+        else -> if (t.isDm) t.text else stringResource(R.string.chat_title_channel, t.text)
+    }
+    val placeholder = when (val t = title) {
+        null -> stringResource(R.string.chat_message_placeholder_loading)
+        else -> if (t.isDm) {
+            stringResource(R.string.chat_message_placeholder_dm, t.text)
+        } else {
+            stringResource(R.string.chat_message_placeholder_channel, t.text)
+        }
+    }
+
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("#$channelName") },
+                title = { Text(titleText) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
@@ -87,18 +125,20 @@ fun TextChannelScreen(
         bottomBar = {
             MessageInput(
                 input = messageInput,
-                channelName = channelName,
+                placeholder = placeholder,
                 typingUsers = typingUsers,
                 onInputChanged = viewModel::onMessageInputChanged,
                 onSend = viewModel::onSendMessage
             )
         }
     ) { paddingValues ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
+        ConnectionBanner(status = connectionStatus)
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             when {
                 isLoading && messages.isEmpty() -> {
                     CircularProgressIndicator(
@@ -140,10 +180,7 @@ fun TextChannelScreen(
                             MessageItem(
                                 message = message,
                                 isOwnMessage = message.author.id == currentUserId,
-                                onEdit = { msgId ->
-                                    // In a full implementation, this would show an edit dialog.
-                                    // For now, the edit action is wired up via the ViewModel.
-                                },
+                                onEdit = viewModel::onStartEdit,
                                 onDelete = { msgId ->
                                     viewModel.onDeleteMessage(msgId)
                                 },
@@ -156,6 +193,15 @@ fun TextChannelScreen(
                 }
             }
         }
+        }
+    }
+
+    editingMessage?.let { message ->
+        EditMessageDialog(
+            initial = message.content,
+            onConfirm = viewModel::onConfirmEdit,
+            onDismiss = viewModel::onCancelEdit
+        )
     }
 
     reactionTargetId?.let { messageId ->

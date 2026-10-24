@@ -17,6 +17,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import io.wolftown.kaiku.domain.model.Attachment
+import io.wolftown.kaiku.ui.shared.resolveServerUrl
 import kotlin.math.ln
 import kotlin.math.pow
 
@@ -35,7 +36,7 @@ fun MessageAttachments(
         for (att in attachments) {
             if (att.isImage()) {
                 AsyncImage(
-                    model = att.mediumUrl ?: att.url,
+                    model = resolveServerUrl(att.mediumUrl ?: att.url),
                     contentDescription = att.filename,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier

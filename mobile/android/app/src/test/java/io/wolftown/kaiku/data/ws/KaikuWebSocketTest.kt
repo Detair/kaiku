@@ -1,9 +1,6 @@
 package io.wolftown.kaiku.data.ws
 
 import app.cash.turbine.test
-import io.mockk.every
-import io.mockk.mockk
-import io.wolftown.kaiku.data.local.TokenStorage
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import okhttp3.Response
@@ -25,7 +22,6 @@ class KaikuWebSocketTest {
 
     private lateinit var mockServer: MockWebServer
     private lateinit var okHttpClient: OkHttpClient
-    private lateinit var tokenStorage: TokenStorage
     private lateinit var ws: KaikuWebSocket
 
     @Before
@@ -35,12 +31,10 @@ class KaikuWebSocketTest {
 
         okHttpClient = OkHttpClient.Builder().build()
 
-        tokenStorage = mockk(relaxed = true)
-        every { tokenStorage.getAccessToken() } returns "test-jwt-token"
-        every { tokenStorage.getServerUrl() } returns mockServer.url("/").toString()
-
-        ws = KaikuWebSocket(okHttpClient, tokenStorage, WsJson)
+        ws = KaikuWebSocket(okHttpClient, WsJson)
     }
+
+    private fun serverUrl() = mockServer.url("/").toString()
 
     @After
     fun tearDown() {
@@ -71,7 +65,7 @@ class KaikuWebSocketTest {
         ws.connectionState.test(timeout = 10.seconds) {
             assertEquals(ConnectionState.Disconnected, awaitItem())
 
-            ws.connect(mockServer.url("/").toString())
+            ws.connect(serverUrl(), TOKEN)
 
             assertEquals(ConnectionState.Connecting, awaitItem())
             assertEquals(ConnectionState.Connected, awaitItem())
@@ -100,7 +94,7 @@ class KaikuWebSocketTest {
         ws.connectionState.test(timeout = 10.seconds) {
             assertEquals(ConnectionState.Disconnected, awaitItem())
 
-            ws.connect(mockServer.url("/").toString())
+            ws.connect(serverUrl(), TOKEN)
             assertEquals(ConnectionState.Connecting, awaitItem())
 
             // Wait for the auth frame to be received by mock server
@@ -135,7 +129,7 @@ class KaikuWebSocketTest {
         )
 
         ws.events.test(timeout = 10.seconds) {
-            ws.connect(mockServer.url("/").toString())
+            ws.connect(serverUrl(), TOKEN)
 
             val ready = awaitItem()
             assertIs<ServerEvent.Ready>(ready)
@@ -178,7 +172,7 @@ class KaikuWebSocketTest {
         )
 
         ws.events.test(timeout = 10.seconds) {
-            ws.connect(mockServer.url("/").toString())
+            ws.connect(serverUrl(), TOKEN)
             awaitItem() // Ready
 
             ws.send(ClientEvent.Subscribe("chan-001"))
@@ -208,7 +202,7 @@ class KaikuWebSocketTest {
         ws.connectionState.test(timeout = 10.seconds) {
             assertEquals(ConnectionState.Disconnected, awaitItem())
 
-            ws.connect(mockServer.url("/").toString())
+            ws.connect(serverUrl(), TOKEN)
             assertEquals(ConnectionState.Connecting, awaitItem())
             assertEquals(ConnectionState.Connected, awaitItem())
 
@@ -240,7 +234,7 @@ class KaikuWebSocketTest {
         )
 
         ws.events.test(timeout = 10.seconds) {
-            ws.connect(mockServer.url("/").toString())
+            ws.connect(serverUrl(), TOKEN)
 
             // Wait for the authenticate message to arrive at the mock server
             assertTrue("Server did not receive auth message in time", authLatch.await(5, TimeUnit.SECONDS))
@@ -260,16 +254,6 @@ class KaikuWebSocketTest {
     }
 
     @Test
-    fun `no access token prevents connection`() {
-        every { tokenStorage.getAccessToken() } returns null
-
-        ws.connect("http://localhost:8080")
-
-        // Should remain disconnected since there's no token
-        assertEquals(ConnectionState.Disconnected, ws.connectionState.value)
-    }
-
-    @Test
     fun `server close triggers Disconnected state`() = runTest {
         mockServer.enqueue(
             MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
@@ -283,14 +267,13 @@ class KaikuWebSocketTest {
         ws.connectionState.test(timeout = 10.seconds) {
             assertEquals(ConnectionState.Disconnected, awaitItem())
 
-            ws.connect(mockServer.url("/").toString())
+            ws.connect(serverUrl(), TOKEN)
             assertEquals(ConnectionState.Connecting, awaitItem())
             assertEquals(ConnectionState.Connected, awaitItem())
 
             // Server-initiated close should transition back to Disconnected
             assertEquals(ConnectionState.Disconnected, awaitItem())
 
-            // Stop reconnect attempts for clean test shutdown
             ws.disconnect()
             cancelAndIgnoreRemainingEvents()
         }
@@ -309,7 +292,7 @@ class KaikuWebSocketTest {
         )
 
         ws.events.test(timeout = 10.seconds) {
-            ws.connect(mockServer.url("/").toString())
+            ws.connect(serverUrl(), TOKEN)
 
             val ready = awaitItem()
             assertIs<ServerEvent.Ready>(ready)
@@ -323,12 +306,99 @@ class KaikuWebSocketTest {
 
     @Test
     fun `connect converts https URL to wss scheme`() {
-        // Verify URL conversion by connecting to HTTPS URL that won't resolve.
-        // The key is that it enters Connecting state (token is present).
-        every { tokenStorage.getAccessToken() } returns "test-token"
-
-        ws.connect("https://example.com")
+        // Verify URL conversion by connecting to an HTTPS URL; the key is that
+        // the request builder accepts the converted URL and enters Connecting.
+        ws.connect("https://example.com", TOKEN)
         assertEquals(ConnectionState.Connecting, ws.connectionState.value)
         ws.disconnect()
+    }
+
+    @Test
+    fun `connect is idempotent while connecting`() = runTest {
+        val authLatch = CountDownLatch(1)
+        mockServer.enqueue(
+            MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    // Receive Authenticate but never answer with Ready: stay Connecting.
+                    authLatch.countDown()
+                }
+            })
+        )
+
+        ws.connect(serverUrl(), TOKEN)
+        ws.connect(serverUrl(), TOKEN)
+
+        assertTrue("Server did not receive auth message in time", authLatch.await(5, TimeUnit.SECONDS))
+
+        // The second connect() returned without opening a socket.
+        assertEquals(1, mockServer.requestCount)
+        assertEquals(ConnectionState.Connecting, ws.connectionState.value)
+    }
+
+    @Test
+    fun `close 1008 while authenticating reports AuthRejected`() = runTest {
+        mockServer.enqueue(
+            MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    if (text.contains("authenticate")) {
+                        webSocket.close(1008, "unauthorized")
+                    }
+                }
+            })
+        )
+
+        ws.connectionState.test(timeout = 10.seconds) {
+            assertEquals(ConnectionState.Disconnected, awaitItem())
+
+            ws.connect(serverUrl(), TOKEN)
+            assertEquals(ConnectionState.Connecting, awaitItem())
+            assertEquals(ConnectionState.AuthRejected, awaitItem())
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `handshake 401 reports AuthRejected`() = runTest {
+        assertHandshakeStatusReportsAuthRejected(401)
+    }
+
+    @Test
+    fun `handshake 403 reports AuthRejected`() = runTest {
+        assertHandshakeStatusReportsAuthRejected(403)
+    }
+
+    @Test
+    fun `handshake 500 reports Disconnected`() = runTest {
+        mockServer.enqueue(MockResponse().setResponseCode(500))
+
+        ws.connectionState.test(timeout = 10.seconds) {
+            assertEquals(ConnectionState.Disconnected, awaitItem())
+
+            ws.connect(serverUrl(), TOKEN)
+            assertEquals(ConnectionState.Connecting, awaitItem())
+            assertEquals(ConnectionState.Disconnected, awaitItem())
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    private suspend fun assertHandshakeStatusReportsAuthRejected(code: Int) {
+        // The server refuses the upgrade request itself with an HTTP status.
+        mockServer.enqueue(MockResponse().setResponseCode(code))
+
+        ws.connectionState.test(timeout = 10.seconds) {
+            assertEquals(ConnectionState.Disconnected, awaitItem())
+
+            ws.connect(serverUrl(), TOKEN)
+            assertEquals(ConnectionState.Connecting, awaitItem())
+            assertEquals(ConnectionState.AuthRejected, awaitItem())
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    private companion object {
+        const val TOKEN = "test-jwt-token"
     }
 }
