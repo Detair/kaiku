@@ -55,6 +55,9 @@ pub struct TestApp {
     pub router: Router,
     pub pool: PgPool,
     pub config: Arc<Config>,
+    /// The state behind `router`, for calling server functions directly
+    /// (e.g. `vc_server::push::deliver`).
+    pub state: AppState,
 }
 
 impl TestApp {
@@ -82,13 +85,14 @@ impl TestApp {
             oidc_manager: None,
             http_client: reqwest::Client::new(),
         });
-        let router = create_router(state);
+        let router = create_router(state.clone());
         let config = Arc::new(config);
 
         Self {
             router,
             pool,
             config,
+            state,
         }
     }
 
@@ -125,13 +129,14 @@ impl TestApp {
             oidc_manager: None,
             http_client: reqwest::Client::new(),
         });
-        let router = create_router(state);
+        let router = create_router(state.clone());
         let config = Arc::new(config);
 
         Self {
             router,
             pool,
             config,
+            state,
         }
     }
 
@@ -156,13 +161,14 @@ impl TestApp {
             oidc_manager: None,
             http_client: reqwest::Client::new(),
         });
-        let router = create_router(state);
+        let router = create_router(state.clone());
         let config = Arc::new(config);
 
         Self {
             router,
             pool,
             config,
+            state,
         }
     }
 
@@ -196,13 +202,14 @@ impl TestApp {
             oidc_manager: None,
             http_client: reqwest::Client::new(),
         });
-        let router = create_router(state);
+        let router = create_router(state.clone());
         let config = Arc::new(config);
 
         Self {
             router,
             pool,
             config,
+            state,
         }
     }
 
@@ -266,13 +273,14 @@ pub async fn fresh_test_app_with_s3_and_pool(pool: PgPool) -> (TestApp, String) 
         oidc_manager: None,
         http_client: reqwest::Client::new(),
     });
-    let router = create_router(state);
+    let router = create_router(state.clone());
 
     (
         TestApp {
             router,
             pool,
             config: Arc::new(config),
+            state,
         },
         bucket,
     )
@@ -904,4 +912,108 @@ pub async fn expect_no_ws_event(ws: &mut WsClient, event_type: &str, timeout: Du
     };
     // Timing out is the expected outcome.
     let _ = tokio::time::timeout(timeout, wait).await;
+}
+
+// ============================================================================
+// FCM mock (local axum on 127.0.0.1; no test reaches Google)
+// ============================================================================
+
+include!("../../fixtures/fcm_test_key.rs");
+
+/// How the FCM mock answers `messages:send`.
+#[derive(Clone, Copy, Debug)]
+pub enum FcmMockResponse {
+    /// 200 with a message name.
+    Ok,
+    /// The given status and body for every send.
+    Status(u16, &'static str),
+}
+
+/// A running FCM mock. Serves `/token` (`OAuth2`) and
+/// `/v1/projects/{p}/messages:send`.
+pub struct FcmMock {
+    pub base_url: String,
+    /// Bodies of every `messages:send` request, in order.
+    pub received: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    _handle: JoinHandle<()>,
+}
+
+impl FcmMock {
+    /// The mock's `OAuth2` token endpoint.
+    pub fn token_uri(&self) -> String {
+        format!("{}/token", self.base_url)
+    }
+}
+
+#[derive(Clone)]
+struct FcmMockState {
+    responder: FcmMockResponse,
+    received: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+}
+
+pub async fn spawn_fcm_mock(responder: FcmMockResponse) -> FcmMock {
+    use axum::extract::{Path, State};
+    use axum::http::StatusCode;
+    use axum::routing::post;
+
+    async fn token() -> axum::Json<serde_json::Value> {
+        axum::Json(serde_json::json!({
+            "access_token": "mock-access-token",
+            "expires_in": 3599,
+            "token_type": "Bearer"
+        }))
+    }
+
+    async fn send(
+        State(st): State<FcmMockState>,
+        Path((_project, action)): Path<(String, String)>,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> (StatusCode, String) {
+        if action != "messages:send" {
+            return (StatusCode::NOT_FOUND, String::new());
+        }
+        st.received.lock().unwrap().push(body);
+        match st.responder {
+            FcmMockResponse::Ok => (
+                StatusCode::OK,
+                r#"{"name":"projects/kaiku-test/messages/1"}"#.to_string(),
+            ),
+            FcmMockResponse::Status(code, body) => {
+                (StatusCode::from_u16(code).unwrap(), body.to_string())
+            }
+        }
+    }
+
+    let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let app = Router::new()
+        .route("/token", post(token))
+        .route("/v1/projects/{project}/{action}", post(send))
+        .with_state(FcmMockState {
+            responder,
+            received: received.clone(),
+        });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind FCM mock");
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    FcmMock {
+        base_url: format!("http://{addr}"),
+        received,
+        _handle: handle,
+    }
+}
+
+/// A service account for the FCM mock, signed with the test-only RSA key in
+/// `tests/fixtures/fcm_test_key.rs` (the shared JWT test key is Ed25519).
+pub fn test_service_account(token_uri: String) -> vc_server::push::fcm::ServiceAccountKey {
+    vc_server::push::fcm::ServiceAccountKey {
+        project_id: "kaiku-test".into(),
+        client_email: "push@kaiku-test.iam.gserviceaccount.com".into(),
+        private_key: TEST_FCM_RSA_PRIVATE_KEY_PEM.into(),
+        private_key_id: "test-key-id".into(),
+        token_uri,
+    }
 }

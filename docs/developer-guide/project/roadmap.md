@@ -2,9 +2,16 @@
 
 This roadmap outlines the development path from the current prototype to a production-ready, multi-tenant SaaS platform.
 
-**Current Phase:** Phase 6 (Competitive Differentiators & Mastery) - In Progress
+**Current Phase:** v1.0 Family Release (Goal 8 in `goals.md`) — target Christmas 2026
 
-**Last Updated:** 2026-03-25
+**Last Updated:** 2026-10-22
+
+> **2026-10-22 reality check:** a multi-model release-readiness review
+> (`../../reviews/2026-10-22-v1-family-release-readiness.md`) found 24
+> Blockers. Most importantly, the packaged desktop app never runs in native
+> mode, so the Phase 6 "desktop complete" items below have not reached
+> users; Android cannot load message history; no CI release has ever
+> succeeded. Phase statuses below are historical until re-verified.
 
 ## Quick Status Overview
 
