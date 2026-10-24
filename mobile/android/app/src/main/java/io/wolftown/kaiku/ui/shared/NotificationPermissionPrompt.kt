@@ -11,6 +11,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,12 +50,17 @@ fun NotificationPermissionPrompt(onGranted: () -> Unit) {
         )
     }
     var showDialog by remember {
-        mutableStateOf(decision == NotificationPermissionDecision.ASK_WITH_RATIONALE && !askedBefore)
+        mutableStateOf(decision == NotificationPermissionDecision.ASK_WITH_RATIONALE)
     }
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted -> if (granted) onGranted() }
+
+    // Already allowed: let the caller (push registration) proceed.
+    LaunchedEffect(decision) {
+        if (decision == NotificationPermissionDecision.GRANTED) onGranted()
+    }
 
     if (!showDialog) return
 

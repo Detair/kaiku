@@ -52,7 +52,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         authState.initialize(tokenStorage)
-        handleIntent(intent)
+        // On recreation (rotation, theme change, process restore) getIntent() is the
+        // original launch intent; handling it again would replay a consumed link.
+        if (savedInstanceState == null) handleIntent(intent)
 
         val startDestination = resolveStartDestination()
         val appVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
@@ -75,6 +77,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         handleIntent(intent)
     }
 
@@ -88,7 +91,11 @@ class MainActivity : ComponentActivity() {
             loginViewModel.onOidcDeepLink(uri)
             return
         }
-        DeepLinks.parseChannelId(uri.toString())?.let(pendingNavigation::post)
+        DeepLinks.parseChannelId(uri.toString())?.let {
+            pendingNavigation.post(it, authState.currentUserId.value)
+            // Strip the consumed link so it cannot be handled twice.
+            intent.data = null
+        }
     }
 
     /**
