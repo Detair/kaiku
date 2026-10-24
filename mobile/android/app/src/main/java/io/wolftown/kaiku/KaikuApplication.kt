@@ -17,6 +17,7 @@ import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.sync.ResyncCoordinator
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.push.NotificationChannels
+import io.wolftown.kaiku.push.PushSessionObserver
 import io.wolftown.kaiku.push.ReadSyncObserver
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -46,6 +47,10 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
     @Inject
     lateinit var readSyncObserver: ReadSyncObserver
 
+    /** Clears message notifications and wake work when the account signs out or changes. */
+    @Inject
+    lateinit var pushSessionObserver: PushSessionObserver
+
     /** Creates @HiltWorker workers (wake fetch); WorkManager's default initializer is removed in the manifest. */
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
@@ -62,6 +67,7 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory, Configurat
         // Observe Ready before the first connect can produce one.
         resyncCoordinator.start()
         readSyncObserver.start()
+        pushSessionObserver.start()
         realtimeConnectionManager.start()
         try {
             ProviderInstaller.installIfNeeded(this)

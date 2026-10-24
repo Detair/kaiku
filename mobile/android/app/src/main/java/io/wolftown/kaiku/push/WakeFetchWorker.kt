@@ -31,6 +31,11 @@ class WakeFetchWorker @AssistedInject constructor(
         const val KEY_CHANNEL_ID = "channel_id"
         const val KEY_KIND = "kind"
         const val KEY_COUNT = "count"
+        const val KEY_USER_ID = "user_id"
+        const val KEY_SERVER_URL = "server_url"
+
+        /** Tag of every wake fetch request (cancelled together on logout). */
+        const val WORK_TAG = "wake"
         const val MAX_ATTEMPTS = 3
 
         /** Id of the silent "checking for new messages" notification (expedited work before API 31). */
@@ -38,11 +43,18 @@ class WakeFetchWorker @AssistedInject constructor(
 
         fun uniqueWorkName(channelId: String) = "wake-$channelId"
 
-        fun inputData(signal: WakeSignal): Data = Data.Builder()
+        fun inputData(signal: WakeSignal, owner: WakeOwner): Data = Data.Builder()
             .putString(KEY_CHANNEL_ID, signal.channelId)
             .putString(KEY_KIND, signal.kind.name)
             .putInt(KEY_COUNT, signal.count)
+            .putString(KEY_USER_ID, owner.userId)
+            .putString(KEY_SERVER_URL, owner.serverUrl)
             .build()
+
+        fun ownerFrom(data: Data): WakeOwner? {
+            val userId = data.getString(KEY_USER_ID) ?: return null
+            return WakeOwner(userId, data.getString(KEY_SERVER_URL))
+        }
 
         fun signalFrom(data: Data): WakeSignal? {
             val channelId = data.getString(KEY_CHANNEL_ID) ?: return null
@@ -55,8 +67,10 @@ class WakeFetchWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         val signal = signalFrom(inputData) ?: return Result.success()
+        // A request without an account cannot be attributed: nothing to post.
+        val owner = ownerFrom(inputData) ?: return Result.success()
         val outcome = try {
-            processor.process(signal)
+            processor.process(signal, owner)
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {

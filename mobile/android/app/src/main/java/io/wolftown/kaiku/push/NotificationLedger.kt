@@ -5,23 +5,29 @@ import java.time.Instant
 import java.time.format.DateTimeParseException
 
 /**
- * Remembers, per channel, the newest message the user has been notified about
- * or has seen, so the next wake fetches only what came after it. Stores ids and
- * timestamps only, never message text.
+ * Remembers, per account and channel, the newest message the user has been
+ * notified about or has seen, so the next wake fetches only what came after
+ * it. Stores ids and timestamps only, never message text.
+ *
+ * Every call names the account ([userId]) explicitly: a caller binds its
+ * reads and writes to the session it started from, never to whoever is
+ * signed in by the time the write happens.
  */
 interface NotificationLedger {
-    fun lastSeen(channelId: String): String?
+    fun lastSeen(userId: String, channelId: String): String?
 
-    /** `created_at` of [lastSeen] when known (lets the latest-page fallback skip old messages). */
-    fun lastSeenCreatedAt(channelId: String): String? = null
+    /** `created_at` of [lastSeen] when known. */
+    fun lastSeenCreatedAt(userId: String, channelId: String): String?
 
     /**
-     * Records [messageId] as seen. With [createdAt] the entry only moves forward:
-     * an older position than the stored one is ignored.
+     * Records [messageId] as seen. The position only moves forward: with a
+     * [createdAt] an older position than the stored one is ignored, and
+     * without one a stored timestamped position is never replaced (its order
+     * is unknown, and message ids are random, not time-ordered).
      */
-    fun markSeen(channelId: String, messageId: String, createdAt: String? = null)
+    fun markSeen(userId: String, channelId: String, messageId: String, createdAt: String?)
 
-    fun clear(channelId: String)
+    fun clear(userId: String, channelId: String)
 }
 
 /** Ordering of message positions by `(created_at, id)`, the server's catch-up order. */
@@ -33,7 +39,7 @@ internal object MessagePosition {
             null
         }
 
-    /** True if `(at, id)` is strictly after `(refAt, refId)`; null when a timestamp is unparseable. */
+    /** True if `(at, id)` is strictly after `(refAt, refId)`; null when a timestamp is missing or unparseable. */
     fun isAfter(at: String?, id: String, refAt: String?, refId: String): Boolean? {
         val a = parse(at) ?: return null
         val b = parse(refAt) ?: return null
@@ -42,39 +48,55 @@ internal object MessagePosition {
     }
 }
 
-/**
- * [NotificationLedger] in plain SharedPreferences (`notif_ledger`). Entries are
- * scoped to the signed-in user ([currentUserId]), so a different account on the
- * same phone never inherits another account's positions.
- */
+/** [NotificationLedger] in plain SharedPreferences (`notif_ledger`), keyed by account and channel. */
 class PrefsNotificationLedger(
     private val prefs: SharedPreferences,
-    private val currentUserId: () -> String?,
 ) : NotificationLedger {
 
-    private fun idKey(channelId: String) = "${currentUserId().orEmpty()}|$channelId|id"
-    private fun atKey(channelId: String) = "${currentUserId().orEmpty()}|$channelId|at"
+    private fun idKey(userId: String, channelId: String) = "$userId|$channelId|id"
+    private fun atKey(userId: String, channelId: String) = "$userId|$channelId|at"
 
-    override fun lastSeen(channelId: String): String? = prefs.getString(idKey(channelId), null)
+    override fun lastSeen(userId: String, channelId: String): String? =
+        prefs.getString(idKey(userId, channelId), null)
 
-    override fun lastSeenCreatedAt(channelId: String): String? = prefs.getString(atKey(channelId), null)
+    override fun lastSeenCreatedAt(userId: String, channelId: String): String? =
+        prefs.getString(atKey(userId, channelId), null)
 
     @Synchronized
-    override fun markSeen(channelId: String, messageId: String, createdAt: String?) {
-        val storedId = lastSeen(channelId)
-        if (storedId == messageId && (createdAt == null || lastSeenCreatedAt(channelId) != null)) return
-        if (createdAt != null && storedId != null) {
-            val storedAt = lastSeenCreatedAt(channelId)
-            if (MessagePosition.isAfter(createdAt, messageId, storedAt, storedId) == false) return
+    override fun markSeen(userId: String, channelId: String, messageId: String, createdAt: String?) {
+        if (!shouldReplace(userId, channelId, messageId, createdAt)) return
+
+        val newAt = createdAt?.takeIf { MessagePosition.parse(it) != null }
+        val editor = prefs.edit()
+        editor.putString(idKey(userId, channelId), messageId)
+        if (newAt != null) {
+            editor.putString(atKey(userId, channelId), newAt)
+        } else {
+            editor.remove(atKey(userId, channelId))
         }
-        prefs.edit()
-            .putString(idKey(channelId), messageId)
-            .apply { if (createdAt != null) putString(atKey(channelId), createdAt) else remove(atKey(channelId)) }
-            .apply()
+        editor.apply()
+    }
+
+    private fun shouldReplace(userId: String, channelId: String, messageId: String, createdAt: String?): Boolean {
+        val storedId = lastSeen(userId, channelId) ?: return true
+        val storedAt = lastSeenCreatedAt(userId, channelId)
+        val storedKnown = MessagePosition.parse(storedAt) != null
+        val newKnown = MessagePosition.parse(createdAt) != null
+        return when {
+            // Same message: only worth writing to add a missing timestamp.
+            storedId == messageId -> newKnown && !storedKnown
+            // Never trade a known position for one of unknown order.
+            !newKnown -> !storedKnown
+            !storedKnown -> true
+            else -> MessagePosition.isAfter(createdAt, messageId, storedAt, storedId) == true
+        }
     }
 
     @Synchronized
-    override fun clear(channelId: String) {
-        prefs.edit().remove(idKey(channelId)).remove(atKey(channelId)).apply()
+    override fun clear(userId: String, channelId: String) {
+        val editor = prefs.edit()
+        editor.remove(idKey(userId, channelId))
+        editor.remove(atKey(userId, channelId))
+        editor.apply()
     }
 }
