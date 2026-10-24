@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import androidx.annotation.StringRes
 import io.wolftown.kaiku.R
 
 /** Notification channel ids and their one-time creation. */
@@ -36,8 +37,8 @@ object NotificationChannels {
         context: Context,
         id: String,
         importance: Int,
-        nameRes: Int,
-        descriptionRes: Int,
+        @StringRes nameRes: Int,
+        @StringRes descriptionRes: Int,
     ): NotificationChannel =
         NotificationChannel(id, context.getString(nameRes), importance).apply {
             description = context.getString(descriptionRes)
