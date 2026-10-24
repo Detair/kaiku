@@ -19,7 +19,9 @@ ignore = [
     # (p256/p384) of webrtc-dtls, jsonwebtoken and openidconnect, none of which
     # support elliptic-curve 0.14 yet. Kaiku signs JWTs with EdDSA (ed25519),
     # OIDC uses public-key verification only; residual exposure is DTLS ECDHE
-    # ephemeral keys. Re-check when dtls/jsonwebtoken/openidconnect move to
+    # ephemeral keys (P-256 on webrtc-rs<->webrtc-rs handshakes, i.e. desktop
+    # <-> SFU; browsers negotiate X25519). Long-term fix: webrtc-rs 0.21
+    # (rustls/ring based DTLS, no p256/p384). Re-check when dtls/jsonwebtoken/openidconnect move to
     # elliptic-curve 0.14.
     "RUSTSEC-2026-0387",
     # rand unsoundness with custom `log` logger — flagged against rand 0.7.3,
