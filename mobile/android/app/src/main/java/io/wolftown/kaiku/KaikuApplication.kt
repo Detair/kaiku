@@ -12,6 +12,7 @@ import com.google.android.gms.security.ProviderInstaller
 import dagger.hilt.android.HiltAndroidApp
 import io.wolftown.kaiku.data.api.AuthHeaderInterceptor
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.data.sync.ResyncCoordinator
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -33,9 +34,15 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory {
     @Inject
     lateinit var realtimeConnectionManager: RealtimeConnectionManager
 
+    /** Re-subscribes and catches up after every (re)connect. */
+    @Inject
+    lateinit var resyncCoordinator: ResyncCoordinator
+
     override fun onCreate() {
         super.onCreate()
         // First connect waits for AuthState.initialize() in MainActivity, which runs after the ProviderInstaller TLS step below.
+        // Observe Ready before the first connect can produce one.
+        resyncCoordinator.start()
         realtimeConnectionManager.start()
         try {
             ProviderInstaller.installIfNeeded(this)

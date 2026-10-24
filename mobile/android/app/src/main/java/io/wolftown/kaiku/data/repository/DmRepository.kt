@@ -1,10 +1,20 @@
 package io.wolftown.kaiku.data.repository
 
 import io.wolftown.kaiku.data.api.DmApi
+import io.wolftown.kaiku.data.ws.KaikuWebSocket
+import io.wolftown.kaiku.data.ws.ServerEvent
+import io.wolftown.kaiku.di.ChatCoroutineScope
 import io.wolftown.kaiku.domain.model.DmConversation
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromJsonElement
+import java.util.logging.Logger
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -13,13 +23,27 @@ import javax.inject.Singleton
  *
  * The list is fetched from the REST API on demand; opening a DM marks it read
  * locally (and on the server) so its unread badge clears immediately.
+ * A `dm_created` WebSocket event (C3) adds a new conversation at the top
+ * without a reload.
  */
 @Singleton
 class DmRepository @Inject constructor(
     private val dmApi: DmApi,
+    private val webSocket: KaikuWebSocket,
+    private val json: Json,
+    @ChatCoroutineScope private val scope: CoroutineScope,
 ) {
     private val _conversations = MutableStateFlow<List<DmConversation>>(emptyList())
     val conversations: StateFlow<List<DmConversation>> = _conversations.asStateFlow()
+
+    init {
+        // UNDISPATCHED: subscribe to the replay-0 SharedFlow before init returns.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            webSocket.events.collect { event ->
+                if (event is ServerEvent.DmCreated) onDmCreated(event)
+            }
+        }
+    }
 
     suspend fun loadDms() {
         _conversations.value = dmApi.getDms()
@@ -37,7 +61,23 @@ class DmRepository @Inject constructor(
         if (lastMessageId != null) dmApi.markAsRead(channelId, lastMessageId)
     }
 
+    private fun onDmCreated(event: ServerEvent.DmCreated) {
+        val dm = try {
+            json.decodeFromJsonElement<DmConversation>(event.channel)
+        } catch (e: Exception) {
+            logger.warning("Failed to decode dm_created payload (${e::class.simpleName})")
+            return
+        }
+        _conversations.update { upsertAtTop(it, dm) }
+    }
+
     companion object {
+        private val logger = Logger.getLogger("DmRepository")
+
+        /** Put [dm] first, replacing any conversation with the same id (pure, testable). */
+        fun upsertAtTop(conversations: List<DmConversation>, dm: DmConversation): List<DmConversation> =
+            listOf(dm) + conversations.filter { it.id != dm.id }
+
         /** Reset unread for one conversation in the list (pure, testable). */
         fun clearUnread(conversations: List<DmConversation>, channelId: String): List<DmConversation> =
             conversations.map { if (it.id == channelId) it.copy(unreadCount = 0) else it }
