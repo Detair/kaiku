@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Each phone now holds one push registration; signing in with another account on the same phone stops notifications for the previous account.
 - **End-to-end encryption paused for 1.0**: End-to-end encryption setup is no longer offered and the DM padlock is removed; direct messages are protected in transit (TLS) and on the server, and end-to-end encryption will return in a later release.
 - Windows releases ship a single `-setup.exe` installer (MSI dropped)
 - Upgrading the self-hosting compose stack: `VALKEY_PASSWORD` and `CORS_ALLOWED_ORIGINS` are now required (compose refuses to start without them); a base64 Valkey password containing `/`, `+` or `=` must be replaced with a hex one (`openssl rand -hex 24`); set `PUBLIC_IP` for voice; TURN over TCP relay is no longer offered; `RATE_LIMIT_TRUST_PROXY` is replaced by `RATE_LIMIT_TRUSTED_PROXIES` (derived from `KAIKU_NET_SUBNET`). See "Upgrading existing deployments" in the self-hosting guide.

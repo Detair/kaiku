@@ -95,6 +95,8 @@ pub struct PushSubscription {
     pub device_label: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Stable per-installation id (not a secret); `None` for older clients.
+    pub device_id: Option<Uuid>,
 }
 
 impl std::fmt::Debug for PushSubscription {
@@ -104,6 +106,7 @@ impl std::fmt::Debug for PushSubscription {
             .field("user_id", &self.user_id)
             .field("provider", &self.provider)
             .field("device_label", &self.device_label)
+            .field("device_id", &self.device_id)
             .field("created_at", &self.created_at)
             .field("last_used_at", &self.last_used_at)
             .finish_non_exhaustive()
@@ -146,7 +149,7 @@ pub async fn deliver(
 ) -> Result<(), sqlx::Error> {
     let subs: Vec<PushSubscription> = sqlx::query_as(
         "SELECT id, user_id, provider, endpoint, public_key, auth_key, device_label,
-                created_at, last_used_at
+                created_at, last_used_at, device_id
          FROM push_subscriptions WHERE user_id = $1",
     )
     .bind(user_id)
@@ -288,6 +291,8 @@ pub enum PushError {
     NotFound,
     #[error("Validation failed: {0}")]
     Validation(String),
+    #[error("Push provider unavailable")]
+    ProviderUnavailable,
     #[error("Database error")]
     Database(#[from] sqlx::Error),
 }
@@ -306,6 +311,11 @@ impl IntoResponse for PushError {
             Self::Validation(_) => (
                 StatusCode::BAD_REQUEST,
                 "VALIDATION_ERROR",
+                self.to_string(),
+            ),
+            Self::ProviderUnavailable => (
+                StatusCode::BAD_REQUEST,
+                "PUSH_PROVIDER_UNAVAILABLE",
                 self.to_string(),
             ),
             Self::Database(_) => (
@@ -332,6 +342,51 @@ pub struct CreateSubscriptionRequest {
     pub auth_key: Option<String>,
     #[validate(length(max = 64))]
     pub device_label: Option<String>,
+    /// Stable per-installation id (C19). Optional for older clients.
+    pub device_id: Option<Uuid>,
+}
+
+/// Maximum push subscriptions kept per user; least recently used are pruned.
+pub const MAX_SUBSCRIPTIONS_PER_USER: i64 = 10;
+
+/// FCM registration token shape (C19).
+fn is_valid_fcm_token(token: &str) -> bool {
+    (20..=4096).contains(&token.len())
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b':' | b'-'))
+}
+
+/// Public FCM settings the Android app compares with its baked-in project.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct FcmPublicConfig {
+    pub project_id: String,
+}
+
+/// Response of `GET /api/me/push-subscriptions/config` (C18).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PushConfigResponse {
+    pub providers: Vec<&'static str>,
+    pub fcm: Option<FcmPublicConfig>,
+}
+
+/// `GET /api/me/push-subscriptions/config` — which transports this server offers.
+pub async fn get_config(
+    State(state): State<AppState>,
+    _auth: AuthUser,
+) -> Json<PushConfigResponse> {
+    match state.push.fcm() {
+        Some(fcm) => Json(PushConfigResponse {
+            providers: vec!["fcm", "unifiedpush"],
+            fcm: Some(FcmPublicConfig {
+                project_id: fcm.project_id().to_string(),
+            }),
+        }),
+        None => Json(PushConfigResponse {
+            providers: vec!["unifiedpush"],
+            fcm: None,
+        }),
+    }
 }
 
 /// `POST /api/me/push-subscriptions` — register (upsert) a device.
@@ -343,37 +398,112 @@ pub async fn create_subscription(
     body.validate()
         .map_err(|e| PushError::Validation(crate::validation::format_validation_errors(&e)))?;
 
-    // Only providers that `send_one` can deliver to are accepted.
-    if body.provider != "unifiedpush" {
-        return Err(PushError::Validation("unsupported push provider".into()));
-    }
-    let parsed = reqwest::Url::parse(&body.endpoint)
-        .map_err(|_| PushError::Validation("endpoint must be a valid URL".into()))?;
-    if parsed.scheme() != "https" {
-        return Err(PushError::Validation("endpoint must use https".into()));
-    }
-    match parsed.host_str() {
-        Some(h) if !crate::webhooks::ssrf::is_blocked_host(h) => {}
-        _ => return Err(PushError::Validation("endpoint host is not allowed".into())),
+    match body.provider.as_str() {
+        "unifiedpush" => {
+            let parsed = reqwest::Url::parse(&body.endpoint)
+                .map_err(|_| PushError::Validation("endpoint must be a valid URL".into()))?;
+            if parsed.scheme() != "https" {
+                return Err(PushError::Validation("endpoint must use https".into()));
+            }
+            match parsed.host_str() {
+                Some(h) if !crate::webhooks::ssrf::is_blocked_host(h) => {}
+                _ => return Err(PushError::Validation("endpoint host is not allowed".into())),
+            }
+        }
+        "fcm" => {
+            if state.push.fcm().is_none() {
+                return Err(PushError::ProviderUnavailable);
+            }
+            // The token is a secret: the message never echoes it.
+            if !is_valid_fcm_token(&body.endpoint) {
+                return Err(PushError::Validation(
+                    "invalid FCM registration token".into(),
+                ));
+            }
+        }
+        _ => return Err(PushError::Validation("unsupported push provider".into())),
     }
 
-    let sub: PushSubscription = sqlx::query_as(
-        "INSERT INTO push_subscriptions (user_id, provider, endpoint, public_key, auth_key, device_label)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (user_id, endpoint) DO UPDATE SET
-             provider = EXCLUDED.provider, public_key = EXCLUDED.public_key,
-             auth_key = EXCLUDED.auth_key, device_label = EXCLUDED.device_label
-         RETURNING id, user_id, provider, endpoint, public_key, auth_key, device_label,
-                   created_at, last_used_at",
+    let mut tx = state.db.begin().await?;
+    let sub: PushSubscription = if let Some(device_id) = body.device_id {
+        // The device moved to this account: drop it (and its token) from others.
+        sqlx::query("DELETE FROM push_subscriptions WHERE device_id = $1 AND user_id <> $2")
+            .bind(device_id)
+            .bind(auth.id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "DELETE FROM push_subscriptions
+             WHERE provider = $1 AND endpoint = $2 AND user_id <> $3",
+        )
+        .bind(&body.provider)
+        .bind(&body.endpoint)
+        .bind(auth.id)
+        .execute(&mut *tx)
+        .await?;
+        // A device holds exactly one subscription per user.
+        sqlx::query(
+            "DELETE FROM push_subscriptions
+             WHERE user_id = $1 AND endpoint = $2 AND device_id IS DISTINCT FROM $3",
+        )
+        .bind(auth.id)
+        .bind(&body.endpoint)
+        .bind(device_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query_as(
+            "INSERT INTO push_subscriptions
+                 (user_id, provider, endpoint, public_key, auth_key, device_label, device_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (user_id, device_id) WHERE device_id IS NOT NULL DO UPDATE SET
+                 provider = EXCLUDED.provider, endpoint = EXCLUDED.endpoint,
+                 public_key = EXCLUDED.public_key, auth_key = EXCLUDED.auth_key,
+                 device_label = EXCLUDED.device_label, last_used_at = NULL
+             RETURNING id, user_id, provider, endpoint, public_key, auth_key, device_label,
+                       created_at, last_used_at, device_id",
+        )
+        .bind(auth.id)
+        .bind(&body.provider)
+        .bind(&body.endpoint)
+        .bind(&body.public_key)
+        .bind(&body.auth_key)
+        .bind(&body.device_label)
+        .bind(device_id)
+        .fetch_one(&mut *tx)
+        .await?
+    } else {
+        sqlx::query_as(
+            "INSERT INTO push_subscriptions (user_id, provider, endpoint, public_key, auth_key, device_label)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (user_id, endpoint) DO UPDATE SET
+                 provider = EXCLUDED.provider, public_key = EXCLUDED.public_key,
+                 auth_key = EXCLUDED.auth_key, device_label = EXCLUDED.device_label
+             RETURNING id, user_id, provider, endpoint, public_key, auth_key, device_label,
+                       created_at, last_used_at, device_id",
+        )
+        .bind(auth.id)
+        .bind(&body.provider)
+        .bind(&body.endpoint)
+        .bind(&body.public_key)
+        .bind(&body.auth_key)
+        .bind(&body.device_label)
+        .fetch_one(&mut *tx)
+        .await?
+    };
+
+    // Keep the most recently used rows; the row just written is never pruned.
+    sqlx::query(
+        "DELETE FROM push_subscriptions WHERE id IN (
+             SELECT id FROM push_subscriptions WHERE user_id = $1 AND id <> $2
+             ORDER BY COALESCE(last_used_at, created_at) DESC, id
+             OFFSET $3)",
     )
     .bind(auth.id)
-    .bind(&body.provider)
-    .bind(&body.endpoint)
-    .bind(&body.public_key)
-    .bind(&body.auth_key)
-    .bind(&body.device_label)
-    .fetch_one(&state.db)
+    .bind(sub.id)
+    .bind(MAX_SUBSCRIPTIONS_PER_USER - 1)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok((StatusCode::CREATED, Json(sub)))
 }
@@ -385,7 +515,7 @@ pub async fn list_subscriptions(
 ) -> Result<Json<Vec<PushSubscription>>, PushError> {
     let subs: Vec<PushSubscription> = sqlx::query_as(
         "SELECT id, user_id, provider, endpoint, public_key, auth_key, device_label,
-                created_at, last_used_at
+                created_at, last_used_at, device_id
          FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at DESC",
     )
     .bind(auth.id)
@@ -412,11 +542,28 @@ pub async fn delete_subscription(
     Ok(Json(serde_json::json!({ "deleted": true, "id": sub_id })))
 }
 
+/// `DELETE /api/me/push-subscriptions/device/{device_id}` — unregister a device
+/// (own rows only). Always 204, also when nothing matched.
+pub async fn delete_device(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(device_id): Path<Uuid>,
+) -> Result<StatusCode, PushError> {
+    sqlx::query("DELETE FROM push_subscriptions WHERE device_id = $1 AND user_id = $2")
+        .bind(device_id)
+        .bind(auth.id)
+        .execute(&state.db)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Router mounted at `/api/me/push-subscriptions`.
 pub fn router() -> axum::Router<AppState> {
     use axum::routing::{delete, get};
     axum::Router::new()
         .route("/", get(list_subscriptions).post(create_subscription))
+        .route("/config", get(get_config))
+        .route("/device/{device_id}", delete(delete_device))
         .route("/{id}", delete(delete_subscription))
 }
 
@@ -483,6 +630,7 @@ mod tests {
             device_label: Some("Pixel".into()),
             created_at: Utc::now(),
             last_used_at: None,
+            device_id: Some(Uuid::nil()),
         };
         let dbg = format!("{sub:?}");
         assert!(!dbg.contains("SENTINEL"), "{dbg}");

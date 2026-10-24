@@ -304,3 +304,272 @@ async fn test_fcm_row_without_fcm_config_is_kept(pool: PgPool) {
 
     assert!(fcm_row(&pool, row).await.is_some(), "row must be kept");
 }
+
+// ============================================================================
+// Push config and per-device registration (C18/C19)
+// ============================================================================
+
+async fn post_sub(
+    app: &TestApp,
+    token: &str,
+    body: serde_json::Value,
+) -> axum::http::Response<Body> {
+    app.oneshot(req(
+        Method::POST,
+        "/api/me/push-subscriptions",
+        token,
+        Some(body),
+    ))
+    .await
+}
+
+async fn list_subs(app: &TestApp, token: &str) -> Vec<serde_json::Value> {
+    let resp = app
+        .oneshot(req(Method::GET, "/api/me/push-subscriptions", token, None))
+        .await;
+    body_to_json(resp).await.as_array().unwrap().clone()
+}
+
+async fn fcm_enabled_app(pool: PgPool) -> (TestApp, crate::helpers::FcmMock) {
+    fcm_app(pool, FcmMockResponse::Ok).await
+}
+
+fn valid_token(seed: &str) -> String {
+    format!("{seed}:{}", "abcDEF-ghi_".repeat(4))
+}
+
+#[sqlx::test]
+async fn test_push_config_without_fcm(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+    let resp = app
+        .oneshot(req(
+            Method::GET,
+            "/api/me/push-subscriptions/config",
+            &token,
+            None,
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_to_json(resp).await,
+        json!({"providers": ["unifiedpush"], "fcm": null})
+    );
+}
+
+#[sqlx::test]
+async fn test_push_config_with_fcm(pool: PgPool) {
+    let (app, mock) = fcm_enabled_app(pool.clone()).await;
+    let _ = mock;
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+    let resp = app
+        .oneshot(req(
+            Method::GET,
+            "/api/me/push-subscriptions/config",
+            &token,
+            None,
+        ))
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_json(resp).await;
+    let project_id = app
+        .config
+        .fcm_service_account
+        .as_ref()
+        .unwrap()
+        .project_id
+        .clone();
+    assert_eq!(body["providers"], json!(["fcm", "unifiedpush"]));
+    assert_eq!(body["fcm"]["project_id"], project_id);
+}
+
+#[sqlx::test]
+async fn test_fcm_subscription_rejected_when_fcm_not_configured(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+    let resp = post_sub(
+        &app,
+        &token,
+        json!({"provider": "fcm", "endpoint": valid_token("a"), "device_id": Uuid::new_v4()}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_to_json(resp).await["error"],
+        "PUSH_PROVIDER_UNAVAILABLE"
+    );
+}
+
+#[sqlx::test]
+async fn test_fcm_token_validation(pool: PgPool) {
+    let (app, _mock) = fcm_enabled_app(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+
+    let resp = post_sub(
+        &app,
+        &token,
+        json!({"provider": "fcm", "endpoint": "short", "device_id": Uuid::new_v4()}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_to_json(resp).await;
+    assert_eq!(body["error"], "VALIDATION_ERROR");
+    assert!(!body.to_string().contains("short"));
+
+    let resp = post_sub(
+        &app,
+        &token,
+        json!({"provider": "fcm", "endpoint": "abc:DEF-ghi_".repeat(10), "device_id": Uuid::new_v4()}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+#[sqlx::test]
+async fn test_device_reregistration_replaces_previous_endpoint(pool: PgPool) {
+    let (app, _mock) = fcm_enabled_app(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+    let device = Uuid::new_v4();
+
+    let resp = post_sub(
+        &app,
+        &token,
+        json!({"provider": "fcm", "endpoint": valid_token("one"), "device_id": device}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(
+        body_to_json(resp).await["device_id"],
+        json!(device.to_string())
+    );
+
+    let resp = post_sub(
+        &app,
+        &token,
+        json!({"provider": "unifiedpush", "endpoint": "https://ntfy.example.com/up?id=x", "device_id": device}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let list = list_subs(&app, &token).await;
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["provider"], "unifiedpush");
+}
+
+#[sqlx::test]
+async fn test_device_id_moves_to_new_user(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let ta = generate_access_token(&app.config, a);
+    let tb = generate_access_token(&app.config, b);
+    let device = Uuid::new_v4();
+
+    let r = post_sub(
+        &app,
+        &ta,
+        json!({"provider": "unifiedpush", "endpoint": "https://ntfy.example.com/a", "device_id": device}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let r = post_sub(
+        &app,
+        &tb,
+        json!({"provider": "unifiedpush", "endpoint": "https://ntfy.example.com/b", "device_id": device}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+
+    assert!(list_subs(&app, &ta).await.is_empty());
+    assert_eq!(list_subs(&app, &tb).await.len(), 1);
+}
+
+#[sqlx::test]
+async fn test_same_fcm_token_moves_to_new_user(pool: PgPool) {
+    let (app, _mock) = fcm_enabled_app(pool.clone()).await;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let ta = generate_access_token(&app.config, a);
+    let tb = generate_access_token(&app.config, b);
+    let tok = valid_token("shared");
+
+    let r = post_sub(
+        &app,
+        &ta,
+        json!({"provider": "fcm", "endpoint": tok, "device_id": Uuid::new_v4()}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let r = post_sub(
+        &app,
+        &tb,
+        json!({"provider": "fcm", "endpoint": tok, "device_id": Uuid::new_v4()}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+
+    assert!(list_subs(&app, &ta).await.is_empty());
+    assert_eq!(list_subs(&app, &tb).await.len(), 1);
+}
+
+#[sqlx::test]
+async fn test_delete_by_device_is_idempotent(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let ta = generate_access_token(&app.config, a);
+    let tb = generate_access_token(&app.config, b);
+    let device = Uuid::new_v4();
+    let uri = format!("/api/me/push-subscriptions/device/{device}");
+
+    let r = post_sub(
+        &app,
+        &ta,
+        json!({"provider": "unifiedpush", "endpoint": "https://ntfy.example.com/a", "device_id": device}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+
+    // Another user cannot delete it.
+    let r = app.oneshot(req(Method::DELETE, &uri, &tb, None)).await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert_eq!(list_subs(&app, &ta).await.len(), 1);
+
+    let r = app.oneshot(req(Method::DELETE, &uri, &ta, None)).await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert!(list_subs(&app, &ta).await.is_empty());
+    let r = app.oneshot(req(Method::DELETE, &uri, &ta, None)).await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+}
+
+#[sqlx::test]
+async fn test_subscription_cap_prunes_oldest(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, user);
+    let first = Uuid::new_v4();
+
+    for i in 0..11 {
+        let device = if i == 0 { first } else { Uuid::new_v4() };
+        let r = post_sub(
+            &app,
+            &token,
+            json!({"provider": "unifiedpush", "endpoint": format!("https://ntfy.example.com/{i}"), "device_id": device}),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::CREATED);
+        // Distinct created_at ordering.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let list = list_subs(&app, &token).await;
+    assert_eq!(list.len(), 10);
+    assert!(list
+        .iter()
+        .all(|s| s["device_id"] != json!(first.to_string())));
+}
