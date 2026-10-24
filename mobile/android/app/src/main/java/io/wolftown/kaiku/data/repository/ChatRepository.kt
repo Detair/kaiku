@@ -1,9 +1,11 @@
 package io.wolftown.kaiku.data.repository
 
+import android.net.Uri
 import io.ktor.http.HttpStatusCode
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.MessageApi
+import io.wolftown.kaiku.data.api.UploadLimits
 import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
@@ -57,6 +59,7 @@ class ChatRepository internal constructor(
     private val scope: CoroutineScope,
     /** Time source for typing expiry; tests pass virtual time. */
     private val clock: WallClock,
+    private val attachments: AttachmentReader? = null,
 ) {
 
     @Inject
@@ -67,10 +70,12 @@ class ChatRepository internal constructor(
         guildRepository: GuildRepository,
         authState: AuthState,
         @ChatCoroutineScope scope: CoroutineScope,
+        attachments: AttachmentReader,
     ) : this(
         messageApi, webSocket, json, guildRepository, authState, scope,
         // Monotonic: typing expiry only compares differences.
         WallClock { System.nanoTime() / 1_000_000L },
+        attachments,
     )
 
     companion object {
@@ -297,6 +302,66 @@ class ChatRepository internal constructor(
         // with the same id is deduplicated by MessageOrdering.merge.
         getOrCreateMessagesFlow(channelId).update { current ->
             MessageOrdering.merge(current, listOf(sentMessage))
+        }
+    }
+
+    /** Why [sendAttachment] failed; the UI maps it to a string resource. */
+    sealed class AttachmentException(cause: Throwable? = null) : Exception(cause) {
+        class TooLarge : AttachmentException()
+        class Failed(cause: Throwable? = null) : AttachmentException(cause)
+    }
+
+    /** Upload limits of the current session, keyed by the signed-in user id. */
+    @Volatile
+    private var cachedLimits: Pair<String?, UploadLimits>? = null
+
+    private suspend fun uploadLimits(): UploadLimits {
+        val me = authState.currentUserId.value
+        cachedLimits?.takeIf { it.first == me }?.let { return it.second }
+        return messageApi.getUploadLimits().also { cachedLimits = me to it }
+    }
+
+    /**
+     * Sends the picked photo/video [uri] to [channelId] with an optional
+     * [caption]. Files above the server's attachment limit are rejected
+     * before any bytes are read ([AttachmentException.TooLarge]); every other
+     * failure is [AttachmentException.Failed]. The created message is merged
+     * into the channel list; the WebSocket echo is deduplicated by id.
+     */
+    suspend fun sendAttachment(channelId: String, uri: Uri, caption: String?): Result<Message> {
+        val reader = attachments ?: return Result.failure(AttachmentException.Failed())
+        return try {
+            val limit = uploadLimits().maxUploadSize
+            val declared = reader.size(uri)
+            if (declared != null && declared > limit) {
+                return Result.failure(AttachmentException.TooLarge())
+            }
+            // Unknown or untrusted size: read at most limit + 1 bytes to detect overflow.
+            val bytes = reader.read(uri, limit + 1)
+                ?: return Result.failure(AttachmentException.Failed())
+            if (bytes.size > limit) return Result.failure(AttachmentException.TooLarge())
+            val message = messageApi.uploadMessageWithFile(
+                channelId = channelId,
+                bytes = bytes,
+                fileName = reader.displayName(uri)?.takeIf { it.isNotBlank() } ?: "upload",
+                mimeType = reader.mimeType(uri) ?: "application/octet-stream",
+                content = caption?.takeIf { it.isNotBlank() },
+            )
+            getOrCreateMessagesFlow(channelId).update { current ->
+                MessageOrdering.merge(current, listOf(message))
+            }
+            Result.success(message)
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (e: ApiException) {
+            logger.info("attachment upload rejected: status=${e.status.value}")
+            Result.failure(
+                if (e.status == HttpStatusCode.PayloadTooLarge) AttachmentException.TooLarge()
+                else AttachmentException.Failed(e)
+            )
+        } catch (e: Exception) {
+            logger.log(Level.WARNING, "attachment upload failed (${e::class.simpleName})")
+            Result.failure(AttachmentException.Failed(e))
         }
     }
 

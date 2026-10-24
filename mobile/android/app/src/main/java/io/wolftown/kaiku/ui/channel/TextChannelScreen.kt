@@ -39,6 +39,7 @@ fun TextChannelScreen(
 ) {
     val title by viewModel.title.collectAsState()
     val messages by viewModel.messages.collectAsState()
+    val isUploading by viewModel.isUploading.collectAsState()
     val typingUserIds by viewModel.typingUserIds.collectAsState()
     val memberNames by viewModel.memberNames.collectAsState()
     val someone = stringResource(R.string.chat_typing_someone)
@@ -134,7 +135,9 @@ fun TextChannelScreen(
                 placeholder = placeholder,
                 typingNames = typingLabels,
                 onInputChanged = viewModel::onMessageInputChanged,
-                onSend = viewModel::onSendMessage
+                onSend = viewModel::onSendMessage,
+                isUploading = isUploading,
+                onAttachmentPicked = viewModel::onAttachmentPicked
             )
         }
     ) { paddingValues ->

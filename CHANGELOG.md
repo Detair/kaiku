@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - The server can deliver Android push notifications through Firebase Cloud Messaging when an FCM service account is configured.
 - Android: message times use your time zone, typing shows names and disappears, reactions are visible, buttons are labelled for screen readers, and a damaged sign-in store asks you to sign in again instead of crashing.
+- Android: you can send photos and videos from your phone.
 - Android: unread badges appear for channels you left, clear on the server when you read them, and new direct messages update the list live.
 - People signing in with a temporary password are asked to choose their own password first.
 - Admins can create accounts with a temporary password from the admin dashboard, so registration can stay closed.

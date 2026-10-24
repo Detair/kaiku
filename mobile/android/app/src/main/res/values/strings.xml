@@ -73,6 +73,9 @@
     <string name="chat_typing_many">Several people are typing…</string>
     <string name="chat_typing_someone">Someone</string>
     <string name="chat_reaction_chip_description">%1$s, %2$d. Tap to toggle your reaction.</string>
+    <string name="chat_attach">Attach photo or video</string>
+    <string name="chat_upload_too_large">That file is too large to send.</string>
+    <string name="chat_upload_failed">Couldn\'t send your photo or video.</string>
     <string name="chat_send_failed">Couldn\'t send your message.</string>
     <string name="chat_edit_failed">Couldn\'t edit your message.</string>
     <string name="chat_delete_failed">Couldn\'t delete your message.</string>

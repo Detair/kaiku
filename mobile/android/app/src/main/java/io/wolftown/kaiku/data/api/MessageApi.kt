@@ -3,6 +3,8 @@ package io.wolftown.kaiku.data.api
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.request.*
+import io.ktor.client.request.forms.formData
+import io.ktor.client.request.forms.submitFormWithBinaryData
 import io.ktor.http.*
 import io.wolftown.kaiku.domain.model.CursorPage
 import io.wolftown.kaiku.domain.model.Message
@@ -29,6 +31,35 @@ interface MessageApi {
     suspend fun deleteMessage(messageId: String)
     suspend fun addReaction(channelId: String, messageId: String, emoji: String)
     suspend fun removeReaction(channelId: String, messageId: String, emoji: String)
+
+    /**
+     * Sends a message with one attachment (`POST /api/messages/channel/{id}/upload`,
+     * multipart fields `file` and `content`). [content] is the optional caption.
+     * The caller must have checked the size against [getUploadLimits] already.
+     */
+    suspend fun uploadMessageWithFile(
+        channelId: String,
+        bytes: ByteArray,
+        fileName: String,
+        mimeType: String,
+        content: String?
+    ): Message
+
+    /** `GET /api/config/upload-limits`; callers cache it per session. */
+    suspend fun getUploadLimits(): UploadLimits
+}
+
+/** Upload size limits in bytes; `maxUploadSize` applies to message attachments. */
+@Serializable
+data class UploadLimits(
+    val maxAvatarSize: Long = 0L,
+    val maxEmojiSize: Long = 0L,
+    val maxUploadSize: Long = DEFAULT_MAX_UPLOAD_SIZE,
+) {
+    companion object {
+        /** Server default (50 MB), used if the server omits the field. */
+        const val DEFAULT_MAX_UPLOAD_SIZE = 50L * 1024 * 1024
+    }
 }
 
 @Serializable
@@ -141,5 +172,46 @@ class MessageApiImpl @Inject constructor(
                 errorBody?.message ?: "Failed to remove reaction"
             )
         }
+    }
+
+    override suspend fun uploadMessageWithFile(
+        channelId: String,
+        bytes: ByteArray,
+        fileName: String,
+        mimeType: String,
+        content: String?
+    ): Message {
+        val safeName = fileName.replace(Regex("[\\r\\n\"\\\\]"), "_")
+        val response = httpClient.submitFormWithBinaryData(
+            url = "/api/messages/channel/$channelId/upload",
+            formData = formData {
+                append("file", bytes, Headers.build {
+                    append(HttpHeaders.ContentType, mimeType)
+                    append(HttpHeaders.ContentDisposition, "filename=\"$safeName\"")
+                })
+                if (!content.isNullOrBlank()) append("content", content)
+            }
+        )
+
+        if (!response.status.isSuccess()) {
+            val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
+            throw ApiException(
+                response.status,
+                errorBody?.message ?: "Failed to upload file",
+                errorBody?.error
+            )
+        }
+
+        return response.body()
+    }
+
+    override suspend fun getUploadLimits(): UploadLimits {
+        val response = httpClient.get("/api/config/upload-limits")
+
+        if (!response.status.isSuccess()) {
+            throw ApiException(response.status, "Failed to load upload limits")
+        }
+
+        return response.body()
     }
 }
