@@ -16,6 +16,7 @@ CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 TAURI_WORKFLOW = ROOT / ".github/workflows/tauri-build.yml"
 RELEASE_WORKFLOW = ROOT / ".github/workflows/release.yml"
 WORKFLOW_DIR = ROOT / ".github/workflows"
+ACTIONS_DIR = ROOT / ".github/actions"
 NATIVE_DEPS_ACTION = ROOT / ".github/actions/setup-native-deps/action.yml"
 NATIVE_DEPS_ACTION_REF = "./.github/actions/setup-native-deps"
 SETUP_INTEGRATION = ROOT / "server/tests/integration/setup_integration.rs"
@@ -91,7 +92,7 @@ SECRET_REF_RE = re.compile(r"\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)")
 PUBLISH_GATE = "needs.prepare-release.outputs.publish == 'true'"
 
 
-USES_RE = re.compile(r"^\s*-?\s*uses:\s*([^\s#]+)", re.MULTILINE)
+USES_RE = re.compile(r"""^\s*-?\s*uses:\s*["']?([^\s#"']+)["']?""", re.MULTILINE)
 PINNED_RE = re.compile(r"@[0-9a-f]{40}$")
 
 
@@ -131,7 +132,7 @@ def check_no_advisory_gates(ci: dict, errors: list[str]) -> None:
             continue
         job_advisory = _truthy(job.get("continue-on-error"))
         for step in _job_steps(job):
-            advisory = _truthy(step.get("continue-on-error"))
+            advisory = job_advisory or _truthy(step.get("continue-on-error"))
             uses = str(step.get("uses") or "")
             run = str(step.get("run") or "")
             if advisory and "gitleaks" in uses:
@@ -144,7 +145,7 @@ def check_no_advisory_gates(ci: dict, errors: list[str]) -> None:
             target = str(entry.get("platform") or entry.get("os") or "")
             if target.startswith("windows") and _truthy(entry.get("allow_failure")):
                 errors.append(f"{job_name}: Windows Tauri build must not be allowed to fail ({target})")
-        if str(job.get("runs-on") or "").startswith("windows") and job.get("continue-on-error") is True:
+        if str(job.get("runs-on") or "").startswith("windows"):
             errors.append(f"{job_name}: Windows job must not set continue-on-error")
 
 
@@ -645,9 +646,13 @@ def main() -> int:
             workflow_docs[wf_path.name] = yaml.safe_load(text) or {}
         except yaml.YAMLError as exc:
             errors.append(f"{wf_path.name}: invalid YAML: {exc}")
+    # Composite actions are scanned for pinning only (they have no permissions/jobs).
+    pin_texts = dict(workflow_texts)
+    for action_path in sorted(ACTIONS_DIR.glob("**/action.yml")):
+        pin_texts[str(action_path.relative_to(ROOT))] = read_text(action_path, errors)
     check_workflow_permissions(workflow_docs, errors)
-    check_actions_pinned(workflow_texts, errors)
-    for gated in ("ci.yml", "tauri-build.yml"):
+    check_actions_pinned(pin_texts, errors)
+    for gated in ("ci.yml", "tauri-build.yml", "security.yml"):
         if gated in workflow_docs:
             check_no_advisory_gates(workflow_docs[gated], errors)
 

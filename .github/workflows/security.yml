@@ -166,6 +166,7 @@ jobs:
     permissions:
       contents: read
       security-events: write  # for SARIF upload to Code Scanning
+      actions: read  # upload-sarif needs this on private repos
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 

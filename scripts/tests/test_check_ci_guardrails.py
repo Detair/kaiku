@@ -588,6 +588,30 @@ class ActionsPinnedTest(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
 
 
+class ActionsPinnedExtraTest(unittest.TestCase):
+    def test_quoted_unpinned_action_is_rejected(self):
+        for text in ('steps:\n  - uses: "a/b@v1"\n', "steps:\n  - uses: 'a/b@v1'\n"):
+            errors: list[str] = []
+            check_actions_pinned({"x.yml": text}, errors)
+            self.assertEqual(len(errors), 1, text)
+
+    def test_quoted_sha_pinned_action_passes(self):
+        errors: list[str] = []
+        check_actions_pinned({"x.yml": f'steps:\n  - uses: "a/b@{SHA}" # v1\n'}, errors)
+        self.assertEqual(errors, [])
+
+    def test_composite_action_unpinned_is_rejected(self):
+        errors: list[str] = []
+        check_actions_pinned(
+            {".github/actions/foo/action.yml": "runs:\n  steps:\n    - uses: a/b@v1\n"}, errors
+        )
+        self.assertEqual(len(errors), 1)
+
+    def test_main_scans_composite_actions(self):
+        src = Path(guardrails.__file__).read_text(encoding="utf-8")
+        self.assertIn('ACTIONS_DIR.glob("**/action.yml")', src)
+
+
 class AdvisoryGatesTest(unittest.TestCase):
     def test_advisory_android_tests_rejected(self):
         ci = yaml.safe_load(
@@ -635,6 +659,52 @@ jobs:
         errors: list[str] = []
         check_no_advisory_gates(ci, errors)
         self.assertTrue(any("windows" in e.lower() for e in errors), errors)
+
+    def test_job_level_continue_on_error_gitleaks_rejected(self):
+        ci = yaml.safe_load(
+            f"""
+jobs:
+  secrets:
+    continue-on-error: ${{{{ matrix.x }}}}
+    steps:
+      - uses: gitleaks/gitleaks-action@{SHA}
+"""
+        )
+        errors: list[str] = []
+        check_no_advisory_gates(ci, errors)
+        self.assertTrue(any("gitleaks" in e for e in errors), errors)
+
+    def test_job_level_continue_on_error_android_rejected(self):
+        ci = yaml.safe_load(
+            """
+jobs:
+  android:
+    continue-on-error: true
+    steps:
+      - run: ./gradlew testDebugUnitTest
+"""
+        )
+        errors: list[str] = []
+        check_no_advisory_gates(ci, errors)
+        self.assertTrue(any("android" in e.lower() for e in errors), errors)
+
+    def test_windows_job_expression_continue_on_error_rejected(self):
+        ci = yaml.safe_load(
+            """
+jobs:
+  win:
+    runs-on: windows-latest
+    continue-on-error: ${{ matrix.allow_failure }}
+    steps: []
+"""
+        )
+        errors: list[str] = []
+        check_no_advisory_gates(ci, errors)
+        self.assertTrue(any("Windows job" in e for e in errors), errors)
+
+    def test_security_workflow_is_checked_by_main_list(self):
+        src = Path(guardrails.__file__).read_text(encoding="utf-8")
+        self.assertIn('"security.yml"', src)
 
     def test_blocking_gates_pass(self):
         ci = yaml.safe_load(
