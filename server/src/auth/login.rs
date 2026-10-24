@@ -236,6 +236,7 @@ pub async fn login(
             expires_in: tokens.access_expires_in,
             token_type: "Bearer".to_string(),
             setup_required: !setup_complete,
+            password_change_required: user.must_change_password,
         }),
     ))
 }
@@ -301,7 +302,7 @@ pub async fn refresh_token(
     }
 
     // Verify user still exists
-    let _user = find_user_by_id(&state.db, user_id)
+    let user = find_user_by_id(&state.db, user_id)
         .await?
         .ok_or(AuthError::UserNotFound)?;
 
@@ -363,6 +364,7 @@ pub async fn refresh_token(
             expires_in: new_tokens.access_expires_in,
             token_type: "Bearer".to_string(),
             setup_required: !setup_complete,
+            password_change_required: user.must_change_password,
         }),
     ))
 }

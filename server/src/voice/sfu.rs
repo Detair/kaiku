@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, info, warn};
@@ -34,7 +35,31 @@ use super::track_types::{Layer, TrackSource};
 use super::webcam::WebcamInfo;
 use crate::config::Config;
 use crate::ratelimit::{RateLimitCategory, RateLimiter};
+use crate::ws::handlers::send_outbound_within;
 use crate::ws::{OutboundMsg, ServerEvent};
+
+/// How long a send to *another* peer's socket may wait for room in its queue.
+/// Voice fan-out runs inside the sending user's socket loop, so a stalled peer
+/// must not hold it up; the stalled peer's own socket loop tears it down.
+const PEER_SIGNAL_SEND_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Send `event` to every peer concurrently, waiting at most
+/// [`PEER_SIGNAL_SEND_TIMEOUT`] per peer. Peers whose queue is closed or stays
+/// full are skipped (logged), so one stalled peer never delays the others.
+async fn fan_out(senders: Vec<(Uuid, mpsc::Sender<OutboundMsg>)>, event: &ServerEvent) {
+    let sends = senders.iter().map(|(user_id, tx)| async move {
+        if let Err(e) = send_outbound_within(
+            tx,
+            OutboundMsg::Event(event.clone()),
+            PEER_SIGNAL_SEND_TIMEOUT,
+        )
+        .await
+        {
+            warn!(user_id = %user_id, error = %e, "Skipping voice event for peer");
+        }
+    });
+    futures::future::join_all(sends).await;
+}
 
 /// Default maximum participants per room.
 const DEFAULT_MAX_PARTICIPANTS: usize = 25;
@@ -235,12 +260,8 @@ impl Room {
                 .collect()
         };
 
-        // Send without holding the lock
-        for (user_id, tx) in senders {
-            if let Err(e) = tx.send(OutboundMsg::Event(event.clone())).await {
-                warn!(user_id = %user_id, error = %e, "Failed to send event to peer");
-            }
-        }
+        // Send without holding the lock; never block on another peer's queue
+        fan_out(senders, &event).await;
     }
 
     /// Broadcast an event to all peers.
@@ -256,12 +277,8 @@ impl Room {
                 .collect()
         };
 
-        // Send without holding the lock
-        for (user_id, tx) in senders {
-            if let Err(e) = tx.send(OutboundMsg::Event(event.clone())).await {
-                warn!(user_id = %user_id, error = %e, "Failed to send event to peer");
-            }
-        }
+        // Send without holding the lock; never block on another peer's queue
+        fan_out(senders, &event).await;
     }
 
     /// Get participant count.
@@ -833,21 +850,26 @@ impl SfuServer {
         peer.subscriber_pc
             .set_local_description(offer.clone())
             .await?;
-        peer.signal_tx
-            .send(OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
+        // Often called for *other* peers from the sender's socket loop, so the
+        // wait is bounded by the short per-peer timeout.
+        send_outbound_within(
+            &peer.signal_tx,
+            OutboundMsg::Event(ServerEvent::VoiceSubscriberOffer {
                 channel_id: peer.channel_id,
                 sdp: offer.sdp,
-            }))
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    user_id = %peer.user_id,
-                    channel_id = %peer.channel_id,
-                    error = %e,
-                    "failed to send subscriber offer — client will not receive tracks"
-                );
-                VoiceError::Signaling("failed to send subscriber offer".into())
-            })?;
+            }),
+            PEER_SIGNAL_SEND_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                user_id = %peer.user_id,
+                channel_id = %peer.channel_id,
+                error = %e,
+                "failed to send subscriber offer — client will not receive tracks"
+            );
+            VoiceError::Outbound(e)
+        })?;
         Ok(())
     }
 
@@ -900,5 +922,70 @@ impl SfuServer {
     /// Get active room count.
     pub async fn room_count(&self) -> usize {
         self.rooms.read().await.len()
+    }
+}
+
+#[cfg(test)]
+mod fan_out_tests {
+    use super::*;
+
+    fn joined_event(user_id: Uuid) -> ServerEvent {
+        ServerEvent::VoiceUserLeft {
+            channel_id: Uuid::nil(),
+            user_id,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fan_out_skips_stalled_peer_without_blocking_others() {
+        let stalled_id = Uuid::from_u128(1);
+        let (stalled_tx, mut stalled_rx) = mpsc::channel(1);
+        stalled_tx
+            .try_send(OutboundMsg::Ping)
+            .expect("fill stalled queue"); // never drained during the call
+        let (healthy_a_tx, mut healthy_a_rx) = mpsc::channel(8);
+        let (healthy_b_tx, mut healthy_b_rx) = mpsc::channel(8);
+
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(
+            PEER_SIGNAL_SEND_TIMEOUT * 2,
+            fan_out(
+                vec![
+                    (Uuid::from_u128(2), healthy_a_tx),
+                    (stalled_id, stalled_tx),
+                    (Uuid::from_u128(3), healthy_b_tx),
+                ],
+                &joined_event(stalled_id),
+            ),
+        )
+        .await
+        .expect("fan_out must not block on a stalled peer");
+        assert!(started.elapsed() <= PEER_SIGNAL_SEND_TIMEOUT);
+
+        for rx in [&mut healthy_a_rx, &mut healthy_b_rx] {
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(OutboundMsg::Event(ServerEvent::VoiceUserLeft { .. }))
+            ));
+        }
+        // The stalled peer only holds what it had before; its event was skipped.
+        assert!(matches!(stalled_rx.try_recv(), Ok(OutboundMsg::Ping)));
+        assert!(stalled_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn fan_out_skips_closed_peer() {
+        let (closed_tx, closed_rx) = mpsc::channel(1);
+        drop(closed_rx);
+        let (healthy_tx, mut healthy_rx) = mpsc::channel(8);
+        fan_out(
+            vec![
+                (Uuid::from_u128(1), closed_tx),
+                (Uuid::from_u128(2), healthy_tx),
+            ],
+            &joined_event(Uuid::from_u128(9)),
+        )
+        .await;
+        assert!(healthy_rx.try_recv().is_ok());
     }
 }

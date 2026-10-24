@@ -30,6 +30,10 @@ pub enum AdminError {
     #[error("{0} not found")]
     NotFound(String),
 
+    /// Resource already exists.
+    #[error("{0}")]
+    Conflict(String),
+
     /// Validation error.
     #[error("Validation failed: {0}")]
     Validation(String),
@@ -69,6 +73,10 @@ impl IntoResponse for AdminError {
             Self::NotFound(what) => (
                 StatusCode::NOT_FOUND,
                 serde_json::json!({"error": "not_found", "message": format!("{} not found", what)}),
+            ),
+            Self::Conflict(msg) => (
+                StatusCode::CONFLICT,
+                serde_json::json!({"error": "conflict", "message": msg}),
             ),
             Self::Validation(msg) => (
                 StatusCode::BAD_REQUEST,

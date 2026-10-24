@@ -67,6 +67,10 @@ pub enum VoiceError {
     /// Database error.
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
+
+    /// A message for a socket could not be queued (closed or stalled client).
+    #[error("Outbound send failed: {0}")]
+    Outbound(#[from] crate::ws::handlers::OutboundSendError),
 }
 
 impl IntoResponse for VoiceError {
@@ -106,7 +110,7 @@ impl IntoResponse for VoiceError {
                 "RATE_LIMITED",
                 self.to_string(),
             ),
-            Self::Internal(_) => (
+            Self::Internal(_) | Self::Outbound(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
                 "Internal server error".to_string(),

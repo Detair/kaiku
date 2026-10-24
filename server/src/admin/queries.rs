@@ -456,6 +456,37 @@ pub(super) async fn user_exists(pool: &PgPool, user_id: Uuid) -> Result<bool, Ad
     Ok(exists)
 }
 
+/// Insert a local account created by a system admin. The account must change
+/// its temporary password at first sign-in.
+///
+/// Returns `Ok(None)` if the username is already taken.
+pub(super) async fn insert_admin_created_user<'e, E>(
+    executor: E,
+    username: &str,
+    display_name: &str,
+    password_hash: &str,
+) -> Result<Option<UserListRow>, AdminError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let result = sqlx::query_as::<_, UserListRow>(
+        r"INSERT INTO users (username, display_name, password_hash, auth_method, must_change_password)
+          VALUES ($1, $2, $3, 'local', true)
+          RETURNING id, username, display_name, email, avatar_url, created_at, false AS is_banned",
+    )
+    .bind(username)
+    .bind(display_name)
+    .bind(password_hash)
+    .fetch_one(executor)
+    .await;
+
+    match result {
+        Ok(row) => Ok(Some(row)),
+        Err(sqlx::Error::Database(ref db_err)) if db_err.is_unique_violation() => Ok(None),
+        Err(e) => Err(AdminError::Database(e)),
+    }
+}
+
 /// Return the username for a user by id (`None` if the row does not exist).
 pub(super) async fn get_username(
     pool: &PgPool,

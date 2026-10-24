@@ -15,6 +15,9 @@ pub enum ChatError {
     #[error("Access denied")]
     Forbidden,
 
+    #[error("You must change your password before continuing")]
+    PasswordChangeRequired,
+
     #[error("Validation error: {0}")]
     Validation(String),
 
@@ -78,6 +81,11 @@ impl IntoResponse for ChatError {
             // Channel
             Self::ChannelNotFound => (StatusCode::NOT_FOUND, "CHANNEL_NOT_FOUND", self.to_string()),
             Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", self.to_string()),
+            Self::PasswordChangeRequired => (
+                StatusCode::FORBIDDEN,
+                "PASSWORD_CHANGE_REQUIRED",
+                self.to_string(),
+            ),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
             Self::LimitExceeded(msg) => (StatusCode::FORBIDDEN, "LIMIT_EXCEEDED", msg.clone()),
 

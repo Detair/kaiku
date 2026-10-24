@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT\n            u.id as user_id,\n            u.username,\n            u.display_name,\n            u.avatar_url,\n            dp.joined_at\n           FROM dm_participants dp\n           JOIN users u ON u.id = dp.user_id\n           WHERE dp.channel_id = $1\n           ORDER BY dp.joined_at ASC",
+  "query": "SELECT\n            u.id as user_id,\n            u.username,\n            u.display_name,\n            u.avatar_url,\n            dp.joined_at\n           FROM dm_participants dp\n           JOIN users u ON u.id = dp.user_id\n           WHERE dp.channel_id = $1\n           ORDER BY dp.joined_at ASC, dp.user_id ASC",
   "describe": {
     "columns": [
       {
@@ -72,5 +72,5 @@
       false
     ]
   },
-  "hash": "a92a8729b14559eef65b1ea6d2accc4008098aec427296673266737307c608f5"
+  "hash": "c2465a96bd3f31d4b249db42621241d78ad50856d7cfe036cca75091996a7084"
 }

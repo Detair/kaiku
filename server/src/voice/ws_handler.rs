@@ -245,14 +245,16 @@ async fn handle_join(
     let screen_shares = room.get_screen_shares().await;
     let webcams = room.get_webcams().await;
 
-    tx.send(OutboundMsg::Event(ServerEvent::VoiceRoomState {
-        channel_id,
-        participants,
-        screen_shares,
-        webcams,
-    }))
-    .await
-    .map_err(|e| VoiceError::Signaling(e.to_string()))?;
+    crate::ws::handlers::send_outbound(
+        tx,
+        OutboundMsg::Event(ServerEvent::VoiceRoomState {
+            channel_id,
+            participants,
+            screen_shares,
+            webcams,
+        }),
+    )
+    .await?;
 
     room.broadcast_except(
         user_id,
@@ -452,23 +454,22 @@ async fn handle_publisher_offer(
 
     match SfuServer::handle_publisher_offer(&peer, sdp.to_string()).await {
         Ok(answer_sdp) => {
-            if let Err(e) = peer
-                .signal_tx
-                .send(OutboundMsg::Event(ServerEvent::VoicePublisherAnswer {
+            if let Err(e) = crate::ws::handlers::send_outbound(
+                &peer.signal_tx,
+                OutboundMsg::Event(ServerEvent::VoicePublisherAnswer {
                     channel_id,
                     sdp: answer_sdp,
-                }))
-                .await
+                }),
+            )
+            .await
             {
                 tracing::error!(
                     user_id = %user_id,
                     channel_id = %channel_id,
                     error = %e,
-                    "failed to send publisher answer — client connection will hang"
+                    "failed to send publisher answer"
                 );
-                return Err(VoiceError::Signaling(
-                    "Failed to send publisher answer".to_string(),
-                ));
+                return Err(e.into());
             }
 
             // On first publisher offer, subscribe to existing peers' tracks
@@ -1158,14 +1159,16 @@ async fn handle_set_layer_preference(
         preferred_layer,
     ) {
         // Notify the viewer of the layer change
-        tx.send(OutboundMsg::Event(ServerEvent::VoiceLayerChanged {
-            channel_id,
-            source_user_id: target_user_id,
-            track_source,
-            active_layer: new_layer,
-        }))
-        .await
-        .map_err(|e| VoiceError::Signaling(e.to_string()))?;
+        crate::ws::handlers::send_outbound(
+            tx,
+            OutboundMsg::Event(ServerEvent::VoiceLayerChanged {
+                channel_id,
+                source_user_id: target_user_id,
+                track_source,
+                active_layer: new_layer,
+            }),
+        )
+        .await?;
     }
 
     Ok(())

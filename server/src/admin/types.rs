@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use validator::Validate;
 
 /// Authenticated system admin user.
 #[derive(Debug, Clone)]
@@ -53,6 +54,35 @@ pub struct CreateAnnouncementRequest {
     pub severity: String,
     pub starts_at: Option<DateTime<Utc>>,
     pub ends_at: Option<DateTime<Utc>>,
+}
+
+/// Request to create a local account with a temporary password.
+///
+/// The new user must replace the temporary password at first sign-in.
+#[derive(Deserialize, Validate, utoipa::ToSchema)]
+pub struct CreateUserRequest {
+    /// Username (3-32 lowercase alphanumeric + underscore).
+    #[validate(
+        length(min = 3, max = 32),
+        regex(path = "crate::auth::types::USERNAME_REGEX")
+    )]
+    pub username: String,
+    /// Display name (optional, defaults to the username).
+    #[validate(length(max = 64))]
+    pub display_name: Option<String>,
+    /// Temporary password handed to the user (8-128 characters).
+    #[validate(length(min = 8, max = 128))]
+    pub temporary_password: String,
+}
+
+impl std::fmt::Debug for CreateUserRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateUserRequest")
+            .field("username", &self.username)
+            .field("display_name", &self.display_name)
+            .field("temporary_password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 fn default_severity() -> String {

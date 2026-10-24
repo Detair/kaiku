@@ -8,13 +8,13 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::response::Response;
 use fred::prelude::*;
 use futures::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -32,6 +32,46 @@ const ACTIVITY_UPDATE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// WebSocket protocol header name for authentication.
 const WS_PROTOCOL_PREFIX: &str = "access_token.";
+
+/// Capacity of the per-socket outbound queue. Sized to absorb normal bursts;
+/// a full queue closes the socket with 1013 so the client resyncs.
+const OUTBOUND_QUEUE_CAPACITY: usize = 256;
+
+/// How long a new socket waits for its pub/sub subscriptions before giving up
+/// with close code 1011.
+const PUBSUB_READY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Upper bound for flushing a Close frame to the client before the socket is
+/// torn down.
+const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Close code: authentication rejected (policy violation).
+const CLOSE_POLICY_VIOLATION: u16 = 1008;
+
+/// Error code sent before closing a socket whose user must change their
+/// password first.
+const PASSWORD_CHANGE_REQUIRED: &str = "PASSWORD_CHANGE_REQUIRED";
+
+/// Close code: server-side event pipeline failed; reconnect and catch up.
+const CLOSE_INTERNAL_ERROR: u16 = 1011;
+
+/// Close code: client too slow, try again later; reconnect and catch up.
+const CLOSE_TRY_AGAIN_LATER: u16 = 1013;
+
+/// How long the pub/sub forwarder waits for room in a full outbound queue
+/// before treating the client as too slow (close 1013). Short bursts such as
+/// the presence snapshot drain well within this.
+const SLOW_CLIENT_SEND_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Broadcast buffer of each socket's own pub/sub subscriber client (fred's
+/// default is 32). The subscriber sees every `channel:*` message server-wide,
+/// so the buffer must absorb ordinary traffic while the forwarder waits up to
+/// [`SLOW_CLIENT_SEND_TIMEOUT`] for a busy client; overflowing it ends the
+/// pipeline with `Lagged` (close 1011).
+const SUBSCRIBER_BROADCAST_CAPACITY: usize = 1024;
+
+/// Close reason sent with 1011/1013: the client should reconnect and resync.
+const CLOSE_REASON_RESYNC: &str = "resync";
 
 /// Extract JWT token from Sec-WebSocket-Protocol header.
 ///
@@ -110,14 +150,13 @@ pub async fn handler(
             }
         };
 
-        // Verify user still exists (lightweight existence check, not full row fetch)
-        match sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)")
-            .bind(user_id)
-            .fetch_one(&state.db)
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => {
+        // Verify the user still exists and has no pending forced password change.
+        match user_must_change_password(&state, user_id).await {
+            Ok(Some(false)) => {}
+            Ok(Some(true)) => {
+                return error_response(403, PASSWORD_CHANGE_REQUIRED);
+            }
+            Ok(None) => {
                 return error_response(401, "User not found");
             }
             Err(e) => {
@@ -153,7 +192,12 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
     .await
     {
         Ok(Ok(uid)) => uid,
-        Ok(Err(reason)) => {
+        Ok(Err(AuthFrameError::PasswordChangeRequired)) => {
+            debug!("Post-connect auth refused: password change required");
+            refuse_password_change_required(ws_sender).await;
+            return;
+        }
+        Ok(Err(AuthFrameError::Failed(reason))) => {
             warn!("Post-connect auth failed: {}", reason);
             let mut ws_sender = ws_sender;
             let _ = ws_sender.close().await;
@@ -174,11 +218,62 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
     handle_socket(socket, state, user_id).await;
 }
 
+/// Look up whether a user must change their password before connecting.
+///
+/// `Ok(None)` means the user does not exist.
+async fn user_must_change_password(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    sqlx::query_scalar::<_, bool>("SELECT must_change_password FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await
+}
+
+/// Why post-connect authentication did not produce a user.
+enum AuthFrameError {
+    /// The user must change their password first (close 1008 with an error event).
+    PasswordChangeRequired,
+    /// Any other failure; the socket is simply closed.
+    Failed(String),
+}
+
+impl From<String> for AuthFrameError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+/// Tell a pre-auth socket that the password must be changed first, then close
+/// it with 1008. Both sends together are bounded by [`CLOSE_FLUSH_TIMEOUT`] so a
+/// stalled client cannot hold the task.
+async fn refuse_password_change_required(
+    mut ws_sender: futures::stream::SplitSink<WebSocket, Message>,
+) {
+    let event = ServerEvent::Error {
+        code: PASSWORD_CHANGE_REQUIRED.to_string(),
+        message: "You must change your password before connecting".to_string(),
+    };
+    let refuse = async {
+        if let Ok(json) = serde_json::to_string(&event) {
+            ws_sender.send(Message::Text(json.into())).await?;
+        }
+        ws_sender
+            .send(Message::Close(Some(CloseFrame {
+                code: CLOSE_POLICY_VIOLATION,
+                reason: PASSWORD_CHANGE_REQUIRED.into(),
+            })))
+            .await
+    };
+    let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, refuse).await;
+}
+
 /// Read frames until an `Authenticate` event arrives and validate its token.
 async fn wait_for_auth_frame(
     receiver: &mut futures::stream::SplitStream<WebSocket>,
     state: &AppState,
-) -> Result<Uuid, String> {
+) -> Result<Uuid, AuthFrameError> {
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => match serde_json::from_str::<ClientEvent>(&text) {
@@ -189,43 +284,38 @@ async fn wait_for_auth_frame(
                     // Reject access tokens whose session was logged out or revoked.
                     if let Some(sid) = claims.sid.as_deref() {
                         if crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
-                            return Err("Session revoked".to_string());
+                            return Err("Session revoked".to_string().into());
                         }
                     }
 
                     let user_id = Uuid::parse_str(&claims.sub)
                         .map_err(|_| "Invalid user ID in token".to_string())?;
 
-                    // Verify user exists
-                    match sqlx::query_scalar::<_, bool>(
-                        "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)",
-                    )
-                    .bind(user_id)
-                    .fetch_one(&state.db)
-                    .await
-                    {
-                        Ok(true) => return Ok(user_id),
-                        Ok(false) => return Err("User not found".to_string()),
-                        Err(e) => return Err(format!("Database error: {e}")),
-                    }
+                    // Verify the user exists and has no pending forced password change.
+                    return match user_must_change_password(state, user_id).await {
+                        Ok(Some(false)) => Ok(user_id),
+                        Ok(Some(true)) => Err(AuthFrameError::PasswordChangeRequired),
+                        Ok(None) => Err("User not found".to_string().into()),
+                        Err(e) => Err(format!("Database error: {e}").into()),
+                    };
                 }
                 Ok(_) => {
                     // Ignore non-Authenticate events during pre-auth
                 }
                 Err(e) => {
-                    return Err(format!("Invalid event: {e}"));
+                    return Err(format!("Invalid event: {e}").into());
                 }
             },
             Ok(Message::Close(_)) => {
-                return Err("Connection closed before authentication".to_string());
+                return Err("Connection closed before authentication".to_string().into());
             }
             Ok(_) => {} // Ignore binary, ping, pong
             Err(e) => {
-                return Err(format!("WebSocket error: {e}"));
+                return Err(format!("WebSocket error: {e}").into());
             }
         }
     }
-    Err("Connection closed before authentication".to_string())
+    Err("Connection closed before authentication".to_string().into())
 }
 
 /// Handle WebSocket connection.
@@ -235,7 +325,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
         socket.split();
 
     // Channel for sending messages to the WebSocket
-    let (tx, mut rx) = mpsc::channel::<OutboundMsg>(100);
+    let (tx, mut rx) = mpsc::channel::<OutboundMsg>(OUTBOUND_QUEUE_CAPACITY);
 
     // Track subscribed channels
     let subscribed_channels: Arc<tokio::sync::RwLock<HashSet<Uuid>>> =
@@ -253,10 +343,32 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
     info!("WebSocket connected: user={}", user_id);
     crate::observability::metrics::record_ws_connect();
 
-    // Send ready event
-    let _ = tx
-        .send(OutboundMsg::Event(ServerEvent::Ready { user_id }))
-        .await;
+    // Spawn task to forward events to WebSocket
+    let mut sender_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            let send_result = match msg {
+                OutboundMsg::Event(event) => match serde_json::to_string(&event) {
+                    Ok(json) => ws_sender.send(Message::Text(json.into())).await,
+                    Err(e) => {
+                        error!("Failed to serialize event: {}", e);
+                        continue;
+                    }
+                },
+                OutboundMsg::Ping => ws_sender.send(Message::Ping(vec![].into())).await,
+                OutboundMsg::Close { code, reason } => {
+                    let frame = CloseFrame {
+                        code,
+                        reason: reason.into(),
+                    };
+                    let _ = ws_sender.send(Message::Close(Some(frame))).await;
+                    break;
+                }
+            };
+            if send_result.is_err() {
+                break;
+            }
+        }
+    });
 
     // Fetch user's friends for presence subscriptions
     let friend_ids = match get_user_friends(&state.db, user_id).await {
@@ -273,61 +385,6 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
             Vec::new()
         }
     };
-
-    match get_friends_presence(&state.db, user_id).await {
-        Ok(snapshots) => {
-            for snap in snapshots {
-                // Always send base presence
-                let presence_event = ServerEvent::PresenceUpdate {
-                    user_id: snap.user_id,
-                    status: snap.status.clone(),
-                };
-                if tx.send(OutboundMsg::Event(presence_event)).await.is_err() {
-                    break;
-                }
-
-                let is_offline = snap.status == "offline";
-
-                // Send activity if present and user is not offline
-                if !is_offline {
-                    if let Some(activity_json) = snap.activity {
-                        if let Ok(activity) =
-                            serde_json::from_value::<crate::presence::Activity>(activity_json)
-                        {
-                            let activity_event = ServerEvent::RichPresenceUpdate {
-                                user_id: snap.user_id,
-                                activity: Some(activity),
-                            };
-                            if tx.send(OutboundMsg::Event(activity_event)).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-
-                    // Send custom status if present and user is not offline
-                    if let Some(cs_json) = snap.custom_status {
-                        if let Ok(cs) =
-                            serde_json::from_value::<crate::presence::CustomStatus>(cs_json)
-                        {
-                            let cs_event = ServerEvent::CustomStatusUpdate {
-                                user_id: snap.user_id,
-                                custom_status: Some(cs),
-                            };
-                            if tx.send(OutboundMsg::Event(cs_event)).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            warn!(
-                "Failed to fetch initial friend presence for {}: {}",
-                user_id, e
-            );
-        }
-    }
 
     // Fetch user's guild IDs for guild event subscriptions
     let guild_ids = match db::get_user_guild_ids(&state.db, user_id).await {
@@ -373,118 +430,155 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
         tokio::sync::RwLock::new(blocked_ids.union(&blocked_by_ids).copied().collect()),
     );
 
-    // Spawn task to handle Redis pub/sub
-    let redis_client = state.redis.clone();
-    let tx_clone = tx.clone();
-    let subscribed_clone = subscribed_channels.clone();
-    let admin_subscribed_clone = admin_subscribed.clone();
-    let blocked_clone = blocked_users.clone();
-    let pubsub_handle = tokio::spawn(async move {
-        handle_pubsub(
-            redis_client,
-            HandlePubsubParams {
-                tx: tx_clone,
-                subscribed_channels: subscribed_clone,
-                admin_subscribed: admin_subscribed_clone,
-                blocked_users: blocked_clone,
-                user_id,
-                friend_ids,
-                guild_ids,
-            },
-        )
-        .await;
-    });
+    // Spawn task to handle Redis pub/sub. The socket owns the subscriber client
+    // so cleanup can `QUIT` it: fred keeps the connection (and its
+    // subscriptions) alive after the last handle is dropped.
+    let subscriber = new_subscriber_client(&state.redis);
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let (start_tx, start_rx) = oneshot::channel();
+    let mut pubsub_handle: tokio::task::JoinHandle<PubsubExit> = tokio::spawn(handle_pubsub(
+        subscriber.clone(),
+        HandlePubsubParams {
+            tx: tx.clone(),
+            subscribed_channels: subscribed_channels.clone(),
+            admin_subscribed: admin_subscribed.clone(),
+            blocked_users: blocked_users.clone(),
+            user_id,
+            friend_ids,
+            guild_ids,
+        },
+        ready_tx,
+        start_rx,
+    ));
 
-    // Spawn task to forward events to WebSocket
-    let sender_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            let send_result = match msg {
-                OutboundMsg::Event(event) => match serde_json::to_string(&event) {
-                    Ok(json) => ws_sender.send(Message::Text(json.into())).await,
-                    Err(e) => {
-                        error!("Failed to serialize event: {}", e);
-                        continue;
-                    }
-                },
-                OutboundMsg::Ping => ws_sender.send(Message::Ping(vec![].into())).await,
-            };
-            if send_result.is_err() {
-                break;
-            }
+    // `Ready` promises that the socket's subscriptions are live, so wait for
+    // the pub/sub task before announcing it.
+    // Why the socket ends, if that warrants a Close frame (see `close_code`).
+    let mut exit: Option<PubsubExit> = None;
+
+    match tokio::time::timeout(PUBSUB_READY_TIMEOUT, ready_rx).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+            // The pub/sub task returned before `ready`: keep its real reason.
+            let reason = (&mut pubsub_handle)
+                .await
+                .unwrap_or(PubsubExit::StreamEnded);
+            warn!(
+                "Pub/sub pipeline failed before ready ({:?}): user={}",
+                reason, user_id
+            );
+            exit = Some(reason);
         }
-    });
+        Err(_) => {
+            warn!("Pub/sub pipeline not ready in time: user={}", user_id);
+            exit = Some(PubsubExit::SubscribeFailed);
+        }
+    }
 
-    // Per-connection mutable state for rate limiting and deduplication
-    let mut msg_state = ClientMessageState::default();
+    // On a setup failure there is no `Ready`; the socket is closed below.
+    if exit.is_none() {
+        if let Err(err) = send_ready_and_snapshot(&state, user_id, &tx, start_tx).await {
+            exit = Some(err.into());
+        }
+    }
 
-    // Server-side heartbeat: detect dead connections via Ping/Pong
-    let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
-    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    ping_interval.tick().await; // consume the immediate first tick
-    let mut awaiting_pong = false;
+    if exit.is_none() {
+        // Per-connection mutable state for rate limiting and deduplication
+        let mut msg_state = ClientMessageState::default();
 
-    // Handle incoming messages with heartbeat
-    loop {
-        tokio::select! {
-            msg = ws_receiver.next() => {
-                match msg {
-                    Some(Ok(Message::Text(text))) => {
-                        if let Err(e) = handle_client_message(
-                            &text,
-                            user_id,
-                            &state,
-                            &tx,
-                            &subscribed_channels,
-                            &admin_subscribed,
-                            &mut msg_state,
-                        )
-                        .await
-                        {
-                            warn!("Error handling message: {}", e);
-                            let _ = tx
-                                .send(OutboundMsg::Event(ServerEvent::Error {
+        // Server-side heartbeat: detect dead connections via Ping/Pong
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ping_interval.tick().await; // consume the immediate first tick
+        let mut awaiting_pong = false;
+
+        // Handle incoming messages with heartbeat
+        loop {
+            tokio::select! {
+                msg = ws_receiver.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Err(e) = handle_client_message(
+                                &text,
+                                user_id,
+                                &state,
+                                &tx,
+                                &subscribed_channels,
+                                &admin_subscribed,
+                                &mut msg_state,
+                            )
+                            .await
+                            {
+                                if let Some(reason) = outbound_failure(&*e) {
+                                    exit = Some(reason);
+                                    break;
+                                }
+                                warn!("Error handling message: {}", e);
+                                let reply = OutboundMsg::Event(ServerEvent::Error {
                                     code: "message_error".to_string(),
                                     message: e.to_string(),
-                                }))
-                                .await;
+                                });
+                                if let Err(err) = send_outbound(&tx, reply).await {
+                                    exit = Some(err.into());
+                                    break;
+                                }
+                            }
                         }
+                        Some(Ok(Message::Ping(_data))) => {
+                            // Axum handles pong automatically
+                            debug!("Received ping from user={}", user_id);
+                        }
+                        Some(Ok(Message::Pong(_))) => {
+                            awaiting_pong = false;
+                        }
+                        Some(Ok(Message::Close(_))) => {
+                            info!("WebSocket closed: user={}", user_id);
+                            break;
+                        }
+                        Some(Err(e)) => {
+                            warn!("WebSocket error: {}", e);
+                            break;
+                        }
+                        None => break,
+                        _ => {}
                     }
-                    Some(Ok(Message::Ping(_data))) => {
-                        // Axum handles pong automatically
-                        debug!("Received ping from user={}", user_id);
-                    }
-                    Some(Ok(Message::Pong(_))) => {
-                        awaiting_pong = false;
-                    }
-                    Some(Ok(Message::Close(_))) => {
-                        info!("WebSocket closed: user={}", user_id);
-                        break;
-                    }
-                    Some(Err(e)) => {
-                        warn!("WebSocket error: {}", e);
-                        break;
-                    }
-                    None => break,
-                    _ => {}
                 }
-            }
 
-            _ = ping_interval.tick() => {
-                if awaiting_pong || sender_handle.is_finished() {
-                    info!("WebSocket ping timeout: user={}", user_id);
-                    break;
+                _ = ping_interval.tick() => {
+                    if awaiting_pong || sender_handle.is_finished() {
+                        info!("WebSocket ping timeout: user={}", user_id);
+                        break;
+                    }
+                    awaiting_pong = true;
+                    if let Err(err) = send_outbound(&tx, OutboundMsg::Ping).await {
+                        exit = Some(err.into());
+                        break;
+                    }
                 }
-                awaiting_pong = true;
-                if tx.send(OutboundMsg::Ping).await.is_err() {
+
+                pubsub_exit = &mut pubsub_handle => {
+                    // A panicked or cancelled pub/sub task is a pipeline failure too.
+                    exit = Some(pubsub_exit.unwrap_or(PubsubExit::StreamEnded));
                     break;
                 }
             }
         }
     }
 
+    if let Some(code) = exit.and_then(PubsubExit::close_code) {
+        warn!(
+            "Closing socket ({:?}) with {}: user={}",
+            exit, code, user_id
+        );
+        close_and_flush(&tx, &mut sender_handle, code).await;
+    }
+
     // Cleanup
     pubsub_handle.abort();
     sender_handle.abort();
+    // Close the subscriber connection on every path (including ConnectFailed
+    // and setup failures); bounded so a hung Valkey cannot hold the task.
+    let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, subscriber.quit()).await;
 
     // Free per-peer voice rate-limit buckets in case the socket dropped without
     // an explicit VoiceLeave (ping timeout, TCP drop, app crash). The explicit
@@ -498,6 +592,166 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
 
     info!("WebSocket disconnected: user={}", user_id);
     crate::observability::metrics::record_ws_disconnect();
+}
+
+/// Why a bounded outbound send failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum OutboundSendError {
+    /// The outbound queue stayed full for [`SLOW_CLIENT_SEND_TIMEOUT`].
+    #[error("client too slow: outbound queue stayed full")]
+    TimedOut,
+    /// The outbound queue is closed (the socket is shutting down).
+    #[error("outbound queue closed")]
+    Closed,
+}
+
+impl From<OutboundSendError> for PubsubExit {
+    fn from(err: OutboundSendError) -> Self {
+        match err {
+            OutboundSendError::TimedOut => Self::SlowClient,
+            OutboundSendError::Closed => Self::ClientGone,
+        }
+    }
+}
+
+/// Queue a message for the socket, waiting at most [`SLOW_CLIENT_SEND_TIMEOUT`]
+/// for room in the outbound queue.
+///
+/// Every outbound send of a socket goes through here, so a stalled client can
+/// never block the socket loop (or the pub/sub forwarder) indefinitely.
+pub(crate) async fn send_outbound(
+    tx: &mpsc::Sender<OutboundMsg>,
+    msg: OutboundMsg,
+) -> Result<(), OutboundSendError> {
+    send_outbound_within(tx, msg, SLOW_CLIENT_SEND_TIMEOUT).await
+}
+
+/// [`send_outbound`] with a caller-chosen bound. Used for sends to *other*
+/// sockets' queues (voice fan-out), which must not hold up the caller for the
+/// full slow-client timeout.
+pub(crate) async fn send_outbound_within(
+    tx: &mpsc::Sender<OutboundMsg>,
+    msg: OutboundMsg,
+    timeout: Duration,
+) -> Result<(), OutboundSendError> {
+    match tokio::time::timeout(timeout, tx.send(msg)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_closed)) => Err(OutboundSendError::Closed),
+        Err(_elapsed) => Err(OutboundSendError::TimedOut),
+    }
+}
+
+/// If a (boxed) handler error is a failed outbound send, the socket must end:
+/// returns the matching exit reason.
+fn outbound_failure(err: &(dyn std::error::Error + 'static)) -> Option<PubsubExit> {
+    if let Some(e) = err.downcast_ref::<OutboundSendError>() {
+        return Some(PubsubExit::from(*e));
+    }
+    match err.downcast_ref::<crate::voice::VoiceError>() {
+        Some(crate::voice::VoiceError::Outbound(e)) => Some(PubsubExit::from(*e)),
+        _ => None,
+    }
+}
+
+/// Queue a Close frame (reason "resync") and give the sender task up to
+/// [`CLOSE_FLUSH_TIMEOUT`] to deliver it.
+async fn close_and_flush(
+    tx: &mpsc::Sender<OutboundMsg>,
+    sender_handle: &mut tokio::task::JoinHandle<()>,
+    code: u16,
+) {
+    let flush = async {
+        if tx
+            .send(OutboundMsg::Close {
+                code,
+                reason: CLOSE_REASON_RESYNC,
+            })
+            .await
+            .is_ok()
+        {
+            let _ = sender_handle.await;
+        }
+    };
+    let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, flush).await;
+}
+
+/// Queue `Ready` as the socket's first frame, release the pub/sub forwarder
+/// (`start`; events published meanwhile wait in its receiver), then send the
+/// friends' presence snapshot.
+async fn send_ready_and_snapshot(
+    state: &AppState,
+    user_id: Uuid,
+    tx: &mpsc::Sender<OutboundMsg>,
+    start: oneshot::Sender<()>,
+) -> Result<(), OutboundSendError> {
+    send_outbound(
+        tx,
+        OutboundMsg::Event(ServerEvent::Ready {
+            user_id,
+            server_time: chrono::Utc::now(),
+        }),
+    )
+    .await?;
+    let _ = start.send(());
+    send_presence_snapshot(state, user_id, tx).await
+}
+
+/// Send the friends' presence snapshot (status, activity, custom status).
+async fn send_presence_snapshot(
+    state: &AppState,
+    user_id: Uuid,
+    tx: &mpsc::Sender<OutboundMsg>,
+) -> Result<(), OutboundSendError> {
+    match get_friends_presence(&state.db, user_id).await {
+        Ok(snapshots) => {
+            for snap in snapshots {
+                // Always send base presence
+                let presence_event = ServerEvent::PresenceUpdate {
+                    user_id: snap.user_id,
+                    status: snap.status.clone(),
+                };
+                send_outbound(tx, OutboundMsg::Event(presence_event)).await?;
+
+                let is_offline = snap.status == "offline";
+
+                // Send activity if present and user is not offline
+                if !is_offline {
+                    if let Some(activity_json) = snap.activity {
+                        if let Ok(activity) =
+                            serde_json::from_value::<crate::presence::Activity>(activity_json)
+                        {
+                            let activity_event = ServerEvent::RichPresenceUpdate {
+                                user_id: snap.user_id,
+                                activity: Some(activity),
+                            };
+                            send_outbound(tx, OutboundMsg::Event(activity_event)).await?;
+                        }
+                    }
+
+                    // Send custom status if present and user is not offline
+                    if let Some(cs_json) = snap.custom_status {
+                        if let Ok(cs) =
+                            serde_json::from_value::<crate::presence::CustomStatus>(cs_json)
+                        {
+                            let cs_event = ServerEvent::CustomStatusUpdate {
+                                user_id: snap.user_id,
+                                custom_status: Some(cs),
+                            };
+                            send_outbound(tx, OutboundMsg::Event(cs_event)).await?;
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            warn!(
+                "Failed to fetch initial friend presence for {}: {}",
+                user_id, e
+            );
+        }
+    }
+
+    Ok(())
 }
 
 /// Handle a client message.
@@ -532,7 +786,7 @@ pub async fn handle_client_message(
 
     match event {
         ClientEvent::Ping => {
-            tx.send(OutboundMsg::Event(ServerEvent::Pong)).await?;
+            send_outbound(tx, OutboundMsg::Event(ServerEvent::Pong)).await?;
         }
 
         ClientEvent::Subscribe { channel_id } => {
@@ -541,10 +795,13 @@ pub async fn handle_client_message(
                 .await?
                 .is_none()
             {
-                tx.send(OutboundMsg::Event(ServerEvent::Error {
-                    code: "channel_not_found".to_string(),
-                    message: "Channel not found".to_string(),
-                }))
+                send_outbound(
+                    tx,
+                    OutboundMsg::Event(ServerEvent::Error {
+                        code: "channel_not_found".to_string(),
+                        message: "Channel not found".to_string(),
+                    }),
+                )
                 .await?;
                 return Ok(());
             }
@@ -554,10 +811,13 @@ pub async fn handle_client_message(
                 .await
                 .is_err()
             {
-                tx.send(OutboundMsg::Event(ServerEvent::Error {
-                    code: "forbidden".to_string(),
-                    message: "You don't have permission to view this channel".to_string(),
-                }))
+                send_outbound(
+                    tx,
+                    OutboundMsg::Event(ServerEvent::Error {
+                        code: "forbidden".to_string(),
+                        message: "You don't have permission to view this channel".to_string(),
+                    }),
+                )
                 .await?;
                 return Ok(());
             }
@@ -565,15 +825,21 @@ pub async fn handle_client_message(
             // Add to subscribed channels
             subscribed_channels.write().await.insert(channel_id);
 
-            tx.send(OutboundMsg::Event(ServerEvent::Subscribed { channel_id }))
-                .await?;
+            send_outbound(
+                tx,
+                OutboundMsg::Event(ServerEvent::Subscribed { channel_id }),
+            )
+            .await?;
             debug!("User {} subscribed to channel {}", user_id, channel_id);
         }
 
         ClientEvent::Unsubscribe { channel_id } => {
             subscribed_channels.write().await.remove(&channel_id);
-            tx.send(OutboundMsg::Event(ServerEvent::Unsubscribed { channel_id }))
-                .await?;
+            send_outbound(
+                tx,
+                OutboundMsg::Event(ServerEvent::Unsubscribed { channel_id }),
+            )
+            .await?;
             debug!("User {} unsubscribed from channel {}", user_id, channel_id);
         }
 
@@ -652,11 +918,19 @@ pub async fn handle_client_message(
             )
             .await
             {
+                // A reply to this socket that could not be queued ends the
+                // socket like any other failed outbound send.
+                if matches!(e, crate::voice::VoiceError::Outbound(_)) {
+                    return Err(Box::new(e));
+                }
                 warn!("Voice event error: {}", e);
-                tx.send(OutboundMsg::Event(ServerEvent::VoiceError {
-                    code: "voice_error".to_string(),
-                    message: e.to_string(),
-                }))
+                send_outbound(
+                    tx,
+                    OutboundMsg::Event(ServerEvent::VoiceError {
+                        code: "voice_error".to_string(),
+                        message: e.to_string(),
+                    }),
+                )
                 .await?;
             }
         }
@@ -791,10 +1065,14 @@ pub async fn handle_client_message(
             let is_elevated =
                 crate::admin::is_elevated_admin(&state.redis, &state.db, user_id).await;
             if !is_elevated {
-                tx.send(OutboundMsg::Event(ServerEvent::Error {
-                    code: "admin_not_elevated".to_string(),
-                    message: "Must be an elevated admin to subscribe to admin events".to_string(),
-                }))
+                send_outbound(
+                    tx,
+                    OutboundMsg::Event(ServerEvent::Error {
+                        code: "admin_not_elevated".to_string(),
+                        message: "Must be an elevated admin to subscribe to admin events"
+                            .to_string(),
+                    }),
+                )
                 .await?;
                 return Ok(());
             }
@@ -842,7 +1120,7 @@ async fn handle_component_interaction(
             code: code.to_string(),
             message: msg.to_string(),
         };
-        async move { tx.send(OutboundMsg::Event(ev)).await }
+        async move { send_outbound(tx, OutboundMsg::Event(ev)).await }
     };
 
     // Rate-limit clicks per user — each interaction does Redis writes + a
@@ -953,7 +1231,7 @@ async fn handle_component_interaction(
 }
 
 /// Parameters for the Redis pub/sub handler.
-struct HandlePubsubParams {
+pub(crate) struct HandlePubsubParams {
     tx: mpsc::Sender<OutboundMsg>,
     subscribed_channels: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     admin_subscribed: Arc<tokio::sync::RwLock<bool>>,
@@ -963,94 +1241,237 @@ struct HandlePubsubParams {
     guild_ids: Vec<Uuid>,
 }
 
-/// Handle Redis pub/sub messages.
-async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
-    // Create a subscriber client
-    let subscriber = redis.clone_new();
+/// Why a connection's pub/sub pipeline stopped.
+///
+/// Every variant except [`PubsubExit::ClientGone`] means the socket can no
+/// longer see all of its events, so the socket is closed and the client
+/// reconnects and catches up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PubsubExit {
+    /// The subscriber connection to Valkey could not be established.
+    ConnectFailed,
+    /// The `channel:*` pattern subscription failed.
+    SubscribeFailed,
+    /// The pub/sub message stream ended.
+    StreamEnded,
+    /// The pub/sub receiver fell behind and messages were skipped.
+    Lagged,
+    /// The outbound queue to the client was full.
+    SlowClient,
+    /// The outbound queue was closed (the socket is already shutting down).
+    ClientGone,
+}
 
-    // Connect (fred 8.x returns JoinHandle)
+impl PubsubExit {
+    /// WebSocket close code to send for this exit, or `None` if the socket is
+    /// already going away.
+    ///
+    /// 1013 = client too slow, try again later; 1011 = server-side event
+    /// pipeline failed. Both mean "reconnect and catch up".
+    pub(crate) const fn close_code(self) -> Option<u16> {
+        match self {
+            Self::SlowClient => Some(CLOSE_TRY_AGAIN_LATER),
+            Self::ClientGone => None,
+            Self::ConnectFailed | Self::SubscribeFailed | Self::StreamEnded | Self::Lagged => {
+                Some(CLOSE_INTERNAL_ERROR)
+            }
+        }
+    }
+}
+
+/// Handle Redis pub/sub messages.
+///
+/// `subscriber` is created and later `QUIT` by the socket (see `handle_socket`).
+///
+/// Fires `ready` once the `channel:*` pattern subscription and all per-user
+/// subscriptions have succeeded and a PING on the same connection has confirmed
+/// that Valkey executed them (any failure returns `SubscribeFailed`), then waits for `start`
+/// (sent by the socket after it queued `Ready`) and forwards messages until the pipeline stops.
+/// The returned [`PubsubExit`] says why.
+async fn handle_pubsub(
+    subscriber: Client,
+    params: HandlePubsubParams,
+    ready: oneshot::Sender<()>,
+    start: oneshot::Receiver<()>,
+) -> PubsubExit {
+    // Connect the socket-owned subscriber client (`connect` spawns fred's
+    // connection task; the socket `QUIT`s the client during cleanup).
     let _connect_handle = subscriber.connect();
 
     if let Err(e) = subscriber.wait_for_connect().await {
         error!("Subscriber connection failed: {}", e);
-        return;
+        return PubsubExit::ConnectFailed;
     }
 
+    // Watch for reconnects from here on (the initial connect has already been
+    // announced, so only later reconnects arrive on this receiver).
+    let reconnect_rx = subscriber.reconnect_rx();
+
     // Subscribe to pattern for all channel events
-    let mut pubsub_stream = subscriber.message_rx();
+    let pubsub_stream = subscriber.message_rx();
 
     // Subscribe to channel pattern
     if let Err(e) = subscriber.psubscribe("channel:*").await {
         error!("Failed to psubscribe: {}", e);
-        return;
+        return PubsubExit::SubscribeFailed;
     }
 
     // Subscribe to user's own events channel (for preferences sync, etc.)
     let user_channel = channels::user_events(params.user_id);
+    // Cross-device sync depends on this channel; like every subscription below,
+    // a failure ends the pipeline (no `Ready`, close 1011).
     if let Err(e) = subscriber.subscribe(&user_channel).await {
-        warn!("Failed to subscribe to user events channel: {}", e);
-    } else {
-        debug!("Subscribed to user events channel: {}", user_channel);
+        error!("Failed to subscribe to user events channel: {}", e);
+        return PubsubExit::SubscribeFailed;
+    }
+    debug!("Subscribed to user events channel: {}", user_channel);
+
+    // Every other subscription is required too: `Ready` promises that the
+    // socket sees all of its events, so any failure ends the pipeline.
+    let other_channels = std::iter::once(channels::ADMIN_EVENTS.to_string())
+        .chain(
+            params
+                .friend_ids
+                .iter()
+                .map(|id| channels::user_presence(*id)),
+        )
+        .chain(
+            params
+                .guild_ids
+                .iter()
+                .map(|id| channels::guild_events(*id)),
+        );
+    for channel in other_channels {
+        if let Err(e) = subscriber.subscribe(&channel).await {
+            error!("Failed to subscribe to {}: {}", channel, e);
+            return PubsubExit::SubscribeFailed;
+        }
+        debug!("Subscribed to {}", channel);
     }
 
-    // Subscribe to admin events channel
-    if let Err(e) = subscriber.subscribe(channels::ADMIN_EVENTS).await {
-        warn!("Failed to subscribe to admin events: {}", e);
-    } else {
-        debug!("Subscribed to admin events channel");
+    // fred resolves `subscribe`/`psubscribe` as soon as the command is queued
+    // on the connection, before it is written and long before Valkey has
+    // executed it (the server's acks are dropped as "unused subscription
+    // responses"). Under load another connection can therefore still see the
+    // channel without this subscriber. A PING on the same connection is
+    // answered only after Valkey has executed every command sent before it,
+    // so its reply proves that all subscriptions above are active.
+    if let Err(e) = subscriber.ping::<fred::types::Value>(None).await {
+        error!("Subscription barrier (PING) failed: {}", e);
+        return PubsubExit::SubscribeFailed;
     }
 
-    // Subscribe to friends' presence channels
-    for friend_id in &params.friend_ids {
-        let presence_channel = channels::user_presence(*friend_id);
-        if let Err(e) = subscriber.subscribe(&presence_channel).await {
+    // Subscriptions are live: the socket may now announce `Ready`.
+    let _ = ready.send(());
+
+    forward_after_start(start, pubsub_stream, reconnect_rx, &params).await
+}
+
+/// Create the per-socket subscriber client: same connection settings and
+/// reconnect policy as `redis`, but with a [`SUBSCRIBER_BROADCAST_CAPACITY`]
+/// pub/sub buffer. The shared client is not modified.
+fn new_subscriber_client(redis: &Client) -> Client {
+    let mut perf = redis.perf_config();
+    perf.broadcast_channel_capacity = SUBSCRIBER_BROADCAST_CAPACITY;
+    Client::new(
+        redis.client_config(),
+        Some(perf),
+        Some(redis.connection_config().clone()),
+        redis.client_reconnect_policy(),
+    )
+}
+
+/// Wait for `start` (the socket has queued `Ready`), then forward messages.
+///
+/// Messages published before `start` stay buffered in `rx`, so `Ready` is
+/// always the socket's first frame and nothing is lost. If `start` is dropped
+/// the socket closed during setup and [`PubsubExit::ClientGone`] is returned.
+async fn forward_after_start(
+    start: oneshot::Receiver<()>,
+    rx: tokio::sync::broadcast::Receiver<fred::types::Message>,
+    reconnect_rx: tokio::sync::broadcast::Receiver<fred::types::config::Server>,
+    params: &HandlePubsubParams,
+) -> PubsubExit {
+    if start.await.is_err() {
+        return PubsubExit::ClientGone;
+    }
+    forward_until_reconnect(rx, reconnect_rx, params).await
+}
+
+/// Run [`forward_pubsub_messages`] until it stops or the subscriber connection
+/// reconnects.
+///
+/// A plain fred client does not restore its subscriptions after a reconnect,
+/// so a reconnect ends the pipeline with [`PubsubExit::StreamEnded`].
+async fn forward_until_reconnect(
+    rx: tokio::sync::broadcast::Receiver<fred::types::Message>,
+    mut reconnect_rx: tokio::sync::broadcast::Receiver<fred::types::config::Server>,
+    params: &HandlePubsubParams,
+) -> PubsubExit {
+    use tokio::sync::broadcast::error::RecvError;
+
+    let reconnected = async {
+        match reconnect_rx.recv().await {
+            Ok(_) | Err(RecvError::Lagged(_)) => {}
+            // No reconnect notifications can arrive any more.
+            Err(RecvError::Closed) => std::future::pending::<()>().await,
+        }
+    };
+
+    tokio::select! {
+        exit = forward_pubsub_messages(rx, params) => exit,
+        () = reconnected => {
             warn!(
-                "Failed to subscribe to presence channel for friend {}: {}",
-                friend_id, e
+                "Pub/sub subscriber reconnected, subscriptions lost (user {})",
+                params.user_id
             );
-        } else {
-            debug!("Subscribed to presence channel: {}", presence_channel);
+            PubsubExit::StreamEnded
         }
     }
+}
 
-    // Subscribe to guild event channels for state sync
-    for guild_id in &params.guild_ids {
-        let guild_channel = channels::guild_events(*guild_id);
-        if let Err(e) = subscriber.subscribe(&guild_channel).await {
-            warn!(
-                "Failed to subscribe to guild events channel for guild {}: {}",
-                guild_id, e
-            );
-        } else {
-            debug!("Subscribed to guild events channel: {}", guild_channel);
-        }
-    }
+/// Forward pub/sub messages to the socket's outbound queue until the pipeline
+/// stops, and report why it stopped.
+///
+/// Never drops an event silently: a lagging receiver, or an outbound queue that
+/// stays full for [`SLOW_CLIENT_SEND_TIMEOUT`], ends forwarding so the socket
+/// can be closed and the client can resync.
+pub(crate) async fn forward_pubsub_messages(
+    mut rx: tokio::sync::broadcast::Receiver<fred::types::Message>,
+    params: &HandlePubsubParams,
+) -> PubsubExit {
+    use tokio::sync::broadcast::error::RecvError;
 
     macro_rules! try_forward {
-        ($tx:expr, $event:expr, $drops:ident, $user_id:expr) => {
-            match $tx.try_send(OutboundMsg::Event($event)) {
-                Ok(()) => {
-                    $drops = 0;
+        ($event:expr) => {
+            if let Err(err) = send_outbound(&params.tx, OutboundMsg::Event($event)).await {
+                if err == OutboundSendError::TimedOut {
+                    warn!(
+                        "Closing slow WebSocket client (user {}): outbound queue full for {:?}",
+                        params.user_id, SLOW_CLIENT_SEND_TIMEOUT
+                    );
                 }
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    $drops += 1;
-                    if $drops > 10 {
-                        warn!(
-                            "Disconnecting slow WebSocket client (user {}): {} consecutive drops",
-                            $user_id, $drops
-                        );
-                        break;
-                    }
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    break;
-                }
+                return err.into();
             }
         };
     }
 
-    let mut backpressure_drops: u32 = 0;
-    while let Ok(message) = pubsub_stream.recv().await {
+    let user_channel = channels::user_events(params.user_id);
+    loop {
+        let message = match rx.recv().await {
+            Ok(message) => message,
+            Err(RecvError::Closed) => {
+                warn!("Pub/sub stream ended (user {})", params.user_id);
+                return PubsubExit::StreamEnded;
+            }
+            Err(RecvError::Lagged(skipped)) => {
+                warn!(
+                    "Pub/sub receiver lagged by {} messages (user {})",
+                    skipped, params.user_id
+                );
+                return PubsubExit::Lagged;
+            }
+        };
         let channel_name = message.channel.to_string();
 
         // Handle channel events (channel:{uuid})
@@ -1088,7 +1509,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                             drop(blocked);
 
                             if !should_filter {
-                                try_forward!(params.tx, event, backpressure_drops, params.user_id);
+                                try_forward!(event);
                             }
                         }
                     }
@@ -1111,10 +1532,27 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                         } => {
                             params.blocked_users.write().await.remove(unblocked_id);
                         }
+                        // Subscribe before forwarding: Redis keeps publish
+                        // order on this connection, so the DM's first
+                        // `channel:{id}` events are not filtered out.
+                        ServerEvent::DmCreated { channel } => {
+                            let channel_id = channel
+                                .get("id")
+                                .and_then(|id| id.as_str())
+                                .and_then(|id| Uuid::parse_str(id).ok());
+                            if let Some(channel_id) = channel_id {
+                                params.subscribed_channels.write().await.insert(channel_id);
+                            } else {
+                                warn!(
+                                    "DmCreated without a valid channel id (user {})",
+                                    params.user_id
+                                );
+                            }
+                        }
                         _ => {}
                     }
 
-                    try_forward!(params.tx, event, backpressure_drops, params.user_id);
+                    try_forward!(event);
                 }
             }
         }
@@ -1124,7 +1562,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
             if *params.admin_subscribed.read().await {
                 if let Some(payload) = message.value.as_str() {
                     if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                        try_forward!(params.tx, event, backpressure_drops, params.user_id);
+                        try_forward!(event);
                     }
                 }
             }
@@ -1144,7 +1582,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
                     };
 
                     if !should_filter {
-                        try_forward!(params.tx, event, backpressure_drops, params.user_id);
+                        try_forward!(event);
                     }
                 }
             }
@@ -1154,7 +1592,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
             // Forward all user-targeted events (read sync, etc.)
             if let Some(payload) = message.value.as_str() {
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                    try_forward!(params.tx, event, backpressure_drops, params.user_id);
+                    try_forward!(event);
                 }
             }
         }
@@ -1163,7 +1601,7 @@ async fn handle_pubsub(redis: Client, params: HandlePubsubParams) {
             // Forward guild/member patch events to all guild members
             if let Some(payload) = message.value.as_str() {
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                    try_forward!(params.tx, event, backpressure_drops, params.user_id);
+                    try_forward!(event);
                 }
             }
         }
@@ -1305,4 +1743,333 @@ async fn get_friends_presence(
     .await?;
 
     Ok(rows)
+}
+
+#[cfg(test)]
+mod pubsub_tests {
+    use fred::types::config::Server;
+    use fred::types::{Message as PubsubMessage, MessageKind, Value as PubsubValue};
+
+    use super::*;
+
+    const CHANNEL: Uuid = Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_0001);
+
+    fn test_params(capacity: usize) -> (HandlePubsubParams, mpsc::Receiver<OutboundMsg>) {
+        let (tx, rx) = mpsc::channel(capacity);
+        let params = HandlePubsubParams {
+            tx,
+            subscribed_channels: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+            admin_subscribed: Arc::new(tokio::sync::RwLock::new(false)),
+            blocked_users: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
+            user_id: Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00aa),
+            friend_ids: Vec::new(),
+            guild_ids: Vec::new(),
+        };
+        (params, rx)
+    }
+
+    fn typing_event() -> ServerEvent {
+        ServerEvent::TypingStart {
+            channel_id: CHANNEL,
+            user_id: Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00bb),
+        }
+    }
+
+    fn channel_message(channel_id: Uuid, event: &ServerEvent) -> PubsubMessage {
+        PubsubMessage {
+            channel: channels::channel_events(channel_id).into(),
+            value: PubsubValue::from(serde_json::to_string(event).expect("serialize event")),
+            kind: MessageKind::PMessage,
+            server: Server::new("127.0.0.1", 6379),
+        }
+    }
+
+    #[tokio::test]
+    async fn dm_created_subscribes_before_forwarding() {
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        let (params, mut rx) = test_params(16);
+        let dm_created = ServerEvent::DmCreated {
+            channel: serde_json::json!({ "id": CHANNEL }),
+        };
+        btx.send(PubsubMessage {
+            channel: channels::user_events(params.user_id).into(),
+            value: PubsubValue::from(serde_json::to_string(&dm_created).expect("serialize")),
+            kind: MessageKind::Message,
+            server: Server::new("127.0.0.1", 6379),
+        })
+        .unwrap();
+        btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
+        drop(btx);
+
+        assert!(matches!(
+            forward_pubsub_messages(brx, &params).await,
+            PubsubExit::StreamEnded
+        ));
+        assert!(params.subscribed_channels.read().await.contains(&CHANNEL));
+        assert!(matches!(
+            rx.recv().await,
+            Some(OutboundMsg::Event(ServerEvent::DmCreated { .. }))
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn forward_returns_stream_ended_when_sender_dropped() {
+        let (btx, brx) = tokio::sync::broadcast::channel::<PubsubMessage>(8);
+        let (params, _rx) = test_params(16);
+        drop(btx);
+        assert!(matches!(
+            forward_pubsub_messages(brx, &params).await,
+            PubsubExit::StreamEnded
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forward_returns_slow_client_when_send_times_out() {
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        let (params, _rx_never_drained) = test_params(1); // outbound capacity 1
+        params.subscribed_channels.write().await.insert(CHANNEL);
+        for _ in 0..2 {
+            btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
+        }
+        let started = tokio::time::Instant::now();
+        assert!(matches!(
+            forward_pubsub_messages(brx, &params).await,
+            PubsubExit::SlowClient
+        ));
+        assert!(started.elapsed() >= SLOW_CLIENT_SEND_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forward_waits_for_briefly_full_queue_instead_of_closing() {
+        // A burst (e.g. the presence snapshot) can fill the queue; as long as
+        // the client drains it within the timeout, nothing is dropped and the
+        // socket stays open.
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        let (params, mut rx) = test_params(1);
+        params.subscribed_channels.write().await.insert(CHANNEL);
+        for _ in 0..3 {
+            btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
+        }
+        let forward = forward_pubsub_messages(brx, &params);
+        tokio::pin!(forward);
+        let drain = async {
+            for _ in 0..3 {
+                tokio::time::sleep(SLOW_CLIENT_SEND_TIMEOUT / 2).await;
+                assert!(matches!(
+                    rx.recv().await,
+                    Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+                ));
+            }
+        };
+        tokio::select! {
+            exit = &mut forward => panic!("forwarding stopped early: {exit:?}"),
+            () = drain => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_returns_lagged_when_broadcast_overflows() {
+        let (btx, brx) = tokio::sync::broadcast::channel(1);
+        let (params, _rx) = test_params(16);
+        params.subscribed_channels.write().await.insert(CHANNEL);
+        for _ in 0..3 {
+            btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
+        }
+        assert!(matches!(
+            forward_pubsub_messages(brx, &params).await,
+            PubsubExit::Lagged
+        ));
+    }
+
+    #[tokio::test]
+    async fn forward_returns_client_gone_when_outbound_closed() {
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        let (params, rx) = test_params(16);
+        params.subscribed_channels.write().await.insert(CHANNEL);
+        drop(rx);
+        btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
+        assert!(matches!(
+            forward_pubsub_messages(brx, &params).await,
+            PubsubExit::ClientGone
+        ));
+    }
+
+    #[tokio::test]
+    async fn forward_returns_stream_ended_on_subscriber_reconnect() {
+        // A plain fred client does not restore subscriptions after a reconnect,
+        // so a reconnect must end forwarding instead of leaving a silent socket.
+        let (_btx, brx) = tokio::sync::broadcast::channel::<PubsubMessage>(8);
+        let (reconnect_tx, reconnect_rx) = tokio::sync::broadcast::channel::<Server>(1);
+        let (params, _rx) = test_params(16);
+        reconnect_tx.send(Server::new("127.0.0.1", 6379)).unwrap();
+        let exit = tokio::time::timeout(
+            Duration::from_secs(1),
+            forward_until_reconnect(brx, reconnect_rx, &params),
+        )
+        .await
+        .expect("forwarding must stop on reconnect");
+        assert!(matches!(exit, PubsubExit::StreamEnded));
+    }
+
+    #[tokio::test]
+    async fn forward_keeps_running_without_reconnect() {
+        let (btx, brx) = tokio::sync::broadcast::channel::<PubsubMessage>(8);
+        let (_reconnect_tx, reconnect_rx) = tokio::sync::broadcast::channel::<Server>(1);
+        let (params, mut rx) = test_params(16);
+        params.subscribed_channels.write().await.insert(CHANNEL);
+        btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
+        let forward = forward_until_reconnect(brx, reconnect_rx, &params);
+        tokio::pin!(forward);
+        tokio::select! {
+            _ = &mut forward => panic!("forwarding stopped without a reason"),
+            msg = rx.recv() => assert!(matches!(
+                msg,
+                Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+            )),
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarding_waits_for_start_so_ready_is_first() {
+        let (btx, brx) = tokio::sync::broadcast::channel::<PubsubMessage>(8);
+        let (_reconnect_tx, reconnect_rx) = tokio::sync::broadcast::channel::<Server>(1);
+        let (start_tx, start_rx) = oneshot::channel();
+        let (params, mut rx) = test_params(16);
+        params.subscribed_channels.write().await.insert(CHANNEL);
+        let user_id = params.user_id;
+        let tx = params.tx.clone();
+
+        // Subscriptions are live; an event arrives before the socket queued Ready.
+        btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
+
+        let forward = forward_after_start(start_rx, brx, reconnect_rx, &params);
+        tokio::pin!(forward);
+        // Give the forwarder every chance to run: it must not forward yet.
+        tokio::select! {
+            biased;
+            exit = &mut forward => panic!("forwarding stopped early: {exit:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+        assert!(rx.try_recv().is_err(), "event forwarded before start");
+
+        tx.send(OutboundMsg::Event(ServerEvent::Ready {
+            user_id,
+            server_time: chrono::Utc::now(),
+        }))
+        .await
+        .unwrap();
+        start_tx.send(()).unwrap();
+
+        tokio::select! {
+            exit = &mut forward => panic!("forwarding stopped early: {exit:?}"),
+            () = async {
+                assert!(matches!(
+                    rx.recv().await,
+                    Some(OutboundMsg::Event(ServerEvent::Ready { .. }))
+                ));
+                assert!(matches!(
+                    rx.recv().await,
+                    Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+                ));
+            } => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn forwarding_returns_client_gone_when_start_never_comes() {
+        let (_btx, brx) = tokio::sync::broadcast::channel::<PubsubMessage>(8);
+        let (_reconnect_tx, reconnect_rx) = tokio::sync::broadcast::channel::<Server>(1);
+        let (start_tx, start_rx) = oneshot::channel::<()>();
+        let (params, _rx) = test_params(16);
+        drop(start_tx);
+        assert!(matches!(
+            forward_after_start(start_rx, brx, reconnect_rx, &params).await,
+            PubsubExit::ClientGone
+        ));
+    }
+
+    #[test]
+    fn subscriber_client_gets_larger_broadcast_capacity() {
+        let base = Client::new(
+            fred::types::config::Config::default(),
+            None,
+            None,
+            Some(ReconnectPolicy::new_constant(0, 100)),
+        );
+        assert!(base.perf_config().broadcast_channel_capacity < SUBSCRIBER_BROADCAST_CAPACITY);
+
+        let subscriber = new_subscriber_client(&base);
+        assert_eq!(
+            subscriber.perf_config().broadcast_channel_capacity,
+            SUBSCRIBER_BROADCAST_CAPACITY
+        );
+        assert!(subscriber.has_reconnect_policy());
+        // The shared base client is left untouched.
+        assert!(base.perf_config().broadcast_channel_capacity < SUBSCRIBER_BROADCAST_CAPACITY);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bounded_send_gives_up_when_queue_stays_full() {
+        let (tx, _rx_never_drained) = mpsc::channel(1);
+        send_outbound(&tx, OutboundMsg::Ping).await.unwrap(); // fills the queue
+        let started = tokio::time::Instant::now();
+        let err = send_outbound(&tx, OutboundMsg::Ping).await.unwrap_err();
+        assert!(matches!(err, OutboundSendError::TimedOut));
+        assert!(started.elapsed() >= SLOW_CLIENT_SEND_TIMEOUT);
+        assert_eq!(PubsubExit::from(err), PubsubExit::SlowClient);
+    }
+
+    #[tokio::test]
+    async fn bounded_send_reports_closed_queue() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let err = send_outbound(&tx, OutboundMsg::Ping).await.unwrap_err();
+        assert!(matches!(err, OutboundSendError::Closed));
+        assert_eq!(PubsubExit::from(err), PubsubExit::ClientGone);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bounded_send_failure_is_recognisable_through_boxed_errors() {
+        // handle_client_message returns Box<dyn Error>; the socket loop must
+        // still tell an outbound failure apart from an ordinary handler error.
+        let (tx, _rx_never_drained) = mpsc::channel(1);
+        send_outbound(&tx, OutboundMsg::Ping).await.unwrap();
+        let boxed: Box<dyn std::error::Error + Send + Sync> = send_outbound(&tx, OutboundMsg::Ping)
+            .await
+            .unwrap_err()
+            .into();
+        assert_eq!(outbound_failure(&*boxed), Some(PubsubExit::SlowClient));
+        let other: Box<dyn std::error::Error + Send + Sync> = "bad input".into();
+        assert_eq!(outbound_failure(&*other), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_voice_reply_is_an_outbound_failure() {
+        let (tx, _rx_never_drained) = mpsc::channel(1);
+        send_outbound(&tx, OutboundMsg::Ping).await.unwrap();
+        let voice_err: crate::voice::VoiceError = send_outbound(&tx, OutboundMsg::Ping)
+            .await
+            .unwrap_err()
+            .into();
+        let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(voice_err);
+        assert_eq!(outbound_failure(&*boxed), Some(PubsubExit::SlowClient));
+
+        let other: Box<dyn std::error::Error + Send + Sync> =
+            Box::new(crate::voice::VoiceError::NotInChannel);
+        assert_eq!(outbound_failure(&*other), None);
+    }
+
+    #[test]
+    fn close_codes() {
+        assert_eq!(PubsubExit::SlowClient.close_code(), Some(1013));
+        assert_eq!(PubsubExit::StreamEnded.close_code(), Some(1011));
+        assert_eq!(PubsubExit::Lagged.close_code(), Some(1011));
+        assert_eq!(PubsubExit::ConnectFailed.close_code(), Some(1011));
+        assert_eq!(PubsubExit::SubscribeFailed.close_code(), Some(1011));
+        assert_eq!(PubsubExit::ClientGone.close_code(), None);
+    }
 }
