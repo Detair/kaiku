@@ -140,10 +140,82 @@ class TokenStorageTest {
     }
 
     @Test
-    fun `noted storage reset is reported once`() {
-        storage.noteStorageReset()
+    fun `read that succeeds on retry does not wipe a committing login`() {
+        val inner = InMemorySharedPreferences()
+        val prefs = ThrowingReadPreferences(inner)
+        val s = TokenStorage(prefs)
+        s.saveTokens("old", "old-r", 900, "user-1")
+        prefs.failure = ThrowingReadPreferences.decryptFailure()
+        prefs.failures = 1
+        // The login commits (without moving the generation we captured) before the reset runs.
+        prefs.onFailure = { inner.edit().putString("access_token", "fresh").commit() }
 
-        assertTrue(storage.consumeStorageResetNotice())
-        assertFalse(storage.consumeStorageResetNotice())
+        assertEquals("fresh", s.getAccessToken())
+
+        assertEquals("old-r", s.getRefreshToken())
+        assertFalse(s.consumeStorageResetNotice())
+    }
+
+    @Test
+    fun `reset is skipped when the session changed while the failure was pending`() {
+        val prefs = ThrowingReadPreferences(InMemorySharedPreferences())
+        val s = TokenStorage(prefs)
+        s.saveTokens("old", "old-r", 900, "user-1")
+        prefs.failure = ThrowingReadPreferences.decryptFailure()
+        prefs.failures = 1
+        prefs.onFailure = { s.saveTokens("new", "new-r", 900, "user-2") }
+
+        assertNull(s.getAccessToken())
+
+        assertEquals("new", s.getAccessToken())
+        assertEquals("user-2", s.getUserId())
+        assertFalse(s.consumeStorageResetNotice())
+    }
+
+    @Test
+    fun `io failure is handled like a security failure`() {
+        val prefs = ThrowingReadPreferences(InMemorySharedPreferences())
+        val s = TokenStorage(prefs)
+        s.saveTokens("a", "r", 900, "user-1")
+
+        prefs.failure = java.io.IOException("test")
+        assertNull(s.getUserId())
+        prefs.failure = null
+
+        assertNull(s.getRefreshToken())
+        assertTrue(s.consumeStorageResetNotice())
+    }
+
+    @Test
+    fun `reset keeps the server address and clears pending sign-in state`() {
+        val prefs = ThrowingReadPreferences(InMemorySharedPreferences())
+        val s = TokenStorage(prefs)
+        s.saveServerUrl("https://kaiku.example.com")
+        s.saveTokens("a", "r", 900, "user-1")
+        s.saveOidcPkceState("verifier", "state")
+
+        prefs.failure = ThrowingReadPreferences.decryptFailure()
+        prefs.failures = 2 // the failed read and its retry; later reads work
+        assertNull(s.getAccessToken())
+
+        assertEquals("https://kaiku.example.com", s.getServerUrl())
+        assertNull(s.getOidcCodeVerifier())
+        assertNull(s.getOidcState())
+        assertNull(s.getRefreshToken())
+    }
+
+    @Test
+    fun `reset notice survives a new instance until consumed`() {
+        val notice = InMemorySharedPreferences()
+        val prefs = ThrowingReadPreferences(InMemorySharedPreferences())
+        val first = TokenStorage(prefs, notice)
+        first.saveTokens("a", "r", 900, "user-1")
+        prefs.failure = ThrowingReadPreferences.decryptFailure()
+        assertNull(first.getAccessToken())
+        prefs.failure = null
+
+        val afterRestart = TokenStorage(prefs, notice)
+        assertTrue(afterRestart.consumeStorageResetNotice())
+        assertFalse(TokenStorage(prefs, notice).consumeStorageResetNotice())
     }
 }

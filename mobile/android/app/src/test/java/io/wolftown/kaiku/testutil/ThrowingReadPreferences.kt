@@ -13,8 +13,19 @@ class ThrowingReadPreferences(
     @Volatile var failure: Throwable? = null,
 ) : SharedPreferences by delegate {
 
+    /** Reads that still fail; negative means every read fails while [failure] is set. */
+    @Volatile var failures: Int = -1
+
+    /** Runs when a read is about to fail, e.g. to simulate a writer committing meanwhile. */
+    @Volatile var onFailure: (() -> Unit)? = null
+
     private fun <T> read(value: () -> T): T {
-        failure?.let { throw it }
+        val f = failure
+        if (f != null && failures != 0) {
+            if (failures > 0) failures--
+            onFailure?.invoke()
+            throw f
+        }
         return value()
     }
 

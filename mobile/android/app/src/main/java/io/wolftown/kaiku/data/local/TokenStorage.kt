@@ -24,9 +24,17 @@ import javax.inject.Inject
  * [consumeStorageResetNotice] reports the reset once so the UI can ask the
  * person to sign in again. Readers take the monitor only on that failure path.
  */
-class TokenStorage @Inject constructor(
-    private val prefs: SharedPreferences
+class TokenStorage internal constructor(
+    private val prefs: SharedPreferences,
+    /**
+     * Plain (unencrypted) preferences holding the reset notice, so it outlives
+     * the process and a damaged secure store. Null keeps it in memory only.
+     */
+    private val noticeStore: SharedPreferences?,
 ) {
+
+    @Inject
+    constructor(prefs: SharedPreferences) : this(prefs, null)
 
     companion object {
         private const val KEY_ACCESS_TOKEN = "access_token"
@@ -36,6 +44,9 @@ class TokenStorage @Inject constructor(
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_OIDC_CODE_VERIFIER = "oidc_code_verifier"
         private const val KEY_OIDC_STATE = "oidc_state"
+
+        /** Key in the notice store; also set by the module when the store was recreated at open. */
+        const val KEY_RESET_NOTICE = "storage_was_reset"
         private val logger = Logger.getLogger("TokenStorage")
     }
 
@@ -45,61 +56,95 @@ class TokenStorage @Inject constructor(
     @Volatile
     private var storageResetNotice = false
 
+    private fun noticePending(): Boolean =
+        noticeStore?.getBoolean(KEY_RESET_NOTICE, false) ?: storageResetNotice
+
+    private fun setNoticePending(pending: Boolean) {
+        storageResetNotice = pending
+        noticeStore?.edit()?.putBoolean(KEY_RESET_NOTICE, pending)?.commit()
+    }
+
     /**
      * True once after the stored session was lost to a damaged store, so the UI
      * can ask the person to sign in again. Returns false on every later call.
+     * The flag is durable (see [noticeStore]), so it survives process death
+     * until it is consumed.
      */
     @Synchronized
     fun consumeStorageResetNotice(): Boolean {
-        val pending = storageResetNotice
-        storageResetNotice = false
+        val pending = noticePending()
+        if (pending) setNoticePending(false)
         return pending
     }
 
-    /** Records that the store was already recreated empty before this instance existed. */
-    @Synchronized
-    fun noteStorageReset() {
-        storageResetNotice = true
-    }
-
     /**
-     * Runs [read]; on a storage failure resets the store, flags the notice and
-     * returns [fallback].
+     * Runs [read]; on a storage failure tries to recover (see
+     * [recoverFromReadFailure]) and returns [fallback] if the store had to be reset.
      */
-    private inline fun <T> readOr(fallback: T, read: () -> T): T {
+    private fun <T> readOr(fallback: T, read: () -> T): T {
         val generation = sessionGeneration
         return try {
             read()
         } catch (e: GeneralSecurityException) {
-            resetAfterReadFailure(generation, e)
-            fallback
+            recoverFromReadFailure(generation, e, fallback, read)
         } catch (e: IOException) {
-            resetAfterReadFailure(generation, e)
-            fallback
+            recoverFromReadFailure(generation, e, fallback, read)
         } catch (e: SecurityException) {
-            resetAfterReadFailure(generation, e)
-            fallback
+            recoverFromReadFailure(generation, e, fallback, read)
         }
     }
 
     /**
-     * Wipes the store like a logout. Skipped when the session changed since the
-     * failed read ([generationAtRead]): a login or logout that raced the read
-     * must not be wiped by it.
+     * Under the monitor, so no writer is mid-commit: gives up when the session
+     * changed since the failed read ([generationAtRead]), and otherwise reads
+     * once more, because a login that committed after the failed read replaced
+     * the damaged value. Only a read that still fails wipes the session data.
      */
     @Synchronized
-    private fun resetAfterReadFailure(generationAtRead: Long, cause: Exception) {
+    private fun <T> recoverFromReadFailure(
+        generationAtRead: Long,
+        cause: Exception,
+        fallback: T,
+        read: () -> T,
+    ): T {
+        if (sessionGeneration != generationAtRead) return fallback
+        try {
+            return read()
+        } catch (_: GeneralSecurityException) {
+        } catch (_: IOException) {
+        } catch (_: SecurityException) {
+        }
         // Type only: the message could describe stored data.
-        logger.warning("Secure storage unreadable (${cause::class.simpleName}), resetting")
-        if (sessionGeneration != generationAtRead) return
+        logger.warning("Secure storage unreadable (${cause::class.simpleName}), resetting session data")
         sessionGeneration++
         val cleared = try {
-            prefs.edit().clear().commit()
+            val editor = prefs.edit()
+                .remove(KEY_ACCESS_TOKEN)
+                .remove(KEY_REFRESH_TOKEN)
+                .remove(KEY_EXPIRES_AT)
+                .remove(KEY_USER_ID)
+                .remove(KEY_OIDC_CODE_VERIFIER)
+                .remove(KEY_OIDC_STATE)
+            // The server address stays so the person lands on sign-in, unless it is itself unreadable.
+            if (!isReadable { prefs.getString(KEY_SERVER_URL, null) }) editor.remove(KEY_SERVER_URL)
+            editor.commit()
         } catch (e: RuntimeException) {
             false
         }
         if (!cleared) logger.warning("Failed to reset secure storage")
-        storageResetNotice = true
+        setNoticePending(true)
+        return fallback
+    }
+
+    private inline fun isReadable(read: () -> Unit): Boolean = try {
+        read()
+        true
+    } catch (_: GeneralSecurityException) {
+        false
+    } catch (_: IOException) {
+        false
+    } catch (_: SecurityException) {
+        false
     }
 
     /** Changes on login, logout and server change; unchanged by a refresh rotation. */

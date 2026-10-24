@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import io.wolftown.kaiku.R
 
@@ -56,10 +57,14 @@ fun VoiceOverlay(
             }
 
             // Mute toggle
-            val muteDescription = stringResource(if (isMuted) R.string.voice_unmute else R.string.voice_mute)
+            val muteDescription = stringResource(R.string.voice_microphone)
+            val muteState = stringResource(if (isMuted) R.string.voice_muted else R.string.voice_microphone_on)
             IconButton(
                 onClick = onMuteToggle,
-                modifier = Modifier.semantics { contentDescription = muteDescription }
+                modifier = Modifier.semantics {
+                    contentDescription = muteDescription
+                    stateDescription = muteState
+                }
             ) {
                 Text(
                     text = if (isMuted) "🔇" else "🎤",

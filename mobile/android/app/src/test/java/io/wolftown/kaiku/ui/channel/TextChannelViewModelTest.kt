@@ -372,6 +372,19 @@ class TextChannelViewModelTest {
     }
 
     @Test
+    fun `member names come from message authors`() = runTest {
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
+        viewModel = createViewModel()
+
+        viewModel.memberNames.test {
+            assertEquals(emptyMap<String, String>(), awaitItem())
+            messagesFlow.value = sampleMessages
+            assertEquals(mapOf("user-1" to "Test User"), awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `input change triggers typing indicator`() = runTest {
         coEvery { chatRepository.loadMessages(any(), any()) } returns false
 

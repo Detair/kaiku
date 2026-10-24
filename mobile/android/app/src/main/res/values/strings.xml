@@ -120,7 +120,8 @@
     <string name="voice_unknown_user">Unknown</string>
     <string name="voice_disconnect">Disconnect</string>
     <string name="voice_mute">Mute</string>
-    <string name="voice_unmute">Unmute</string>
+    <string name="voice_microphone">Microphone</string>
+    <string name="voice_microphone_on">On</string>
     <string name="voice_audio_output">Audio output</string>
     <string name="voice_overlay_connected">Connected to #%1$s</string>
     <string name="voice_in_channel">In voice channel</string>
