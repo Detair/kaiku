@@ -202,8 +202,8 @@ pub(crate) fn classify_fcm_response(status: u16, body: &str) -> FcmOutcome {
 #[derive(Default)]
 struct TokenState {
     cached: Option<CachedToken>,
-    /// When the last token fetch failed (negative cache).
-    failed_at: Option<Instant>,
+    /// After a failed fetch: no new fetch before this instant (negative cache).
+    retry_after: Option<Instant>,
 }
 
 struct CachedToken {
@@ -333,27 +333,35 @@ impl FcmClient {
     /// close to expiry. The lock is held across the fetch (single flight).
     async fn access_token(&self) -> anyhow::Result<String> {
         let mut guard = self.token.lock().await;
+        let now = Instant::now();
         if let Some(t) = guard.cached.as_ref() {
-            if t.expires_at.saturating_duration_since(Instant::now()) > REFRESH_MARGIN {
+            if t.expires_at.saturating_duration_since(now) > REFRESH_MARGIN {
                 return Ok(t.access_token.clone());
             }
         }
-        if guard
-            .failed_at
-            .is_some_and(|at| at.elapsed() < TOKEN_FAILURE_COOLDOWN)
-        {
-            bail!("OAuth2 token fetch failed recently; cooling down");
+        // A token inside the refresh margin is still valid: if the refresh
+        // fails (or is cooling down), keep using it rather than blacking out
+        // sends over a transient OAuth2 hiccup.
+        let still_valid = guard
+            .cached
+            .as_ref()
+            .filter(|t| t.expires_at > now)
+            .map(|t| t.access_token.clone());
+        if guard.retry_after.is_some_and(|at| now < at) {
+            return still_valid.ok_or_else(|| {
+                anyhow::anyhow!("OAuth2 token fetch failed recently; cooling down")
+            });
         }
         match self.fetch_token().await {
             Ok(fresh) => {
                 let access = fresh.access_token.clone();
                 guard.cached = Some(fresh);
-                guard.failed_at = None;
+                guard.retry_after = None;
                 Ok(access)
             }
             Err(e) => {
-                guard.failed_at = Some(Instant::now());
-                Err(e)
+                guard.retry_after = Some(Instant::now() + TOKEN_FAILURE_COOLDOWN);
+                still_valid.ok_or(e)
             }
         }
     }
@@ -822,10 +830,50 @@ mod tests {
         assert_eq!(m.token_hits.load(Ordering::SeqCst), 1);
         assert_eq!(m.sends.load(Ordering::SeqCst), 0);
         // After the cooldown the next send fetches again.
-        client.token.lock().await.failed_at =
-            Some(Instant::now().checked_sub(TOKEN_FAILURE_COOLDOWN).unwrap());
+        // (No Instant subtraction: it can underflow on low-uptime hosts.)
+        client.token.lock().await.retry_after = Some(Instant::now());
         assert_eq!(client.send("t", &sig).await, Delivery::Failed);
         assert_eq!(m.token_hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_keeps_using_unexpired_token() {
+        let m = Mock {
+            token_status: Some(503),
+            ..Mock::default()
+        };
+        let base = spawn_mock(m.clone()).await;
+        let client = FcmClient::new(key(format!("{base}/token")), &base).unwrap();
+        // Cached token inside the refresh margin, but not expired.
+        client.token.lock().await.cached = Some(CachedToken {
+            access_token: "at-old".into(),
+            expires_at: Instant::now() + Duration::from_mins(1),
+        });
+        let sig = WakeSignal::dm(Uuid::now_v7(), 1);
+        // Refresh attempt fails (503) → send still goes out with the old token.
+        assert_eq!(client.send("t", &sig).await, Delivery::Sent);
+        assert_eq!(m.token_hits.load(Ordering::SeqCst), 1);
+        // During the cooldown: old token again, no new fetch.
+        assert_eq!(client.send("t", &sig).await, Delivery::Sent);
+        assert_eq!(m.token_hits.load(Ordering::SeqCst), 1);
+        assert!(m
+            .bearers
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|b| b == "Bearer at-old"));
+        // Once the cached token has expired, the cooldown means Failed.
+        client
+            .token
+            .lock()
+            .await
+            .cached
+            .as_mut()
+            .unwrap()
+            .expires_at = Instant::now();
+        assert_eq!(client.send("t", &sig).await, Delivery::Failed);
+        assert_eq!(m.token_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(m.sends.load(Ordering::SeqCst), 2);
     }
 
     #[test]
