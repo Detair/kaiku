@@ -39,6 +39,7 @@ mod oidc;
 mod pages;
 mod performance_budgets;
 mod push_http;
+mod push_triggers;
 mod ratelimit;
 mod ratelimit_http;
 mod reaction_roles;

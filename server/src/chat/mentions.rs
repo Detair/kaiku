@@ -15,7 +15,6 @@ use std::sync::LazyLock;
 use uuid::Uuid;
 
 use crate::api::AppState;
-use crate::social::block_cache;
 use crate::{db, permissions};
 
 /// Maximum number of distinct usernames taken from one message.
@@ -164,9 +163,9 @@ pub fn extract_mentions(content: &str) -> MentionSet {
 /// Only guild channels produce targets. Candidates are the mentioned
 /// usernames plus, for `@everyone`, the guild members (bounded query). The
 /// author, users without access to the channel and users with a block in
-/// either direction (Postgres `friendships`, plus the Redis block cache) are
-/// dropped. A failed block lookup fails closed: the database query error
-/// yields no targets, a cache error drops that user.
+/// either direction are dropped. Blocks come from one batched Postgres
+/// `friendships` query, the source of truth (the Redis block cache is not
+/// consulted); if that query fails, there are no targets (fail closed).
 /// `@here` contributes nothing. The result is capped at
 /// [`MENTION_EVERYONE_PUSH_CAP`].
 #[tracing::instrument(skip(state, channel, mentions), fields(channel_id = %channel.id))]
@@ -244,18 +243,9 @@ pub async fn resolve_mention_targets(
         }
         if permissions::require_channel_access(&state.db, uid, channel.id)
             .await
-            .is_err()
+            .is_ok()
         {
-            continue;
-        }
-        // A fresher cache entry (block written moments ago) also counts;
-        // a cache error fails closed.
-        match block_cache::is_blocked_either_direction(&state.redis, author_id, uid).await {
-            Ok(false) => targets.push(uid),
-            Ok(true) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "Block cache check failed; skipping mention target");
-            }
+            targets.push(uid);
         }
     }
 

@@ -10,7 +10,6 @@ use vc_server::chat::mentions::{
 };
 use vc_server::db;
 use vc_server::permissions::GuildPermissions;
-use vc_server::social::block_cache;
 
 use crate::helpers::{
     add_guild_member, create_channel, create_guild_with_default_role, create_test_user, TestApp,
@@ -168,33 +167,7 @@ async fn test_here_targets_nobody(pool: PgPool) {
     assert!(targets(&f, "@here quick question").await.is_empty());
 }
 
-#[sqlx::test]
-async fn test_blocked_author_mention_not_targeted(pool: PgPool) {
-    use fred::interfaces::KeysInterface;
-
-    let f = fixture(pool).await;
-    let (member_id, member_name) = member(&f).await;
-    let redis = &f.app.state.redis;
-    // Keys are unique to this test's fresh user ids; the TTL guarantees a
-    // panicking test leaves nothing behind.
-    block_cache::add_block(redis, member_id, f.author)
-        .await
-        .unwrap();
-    for key in [
-        format!("blocks:{member_id}"),
-        format!("blocked_by:{}", f.author),
-    ] {
-        let _: () = redis.expire(&key, 60, None).await.unwrap();
-    }
-
-    let got = targets(&f, &format!("@{member_name}")).await;
-    block_cache::remove_block(redis, member_id, f.author)
-        .await
-        .unwrap();
-    assert!(got.is_empty());
-}
-
-/// The Redis block cache expires; a block stored only in Postgres must still
+/// Blocks in either direction, stored in Postgres (the source of truth),
 /// suppress the mention target.
 #[sqlx::test]
 async fn test_db_only_block_not_targeted(pool: PgPool) {

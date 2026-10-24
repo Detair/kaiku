@@ -197,7 +197,7 @@ pub struct NewMessageDispatch<'a> {
 }
 
 /// Fan out a committed top-level message: `MessageNew` broadcast,
-/// announcement crosspost, DM push wake, bot/webhook events.
+/// announcement crosspost, push wake (DMs, mentions), bot/webhook events.
 ///
 /// Never fails; delivery problems are logged.
 pub async fn dispatch_new_message(state: &AppState, d: NewMessageDispatch<'_>) {
@@ -230,18 +230,15 @@ pub async fn dispatch_new_message(state: &AppState, d: NewMessageDispatch<'_>) {
         );
     }
 
-    // DM message → content-free mobile push to the other participant(s). The
-    // signal carries no text (E2EE-safe); the app wakes and syncs locally.
-    if d.channel.channel_type == db::ChannelType::Dm {
-        if let Ok(participants) = queries::list_dm_participant_ids(&state.db, channel_id).await {
-            let signal = crate::push::WakeSignal::dm(channel_id, 1);
-            for pid in participants {
-                if pid != d.author_id {
-                    crate::push::spawn_dispatch(state.clone(), pid, signal.clone());
-                }
-            }
-        }
-    }
+    // Content-free mobile wake: DM participants and @mention targets.
+    // Resolution and delivery run in a spawned task.
+    crate::push::spawn_wake_for_new_message(
+        state,
+        d.channel.clone(),
+        d.author_id,
+        d.content.to_string(),
+        d.encrypted,
+    );
 
     dispatch_bot_events(
         state,

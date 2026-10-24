@@ -19,7 +19,7 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 - `messages.rs` — Message handlers (list, create, edit, delete)
 - `dm.rs` — DM channel creation and management
 - `uploads.rs` — File upload/download handlers with multipart form support
-- `send.rs` — Shared send path: `authorize_send` (access, permissions, blocks, mentions, content filter) and `dispatch_new_message` (broadcast, crosspost, DM push wake, bot events) used by both text messages and uploads
+- `send.rs` — Shared send path: `authorize_send` (access, permissions, blocks, mentions, content filter) and `dispatch_new_message` (broadcast, crosspost, push wake via `push::spawn_wake_for_new_message`, bot events) used by both text messages and uploads
 - `mentions.rs` — C21 @mention tokenizer (`extract_mentions`) and per-user push targets (`resolve_mention_targets`)
 - `s3.rs` — S3Client wrapper for object storage (AWS S3, RustFS, etc.)
 
@@ -144,7 +144,7 @@ S3_PUBLIC_URL=https://cdn.example.com  # Optional CDN
 **Rules**:
 - `extract_mentions` is the only tokenizer: `detect_mention_type` (message-level `mention_type`) and the `MENTION_EVERYONE` check in `authorize_send` both use it. Do not add `contains("@...")` checks.
 - `MentionSet.usernames` is deduplicated and capped at `MAX_MENTIONED_USERNAMES` (20).
-- `resolve_mention_targets` returns push targets for guild channels only: author dropped, every target must pass `permissions::require_channel_access`, block in either direction (or a failed block lookup) drops the target. `@everyone` loads at most 101 members; the result is capped at `MENTION_EVERYONE_PUSH_CAP` (100). `@here` never pushes.
+- `resolve_mention_targets` returns push targets for guild channels only: author dropped, every target must pass `permissions::require_channel_access`, block in either direction (one batched Postgres `friendships` query, the source of truth; the Redis block cache is not consulted) or a failed block lookup drops the target. `@everyone` loads at most 101 members; the result is capped at `MENTION_EVERYONE_PUSH_CAP` (100). `@here` never pushes.
 
 ### Message Editing
 

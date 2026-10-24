@@ -120,7 +120,11 @@ pub async fn mark_all_read(
         (StatusCode::INTERNAL_SERVER_ERROR, "Failed to mark DMs as read".to_string())
     })?;
 
-    // 3. Broadcast events to user's other sessions
+    // 3. Clear phone notifications (C20 `read`; only channels with a prior wake push anything) and
+    //    broadcast events to user's other sessions
+    for (channel_id, _) in guild_rows.iter().chain(&dm_rows) {
+        state.push.notify_read(&state, auth_user.id, *channel_id);
+    }
     for (channel_id, last_read_message_id) in &guild_rows {
         let _ = broadcast_to_user(
             &state.redis,

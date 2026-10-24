@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - The server can deliver Android push notifications through Firebase Cloud Messaging when an FCM service account is configured.
+- Phones are notified about @mentions and photo or file messages, not only text DMs. Bursts of messages produce one notification instead of many, and reading a conversation on another device clears its notification on the phone.
 - People signing in with a temporary password are asked to choose their own password first.
 - Admins can create accounts with a temporary password from the admin dashboard, so registration can stay closed.
 - Releases now include a signed Android app (`Kaiku-<version>.apk`) that updates in place over earlier installs.

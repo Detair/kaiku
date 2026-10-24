@@ -159,14 +159,15 @@ pub async fn is_guild_member(
 /// Forward-only upsert into `channel_read_state` for a guild channel.
 ///
 /// The cursor only moves forward — stale requests cannot rewind it.
+/// Returns whether the cursor was written (false for a stale request).
 pub async fn upsert_channel_read_state(
     pool: &PgPool,
     user_id: Uuid,
     channel_id: Uuid,
     last_read_at: DateTime<Utc>,
     last_read_message_id: Uuid,
-) -> Result<(), ChatError> {
-    sqlx::query(
+) -> Result<bool, ChatError> {
+    let result = sqlx::query(
         r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
           VALUES ($1, $2, $3, $4)
           ON CONFLICT (user_id, channel_id)
@@ -182,7 +183,7 @@ pub async fn upsert_channel_read_state(
     .bind(last_read_message_id)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 // ============================================================================
@@ -653,14 +654,15 @@ pub async fn set_channel_icon(
 }
 
 /// Forward-only upsert into `dm_read_state` for a single DM channel.
+/// Returns whether the cursor was written (false for a stale request).
 pub async fn upsert_dm_read_state(
     pool: &PgPool,
     user_id: Uuid,
     channel_id: Uuid,
     last_read_at: DateTime<Utc>,
     last_read_message_id: Uuid,
-) -> Result<(), ChatError> {
-    sqlx::query(
+) -> Result<bool, ChatError> {
+    let result = sqlx::query(
         r"INSERT INTO dm_read_state (user_id, channel_id, last_read_at, last_read_message_id)
           VALUES ($1, $2, $3, $4)
           ON CONFLICT (user_id, channel_id)
@@ -676,7 +678,7 @@ pub async fn upsert_dm_read_state(
     .bind(last_read_message_id)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() > 0)
 }
 
 /// Bulk upsert `dm_read_state` for every DM channel a user participates in.
