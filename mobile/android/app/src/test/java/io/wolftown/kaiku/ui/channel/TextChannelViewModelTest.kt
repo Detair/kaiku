@@ -259,6 +259,8 @@ class TextChannelViewModelTest {
         viewModel.onCleared()
 
         verify { chatRepository.unsubscribeFromChannel("ch-1") }
+        verify { guildRepository.clearActiveChannel("ch-1") }
+        verify { dmRepository.clearActiveChannel("ch-1") }
     }
 
     // ========================================================================
