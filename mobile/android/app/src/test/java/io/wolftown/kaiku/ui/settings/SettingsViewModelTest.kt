@@ -1,7 +1,8 @@
 package io.wolftown.kaiku.ui.settings
 
-import io.mockk.coEvery
-import io.mockk.coVerify
+import io.mockk.Runs
+import io.mockk.just
+import io.mockk.verify
 import io.mockk.every
 import io.mockk.mockk
 import io.wolftown.kaiku.data.local.TokenStorage
@@ -11,7 +12,6 @@ import io.wolftown.kaiku.push.PushPlatform
 import io.wolftown.kaiku.push.PushPreferences
 import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.push.PushStatus
-import io.wolftown.kaiku.push.RefreshOutcome
 import io.wolftown.kaiku.push.TransportKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -32,7 +32,7 @@ class SettingsViewModelTest {
     private val status = MutableStateFlow<PushStatus>(PushStatus.Unknown)
     private val registrar: PushRegistrar = mockk {
         every { this@mockk.status } returns this@SettingsViewModelTest.status
-        coEvery { refresh(any()) } returns RefreshOutcome.OFF
+        every { refreshAsync() } just Runs
     }
     private var installed = emptyList<String>()
     private var gms = true
@@ -83,9 +83,31 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `picker shows with more than one distributor`() {
+    fun `picker shows with more than one distributor and unifiedpush in use`() {
         installed = listOf("io.heckel.ntfy", "org.example.other")
+        assertFalse(viewModel().notificationState.value.showDistributorPicker)
+
+        prefer = true
         assertTrue(viewModel().notificationState.value.showDistributorPicker)
+
+        prefer = false
+        gms = false
+        assertTrue(viewModel().notificationState.value.showDistributorPicker)
+    }
+
+    @Test
+    fun `opening settings refreshes only when push is not active or distributor vanished`() {
+        installed = listOf("io.heckel.ntfy")
+        picked = "io.heckel.ntfy"
+        status.value = PushStatus.Active(TransportKind.UNIFIED_PUSH, "io.heckel.ntfy")
+        val vm = viewModel()
+
+        vm.reloadPushState()
+        verify(exactly = 0) { registrar.refreshAsync() }
+
+        installed = emptyList()
+        vm.reloadPushState()
+        verify(exactly = 1) { registrar.refreshAsync() }
     }
 
     @Test
@@ -106,7 +128,7 @@ class SettingsViewModelTest {
 
         assertTrue(prefer)
         assertTrue(vm.notificationState.value.preferUnifiedPush)
-        coVerify(exactly = 1) { registrar.refresh(any()) }
+        verify(exactly = 1) { registrar.refreshAsync() }
     }
 
     @Test
@@ -118,6 +140,6 @@ class SettingsViewModelTest {
 
         assertEquals("org.example.other", picked)
         assertEquals("org.example.other", vm.notificationState.value.selectedDistributor)
-        coVerify(exactly = 1) { registrar.refresh(any()) }
+        verify(exactly = 1) { registrar.refreshAsync() }
     }
 }

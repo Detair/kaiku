@@ -14,6 +14,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +28,7 @@ import java.io.IOException
 import java.net.URI
 import java.net.URISyntaxException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -102,6 +104,15 @@ class PushRegistrar @Inject constructor(
 
         /** The server rejects longer UnifiedPush endpoints with a 400 (C19). */
         const val MAX_UP_ENDPOINT_BYTES = 2048
+
+        /** The distributor has this long to deliver an endpoint after a registration request. */
+        const val PENDING_ENDPOINT_TIMEOUT_MS = 60_000L
+
+        /** Delay before the first retry after a distributor failure; doubles each time. */
+        const val UP_RETRY_BASE_SECONDS = 30L
+
+        /** After this many consecutive failures the status stays Off(ERROR) until the next trigger. */
+        const val MAX_UP_FAILURES = 5
     }
 
     /** The account a pass works for (no tokens). */
@@ -120,6 +131,12 @@ class PushRegistrar @Inject constructor(
 
     /** Bumped by every logout; a pass that started before must not register. */
     private val epoch = AtomicLong(0)
+
+    /** Consecutive UnifiedPush failures since the last successful registration (this process). */
+    private val upFailures = AtomicInteger(0)
+
+    @Volatile
+    private var pendingEndpointTimeout: Job? = null
 
     /** Parent of the passes launched by triggers, cancelled on logout. */
     private val triggered = SupervisorJob(scope.coroutineContext[Job])
@@ -178,7 +195,37 @@ class PushRegistrar @Inject constructor(
      * it only hands off: no network and no disk access on the caller's thread.
      */
     fun onEndpointAsync(kind: TransportKind, endpoint: String) {
-        launchGuarded { onEndpoint(kind, endpoint) }
+        launchGuarded {
+            if (lastKind == kind && platform.notificationsAllowed()) {
+                onEndpoint(kind, endpoint)
+            } else {
+                // Late endpoint of a transport we left, or no pass ran yet: select again.
+                launchRefresh()
+            }
+        }
+    }
+
+    /** Sets the permission-free parts of a UnifiedPush failure and plans the bounded retry. */
+    private fun handleUnifiedPushFailure() {
+        if (lastKind != TransportKind.UNIFIED_PUSH || currentAccount() == null) return
+        pendingEndpointTimeout?.cancel()
+        _status.value = PushStatus.Off(PushOffReason.ERROR)
+        val failures = upFailures.incrementAndGet()
+        if (failures > MAX_UP_FAILURES) {
+            logger.info("unifiedpush registration given up after $failures failures")
+            return
+        }
+        scheduler.scheduleDelayed(UP_RETRY_BASE_SECONDS shl (failures - 1))
+    }
+
+    /** A pending distributor registration that never delivers an endpoint counts as a failure. */
+    private fun armEndpointTimeout() {
+        pendingEndpointTimeout?.cancel()
+        pendingEndpointTimeout = scope.launch(triggered) {
+            delay(PENDING_ENDPOINT_TIMEOUT_MS)
+            logger.info("unifiedpush endpoint timed out")
+            handleUnifiedPushFailure()
+        }
     }
 
     /** The distributor dropped our registration: run the whole selection again. */
@@ -187,12 +234,16 @@ class PushRegistrar @Inject constructor(
     }
 
     /**
-     * The distributor could not register us. Not retried at once (the distributor
-     * may report failures in a loop): the worker retries with backoff.
+     * The distributor could not register us. Ignored unless UnifiedPush is the active
+     * transport of a logged-in account. Retried with a growing delay, [MAX_UP_FAILURES] times at most.
      */
     fun onTransportRegistrationFailed() {
-        _status.value = PushStatus.Off(PushOffReason.ERROR)
-        scheduler.schedule()
+        launchGuarded { handleUnifiedPushFailure() }
+    }
+
+    /** Re-runs the selection without blocking the caller (Settings changes). */
+    fun refreshAsync() {
+        launchRefresh()
     }
 
     private fun launchRefresh() {
@@ -246,6 +297,7 @@ class PushRegistrar @Inject constructor(
     suspend fun unregisterForLogout() {
         epoch.incrementAndGet()
         triggered.cancelChildren()
+        upFailures.set(0)
         scheduler.cancel()
         val previous = lastKind ?: store.load()?.let { kindOf(it.provider) }
         var locked = false
@@ -355,10 +407,16 @@ class PushRegistrar @Inject constructor(
                 logger.info("push endpoint timed out: provider=${transport.kind.wire}")
                 retry(scheduleRetry)
             } else {
+                if (outcome == RefreshOutcome.PENDING && transport.kind == TransportKind.UNIFIED_PUSH) {
+                    armEndpointTimeout()
+                }
                 outcome
             }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: NoDistributorException) {
+            logger.info("push endpoint failed: no distributor")
+            off(PushOffReason.NO_DISTRIBUTOR)
         } catch (e: IOException) {
             networkFailure("endpoint", e, scheduleRetry)
         } catch (e: Exception) {
@@ -377,6 +435,8 @@ class PushRegistrar @Inject constructor(
     ): RefreshOutcome {
         if (epoch.get() != startEpoch || currentAccount() != account) return RefreshOutcome.NOT_LOGGED_IN
 
+        if (kind == TransportKind.UNIFIED_PUSH) pendingEndpointTimeout?.cancel()
+
         // Endpoints are secrets and must reach the server over TLS only; a bad one is final.
         if (kind == TransportKind.UNIFIED_PUSH && !isAcceptableUnifiedPushEndpoint(endpoint)) {
             logger.info("push endpoint rejected: provider=${kind.wire}")
@@ -394,6 +454,7 @@ class PushRegistrar @Inject constructor(
             age in 0 until STALE_AFTER_MS
         ) {
             lastKind = kind
+            upFailures.set(0)
             _status.value = PushStatus.Active(kind, distributor)
             return RefreshOutcome.UNCHANGED
         }
@@ -430,6 +491,7 @@ class PushRegistrar @Inject constructor(
         }
         store.save(PushRegistrationRecord(account.userId, account.serverUrl, kind.wire, hash, now()))
         lastKind = kind
+        upFailures.set(0)
         _status.value = PushStatus.Active(kind, distributor)
         logger.info("push registered: provider=${kind.wire}")
         return RefreshOutcome.REGISTERED
@@ -475,7 +537,9 @@ class PushRegistrar @Inject constructor(
         } catch (_: URISyntaxException) {
             return false
         }
-        return uri.scheme.equals("https", ignoreCase = true) && !uri.host.isNullOrBlank()
+        // URI.getHost() is null for names with underscores, which the server's URL parser accepts.
+        val host = uri.host ?: uri.rawAuthority?.substringAfterLast('@')?.substringBefore(':')
+        return uri.scheme.equals("https", ignoreCase = true) && !host.isNullOrBlank()
     }
 
     private fun transportFor(kind: TransportKind): PushTransport? = transports.firstOrNull { it.kind == kind }

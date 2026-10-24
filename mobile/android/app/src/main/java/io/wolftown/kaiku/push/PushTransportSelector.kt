@@ -18,7 +18,7 @@ data class PushEnvironment(
     val savedDistributor: String?,
 )
 
-enum class PushOffReason { NO_TRANSPORT, PERMISSION_DENIED, ERROR }
+enum class PushOffReason { NO_TRANSPORT, NO_DISTRIBUTOR, PERMISSION_DENIED, ERROR }
 
 sealed interface TransportChoice {
     data object Fcm : TransportChoice

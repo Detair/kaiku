@@ -41,6 +41,7 @@ class PushRegistrarTest {
         var unregisters = 0
         var failWith: Exception? = null
         var hang = false
+        var silent = false
         var unregisterGate: CompletableDeferred<Unit>? = null
         val events = mutableListOf<String>()
 
@@ -49,6 +50,7 @@ class PushRegistrarTest {
             events += "request"
             failWith?.let { throw it }
             if (hang) awaitCancellation()
+            if (silent) return
             onEndpoint(endpoint)
         }
 
@@ -92,8 +94,12 @@ class PushRegistrarTest {
     private class FakeScheduler : PushRegistrationScheduler {
         var scheduled = 0
         var cancelled = 0
+        val delays = mutableListOf<Long>()
         override fun schedule() {
             scheduled++
+        }
+        override fun scheduleDelayed(delaySeconds: Long) {
+            delays += delaySeconds
         }
         override fun cancel() {
             cancelled++
@@ -519,14 +525,120 @@ class PushRegistrarTest {
         coVerify(exactly = 0) { api.register(any()) }
     }
 
-    @Test
-    fun `distributor registration failure schedules a retry`() = runTest {
+    private suspend fun TestScope.registrarOnUnifiedPush(): PushRegistrar {
+        platform.installed = listOf(DISTRIBUTOR)
+        coEvery { api.getConfig() } returns upOnlyConfig
         val registrar = newRegistrar()
+        assertEquals(RefreshOutcome.REGISTERED, registrar.refresh())
+        return registrar
+    }
+
+    @Test
+    fun `distributor failures back off and stop after the limit`() = runTest {
+        val registrar = registrarOnUnifiedPush()
+
+        repeat(PushRegistrar.MAX_UP_FAILURES + 2) {
+            registrar.onTransportRegistrationFailed()
+            runCurrent()
+        }
+
+        assertEquals(listOf(30L, 60L, 120L, 240L, 480L), scheduler.delays)
+        assertEquals(0, scheduler.scheduled)
+        assertEquals(PushStatus.Off(PushOffReason.ERROR), registrar.status.value)
+    }
+
+    @Test
+    fun `successful registration resets the failure count`() = runTest {
+        val registrar = registrarOnUnifiedPush()
+        registrar.onTransportRegistrationFailed()
+        runCurrent()
+
+        assertEquals(RefreshOutcome.REGISTERED, registrar.onEndpoint(TransportKind.UNIFIED_PUSH, "https://push.example.com/up/new"))
+        registrar.onTransportRegistrationFailed()
+        runCurrent()
+
+        assertEquals(listOf(30L, 30L), scheduler.delays)
+    }
+
+    @Test
+    fun `distributor failure is ignored on fcm and when logged out`() = runTest {
+        val registrar = newRegistrar()
+        registrar.refresh()
 
         registrar.onTransportRegistrationFailed()
+        runCurrent()
+        assertEquals(PushStatus.Active(TransportKind.FCM, null), registrar.status.value)
+        assertTrue(scheduler.delays.isEmpty())
 
-        assertEquals(1, scheduler.scheduled)
+        platform.installed = listOf(DISTRIBUTOR)
+        coEvery { api.getConfig() } returns upOnlyConfig
+        registrar.refresh()
+        userId = null
+        registrar.onTransportRegistrationFailed()
+        runCurrent()
+        assertTrue(scheduler.delays.isEmpty())
+    }
+
+    @Test
+    fun `endpoint that never arrives counts as a failure`() = runTest {
+        platform.installed = listOf(DISTRIBUTOR)
+        coEvery { api.getConfig() } returns upOnlyConfig
+        up.silent = true
+        val registrar = newRegistrar()
+
+        assertEquals(RefreshOutcome.PENDING, registrar.refresh())
+        advanceTimeBy(PushRegistrar.PENDING_ENDPOINT_TIMEOUT_MS - 1)
+        runCurrent()
+        assertTrue(scheduler.delays.isEmpty())
+        advanceTimeBy(2)
+        runCurrent()
+
+        assertEquals(listOf(30L), scheduler.delays)
         assertEquals(PushStatus.Off(PushOffReason.ERROR), registrar.status.value)
+    }
+
+    @Test
+    fun `late unifiedpush endpoint after switching to fcm registers nothing`() = runTest {
+        val registrar = newRegistrar()
+        registrar.refresh()
+
+        registrar.onEndpointAsync(TransportKind.UNIFIED_PUSH, "https://push.example.com/up/late")
+        runCurrent()
+
+        coVerify(exactly = 0) { api.register(match { it.provider == "unifiedpush" }) }
+        assertEquals(PushStatus.Active(TransportKind.FCM, null), registrar.status.value)
+    }
+
+    @Test
+    fun `unifiedpush endpoint while unifiedpush is active registers`() = runTest {
+        val registrar = registrarOnUnifiedPush()
+
+        registrar.onEndpointAsync(TransportKind.UNIFIED_PUSH, "https://push.example.com/up/rotated")
+        runCurrent()
+
+        coVerify(exactly = 1) { api.register(PushRegistration("unifiedpush", "https://push.example.com/up/rotated", DEVICE_ID, LABEL)) }
+    }
+
+    @Test
+    fun `transport without distributor turns push off instead of failing`() = runTest {
+        platform.installed = listOf(DISTRIBUTOR)
+        coEvery { api.getConfig() } returns upOnlyConfig
+        up.failWith = NoDistributorException()
+        val registrar = newRegistrar()
+
+        assertEquals(RefreshOutcome.OFF, registrar.refresh())
+
+        assertEquals(PushStatus.Off(PushOffReason.NO_DISTRIBUTOR), registrar.status.value)
+    }
+
+    @Test
+    fun `endpoint size limit is 2048 bytes and underscore hosts are accepted`() = runTest {
+        val registrar = newRegistrar()
+        val prefix = "https://push.example.com/"
+
+        assertEquals(RefreshOutcome.REGISTERED, registrar.onEndpoint(TransportKind.UNIFIED_PUSH, prefix + "a".repeat(2048 - prefix.length)))
+        assertEquals(RefreshOutcome.FAILED, registrar.onEndpoint(TransportKind.UNIFIED_PUSH, prefix + "a".repeat(2049 - prefix.length)))
+        assertEquals(RefreshOutcome.REGISTERED, registrar.onEndpoint(TransportKind.UNIFIED_PUSH, "https://my_ntfy.example.com/up/abc"))
     }
 
     @Test

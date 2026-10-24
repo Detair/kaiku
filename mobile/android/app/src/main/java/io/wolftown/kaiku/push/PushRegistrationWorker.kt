@@ -23,6 +23,14 @@ interface PushRegistrationScheduler {
     /** (Re)schedules one registration attempt once a network is available. */
     fun schedule()
 
+    /**
+     * Schedules one attempt after [delaySeconds] unless one is already scheduled
+     * (never replaces a running attempt).
+     */
+    fun scheduleDelayed(delaySeconds: Long) {
+        schedule()
+    }
+
     /** Drops a scheduled or running attempt (logout). */
     fun cancel()
 }
@@ -45,6 +53,25 @@ class WorkManagerPushRegistrationScheduler @Inject constructor(
         WorkManager.getInstance(context).enqueueUniqueWork(
             PushRegistrationWorker.UNIQUE_NAME,
             ExistingWorkPolicy.REPLACE,
+            request,
+        )
+    }
+
+    override fun scheduleDelayed(delaySeconds: Long) {
+        val request = OneTimeWorkRequestBuilder<PushRegistrationWorker>()
+            .setInitialDelay(delaySeconds, TimeUnit.SECONDS)
+            .setConstraints(
+                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+            )
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                PushRegistrationWorker.BACKOFF_SECONDS,
+                TimeUnit.SECONDS,
+            )
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            PushRegistrationWorker.UNIQUE_NAME,
+            ExistingWorkPolicy.KEEP,
             request,
         )
     }

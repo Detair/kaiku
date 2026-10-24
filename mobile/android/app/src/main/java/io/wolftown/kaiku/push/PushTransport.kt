@@ -6,6 +6,9 @@ enum class TransportKind(val wire: String) {
     UNIFIED_PUSH("unifiedpush"),
 }
 
+/** The UnifiedPush transport has no distributor to register with (none chosen, saved or unambiguous). */
+class NoDistributorException : Exception("No UnifiedPush distributor available")
+
 /**
  * Obtains the endpoint the server pushes to. FCM hands over its registration
  * token right away; UnifiedPush (Task 8) delivers its endpoint later through
