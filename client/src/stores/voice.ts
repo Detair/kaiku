@@ -4,7 +4,10 @@
  * Manages voice channel state including connection, participants, and audio settings.
  */
 
+import { createEffect, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   createVoiceAdapter,
   getVoiceAdapter,
@@ -25,6 +28,7 @@ import { currentUser } from "@/stores/auth";
 import * as tauri from "@/lib/tauri";
 import { showToast, dismissToast } from "@/components/ui/Toast";
 import { PttController, createTauriPttListeners, type PttFullConfig } from "@/lib/pttManager";
+import { isTauri } from "@/lib/tauri/common";
 
 // Helper to get error message from VoiceError
 function getErrorMessage(error: VoiceError): string {
@@ -998,4 +1002,65 @@ export function handleVoiceUserStats(data: {
 }
 
 // Export the store for reading and writing
+// ============================================================================
+// System tray (desktop)
+// ============================================================================
+
+/** Event the native tray emits for its "Leave voice" / "Mute" items (`tray.rs`). */
+const TRAY_VOICE_ACTION_EVENT = "tray-voice-action";
+
+/**
+ * Voice state as the tray sees it. Connecting counts as in voice: the mic may
+ * already be open, so a close during the join must still warn.
+ */
+export function trayVoiceReport(
+  state: VoiceState,
+  muted: boolean,
+): { inVoice: boolean; muted: boolean } {
+  return { inVoice: state !== "disconnected", muted };
+}
+
+/** Run a tray menu voice action (payload of `tray-voice-action`). */
+export async function handleTrayVoiceAction(action: string): Promise<void> {
+  if (action === "leave") {
+    await leaveVoice();
+  } else if (action === "toggle_mute" && voiceState.state !== "disconnected") {
+    await toggleMute();
+  }
+}
+
+/**
+ * Keep the native tray in sync with the call: reports in-voice/muted via
+ * `set_tray_voice_state` and runs the tray's voice menu items. Must be called
+ * inside a component context (createEffect/onCleanup); a no-op in the browser.
+ */
+export function initTrayVoiceSync(): void {
+  if (!isTauri()) return;
+
+  createEffect(() => {
+    const report = trayVoiceReport(voiceState.state, voiceState.muted);
+    invoke("set_tray_voice_state", report).catch((err) => {
+      console.warn("[Tray] Failed to report voice state:", err);
+    });
+  });
+
+  let disposed = false;
+  let unlisten: (() => void) | null = null;
+  listen<string>(TRAY_VOICE_ACTION_EVENT, (event) => {
+    void handleTrayVoiceAction(event.payload);
+  })
+    .then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    })
+    .catch((err) => {
+      console.warn("[Tray] Failed to listen for tray voice actions:", err);
+    });
+
+  onCleanup(() => {
+    disposed = true;
+    unlisten?.();
+  });
+}
+
 export { voiceState, setVoiceState };

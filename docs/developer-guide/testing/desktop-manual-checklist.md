@@ -37,6 +37,7 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Switch the microphone device while connected: audio continues on the new device
 - [ ] Leave voice: no ghost entry remains in the browser participant's list
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
+- [ ] Close the window during a voice call: one notification says Kaiku is still in the voice channel; the tray menu shows "Leave voice" and "Mute"/"Unmute"; "Leave voice" ends the call for the browser participant
 - [ ] QR code dialog shows a code that contains the server address
 - [ ] DM header shows no encryption padlock; no recovery-key prompt appears after login
 - [ ] Admin creates an account; the new user signs in with the temporary password and sees "Choose your own password" (no "Session Expired" dialog, no "Reconnecting…"); quit and restart before changing it: the same screen appears again and asks for the temporary password; after saving a new password the app loads; signing in with the temporary password then fails
@@ -63,6 +64,8 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Switch the microphone device while connected: audio continues on the new device
 - [ ] Leave voice: no ghost entry remains in the browser participant's list
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
+- [ ] Close the window during a voice call: one notification says Kaiku is still in the voice channel; the tray menu shows "Leave voice" and "Mute"/"Unmute"; "Leave voice" ends the call for the browser participant
+- [ ] GNOME without an AppIndicator extension (no tray icon): closing the window minimises it to the dock/taskbar instead of hiding it; it can be restored from there
 - [ ] QR code dialog shows a code that contains the server address
 - [ ] DM header shows no encryption padlock; no recovery-key prompt appears after login
 - [ ] Admin creates an account; the new user signs in with the temporary password and sees "Choose your own password" (no "Session Expired" dialog, no "Reconnecting…"); quit and restart before changing it: the same screen appears again and asks for the temporary password; after saving a new password the app loads; signing in with the temporary password then fails
@@ -89,6 +92,8 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Switch the microphone device while connected: audio continues on the new device
 - [ ] Leave voice: no ghost entry remains in the browser participant's list
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
+- [ ] Close the window during a voice call: one notification says Kaiku is still in the voice channel; the tray menu shows "Leave voice" and "Mute"/"Unmute"; "Leave voice" ends the call for the browser participant
+- [ ] Close the window, then click the Dock icon: the window reopens
 - [ ] QR code dialog shows a code that contains the server address
 - [ ] DM header shows no encryption padlock; no recovery-key prompt appears after login
 - [ ] Admin creates an account; the new user signs in with the temporary password and sees "Choose your own password" (no "Session Expired" dialog, no "Reconnecting…"); quit and restart before changing it: the same screen appears again and asks for the temporary password; after saving a new password the app loads; signing in with the temporary password then fails
