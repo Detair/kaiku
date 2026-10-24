@@ -125,6 +125,12 @@
     <string name="notif_channel_mentions_description">When someone mentions you in a channel</string>
     <string name="notif_channel_sync_name">Background sync</string>
     <string name="notif_channel_sync_description">Shown while Kaiku checks for new messages</string>
+    <string name="notif_new_message">New message</string>
+    <string name="notif_encrypted_message">Encrypted message</string>
+    <string name="notif_sent_photo">Sent a photo</string>
+    <string name="notif_sent_file">Sent a file</string>
+    <string name="notif_checking_messages">Checking for new messages</string>
+    <string name="notif_self_name">You</string>
     <string name="push_permission_rationale">So you don\'t miss messages from family, Kaiku needs permission to show notifications.</string>
     <string name="push_permission_continue">Continue</string>
     <string name="push_permission_not_now">Not now</string>

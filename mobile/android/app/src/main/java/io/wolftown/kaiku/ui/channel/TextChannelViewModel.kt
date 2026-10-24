@@ -14,6 +14,9 @@ import io.wolftown.kaiku.data.ws.RealtimeStatus
 import io.wolftown.kaiku.domain.ChannelTitle
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.domain.resolveChannelTitle
+import io.wolftown.kaiku.push.ActiveChannelTracker
+import io.wolftown.kaiku.push.NotificationLedger
+import io.wolftown.kaiku.push.NotificationSink
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +36,9 @@ class TextChannelViewModel @Inject constructor(
     private val dmRepository: DmRepository,
     authState: AuthState,
     realtimeConnectionManager: RealtimeConnectionManager,
+    private val activeChannelTracker: ActiveChannelTracker,
+    private val notificationSink: NotificationSink,
+    private val notificationLedger: NotificationLedger,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -75,9 +81,35 @@ class TextChannelViewModel @Inject constructor(
     /** Realtime connection state, for the reconnect banner. */
     val connectionStatus: StateFlow<RealtimeStatus> = realtimeConnectionManager.status
 
+    /** True while the screen is resumed (between [onVisible] and [onHidden]). */
+    private var visible = false
+
     init {
         chatRepository.subscribeToChannel(channelId)
         loadInitialMessages()
+        // While visible, every message the user can see counts as seen for notifications.
+        viewModelScope.launch {
+            messages.collect { list -> if (visible) markNewestSeen(list) }
+        }
+    }
+
+    /** The screen is resumed: no notifications for this channel, and clear the shown one. */
+    fun onVisible() {
+        visible = true
+        activeChannelTracker.onVisible(channelId)
+        notificationSink.cancel(channelId)
+        markNewestSeen(messages.value)
+    }
+
+    /** The screen is paused or left. */
+    fun onHidden() {
+        visible = false
+        activeChannelTracker.onHidden(channelId)
+    }
+
+    private fun markNewestSeen(list: List<Message>) {
+        val newest = list.lastOrNull() ?: return
+        notificationLedger.markSeen(channelId, newest.id, newest.createdAt.ifEmpty { null })
     }
 
     fun onMessageInputChanged(text: String) {
@@ -195,6 +227,7 @@ class TextChannelViewModel @Inject constructor(
     }
 
     public override fun onCleared() {
+        activeChannelTracker.onHidden(channelId)
         chatRepository.unsubscribeFromChannel(channelId)
         super.onCleared()
     }

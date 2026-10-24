@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Mobile push notifications (server side)**: the server can wake the Android app through Firebase Cloud Messaging (when an FCM service account is configured) or UnifiedPush. Phones are now also notified about @mentions, not only DMs (photo and file DMs already pushed before). Bursts of messages are coalesced into one notification, and reading a conversation on another device clears its notification. Wake signals carry only a type, channel and count, never message text, so end-to-end encryption is preserved. Blocked users never trigger a notification, and blocks are enforced for DMs even when cached data has expired. Endpoints are registered per device under `/api/me/push-subscriptions`, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
 - The server can deliver Android push notifications through Firebase Cloud Messaging when an FCM service account is configured.
+- Android: new messages show as notifications with the sender and text, grouped per conversation; tapping one opens the conversation, and reading it anywhere clears the notification.
 - Android: after signing in, Kaiku asks once for permission to show notifications.
 - People signing in with a temporary password are asked to choose their own password first.
 - Admins can create accounts with a temporary password from the admin dashboard, so registration can stay closed.
