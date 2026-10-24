@@ -20,6 +20,8 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { initE2EE } from "@/lib/tauri";
 import { isE2EEEnabled } from "@/lib/featureFlags";
+import { createDialog } from "@/lib/a11y/dialog";
+import { t } from "@/i18n";
 import AccountSettings from "./AccountSettings";
 import AppearanceSettings from "./AppearanceSettings";
 import NotificationSettings from "./NotificationSettings";
@@ -62,6 +64,7 @@ const tabs: TabDefinition[] = [
 ];
 
 const SettingsModal: Component<SettingsModalProps> = (props) => {
+  const dialog = createDialog({ onClose: () => props.onClose() });
   const [activeTab, setActiveTab] = createSignal<TabId>("account");
   const [showRecoveryKey, setShowRecoveryKey] = createSignal(false);
   const [recoveryKey, setRecoveryKey] = createSignal<{
@@ -121,13 +124,6 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
     }
   };
 
-  // Close on escape key
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      props.onClose();
-    }
-  };
-
   // Close on backdrop click
   const handleBackdropClick = (e: MouseEvent) => {
     if (e.target === e.currentTarget) {
@@ -140,17 +136,21 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
       <div
         class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50"
         onClick={handleBackdropClick}
-        onKeyDown={handleKeyDown}
-        tabIndex={-1}
       >
         <div
+          {...dialog.dialogProps}
+          ref={dialog.ref}
           class="border border-white/10 rounded-2xl w-[700px] max-h-[600px] flex flex-col shadow-2xl animate-[fadeIn_0.15s_ease-out]"
           style={{"background-color":"var(--color-surface-layer1)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">
-            <h2 class="text-xl font-bold text-text-primary">Settings</h2>
+            <h2 id={dialog.titleId} class="text-xl font-bold text-text-primary">
+              {t("settings.title")}
+            </h2>
             <button
+              type="button"
+              aria-label={t("common.close")}
               onClick={props.onClose}
               class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
             >
@@ -166,6 +166,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
                   const Icon = tab.icon;
                   return (
                     <button
+                      type="button"
                       data-testid={`settings-tab-${tab.id}`}
                       onClick={() => setActiveTab(tab.id)}
                       class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-colors mb-1"

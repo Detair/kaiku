@@ -4,12 +4,14 @@
  * Simple form for channel creation with name and type selection.
  */
 
-import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, Show } from "solid-js";
 import { X, Hash, Mic, MessagesSquare, Megaphone } from "lucide-solid";
 import { createChannel } from "@/stores/channels";
 import { getCategory } from "@/stores/categories";
 import { Portal } from "solid-js/web";
 import { showToast } from "@/components/ui/Toast";
+import { createDialog } from "@/lib/a11y/dialog";
+import { t } from "@/i18n";
 
 interface CreateChannelModalProps {
   guildId: string;
@@ -21,13 +23,7 @@ interface CreateChannelModalProps {
 }
 
 const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
-  });
+  const dialog = createDialog({ onClose: () => props.onClose() });
 
   // If the category restricts channel type, lock the selector
   const categoryTypeRestriction = () => {
@@ -90,16 +86,19 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
     <Portal>
       <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
         <div
+          {...dialog.dialogProps}
+          ref={dialog.ref}
           class="border border-white/10 rounded-2xl w-[440px] flex flex-col shadow-2xl"
           style={{"background-color":"var(--color-surface-base)"}}
         >
           {/* Header */}
           <div class="flex items-center justify-between p-6 border-b border-white/10">
-            <h2 class="text-xl font-bold text-text-primary">Create Channel</h2>
+            <h2 id={dialog.titleId} class="text-xl font-bold text-text-primary">Create Channel</h2>
             <button
+              type="button"
               onClick={props.onClose}
               class="text-text-secondary hover:text-text-primary transition-colors"
-              aria-label="Close"
+              aria-label={t("common.close")}
             >
               <X size={24} />
             </button>

@@ -15,7 +15,6 @@ import {
   createSignal,
   createEffect,
   on,
-  onCleanup,
   Show,
   For,
   lazy,
@@ -46,18 +45,34 @@ import { joinViaInviteCode } from "@/stores/guilds";
 import { showToast } from "@/components/ui/Toast";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds, joinDiscoverable } from "@/lib/tauri";
+import { createDialog } from "@/lib/a11y/dialog";
+import { t } from "@/i18n";
 
 const MicTestPanel = lazy(() => import("@/components/voice/MicTestPanel"));
 
 const TOTAL_STEPS = 5;
 
-const OnboardingWizard: Component = () => {
-  // Don't render if onboarding is complete, setup wizard is showing, or auth not initialized yet
-  const shouldShow = () =>
-    authState.isInitialized &&
-    preferencesInitialized() &&
-    !preferences().onboarding_completed &&
-    !authState.setupRequired;
+// Don't render if onboarding is complete, setup wizard is showing, or auth not initialized yet
+const shouldShow = () =>
+  authState.isInitialized &&
+  preferencesInitialized() &&
+  !preferences().onboarding_completed &&
+  !authState.setupRequired;
+
+// The dialog behaviour (focus in, focus trap, focus return) lives in an inner
+// component so it starts when the wizard actually appears.
+const OnboardingWizard: Component = () => (
+  <Show when={shouldShow()}>
+    <OnboardingDialog />
+  </Show>
+);
+
+const OnboardingDialog: Component = () => {
+  // Required flow: Escape must not skip it, but the dialog still traps Tab.
+  const dialog = createDialog({
+    onClose: () => {},
+    initialFocus: () => displayNameRef,
+  });
 
   const [step, setStep] = createSignal(0);
   const [displayName, setDisplayName] = createSignal("");
@@ -74,7 +89,6 @@ const OnboardingWizard: Component = () => {
   const [joinedIds, setJoinedIds] = createSignal<Set<string>>(new Set());
 
   let displayNameRef: HTMLInputElement | undefined;
-  let dialogRef: HTMLDivElement | undefined;
 
   // Reset wizard state when re-shown (e.g. re-run from settings).
   // Also handles initial display name sync when user data loads.
@@ -110,31 +124,6 @@ const OnboardingWizard: Component = () => {
       { defer: true },
     ),
   );
-
-  // Focus trap: constrain Tab cycling within the dialog (aria-modal="true" contract)
-  const handleFocusTrap = (e: KeyboardEvent) => {
-    if (e.key !== "Tab" || !dialogRef) return;
-    const focusable = dialogRef.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    );
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
-
-  createEffect(() => {
-    if (shouldShow()) {
-      document.addEventListener("keydown", handleFocusTrap);
-      onCleanup(() => document.removeEventListener("keydown", handleFocusTrap));
-    }
-  });
 
   const complete = () => {
     updatePreference("onboarding_completed", true);
@@ -272,13 +261,13 @@ const OnboardingWizard: Component = () => {
     <Show when={shouldShow()}>
       <div
         class="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Onboarding wizard"
         data-testid="onboarding-wizard"
       >
         <div
-          ref={dialogRef}
+          {...dialog.dialogProps}
+          aria-labelledby={undefined}
+          aria-label={t("onboarding.dialogLabel")}
+          ref={dialog.ref}
           class="w-[36rem] max-h-[85vh] rounded-xl border border-white/10 shadow-2xl flex flex-col overflow-hidden"
           style={{"background-color":"var(--color-surface-layer2)"}}
         >
