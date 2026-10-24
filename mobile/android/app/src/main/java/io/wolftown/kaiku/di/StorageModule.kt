@@ -61,7 +61,17 @@ object StorageModule {
 
     @Provides
     @Singleton
-    fun provideTokenStorage(prefs: SharedPreferences): TokenStorage {
-        return TokenStorage(prefs)
+    fun provideTokenStorage(
+        prefs: SharedPreferences,
+        @ApplicationContext context: Context
+    ): TokenStorage {
+        val storage = TokenStorage(prefs)
+        // The store was recreated empty while it was opened (see above): report it once.
+        val appState = context.getSharedPreferences("kaiku_app_state", Context.MODE_PRIVATE)
+        if (appState.getBoolean("storage_was_reset", false)) {
+            storage.noteStorageReset()
+            appState.edit().remove("storage_was_reset").commit()
+        }
+        return storage
     }
 }

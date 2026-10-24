@@ -23,6 +23,7 @@
     <string name="auth_oidc_failed">Couldn\'t sign in with that provider.</string>
     <string name="auth_login_server">Signing in to %1$s</string>
     <string name="auth_register_check_retry">Couldn\'t check if you can register. Try again</string>
+    <string name="auth_storage_reset">Please sign in again.</string>
     <string name="auth_change_server">Change server</string>
 
     <!-- Server address -->
@@ -70,6 +71,8 @@
     <string name="chat_typing_one">%1$s is typing…</string>
     <string name="chat_typing_two">%1$s and %2$s are typing…</string>
     <string name="chat_typing_many">Several people are typing…</string>
+    <string name="chat_typing_someone">Someone</string>
+    <string name="chat_reaction_chip_description">%1$s, %2$d. Tap to toggle your reaction.</string>
     <string name="chat_send_failed">Couldn\'t send your message.</string>
     <string name="chat_edit_failed">Couldn\'t edit your message.</string>
     <string name="chat_delete_failed">Couldn\'t delete your message.</string>
@@ -117,6 +120,9 @@
     <string name="voice_unknown_user">Unknown</string>
     <string name="voice_disconnect">Disconnect</string>
     <string name="voice_mute">Mute</string>
+    <string name="voice_unmute">Unmute</string>
+    <string name="voice_audio_output">Audio output</string>
+    <string name="voice_overlay_connected">Connected to #%1$s</string>
     <string name="voice_in_channel">In voice channel</string>
     <string name="voice_default_channel_name">Voice channel</string>
     <string name="voice_notification_channel_name">Voice calls</string>

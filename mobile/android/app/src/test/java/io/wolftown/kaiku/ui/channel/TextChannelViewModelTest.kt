@@ -44,7 +44,7 @@ class TextChannelViewModelTest {
     private val channelsFlow = MutableStateFlow<List<Channel>>(emptyList())
     private val conversationsFlow = MutableStateFlow<List<DmConversation>>(emptyList())
     private val currentUserIdFlow = MutableStateFlow<String?>("me")
-    private val typingUsersFlow = MutableStateFlow<Set<String>>(emptySet())
+    private val typingUsersFlow = MutableStateFlow<Map<String, Long>>(emptyMap())
 
     private val testAuthor = User(
         id = "user-1",
@@ -361,10 +361,14 @@ class TextChannelViewModelTest {
         viewModel = createViewModel()
         advanceUntilIdle()
 
-        typingUsersFlow.value = setOf("user-2", "user-3")
-        advanceUntilIdle()
+        viewModel.typingUserIds.test {
+            assertEquals(emptySet<String>(), awaitItem())
 
-        assertEquals(setOf("user-2", "user-3"), viewModel.typingUsers.value)
+            // The signed-in user ("me") is never shown as typing.
+            typingUsersFlow.value = mapOf("user-2" to 8_000L, "user-3" to 8_000L, "me" to 8_000L)
+            assertEquals(setOf("user-2", "user-3"), awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
     }
 
     @Test

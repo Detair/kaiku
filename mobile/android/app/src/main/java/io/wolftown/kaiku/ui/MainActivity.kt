@@ -2,7 +2,9 @@ package io.wolftown.kaiku.ui
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import io.wolftown.kaiku.BuildConfig
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.normalizeServerAddress
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -52,6 +54,10 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
 
         val startDestination = resolveStartDestination()
+        // After the start destination: reading the stored session may have found a damaged store.
+        if (tokenStorage.consumeStorageResetNotice()) {
+            Toast.makeText(this, R.string.auth_storage_reset, Toast.LENGTH_LONG).show()
+        }
         val appVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
 
         setContent {

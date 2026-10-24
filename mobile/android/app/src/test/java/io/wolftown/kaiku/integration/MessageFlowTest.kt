@@ -299,12 +299,12 @@ class MessageFlowTest {
         repository.subscribeToChannel(CHANNEL_ID)
 
         eventsFlow.emit(ServerEvent.TypingStart(channelId = CHANNEL_ID, userId = "user-2"))
-        advanceUntilIdle()
-        assertTrue(repository.getTypingUsers(CHANNEL_ID).value.contains("user-2"))
+        // No advanceUntilIdle here: it would run the 8 s typing expiry.
+        assertTrue(repository.getTypingUsers(CHANNEL_ID).value.containsKey("user-2"))
 
         eventsFlow.emit(ServerEvent.TypingStop(channelId = CHANNEL_ID, userId = "user-2"))
         advanceUntilIdle()
-        assertFalse(repository.getTypingUsers(CHANNEL_ID).value.contains("user-2"))
+        assertFalse(repository.getTypingUsers(CHANNEL_ID).value.containsKey("user-2"))
     }
 
     @Test
