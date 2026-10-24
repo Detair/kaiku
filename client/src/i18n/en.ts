@@ -13,6 +13,7 @@ import { auth } from "./en/auth";
 import { qr } from "./en/qr";
 import { chat } from "./en/chat";
 import { dm } from "./en/dm";
+import { time } from "./en/time";
 import { admin } from "./en/admin";
 import { settings } from "./en/settings";
 
@@ -23,6 +24,7 @@ export const en = {
   ...qr,
   ...chat,
   ...dm,
+  ...time,
   ...admin,
   ...settings,
 } as const;
