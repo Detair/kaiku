@@ -367,6 +367,8 @@ trait CaptureFactory {
     ) -> impl std::future::Future<Output = Result<Self::Task, AudioError>> + Send;
     /// Tell the user no microphone is capturing any more.
     fn report_failure(&self, device: Option<&str>);
+    /// Withdraw an earlier "microphone stopped working" for `device`.
+    fn report_recovered(&self, device: Option<&str>);
 }
 
 /// Move capture to `target` (make-before-break).
@@ -383,8 +385,8 @@ async fn switch_capture<F: CaptureFactory + Sync>(
 ) -> Result<bool, AudioError> {
     // Re-applying the device that is already capturing fine (e.g. the saved
     // device on join) is a no-op; a failed stream is rebuilt.
-    let healthy = capture.as_ref().is_some_and(CaptureStream::is_healthy);
-    if healthy && target == *current {
+    let old_healthy = capture.as_ref().is_some_and(CaptureStream::is_healthy);
+    if old_healthy && target == *current {
         return Ok(false);
     }
 
@@ -405,6 +407,10 @@ async fn switch_capture<F: CaptureFactory + Sync>(
                         Ok(task) => {
                             task.activate();
                             *capture = Some(task);
+                            if !old_healthy {
+                                // The failed mic works again after the rebuild.
+                                factory.report_recovered(current.as_deref());
+                            }
                         }
                         Err(restore) => {
                             error!("Previous microphone could not be restored: {restore}");
@@ -483,13 +489,46 @@ fn device_label(device: &Device) -> String {
         .unwrap_or_else(|_| "default".to_string())
 }
 
-/// Find a device by name (`None` = system default).
+/// Pick the device for `name` (`None` = system default).
+///
+/// `named` is the device found under `name`, `default` the system default.
+/// With `fallback`, a saved device that is gone (headset unplugged between
+/// calls) falls back to the system default instead of failing the call;
+/// an explicit switch passes `false` so the user learns the choice failed.
+fn resolve_device<D>(
+    name: Option<&str>,
+    named: Option<D>,
+    default: impl FnOnce() -> Option<D>,
+    fallback: bool,
+    is_input: bool,
+) -> Result<D, AudioError> {
+    let no_default = || {
+        if is_input {
+            AudioError::NoInputDevice
+        } else {
+            AudioError::NoOutputDevice
+        }
+    };
+    match (name, named) {
+        (Some(_), Some(device)) => Ok(device),
+        (Some(name), None) if fallback => {
+            warn!("Audio device {name:?} not found; using the system default");
+            default().ok_or_else(no_default)
+        }
+        (Some(name), None) => Err(AudioError::DeviceNotFound(name.to_string())),
+        (None, _) => default().ok_or_else(no_default),
+    }
+}
+
+/// Find a device by name (`None` = system default); see [`resolve_device`]
+/// for `fallback`.
 fn find_device(
     host: &Host,
     device_name: Option<&str>,
     is_input: bool,
+    fallback: bool,
 ) -> Result<Device, AudioError> {
-    match device_name {
+    let named = match device_name {
         Some(name) => {
             let mut devices = if is_input {
                 host.input_devices()
@@ -497,24 +536,27 @@ fn find_device(
                 host.output_devices()
             }
             .map_err(|e| AudioError::ConfigError(e.to_string()))?;
-
-            devices
-                .find(|d| {
-                    d.description()
-                        .map(|desc| desc.name() == name)
-                        .unwrap_or(false)
-                })
-                .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))
+            devices.find(|d| {
+                d.description()
+                    .map(|desc| desc.name() == name)
+                    .unwrap_or(false)
+            })
         }
-        None => {
+        None => None,
+    };
+    resolve_device(
+        device_name,
+        named,
+        || {
             if is_input {
-                host.default_input_device().ok_or(AudioError::NoInputDevice)
+                host.default_input_device()
             } else {
                 host.default_output_device()
-                    .ok_or(AudioError::NoOutputDevice)
             }
-        }
-    }
+        },
+        fallback,
+        is_input,
+    )
 }
 
 /// Sink that emits [`AudioNotice`]s as Tauri events.
@@ -536,6 +578,9 @@ struct CaptureSpawner {
     vad_config: VadConfig,
     app_handle: Option<tauri::AppHandle>,
     output_tx: mpsc::Sender<Vec<u8>>,
+    /// Fall back to the default microphone when the named one is gone
+    /// (call start), instead of failing (explicit switch).
+    fallback_to_default: bool,
 }
 
 impl CaptureSpawner {
@@ -558,7 +603,7 @@ impl CaptureFactory for CaptureSpawner {
 
     /// Build (but do not activate) a capture stream on `device_name`.
     async fn spawn(&self, device_name: Option<&str>) -> Result<CaptureTask, AudioError> {
-        let device = find_device(&self.host, device_name, true)?;
+        let device = find_device(&self.host, device_name, true, self.fallback_to_default)?;
         let reporter = FailureReporter::new(
             AudioErrorKind::CaptureFailed,
             device_label(&device),
@@ -590,6 +635,14 @@ impl CaptureFactory for CaptureSpawner {
     fn report_failure(&self, device: Option<&str>) {
         error!("No microphone could be restarted");
         self.notify(AudioNotice::Failed, AudioErrorKind::CaptureFailed, device);
+    }
+
+    fn report_recovered(&self, device: Option<&str>) {
+        self.notify(
+            AudioNotice::Recovered,
+            AudioErrorKind::CaptureFailed,
+            device,
+        );
     }
 }
 
@@ -692,7 +745,7 @@ impl AudioHandle {
             self.input_device_name = device_name;
             return Ok(());
         };
-        let spawner = self.capture_spawner(output_tx);
+        let spawner = self.capture_spawner(output_tx, false);
         let switched = switch_capture(
             &spawner,
             &mut self.capture,
@@ -766,7 +819,17 @@ impl AudioHandle {
 
     /// Get device by name
     fn get_device(&self, device_name: Option<&str>, is_input: bool) -> Result<Device, AudioError> {
-        find_device(&self.host, device_name, is_input)
+        find_device(&self.host, device_name, is_input, false)
+    }
+
+    /// Like `get_device`, but a saved device that is gone falls back to the
+    /// system default (stream starts at call join).
+    fn get_device_or_default(
+        &self,
+        device_name: Option<&str>,
+        is_input: bool,
+    ) -> Result<Device, AudioError> {
+        find_device(&self.host, device_name, is_input, true)
     }
 
     /// Delivers audio failures/recoveries to the webview as Tauri events.
@@ -775,14 +838,24 @@ impl AudioHandle {
     }
 
     /// What is needed to open capture streams feeding `output_tx`.
-    fn capture_spawner(&self, output_tx: mpsc::Sender<Vec<u8>>) -> CaptureSpawner {
+    fn capture_spawner(
+        &self,
+        output_tx: mpsc::Sender<Vec<u8>>,
+        fallback_to_default: bool,
+    ) -> CaptureSpawner {
         CaptureSpawner {
             host: self.host.clone(),
             muted: self.muted.clone(),
             vad_config: self.vad_config.clone(),
             app_handle: self.app_handle.clone(),
             output_tx,
+            fallback_to_default,
         }
+    }
+
+    /// Selected output device name (`None` = system default).
+    pub fn output_device_name(&self) -> Option<&str> {
+        self.output_device_name.as_deref()
     }
 
     /// Start audio capture in a background thread.
@@ -802,7 +875,7 @@ impl AudioHandle {
         // the call then starts capture (see `set_input_device`).
         self.capture_output_tx = Some(output_tx.clone());
         let task = self
-            .capture_spawner(output_tx)
+            .capture_spawner(output_tx, true)
             .spawn(self.input_device_name.as_deref())
             .await?;
         task.activate();
@@ -834,7 +907,7 @@ impl AudioHandle {
         // Stop existing playback if running
         self.stop_playback().await;
 
-        let device = self.get_device(self.output_device_name.as_deref(), false)?;
+        let device = self.get_device_or_default(self.output_device_name.as_deref(), false)?;
         let deafened = self.deafened.clone();
         let sink = self.error_sink();
 
@@ -862,7 +935,7 @@ impl AudioHandle {
         // Stop existing playback if running
         self.stop_playback().await;
 
-        let device = self.get_device(self.output_device_name.as_deref(), false)?;
+        let device = self.get_device_or_default(self.output_device_name.as_deref(), false)?;
         let deafened = self.deafened.clone();
         let sink = self.error_sink();
 
@@ -1334,13 +1407,21 @@ fn run_playback_task(
         device_label(&device),
         sink.clone(),
     );
-    let Some(stream) = build_buffer_output_stream(&device, &deafened, &playback_buffer, &reporter)
-    else {
+    let stream = build_buffer_output_stream(&device, &deafened, &playback_buffer, &reporter);
+    if stream.is_none() {
+        // Keep the task (and its control channel) alive: choosing another
+        // speaker then starts playback.
         reporter.report("output stream could not be started");
-        return;
-    };
+    }
 
-    playback_control_loop(stream, &deafened, &playback_buffer, control_rx, sink);
+    playback_control_loop(
+        stream,
+        reporter,
+        &deafened,
+        &playback_buffer,
+        control_rx,
+        sink,
+    );
     info!("Playback task stopped");
 }
 
@@ -1407,9 +1488,13 @@ fn build_buffer_output_stream(
 
 /// Block on control messages until Stop, rebuilding the output stream in
 /// place on `SwitchDevice`. The new stream is built BEFORE the old one is
-/// dropped so a failed switch keeps audio on the previous device.
+/// dropped so a failed switch keeps audio on the previous device. `stream`
+/// is `None` when playback could not start; a successful switch then starts
+/// it. A switch that succeeds after a reported failure withdraws the
+/// "Speaker stopped working" notice.
 fn playback_control_loop(
-    mut stream: cpal::Stream,
+    mut stream: Option<cpal::Stream>,
+    mut reporter: FailureReporter,
     deafened: &Arc<AtomicBool>,
     playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
@@ -1419,15 +1504,20 @@ fn playback_control_loop(
         match msg {
             PlaybackControl::Stop => break,
             PlaybackControl::SwitchDevice(new_device, reply) => {
-                let reporter = FailureReporter::new(
+                let new_reporter = FailureReporter::new(
                     AudioErrorKind::PlaybackFailed,
                     device_label(&new_device),
                     sink.clone(),
                 );
-                if let Some(new_stream) =
-                    build_buffer_output_stream(&new_device, deafened, playback_buffer, &reporter)
-                {
-                    stream = new_stream;
+                if let Some(new_stream) = build_buffer_output_stream(
+                    &new_device,
+                    deafened,
+                    playback_buffer,
+                    &new_reporter,
+                ) {
+                    stream = Some(new_stream);
+                    reporter.recover();
+                    reporter = new_reporter;
                     let _ = reply.send(true);
                     info!("Playback switched to new output device");
                 } else {
@@ -1478,13 +1568,21 @@ fn run_pcm_playback_task(
         device_label(&device),
         sink.clone(),
     );
-    let Some(stream) = build_buffer_output_stream(&device, &deafened, &playback_buffer, &reporter)
-    else {
+    let stream = build_buffer_output_stream(&device, &deafened, &playback_buffer, &reporter);
+    if stream.is_none() {
+        // Keep the task (and its control channel) alive: choosing another
+        // speaker then starts playback.
         reporter.report("output stream could not be started");
-        return;
-    };
+    }
 
-    playback_control_loop(stream, &deafened, &playback_buffer, control_rx, sink);
+    playback_control_loop(
+        stream,
+        reporter,
+        &deafened,
+        &playback_buffer,
+        control_rx,
+        sink,
+    );
     info!("PCM playback task stopped");
 }
 
@@ -1783,6 +1881,44 @@ mod tests {
         assert_eq!(converted.capacity(), capacity);
     }
 
+    #[test]
+    fn missing_saved_device_falls_back_to_the_default_on_start() {
+        // Saved headset unplugged between calls: start on the default.
+        let device = resolve_device(Some("Headset"), None, || Some("Speakers"), true, false);
+        assert_eq!(device.unwrap(), "Speakers");
+
+        // An explicit mid-call switch to a missing device is an error.
+        let err = resolve_device(
+            Some("Headset"),
+            None::<&str>,
+            || Some("Speakers"),
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AudioError::DeviceNotFound(ref n) if n == "Headset"));
+
+        assert_eq!(
+            resolve_device(
+                Some("Headset"),
+                Some("Headset"),
+                || Some("Speakers"),
+                true,
+                false
+            )
+            .unwrap(),
+            "Headset"
+        );
+        assert!(matches!(
+            resolve_device(Some("Mic"), None::<&str>, || None, true, true),
+            Err(AudioError::NoInputDevice)
+        ));
+        assert!(matches!(
+            resolve_device(None, None::<&str>, || None, true, false),
+            Err(AudioError::NoOutputDevice)
+        ));
+    }
+
     // --- Mic switching (make-before-break, retry, restore) ---
 
     /// Scripted capture factory: each `spawn` pops the next result.
@@ -1791,6 +1927,7 @@ mod tests {
         script: Mutex<std::collections::VecDeque<bool>>,
         log: Arc<Mutex<Vec<String>>>,
         reported: Mutex<Vec<Option<String>>>,
+        recovered: Mutex<Vec<Option<String>>>,
     }
 
     struct FakeTask {
@@ -1859,6 +1996,12 @@ mod tests {
         fn report_failure(&self, device: Option<&str>) {
             self.reported.lock().unwrap().push(device.map(String::from));
         }
+        fn report_recovered(&self, device: Option<&str>) {
+            self.recovered
+                .lock()
+                .unwrap()
+                .push(device.map(String::from));
+        }
     }
 
     #[tokio::test]
@@ -1920,6 +2063,31 @@ mod tests {
         assert_eq!(current.as_deref(), Some("A"), "choice unchanged");
         assert_eq!(capture.as_ref().map(|t| t.name.as_str()), Some("A"));
         assert!(factory.reported.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn restoring_a_failed_mic_withdraws_its_notice() {
+        // The current mic had failed; the new one cannot open; the old one
+        // comes back on restore: its "stopped working" notice must go.
+        let factory = FakeFactory::new(&[false, false, true]);
+        let mut capture = Some(factory.task("A", true));
+        let mut current = Some("A".to_string());
+
+        assert!(
+            switch_capture(&factory, &mut capture, &mut current, Some("B".into()))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            *factory.recovered.lock().unwrap(),
+            vec![Some("A".to_string())]
+        );
+
+        // A healthy mic that is restored had no notice to withdraw.
+        let factory = FakeFactory::new(&[false, false, true]);
+        let mut capture = Some(factory.task("A", false));
+        let _ = switch_capture(&factory, &mut capture, &mut current, Some("B".into())).await;
+        assert!(factory.recovered.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

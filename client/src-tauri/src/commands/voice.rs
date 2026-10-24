@@ -15,8 +15,8 @@ use webrtc::track::track_local::TrackLocalWriter;
 use webrtc::track::track_remote::TrackRemote;
 
 use crate::audio::{
-    AudioDeviceList, AudioErrorEvent, AudioErrorKind, AUDIO_ERROR_EVENT, CHANNELS, FRAME_SIZE,
-    FRAME_SIZE_MS, SAMPLE_RATE,
+    AudioDeviceList, AudioError, AudioErrorEvent, AudioErrorKind, AudioHandle, AUDIO_ERROR_EVENT,
+    CHANNELS, FRAME_SIZE, FRAME_SIZE_MS, SAMPLE_RATE,
 };
 use crate::network::ClientEvent;
 use crate::voice::audio_mixer::AudioMixer;
@@ -403,54 +403,123 @@ pub async fn handle_voice_publisher_answer(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Start audio capture. A microphone that cannot be opened must not
-    // leave a silent "Connected" call: the user is told right away, the
-    // rest of the call (hearing others) still starts, and picking another
-    // microphone retries capture.
-    let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
-    let capture_result = voice_state.audio.start_capture(audio_tx.clone()).await;
-    if let Err(e) = &capture_result {
-        error!("Microphone could not be started: {e}");
-        let _ = app.emit(
-            AUDIO_ERROR_EVENT,
-            AudioErrorEvent {
-                kind: AudioErrorKind::CaptureFailed,
-                device: voice_state
-                    .audio
-                    .input_device_name()
-                    .unwrap_or("default")
-                    .to_string(),
-            },
-        );
-    }
-
-    // Create audio mixer and start PCM playback from its output.
-    // The mixer combines all decoded remote audio tracks into one stream.
-    let (pcm_output_tx, pcm_output_rx) = tokio::sync::mpsc::channel::<Vec<f32>>(100);
-    let mixer = AudioMixer::with_gains(pcm_output_tx, voice_state.user_gains.clone());
-    voice_state.audio_mixer = Some(mixer);
-
-    voice_state
-        .audio
-        .start_pcm_playback(pcm_output_rx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    voice_state.audio_tx = Some(audio_tx);
-
-    // Spawn task to send captured audio to WebRTC track
+    // Fetched first: the uplink sender is wired before anything can fail.
     let local_track = voice_state.webrtc.get_local_track().await;
-    if let Some(track) = local_track {
-        tokio::spawn(async move {
-            send_audio_to_track(track, audio_rx).await;
-        });
-    } else {
-        error!("No local track available for audio sending");
-    }
-
-    capture_result.map_err(|e| format!("Microphone could not be started: {e}"))?;
+    let gains = voice_state.user_gains.clone();
+    let started = start_call_audio(
+        &mut voice_state.audio,
+        gains,
+        |event| {
+            let _ = app.emit(AUDIO_ERROR_EVENT, event);
+        },
+        |audio_rx| {
+            if let Some(track) = local_track {
+                tokio::spawn(async move {
+                    send_audio_to_track(track, audio_rx).await;
+                });
+            } else {
+                error!("No local track available for audio sending");
+            }
+        },
+    )
+    .await;
+    voice_state.audio_tx = Some(started.audio_tx);
+    voice_state.audio_mixer = Some(started.mixer);
+    started.result?;
     info!("Publisher answer set, audio started");
     Ok(())
+}
+
+/// The audio engine as the call start sees it (a seam for tests).
+trait CallAudio {
+    fn start_capture(
+        &mut self,
+        output_tx: mpsc::Sender<Vec<u8>>,
+    ) -> impl std::future::Future<Output = Result<(), AudioError>> + Send;
+    fn start_pcm_playback(
+        &mut self,
+        input_rx: mpsc::Receiver<Vec<f32>>,
+    ) -> impl std::future::Future<Output = Result<(), AudioError>> + Send;
+    /// Device name for an audio error of `kind`.
+    fn device_label(&self, kind: AudioErrorKind) -> String;
+}
+
+impl CallAudio for AudioHandle {
+    async fn start_capture(&mut self, output_tx: mpsc::Sender<Vec<u8>>) -> Result<(), AudioError> {
+        Self::start_capture(self, output_tx).await
+    }
+
+    async fn start_pcm_playback(
+        &mut self,
+        input_rx: mpsc::Receiver<Vec<f32>>,
+    ) -> Result<(), AudioError> {
+        Self::start_pcm_playback(self, input_rx).await
+    }
+
+    fn device_label(&self, kind: AudioErrorKind) -> String {
+        match kind {
+            AudioErrorKind::CaptureFailed => self.input_device_name(),
+            AudioErrorKind::PlaybackFailed => self.output_device_name(),
+        }
+        .unwrap_or("default")
+        .to_string()
+    }
+}
+
+/// Result of [`start_call_audio`].
+struct StartedCallAudio {
+    /// Where captured Opus frames go (kept in the voice state).
+    audio_tx: mpsc::Sender<Vec<u8>>,
+    mixer: AudioMixer,
+    /// Combined user-facing error when the microphone or speaker failed.
+    result: Result<(), String>,
+}
+
+/// Start the audio of a call whose publisher answer was just applied.
+///
+/// A microphone or speaker that cannot start must not leave a silent
+/// "Connected" call: each failure is emitted (`emit`) right away, the rest
+/// of the call still starts, and the uplink sender (`spawn_sender`) is wired
+/// before playback is attempted, so picking another device mid-call fixes
+/// the failed side. The failures are returned together at the end.
+async fn start_call_audio<A: CallAudio + Send>(
+    audio: &mut A,
+    gains: crate::voice::audio_mixer::UserGains,
+    emit: impl Fn(&AudioErrorEvent) + Send + Sync,
+    spawn_sender: impl FnOnce(mpsc::Receiver<Vec<u8>>) + Send,
+) -> StartedCallAudio {
+    let mut problems = Vec::new();
+    let mut fail = |kind: AudioErrorKind, what: &str, e: &AudioError, audio: &A| {
+        error!("{what} could not be started: {e}");
+        emit(&AudioErrorEvent {
+            kind,
+            device: audio.device_label(kind),
+        });
+        problems.push(format!("{what} could not be started: {e}"));
+    };
+
+    let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>(100);
+    if let Err(e) = audio.start_capture(audio_tx.clone()).await {
+        fail(AudioErrorKind::CaptureFailed, "Microphone", &e, audio);
+    }
+    spawn_sender(audio_rx);
+
+    // The mixer combines all decoded remote audio tracks into one stream.
+    let (pcm_output_tx, pcm_output_rx) = mpsc::channel::<Vec<f32>>(100);
+    let mixer = AudioMixer::with_gains(pcm_output_tx, gains);
+    if let Err(e) = audio.start_pcm_playback(pcm_output_rx).await {
+        fail(AudioErrorKind::PlaybackFailed, "Speaker", &e, audio);
+    }
+
+    StartedCallAudio {
+        audio_tx,
+        mixer,
+        result: if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems.join("; "))
+        },
+    }
 }
 
 /// Handle SDP offer from server for the subscriber `PeerConnection`.
@@ -1083,6 +1152,123 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::audio::AudioError;
+    use crate::voice::audio_mixer::UserGains;
+
+    /// Scripted audio engine for the call-start order.
+    struct FakeCallAudio {
+        capture_ok: bool,
+        playback_ok: bool,
+        log: Vec<&'static str>,
+    }
+
+    impl CallAudio for FakeCallAudio {
+        async fn start_capture(&mut self, _tx: mpsc::Sender<Vec<u8>>) -> Result<(), AudioError> {
+            self.log.push("capture");
+            if self.capture_ok {
+                Ok(())
+            } else {
+                Err(AudioError::StreamError("mic gone".into()))
+            }
+        }
+
+        async fn start_pcm_playback(
+            &mut self,
+            _rx: mpsc::Receiver<Vec<f32>>,
+        ) -> Result<(), AudioError> {
+            self.log.push("playback");
+            if self.playback_ok {
+                Ok(())
+            } else {
+                Err(AudioError::DeviceNotFound("Headset".into()))
+            }
+        }
+
+        fn device_label(&self, kind: AudioErrorKind) -> String {
+            match kind {
+                AudioErrorKind::CaptureFailed => "USB Mic".into(),
+                AudioErrorKind::PlaybackFailed => "Headset".into(),
+            }
+        }
+    }
+
+    async fn start(
+        capture_ok: bool,
+        playback_ok: bool,
+    ) -> (
+        FakeCallAudio,
+        StartedCallAudio,
+        Vec<AudioErrorEvent>,
+        Option<mpsc::Receiver<Vec<u8>>>,
+    ) {
+        let mut audio = FakeCallAudio {
+            capture_ok,
+            playback_ok,
+            log: Vec::new(),
+        };
+        let events = std::sync::Mutex::new(Vec::new());
+        let mut sender_rx = None;
+        let started = start_call_audio(
+            &mut audio,
+            UserGains::default(),
+            |event| events.lock().unwrap().push(event.clone()),
+            |rx| {
+                sender_rx = Some(rx);
+            },
+        )
+        .await;
+        (audio, started, events.into_inner().unwrap(), sender_rx)
+    }
+
+    #[tokio::test]
+    async fn sender_is_wired_even_when_playback_fails() {
+        // Saved headset unplugged between calls: the speaker cannot start.
+        let (audio, started, events, sender_rx) = start(true, false).await;
+
+        assert_eq!(audio.log, ["capture", "playback"]);
+        let mut sender_rx = sender_rx.expect("uplink sender wired");
+        // The microphone's frames still reach the WebRTC sender.
+        started.audio_tx.try_send(vec![7]).unwrap();
+        assert_eq!(sender_rx.try_recv().unwrap(), vec![7]);
+
+        assert_eq!(
+            events,
+            vec![AudioErrorEvent {
+                kind: AudioErrorKind::PlaybackFailed,
+                device: "Headset".into(),
+            }]
+        );
+        let err = started.result.unwrap_err();
+        assert!(err.contains("Speaker"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn capture_and_playback_failures_are_both_reported() {
+        let (audio, started, events, sender_rx) = start(false, false).await;
+        assert_eq!(audio.log, ["capture", "playback"]);
+        assert!(sender_rx.is_some(), "a mic chosen later still has a sender");
+        let kinds: Vec<_> = events.iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                AudioErrorKind::CaptureFailed,
+                AudioErrorKind::PlaybackFailed
+            ]
+        );
+        let err = started.result.unwrap_err();
+        assert!(
+            err.contains("Microphone") && err.contains("Speaker"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn healthy_call_audio_reports_nothing() {
+        let (_, started, events, sender_rx) = start(true, true).await;
+        assert!(sender_rx.is_some());
+        assert!(events.is_empty());
+        assert!(started.result.is_ok());
+    }
 
     #[tokio::test]
     async fn ice_servers_parsed_from_server() {
