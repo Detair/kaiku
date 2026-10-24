@@ -155,17 +155,28 @@ class WakeFetchProcessor @Inject constructor(
         resolveReadCursor(account, channelId, unseen)
         // Newest message actually considered; own messages count as seen.
         val newest = unseen.lastOrNull()
-        if (newest == null || notifiable(account, channelId, unseen, unread = null).isEmpty()) {
-            newest?.let { markSeen(account, channelId, it) }
-            return finish(signal, account, WakeOutcome.NOTHING_NEW)
-        }
+        val locallyNotifiable = newest != null && notifiable(account, channelId, unseen, unread = null).isNotEmpty()
 
         // The server's read state is authoritative (C20): a late wake never
-        // re-notifies what was read, whatever arrived first.
-        val unread = serverUnread(channelId)
+        // re-notifies what was read, whatever arrived first. Asked on every
+        // wake, because a `read` push shares the collapse key and may have been
+        // dropped: a wake is then the only chance to clear a stale notification.
+        val unread = try {
+            serverUnread(channelId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Without anything to post, a failed lookup only means no cleanup this time.
+            if (locallyNotifiable) throw e
+            null
+        }
         if (!isCurrent(account)) return sessionLost(account)
-        if (notifiable(account, channelId, unseen, unread).isEmpty()) {
-            markSeen(account, channelId, newest)
+        if (nothingUnread(account, channelId, unseen, unread)) {
+            // Read elsewhere (maybe its `read` push was dropped): clear what is shown.
+            sink.cancel(channelId)
+        }
+        if (newest == null || !locallyNotifiable || notifiable(account, channelId, unseen, unread).isEmpty()) {
+            newest?.let { markSeen(account, channelId, it) }
             return finish(signal, account, WakeOutcome.NOTHING_NEW)
         }
 
@@ -251,6 +262,23 @@ class WakeFetchProcessor @Inject constructor(
         return ledger.readCursor(account.userId, channelId)
             .unread(afterSeen)
             .filter { fromOthers(it) && (window == null || it.id in window) }
+    }
+
+    /**
+     * True when the channel is known to be fully read: the server reports no
+     * unread messages, or the local read cursor covers the newest fetched
+     * message from others. "Nothing new since the last notification" is not
+     * enough (the shown notification is then still unread and stays).
+     */
+    private fun nothingUnread(
+        account: Account,
+        channelId: String,
+        unseen: List<Message>,
+        unread: ServerUnread?,
+    ): Boolean {
+        if (unread?.count == 0) return true
+        val newestFromOthers = unseen.lastOrNull { it.author.id != account.userId } ?: return false
+        return ledger.readCursor(account.userId, channelId).unread(listOf(newestFromOthers)).isEmpty()
     }
 
     /** The server's unread count for [channelId]; a channel not listed has none. */

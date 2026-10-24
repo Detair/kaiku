@@ -426,6 +426,63 @@ class WakeFetchProcessorTest {
     }
 
     @Test
+    fun `wake with nothing unread on the server clears the shown notification`() = runTest {
+        // A notification for ch is shown; its `read` push was dropped (shared collapse key).
+        serverDmUnread(0)
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
+
+        verify { sink.cancel(ch) }
+        assertTrue(shown.isEmpty())
+    }
+
+    @Test
+    fun `wake with nothing new and nothing unread clears the shown notification`() = runTest {
+        ledger.markSeen("me", ch, "m1", "2026-10-24T10:01:00Z")
+        serverDmUnread(0)
+        coEvery { messages.getMessages(ch, null, "m1", 50) } returns page()
+
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
+
+        verify { sink.cancel(ch) }
+    }
+
+    @Test
+    fun `local read cursor covering the newest message clears the shown notification`() = runTest {
+        ledger.markRead("me", ch, "m1", "2026-10-24T10:01:00Z")
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
+
+        verify { sink.cancel(ch) }
+    }
+
+    @Test
+    fun `unread but already notified keeps the notification unchanged`() = runTest {
+        // m1 was notified and is still unread on the server; nothing newer arrived.
+        ledger.markSeen("me", ch, "m1", "2026-10-24T10:01:00Z")
+        serverDmUnread(1)
+        coEvery { messages.getMessages(ch, null, "m1", 50) } returns page()
+
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
+
+        verify(exactly = 0) { sink.cancel(any()) }
+        verify(exactly = 0) { sink.show(any()) }
+    }
+
+    @Test
+    fun `failed unread lookup with nothing to post is not retried`() = runTest {
+        ledger.markSeen("me", ch, "m1", "2026-10-24T10:01:00Z")
+        coEvery { unreadApi.getUnread() } throws IOException("offline")
+        coEvery { messages.getMessages(ch, null, "m1", 50) } returns page()
+
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
+
+        verify(exactly = 0) { sink.cancel(any()) }
+    }
+
+    @Test
     fun `channel missing from the server unread list posts nothing`() = runTest {
         coEvery { unreadApi.getUnread() } returns UnreadAggregate()
         coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))
