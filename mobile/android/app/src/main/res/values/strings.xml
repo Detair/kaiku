@@ -21,6 +21,22 @@
     <string name="auth_mfa_invalid">That code didn\'t work. Try again.</string>
     <string name="auth_login_failed">Couldn\'t sign in. Check your connection and try again.</string>
     <string name="auth_oidc_failed">Couldn\'t sign in with that provider.</string>
+    <string name="auth_login_server">Signing in to %1$s</string>
+    <string name="auth_register_check_retry">Couldn\'t check if you can register. Try again</string>
+    <string name="auth_storage_reset">Please sign in again.</string>
+    <string name="auth_change_server">Change server</string>
+
+    <!-- Server address -->
+    <string name="auth_server_title">Welcome to Kaiku</string>
+    <string name="auth_server_subtitle">Check the server address, then tap Connect</string>
+    <string name="auth_server_address_label">Server address</string>
+    <string name="auth_server_address_hint">kaiku.example.com</string>
+    <string name="auth_server_connect">Connect</string>
+    <string name="auth_server_scan_qr">Scan QR code</string>
+    <string name="auth_server_invalid_address">That doesn\'t look like a server address. Check it and try again.</string>
+    <string name="auth_server_not_secure">Only secure addresses (https) are allowed.</string>
+    <string name="auth_server_not_kaiku">That address doesn\'t seem to be a Kaiku server.</string>
+    <string name="auth_server_unreachable">Couldn\'t reach that server. Check the address and your connection.</string>
 
     <!-- Forced password change (first sign-in) -->
     <string name="auth_change_password_title">Choose your own password</string>
@@ -55,6 +71,13 @@
     <string name="chat_typing_one">%1$s is typing…</string>
     <string name="chat_typing_two">%1$s and %2$s are typing…</string>
     <string name="chat_typing_many">Several people are typing…</string>
+    <string name="chat_typing_someone">Someone</string>
+    <string name="chat_reaction_chip_description">%1$s, %2$d. Tap to toggle your reaction.</string>
+    <string name="chat_attach">Attach photo or video</string>
+    <string name="chat_upload_too_large">That file is too large to send.</string>
+    <string name="chat_uploading">Sending photo or video…</string>
+    <string name="chat_upload_unsupported_type">This kind of file can\'t be sent. Photos (JPEG, PNG, GIF, WebP) and videos (MP4, WebM) work.</string>
+    <string name="chat_upload_failed">Couldn\'t send your photo or video.</string>
     <string name="chat_send_failed">Couldn\'t send your message.</string>
     <string name="chat_edit_failed">Couldn\'t edit your message.</string>
     <string name="chat_delete_failed">Couldn\'t delete your message.</string>
@@ -90,7 +113,7 @@
     <string name="home_select_server">Select a server to get started</string>
     <string name="home_select_server_named">Select server %1$s</string>
     <string name="home_open_server_list">Open server list</string>
-    <string name="home_no_servers">No servers yet</string>
+    <string name="home_no_servers_hint">You\'re not on a server yet. Ask the person who runs Kaiku to add you.</string>
     <string name="home_servers_load_failed">Couldn\'t load your servers.</string>
     <string name="home_channels_load_failed">Couldn\'t load this server\'s channels.</string>
 
@@ -102,6 +125,12 @@
     <string name="voice_unknown_user">Unknown</string>
     <string name="voice_disconnect">Disconnect</string>
     <string name="voice_mute">Mute</string>
+    <string name="voice_microphone">Microphone</string>
+    <string name="voice_microphone_on">On</string>
+    <string name="voice_audio_output">Audio output</string>
+    <string name="voice_overlay_connected">Connected to #%1$s</string>
+    <string name="voice_overlay_connected_unknown">Connected to voice</string>
+    <string name="voice_overlay_return">Return to call</string>
     <string name="voice_in_channel">In voice channel</string>
     <string name="voice_default_channel_name">Voice channel</string>
     <string name="voice_notification_channel_name">Voice calls</string>

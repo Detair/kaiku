@@ -1,6 +1,8 @@
 package io.wolftown.kaiku.data.local
 
 import android.content.SharedPreferences
+import java.io.IOException
+import java.security.GeneralSecurityException
 import java.util.logging.Logger
 import javax.inject.Inject
 
@@ -15,10 +17,24 @@ import javax.inject.Inject
  * [getSessionGeneration] changes whenever a different session may start (login,
  * logout, server change) but not when a refresh rotates the current session's
  * tokens. Callers capture it to detect that the session they started from is gone.
+ *
+ * Every read tolerates a damaged encrypted store (key lost after a restore or an
+ * OS update): the store is reset through the same synchronized path as a logout
+ * (new session generation), the read returns null, and
+ * [consumeStorageResetNotice] reports the reset once so the UI can ask the
+ * person to sign in again. Readers take the monitor only on that failure path.
  */
-class TokenStorage @Inject constructor(
-    private val prefs: SharedPreferences
+class TokenStorage internal constructor(
+    private val prefs: SharedPreferences,
+    /**
+     * Plain (unencrypted) preferences holding the reset notice, so it outlives
+     * the process and a damaged secure store. Null keeps it in memory only.
+     */
+    private val noticeStore: SharedPreferences?,
 ) {
+
+    @Inject
+    constructor(prefs: SharedPreferences) : this(prefs, null)
 
     companion object {
         private const val KEY_ACCESS_TOKEN = "access_token"
@@ -28,11 +44,108 @@ class TokenStorage @Inject constructor(
         private const val KEY_SERVER_URL = "server_url"
         private const val KEY_OIDC_CODE_VERIFIER = "oidc_code_verifier"
         private const val KEY_OIDC_STATE = "oidc_state"
+
+        /** Key in the notice store; also set by the module when the store was recreated at open. */
+        const val KEY_RESET_NOTICE = "storage_was_reset"
         private val logger = Logger.getLogger("TokenStorage")
     }
 
     @Volatile
     private var sessionGeneration = 0L
+
+    @Volatile
+    private var storageResetNotice = false
+
+    private fun noticePending(): Boolean =
+        noticeStore?.getBoolean(KEY_RESET_NOTICE, false) ?: storageResetNotice
+
+    private fun setNoticePending(pending: Boolean) {
+        storageResetNotice = pending
+        noticeStore?.edit()?.putBoolean(KEY_RESET_NOTICE, pending)?.commit()
+    }
+
+    /**
+     * True once after the stored session was lost to a damaged store, so the UI
+     * can ask the person to sign in again. Returns false on every later call.
+     * The flag is durable (see [noticeStore]), so it survives process death
+     * until it is consumed.
+     */
+    @Synchronized
+    fun consumeStorageResetNotice(): Boolean {
+        val pending = noticePending()
+        if (pending) setNoticePending(false)
+        return pending
+    }
+
+    /**
+     * Runs [read]; on a storage failure tries to recover (see
+     * [recoverFromReadFailure]) and returns [fallback] if the store had to be reset.
+     */
+    private fun <T> readOr(fallback: T, read: () -> T): T {
+        val generation = sessionGeneration
+        return try {
+            read()
+        } catch (e: GeneralSecurityException) {
+            recoverFromReadFailure(generation, e, fallback, read)
+        } catch (e: IOException) {
+            recoverFromReadFailure(generation, e, fallback, read)
+        } catch (e: SecurityException) {
+            recoverFromReadFailure(generation, e, fallback, read)
+        }
+    }
+
+    /**
+     * Under the monitor, so no writer is mid-commit: gives up when the session
+     * changed since the failed read ([generationAtRead]), and otherwise reads
+     * once more, because a login that committed after the failed read replaced
+     * the damaged value. Only a read that still fails wipes the session data.
+     */
+    @Synchronized
+    private fun <T> recoverFromReadFailure(
+        generationAtRead: Long,
+        cause: Exception,
+        fallback: T,
+        read: () -> T,
+    ): T {
+        if (sessionGeneration != generationAtRead) return fallback
+        try {
+            return read()
+        } catch (_: GeneralSecurityException) {
+        } catch (_: IOException) {
+        } catch (_: SecurityException) {
+        }
+        // Type only: the message could describe stored data.
+        logger.warning("Secure storage unreadable (${cause::class.simpleName}), resetting session data")
+        sessionGeneration++
+        val cleared = try {
+            val editor = prefs.edit()
+                .remove(KEY_ACCESS_TOKEN)
+                .remove(KEY_REFRESH_TOKEN)
+                .remove(KEY_EXPIRES_AT)
+                .remove(KEY_USER_ID)
+                .remove(KEY_OIDC_CODE_VERIFIER)
+                .remove(KEY_OIDC_STATE)
+            // The server address stays so the person lands on sign-in, unless it is itself unreadable.
+            if (!isReadable { prefs.getString(KEY_SERVER_URL, null) }) editor.remove(KEY_SERVER_URL)
+            editor.commit()
+        } catch (e: RuntimeException) {
+            false
+        }
+        if (!cleared) logger.warning("Failed to reset secure storage")
+        setNoticePending(true)
+        return fallback
+    }
+
+    private inline fun isReadable(read: () -> Unit): Boolean = try {
+        read()
+        true
+    } catch (_: GeneralSecurityException) {
+        false
+    } catch (_: IOException) {
+        false
+    } catch (_: SecurityException) {
+        false
+    }
 
     /** Changes on login, logout and server change; unchanged by a refresh rotation. */
     fun getSessionGeneration(): Long = sessionGeneration
@@ -91,16 +204,16 @@ class TokenStorage @Inject constructor(
         }
     }
 
-    fun getAccessToken(): String? = prefs.getString(KEY_ACCESS_TOKEN, null)
+    fun getAccessToken(): String? = readOr(null) { prefs.getString(KEY_ACCESS_TOKEN, null) }
 
     fun getRefreshToken(): String? {
-        val token = prefs.getString(KEY_REFRESH_TOKEN, null)
+        val token = readOr(null) { prefs.getString(KEY_REFRESH_TOKEN, null) }
         return if (token.isNullOrEmpty()) null else token
     }
 
-    fun getUserId(): String? = prefs.getString(KEY_USER_ID, null)
+    fun getUserId(): String? = readOr(null) { prefs.getString(KEY_USER_ID, null) }
 
-    fun getServerUrl(): String? = prefs.getString(KEY_SERVER_URL, null)
+    fun getServerUrl(): String? = readOr(null) { prefs.getString(KEY_SERVER_URL, null) }
 
     @Synchronized
     fun saveServerUrl(url: String) {
@@ -114,10 +227,10 @@ class TokenStorage @Inject constructor(
     }
 
     /** Epoch millis at which the stored access token expires, or 0 when none is stored. */
-    fun getAccessTokenExpiresAtMillis(): Long = prefs.getLong(KEY_EXPIRES_AT, 0L)
+    fun getAccessTokenExpiresAtMillis(): Long = readOr(0L) { prefs.getLong(KEY_EXPIRES_AT, 0L) }
 
     fun isAccessTokenExpired(): Boolean {
-        val expiresAt = prefs.getLong(KEY_EXPIRES_AT, 0L)
+        val expiresAt = getAccessTokenExpiresAtMillis()
         return System.currentTimeMillis() >= expiresAt
     }
 
@@ -131,9 +244,9 @@ class TokenStorage @Inject constructor(
         }
     }
 
-    fun getOidcCodeVerifier(): String? = prefs.getString(KEY_OIDC_CODE_VERIFIER, null)
+    fun getOidcCodeVerifier(): String? = readOr(null) { prefs.getString(KEY_OIDC_CODE_VERIFIER, null) }
 
-    fun getOidcState(): String? = prefs.getString(KEY_OIDC_STATE, null)
+    fun getOidcState(): String? = readOr(null) { prefs.getString(KEY_OIDC_STATE, null) }
 
     fun clearOidcPkceState() {
         val success = prefs.edit()
@@ -162,6 +275,21 @@ class TokenStorage @Inject constructor(
     @Synchronized
     fun clearIfRefreshTokenIs(expectedRefreshToken: String?): Boolean {
         if (getRefreshToken() != expectedRefreshToken) return false
+        sessionGeneration++
+        removeTokens()
+        return true
+    }
+
+    /**
+     * Removes the session tokens only if the session generation is still
+     * [expectedGeneration] (refresh rotations keep it), so a logout never
+     * wipes a newer login. Starts a new generation when it removes.
+     *
+     * @return true if the tokens were removed.
+     */
+    @Synchronized
+    fun clearIfGeneration(expectedGeneration: Long): Boolean {
+        if (sessionGeneration != expectedGeneration) return false
         sessionGeneration++
         removeTokens()
         return true

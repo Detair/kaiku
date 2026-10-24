@@ -30,6 +30,8 @@ import io.wolftown.kaiku.ui.settings.SettingsScreen
 import io.wolftown.kaiku.ui.voice.VoiceChannelScreen
 import io.wolftown.kaiku.ui.voice.VoiceOverlay
 import io.wolftown.kaiku.ui.voice.VoiceOverlayViewModel
+import io.wolftown.kaiku.ui.voice.VOICE_ROUTE
+import io.wolftown.kaiku.ui.voice.shouldShowVoiceOverlay
 
 @Composable
 fun KaikuNavGraph(
@@ -55,11 +57,13 @@ fun KaikuNavGraph(
         }
     }
 
-    // Voice overlay state — shows on non-voice screens when connected
+    // Voice overlay state: a call keeps running when the user leaves the voice
+    // screen; the bar shows on every other screen and leads back to it.
     val voiceOverlayViewModel: VoiceOverlayViewModel = hiltViewModel()
     val voiceChannelId by voiceOverlayViewModel.currentChannelId.collectAsState()
+    val voiceChannelName by voiceOverlayViewModel.channelName.collectAsState()
     val voiceIsMuted by voiceOverlayViewModel.isMuted.collectAsState()
-    val showOverlay = voiceChannelId != null && currentRoute != "voice/{channelId}"
+    val showOverlay = shouldShowVoiceOverlay(voiceChannelId, currentRoute)
 
     Column(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.weight(1f)) {
@@ -73,6 +77,11 @@ fun KaikuNavGraph(
                         },
                         onScanQrCode = {
                             navController.navigate("qr_scanner")
+                        },
+                        onBack = {
+                            navController.navigate("login") {
+                                popUpTo("server_url") { inclusive = true }
+                            }
                         }
                     )
                 }
@@ -89,6 +98,12 @@ fun KaikuNavGraph(
                         },
                         onPasswordChangeRequired = {
                             navController.navigate("change_password")
+                        },
+                        onChangeServer = {
+                            // Replace login so no screen below keeps the old server's state.
+                            navController.navigate("server_url") {
+                                popUpTo("login") { inclusive = true }
+                            }
                         }
                     )
                 }
@@ -150,7 +165,7 @@ fun KaikuNavGraph(
                     )
                 }
 
-                composable("voice/{channelId}") {
+                composable(VOICE_ROUTE) {
                     VoiceChannelScreen(
                         onNavigateBack = { navController.popBackStack() }
                     )
@@ -206,12 +221,12 @@ fun KaikuNavGraph(
         // Voice overlay bar — visible on non-voice screens when in a voice channel
         if (showOverlay) {
             VoiceOverlay(
-                channelName = voiceChannelId ?: "",
+                channelName = voiceChannelName,
                 isMuted = voiceIsMuted,
                 onMuteToggle = { voiceOverlayViewModel.onToggleMute() },
                 onTap = {
                     voiceChannelId?.let { channelId ->
-                        navController.navigate("voice/$channelId")
+                        navController.navigate("voice/$channelId") { launchSingleTop = true }
                     }
                 },
                 onDisconnect = { voiceOverlayViewModel.onDisconnect() }

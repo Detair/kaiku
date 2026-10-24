@@ -15,6 +15,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.domain.typingNames
 import io.wolftown.kaiku.ui.shared.ConnectionBanner
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
@@ -38,7 +39,13 @@ fun TextChannelScreen(
 ) {
     val title by viewModel.title.collectAsState()
     val messages by viewModel.messages.collectAsState()
-    val typingUsers by viewModel.typingUsers.collectAsState()
+    val isUploading by viewModel.isUploading.collectAsState()
+    val typingUserIds by viewModel.typingUserIds.collectAsState()
+    val memberNames by viewModel.memberNames.collectAsState()
+    val someone = stringResource(R.string.chat_typing_someone)
+    val typingLabels = remember(typingUserIds, memberNames, someone) {
+        typingNames(typingUserIds, memberNames, someone)
+    }
     val isLoading by viewModel.isLoading.collectAsState()
     val canLoadMore by viewModel.canLoadMore.collectAsState()
     val messageInput by viewModel.messageInput.collectAsState()
@@ -126,9 +133,11 @@ fun TextChannelScreen(
             MessageInput(
                 input = messageInput,
                 placeholder = placeholder,
-                typingUsers = typingUsers,
+                typingNames = typingLabels,
                 onInputChanged = viewModel::onMessageInputChanged,
-                onSend = viewModel::onSendMessage
+                onSend = viewModel::onSendMessage,
+                isUploading = isUploading,
+                onAttachmentPicked = viewModel::onAttachmentPicked
             )
         }
     ) { paddingValues ->
@@ -180,6 +189,11 @@ fun TextChannelScreen(
                             MessageItem(
                                 message = message,
                                 isOwnMessage = message.author.id == currentUserId,
+                                currentUserId = currentUserId,
+                                onToggleReaction = { msgId, emoji, mine ->
+                                    if (mine) viewModel.onRemoveReaction(msgId, emoji)
+                                    else viewModel.onAddReaction(msgId, emoji)
+                                },
                                 onEdit = viewModel::onStartEdit,
                                 onDelete = { msgId ->
                                     viewModel.onDeleteMessage(msgId)

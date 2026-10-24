@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - The server can deliver Android push notifications through Firebase Cloud Messaging when an FCM service account is configured.
+- Android: message times use your time zone, typing shows names and disappears, reactions are visible, buttons are labelled for screen readers, and a damaged sign-in store asks you to sign in again instead of crashing.
+- Android: you can send photos and videos from your phone.
+- Android: unread badges appear for channels you left, clear on the server when you read them, and new direct messages update the list live.
 - People signing in with a temporary password are asked to choose their own password first.
 - Admins can create accounts with a temporary password from the admin dashboard, so registration can stay closed.
 - Releases now include a signed Android app (`Kaiku-<version>.apk`) that updates in place over earlier installs.
@@ -103,6 +106,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: update `dompurify` 3.4.2 → 3.4.11 (eight HTML-sanitizer XSS advisories — the markdown preview's runtime sanitizer), `vite` 8.0.0 → 8.0.16 (the `server.fs.deny` bypass and `__open-in-editor` NTLM dev-server CVEs), and add transitive overrides for `undici` → 7.28.0 (seven HTTP-client advisories via jsdom) and `@babel/core` → 7.29.6 (via vite-plugin-solid). The remaining flagged instance is the test-only vite 7.3.1 nested under vitest, whose fix is blocked by a JSX-transform incompatibility (documented as a justified, dev-server-only exception); the production bundle is built with the patched vite 8.0.16. This restores the weekly OSV scanner to green.
 
 ### Fixed
+- Android: signing out ends the session, leaves voice and removes your data from the screen; going back from a call keeps it running with a bar to return to it.
+- Android: the app starts with the family server filled in, accepts a plain address, checks it before sign-in, lets you change the server, hides Register when it is closed, and opens your server automatically.
 - Messages sent while you were disconnected now appear after reconnecting, and a new direct message shows up immediately for the recipient.
 - Desktop voice now uses the server's TURN relay, so voice also works on restrictive networks.
 - When the desktop app starts before the network or server is reachable, it now keeps your saved login and connects as soon as it can, instead of showing the login screen.

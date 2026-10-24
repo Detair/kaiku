@@ -1,16 +1,23 @@
 package io.wolftown.kaiku.ui.channel
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.wolftown.kaiku.R
 
@@ -19,28 +26,41 @@ import io.wolftown.kaiku.R
  *
  * @param input Current message text
  * @param placeholder Hint shown while the input is empty
- * @param typingUsers Set of user display names currently typing
+ * @param typingNames Display names of the users currently typing (never ids)
  * @param onInputChanged Callback when text changes
  * @param onSend Callback when the send button is pressed
+ * @param isUploading True while an attachment uploads; disables the attach button
+ * @param onAttachmentPicked Callback with the photo or video the user picked
  */
 @Composable
 fun MessageInput(
     input: String,
     placeholder: String,
-    typingUsers: Set<String>,
+    typingNames: List<String>,
     onInputChanged: (String) -> Unit,
     onSend: () -> Unit,
+    isUploading: Boolean,
+    onAttachmentPicked: (Uri) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // The system photo picker needs no storage permission.
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) onAttachmentPicked(uri)
+    }
+
+    val attachDescription = stringResource(
+        if (isUploading) R.string.chat_uploading else R.string.chat_attach
+    )
+
     Column(modifier = modifier) {
         // Typing indicator
         AnimatedVisibility(
-            visible = typingUsers.isNotEmpty(),
+            visible = typingNames.isNotEmpty(),
             enter = fadeIn(),
             exit = fadeOut()
         ) {
             Text(
-                text = typingIndicatorText(typingUsers),
+                text = typingIndicatorText(typingNames),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
@@ -57,6 +77,28 @@ fun MessageInput(
                     .padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                IconButton(
+                    onClick = {
+                        pickMedia.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                        )
+                    },
+                    enabled = !isUploading,
+                    modifier = Modifier.semantics {
+                        contentDescription = attachDescription
+                    }
+                ) {
+                    if (isUploading) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
                 TextField(
                     value = input,
                     onValueChange = onInputChanged,
@@ -99,8 +141,7 @@ fun MessageInput(
  * - 3+ users: "Several people are typing..."
  */
 @Composable
-private fun typingIndicatorText(typingUsers: Set<String>): String {
-    val users = typingUsers.toList()
+private fun typingIndicatorText(users: List<String>): String {
     return when (users.size) {
         0 -> ""
         1 -> stringResource(R.string.chat_typing_one, users[0])

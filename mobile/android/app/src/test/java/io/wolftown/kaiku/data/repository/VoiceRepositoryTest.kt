@@ -24,6 +24,7 @@ import io.wolftown.kaiku.service.VoiceCallService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -242,5 +243,50 @@ class VoiceRepositoryTest {
 
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    // -- Join owned by the repository (Task 19) -------------------------------
+
+    @Test
+    fun `startJoin without mic permission sets the string error`() = runTest {
+        every { micPermissionChecker.isGranted() } returns false
+
+        repository.startJoin("ch-1")
+        advanceUntilIdle()
+
+        assertEquals(R.string.voice_mic_permission_required, repository.error.value)
+        assertEquals(null, repository.currentChannelId.value)
+    }
+
+    @Test
+    fun `leave during join cancels the join and cleans up`() = runTest {
+        coEvery { webRtcManager.createSubscriberPeerConnection() } coAnswers { awaitCancellation() }
+
+        repository.startJoin("ch-1")
+        advanceUntilIdle()
+        assertEquals("ch-1", repository.currentChannelId.value)
+
+        repository.leaveChannel()
+        advanceUntilIdle()
+
+        assertEquals(null, repository.currentChannelId.value)
+        verify { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+        verify(exactly = 0) { webSocket.send(ClientEvent.VoiceJoin("ch-1")) }
+        verify(atLeast = 1) { webRtcManager.closePeerConnections() }
+        verify(atLeast = 1) { VoiceCallService.stop(any()) }
+    }
+
+    @Test
+    fun `leave clears the channel before VoiceLeave is sent`() = runTest {
+        repository.joinChannel("ch-1")
+        var channelAtSend: String? = "unset"
+        every { webSocket.send(ClientEvent.VoiceLeave("ch-1")) } answers {
+            channelAtSend = repository.currentChannelId.value
+            true
+        }
+
+        repository.leaveChannel()
+
+        assertEquals(null, channelAtSend)
     }
 }

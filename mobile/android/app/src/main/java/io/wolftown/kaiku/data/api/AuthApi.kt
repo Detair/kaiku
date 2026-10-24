@@ -27,7 +27,20 @@ interface AuthApi {
         displayName: String? = null
     ): AuthResponse
     suspend fun refresh(refreshToken: String): AuthResponse
-    suspend fun logout()
+    /**
+     * `POST /auth/logout` on [serverUrl] (absolute) for one captured session,
+     * using only the tokens passed in: the auth interceptor is skipped, so a
+     * stored token (possibly another session's) is never attached, and
+     * nothing is refreshed. Attempts, until one succeeds:
+     * 1. bearer [accessToken] plus [refreshToken] in the body;
+     * 2. bearer only (C25), e.g. when the body token was rotated away;
+     * 3. [refreshToken] in the body without a bearer, e.g. when the captured
+     *    access token has expired (if the server accepts it).
+     * Without a [refreshToken] only the bearer request is sent. Best effort:
+     * never throws on a non-2xx status; logs status codes, never tokens.
+     */
+    suspend fun logoutSession(serverUrl: String, accessToken: String?, refreshToken: String?)
+
     suspend fun getMe(): User
     /**
      * Calls /auth/me with an explicit bearer token. The request skips the auth
@@ -70,7 +83,9 @@ private data class RegisterRequest(
 @Serializable
 private data class RefreshTokenRequest(
     val refreshToken: String
-)
+) {
+    override fun toString(): String = "RefreshTokenRequest"
+}
 
 @Serializable
 private data class OidcCallbackRequest(
@@ -156,10 +171,24 @@ class AuthApiImpl @Inject constructor(
         return response.body()
     }
 
-    override suspend fun logout() {
-        val response = httpClient.post("/auth/logout")
-        if (!response.status.isSuccess()) {
-            logger.log(Level.WARNING, "Logout request failed: ${response.status}")
+    override suspend fun logoutSession(serverUrl: String, accessToken: String?, refreshToken: String?) {
+        val url = serverUrl.trimEnd('/') + "/auth/logout"
+        val attempts = buildList {
+            if (accessToken != null) add(accessToken to refreshToken)
+            if (accessToken != null && refreshToken != null) add(accessToken to null)
+            if (refreshToken != null) add(null to refreshToken)
+        }
+        for ((index, attempt) in attempts.withIndex()) {
+            val (bearer, bodyToken) = attempt
+            val response = httpClient.post(url) {
+                attributes.put(KaikuHttpClient.SkipAuthInterceptor, true)
+                if (bearer != null) {
+                    headers { set(HttpHeaders.Authorization, "Bearer $bearer") }
+                }
+                if (bodyToken != null) setBody(RefreshTokenRequest(bodyToken))
+            }
+            if (response.status.isSuccess()) return
+            logger.log(Level.WARNING, "Logout attempt ${index + 1} failed: ${response.status.value}")
         }
     }
 

@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.ui.channel
 
+import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.logging.Level
@@ -52,7 +54,19 @@ class TextChannelViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val messages: StateFlow<List<Message>> = chatRepository.getMessages(channelId)
-    val typingUsers: StateFlow<Set<String>> = chatRepository.getTypingUsers(channelId)
+
+    /** Ids of the other users typing right now (entries expire in the repository). */
+    val typingUserIds: StateFlow<Set<String>> = combine(
+        chatRepository.getTypingUsers(channelId),
+        authState.currentUserId,
+    ) { typing, me ->
+        typing.keys.filterTo(LinkedHashSet()) { it != me }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    /** User id to display name for everyone who wrote in the loaded messages. */
+    val memberNames: StateFlow<Map<String, String>> = messages
+        .map { list -> list.associate { it.author.id to it.author.displayName } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -67,6 +81,11 @@ class TextChannelViewModel @Inject constructor(
     /** `@StringRes` of the latest failed action, or null. Cleared by [clearError]. */
     private val _error = MutableStateFlow<Int?>(null)
     val error: StateFlow<Int?> = _error.asStateFlow()
+
+    private val _isUploading = MutableStateFlow(false)
+
+    /** True while a picked photo or video is being uploaded. */
+    val isUploading: StateFlow<Boolean> = _isUploading.asStateFlow()
 
     /** The message being edited; non-null while the edit dialog is shown. */
     private val _editingMessage = MutableStateFlow<Message?>(null)
@@ -102,6 +121,33 @@ class TextChannelViewModel @Inject constructor(
                 if (_messageInput.value.isEmpty()) _messageInput.value = content
                 _error.value = R.string.chat_send_failed
                 logger.log(Level.WARNING, "Failed to send message", e)
+            }
+        }
+    }
+
+    /**
+     * Uploads the picked photo/video; the current draft becomes its caption
+     * and is cleared while the upload runs (restored on failure). Picks while
+     * an upload is running are ignored.
+     */
+    fun onAttachmentPicked(uri: Uri) {
+        if (_isUploading.value) return
+        val caption = _messageInput.value.trim()
+        _isUploading.value = true
+        _messageInput.value = ""
+        viewModelScope.launch {
+            try {
+                chatRepository.sendAttachment(channelId, uri, caption.ifEmpty { null })
+                    .onFailure { e ->
+                        if (_messageInput.value.isEmpty()) _messageInput.value = caption
+                        _error.value = when (e) {
+                            is ChatRepository.AttachmentException.TooLarge -> R.string.chat_upload_too_large
+                            is ChatRepository.AttachmentException.UnsupportedType -> R.string.chat_upload_unsupported_type
+                            else -> R.string.chat_upload_failed
+                        }
+                    }
+            } finally {
+                _isUploading.value = false
             }
         }
     }
@@ -196,6 +242,8 @@ class TextChannelViewModel @Inject constructor(
 
     public override fun onCleared() {
         chatRepository.unsubscribeFromChannel(channelId)
+        guildRepository.clearActiveChannel(channelId)
+        dmRepository.clearActiveChannel(channelId)
         super.onCleared()
     }
 

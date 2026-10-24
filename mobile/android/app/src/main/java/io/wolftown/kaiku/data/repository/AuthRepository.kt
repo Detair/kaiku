@@ -2,14 +2,19 @@ package io.wolftown.kaiku.data.repository
 
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.api.MfaRequiredApiException
+import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.data.session.SessionTeardownRunner
 import io.wolftown.kaiku.domain.model.User
 import io.wolftown.kaiku.ui.auth.MfaRequiredException
 import io.wolftown.kaiku.ui.auth.PasswordChangeRequiredException
 import java.util.logging.Level
 import java.util.logging.Logger
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,10 +40,14 @@ internal data class PendingPasswordChange(
 class AuthRepository @Inject constructor(
     private val authApi: AuthApi,
     private val tokenStorage: TokenStorage,
-    private val authState: AuthState
+    private val authState: AuthState,
+    private val sessionTeardown: SessionTeardownRunner
 ) {
     companion object {
         private val logger = Logger.getLogger("AuthRepository")
+
+        /** Upper bound for the best-effort server logout. */
+        const val SERVER_LOGOUT_TIMEOUT_MS = 10_000L
     }
 
     /**
@@ -124,6 +133,9 @@ class AuthRepository @Inject constructor(
             if (tokenStorage.getServerUrl() != serverUrl) return supersededResult()
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
+
             // Persist only for the latest attempt and the server it went to: a
             // server change mid-login must not store server A's tokens under B.
             val persisted = synchronized(pendingLock) {
@@ -186,6 +198,9 @@ class AuthRepository @Inject constructor(
 
             val user = authApi.authenticatedGetMe(pending.accessToken, pending.serverUrl)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
+
             // Check and persist under the lock: a cancel can't slip in between.
             val persisted = synchronized(pendingLock) {
                 if (pendingPasswordChange !== changed || !isSameServer(pending)) {
@@ -235,6 +250,8 @@ class AuthRepository @Inject constructor(
 
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken,
@@ -252,17 +269,72 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    /**
+     * Signs out the session that is current when it is called (the captured
+     * session), on this device and on the server, in this order:
+     *
+     * 1. (push plan Task 7: `pushRegistrar.unregisterForLogout()` goes here,
+     *    FIRST, while the session token still works)
+     * 2. session teardown ([SessionTeardownRunner]) for the captured session:
+     *    leave voice, close the realtime connection, clear caches; shared with
+     *    the LoggedOut observer, so it runs once
+     * 3. server logout, best effort and bounded by [SERVER_LOGOUT_TIMEOUT_MS],
+     *    with the captured session's own tokens only ([AuthApi.logoutSession]:
+     *    explicit bearer, no interceptor, no refresh, body/bearer-only/body-only
+     *    attempts). If a refresh rotated the session's tokens during the
+     *    teardown, the rotated ones are used, read under a generation check so
+     *    a newer login's tokens can never be picked up
+     * 4. clear the stored tokens only if they still belong to the captured
+     *    session (session generation), and set LoggedOut only if the captured
+     *    session is still current
+     *
+     * Runs to the end even if the caller is cancelled (e.g. its ViewModel is
+     * cleared); tokens are never logged.
+     */
     suspend fun logout() {
+        withContext(NonCancellable) { logoutCaptured() }
+    }
+
+    private suspend fun logoutCaptured() {
         invalidateLogin()
-        try {
-            authApi.logout()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            logger.log(Level.WARNING, "Server-side logout failed (best-effort)", e)
+        val session = authState.session.value as? AuthSession.LoggedIn
+        val generation = tokenStorage.getSessionGeneration()
+        val serverUrl = tokenStorage.getServerUrl()
+        val capturedAccess = tokenStorage.getAccessToken()
+        val capturedRefresh = tokenStorage.getRefreshToken()
+
+        // Push Task 7: pushRegistrar.unregisterForLogout() — keep it the first step.
+        sessionTeardown.tearDown(session?.sessionId).join()
+
+        // The captured session's tokens, rotated if a refresh ran meanwhile.
+        // Read between two generation checks: a login landing in between
+        // changes the generation, and then the captured tokens are kept.
+        var access = capturedAccess
+        var refresh = capturedRefresh
+        if (tokenStorage.getSessionGeneration() == generation) {
+            val rotatedAccess = tokenStorage.getAccessToken()
+            val rotatedRefresh = tokenStorage.getRefreshToken()
+            if (tokenStorage.getSessionGeneration() == generation) {
+                access = rotatedAccess ?: capturedAccess
+                refresh = rotatedRefresh ?: capturedRefresh
+            }
         }
-        tokenStorage.clear()
-        authState.setLoggedOut()
+
+        try {
+            val finished = withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) {
+                if (serverUrl != null && (access != null || refresh != null)) {
+                    authApi.logoutSession(serverUrl, access, refresh)
+                }
+                true
+            }
+            if (finished == null) logger.warning("Server-side logout timed out (best-effort)")
+        } catch (e: Exception) {
+            // Includes cancellation from the request: the local sign-out below must still run.
+            logger.log(Level.WARNING, "Server-side logout failed (best-effort): ${e::class.simpleName}")
+        }
+
+        tokenStorage.clearIfGeneration(generation)
+        if (session != null) authState.setLoggedOutIf(session.sessionId)
     }
 
     suspend fun getCurrentUser(): Result<User> {
@@ -291,6 +363,8 @@ class AuthRepository @Inject constructor(
         return try {
             val user = authApi.authenticatedGetMe(accessToken)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
             tokenStorage.saveTokens(
                 accessToken = accessToken,
                 refreshToken = refreshToken,
@@ -322,6 +396,8 @@ class AuthRepository @Inject constructor(
 
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken,
@@ -355,6 +431,8 @@ class AuthRepository @Inject constructor(
 
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
+            // The previous session's teardown finishes before this one starts.
+            sessionTeardown.awaitIdle()
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken,

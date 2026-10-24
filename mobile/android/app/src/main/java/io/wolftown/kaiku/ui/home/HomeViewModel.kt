@@ -74,6 +74,16 @@ class HomeViewModel @Inject constructor(
     val navigateToChannel = _navigateToChannel.receiveAsFlow()
 
     init {
+        // Open the first server when none is selected (or the selected one is gone),
+        // so someone on a single server lands in it without a tap.
+        viewModelScope.launch {
+            guildRepository.guilds.collect { list ->
+                val selectedId = guildRepository.selectedGuildId.value
+                if (list.isNotEmpty() && list.none { it.id == selectedId }) {
+                    onGuildSelected(list.first().id)
+                }
+            }
+        }
         // The realtime connection is owned by RealtimeConnectionManager, started by KaikuApplication.
         loadGuilds()
     }
