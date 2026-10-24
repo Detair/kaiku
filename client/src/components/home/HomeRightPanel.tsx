@@ -48,7 +48,7 @@ const HomeRightPanel: Component = () => {
             <div class="p-4">
               <div class="flex flex-col items-center">
                 <div class="w-20 h-20 rounded-full bg-accent-primary flex items-center justify-center mb-3">
-                  <span class="text-2xl font-bold text-white">
+                  <span class="text-2xl font-bold text-on-accent">
                     {otherParticipants()[0]
                       ?.display_name?.charAt(0)
                       .toUpperCase()}
@@ -89,7 +89,7 @@ const HomeRightPanel: Component = () => {
                 {(p) => (
                   <div class="flex items-start gap-2 py-1">
                     <div class="w-8 h-8 rounded-full bg-accent-primary flex items-center justify-center flex-shrink-0">
-                      <span class="text-xs font-semibold text-white">
+                      <span class="text-xs font-semibold text-on-accent">
                         {p.display_name.charAt(0).toUpperCase()}
                       </span>
                     </div>

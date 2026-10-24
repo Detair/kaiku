@@ -50,10 +50,16 @@ describe("colour tokens", () => {
           hits.push(`${f.path}: ${s}`);
         }
       }
-      // Check icons rendered on the accent-filled radio/checkbox indicator.
-      if (/bg-accent-primary["'`]?[^\n]*\n[\s\S]{0,200}?<Check[^>]*text-white/.test(f.text)) {
-        hits.push(`${f.path}: Check icon text-white on accent fill`);
-      }
+      // Heuristic (line-window based, not a parser): a text-white child within
+      // a few lines after an element whose class has bg-accent-primary as a solid fill.
+      const lines = f.text.split("\n");
+      lines.forEach((line, i) => {
+        if (!/bg-accent-primary(?![/\w-])/.test(line) || /text-on-/.test(line)) return;
+        const window = lines.slice(i + 1, i + 4).join("\n");
+        if (/\btext-white\b/.test(window)) {
+          hits.push(`${f.path}:${i + 1}: text-white near bg-accent-primary fill`);
+        }
+      });
     }
     expect(hits).toEqual([]);
   });

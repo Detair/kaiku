@@ -279,14 +279,13 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
 
       {/* Section Tabs */}
       <div
-        class="flex gap-1 p-1 rounded-lg"
-        style={{"background-color":"var(--color-surface-layer2)"}}
+        class="flex gap-1 p-1 rounded-lg bg-surface-layer2"
       >
         <button
           onClick={() => setActiveSection("categories")}
           class="px-3 py-1.5 text-sm rounded-md transition-colors"
           classList={{
-            "bg-accent-primary/20 text-on-accent font-semibold":
+            "bg-accent-primary/20 text-text-primary font-semibold":
               activeSection() === "categories",
             "text-text-secondary hover:text-text-primary":
               activeSection() !== "categories",
@@ -298,7 +297,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
           onClick={() => setActiveSection("patterns")}
           class="px-3 py-1.5 text-sm rounded-md transition-colors"
           classList={{
-            "bg-accent-primary/20 text-on-accent font-semibold":
+            "bg-accent-primary/20 text-text-primary font-semibold":
               activeSection() === "patterns",
             "text-text-secondary hover:text-text-primary":
               activeSection() !== "patterns",
@@ -310,7 +309,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
           onClick={() => setActiveSection("test")}
           class="px-3 py-1.5 text-sm rounded-md transition-colors"
           classList={{
-            "bg-accent-primary/20 text-on-accent font-semibold":
+            "bg-accent-primary/20 text-text-primary font-semibold":
               activeSection() === "test",
             "text-text-secondary hover:text-text-primary":
               activeSection() !== "test",
@@ -325,7 +324,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
           }}
           class="px-3 py-1.5 text-sm rounded-md transition-colors"
           classList={{
-            "bg-accent-primary/20 text-on-accent font-semibold":
+            "bg-accent-primary/20 text-text-primary font-semibold":
               activeSection() === "log",
             "text-text-secondary hover:text-text-primary":
               activeSection() !== "log",
