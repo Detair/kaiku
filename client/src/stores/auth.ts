@@ -91,46 +91,89 @@ export function isForcedPasswordChangeSaved(): boolean {
   return passwordChangeSaved;
 }
 
-/**
- * Generation of the session services. `startSessionServices()` captures it
- * and stops after any await once it changed; `invalidateSessionServices()`
- * bumps it (pending password change, logout, expiry).
- */
-let servicesGeneration = 0;
+// ---------------------------------------------------------------------------
+// Session-services lifecycle
+//
+// Every start and stop of the session services (WebSocket, presence,
+// preferences, idle detection) runs as one job on a single serial queue, so
+// no two ever run at the same time. `currentOwnerId` grows monotonically:
+// `startSessionServices()` takes a new id synchronously, `requestStop()` bumps it
+// synchronously. A start job only runs while its id is still the current
+// one; between its steps it re-checks and, once superseded, undoes exactly
+// what it started and exits. A stop job tears down whatever runs; being
+// serialized, it can never run after a newer start has begun.
+// ---------------------------------------------------------------------------
 
-/** Make any running `startSessionServices()` stop at its next step. */
-function invalidateSessionServices(): void {
-  servicesGeneration += 1;
+let lifecycleQueue: Promise<void> = Promise.resolve();
+let currentOwnerId = 0;
+
+/** Append a job to the lifecycle queue; a failed job never blocks the next. */
+function enqueueLifecycle<T>(job: () => Promise<T>): Promise<T> {
+  const result = lifecycleQueue.then(job);
+  lifecycleQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+/** Stop every session service. Never throws. */
+async function teardownAllServices(): Promise<void> {
+  try {
+    await wsDisconnect();
+    await cleanupWebSocket();
+  } catch (err) {
+    console.error("[Auth] Stopping the WebSocket failed:", err);
+  }
+  try {
+    stopIdleDetectionCleanup();
+    cleanupPresence();
+  } catch (err) {
+    console.error("[Auth] Stopping presence/idle failed:", err);
+  }
+}
+
+/** Services may run: signed in and no forced password change pending. */
+function servicesEligible(): boolean {
+  return authState.user !== null && !authState.passwordChangeRequired;
+}
+
+/** What one start job has started so far, so it can undo only that. */
+interface StartedServices {
+  websocket: boolean;
+  presence: boolean;
+  idle: boolean;
+}
+
+async function undoStarted(started: StartedServices): Promise<void> {
+  try {
+    if (started.websocket) {
+      await wsDisconnect();
+      await cleanupWebSocket();
+    }
+  } catch (err) {
+    console.error("[Auth] Undoing the WebSocket start failed:", err);
+  }
+  try {
+    if (started.idle) stopIdleDetectionCleanup();
+    if (started.presence) cleanupPresence();
+  } catch (err) {
+    console.error("[Auth] Undoing presence/idle start failed:", err);
+  }
 }
 
 /**
- * Id of the newest `startSessionServices()` run; that run owns the services.
- * A cancelled older run never tears down what a newer run started.
+ * Request a stop of the session services: supersedes any queued or running
+ * start at once, then tears down on the queue.
  */
-let latestServicesRun = 0;
-
-/** Serializes teardowns, so a late one never interleaves with another. */
-let teardownChain: Promise<void> = Promise.resolve();
-
-/** Stop everything `startSessionServices()` started. Never throws. */
-function teardownSessionServices(): Promise<void> {
-  teardownChain = teardownChain.then(async () => {
-    try {
-      await wsDisconnect();
-      await cleanupWebSocket();
-      stopIdleDetectionCleanup();
-      cleanupPresence();
-    } catch (err) {
-      console.error("[Auth] Stopping session services failed:", err);
-    }
-  });
-  return teardownChain;
+function requestStop(): Promise<void> {
+  currentOwnerId += 1;
+  return enqueueLifecycle(teardownAllServices);
 }
 
 /** Cancel a running startup and stop the services. */
 function stopSessionServices(): Promise<void> {
-  invalidateSessionServices();
-  return teardownSessionServices();
+  return requestStop();
 }
 
 // Session-expired listener (registered once globally to prevent leaks)
@@ -166,14 +209,10 @@ function registerSessionExpiredListener() {
     }
 
     console.warn("[Kaiku:Auth] Silent retry: failed — showing expiry modal");
-    invalidateSessionServices();
 
     // Clean up connections and drafts
+    await requestStop();
     try {
-      await wsDisconnect();
-      await cleanupWebSocket();
-      stopIdleDetectionCleanup();
-      cleanupPresence();
       clearAllDrafts();
       cleanupDrafts();
     } catch (err) {
@@ -234,28 +273,39 @@ function warnIfNotRemembered(result: tauri.AuthResult): void {
  * flows. `showWsError: false` keeps registration's behaviour of not showing
  * the "real-time unavailable" banner when the first connect fails.
  */
-async function startSessionServices(
+function startSessionServices(
   options: { showWsError?: boolean } = {},
 ): Promise<void> {
+  // The id is taken now, before anything is awaited: a stop requested from
+  // here on supersedes this start even while it is still queued.
+  const myId = ++currentOwnerId;
+  return enqueueLifecycle(() => runStart(myId, options));
+}
+
+/** One start job, run on the lifecycle queue. */
+async function runStart(
+  myId: number,
+  options: { showWsError?: boolean },
+): Promise<void> {
   const { showWsError = true } = options;
-  // A late teardown from a cancelled run must not hit this one.
-  await teardownChain;
-  const generation = servicesGeneration;
-  const run = ++latestServicesRun;
-  // Cancelled (pending password change, logout, expiry) while a step ran:
-  // undo what this run started, unless a newer run owns the services by
-  // now. The canceller's own teardown may have run before this step ended.
-  const cancelled = async (): Promise<boolean> => {
-    if (generation === servicesGeneration) return false;
-    if (run === latestServicesRun) await teardownSessionServices();
+  const current = () => myId === currentOwnerId && servicesEligible();
+  if (!current()) return;
+
+  const started: StartedServices = { websocket: false, presence: false, idle: false };
+  // Superseded while a step ran: undo what this job started and stop.
+  const superseded = async (): Promise<boolean> => {
+    if (current()) return false;
+    await undoStarted(started);
     return true;
   };
 
   // Initialize WebSocket listeners and presence in parallel (independent).
-  // allSettled: a rejection must not skip the cancellation check while the
-  // other init is still running.
+  // allSettled: a rejection must not skip the check while the other init is
+  // still running. A failed init still counts as started for the undo.
+  started.websocket = true;
+  started.presence = true;
   const initResults = await Promise.allSettled([initWebSocket(), initPresence()]);
-  if (await cancelled()) return;
+  if (await superseded()) return;
   const initFailure = initResults.find(
     (r): r is PromiseRejectedResult => r.status === "rejected",
   );
@@ -280,10 +330,11 @@ async function startSessionServices(
         console.error("[Auth] Preferences initialization failed:", prefErr);
       }),
   ]);
-  if (await cancelled()) return;
+  if (await superseded()) return;
 
   // Initialize idle detection after preferences (uses idle_timeout_minutes setting)
   initIdleDetection();
+  started.idle = true;
 }
 
 // Actions
@@ -624,15 +675,11 @@ export async function loginWithOidc(
 export async function logout(): Promise<void> {
   pendingTemporaryPassword = null;
   passwordChangeSaved = false;
-  invalidateSessionServices();
   setAuthState({ isLoading: true, error: null, passwordChangeRequired: false });
 
   // Disconnect WebSocket and cleanup
+  await requestStop();
   try {
-    await wsDisconnect();
-    await cleanupWebSocket();
-    stopIdleDetectionCleanup();
-    cleanupPresence();
     clearAllDrafts();
     cleanupDrafts();
   } catch (err) {
