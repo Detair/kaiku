@@ -49,4 +49,29 @@ class ReactionSummaryTest {
         val removed = added.withReactionRemoved("👍", "u2", isMe = false)
         assertTrue(removed.isEmpty())
     }
+
+    @Test
+    fun `own reaction sets me and raises count`() {
+        val added = listOf(Reaction("👍", 1, false, listOf("u2")))
+            .withReactionAdded("👍", "u1", isMe = true)
+
+        assertEquals(Reaction("👍", 2, true, listOf("u2", "u1")), added.single())
+        assertEquals(true, reactionSummaries(message(added), null).single().mine)
+    }
+
+    @Test
+    fun `removing own reaction clears me and lowers count`() {
+        val removed = listOf(Reaction("👍", 2, true, listOf("u2", "u1")))
+            .withReactionRemoved("👍", "u1", isMe = true)
+
+        assertEquals(Reaction("👍", 1, false, listOf("u2")), removed.single())
+    }
+
+    @Test
+    fun `removing an unknown reaction changes nothing`() {
+        val list = listOf(Reaction("👍", 1, false, listOf("u2")))
+
+        assertEquals(list, list.withReactionRemoved("👍", "u3", isMe = false))
+        assertEquals(list, list.withReactionRemoved("🎉", "u2", isMe = false))
+    }
 }

@@ -46,7 +46,7 @@ object StorageModule {
             // Flag for the UI to show a notification on next launch
             context.getSharedPreferences("kaiku_app_state", Context.MODE_PRIVATE)
                 .edit()
-                .putBoolean("storage_was_reset", true)
+                .putBoolean(TokenStorage.KEY_RESET_NOTICE, true)
                 .commit()
 
             EncryptedSharedPreferences.create(
@@ -65,13 +65,7 @@ object StorageModule {
         prefs: SharedPreferences,
         @ApplicationContext context: Context
     ): TokenStorage {
-        val storage = TokenStorage(prefs)
-        // The store was recreated empty while it was opened (see above): report it once.
-        val appState = context.getSharedPreferences("kaiku_app_state", Context.MODE_PRIVATE)
-        if (appState.getBoolean("storage_was_reset", false)) {
-            storage.noteStorageReset()
-            appState.edit().remove("storage_was_reset").commit()
-        }
-        return storage
+        // The app-state flag is also set above when the store was recreated at open.
+        return TokenStorage(prefs, context.getSharedPreferences("kaiku_app_state", Context.MODE_PRIVATE))
     }
 }

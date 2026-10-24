@@ -34,6 +34,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.graphics.Color
@@ -495,11 +496,15 @@ private fun VoiceBottomBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Mute/unmute toggle
-            val muteDescription = stringResource(if (isMuted) R.string.voice_unmute else R.string.voice_mute)
+            val muteDescription = stringResource(R.string.voice_microphone)
+            val muteState = stringResource(if (isMuted) R.string.voice_muted else R.string.voice_microphone_on)
             FilledIconToggleButton(
                 checked = isMuted,
                 onCheckedChange = { onToggleMute() },
-                modifier = Modifier.semantics { contentDescription = muteDescription }
+                modifier = Modifier.semantics {
+                    contentDescription = muteDescription
+                    stateDescription = muteState
+                }
             ) {
                 if (isMuted) {
                     Text("🔇", style = MaterialTheme.typography.titleLarge)
