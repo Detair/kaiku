@@ -12,6 +12,9 @@ import io.wolftown.kaiku.ui.auth.PasswordChangeRequiredException
 import java.util.logging.Level
 import java.util.logging.Logger
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -42,6 +45,9 @@ class AuthRepository @Inject constructor(
 ) {
     companion object {
         private val logger = Logger.getLogger("AuthRepository")
+
+        /** Upper bound for the best-effort server logout. */
+        const val SERVER_LOGOUT_TIMEOUT_MS = 10_000L
     }
 
     /**
@@ -256,37 +262,65 @@ class AuthRepository @Inject constructor(
     }
 
     /**
-     * Signs out on this device and on the server, in this order:
+     * Signs out the session that is current when it is called (the captured
+     * session), on this device and on the server, in this order:
      *
      * 1. (push plan Task 7: `pushRegistrar.unregisterForLogout()` goes here,
      *    FIRST, while the session token still works)
-     * 2. session teardown ([SessionTeardownRunner]): leave voice, close the
-     *    realtime connection, clear caches; each step bounded and best-effort
-     * 3. `POST /auth/logout` with the refresh token (best-effort; C25 also
-     *    ends the session from the bearer token alone)
-     * 4. clear the stored tokens, then LoggedOut
+     * 2. session teardown ([SessionTeardownRunner]) for the captured session:
+     *    leave voice, close the realtime connection, clear caches; shared with
+     *    the LoggedOut observer, so it runs once
+     * 3. server logout, best effort and bounded by [SERVER_LOGOUT_TIMEOUT_MS]:
+     *    if the captured session is still the stored one, `POST /auth/logout`
+     *    with its current refresh token (bearer-only retry, C25); if a newer
+     *    login replaced it meanwhile, only the old session is ended with its
+     *    captured tokens, and nothing local is touched
+     * 4. clear the stored tokens only if they still belong to the captured
+     *    session (session generation), and set LoggedOut only if the captured
+     *    session is still current
      *
-     * Step 4 always runs, even if an earlier step fails or the caller is
-     * cancelled. The LoggedOut transition does not tear down a second time.
+     * Runs to the end even if the caller is cancelled (e.g. its ViewModel is
+     * cleared); tokens are never logged.
      */
     suspend fun logout() {
+        withContext(NonCancellable) { logoutCaptured() }
+    }
+
+    private suspend fun logoutCaptured() {
         invalidateLogin()
         val session = authState.session.value as? AuthSession.LoggedIn
+        val generation = tokenStorage.getSessionGeneration()
+        val serverUrl = tokenStorage.getServerUrl()
+        val capturedAccess = tokenStorage.getAccessToken()
+        val capturedRefresh = tokenStorage.getRefreshToken()
+
+        // Push Task 7: pushRegistrar.unregisterForLogout() — keep it the first step.
+        sessionTeardown.tearDown(session?.sessionId).join()
+
         try {
-            // Push Task 7: pushRegistrar.unregisterForLogout() — keep it the first step.
-            sessionTeardown.tearDown(session)
-            try {
-                // Read after the teardown: a refresh may have rotated it meanwhile.
-                authApi.logout(tokenStorage.getRefreshToken())
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.log(Level.WARNING, "Server-side logout failed (best-effort): ${e::class.simpleName}")
+            val finished = withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) {
+                if (tokenStorage.getSessionGeneration() == generation) {
+                    // Read now: a refresh may have rotated it during the teardown.
+                    authApi.logout(tokenStorage.getRefreshToken())
+                } else if (serverUrl != null && capturedAccess != null && isNewerLogin(session)) {
+                    authApi.logoutSession(serverUrl, capturedAccess, capturedRefresh)
+                }
+                true
             }
-        } finally {
-            tokenStorage.clear()
-            authState.setLoggedOut()
+            if (finished == null) logger.warning("Server-side logout timed out (best-effort)")
+        } catch (e: Exception) {
+            // Includes cancellation from the request: the local sign-out below must still run.
+            logger.log(Level.WARNING, "Server-side logout failed (best-effort): ${e::class.simpleName}")
         }
+
+        tokenStorage.clearIfGeneration(generation)
+        if (session != null) authState.setLoggedOutIf(session.sessionId)
+    }
+
+    /** A different session than [captured] is current now (a login landed meanwhile). */
+    private fun isNewerLogin(captured: AuthSession.LoggedIn?): Boolean {
+        val now = authState.session.value
+        return now is AuthSession.LoggedIn && now.sessionId != captured?.sessionId
     }
 
     suspend fun getCurrentUser(): Result<User> {

@@ -24,6 +24,8 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -67,6 +69,11 @@ class VoiceRepository @Inject constructor(
         voiceScope.coroutineContext + SupervisorJob(voiceScope.coroutineContext[Job])
     )
     private val leaveMutex = Mutex()
+
+    /** The running [startJoin] job; guarded by [joinLock]. */
+    private val joinLock = Any()
+    private var joinJob: Job? = null
+    private var joiningChannelId: String? = null
 
     private val _currentChannelId = MutableStateFlow<String?>(null)
     /** The channel ID currently connected to, or null if not in a voice channel. */
@@ -219,20 +226,70 @@ class VoiceRepository @Inject constructor(
     }
 
     /**
-     * Leaves the current voice channel.
+     * Joins [channelId] on the repository's own scope, for the UI: leaving the
+     * voice screen (Back) during setup does not cancel the join. Only Leave
+     * ([leaveChannel], [leaveInBackground]) or logout cancel it. A failure is
+     * published as [error] (`@StringRes`). No-op while a join of the same
+     * channel runs; a join of another channel replaces it.
+     */
+    fun startJoin(channelId: String) {
+        synchronized(joinLock) {
+            if (joiningChannelId == channelId && joinJob?.isActive == true) return
+            val previous = joinJob
+            joiningChannelId = channelId
+            joinJob = scope.launch {
+                previous?.cancelAndJoin()
+                try {
+                    joinChannel(channelId)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: MissingMicPermissionException) {
+                    _error.value = R.string.voice_mic_permission_required
+                } catch (e: Exception) {
+                    // joinChannel already logged and cleaned up (which clears the error).
+                    _error.value = R.string.voice_join_failed
+                }
+            }
+        }
+    }
+
+    /**
+     * Cancels a running [startJoin] and waits until its clean-up finished, so
+     * a leave never interleaves with a half-done join. A join that leaves a
+     * previous channel itself (inside its own job) does not cancel itself.
+     */
+    private suspend fun cancelJoin() {
+        val self = currentCoroutineContext()[Job]
+        val job = synchronized(joinLock) {
+            val running = joinJob
+            if (running == null || running === self) {
+                null
+            } else {
+                joinJob = null
+                joiningChannelId = null
+                running
+            }
+        } ?: return
+        job.cancelAndJoin()
+    }
+
+    /**
+     * Leaves the current voice channel (or the one being joined).
      *
-     * 1. Send VoiceLeave via WebSocket
-     * 2. Close PeerConnection
-     * 3. Abandon audio focus
-     * 4. Stop foreground service
-     * 5. Clear state
+     * 1. Cancel a running join (its clean-up runs first)
+     * 2. Clear the channel at once, so the overlay disappears without a flash
+     * 3. Send VoiceLeave via WebSocket
+     * 4. Close the peer connections, abandon audio focus, stop the foreground
+     *    service, clear state ([cleanUp])
      */
     suspend fun leaveChannel() {
+        val joiningOrJoined = _currentChannelId.value
+        cancelJoin()
         leaveMutex.withLock {
-            val channelId = _currentChannelId.value ?: return@withLock
+            val channelId = _currentChannelId.value ?: joiningOrJoined ?: return@withLock
+            _currentChannelId.value = null
 
             try {
-                // 1. Send VoiceLeave
                 webSocket.send(ClientEvent.VoiceLeave(channelId))
             } catch (e: Exception) {
                 logger.log(Level.WARNING, "Failed to send VoiceLeave", e)

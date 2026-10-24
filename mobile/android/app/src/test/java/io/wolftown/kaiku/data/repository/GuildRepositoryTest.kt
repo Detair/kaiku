@@ -7,13 +7,16 @@ import io.wolftown.kaiku.data.api.ChannelApi
 import io.wolftown.kaiku.data.api.GuildApi
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
+import io.wolftown.kaiku.domain.model.Guild
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -187,5 +190,33 @@ class GuildRepositoryTest {
 
         assertEquals(0, repository.channels.value.single().unreadCount)
         assertEquals("m1", repository.channels.value.single().lastMessageId)
+    }
+
+    // -- Session epoch (Task 19) ------------------------------------------------
+
+    @Test
+    fun `load in flight across clearSession publishes nothing`() = runTest {
+        val repository = repository()
+        val guildsResponse = CompletableDeferred<List<Guild>>()
+        val channelsResponse = CompletableDeferred<List<Channel>>()
+        coEvery { guildApi.getGuilds() } coAnswers { guildsResponse.await() }
+        coEvery { channelApi.getChannels("g1") } coAnswers { channelsResponse.await() }
+
+        val guildLoad = launch { repository.loadGuilds() }
+        val channelLoad = launch { repository.loadChannels("g1") }
+        runCurrent()
+        repository.clearSession() // logout while both requests are in flight
+        guildsResponse.complete(listOf(Guild(id = "g1", name = "Family")))
+        channelsResponse.complete(listOf(channel("c1", unread = 3)))
+        guildLoad.join()
+        channelLoad.join()
+
+        assertTrue(repository.guilds.value.isEmpty())
+        assertTrue(repository.channels.value.isEmpty())
+
+        // The next session loads normally.
+        coEvery { guildApi.getGuilds() } returns listOf(Guild(id = "g2", name = "Other"))
+        repository.loadGuilds()
+        assertEquals(listOf("g2"), repository.guilds.value.map { it.id })
     }
 }

@@ -11,6 +11,8 @@ import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.di.AuthCoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -41,25 +43,27 @@ interface SessionTeardown {
 /**
  * Runs every [SessionTeardown] once per ended session.
  *
- * Two triggers share this runner:
- * - an explicit logout calls [tearDown] before the server logout and the
- *   token clear ([io.wolftown.kaiku.data.repository.AuthRepository.logout]);
- * - [start] observes [AuthState]: when a LoggedIn session becomes LoggedOut
- *   for any other reason (refresh rejected, WebSocket auth reject cap,
- *   PASSWORD_CHANGE_REQUIRED), the same teardown runs. This is the only hook
- *   for rejected sessions; the HTTP client and the connection manager keep
- *   just clearing tokens and setting LoggedOut.
+ * Sessions are identified by [AuthSession.LoggedIn.sessionId]. For each
+ * session there is one shared teardown [Job] on the runner's application
+ * scope; [tearDown] starts it or returns the running/completed one, so every
+ * trigger is harmless:
+ * - the explicit logout ([io.wolftown.kaiku.data.repository.AuthRepository.logout])
+ *   joins it before the server logout and the token clear;
+ * - [start] observes [AuthState.endedSessions] (emitted by the transition
+ *   itself, never conflated): every session that ends for any reason (logout,
+ *   refresh rejected, WebSocket auth reject cap, PASSWORD_CHANGE_REQUIRED) is
+ *   torn down. The HTTP client and the connection manager only clear tokens
+ *   and set LoggedOut; this observer is their hook, without a DI cycle.
  *
- * Sessions are identified by the [AuthSession.LoggedIn] instance (identity,
- * not equality: every login stores a new instance). The first trigger for a
- * session claims it under [mutex]; a later trigger for the same session waits
- * for the running teardown and then does nothing, so an explicit logout
- * (which also ends in LoggedOut) never tears down twice.
+ * The job does not belong to the caller: a ViewModel that dies mid-logout
+ * cancels only its own wait, the remaining steps still run. A job that ended
+ * abnormally (cancelled with the scope) releases its claim, so a later
+ * trigger runs the teardown again.
  *
- * Each step gets [STEP_TIMEOUT_MS]; a failure or timeout is logged (step name
- * and exception type only) and the next step runs. If a newer login took over
- * meanwhile, the remaining steps are skipped so the new session's state is
- * left alone.
+ * Steps run one at a time ([stepMutex]), in ascending order, each bounded by
+ * [STEP_TIMEOUT_MS]; a failure or timeout is logged (step name and exception
+ * type only) and the next step runs. If a newer session is current when a
+ * step is due, the remaining steps are skipped so its state is left alone.
  */
 @Singleton
 class SessionTeardownRunner @Inject constructor(
@@ -75,38 +79,51 @@ class SessionTeardownRunner @Inject constructor(
     }
 
     private val steps: List<SessionTeardown> = teardowns.sortedBy { it.order }
-    private val mutex = Mutex()
+    private val stepMutex = Mutex()
     private val started = AtomicBoolean(false)
 
-    /** The session whose teardown was claimed last; guarded by [mutex]. */
-    private var claimed: AuthSession.LoggedIn? = null
+    /** Teardown job per session id; guarded by itself. */
+    private val jobs = HashMap<Long, Job>()
 
-    /** Starts observing LoggedIn -> LoggedOut transitions; idempotent. */
+    /** Starts observing ended sessions; idempotent. */
     fun start() {
         if (!started.compareAndSet(false, true)) return
-        scope.launch {
-            var previous: AuthSession = authState.session.value
-            authState.session.collect { current ->
-                val ended = previous as? AuthSession.LoggedIn
-                previous = current
-                if (ended != null && current is AuthSession.LoggedOut) tearDown(ended)
+        // UNDISPATCHED: subscribed before start() returns (endedSessions has no replay).
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            authState.endedSessions.collect { ended ->
+                // Only starts the job; never runs the teardown inside collect.
+                tearDown(ended.sessionId)
             }
         }
     }
 
     /**
-     * Runs the teardown steps for [session] unless they already ran (or are
-     * running) for it. With a null [session] (nobody was logged in) the steps
-     * always run; they are idempotent.
+     * Starts the teardown of [sessionId], or returns the job already running
+     * or completed for it. With a null [sessionId] (nobody was logged in) a
+     * new run always starts; the steps are idempotent. Join the result to
+     * wait; cancelling the wait does not cancel the teardown.
      */
-    suspend fun tearDown(session: AuthSession.LoggedIn?) {
-        mutex.withLock {
-            if (session != null) {
-                if (claimed === session) return
-                claimed = session
+    fun tearDown(sessionId: Long?): Job {
+        if (sessionId == null) return scope.launch { runSteps(null) }
+        synchronized(jobs) {
+            val existing = jobs[sessionId]
+            // Running or completed normally: share it. Cancelled/failed: run again.
+            if (existing != null && !existing.isCancelled) return existing
+            val job = scope.launch(start = CoroutineStart.LAZY) { runSteps(sessionId) }
+            jobs[sessionId] = job
+            job.invokeOnCompletion { cause ->
+                // Abnormal end: release the claim so a later trigger retries.
+                if (cause != null) synchronized(jobs) { if (jobs[sessionId] === job) jobs.remove(sessionId) }
             }
+            job.start()
+            return job
+        }
+    }
+
+    private suspend fun runSteps(sessionId: Long?) {
+        stepMutex.withLock {
             for (step in steps) {
-                if (isSuperseded(session)) {
+                if (isSuperseded(sessionId)) {
                     logger.info("a newer session started, remaining teardown skipped")
                     return
                 }
@@ -115,9 +132,9 @@ class SessionTeardownRunner @Inject constructor(
         }
     }
 
-    private fun isSuperseded(session: AuthSession.LoggedIn?): Boolean {
+    private fun isSuperseded(sessionId: Long?): Boolean {
         val now = authState.session.value
-        return now is AuthSession.LoggedIn && now !== session
+        return now is AuthSession.LoggedIn && now.sessionId != sessionId
     }
 
     private suspend fun runStep(step: SessionTeardown) {

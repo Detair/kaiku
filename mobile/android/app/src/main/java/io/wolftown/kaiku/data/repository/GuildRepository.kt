@@ -42,9 +42,28 @@ class GuildRepository @Inject constructor(
     private val _activeChannelId = MutableStateFlow<String?>(null)
 
     /**
+     * Session epoch: [clearSession] bumps it, and a load publishes its result
+     * only if the epoch is unchanged since the load started (checked and
+     * published under [epochLock]), so a request still in flight at logout
+     * cannot bring the old session's data back.
+     */
+    private val epochLock = Any()
+    private var epoch = 0L
+
+    private fun currentEpoch(): Long = synchronized(epochLock) { epoch }
+
+    /** Runs [publish] only if [startEpoch] is still current; returns whether it ran. */
+    private inline fun publishIfCurrent(startEpoch: Long, publish: () -> Unit): Boolean =
+        synchronized(epochLock) {
+            if (epoch != startEpoch) return false
+            publish()
+            true
+        }
+
+    /**
      * Session teardown: drops servers, channels, categories, the selection and
      * the open channel. A read mark still waiting for its debounce is dropped,
-     * not sent: the session is ending.
+     * not sent: the session is ending. Loads still in flight publish nothing.
      */
     fun clearSession() {
         synchronized(readLock) {
@@ -52,16 +71,20 @@ class GuildRepository @Inject constructor(
             readJob = null
             pending = null
         }
-        _activeChannelId.value = null
-        _selectedGuildId.value = null
-        _channels.value = emptyList()
-        _categories.value = emptyList()
-        _guilds.value = emptyList()
+        synchronized(epochLock) {
+            epoch++
+            _activeChannelId.value = null
+            _selectedGuildId.value = null
+            _channels.value = emptyList()
+            _categories.value = emptyList()
+            _guilds.value = emptyList()
+        }
     }
 
     suspend fun loadGuilds() {
+        val startEpoch = currentEpoch()
         val guildList = guildApi.getGuilds()
-        _guilds.value = guildList
+        publishIfCurrent(startEpoch) { _guilds.value = guildList }
     }
 
     fun selectGuild(guildId: String) {
@@ -69,6 +92,7 @@ class GuildRepository @Inject constructor(
     }
 
     suspend fun loadChannels(guildId: String) {
+        val startEpoch = currentEpoch()
         val channelList = channelApi.getChannels(guildId)
         // Category names are cosmetic: a failure leaves the channels ungrouped
         // instead of failing the whole load.
@@ -79,8 +103,10 @@ class GuildRepository @Inject constructor(
         } catch (e: Exception) {
             emptyList()
         }
-        _categories.value = categoryList
-        _channels.value = channelList
+        publishIfCurrent(startEpoch) {
+            _categories.value = categoryList
+            _channels.value = channelList
+        }
     }
 
     /**

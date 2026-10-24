@@ -83,7 +83,7 @@ class AuthRepositoryLoginRaceTest {
         assertTrue(result.isFailure)
         verify(exactly = 1) { tokenStorage.saveTokens("access-new", "refresh-access-new", 900, "user-new") }
         verify(exactly = 0) { tokenStorage.clear() }
-        assertEquals(AuthSession.LoggedIn("user-new"), authState.session.value)
+        assertEquals("user-new", (authState.session.value as AuthSession.LoggedIn).userId)
     }
 
     @Test

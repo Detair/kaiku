@@ -106,7 +106,7 @@ class RealtimeConnectionManager internal constructor(
         data class ForegroundProbeDue(val generation: Int, val pongsAtSend: Long) : Input
         data class ConnectTimeoutDue(val generation: Int) : Input
         data class RefreshDue(val generation: Int) : Input
-        data class CloseForLogout(val session: AuthSession.LoggedIn?, val done: CompletableDeferred<Unit>) : Input
+        data class CloseForLogout(val sessionId: Long?, val done: CompletableDeferred<Unit>) : Input
     }
 
     private val _status = MutableStateFlow(RealtimeStatus.Idle)
@@ -139,11 +139,12 @@ class RealtimeConnectionManager internal constructor(
     private var refreshGeneration = 0
 
     /**
-     * Session closed by [closeForLogout] (identity). While it is still the
-     * current session, the manager treats it as logged out: no connect, retry
-     * or refresh. A new login is a new instance and connects normally.
+     * Session id closed by [closeForLogout]. While it is still the current
+     * session, the manager treats it as logged out: no connect, retry or
+     * refresh. A new login has a new id and connects normally; LoggedOut
+     * resets it.
      */
-    private var closedSession: AuthSession.LoggedIn? = null
+    private var closedSessionId: Long? = null
 
     /** Starts observing; idempotent. */
     fun start() {
@@ -178,7 +179,8 @@ class RealtimeConnectionManager internal constructor(
      */
     suspend fun closeForLogout() {
         val done = CompletableDeferred<Unit>()
-        inbox.send(Input.CloseForLogout(authState.session.value as? AuthSession.LoggedIn, done))
+        val sessionId = (authState.session.value as? AuthSession.LoggedIn)?.sessionId
+        inbox.send(Input.CloseForLogout(sessionId, done))
         done.await()
     }
 
@@ -209,7 +211,7 @@ class RealtimeConnectionManager internal constructor(
             is Input.ConnectTimeoutDue -> if (input.generation == connectTimeoutGeneration) onConnectTimeout()
             is Input.RefreshDue -> if (input.generation == refreshGeneration) onRefreshDue()
             is Input.CloseForLogout -> try {
-                onCloseForLogout(input.session)
+                onCloseForLogout(input.sessionId)
             } finally {
                 input.done.complete(Unit)
             }
@@ -227,6 +229,7 @@ class RealtimeConnectionManager internal constructor(
             }
             AuthSession.LoggedOut -> {
                 logger.info("session LoggedOut")
+                closedSessionId = null
                 cancelRetry()
                 stopHeartbeat()
                 cancelTokenRefresh()
@@ -237,12 +240,12 @@ class RealtimeConnectionManager internal constructor(
         }
     }
 
-    private fun onCloseForLogout(session: AuthSession.LoggedIn?) {
+    private fun onCloseForLogout(sessionId: Long?) {
         val current = authState.session.value
         // A newer login than the one being torn down: leave its connection alone.
-        if (current is AuthSession.LoggedIn && current !== session) return
+        if (current is AuthSession.LoggedIn && current.sessionId != sessionId) return
         logger.info("closing for logout")
-        if (current is AuthSession.LoggedIn) closedSession = current
+        if (current is AuthSession.LoggedIn) closedSessionId = current.sessionId
         stopAfterSessionEnded()
     }
 
@@ -642,7 +645,7 @@ class RealtimeConnectionManager internal constructor(
     /** Logged in with a session that was not closed for logout. */
     private fun isLoggedIn(): Boolean {
         val session = authState.session.value
-        return session is AuthSession.LoggedIn && session !== closedSession
+        return session is AuthSession.LoggedIn && session.sessionId != closedSessionId
     }
 
     private fun hasUnexpiredAccessToken(): Boolean =
