@@ -103,7 +103,8 @@ pub async fn authorize_send(
 
     // Check for @everyone/@here mentions in guild channels
     if let Some(guild_id) = channel.guild_id {
-        if intent.content.contains("@everyone") || intent.content.contains("@here") {
+        let mentions = super::mentions::extract_mentions(intent.content);
+        if mentions.everyone || mentions.here {
             // Load user's permissions in this guild
             if let Ok(Some(ctx)) = get_member_permission_context(&state.db, guild_id, user_id).await
             {

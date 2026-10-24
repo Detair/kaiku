@@ -13,6 +13,7 @@ pub mod error;
 pub mod files;
 pub mod forum;
 pub(crate) mod media_processing;
+pub mod mentions;
 pub(crate) mod messages;
 pub mod overrides;
 pub mod pins;

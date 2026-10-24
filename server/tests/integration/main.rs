@@ -32,6 +32,7 @@ mod identities_http;
 mod incoming_webhooks_http;
 mod media_processing;
 mod mention_permission;
+mod mention_targets;
 mod messages_http;
 mod observability_queries;
 mod oidc;
