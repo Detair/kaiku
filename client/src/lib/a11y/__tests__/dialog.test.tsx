@@ -116,3 +116,72 @@ describe("isEscapeForOverlay", () => {
     expect(isEscapeForOverlay(e)).toBe(false);
   });
 });
+
+describe("createDialog focus loss and stacking", () => {
+  it("click backdrop (focus on body), then Escape closes the dialog and does not reach document listeners", () => {
+    const onClose = vi.fn();
+    const docListener = vi.fn();
+    document.addEventListener("keydown", docListener);
+    try {
+      render(() => <TestDialog onClose={onClose} />);
+      (document.activeElement as HTMLElement | null)?.blur();
+      expect(document.activeElement).toBe(document.body);
+      fireEvent.keyDown(document.body, { key: "Escape" });
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(docListener).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("keydown", docListener);
+    }
+  });
+
+  it("nested dialogs: Escape closes only the top one", () => {
+    const outer = vi.fn();
+    const inner = vi.fn();
+    render(() => (
+      <>
+        <TestDialog onClose={outer} />
+        <TestDialog onClose={inner} />
+      </>
+    ));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(outer).not.toHaveBeenCalled();
+  });
+
+  it("Tab with focus on body moves into the dialog", () => {
+    render(() => <TestDialog onClose={() => {}} />);
+    (document.activeElement as HTMLElement | null)?.blur();
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByText("first"));
+  });
+
+  it("non-Escape keys still reach descendant handlers", () => {
+    const onKey = vi.fn();
+    render(() => (
+      <div role="dialog" tabIndex={-1} ref={createDialog({ onClose: () => {} }).ref}>
+        <input aria-label="field" onKeyDown={onKey} />
+      </div>
+    ));
+    fireEvent.keyDown(screen.getByLabelText("field"), { key: "a" });
+    expect(onKey).toHaveBeenCalledTimes(1);
+  });
+
+  it("honours a custom initialFocus and skips tabindex=-1 elements", async () => {
+    function Custom() {
+      let target: HTMLButtonElement | undefined;
+      const d = createDialog({ onClose: () => {}, initialFocus: () => target });
+      return (
+        <div {...d.dialogProps} ref={d.ref}>
+          <button type="button">a</button>
+          <button type="button" tabIndex={-1}>skipme</button>
+          <button type="button" ref={target}>custom</button>
+        </div>
+      );
+    }
+    render(() => <Custom />);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(screen.getByText("custom"));
+    fireEvent.keyDown(screen.getByText("custom"), { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByText("a"));
+  });
+});

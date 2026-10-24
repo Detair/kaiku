@@ -28,13 +28,51 @@ export interface DialogHandle {
   };
 }
 
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE = [
+  "a[href]",
+  "button:not([disabled])",
+  'input:not([disabled]):not([type="hidden"])',
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[tabindex]",
+]
+  .map((sel) => `${sel}:not([tabindex="-1"])`)
+  .join(", ");
 
 function focusableIn(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
     (el) => !el.hasAttribute("hidden") && el.getAttribute("aria-hidden") !== "true",
   );
+}
+
+interface OpenDialog {
+  el: () => HTMLElement | undefined;
+  handleKey: (e: KeyboardEvent) => void;
+}
+
+// Open dialogs, oldest first. Only the last one reacts to the keyboard.
+const openDialogs: OpenDialog[] = [];
+
+// One capture-phase listener on document serves all open dialogs, so Escape and
+// Tab keep working when focus is on the body (after a backdrop click) or the
+// focused node was removed, and Escape never reaches page-level shortcuts.
+const onDocumentKeyDown = (e: KeyboardEvent) => {
+  openDialogs[openDialogs.length - 1]?.handleKey(e);
+};
+
+function register(d: OpenDialog) {
+  if (openDialogs.length === 0) {
+    document.addEventListener("keydown", onDocumentKeyDown, true);
+  }
+  openDialogs.push(d);
+}
+
+function unregister(d: OpenDialog) {
+  const i = openDialogs.indexOf(d);
+  if (i >= 0) openDialogs.splice(i, 1);
+  if (openDialogs.length === 0) {
+    document.removeEventListener("keydown", onDocumentKeyDown, true);
+  }
 }
 
 export function createDialog(opts: DialogOptions): DialogHandle {
@@ -46,14 +84,15 @@ export function createDialog(opts: DialogOptions): DialogHandle {
       : null;
   let el: HTMLElement | undefined;
 
-  const onKeyDown = (e: KeyboardEvent) => {
+  const handleKey = (e: KeyboardEvent) => {
+    if (!el) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
       opts.onClose();
       return;
     }
-    if (e.key !== "Tab" || !el) return;
+    if (e.key !== "Tab") return;
     const items = focusableIn(el);
     if (items.length === 0) {
       e.preventDefault();
@@ -75,6 +114,8 @@ export function createDialog(opts: DialogOptions): DialogHandle {
     }
   };
 
+  const entry: OpenDialog = { el: () => el, handleKey };
+
   const focusIn = () => {
     if (!el) return;
     const target = opts.initialFocus?.() ?? focusableIn(el)[0] ?? el;
@@ -83,17 +124,17 @@ export function createDialog(opts: DialogOptions): DialogHandle {
 
   const ref = (node: HTMLElement) => {
     el = node;
-    node.addEventListener("keydown", onKeyDown);
   };
 
   onMount(() => {
+    register(entry);
     // Inside a Portal the node may not be attached yet when onMount fires.
     if (el?.isConnected) focusIn();
     else queueMicrotask(focusIn);
   });
 
   onCleanup(() => {
-    el?.removeEventListener("keydown", onKeyDown);
+    unregister(entry);
     if (opener?.isConnected) opener.focus();
   });
 

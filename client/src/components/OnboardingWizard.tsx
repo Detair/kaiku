@@ -258,14 +258,14 @@ const OnboardingDialog: Component = () => {
   };
 
   return (
-    <Show when={shouldShow()}>
       <div
         class="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
         data-testid="onboarding-wizard"
       >
         <div
-          {...dialog.dialogProps}
-          aria-labelledby={undefined}
+          role={dialog.dialogProps.role}
+          aria-modal={dialog.dialogProps["aria-modal"]}
+          tabIndex={dialog.dialogProps.tabIndex}
           aria-label={t("onboarding.dialogLabel")}
           ref={dialog.ref}
           class="w-[36rem] max-h-[85vh] rounded-xl border border-white/10 shadow-2xl flex flex-col overflow-hidden"
@@ -672,7 +672,6 @@ const OnboardingDialog: Component = () => {
           </div>
         </div>
       </div>
-    </Show>
   );
 };
 

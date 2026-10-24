@@ -50,7 +50,7 @@ const VoiceControls: Component = () => {
         <button
           type="button"
           data-testid="voice-mute"
-          aria-label={voiceState.muted ? t("voice.unmute") : t("voice.mute")}
+          aria-label={t("voice.mute")}
           aria-pressed={voiceState.muted}
           onClick={() => { if (!isPttActive()) toggleMute(); }}
           class={`p-2 rounded-full transition-colors ${
@@ -78,7 +78,7 @@ const VoiceControls: Component = () => {
         <button
           type="button"
           data-testid="voice-deafen"
-          aria-label={voiceState.deafened ? t("voice.undeafen") : t("voice.deafen")}
+          aria-label={t("voice.deafen")}
           aria-pressed={voiceState.deafened}
           onClick={() => toggleDeafen()}
           class={`p-2 rounded-full transition-colors ${

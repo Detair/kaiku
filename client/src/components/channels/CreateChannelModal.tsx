@@ -84,7 +84,12 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
 
   return (
     <Portal>
-      <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div
+        class="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) props.onClose();
+        }}
+      >
         <div
           {...dialog.dialogProps}
           ref={dialog.ref}
