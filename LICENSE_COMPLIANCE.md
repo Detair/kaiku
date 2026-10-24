@@ -198,6 +198,18 @@ This document tracks all direct third-party dependencies and their licenses for 
 
 ---
 
+## Android Dependencies
+
+Runtime libraries of the Android client (`mobile/android/app/build.gradle.kts`) added for push notifications.
+
+| Package | Version | License | Usage |
+|---------|---------|---------|-------|
+| androidx.work:work-runtime-ktx | 2.10.0 | Apache-2.0 | WorkManager: background fetch after a push wake signal |
+| androidx.hilt:hilt-work | 1.2.0 | Apache-2.0 | Hilt dependency injection for WorkManager workers |
+| androidx.hilt:hilt-compiler | 1.2.0 | Apache-2.0 | Annotation processor for `@HiltWorker` (build time only) |
+
+---
+
 ## Fonts & Assets
 
 ### Press Start 2P
