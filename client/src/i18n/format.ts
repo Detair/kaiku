@@ -17,7 +17,7 @@ type Locales = readonly string[] | undefined;
  */
 export function formatLocales(
   explicit: Locale | null = hasExplicitLocale() ? getLocale() : null,
-  system: readonly string[] = typeof navigator === "undefined" ? [] : navigator.languages,
+  system: readonly string[] = (typeof navigator === "undefined" ? undefined : navigator.languages) ?? [],
 ): string[] | undefined {
   if (explicit === null) return undefined;
   const match = system.find((l) => l.split("-")[0].toLowerCase() === explicit);
@@ -44,13 +44,15 @@ function dateTime(
   locales: Locales,
   options: Intl.DateTimeFormatOptions,
 ): string {
+  const value = typeof date === "string" ? new Date(date) : date;
+  if (Number.isNaN(value.getTime())) return "";
   const fmt = cached(
     dateTimeCache,
     locales,
     options,
     () => new Intl.DateTimeFormat(locales as string[] | undefined, options),
   );
-  return fmt.format(typeof date === "string" ? new Date(date) : date);
+  return fmt.format(value);
 }
 
 const TIME_OPTIONS: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
@@ -107,6 +109,7 @@ function relative(n: number, unit: Intl.RelativeTimeFormatUnit, style: "long" | 
 
 function relativeParts(iso: string, now: Date) {
   const diffSecs = Math.floor((now.getTime() - new Date(iso).getTime()) / 1000);
+  if (Number.isNaN(diffSecs)) return null;
   const mins = Math.floor(diffSecs / 60);
   const hours = Math.floor(mins / 60);
   return { secs: diffSecs, mins, hours, days: Math.floor(hours / 24) };
@@ -114,7 +117,9 @@ function relativeParts(iso: string, now: Date) {
 
 /** "5 minutes ago" up to 6 days, then `formatTimestamp`. */
 export function formatRelativeTime(iso: string, now: Date = new Date()): string {
-  const { secs, mins, hours, days } = relativeParts(iso, now);
+  const parts = relativeParts(iso, now);
+  if (!parts) return "";
+  const { secs, mins, hours, days } = parts;
   if (secs < 60) return t("time.justNow");
   if (mins < 60) return relative(mins, "minute", "long");
   if (hours < 24) return relative(hours, "hour", "long");
@@ -124,7 +129,9 @@ export function formatRelativeTime(iso: string, now: Date = new Date()): string 
 
 /** Compact "5m ago" / "3h ago" / "2d ago", no 7-day cap. */
 export function formatRelativeTimeShort(iso: string, now: Date = new Date()): string {
-  const { mins, hours, days } = relativeParts(iso, now);
+  const parts = relativeParts(iso, now);
+  if (!parts) return "";
+  const { mins, hours, days } = parts;
   if (mins < 1) return t("time.justNow");
   if (mins < 60) return relative(mins, "minute", "narrow");
   if (hours < 24) return relative(hours, "hour", "narrow");

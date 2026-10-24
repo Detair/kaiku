@@ -53,12 +53,21 @@ describe("format", () => {
   });
 
   it("formatTimestamp says Yesterday", async () => {
-    vi.spyOn(navigator, "languages", "get").mockReturnValue(["en-US"]);
     const { formatTimestamp } = await load();
     const out = formatTimestamp("2026-10-22T09:05:00Z");
     expect(out).toContain("Yesterday");
     expect(out).toContain("09:05");
     expect(formatTimestamp("2026-10-23T09:05:00Z")).toBe("09:05 AM");
+  });
+
+  it("formatters return an empty string for invalid dates instead of throwing", async () => {
+    const f = await load();
+    expect(f.formatTime("garbage")).toBe("");
+    expect(f.formatTime(new Date(NaN))).toBe("");
+    expect(f.formatShortDate("garbage")).toBe("");
+    expect(f.formatTimestamp("garbage")).toBe("");
+    expect(f.formatRelativeTime("garbage")).toBe("");
+    expect(f.formatRelativeTimeShort("garbage")).toBe("");
   });
 
   it("formatList joins with the UI language", async () => {
