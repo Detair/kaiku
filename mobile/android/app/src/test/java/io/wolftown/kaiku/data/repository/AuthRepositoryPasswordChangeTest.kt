@@ -57,6 +57,10 @@ class AuthRepositoryPasswordChangeTest {
     private var passwordStatus = HttpStatusCode.OK
     private var passwordBody = """{"success":true,"message":"Password updated successfully.","revoked_count":0}"""
 
+    /** Runs inside the server while a request is in flight (e.g. the user cancels meanwhile). */
+    private var duringPasswordRequest: () -> Unit = {}
+    private var duringMeRequest: () -> Unit = {}
+
     private val engine = MockEngine { request ->
         val path = request.url.encodedPath
         requests += Recorded(
@@ -67,8 +71,14 @@ class AuthRepositoryPasswordChangeTest {
         val json = headersOf(HttpHeaders.ContentType, "application/json")
         when (path) {
             "/auth/login" -> respond(Golden.load("auth_response_password_change.json"), HttpStatusCode.OK, json)
-            "/auth/me/password" -> respond(passwordBody, passwordStatus, json)
-            "/auth/me" -> respond(USER_JSON, HttpStatusCode.OK, json)
+            "/auth/me/password" -> {
+                duringPasswordRequest()
+                respond(passwordBody, passwordStatus, json)
+            }
+            "/auth/me" -> {
+                duringMeRequest()
+                respond(USER_JSON, HttpStatusCode.OK, json)
+            }
             else -> respond("""{"error":"NOT_FOUND"}""", HttpStatusCode.NotFound, json)
         }
     }
@@ -153,6 +163,33 @@ class AuthRepositoryPasswordChangeTest {
         assertFalse(repository.hasPendingPasswordChange())
         assertIs<IllegalStateException>(repository.completePasswordChange("my-own-password").exceptionOrNull())
         assertEquals(listOf("/auth/login"), requests.map { it.path })
+    }
+
+    @Test
+    fun `cancel while the password change is in flight does not log in`() = runTest {
+        repository.login("anna", "temp-pass-1")
+        duringPasswordRequest = { repository.cancelPasswordChange() }
+
+        val result = repository.completePasswordChange("my-own-password")
+
+        assertIs<IllegalStateException>(result.exceptionOrNull())
+        assertEquals(listOf("/auth/login", "/auth/me/password"), requests.map { it.path })
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        assertEquals(AuthSession.LoggedOut, authState.session.value)
+        assertFalse(repository.hasPendingPasswordChange())
+    }
+
+    @Test
+    fun `cancel during getMe does not persist the session`() = runTest {
+        repository.login("anna", "temp-pass-1")
+        // The pending state is cleared while GET /auth/me is in flight.
+        duringMeRequest = { repository.cancelPasswordChange() }
+
+        val result = repository.completePasswordChange("my-own-password")
+
+        assertIs<IllegalStateException>(result.exceptionOrNull())
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        assertEquals(AuthSession.LoggedOut, authState.session.value)
     }
 
     @Test

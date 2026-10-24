@@ -39,9 +39,29 @@ class AuthRepository @Inject constructor(
         private val logger = Logger.getLogger("AuthRepository")
     }
 
-    /** Set by [login] when the server requires a password change; see [completePasswordChange]. */
+    /**
+     * Set by [login] when the server requires a password change; see
+     * [completePasswordChange]. Guarded by [pendingLock], so a cancel and the
+     * final persist step can't interleave.
+     */
+    private val pendingLock = Any()
     @Volatile
     private var pendingPasswordChange: PendingPasswordChange? = null
+
+    /** Swaps the pending state only if it is still [expected] (same instance). */
+    private fun replacePendingIf(expected: PendingPasswordChange, next: PendingPasswordChange?): Boolean =
+        synchronized(pendingLock) {
+            if (pendingPasswordChange === expected) {
+                pendingPasswordChange = next
+                true
+            } else {
+                false
+            }
+        }
+
+    private fun clearPending() {
+        synchronized(pendingLock) { pendingPasswordChange = null }
+    }
 
     /** True while a login is waiting for the user to choose a new password. */
     fun hasPendingPasswordChange(): Boolean = pendingPasswordChange != null
@@ -58,17 +78,18 @@ class AuthRepository @Inject constructor(
         password: String,
         mfaCode: String? = null
     ): Result<User> {
-        pendingPasswordChange = null
+        clearPending()
         return try {
             val authResponse = authApi.login(username, password, mfaCode)
 
             if (authResponse.passwordChangeRequired) {
-                pendingPasswordChange = PendingPasswordChange(
+                val pending = PendingPasswordChange(
                     accessToken = authResponse.accessToken,
                     refreshToken = authResponse.refreshToken,
                     expiresIn = authResponse.expiresIn,
                     currentPassword = password
                 )
+                synchronized(pendingLock) { pendingPasswordChange = pending }
                 return Result.failure(PasswordChangeRequiredException())
             }
 
@@ -97,7 +118,9 @@ class AuthRepository @Inject constructor(
      * Sets the user's own password for the pending login, then completes it:
      * `POST /auth/me/password`, `GET /auth/me`, persist the tokens, log in.
      * The pending state is cleared on success. Fails with
-     * [IllegalStateException] if no password change is pending.
+     * [IllegalStateException] if no password change is pending, or if it was
+     * cancelled or replaced while a request was in flight: then nothing is
+     * persisted and the user is not logged in.
      */
     suspend fun completePasswordChange(newPassword: String): Result<User> {
         val pending = pendingPasswordChange
@@ -106,18 +129,28 @@ class AuthRepository @Inject constructor(
             authApi.changePassword(pending.accessToken, pending.currentPassword, newPassword)
             // The new password is now the current one: a retry after a failed
             // getMe must not send the old temporary password again.
-            pendingPasswordChange = pending.copy(currentPassword = newPassword)
+            val changed = pending.copy(currentPassword = newPassword)
+            if (!replacePendingIf(pending, changed)) return cancelledResult()
 
             val user = authApi.authenticatedGetMe(pending.accessToken)
 
-            tokenStorage.saveTokens(
-                accessToken = pending.accessToken,
-                refreshToken = pending.refreshToken,
-                expiresIn = pending.expiresIn,
-                userId = user.id
-            )
-            pendingPasswordChange = null
-            authState.setLoggedIn(user.id)
+            // Check and persist under the lock: a cancel can't slip in between.
+            val persisted = synchronized(pendingLock) {
+                if (pendingPasswordChange !== changed) {
+                    false
+                } else {
+                    tokenStorage.saveTokens(
+                        accessToken = pending.accessToken,
+                        refreshToken = pending.refreshToken,
+                        expiresIn = pending.expiresIn,
+                        userId = user.id
+                    )
+                    pendingPasswordChange = null
+                    authState.setLoggedIn(user.id)
+                    true
+                }
+            }
+            if (!persisted) return cancelledResult()
             Result.success(user)
         } catch (e: CancellationException) {
             throw e
@@ -126,9 +159,12 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    private fun cancelledResult(): Result<User> =
+        Result.failure(IllegalStateException("Password change was cancelled"))
+
     /** Drops the pending password change (Back on the change-password screen). */
     fun cancelPasswordChange() {
-        pendingPasswordChange = null
+        clearPending()
     }
 
     suspend fun register(
@@ -160,7 +196,7 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun logout() {
-        pendingPasswordChange = null
+        clearPending()
         try {
             authApi.logout()
         } catch (e: CancellationException) {

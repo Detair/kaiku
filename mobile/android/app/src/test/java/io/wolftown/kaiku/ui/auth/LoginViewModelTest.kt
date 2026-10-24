@@ -70,6 +70,15 @@ class LoginViewModelTest {
     }
 
     @Test
+    fun `ui state toString hides password and mfa code`() {
+        val text = LoginUiState(username = "anna", password = "temp-pass-1", mfaCode = "123456").toString()
+
+        assertTrue(text.contains("anna"))
+        assertFalse(text.contains("temp-pass-1"))
+        assertFalse(text.contains("123456"))
+    }
+
+    @Test
     fun `onMfaCodeChanged updates mfaCode in state`() = runTest {
         viewModel.onMfaCodeChanged("123456")
         assertEquals("123456", viewModel.uiState.value.mfaCode)

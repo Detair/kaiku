@@ -63,6 +63,17 @@ class ChangePasswordViewModelTest {
     }
 
     @Test
+    fun `four emoji are too short because length counts code points`() = runTest {
+        enter("\uD83D\uDE00".repeat(4)) // 4 code points, 8 UTF-16 units
+
+        viewModel.onSubmit()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_password_too_short, viewModel.uiState.value.error)
+        coVerify(exactly = 0) { authRepository.completePasswordChange(any()) }
+    }
+
+    @Test
     fun `too long password rejected`() = runTest {
         enter("x".repeat(129))
 

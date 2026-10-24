@@ -35,7 +35,11 @@ fun ChangePasswordScreen(
         viewModel.onCancel()
         onCancel()
     }
-    BackHandler(enabled = !uiState.isLoading, onBack = cancel)
+    // Always enabled: a disabled handler would let the NavHost pop to Login while
+    // the change is still in flight. Back is ignored until the request finishes.
+    BackHandler {
+        if (!uiState.isLoading) cancel()
+    }
 
     LaunchedEffect(uiState.done) {
         if (uiState.done) onPasswordChanged()

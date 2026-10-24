@@ -30,7 +30,13 @@ data class LoginUiState(
     val loginSuccess: Boolean = false,
     /** C4: the account must choose its own password; the screen navigates to `change_password`. */
     val passwordChangeRequired: Boolean = false
-)
+) {
+    // Never print the password or MFA code (logs, crash reports).
+    override fun toString(): String =
+        "LoginUiState(username=$username, isLoading=$isLoading, error=$error, " +
+            "mfaRequired=$mfaRequired, loginSuccess=$loginSuccess, " +
+            "passwordChangeRequired=$passwordChangeRequired)"
+}
 
 /** Maps a login failure to user-facing copy by status / error code (never the server message). */
 @StringRes

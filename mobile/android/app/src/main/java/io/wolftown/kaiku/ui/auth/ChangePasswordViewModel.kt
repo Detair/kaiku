@@ -85,11 +85,15 @@ class ChangePasswordViewModel @Inject constructor(
     }
 
     @StringRes
-    private fun validate(newPassword: String, confirm: String): Int? = when {
-        newPassword.length < MIN_PASSWORD_LENGTH -> R.string.auth_password_too_short
-        newPassword.length > MAX_PASSWORD_LENGTH -> R.string.auth_password_too_long
-        newPassword != confirm -> R.string.auth_password_mismatch
-        else -> null
+    private fun validate(newPassword: String, confirm: String): Int? {
+        // Count code points like the server's validator, not UTF-16 units.
+        val length = newPassword.codePointCount(0, newPassword.length)
+        return when {
+            length < MIN_PASSWORD_LENGTH -> R.string.auth_password_too_short
+            length > MAX_PASSWORD_LENGTH -> R.string.auth_password_too_long
+            newPassword != confirm -> R.string.auth_password_mismatch
+            else -> null
+        }
     }
 
     @StringRes
