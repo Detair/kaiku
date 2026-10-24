@@ -29,6 +29,7 @@ import * as tauri from "@/lib/tauri";
 import { showToast, dismissToast } from "@/components/ui/Toast";
 import { PttController, createTauriPttListeners, type PttFullConfig } from "@/lib/pttManager";
 import { isTauri } from "@/lib/tauri/common";
+import { t } from "@/i18n";
 
 // Helper to get error message from VoiceError
 function getErrorMessage(error: VoiceError): string {
@@ -123,6 +124,10 @@ let isJoining = false;
 let currentIncidentStart: number | null = null;
 let goodQualityStartTime: number | null = null;
 const INCIDENT_RECOVERY_THRESHOLD = 10_000; // 10s of good quality to clear incident
+
+/** Toast ids for native audio stream failures (one each, replaced on repeat). */
+const AUDIO_CAPTURE_TOAST_ID = "voice-audio-capture-failed";
+const AUDIO_PLAYBACK_TOAST_ID = "voice-audio-playback-failed";
 
 /**
  * Convert QualityLevel to numeric value for server transmission.
@@ -424,6 +429,19 @@ export async function joinVoice(channelId: string): Promise<void> {
       onSpeakingChange: (speaking) => {
         setVoiceState({ speaking });
       },
+      onAudioError: (audioError) => {
+        // Native stream died (unplugged, stalled, could not open): never let
+        // the call look healthy with a dead mic. Stays until dismissed or
+        // the call ends; picking another device restarts the stream.
+        const capture = audioError.kind === "capture_failed";
+        showToast({
+          type: "error",
+          title: t(capture ? "voice.audio.captureFailed" : "voice.audio.playbackFailed"),
+          message: audioError.device,
+          duration: 0,
+          id: capture ? AUDIO_CAPTURE_TOAST_ID : AUDIO_PLAYBACK_TOAST_ID,
+        });
+      },
       onScreenShareTrack: (userId, streamId, track) => {
         console.log("[Voice] Screen share track received:", userId, streamId);
         // Import and call viewer store — register track (auto-views if nothing active)
@@ -516,6 +534,8 @@ export async function leaveVoice(): Promise<void> {
   goodQualityStartTime = null;
   dismissToast("connection-critical");
   dismissToast("connection-warning");
+  dismissToast(AUDIO_CAPTURE_TOAST_ID);
+  dismissToast(AUDIO_PLAYBACK_TOAST_ID);
 
   const adapter = await createVoiceAdapter();
   const result = await adapter.leave();

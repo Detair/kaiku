@@ -7,6 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AudioStreamError,
   VoiceAdapter,
   VoiceConnectionState,
   VoiceError,
@@ -43,10 +44,14 @@ export class TauriVoiceAdapter implements VoiceAdapter {
   // Event handlers
   private eventHandlers: Partial<VoiceAdapterEvents> = {};
   private unlisteners: UnlistenFn[] = [];
+  /** Set by dispose(); registrations that finish afterwards are released. */
+  private disposed = false;
 
   constructor() {
     console.log("[TauriVoiceAdapter] Initialized");
-    this.setupEventListeners();
+    this.setupEventListeners().catch((err) =>
+      console.error("[TauriVoiceAdapter] Failed to register voice listeners:", err),
+    );
   }
 
   // Lifecycle methods
@@ -315,6 +320,15 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     }
   }
 
+  async setUserVolume(userId: string, volume: number): Promise<VoiceResult<void>> {
+    try {
+      await invoke("set_user_volume", { userId, volume });
+      return { ok: true, value: undefined };
+    } catch (err) {
+      return { ok: false, error: this.mapTauriError(err) };
+    }
+  }
+
   async setOutputDevice(deviceId: string): Promise<VoiceResult<void>> {
     console.log(`[TauriVoiceAdapter] Setting output device: ${deviceId}`);
 
@@ -554,16 +568,22 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     }
     this.activeScreenShares.clear();
 
+    this.disposed = true;
     this.unlisteners.forEach((unlisten) => unlisten());
     this.unlisteners = [];
   }
 
   // Private helper methods
 
+  /**
+   * Register this adapter's native `voice:*` listeners — the only set in the
+   * app. Registration is async: if the adapter is disposed before it
+   * finishes, the late registrations are released at once instead of
+   * lingering next to a newer adapter's set (which ran every event twice).
+   */
   private async setupEventListeners() {
-    // Listen for voice state changes
-    this.unlisteners.push(
-      await listen<string>("voice:state_change", (event) => {
+    const handles = await Promise.all([
+      listen<string>("voice:state_change", (event) => {
         console.log(`[TauriVoiceAdapter] State change: ${event.payload}`);
         // Map Rust ConnectionState to VoiceConnectionState
         const stateMap: Record<string, VoiceConnectionState> = {
@@ -578,11 +598,9 @@ export class TauriVoiceAdapter implements VoiceAdapter {
         }
         this.setState(newState);
       }),
-    );
 
-    // Remote audio track events
-    this.unlisteners.push(
-      await listen<{ user_id: string; source_type: string }>("voice:remote_track", (event) => {
+      // Remote audio track events
+      listen<{ user_id: string; source_type: string }>("voice:remote_track", (event) => {
         console.log(`[TauriVoiceAdapter] Remote track: ${event.payload.user_id}:${event.payload.source_type}`);
         // The existing onRemoteTrack callback expects a RemoteTrack object.
         // In Tauri mode, audio plays natively via CPAL — the frontend only needs
@@ -594,18 +612,14 @@ export class TauriVoiceAdapter implements VoiceAdapter {
           muted: false,
         });
       }),
-    );
 
-    this.unlisteners.push(
-      await listen<{ user_id: string }>("voice:remote_track_removed", (event) => {
+      listen<{ user_id: string }>("voice:remote_track_removed", (event) => {
         console.log(`[TauriVoiceAdapter] Remote track removed: ${event.payload.user_id}`);
         this.eventHandlers.onRemoteTrackRemoved?.(event.payload.user_id);
       }),
-    );
 
-    // Screen share track events
-    this.unlisteners.push(
-      await listen<{ user_id: string; stream_id: string; source_type: string }>("voice:screen_share_track", (event) => {
+      // Screen share track events
+      listen<{ user_id: string; stream_id: string; source_type: string }>("voice:screen_share_track", (event) => {
         console.log(`[TauriVoiceAdapter] Screen share track: ${event.payload.user_id}:${event.payload.stream_id}`);
         this.eventHandlers.onScreenShareTrack?.(
           event.payload.user_id,
@@ -613,36 +627,40 @@ export class TauriVoiceAdapter implements VoiceAdapter {
           null,
         );
       }),
-    );
 
-    this.unlisteners.push(
-      await listen<{ user_id: string; stream_id: string; source_type: string }>("voice:screen_share_track_removed", (event) => {
+      listen<{ user_id: string; stream_id: string; source_type: string }>("voice:screen_share_track_removed", (event) => {
         console.log(`[TauriVoiceAdapter] Screen share removed: ${event.payload.user_id}:${event.payload.stream_id}`);
         this.eventHandlers.onScreenShareTrackRemoved?.(event.payload.user_id, event.payload.stream_id);
       }),
-    );
 
-    // Webcam track events
-    this.unlisteners.push(
-      await listen<{ user_id: string; stream_id: string; source_type: string }>("voice:webcam_track", (event) => {
+      // Webcam track events
+      listen<{ user_id: string; stream_id: string; source_type: string }>("voice:webcam_track", (event) => {
         console.log(`[TauriVoiceAdapter] Webcam track: ${event.payload.user_id}`);
         this.eventHandlers.onWebcamTrack?.(event.payload.user_id, null);
       }),
-    );
 
-    this.unlisteners.push(
-      await listen<{ user_id: string; stream_id: string; source_type: string }>("voice:webcam_track_removed", (event) => {
+      listen<{ user_id: string; stream_id: string; source_type: string }>("voice:webcam_track_removed", (event) => {
         console.log(`[TauriVoiceAdapter] Webcam removed: ${event.payload.user_id}`);
         this.eventHandlers.onWebcamTrackRemoved?.(event.payload.user_id);
       }),
-    );
 
-    // VAD speaking indicator
-    this.unlisteners.push(
-      await listen<boolean>("voice:speaking", (event) => {
+      // VAD speaking indicator
+      listen<boolean>("voice:speaking", (event) => {
         this.eventHandlers.onSpeakingChange?.(event.payload);
       }),
-    );
+
+      // Microphone/speaker stream died (unplugged, stalled, failed to open)
+      listen<AudioStreamError>("voice:audio_error", (event) => {
+        console.warn("[TauriVoiceAdapter] Audio error:", event.payload);
+        this.eventHandlers.onAudioError?.(event.payload);
+      }),
+    ]);
+
+    if (this.disposed) {
+      for (const unlisten of handles) unlisten();
+      return;
+    }
+    this.unlisteners.push(...handles);
   }
 
   private setState(state: VoiceConnectionState) {

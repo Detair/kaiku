@@ -154,6 +154,7 @@ pub fn run() {
             commands::voice::get_audio_devices,
             commands::voice::set_input_device,
             commands::voice::set_output_device,
+            commands::voice::set_user_volume,
             commands::voice::is_in_voice,
             commands::voice::get_voice_channel,
             commands::voice::voice_connection_stats,
@@ -303,6 +304,8 @@ pub struct VoiceState {
     /// Per-track receive jitter estimates, fed by audio decode tasks and read
     /// by the `voice_connection_stats` command.
     pub connection_stats: voice::connection_stats::ConnectionStatsRegistry,
+    /// Per-person playback volume, shared with every call's audio mixer.
+    pub user_gains: voice::audio_mixer::UserGains,
 }
 
 impl VoiceState {
@@ -321,6 +324,7 @@ impl VoiceState {
             active_video_count: Arc::new(AtomicUsize::new(0)),
             video_frame_sinks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             connection_stats: voice::connection_stats::ConnectionStatsRegistry::new(),
+            user_gains: voice::audio_mixer::UserGains::default(),
         })
     }
 }

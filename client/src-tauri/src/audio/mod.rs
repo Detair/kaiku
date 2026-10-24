@@ -10,22 +10,22 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+pub mod format;
 mod handle;
 
-pub use handle::AudioHandle;
+pub use handle::{AudioErrorEvent, AudioErrorKind, AudioHandle, AUDIO_ERROR_EVENT};
 
 /// Audio configuration constants
 pub const SAMPLE_RATE: u32 = 48000;
+/// Playback/mixer channel count (remote peers may send stereo). Capture is
+/// opened in whatever format the device supports and downmixed to mono
+/// 48 kHz for RNNoise/Opus (see `format::CaptureFormat`).
 pub const CHANNELS: u16 = 2;
 pub const FRAME_SIZE_MS: usize = 20;
 /// 960 samples per channel.
 pub const FRAME_SIZE: usize = (SAMPLE_RATE as usize * FRAME_SIZE_MS) / 1000;
 
-/// Capture-only channel count (mono for RNNoise compatibility).
-/// Playback/mixer stays stereo (`CHANNELS`) since remote peers may send stereo.
-pub const CAPTURE_CHANNELS: u16 = 1;
-
-/// RNNoise processes 480-sample frames (10ms at 48kHz mono)
+/// `RNNoise` processes 480-sample frames (10ms at 48kHz mono)
 pub const RNNOISE_FRAME_SIZE: usize = 480;
 
 /// Shared VAD + noise suppression state, accessible from CPAL callback thread
@@ -58,7 +58,7 @@ impl VadConfig {
     }
 
     pub fn get_threshold(&self) -> f32 {
-        self.threshold.load(Ordering::Relaxed) as f32 / 100.0
+        f32::from(self.threshold.load(Ordering::Relaxed)) / 100.0
     }
 
     pub fn is_enabled(&self) -> bool {

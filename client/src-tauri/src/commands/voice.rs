@@ -14,7 +14,10 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocalWriter;
 use webrtc::track::track_remote::TrackRemote;
 
-use crate::audio::{AudioDeviceList, CHANNELS, FRAME_SIZE, FRAME_SIZE_MS, SAMPLE_RATE};
+use crate::audio::{
+    AudioDeviceList, AudioErrorEvent, AudioErrorKind, AUDIO_ERROR_EVENT, CHANNELS, FRAME_SIZE,
+    FRAME_SIZE_MS, SAMPLE_RATE,
+};
 use crate::network::ClientEvent;
 use crate::voice::audio_mixer::AudioMixer;
 use crate::webrtc::IceServerConfig;
@@ -378,6 +381,7 @@ pub async fn handle_voice_publisher_answer(
     channel_id: String,
     sdp: String,
     state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<(), String> {
     info!("Handling publisher answer for channel: {}", channel_id);
 
@@ -399,18 +403,31 @@ pub async fn handle_voice_publisher_answer(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Start audio capture
+    // Start audio capture. A microphone that cannot be opened must not
+    // leave a silent "Connected" call: the user is told right away, the
+    // rest of the call (hearing others) still starts, and picking another
+    // microphone retries capture.
     let (audio_tx, audio_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(100);
-    voice_state
-        .audio
-        .start_capture(audio_tx.clone())
-        .await
-        .map_err(|e| e.to_string())?;
+    let capture_result = voice_state.audio.start_capture(audio_tx.clone()).await;
+    if let Err(e) = &capture_result {
+        error!("Microphone could not be started: {e}");
+        let _ = app.emit(
+            AUDIO_ERROR_EVENT,
+            AudioErrorEvent {
+                kind: AudioErrorKind::CaptureFailed,
+                device: voice_state
+                    .audio
+                    .input_device_name()
+                    .unwrap_or("default")
+                    .to_string(),
+            },
+        );
+    }
 
     // Create audio mixer and start PCM playback from its output.
     // The mixer combines all decoded remote audio tracks into one stream.
     let (pcm_output_tx, pcm_output_rx) = tokio::sync::mpsc::channel::<Vec<f32>>(100);
-    let mixer = AudioMixer::new(pcm_output_tx);
+    let mixer = AudioMixer::with_gains(pcm_output_tx, voice_state.user_gains.clone());
     voice_state.audio_mixer = Some(mixer);
 
     voice_state
@@ -431,6 +448,7 @@ pub async fn handle_voice_publisher_answer(
         error!("No local track available for audio sending");
     }
 
+    capture_result.map_err(|e| format!("Microphone could not be started: {e}"))?;
     info!("Publisher answer set, audio started");
     Ok(())
 }
@@ -728,6 +746,9 @@ pub async fn get_audio_devices(state: State<'_, AppState>) -> Result<AudioDevice
 }
 
 /// Set input (microphone) device.
+///
+/// During a call the microphone switches immediately; if the new device
+/// cannot be opened the previous one keeps running and an error is returned.
 #[command]
 pub async fn set_input_device(
     device_id: Option<String>,
@@ -740,8 +761,30 @@ pub async fn set_input_device(
     let mut voice = state.voice.write().await;
     let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
 
-    voice_state.audio.set_input_device(device_id);
+    voice_state
+        .audio
+        .set_input_device(device_id)
+        .await
+        .map_err(|e| e.to_string())
+}
 
+/// Set how loud one person plays for this user (`volume`: 0.0 = muted,
+/// 1.0 = unchanged, up to 2.0). Applies to all of their audio immediately
+/// and to later calls in this session.
+#[command]
+pub async fn set_user_volume(
+    user_id: String,
+    volume: f32,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let user_id = uuid::Uuid::parse_str(&user_id).map_err(|e| format!("Invalid user id: {e}"))?;
+    debug!(%user_id, volume, "Setting user volume");
+
+    state.ensure_voice().await?;
+    let voice = state.voice.read().await;
+    let voice_state = voice.as_ref().ok_or("Voice not initialized")?;
+    // Shared with the running mixer (if any), so this takes effect mid-call.
+    voice_state.user_gains.set(user_id, volume);
     Ok(())
 }
 

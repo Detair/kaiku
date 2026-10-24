@@ -34,7 +34,10 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Join a voice channel: devtools console shows `[VoiceAdapter] Creating Tauri adapter` AND the devtools network tab shows the `get_auth_info` IPC call (`ipc://localhost/get_auth_info`); together they confirm the native runtime is detected with `withGlobalTauri: false` (joining during a 1-2 s reconnect may show an error; known, retry works)
 - [ ] Two-way audio with the browser participant
 - [ ] Mute and deafen work and are reflected for the browser participant
-- [ ] Switch the microphone device while connected: audio continues on the new device
+- [ ] 44.1 kHz headset: set a headset microphone to 2 channels, 44100 Hz (or use one that only offers that) and join voice: the browser participant hears you clearly, at normal pitch
+- [ ] Unplug mic mid-call: unplug the USB microphone or headset during a call: within about 3 s an error toast says "Microphone stopped working. Check your audio settings." (the call never just shows Connected with a dead mic); choose another microphone in Voice settings: the browser participant hears you again
+- [ ] Switch mic mid-call: switch the microphone device while connected: audio continues on the new device without leaving the call; choosing a device that cannot be opened keeps the previous microphone working
+- [ ] Per-person volume: there is no volume slider yet; in the devtools console run `await window.__TAURI_INTERNALS__.invoke('set_user_volume', { userId: '<browser participant user id>', volume: 0 })`: the participant goes silent at once; `volume: 0.5` is quieter, `volume: 1` restores it
 - [ ] Leave voice: no ghost entry remains in the browser participant's list
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
 - [ ] Close the window during a voice call: one notification says Kaiku is still in the voice channel; the tray menu shows "Leave voice" and "Mute"/"Unmute"; "Leave voice" ends the call for the browser participant
@@ -61,7 +64,10 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Join a voice channel: devtools console shows `[VoiceAdapter] Creating Tauri adapter` AND the devtools network tab shows the `get_auth_info` IPC call (`ipc://localhost/get_auth_info`); together they confirm the native runtime is detected with `withGlobalTauri: false` (joining during a 1-2 s reconnect may show an error; known, retry works)
 - [ ] Two-way audio with the browser participant
 - [ ] Mute and deafen work and are reflected for the browser participant
-- [ ] Switch the microphone device while connected: audio continues on the new device
+- [ ] 44.1 kHz headset: set a headset microphone to 2 channels, 44100 Hz (or use one that only offers that) and join voice: the browser participant hears you clearly, at normal pitch
+- [ ] Unplug mic mid-call: unplug the USB microphone or headset during a call: within about 3 s an error toast says "Microphone stopped working. Check your audio settings." (the call never just shows Connected with a dead mic); choose another microphone in Voice settings: the browser participant hears you again
+- [ ] Switch mic mid-call: switch the microphone device while connected: audio continues on the new device without leaving the call; choosing a device that cannot be opened keeps the previous microphone working
+- [ ] Per-person volume: there is no volume slider yet; in the devtools console run `await window.__TAURI_INTERNALS__.invoke('set_user_volume', { userId: '<browser participant user id>', volume: 0 })`: the participant goes silent at once; `volume: 0.5` is quieter, `volume: 1` restores it
 - [ ] Leave voice: no ghost entry remains in the browser participant's list
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
 - [ ] Close the window during a voice call: one notification says Kaiku is still in the voice channel; the tray menu shows "Leave voice" and "Mute"/"Unmute"; "Leave voice" ends the call for the browser participant
@@ -89,7 +95,10 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Join a voice channel: devtools console shows `[VoiceAdapter] Creating Tauri adapter` AND the devtools network tab shows the `get_auth_info` IPC call (`ipc://localhost/get_auth_info`); together they confirm the native runtime is detected with `withGlobalTauri: false` (joining during a 1-2 s reconnect may show an error; known, retry works)
 - [ ] Two-way audio with the browser participant
 - [ ] Mute and deafen work and are reflected for the browser participant
-- [ ] Switch the microphone device while connected: audio continues on the new device
+- [ ] 44.1 kHz headset: set a headset microphone to 2 channels, 44100 Hz (or use one that only offers that) and join voice: the browser participant hears you clearly, at normal pitch
+- [ ] Unplug mic mid-call: unplug the USB microphone or headset during a call: within about 3 s an error toast says "Microphone stopped working. Check your audio settings." (the call never just shows Connected with a dead mic); choose another microphone in Voice settings: the browser participant hears you again
+- [ ] Switch mic mid-call: switch the microphone device while connected: audio continues on the new device without leaving the call; choosing a device that cannot be opened keeps the previous microphone working
+- [ ] Per-person volume: there is no volume slider yet; in the devtools console run `await window.__TAURI_INTERNALS__.invoke('set_user_volume', { userId: '<browser participant user id>', volume: 0 })`: the participant goes silent at once; `volume: 0.5` is quieter, `volume: 1` restores it
 - [ ] Leave voice: no ghost entry remains in the browser participant's list
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
 - [ ] Close the window during a voice call: one notification says Kaiku is still in the voice channel; the tray menu shows "Leave voice" and "Mute"/"Unmute"; "Leave voice" ends the call for the browser participant

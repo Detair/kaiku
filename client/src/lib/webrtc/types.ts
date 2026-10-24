@@ -53,6 +53,16 @@ export interface RemoteTrack {
 }
 
 /**
+ * A native audio stream stopped working (payload of the Tauri
+ * `voice:audio_error` event; wire format, hence snake_case values).
+ */
+export interface AudioStreamError {
+  kind: "capture_failed" | "playback_failed";
+  /** Device name as listed in the audio device settings. */
+  device: string;
+}
+
+/**
  * Voice adapter events
  */
 export interface VoiceAdapterEvents {
@@ -63,6 +73,8 @@ export interface VoiceAdapterEvents {
   onRemoteTrackRemoved: (userId: string) => void;
   onLocalMuteChange: (muted: boolean) => void;
   onSpeakingChange: (speaking: boolean) => void;
+  /** Native only: the microphone or speaker stream died mid-call. */
+  onAudioError?: (error: AudioStreamError) => void;
 
   // Screen share events
   onScreenShareStarted?: (info: ScreenShareInfo) => void;
@@ -302,6 +314,11 @@ export interface VoiceAdapter {
   getAudioDevices(): Promise<VoiceResult<AudioDeviceList>>;
   setInputDevice(deviceId: string): Promise<VoiceResult<void>>;
   setOutputDevice(deviceId: string): Promise<VoiceResult<void>>;
+  /**
+   * Per-person playback volume (0 = muted, 1 = unchanged, up to 2).
+   * Native only; the browser plays remote audio through elements it owns.
+   */
+  setUserVolume?(userId: string, volume: number): Promise<VoiceResult<void>>;
 
   // Screen sharing
   startScreenShare(options?: ScreenShareOptions): Promise<VoiceResult<void>>;
