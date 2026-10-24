@@ -12,5 +12,6 @@ data class Message(
     val attachments: List<Attachment> = emptyList(),
     val replyTo: String? = null,
     val editedAt: String? = null,
-    val createdAt: String = ""
+    val createdAt: String = "",
+    val reactions: List<Reaction>? = null
 )

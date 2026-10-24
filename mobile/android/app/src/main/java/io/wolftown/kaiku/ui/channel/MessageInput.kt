@@ -19,7 +19,7 @@ import io.wolftown.kaiku.R
  *
  * @param input Current message text
  * @param placeholder Hint shown while the input is empty
- * @param typingUsers Set of user display names currently typing
+ * @param typingNames Display names of the users currently typing (never ids)
  * @param onInputChanged Callback when text changes
  * @param onSend Callback when the send button is pressed
  */
@@ -27,7 +27,7 @@ import io.wolftown.kaiku.R
 fun MessageInput(
     input: String,
     placeholder: String,
-    typingUsers: Set<String>,
+    typingNames: List<String>,
     onInputChanged: (String) -> Unit,
     onSend: () -> Unit,
     modifier: Modifier = Modifier
@@ -35,12 +35,12 @@ fun MessageInput(
     Column(modifier = modifier) {
         // Typing indicator
         AnimatedVisibility(
-            visible = typingUsers.isNotEmpty(),
+            visible = typingNames.isNotEmpty(),
             enter = fadeIn(),
             exit = fadeOut()
         ) {
             Text(
-                text = typingIndicatorText(typingUsers),
+                text = typingIndicatorText(typingNames),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
@@ -99,8 +99,7 @@ fun MessageInput(
  * - 3+ users: "Several people are typing..."
  */
 @Composable
-private fun typingIndicatorText(typingUsers: Set<String>): String {
-    val users = typingUsers.toList()
+private fun typingIndicatorText(users: List<String>): String {
     return when (users.size) {
         0 -> ""
         1 -> stringResource(R.string.chat_typing_one, users[0])

@@ -1,6 +1,8 @@
 package io.wolftown.kaiku.data.local
 
 import android.content.SharedPreferences
+import java.io.IOException
+import java.security.GeneralSecurityException
 import java.util.logging.Logger
 import javax.inject.Inject
 
@@ -15,6 +17,12 @@ import javax.inject.Inject
  * [getSessionGeneration] changes whenever a different session may start (login,
  * logout, server change) but not when a refresh rotates the current session's
  * tokens. Callers capture it to detect that the session they started from is gone.
+ *
+ * Every read tolerates a damaged encrypted store (key lost after a restore or an
+ * OS update): the store is reset through the same synchronized path as a logout
+ * (new session generation), the read returns null, and
+ * [consumeStorageResetNotice] reports the reset once so the UI can ask the
+ * person to sign in again. Readers take the monitor only on that failure path.
  */
 class TokenStorage @Inject constructor(
     private val prefs: SharedPreferences
@@ -33,6 +41,66 @@ class TokenStorage @Inject constructor(
 
     @Volatile
     private var sessionGeneration = 0L
+
+    @Volatile
+    private var storageResetNotice = false
+
+    /**
+     * True once after the stored session was lost to a damaged store, so the UI
+     * can ask the person to sign in again. Returns false on every later call.
+     */
+    @Synchronized
+    fun consumeStorageResetNotice(): Boolean {
+        val pending = storageResetNotice
+        storageResetNotice = false
+        return pending
+    }
+
+    /** Records that the store was already recreated empty before this instance existed. */
+    @Synchronized
+    fun noteStorageReset() {
+        storageResetNotice = true
+    }
+
+    /**
+     * Runs [read]; on a storage failure resets the store, flags the notice and
+     * returns [fallback].
+     */
+    private inline fun <T> readOr(fallback: T, read: () -> T): T {
+        val generation = sessionGeneration
+        return try {
+            read()
+        } catch (e: GeneralSecurityException) {
+            resetAfterReadFailure(generation, e)
+            fallback
+        } catch (e: IOException) {
+            resetAfterReadFailure(generation, e)
+            fallback
+        } catch (e: SecurityException) {
+            resetAfterReadFailure(generation, e)
+            fallback
+        }
+    }
+
+    /**
+     * Wipes the store like a logout. Skipped when the session changed since the
+     * failed read ([generationAtRead]): a login or logout that raced the read
+     * must not be wiped by it.
+     */
+    @Synchronized
+    private fun resetAfterReadFailure(generationAtRead: Long, cause: Exception) {
+        // Type only: the message could describe stored data.
+        logger.warning("Secure storage unreadable (${cause::class.simpleName}), resetting")
+        if (sessionGeneration != generationAtRead) return
+        sessionGeneration++
+        val cleared = try {
+            prefs.edit().clear().commit()
+        } catch (e: RuntimeException) {
+            false
+        }
+        if (!cleared) logger.warning("Failed to reset secure storage")
+        storageResetNotice = true
+    }
 
     /** Changes on login, logout and server change; unchanged by a refresh rotation. */
     fun getSessionGeneration(): Long = sessionGeneration
@@ -91,16 +159,16 @@ class TokenStorage @Inject constructor(
         }
     }
 
-    fun getAccessToken(): String? = prefs.getString(KEY_ACCESS_TOKEN, null)
+    fun getAccessToken(): String? = readOr(null) { prefs.getString(KEY_ACCESS_TOKEN, null) }
 
     fun getRefreshToken(): String? {
-        val token = prefs.getString(KEY_REFRESH_TOKEN, null)
+        val token = readOr(null) { prefs.getString(KEY_REFRESH_TOKEN, null) }
         return if (token.isNullOrEmpty()) null else token
     }
 
-    fun getUserId(): String? = prefs.getString(KEY_USER_ID, null)
+    fun getUserId(): String? = readOr(null) { prefs.getString(KEY_USER_ID, null) }
 
-    fun getServerUrl(): String? = prefs.getString(KEY_SERVER_URL, null)
+    fun getServerUrl(): String? = readOr(null) { prefs.getString(KEY_SERVER_URL, null) }
 
     @Synchronized
     fun saveServerUrl(url: String) {
@@ -114,10 +182,10 @@ class TokenStorage @Inject constructor(
     }
 
     /** Epoch millis at which the stored access token expires, or 0 when none is stored. */
-    fun getAccessTokenExpiresAtMillis(): Long = prefs.getLong(KEY_EXPIRES_AT, 0L)
+    fun getAccessTokenExpiresAtMillis(): Long = readOr(0L) { prefs.getLong(KEY_EXPIRES_AT, 0L) }
 
     fun isAccessTokenExpired(): Boolean {
-        val expiresAt = prefs.getLong(KEY_EXPIRES_AT, 0L)
+        val expiresAt = getAccessTokenExpiresAtMillis()
         return System.currentTimeMillis() >= expiresAt
     }
 
@@ -131,9 +199,9 @@ class TokenStorage @Inject constructor(
         }
     }
 
-    fun getOidcCodeVerifier(): String? = prefs.getString(KEY_OIDC_CODE_VERIFIER, null)
+    fun getOidcCodeVerifier(): String? = readOr(null) { prefs.getString(KEY_OIDC_CODE_VERIFIER, null) }
 
-    fun getOidcState(): String? = prefs.getString(KEY_OIDC_STATE, null)
+    fun getOidcState(): String? = readOr(null) { prefs.getString(KEY_OIDC_STATE, null) }
 
     fun clearOidcPkceState() {
         val success = prefs.edit()

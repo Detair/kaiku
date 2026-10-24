@@ -7,12 +7,17 @@ import io.wolftown.kaiku.data.api.MessageApi
 import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
+import io.wolftown.kaiku.data.ws.WallClock
 import io.wolftown.kaiku.di.ChatCoroutineScope
 import io.wolftown.kaiku.domain.MessageOrdering
+import io.wolftown.kaiku.domain.withReactionAdded
+import io.wolftown.kaiku.domain.withReactionRemoved
 import io.wolftown.kaiku.domain.model.Message
+import io.wolftown.kaiku.domain.model.Reaction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,7 +40,7 @@ import javax.inject.Singleton
  * - Exposes per-channel message lists as [StateFlow]s
  * - Loads message history from the REST API
  * - Processes real-time WebSocket events (new/edit/delete, typing)
- * - Reactions are received but not yet reflected in the UI
+ * - Keeps each message's reactions up to date from reaction events
  * - Sends client events (subscribe, unsubscribe, typing) via WebSocket
  * - Typing indicator debouncing (max once per 3 seconds)
  * - Remembers which channels need a server-side subscription, so they can be
@@ -43,17 +48,37 @@ import javax.inject.Singleton
  *   missed while offline ([catchUp])
  */
 @Singleton
-class ChatRepository @Inject constructor(
+class ChatRepository internal constructor(
     private val messageApi: MessageApi,
     private val webSocket: KaikuWebSocket,
     private val json: Json,
     private val guildRepository: GuildRepository,
     private val authState: AuthState,
-    @ChatCoroutineScope private val scope: CoroutineScope,
+    private val scope: CoroutineScope,
+    /** Time source for typing expiry; tests pass virtual time. */
+    private val clock: WallClock,
 ) {
+
+    @Inject
+    constructor(
+        messageApi: MessageApi,
+        webSocket: KaikuWebSocket,
+        json: Json,
+        guildRepository: GuildRepository,
+        authState: AuthState,
+        @ChatCoroutineScope scope: CoroutineScope,
+    ) : this(
+        messageApi, webSocket, json, guildRepository, authState, scope,
+        // Monotonic: typing expiry only compares differences.
+        WallClock { System.nanoTime() / 1_000_000L },
+    )
+
     companion object {
         private val logger = Logger.getLogger("ChatRepository")
         private const val TYPING_DEBOUNCE_MS = 3_000L
+
+        /** A typing indicator disappears this long after the user's last typing event. */
+        const val TYPING_EXPIRY_MS = 8_000L
 
         /** Page size for [catchUp] (`limit`). */
         const val CATCH_UP_PAGE_SIZE = 100
@@ -65,8 +90,8 @@ class ChatRepository @Inject constructor(
     /** Per-channel message lists. */
     private val channelMessages = ConcurrentHashMap<String, MutableStateFlow<List<Message>>>()
 
-    /** Per-channel typing user sets. */
-    private val channelTypingUsers = ConcurrentHashMap<String, MutableStateFlow<Set<String>>>()
+    /** Per-channel typing users: user id to the time ([WallClock]) their indicator expires. */
+    private val channelTypingUsers = ConcurrentHashMap<String, MutableStateFlow<Map<String, Long>>>()
 
     /** Track last typing indicator send time per channel for debouncing. */
     private val lastTypingSent = ConcurrentHashMap<String, Long>()
@@ -289,10 +314,17 @@ class ChatRepository @Inject constructor(
 
     suspend fun addReaction(channelId: String, messageId: String, emoji: String) {
         messageApi.addReaction(channelId, messageId, emoji)
+        // The echo event is idempotent with this, so it works with or without one.
+        authState.currentUserId.value?.let { me ->
+            updateReactions(channelId, messageId) { it.withReactionAdded(emoji, me, isMe = true) }
+        }
     }
 
     suspend fun removeReaction(channelId: String, messageId: String, emoji: String) {
         messageApi.removeReaction(channelId, messageId, emoji)
+        authState.currentUserId.value?.let { me ->
+            updateReactions(channelId, messageId) { it.withReactionRemoved(emoji, me, isMe = true) }
+        }
     }
 
     /**
@@ -319,7 +351,8 @@ class ChatRepository @Inject constructor(
         webSocket.send(ClientEvent.Unsubscribe(channelId))
     }
 
-    fun getTypingUsers(channelId: String): StateFlow<Set<String>> {
+    /** Users typing in [channelId] (id to expiry time); entries disappear [TYPING_EXPIRY_MS] after the last event. */
+    fun getTypingUsers(channelId: String): StateFlow<Map<String, Long>> {
         return getOrCreateTypingUsersFlow(channelId).asStateFlow()
     }
 
@@ -339,8 +372,8 @@ class ChatRepository @Inject constructor(
         return channelMessages.getOrPut(channelId) { MutableStateFlow(emptyList()) }
     }
 
-    private fun getOrCreateTypingUsersFlow(channelId: String): MutableStateFlow<Set<String>> {
-        return channelTypingUsers.getOrPut(channelId) { MutableStateFlow(emptySet()) }
+    private fun getOrCreateTypingUsersFlow(channelId: String): MutableStateFlow<Map<String, Long>> {
+        return channelTypingUsers.getOrPut(channelId) { MutableStateFlow(emptyMap()) }
     }
 
     private fun startCollectingEvents() {
@@ -423,23 +456,41 @@ class ChatRepository @Inject constructor(
     }
 
     private fun handleReactionAdd(event: ServerEvent.ReactionAdd) {
-        // Reaction handling is a no-op for now since the Message model
-        // does not include a reactions field. This will be extended when
-        // a Reaction data class is added to the domain model.
-        logger.fine("ReactionAdd: ${event.emoji} on ${event.messageId} by ${event.userId}")
+        val isMe = event.userId == authState.currentUserId.value
+        updateReactions(event.channelId, event.messageId) { it.withReactionAdded(event.emoji, event.userId, isMe) }
     }
 
     private fun handleReactionRemove(event: ServerEvent.ReactionRemove) {
-        logger.fine("ReactionRemove: ${event.emoji} on ${event.messageId} by ${event.userId}")
+        val isMe = event.userId == authState.currentUserId.value
+        updateReactions(event.channelId, event.messageId) { it.withReactionRemoved(event.emoji, event.userId, isMe) }
+    }
+
+    private fun updateReactions(
+        channelId: String,
+        messageId: String,
+        change: (List<Reaction>?) -> List<Reaction>,
+    ) {
+        val flow = channelMessages[channelId] ?: return
+        flow.update { current ->
+            current.map { msg -> if (msg.id == messageId) msg.copy(reactions = change(msg.reactions)) else msg }
+        }
     }
 
     private fun handleTypingStart(event: ServerEvent.TypingStart) {
         val flow = getOrCreateTypingUsersFlow(event.channelId)
-        flow.value = flow.value + event.userId
+        val expiresAt = clock.nowMillis() + TYPING_EXPIRY_MS
+        flow.update { it + (event.userId to expiresAt) }
+        scope.launch {
+            delay(TYPING_EXPIRY_MS)
+            // A newer typing event moved the expiry; its own timer removes the entry.
+            flow.update { current ->
+                if (current[event.userId] == expiresAt) current - event.userId else current
+            }
+        }
     }
 
     private fun handleTypingStop(event: ServerEvent.TypingStop) {
         val flow = getOrCreateTypingUsersFlow(event.channelId)
-        flow.value = flow.value - event.userId
+        flow.update { it - event.userId }
     }
 }

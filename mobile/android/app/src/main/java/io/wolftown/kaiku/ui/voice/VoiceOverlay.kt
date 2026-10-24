@@ -8,7 +8,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import io.wolftown.kaiku.R
 
 /**
  * Compact bar shown at the bottom of other screens when the user is in a voice channel.
@@ -44,7 +48,7 @@ fun VoiceOverlay(
                 modifier = Modifier.weight(1f)
             ) {
                 Text(
-                    text = "Connected to #$channelName",
+                    text = stringResource(R.string.voice_overlay_connected, channelName),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                     maxLines = 1
@@ -52,7 +56,11 @@ fun VoiceOverlay(
             }
 
             // Mute toggle
-            IconButton(onClick = onMuteToggle) {
+            val muteDescription = stringResource(if (isMuted) R.string.voice_unmute else R.string.voice_mute)
+            IconButton(
+                onClick = onMuteToggle,
+                modifier = Modifier.semantics { contentDescription = muteDescription }
+            ) {
                 Text(
                     text = if (isMuted) "🔇" else "🎤",
                     style = MaterialTheme.typography.titleMedium
@@ -63,7 +71,7 @@ fun VoiceOverlay(
             IconButton(onClick = onDisconnect) {
                 Icon(
                     imageVector = Icons.Default.Call,
-                    contentDescription = "Disconnect",
+                    contentDescription = stringResource(R.string.voice_disconnect),
                     tint = MaterialTheme.colorScheme.error
                 )
             }

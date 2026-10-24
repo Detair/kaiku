@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.logging.Level
@@ -52,7 +53,19 @@ class TextChannelViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val messages: StateFlow<List<Message>> = chatRepository.getMessages(channelId)
-    val typingUsers: StateFlow<Set<String>> = chatRepository.getTypingUsers(channelId)
+
+    /** Ids of the other users typing right now (entries expire in the repository). */
+    val typingUserIds: StateFlow<Set<String>> = combine(
+        chatRepository.getTypingUsers(channelId),
+        authState.currentUserId,
+    ) { typing, me ->
+        typing.keys.filterTo(LinkedHashSet()) { it != me }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    /** User id to display name for everyone who wrote in the loaded messages. */
+    val memberNames: StateFlow<Map<String, String>> = messages
+        .map { list -> list.associate { it.author.id to it.author.displayName } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
