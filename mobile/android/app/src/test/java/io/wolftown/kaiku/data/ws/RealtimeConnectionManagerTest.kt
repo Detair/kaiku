@@ -97,10 +97,25 @@ class RealtimeConnectionManagerTest {
     private class Tokens(private val now: () -> Long) {
         var accessToken: String? = "token-0"
         var expiresAt: Long = 15 * 60_000L
+        var refreshToken: String? = "refresh-0"
+        var generation = 0L
         private var rotations = 0
 
         val storage: TokenStorage = mockk(relaxed = true) {
             every { getAccessToken() } answers { accessToken }
+            every { getRefreshToken() } answers { refreshToken }
+            every { getSessionGeneration() } answers { generation }
+            // Like TokenStorage: clears only if the refresh token still matches.
+            every { clearIfRefreshTokenIs(any()) } answers {
+                if (firstArg<String?>() == refreshToken) {
+                    accessToken = null
+                    refreshToken = null
+                    generation++
+                    true
+                } else {
+                    false
+                }
+            }
             every { getAccessTokenExpiresAtMillis() } answers { expiresAt }
             every { getServerUrl() } returns "https://kaiku.example.com"
         }
@@ -510,7 +525,8 @@ class RealtimeConnectionManagerTest {
 
         assertEquals(AuthSession.LoggedOut, h.authState.session.value)
         assertEquals(RealtimeStatus.Idle, h.manager.status.value)
-        verify { h.tokens.storage.clear() }
+        verify { h.tokens.storage.clearIfRefreshTokenIs("refresh-0") }
+        verify(exactly = 0) { h.tokens.storage.clear() }
 
         h.socket.rejectAuth()
         runCurrent()
@@ -520,6 +536,22 @@ class RealtimeConnectionManagerTest {
         assertEquals(1, h.socket.connects.size)
         assertEquals(0, h.refresher.forceCalls)
         assertEquals(RealtimeStatus.Idle, h.manager.status.value)
+    }
+
+    @Test
+    fun `stale password change refusal keeps a newer login`() = runManagerTest { h ->
+        connected(h)
+        // A newer login landed (new generation and tokens) before the refusal is handled.
+        h.tokens.generation = 5L
+        h.tokens.refreshToken = "refresh-new"
+
+        h.socket.emit(ServerEvent.Error("PASSWORD_CHANGE_REQUIRED", "server text"))
+        runCurrent()
+
+        assertTrue(h.authState.session.value is AuthSession.LoggedIn)
+        assertEquals("refresh-new", h.tokens.refreshToken)
+        verify(exactly = 0) { h.tokens.storage.clearIfRefreshTokenIs(any()) }
+        verify(exactly = 0) { h.tokens.storage.clear() }
     }
 
     @Test

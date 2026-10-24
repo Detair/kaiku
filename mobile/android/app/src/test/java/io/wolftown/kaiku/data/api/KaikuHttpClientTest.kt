@@ -831,9 +831,89 @@ class KaikuHttpClientTest {
         assertTrue(response.bodyAsText().contains("PASSWORD_CHANGE_REQUIRED"))
         assertEquals(listOf("/api/guilds"), paths) // no refresh, no retry
         verifyOrder {
-            tokenStorage.clear()
+            tokenStorage.clearIfRefreshTokenIs("refresh-1")
             authState.setLoggedOut()
         }
+        verify(exactly = 0) { tokenStorage.clear() }
+    }
+
+    @Test
+    fun `stale 403 PASSWORD_CHANGE_REQUIRED keeps a newer login`() = runTest {
+        var generation = 1L
+        var refreshToken: String? = "refresh-old"
+        every { tokenStorage.getSessionGeneration() } answers { generation }
+        every { tokenStorage.getAccessToken() } returns "access-old"
+        every { tokenStorage.getRefreshToken() } answers { refreshToken }
+        every { tokenStorage.clearIfRefreshTokenIs(any()) } answers { firstArg<String?>() == refreshToken }
+
+        val mockEngine = MockEngine {
+            // A newer login lands while the old session's request is in flight.
+            generation = 2L
+            refreshToken = "refresh-new"
+            respond(
+                content = """{"error":"PASSWORD_CHANGE_REQUIRED","message":"server text"}""",
+                status = HttpStatusCode.Forbidden,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+
+        createClient(mockEngine).activeClient().get("/api/guilds")
+
+        verify(exactly = 0) { tokenStorage.clearIfRefreshTokenIs(any()) }
+        verify(exactly = 0) { tokenStorage.clear() }
+        verify(exactly = 0) { authState.setLoggedOut() }
+    }
+
+    @Test
+    fun `403 PASSWORD_CHANGE_REQUIRED on the retry after refresh ends the session`() = runTest {
+        var accessToken: String? = "expired-token"
+        var refreshToken: String? = "refresh-1"
+        every { tokenStorage.getAccessToken() } answers { accessToken }
+        every { tokenStorage.getRefreshToken() } answers { refreshToken }
+        every { tokenStorage.getUserId() } returns "user-1"
+        every {
+            tokenStorage.saveTokensIfRefreshTokenIs(any(), any(), any(), any(), any())
+        } answers {
+            accessToken = secondArg()
+            refreshToken = thirdArg()
+            true
+        }
+        val paths = mutableListOf<String>()
+
+        val mockEngine = MockEngine { request ->
+            paths += request.url.encodedPath
+            val json = headersOf(HttpHeaders.ContentType, "application/json")
+            when {
+                request.url.encodedPath == "/auth/refresh" -> respond(
+                    content = """{
+                        "access_token": "access-2",
+                        "refresh_token": "refresh-2",
+                        "expires_in": 900,
+                        "token_type": "Bearer",
+                        "setup_required": false
+                    }""",
+                    status = HttpStatusCode.OK,
+                    headers = json
+                )
+                request.headers[HttpHeaders.Authorization] == "Bearer expired-token" -> respond(
+                    content = """{"error":"TOKEN_ERROR"}""",
+                    status = HttpStatusCode.Unauthorized,
+                    headers = json
+                )
+                else -> respond(
+                    content = """{"error":"PASSWORD_CHANGE_REQUIRED","message":"server text"}""",
+                    status = HttpStatusCode.Forbidden,
+                    headers = json
+                )
+            }
+        }
+
+        val response = createClient(mockEngine).activeClient().get("/api/guilds")
+
+        assertEquals(HttpStatusCode.Forbidden, response.status)
+        assertEquals(listOf("/api/guilds", "/auth/refresh", "/api/guilds"), paths) // no further retry
+        verify { tokenStorage.clearIfRefreshTokenIs("refresh-2") }
+        verify { authState.setLoggedOut() }
     }
 
     @Test

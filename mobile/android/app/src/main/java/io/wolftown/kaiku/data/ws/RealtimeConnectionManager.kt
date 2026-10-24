@@ -118,6 +118,9 @@ class RealtimeConnectionManager internal constructor(
     /** True between our socket.connect() and the socket's terminal state or our socket.disconnect(). */
     private var socketActive = false
     private var consecutiveAuthRejects = 0
+
+    /** Session generation of the token the current socket authenticated with. */
+    private var socketSessionGeneration = -1L
     private var lastPongAt = 0L
 
     /** Pongs received on the current socket; the foreground probe checks it moved. */
@@ -251,6 +254,8 @@ class RealtimeConnectionManager internal constructor(
             setStatus(RealtimeStatus.Offline)
             return
         }
+        // Read the generation before the token (same rule as the HTTP client).
+        val generation = tokenStorage.getSessionGeneration()
         val token = tokenStorage.getAccessToken() ?: run {
             logger.warning("no access token after refresh, not connecting")
             stopAfterSessionEnded()
@@ -260,6 +265,7 @@ class RealtimeConnectionManager internal constructor(
         socket.connect(url, token)
         // Only after connect() returned: if it threw, the actor's catch schedules a retry.
         socketActive = true
+        socketSessionGeneration = generation
         armConnectTimeout()
     }
 
@@ -344,10 +350,16 @@ class RealtimeConnectionManager internal constructor(
      */
     private fun onPasswordChangeRequired() {
         if (!isLoggedIn()) return
+        // Read the refresh token before the session check and clear only if it is
+        // still stored: a newer login (new generation / token) is never wiped.
+        val refreshToken = tokenStorage.getRefreshToken()
+        if (tokenStorage.getSessionGeneration() != socketSessionGeneration) {
+            logger.info("password-change refusal from an older session, ignored")
+            return
+        }
         logger.warning("server requires a password change, logging out")
         stopAfterSessionEnded()
-        tokenStorage.clear()
-        authState.setLoggedOut()
+        if (tokenStorage.clearIfRefreshTokenIs(refreshToken)) authState.setLoggedOut()
     }
 
     /** Step 6: offline pauses, online reconnects now. */

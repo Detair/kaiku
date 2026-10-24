@@ -39,12 +39,21 @@ import kotlin.test.assertIs
 @OptIn(ExperimentalCoroutinesApi::class)
 class AuthRepositoryPasswordChangeTest {
 
-    private data class Recorded(val path: String, val authorization: String?, val body: String)
+    private data class Recorded(
+        val host: String,
+        val path: String,
+        val authorization: String?,
+        val body: String
+    )
+
+    /** Configured server URL and stored access token, changeable by a test. */
+    private var serverUrl: String? = "https://kaiku.example.com"
+    private var storedAccessToken: String? = null
 
     private val tokenStorage: TokenStorage = mockk(relaxed = true) {
-        every { getServerUrl() } returns "https://kaiku.example.com"
-        // Nothing is stored while a change is pending: the explicit bearer header must survive.
-        every { getAccessToken() } returns null
+        every { getServerUrl() } answers { serverUrl }
+        // Nothing is stored while a change is pending, unless a test says otherwise.
+        every { getAccessToken() } answers { storedAccessToken }
         every { getRefreshToken() } returns null
     }
 
@@ -58,19 +67,24 @@ class AuthRepositoryPasswordChangeTest {
     private var passwordBody = """{"success":true,"message":"Password updated successfully.","revoked_count":0}"""
 
     /** Runs inside the server while a request is in flight (e.g. the user cancels meanwhile). */
+    private var duringLoginRequest: () -> Unit = {}
     private var duringPasswordRequest: () -> Unit = {}
     private var duringMeRequest: () -> Unit = {}
 
     private val engine = MockEngine { request ->
         val path = request.url.encodedPath
         requests += Recorded(
+            host = request.url.host,
             path = path,
             authorization = request.headers[HttpHeaders.Authorization],
             body = String(request.body.toByteArray())
         )
         val json = headersOf(HttpHeaders.ContentType, "application/json")
         when (path) {
-            "/auth/login" -> respond(Golden.load("auth_response_password_change.json"), HttpStatusCode.OK, json)
+            "/auth/login" -> {
+                duringLoginRequest()
+                respond(Golden.load("auth_response_password_change.json"), HttpStatusCode.OK, json)
+            }
             "/auth/me/password" -> {
                 duringPasswordRequest()
                 respond(passwordBody, passwordStatus, json)
@@ -125,6 +139,8 @@ class AuthRepositoryPasswordChangeTest {
         assertEquals(listOf("/auth/login", "/auth/me/password", "/auth/me"), requests.map { it.path })
 
         val change = requests[1]
+        assertEquals("kaiku.example.com", change.host)
+        assertEquals("kaiku.example.com", requests[2].host)
         assertEquals("Bearer $TEMP_ACCESS", change.authorization)
         val body = KaikuJson.parseToJsonElement(change.body).jsonObject
         assertEquals("temp-pass-1", body.getValue("current_password").jsonPrimitive.content)
@@ -188,6 +204,43 @@ class AuthRepositoryPasswordChangeTest {
         val result = repository.completePasswordChange("my-own-password")
 
         assertIs<IllegalStateException>(result.exceptionOrNull())
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        assertEquals(AuthSession.LoggedOut, authState.session.value)
+    }
+
+    @Test
+    fun `server change while pending sends nothing and fails`() = runTest {
+        repository.login("anna", "temp-pass-1")
+        serverUrl = "https://other.example.com"
+
+        val result = repository.completePasswordChange("my-own-password")
+
+        assertIs<IllegalStateException>(result.exceptionOrNull())
+        assertEquals(listOf("/auth/login"), requests.map { it.path }) // neither host got the passwords
+        assertFalse(repository.hasPendingPasswordChange())
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `explicit bearer survives a different stored token`() = runTest {
+        repository.login("anna", "temp-pass-1")
+        // E.g. another session got stored meanwhile: the interceptor must not swap tokens.
+        storedAccessToken = "other-stored-token"
+
+        repository.completePasswordChange("my-own-password")
+
+        assertEquals("Bearer $TEMP_ACCESS", requests.single { it.path == "/auth/me/password" }.authorization)
+        assertEquals("Bearer $TEMP_ACCESS", requests.single { it.path == "/auth/me" }.authorization)
+    }
+
+    @Test
+    fun `cancel while the login is in flight installs no pending change`() = runTest {
+        duringLoginRequest = { repository.cancelPasswordChange() }
+
+        val result = repository.login("anna", "temp-pass-1")
+
+        assertIs<IllegalStateException>(result.exceptionOrNull())
+        assertFalse(repository.hasPendingPasswordChange())
         verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
         assertEquals(AuthSession.LoggedOut, authState.session.value)
     }

@@ -19,6 +19,8 @@ import javax.inject.Singleton
  * the tokens and the temporary password.
  */
 internal data class PendingPasswordChange(
+    /** Server that issued the session; the change goes only there. */
+    val serverUrl: String,
     val accessToken: String,
     val refreshToken: String?,
     val expiresIn: Int,
@@ -48,6 +50,13 @@ class AuthRepository @Inject constructor(
     @Volatile
     private var pendingPasswordChange: PendingPasswordChange? = null
 
+    /**
+     * Bumped by every login, cancel and logout (under [pendingLock]). A login
+     * response only installs or persists anything if its attempt is still the
+     * latest, so a late response can't undo a cancel, a logout or a newer login.
+     */
+    private var loginAttempt = 0L
+
     /** Swaps the pending state only if it is still [expected] (same instance). */
     private fun replacePendingIf(expected: PendingPasswordChange, next: PendingPasswordChange?): Boolean =
         synchronized(pendingLock) {
@@ -59,9 +68,14 @@ class AuthRepository @Inject constructor(
             }
         }
 
-    private fun clearPending() {
-        synchronized(pendingLock) { pendingPasswordChange = null }
+    /** Drops the pending state and invalidates any login still in flight. */
+    private fun invalidateLogin(): Long = synchronized(pendingLock) {
+        pendingPasswordChange = null
+        ++loginAttempt
     }
+
+    private fun supersededResult(): Result<User> =
+        Result.failure(IllegalStateException("Login was cancelled or superseded"))
 
     /** True while a login is waiting for the user to choose a new password. */
     fun hasPendingPasswordChange(): Boolean = pendingPasswordChange != null
@@ -78,31 +92,50 @@ class AuthRepository @Inject constructor(
         password: String,
         mfaCode: String? = null
     ): Result<User> {
-        clearPending()
+        val attempt = invalidateLogin()
+        // The server this login goes to; a pending change is bound to it.
+        val serverUrl = tokenStorage.getServerUrl()
         return try {
             val authResponse = authApi.login(username, password, mfaCode)
 
             if (authResponse.passwordChangeRequired) {
+                if (serverUrl == null) return supersededResult()
                 val pending = PendingPasswordChange(
+                    serverUrl = serverUrl,
                     accessToken = authResponse.accessToken,
                     refreshToken = authResponse.refreshToken,
                     expiresIn = authResponse.expiresIn,
                     currentPassword = password
                 )
-                synchronized(pendingLock) { pendingPasswordChange = pending }
+                val installed = synchronized(pendingLock) {
+                    if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl) {
+                        pendingPasswordChange = pending
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (!installed) return supersededResult()
                 return Result.failure(PasswordChangeRequiredException())
             }
 
             val user = authApi.authenticatedGetMe(authResponse.accessToken)
 
-            tokenStorage.saveTokens(
-                accessToken = authResponse.accessToken,
-                refreshToken = authResponse.refreshToken,
-                expiresIn = authResponse.expiresIn,
-                userId = user.id
-            )
-
-            authState.setLoggedIn(user.id)
+            val persisted = synchronized(pendingLock) {
+                if (loginAttempt != attempt) {
+                    false
+                } else {
+                    tokenStorage.saveTokens(
+                        accessToken = authResponse.accessToken,
+                        refreshToken = authResponse.refreshToken,
+                        expiresIn = authResponse.expiresIn,
+                        userId = user.id
+                    )
+                    authState.setLoggedIn(user.id)
+                    true
+                }
+            }
+            if (!persisted) return supersededResult()
             Result.success(user)
         } catch (_: MfaRequiredApiException) {
             Result.failure(MfaRequiredException())
@@ -120,23 +153,33 @@ class AuthRepository @Inject constructor(
      * The pending state is cleared on success. Fails with
      * [IllegalStateException] if no password change is pending, or if it was
      * cancelled or replaced while a request was in flight: then nothing is
-     * persisted and the user is not logged in.
+     * persisted and the user is not logged in. The requests go only to the
+     * server that issued the pending session; if the configured server changed
+     * meanwhile, the pending change is dropped and nothing is sent.
      */
     suspend fun completePasswordChange(newPassword: String): Result<User> {
         val pending = pendingPasswordChange
             ?: return Result.failure(IllegalStateException("No password change pending"))
+        if (!isSameServer(pending)) {
+            replacePendingIf(pending, null)
+            return cancelledResult()
+        }
         return try {
-            authApi.changePassword(pending.accessToken, pending.currentPassword, newPassword)
+            authApi.changePassword(pending.serverUrl, pending.accessToken, pending.currentPassword, newPassword)
             // The new password is now the current one: a retry after a failed
             // getMe must not send the old temporary password again.
             val changed = pending.copy(currentPassword = newPassword)
             if (!replacePendingIf(pending, changed)) return cancelledResult()
+            if (!isSameServer(pending)) {
+                replacePendingIf(changed, null)
+                return cancelledResult()
+            }
 
-            val user = authApi.authenticatedGetMe(pending.accessToken)
+            val user = authApi.authenticatedGetMe(pending.accessToken, pending.serverUrl)
 
             // Check and persist under the lock: a cancel can't slip in between.
             val persisted = synchronized(pendingLock) {
-                if (pendingPasswordChange !== changed) {
+                if (pendingPasswordChange !== changed || !isSameServer(pending)) {
                     false
                 } else {
                     tokenStorage.saveTokens(
@@ -159,12 +202,15 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    private fun isSameServer(pending: PendingPasswordChange): Boolean =
+        tokenStorage.getServerUrl() == pending.serverUrl
+
     private fun cancelledResult(): Result<User> =
         Result.failure(IllegalStateException("Password change was cancelled"))
 
     /** Drops the pending password change (Back on the change-password screen). */
     fun cancelPasswordChange() {
-        clearPending()
+        invalidateLogin()
     }
 
     suspend fun register(
@@ -196,7 +242,7 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun logout() {
-        clearPending()
+        invalidateLogin()
         try {
             authApi.logout()
         } catch (e: CancellationException) {
