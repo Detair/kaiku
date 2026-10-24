@@ -336,7 +336,7 @@ impl IntoResponse for PushError {
 pub struct CreateSubscriptionRequest {
     #[validate(length(min = 1, max = 32))]
     pub provider: String,
-    #[validate(length(min = 1, max = 2048))]
+    #[validate(length(min = 1, max = 4096))]
     pub endpoint: String,
     pub public_key: Option<String>,
     pub auth_key: Option<String>,
@@ -425,22 +425,24 @@ pub async fn create_subscription(
     }
 
     let mut tx = state.db.begin().await?;
-    let sub: PushSubscription = if let Some(device_id) = body.device_id {
-        // The device moved to this account: drop it (and its token) from others.
-        sqlx::query("DELETE FROM push_subscriptions WHERE device_id = $1 AND user_id <> $2")
-            .bind(device_id)
-            .bind(auth.id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            "DELETE FROM push_subscriptions
-             WHERE provider = $1 AND endpoint = $2 AND user_id <> $3",
-        )
-        .bind(&body.provider)
-        .bind(&body.endpoint)
+    // Serialize registrations per user (cap race, same-endpoint races).
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
         .bind(auth.id)
         .execute(&mut *tx)
         .await?;
+    // A handed-down phone: the same (provider, endpoint) under other users is
+    // removed. Matching only on the endpoint proves possession; a device_id is
+    // client-asserted and never triggers cross-user deletes.
+    sqlx::query(
+        "DELETE FROM push_subscriptions
+         WHERE provider = $1 AND endpoint = $2 AND user_id <> $3",
+    )
+    .bind(&body.provider)
+    .bind(&body.endpoint)
+    .bind(auth.id)
+    .execute(&mut *tx)
+    .await?;
+    let sub: PushSubscription = if let Some(device_id) = body.device_id {
         // A device holds exactly one subscription per user.
         sqlx::query(
             "DELETE FROM push_subscriptions
@@ -458,7 +460,7 @@ pub async fn create_subscription(
              ON CONFLICT (user_id, device_id) WHERE device_id IS NOT NULL DO UPDATE SET
                  provider = EXCLUDED.provider, endpoint = EXCLUDED.endpoint,
                  public_key = EXCLUDED.public_key, auth_key = EXCLUDED.auth_key,
-                 device_label = EXCLUDED.device_label, last_used_at = NULL
+                 device_label = EXCLUDED.device_label
              RETURNING id, user_id, provider, endpoint, public_key, auth_key, device_label,
                        created_at, last_used_at, device_id",
         )

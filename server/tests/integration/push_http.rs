@@ -462,7 +462,7 @@ async fn test_device_reregistration_replaces_previous_endpoint(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn test_device_id_moves_to_new_user(pool: PgPool) {
+async fn test_foreign_device_id_does_not_remove_other_users_row(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (a, _) = create_test_user(&pool).await;
     let (b, _) = create_test_user(&pool).await;
@@ -485,8 +485,109 @@ async fn test_device_id_moves_to_new_user(pool: PgPool) {
     .await;
     assert_eq!(r.status(), StatusCode::CREATED);
 
+    assert_eq!(list_subs(&app, &ta).await.len(), 1);
+    assert_eq!(list_subs(&app, &tb).await.len(), 1);
+}
+
+#[sqlx::test]
+async fn test_same_endpoint_moves_to_new_user_with_same_device_id(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let ta = generate_access_token(&app.config, a);
+    let tb = generate_access_token(&app.config, b);
+    let device = Uuid::new_v4();
+    let body = json!({"provider": "unifiedpush", "endpoint": "https://ntfy.example.com/p", "device_id": device});
+
+    assert_eq!(
+        post_sub(&app, &ta, body.clone()).await.status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        post_sub(&app, &tb, body).await.status(),
+        StatusCode::CREATED
+    );
     assert!(list_subs(&app, &ta).await.is_empty());
     assert_eq!(list_subs(&app, &tb).await.len(), 1);
+}
+
+#[sqlx::test]
+async fn test_legacy_registration_moves_endpoint_to_new_user(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let ta = generate_access_token(&app.config, a);
+    let tb = generate_access_token(&app.config, b);
+    let body = json!({"provider": "unifiedpush", "endpoint": "https://ntfy.example.com/legacy"});
+
+    assert_eq!(
+        post_sub(&app, &ta, body.clone()).await.status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        post_sub(&app, &tb, body).await.status(),
+        StatusCode::CREATED
+    );
+    assert!(list_subs(&app, &ta).await.is_empty());
+    assert_eq!(list_subs(&app, &tb).await.len(), 1);
+}
+
+#[sqlx::test]
+async fn test_same_user_same_endpoint_new_device_replaces_old(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (u, _) = create_test_user(&pool).await;
+    let t = generate_access_token(&app.config, u);
+    let (d1, d2) = (Uuid::new_v4(), Uuid::new_v4());
+    let ep = "https://ntfy.example.com/same";
+
+    for d in [d1, d2] {
+        let r = post_sub(
+            &app,
+            &t,
+            json!({"provider": "unifiedpush", "endpoint": ep, "device_id": d}),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::CREATED);
+    }
+    let list = list_subs(&app, &t).await;
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["device_id"], json!(d2.to_string()));
+}
+
+#[sqlx::test]
+async fn test_device_registration_adopts_legacy_row_with_same_endpoint(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (u, _) = create_test_user(&pool).await;
+    let t = generate_access_token(&app.config, u);
+    let ep = "https://ntfy.example.com/legacy2";
+
+    let r = post_sub(&app, &t, json!({"provider": "unifiedpush", "endpoint": ep})).await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let device = Uuid::new_v4();
+    let r = post_sub(
+        &app,
+        &t,
+        json!({"provider": "unifiedpush", "endpoint": ep, "device_id": device}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let list = list_subs(&app, &t).await;
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["device_id"], json!(device.to_string()));
+}
+
+#[sqlx::test]
+async fn test_fcm_token_of_4096_chars_is_accepted(pool: PgPool) {
+    let (app, _mock) = fcm_enabled_app(pool.clone()).await;
+    let (u, _) = create_test_user(&pool).await;
+    let t = generate_access_token(&app.config, u);
+    let r = post_sub(
+        &app,
+        &t,
+        json!({"provider": "fcm", "endpoint": "a".repeat(4096), "device_id": Uuid::new_v4()}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
 }
 
 #[sqlx::test]

@@ -51,6 +51,12 @@ URLs or the repo. FCM logs carry only the HTTP status and the FCM `errorCode`.
   `server/tests/fixtures/fcm_test_key.rs` is test-only. No test may reach the
   internet.
 
+## Registration trust
+
+Cross-user cleanup on registration matches only an exact (provider, endpoint):
+possessing the token proves the phone changed hands. A `device_id` is
+client-asserted, so it never deletes another user's rows.
+
 ## Single replica
 
 The access-token cache is per process. Any per-user push state (e.g.
