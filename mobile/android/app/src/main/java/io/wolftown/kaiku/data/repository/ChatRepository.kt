@@ -114,18 +114,33 @@ class ChatRepository @Inject constructor(
      * Loads one page of history for [channelId] and returns whether older
      * messages exist on the server (`has_more`).
      *
-     * Without [before] the page replaces the current list (initial load).
+     * Without [before] the page replaces the current list (initial load),
+     * except for messages newer than the page's newest item: those arrived
+     * live while the request was in flight and are kept. For an empty page,
+     * messages that arrived during the request are kept.
      * With [before] the older page is merged into the current list.
      * Either way the list ends up oldest-to-newest (see [MessageOrdering]).
      */
     suspend fun loadMessages(channelId: String, before: String? = null): Boolean {
-        val page = messageApi.getMessages(channelId, before = before)
         val flow = getOrCreateMessagesFlow(channelId)
+        val idsBeforeRequest = flow.value.mapTo(HashSet()) { it.id }
+        val page = messageApi.getMessages(channelId, before = before)
 
         if (before != null) {
             flow.update { existing -> MessageOrdering.merge(existing, page.items) }
         } else {
-            flow.value = MessageOrdering.merge(emptyList(), page.items)
+            val latest = MessageOrdering.merge(emptyList(), page.items)
+            val newest = latest.lastOrNull()
+            flow.update { existing ->
+                val live = existing.filter { message ->
+                    if (newest != null) {
+                        MessageOrdering.isNewer(message, newest)
+                    } else {
+                        message.id !in idsBeforeRequest
+                    }
+                }
+                MessageOrdering.merge(latest, live)
+            }
         }
         return page.hasMore
     }

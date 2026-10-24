@@ -30,6 +30,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -102,6 +103,7 @@ class ChatRepositoryCatchUpTest {
      * `after` request; returning null answers 400 "Unknown cursor".
      */
     private fun createRepository(
+        onLatestPageRequest: () -> Unit = {},
         afterPage: (after: String, index: Int) -> CursorPage<Message>? = { _, _ ->
             CursorPage(emptyList(), hasMore = false)
         },
@@ -111,6 +113,7 @@ class ChatRepositoryCatchUpTest {
             requests += request
             val after = request.url.parameters["after"]
             if (after == null) {
+                onLatestPageRequest()
                 jsonResponse(this, Golden.load("messages_page.json"))
             } else {
                 val page = afterPage(after, afterIndex++)
@@ -290,5 +293,30 @@ class ChatRepositoryCatchUpTest {
         eventsFlow.emit(WsJson.decodeFromString<ServerEvent>(Golden.load("ws_ready.json")))
 
         assertEquals("2026-03-12T10:03:00.250Z", repository.lastServerTime.value)
+    }
+
+    // -- Initial load ---------------------------------------------------------
+
+    @Test
+    fun `initial load keeps a live message that arrived during the request`() = runTest {
+        val live = WsJson.decodeFromString<ServerEvent>(Golden.load("ws_message_new.json"))
+        val repository = createRepository(onLatestPageRequest = { eventsFlow.tryEmit(live) })
+
+        repository.loadMessages(CHANNEL_ID)
+
+        assertEquals(listOf(OLDER_ID, NEWER_ID, LIVE_ID), repository.ids())
+    }
+
+    @Test
+    fun `initial load still drops messages older than the page`() = runTest {
+        val stale = missed(0).copy(id = "stale", createdAt = "2026-03-12T09:00:00Z")
+        val repository = createRepository()
+        val payload = KaikuJson.encodeToJsonElement(Message.serializer(), stale).jsonObject
+        eventsFlow.emit(ServerEvent.MessageNew(CHANNEL_ID, payload))
+        assertEquals(listOf("stale"), repository.ids())
+
+        repository.loadMessages(CHANNEL_ID)
+
+        assertEquals(listOf(OLDER_ID, NEWER_ID), repository.ids())
     }
 }
