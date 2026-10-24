@@ -1,89 +1,30 @@
 /**
- * English message catalog (the only locale for v1.0).
+ * English message catalog, aggregated from one file per area (`en/<area>.ts`).
  *
- * Key convention: `area.screen.purpose`, whole sentences per key, `{{name}}`
- * placeholders. The Android client mirrors keys in strings.xml with `.` -> `_`.
+ * Key convention (contract C15): `area.screen.purpose`, whole sentences per
+ * key, `{{name}}` placeholders, plural forms as sibling `….one`/`….other`
+ * keys. The first segment is the area, and only `en/<area>.ts` may hold keys
+ * for it; a new area is a new file plus one spread line here. The Android
+ * client mirrors keys in strings.xml with `.` -> `_`, camelCase -> snake_case.
  */
+import { common } from "./en/common";
+import { connection } from "./en/connection";
+import { auth } from "./en/auth";
+import { qr } from "./en/qr";
+import { chat } from "./en/chat";
+import { dm } from "./en/dm";
+import { admin } from "./en/admin";
+import { settings } from "./en/settings";
+
 export const en = {
-  "common.cancel": "Cancel",
-  "common.close": "Close",
-  "common.save": "Save",
-  "common.retry": "Retry",
-  "common.copy": "Copy",
-  "common.copied": "Copied",
-  "connection.attempt.one": "Attempt {{count}}",
-  "connection.attempt.other": "Attempt {{count}}",
-  "connection.reconnecting": "Reconnecting…",
-  "connection.offline": "You're offline. New messages will appear when you're back online.",
-  "connection.retryNow": "Retry now",
-  "auth.notRememberedTitle": "Login not saved",
-  "auth.notRemembered": "Kaiku couldn't save your login on this computer, so you'll need to sign in again next time.",
-  "auth.restore.unreachableTitle": "Can't reach the server",
-  "auth.restore.unreachable": "You're still signed in. Kaiku keeps trying to connect and opens as soon as the server is reachable.",
-  "auth.restore.retryNow": "Try again",
-  "auth.restore.signInInstead": "Sign in instead",
-  "auth.forcedChange.title": "Choose your own password",
-  "auth.forcedChange.intro": "You signed in with a temporary password. Choose your own password to continue.",
-  "auth.forcedChange.currentPassword": "Temporary password",
-  "auth.forcedChange.currentPasswordPlaceholder": "Enter the temporary password",
-  "auth.forcedChange.newPassword": "New password",
-  "auth.forcedChange.newPasswordPlaceholder": "At least 8 characters",
-  "auth.forcedChange.confirmPassword": "Confirm new password",
-  "auth.forcedChange.confirmPasswordPlaceholder": "Repeat the new password",
-  "auth.forcedChange.submit": "Save password",
-  "auth.forcedChange.saving": "Saving…",
-  "auth.forcedChange.signOut": "Sign out",
-  "auth.forcedChange.currentRequired": "Enter the temporary password you were given.",
-  "auth.forcedChange.length": "The password must be 8 to 128 characters.",
-  "auth.forcedChange.mismatch": "The passwords do not match.",
-  "auth.forcedChange.sameAsTemporary": "Choose a password that differs from the temporary one.",
-  "auth.forcedChange.wrongTemporary": "The temporary password is not correct.",
-  "auth.forcedChange.failed": "Could not save the password. Please try again.",
-  "auth.forcedChange.savedOffline": "Your new password is saved, but Kaiku couldn't reach the server to continue. Check your connection and try again.",
-  "auth.forcedChange.retry": "Try again",
-  "qr.title": "Link Mobile Device",
-  "qr.instructions": "Scan this code with the Kaiku mobile app to sign in",
-  "qr.alt": "QR login code",
-  "qr.expiresIn": "Expires in {{seconds}}s",
-  "qr.expired": "Code expired",
-  "qr.generateNew": "Generate new code",
-  "qr.tryAgain": "Try again",
-  "qr.noServer": "Can't create a login code because the server address is unknown. Sign out and sign in again.",
-  "qr.failedTitle": "QR Code Failed",
-  "qr.failedMessage": "Could not generate QR login code.",
-  "chat.encryptedPlaceholder": "Encrypted message — it can't be shown on this device.",
-  "dm.header.selectConversation": "Select a conversation",
-  "dm.header.unknownUser": "Unknown",
-  "dm.header.changeIcon": "Change icon (Max {{limit}})",
-  "dm.header.iconAlt": "DM Icon",
-  "dm.header.uploadIconFailed": "Failed to upload icon",
-  "dm.header.clickToRename": "Click to rename",
-  "dm.header.renameFailed": "Could not rename conversation. Please try again.",
-  "dm.header.members": "{{count}} members",
-  "dm.header.startCall": "Start voice call",
-  "dm.header.callInProgress": "Call in progress",
-  "admin.createAccount.button": "Create account",
-  "admin.createAccount.title": "Create account",
-  "admin.createAccount.needsElevation": "Elevate your session to create accounts.",
-  "admin.createAccount.username": "Username",
-  "admin.createAccount.usernameHint": "3-32 characters: lowercase letters, digits and underscore.",
-  "admin.createAccount.displayName": "Display name (optional)",
-  "admin.createAccount.password": "Temporary password",
-  "admin.createAccount.generate": "Generate new",
-  "admin.createAccount.copy": "Copy",
-  "admin.createAccount.copyAll": "Copy all",
-  "admin.createAccount.copied": "Copied",
-  "admin.createAccount.copyFailed": "Could not copy. Select the text and copy it manually.",
-  "admin.createAccount.submit": "Create account",
-  "admin.createAccount.cancel": "Cancel",
-  "admin.createAccount.close": "Close",
-  "admin.createAccount.usernameInvalid": "Username must be 3-32 characters: lowercase letters, digits or underscore.",
-  "admin.createAccount.passwordLength": "The password must be 8 to 128 characters.",
-  "admin.createAccount.usernameTaken": "That username is already taken.",
-  "admin.createAccount.failed": "Could not create the account. Please try again.",
-  "admin.createAccount.created": "Account created",
-  "admin.createAccount.server": "Server",
-  "admin.createAccount.handover": "Give these to {{name}}. They will choose their own password the first time they sign in.",
+  ...common,
+  ...connection,
+  ...auth,
+  ...qr,
+  ...chat,
+  ...dm,
+  ...admin,
+  ...settings,
 } as const;
 
 export type MessageKey = keyof typeof en;

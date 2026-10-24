@@ -3,6 +3,7 @@ export const I18N_GUARDED_FILES = [
   "src/i18n/**/*.{ts,tsx}",
   "src/components/layout/ConnectionIndicator.tsx",
   "src/components/settings/QrLoginModal.tsx",
+  "src/components/settings/LanguageSelect.tsx",
   "src/components/home/DMConversation.tsx",
   "src/components/admin/CreateAccountModal.tsx",
   "src/views/ForcedPasswordChange.tsx",
