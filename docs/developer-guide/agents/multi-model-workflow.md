@@ -76,3 +76,9 @@ directory. Briefs live in `docs/developer-guide/agents/experts/`.
   stdin ("Reading additional input from stdin..."). Always redirect stdin for
   headless CLIs: `codex exec … </dev/null`, `agy … </dev/null`,
   `opencode run … </dev/null`.
+- 2026-10-24 (maintainer): use Fable only for the biggest and most important
+  reviews (final whole-branch reviews, auth/security-critical diffs); otherwise
+  pick the adequate model — Sonnet for task reviews and re-reviews, Opus for
+  concurrency or complex stage reviews. Goal: best result, token-efficient.
+- 2026-10-24 (maintainer): if Codex hits a rate limit, fall back to Gemini
+  (`gemini-3.8-flash-high`) immediately instead of waiting for the reset.
