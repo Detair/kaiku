@@ -12,6 +12,7 @@ import com.google.android.gms.security.ProviderInstaller
 import dagger.hilt.android.HiltAndroidApp
 import io.wolftown.kaiku.data.api.AuthHeaderInterceptor
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.data.session.SessionTeardownRunner
 import io.wolftown.kaiku.data.sync.ResyncCoordinator
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import okhttp3.OkHttpClient
@@ -38,11 +39,16 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory {
     @Inject
     lateinit var resyncCoordinator: ResyncCoordinator
 
+    /** Tears down voice, realtime and caches whenever a session ends (logout or rejection). */
+    @Inject
+    lateinit var sessionTeardownRunner: SessionTeardownRunner
+
     override fun onCreate() {
         super.onCreate()
         // First connect waits for AuthState.initialize() in MainActivity, which runs after the ProviderInstaller TLS step below.
         // Observe Ready before the first connect can produce one.
         resyncCoordinator.start()
+        sessionTeardownRunner.start()
         realtimeConnectionManager.start()
         try {
             ProviderInstaller.installIfNeeded(this)

@@ -1,7 +1,5 @@
 package io.wolftown.kaiku.data.voice
 
-import android.content.Context
-import dagger.hilt.android.qualifiers.ApplicationContext
 import io.wolftown.kaiku.data.api.IceServer
 import io.wolftown.kaiku.data.api.VoiceApi
 import io.wolftown.kaiku.di.VoiceCoroutineScope
@@ -28,7 +26,6 @@ import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import org.webrtc.VideoTrack
-import org.webrtc.audio.JavaAudioDeviceModule
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -58,9 +55,9 @@ import javax.inject.Singleton
  */
 @Singleton
 class WebRtcManager @Inject constructor(
-    @ApplicationContext private val context: Context,
     private val voiceApi: VoiceApi,
     private val eglBaseProvider: EglBaseProvider,
+    private val factoryProvider: PeerConnectionFactoryProvider,
     @VoiceCoroutineScope private val voiceScope: CoroutineScope,
 ) {
     companion object {
@@ -79,7 +76,6 @@ class WebRtcManager @Inject constructor(
     @Volatile
     private var subscriberPc: PeerConnection? = null
     private var audioSource: AudioSource? = null
-    private var audioDeviceModule: org.webrtc.audio.AudioDeviceModule? = null
     private var subscriberRemoteDescriptionSet = false
     private val subscriberPendingCandidates = mutableListOf<String>()  // buffered JSON strings
 
@@ -112,8 +108,8 @@ class WebRtcManager @Inject constructor(
      * Lazy so tests that never touch video rendering never trigger EGL init,
      * and so production startup defers the native cost until first use.
      *
-     * Exposed via the `eglBase` accessor below; dispose() uses `_eglBase.isInitialized()`
-     * to avoid re-triggering init purely to release.
+     * Exposed via the `eglBase` accessor below. One per process, like the factory:
+     * dispose() does not release it.
      */
     private val _eglBase: Lazy<EglBase> = lazy { eglBaseProvider.create() }
 
@@ -181,29 +177,15 @@ class WebRtcManager @Inject constructor(
     // -- Lifecycle ------------------------------------------------------------
 
     /**
-     * Initializes the [PeerConnectionFactory].
+     * Takes the process-wide [PeerConnectionFactory] from [factoryProvider].
      *
-     * Must be called once before [createSubscriberPeerConnection] or
-     * [createPublisherOffer]. Safe to call multiple times — subsequent
-     * calls are no-ops if the factory already exists.
+     * Must be called before [createSubscriberPeerConnection] or
+     * [createPublisherOffer]. Safe to call multiple times (every join does);
+     * the factory is created once per process and never disposed here.
      */
     suspend fun initialize() = initMutex.withLock {
         if (factory != null) return
-
-        PeerConnectionFactory.initialize(
-            PeerConnectionFactory.InitializationOptions.builder(context)
-                .setEnableInternalTracer(false)
-                .createInitializationOptions()
-        )
-
-        audioDeviceModule = JavaAudioDeviceModule.builder(context)
-            .createAudioDeviceModule()
-
-        factory = PeerConnectionFactory.builder()
-            .setAudioDeviceModule(audioDeviceModule)
-            .createPeerConnectionFactory()
-
-        logger.info("PeerConnectionFactory initialized")
+        factory = factoryProvider.get()
     }
 
     /**
@@ -364,22 +346,14 @@ class WebRtcManager @Inject constructor(
         logger.info("Publisher and subscriber PeerConnections closed")
     }
 
-    /** Disposes of the factory and all resources. Call on application shutdown. */
+    /**
+     * Releases the peer connections, tracks and sources of the current call.
+     * The factory, its audio device module and the shared EGL context stay
+     * alive for the next join (one per process, see
+     * [PeerConnectionFactoryProvider]).
+     */
     fun dispose() {
         closePeerConnections()
-        factory?.dispose()
-        factory = null
-        audioDeviceModule?.release()
-        audioDeviceModule = null
-        if (_eglBase.isInitialized()) {
-            try {
-                _eglBase.value.release()
-            } catch (_: IllegalStateException) {
-                // EglBase may already be released
-            } catch (e: Exception) {
-                logger.log(Level.WARNING, "Unexpected error releasing EglBase", e)
-            }
-        }
         logger.info("WebRtcManager disposed")
     }
 

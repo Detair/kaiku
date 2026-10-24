@@ -27,7 +27,11 @@ interface AuthApi {
         displayName: String? = null
     ): AuthResponse
     suspend fun refresh(refreshToken: String): AuthResponse
-    suspend fun logout()
+    /**
+     * `POST /auth/logout`. Sends [refreshToken] in the body when known; without
+     * it the bearer token alone ends the session (C25). Never logs tokens.
+     */
+    suspend fun logout(refreshToken: String?)
     suspend fun getMe(): User
     /**
      * Calls /auth/me with an explicit bearer token. The request skips the auth
@@ -70,7 +74,9 @@ private data class RegisterRequest(
 @Serializable
 private data class RefreshTokenRequest(
     val refreshToken: String
-)
+) {
+    override fun toString(): String = "RefreshTokenRequest"
+}
 
 @Serializable
 private data class OidcCallbackRequest(
@@ -156,8 +162,10 @@ class AuthApiImpl @Inject constructor(
         return response.body()
     }
 
-    override suspend fun logout() {
-        val response = httpClient.post("/auth/logout")
+    override suspend fun logout(refreshToken: String?) {
+        val response = httpClient.post("/auth/logout") {
+            if (refreshToken != null) setBody(RefreshTokenRequest(refreshToken))
+        }
         if (!response.status.isSuccess()) {
             logger.log(Level.WARNING, "Logout request failed: ${response.status}")
         }

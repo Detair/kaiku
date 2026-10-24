@@ -156,6 +156,26 @@ class ChatRepository internal constructor(
 
     // -- Public API ------------------------------------------------------------
 
+    /**
+     * Session teardown: empties every message and typing list (screens still
+     * holding a flow see it empty), forgets subscriptions, DM tracking,
+     * catch-up anchors, the server-time watermark and the upload limits. The
+     * WebSocket event collector keeps running for the next session.
+     */
+    fun clearSession() {
+        channelMessages.values.forEach { it.value = emptyList() }
+        channelMessages.clear()
+        channelTypingUsers.values.forEach { it.value = emptyMap() }
+        channelTypingUsers.clear()
+        lastTypingSent.clear()
+        subscribedChannels.clear()
+        dmChannels.clear()
+        dmTrackedAt.clear()
+        catchUpAnchors.clear()
+        _lastServerTime.value = null
+        cachedLimits = null
+    }
+
     fun getMessages(channelId: String): StateFlow<List<Message>> {
         return getOrCreateMessagesFlow(channelId).asStateFlow()
     }

@@ -68,6 +68,13 @@ class DmRepository @Inject constructor(
         activeChannelId.compareAndSet(channelId, null)
     }
 
+    /** Session teardown: drops the conversation list, the open DM and live-DM bookkeeping. */
+    fun clearSession() {
+        activeChannelId.value = null
+        liveCreatedAt.clear()
+        _conversations.value = emptyList()
+    }
+
     /** Sequence of dm_created events, and the position each live DM arrived at. */
     private val liveSeq = AtomicLong(0)
     private val liveCreatedAt = ConcurrentHashMap<String, Long>()

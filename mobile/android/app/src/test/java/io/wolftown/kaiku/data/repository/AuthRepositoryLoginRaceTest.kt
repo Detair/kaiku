@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.data.repository
 
+import io.wolftown.kaiku.testutil.noTeardown
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
@@ -40,7 +41,7 @@ class AuthRepositoryLoginRaceTest {
 
     // UnconfinedTestDispatcher drives AuthState's stateIn synchronously (see app/src/test/AGENTS.md).
     private val authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
-    private val repository = AuthRepository(authApi, tokenStorage, authState)
+    private val repository = AuthRepository(authApi, tokenStorage, authState, noTeardown(authState))
 
     private fun response(access: String) = AuthResponse(
         accessToken = access,
@@ -107,7 +108,8 @@ class AuthRepositoryLoginRaceTest {
         val realRepository = AuthRepository(
             AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
             tokenStorage,
-            authState
+            authState,
+            noTeardown(authState)
         )
 
         val result = realRepository.login("anna", "pw")

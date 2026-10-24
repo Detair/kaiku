@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.data.repository
 
+import io.wolftown.kaiku.testutil.noTeardown
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.toByteArray
@@ -100,7 +101,8 @@ class AuthRepositoryPasswordChangeTest {
     private val repository = AuthRepository(
         AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
         tokenStorage,
-        authState
+        authState,
+        noTeardown(authState)
     )
 
     private companion object {

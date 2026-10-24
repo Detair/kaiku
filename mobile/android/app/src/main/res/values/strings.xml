@@ -129,6 +129,8 @@
     <string name="voice_microphone_on">On</string>
     <string name="voice_audio_output">Audio output</string>
     <string name="voice_overlay_connected">Connected to #%1$s</string>
+    <string name="voice_overlay_connected_unknown">Connected to voice</string>
+    <string name="voice_overlay_return">Return to call</string>
     <string name="voice_in_channel">In voice channel</string>
     <string name="voice_default_channel_name">Voice channel</string>
     <string name="voice_notification_channel_name">Voice calls</string>

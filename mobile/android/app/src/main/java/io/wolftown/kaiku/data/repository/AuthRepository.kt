@@ -2,8 +2,10 @@ package io.wolftown.kaiku.data.repository
 
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.api.MfaRequiredApiException
+import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.data.session.SessionTeardownRunner
 import io.wolftown.kaiku.domain.model.User
 import io.wolftown.kaiku.ui.auth.MfaRequiredException
 import io.wolftown.kaiku.ui.auth.PasswordChangeRequiredException
@@ -35,7 +37,8 @@ internal data class PendingPasswordChange(
 class AuthRepository @Inject constructor(
     private val authApi: AuthApi,
     private val tokenStorage: TokenStorage,
-    private val authState: AuthState
+    private val authState: AuthState,
+    private val sessionTeardown: SessionTeardownRunner
 ) {
     companion object {
         private val logger = Logger.getLogger("AuthRepository")
@@ -252,17 +255,38 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    /**
+     * Signs out on this device and on the server, in this order:
+     *
+     * 1. (push plan Task 7: `pushRegistrar.unregisterForLogout()` goes here,
+     *    FIRST, while the session token still works)
+     * 2. session teardown ([SessionTeardownRunner]): leave voice, close the
+     *    realtime connection, clear caches; each step bounded and best-effort
+     * 3. `POST /auth/logout` with the refresh token (best-effort; C25 also
+     *    ends the session from the bearer token alone)
+     * 4. clear the stored tokens, then LoggedOut
+     *
+     * Step 4 always runs, even if an earlier step fails or the caller is
+     * cancelled. The LoggedOut transition does not tear down a second time.
+     */
     suspend fun logout() {
         invalidateLogin()
+        val session = authState.session.value as? AuthSession.LoggedIn
         try {
-            authApi.logout()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            logger.log(Level.WARNING, "Server-side logout failed (best-effort)", e)
+            // Push Task 7: pushRegistrar.unregisterForLogout() — keep it the first step.
+            sessionTeardown.tearDown(session)
+            try {
+                // Read after the teardown: a refresh may have rotated it meanwhile.
+                authApi.logout(tokenStorage.getRefreshToken())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.log(Level.WARNING, "Server-side logout failed (best-effort): ${e::class.simpleName}")
+            }
+        } finally {
+            tokenStorage.clear()
+            authState.setLoggedOut()
         }
-        tokenStorage.clear()
-        authState.setLoggedOut()
     }
 
     suspend fun getCurrentUser(): Result<User> {

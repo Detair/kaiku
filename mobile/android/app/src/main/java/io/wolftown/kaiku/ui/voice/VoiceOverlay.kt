@@ -16,15 +16,16 @@ import androidx.compose.ui.unit.dp
 import io.wolftown.kaiku.R
 
 /**
- * Compact bar shown at the bottom of other screens when the user is in a voice channel.
+ * Compact bar shown at the bottom of other screens while a voice call runs
+ * (see [shouldShowVoiceOverlay]).
  *
  * Height: 56dp with accent background.
- * Shows: "Connected to #channel-name"
- * Actions: mute toggle, tap to navigate, disconnect
+ * Shows: "Connected to #channel-name" ([channelName] null: "Connected to voice")
+ * Actions: mute toggle, tap to return to the call, disconnect
  */
 @Composable
 fun VoiceOverlay(
-    channelName: String,
+    channelName: String?,
     isMuted: Boolean,
     onMuteToggle: () -> Unit,
     onTap: () -> Unit,
@@ -34,7 +35,7 @@ fun VoiceOverlay(
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp)
-            .clickable(onClick = onTap),
+            .clickable(onClickLabel = stringResource(R.string.voice_overlay_return), onClick = onTap),
         color = MaterialTheme.colorScheme.primaryContainer,
         tonalElevation = 4.dp
     ) {
@@ -49,7 +50,11 @@ fun VoiceOverlay(
                 modifier = Modifier.weight(1f)
             ) {
                 Text(
-                    text = stringResource(R.string.voice_overlay_connected, channelName),
+                    text = if (channelName != null) {
+                        stringResource(R.string.voice_overlay_connected, channelName)
+                    } else {
+                        stringResource(R.string.voice_overlay_connected_unknown)
+                    },
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                     maxLines = 1
