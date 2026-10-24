@@ -1029,6 +1029,11 @@ export async function handleTrayVoiceAction(action: string): Promise<void> {
   }
 }
 
+/** Tray event handler: an event callback, not a reactive scope. */
+function onTrayVoiceAction(event: { payload: string }): void {
+  void handleTrayVoiceAction(event.payload);
+}
+
 /**
  * Keep the native tray in sync with the call: reports in-voice/muted via
  * `set_tray_voice_state` and runs the tray's voice menu items. Must be called
@@ -1046,9 +1051,7 @@ export function initTrayVoiceSync(): void {
 
   let disposed = false;
   let unlisten: (() => void) | null = null;
-  listen<string>(TRAY_VOICE_ACTION_EVENT, (event) => {
-    void handleTrayVoiceAction(event.payload);
-  })
+  listen<string>(TRAY_VOICE_ACTION_EVENT, onTrayVoiceAction)
     .then((fn) => {
       if (disposed) fn();
       else unlisten = fn;

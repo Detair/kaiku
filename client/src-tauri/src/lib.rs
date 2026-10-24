@@ -101,7 +101,7 @@ pub fn run() {
             presence::start_presence_service(app.handle().clone());
 
             // System tray: icon, menu, unread badge target. A failed build leaves
-            // `TrayState::built` false, so closing the window minimizes instead.
+            // `TrayState::built` false, so closing the window does not hide it.
             app.manage(tray::TrayState::default());
             if let Err(err) = tray::setup_tray(app.handle()) {
                 tracing::error!(error = %err, "Failed to set up system tray");
@@ -110,14 +110,20 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Close-to-tray: closing the MAIN window never quits ("Quit Kaiku"
-            // in the tray menu does). It hides to the tray when one is
-            // reachable (with a notice while in voice) and minimizes otherwise.
-            // Other windows (screen-share pop-outs) must close normally.
+            // Close-to-tray for the MAIN window: hides to the tray when one is
+            // usable (with a notice while in voice); without a tray it minimizes
+            // during a call and quits otherwise. Focus re-checks the tray host in
+            // the background. Other windows (screen-share pop-outs) close normally.
             if window.label() == "main" {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    tray::handle_main_close(window);
+                match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        tray::handle_main_close(window);
+                    }
+                    tauri::WindowEvent::Focused(true) => {
+                        tray::refresh_host_availability(window.app_handle());
+                    }
+                    _ => {}
                 }
             }
         })
