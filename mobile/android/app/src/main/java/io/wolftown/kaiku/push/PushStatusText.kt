@@ -16,6 +16,7 @@ object PushStatusText {
         is PushStatus.Off -> when (status.reason) {
             PushOffReason.PERMISSION_DENIED -> R.string.push_status_permission_off
             PushOffReason.NO_TRANSPORT -> R.string.push_status_no_transport
+            PushOffReason.NO_DISTRIBUTOR -> R.string.push_status_no_distributor
             PushOffReason.ERROR -> R.string.push_status_error
         }
     }

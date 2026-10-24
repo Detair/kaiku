@@ -12,6 +12,7 @@ class PushStatusTextTest {
         PushStatus.Active(TransportKind.UNIFIED_PUSH, "io.heckel.ntfy") to R.string.push_status_unifiedpush,
         PushStatus.Off(PushOffReason.PERMISSION_DENIED) to R.string.push_status_permission_off,
         PushStatus.Off(PushOffReason.NO_TRANSPORT) to R.string.push_status_no_transport,
+        PushStatus.Off(PushOffReason.NO_DISTRIBUTOR) to R.string.push_status_no_distributor,
         PushStatus.Off(PushOffReason.ERROR) to R.string.push_status_error,
         PushStatus.Unknown to R.string.push_status_checking,
     )

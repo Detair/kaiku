@@ -10,6 +10,7 @@ import io.wolftown.kaiku.push.PushPlatform
 import io.wolftown.kaiku.push.PushPreferences
 import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.push.PushStatus
+import io.wolftown.kaiku.push.TransportKind
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
@@ -34,7 +35,12 @@ data class NotificationSettingsState(
 ) {
     /** Without Google services UnifiedPush is the only choice, so there is nothing to switch. */
     val showUnifiedPushSwitch: Boolean get() = gmsAvailable && distributors.isNotEmpty()
-    val showDistributorPicker: Boolean get() = distributors.size > 1
+
+    /** Only while UnifiedPush is chosen, in use, or the only transport. */
+    val showDistributorPicker: Boolean
+        get() = distributors.size > 1 &&
+            (preferUnifiedPush || !gmsAvailable ||
+                (status as? PushStatus.Active)?.kind == TransportKind.UNIFIED_PUSH)
 }
 
 @HiltViewModel
@@ -128,19 +134,14 @@ class SettingsViewModel @Inject constructor(
     /** Re-reads installed distributors (e.g. after installing ntfy); registers again unless push is already on. */
     fun reloadPushState() {
         pushInputs.value = readPushInputs()
-        if (pushRegistrar.status.value !is PushStatus.Active) refreshPush()
+        val saved = pushPreferences.distributor
+        val savedGone = saved != null && saved !in pushInputs.value.distributors
+        if (savedGone || pushRegistrar.status.value !is PushStatus.Active) refreshPush()
     }
 
+    /** Runs on the registrar's own scope, so leaving Settings does not cancel the pass. */
     private fun refreshPush() {
-        viewModelScope.launch {
-            try {
-                pushRegistrar.refresh()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.log(Level.WARNING, "Push refresh failed: ${e.javaClass.simpleName}")
-            }
-        }
+        pushRegistrar.refreshAsync()
     }
 
     private fun readPushInputs() = PushInputs(

@@ -146,5 +146,6 @@
     <string name="push_status_permission_off">Notifications off</string>
     <string name="push_status_no_transport">Off: install ntfy to get notifications</string>
     <string name="push_status_error">Off: Kaiku could not set up notifications and will try again</string>
+    <string name="push_status_no_distributor">Off: choose a UnifiedPush app</string>
     <string name="push_status_checking">Checking…</string>
 </resources>

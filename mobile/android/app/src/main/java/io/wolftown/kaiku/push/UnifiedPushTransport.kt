@@ -20,9 +20,12 @@ class UnifiedPushTransport @Inject constructor(
     override val kind: TransportKind = TransportKind.UNIFIED_PUSH
 
     override suspend fun requestEndpoint(onEndpoint: suspend (String) -> Unit) {
-        val distributor = preferences.distributor
-            ?: throw IllegalStateException("No UnifiedPush distributor selected")
         val saved = UnifiedPush.getSavedDistributor(context)
+        val installed = UnifiedPush.getDistributors(context)
+        val distributor = preferences.distributor
+            ?: saved
+            ?: installed.singleOrNull()
+            ?: throw NoDistributorException()
         // Switching distributors: drop the old registration so it stops delivering.
         if (saved != null && saved != distributor) UnifiedPush.unregister(context)
         UnifiedPush.saveDistributor(context, distributor)
