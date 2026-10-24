@@ -11,6 +11,7 @@ import { adminState, createUser } from "@/stores/admin";
 import { getServerUrl, HttpError } from "@/lib/tauri";
 import { generateTemporaryPassword } from "@/lib/passwords";
 import { showToast } from "@/components/ui/Toast";
+import { copyHandoverText, canDismissCreateAccount } from "@/lib/adminHandover";
 import { t } from "@/i18n";
 
 const USERNAME_RE = /^[a-z0-9_]{3,32}$/;
@@ -34,7 +35,9 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
 
   onMount(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
+      if (e.key === "Escape" && canDismissCreateAccount(created() !== null)) {
+        props.onClose();
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
@@ -42,7 +45,7 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
 
   const copy = async (text: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyHandoverText(text);
       showToast({ type: "success", title: t("admin.createAccount.copied"), duration: 2000 });
     } catch {
       showToast({
@@ -99,7 +102,9 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
   return (
     <div
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={props.onClose}
+      onClick={() => {
+        if (canDismissCreateAccount(created() !== null)) props.onClose();
+      }}
     >
       <div
         class="bg-background-secondary rounded-xl shadow-2xl w-full max-w-md mx-4"
