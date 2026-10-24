@@ -391,21 +391,27 @@ class ChatRepository internal constructor(
                 // Fail before the request if the file cannot be opened at all.
                 val probe = reader.open(uri)
                     ?: return@withContext Result.failure<Message>(AttachmentException.Failed())
+                // Every stream opened here is closed on success, failure and cancellation.
+                val opened = mutableListOf(probe)
                 var probeUsed = false
-                val sent = messageApi.uploadMessageWithFile(
-                    channelId = channelId,
-                    fileName = name,
-                    mimeType = mime,
-                    size = declared,
-                    open = {
-                        val stream = if (!probeUsed) probe.also { probeUsed = true }
-                        else reader.open(uri) ?: throw java.io.IOException("cannot open attachment")
-                        LimitedInputStream(stream, limit)
-                    },
-                    content = caption?.takeIf { it.isNotBlank() },
-                )
-                if (!probeUsed) probe.close()
-                Result.success(sent)
+                try {
+                    val sent = messageApi.uploadMessageWithFile(
+                        channelId = channelId,
+                        fileName = name,
+                        mimeType = mime,
+                        size = declared,
+                        open = {
+                            val stream = if (!probeUsed) probe.also { probeUsed = true }
+                            else (reader.open(uri) ?: throw java.io.IOException("cannot open attachment"))
+                                .also { opened += it }
+                            LimitedInputStream(stream, limit)
+                        },
+                        content = caption?.takeIf { it.isNotBlank() },
+                    )
+                    Result.success(sent)
+                } finally {
+                    opened.forEach { runCatching { it.close() } }
+                }
             }
             message.onSuccess { sent ->
                 getOrCreateMessagesFlow(channelId).update { current ->
