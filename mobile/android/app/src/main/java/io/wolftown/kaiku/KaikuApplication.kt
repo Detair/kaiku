@@ -14,6 +14,7 @@ import io.wolftown.kaiku.data.api.AuthHeaderInterceptor
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.sync.ResyncCoordinator
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
+import io.wolftown.kaiku.push.NotificationChannels
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import java.util.logging.Logger
@@ -40,6 +41,7 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory {
 
     override fun onCreate() {
         super.onCreate()
+        NotificationChannels.ensureCreated(this)
         // First connect waits for AuthState.initialize() in MainActivity, which runs after the ProviderInstaller TLS step below.
         // Observe Ready before the first connect can produce one.
         resyncCoordinator.start()

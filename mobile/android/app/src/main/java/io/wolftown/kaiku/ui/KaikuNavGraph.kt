@@ -36,8 +36,11 @@ fun KaikuNavGraph(
     navController: NavHostController,
     startDestination: String,
     authState: AuthState,
-    appVersion: String = ""
+    appVersion: String = "",
+    pendingNavigationViewModel: PendingNavigationViewModel = hiltViewModel()
 ) {
+    val pendingNavigation = pendingNavigationViewModel.pendingNavigation
+    val pendingChannelId by pendingNavigation.channelId.collectAsState()
     val currentUserId by authState.currentUserId.collectAsState()
     val isLoggedIn by authState.isLoggedIn.collectAsState()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -49,8 +52,22 @@ fun KaikuNavGraph(
     )
     LaunchedEffect(isLoggedIn) {
         if (!isLoggedIn && currentRoute != null && currentRoute !in authRoutes) {
+            pendingNavigation.clear()
             navController.navigate("login") {
                 popUpTo(0) { inclusive = true }
+            }
+        }
+    }
+
+    // Open a channel from a deep link / notification tap, only while signed in.
+    // The "home" entry must be on the stack first (not during login screens).
+    LaunchedEffect(isLoggedIn, pendingChannelId, currentRoute) {
+        val id = pendingChannelId
+        if (isLoggedIn && id != null && currentRoute != null && currentRoute !in authRoutes) {
+            pendingNavigation.consume()
+            navController.navigate("channel/$id") {
+                popUpTo("home")
+                launchSingleTop = true
             }
         }
     }
