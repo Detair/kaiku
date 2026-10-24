@@ -11,9 +11,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -36,7 +38,9 @@ import javax.inject.Singleton
  *    An older server that never acks falls back to catching up after
  *    [SUBSCRIBED_TIMEOUT_MS];
  * 3. reloads the selected server's channels (unread counts)
- *    ([GuildRepository.reloadSelectedGuildChannels]);
+ *    ([GuildRepository.reloadSelectedGuildChannels]) once this Ready's
+ *    catch-ups are done (bounded by [CATCH_UP_SETTLE_TIMEOUT_MS]), so the
+ *    catch-up's per-message unread increments do not add to the server counts;
  * 4. reloads the DM list and subscribes to every DM channel
  *    ([DmRepository.loadDms], [ChatRepository.setDmChannels]). `dm_created`
  *    auto-subscribes only sockets open at creation, so this is the only way a
@@ -59,6 +63,15 @@ class ResyncCoordinator @Inject constructor(
 
         /** How long to wait for a `subscribed` ack before catching up anyway (old servers). */
         const val SUBSCRIBED_TIMEOUT_MS = 5_000L
+
+        /**
+         * Upper bound for the channel reload to wait for this Ready's catch-ups:
+         * the ack wait plus a budget for the catch-up fetches.
+         */
+        const val CATCH_UP_SETTLE_TIMEOUT_MS = SUBSCRIBED_TIMEOUT_MS + 10_000L
+
+        /** How often the channel reload checks whether acks are still pending. */
+        private const val ACK_POLL_MS = 100L
     }
 
     private val started = AtomicBoolean(false)
@@ -69,7 +82,23 @@ class ResyncCoordinator @Inject constructor(
     /** Channels waiting for their `subscribed` ack before catch-up, with the Ready generation. */
     private val awaitingAck = ConcurrentHashMap<String, Int>()
 
-    private var resyncJob: Job? = null
+    private var resyncJobs: List<Job> = emptyList()
+
+    /** Catch-up jobs of the current generation; the channel reload waits for them. */
+    @Volatile
+    private var catchUpJobs = CatchUpJobs(generation = 0)
+
+    /**
+     * Guards "ack consumed + catch-up job recorded" against the channel
+     * reload's "nothing pending" check, so the reload never sees a channel
+     * that is neither awaiting its ack nor recorded as a catch-up job.
+     */
+    private val catchUpLock = Any()
+
+    /** Catch-up jobs of one generation; guarded by [catchUpLock]. */
+    private class CatchUpJobs(val generation: Int) {
+        val jobs = mutableListOf<Job>()
+    }
 
     /** Starts observing server events; idempotent. */
     fun start() {
@@ -94,20 +123,52 @@ class ResyncCoordinator @Inject constructor(
     private fun onReady() {
         val gen = generation.incrementAndGet()
         awaitingAck.clear()
-        resyncJob?.cancel()
+        resyncJobs.forEach { it.cancel() }
+        val catchUps = CatchUpJobs(gen)
+        val previousJobs = synchronized(catchUpLock) {
+            val previous = catchUpJobs.jobs.toList()
+            catchUpJobs = catchUps
+            previous
+        }
+        previousJobs.forEach { it.cancel() }
 
         val resubscribed = step("resubscribe") { chat.resubscribeAll() }.orEmpty()
         awaitAck(resubscribed, gen)
 
-        resyncJob = scope.launch {
+        // The channel reload replaces local unread counts with the server's,
+        // which already include the missed messages. It runs after the
+        // catch-ups (bounded), so their per-message increments cannot land on
+        // top of the server counts.
+        val reloadChannels = scope.launch {
+            withTimeoutOrNull(CATCH_UP_SETTLE_TIMEOUT_MS) { awaitCatchUps(catchUps) }
             step("reload channels") { guilds.reloadSelectedGuildChannels() }
+        }
+        val reloadDms = scope.launch {
             step("reload dms") {
                 dms.loadDms()
+                if (gen != generation.get()) return@step
                 val ids = dms.conversations.value.map { it.id }
                 // Register before sending so a fast ack cannot be missed.
                 awaitAck(ids.filterNot(chat::isDmChannelTracked), gen)
                 chat.setDmChannels(ids)
             }
+        }
+        resyncJobs = listOf(reloadChannels, reloadDms)
+    }
+
+    /** Suspends until no channel of this generation awaits its ack and all its catch-ups finished. */
+    private suspend fun awaitCatchUps(catchUps: CatchUpJobs) {
+        while (true) {
+            val (pending, jobs) = synchronized(catchUpLock) {
+                awaitingAck.values.any { it == catchUps.generation } to catchUps.jobs.toList()
+            }
+            if (pending) {
+                // Acks or the fallback start the remaining catch-ups.
+                delay(ACK_POLL_MS)
+                continue
+            }
+            if (jobs.all { it.isCompleted }) return
+            jobs.joinAll()
         }
     }
 
@@ -117,10 +178,10 @@ class ResyncCoordinator @Inject constructor(
         // Fallback for servers that never send `subscribed`.
         scope.launch {
             delay(SUBSCRIBED_TIMEOUT_MS)
+            if (gen != generation.get()) return@launch
             channelIds.forEach { id ->
-                if (awaitingAck.remove(id, gen)) {
-                    logger.info("no subscribed ack within ${SUBSCRIBED_TIMEOUT_MS}ms, catching up anyway")
-                    launchCatchUp(id)
+                if (startCatchUpIfAwaiting(id, gen)) {
+                    logger.info("no subscribed ack within ${SUBSCRIBED_TIMEOUT_MS}ms, caught up anyway")
                 }
             }
         }
@@ -128,15 +189,28 @@ class ResyncCoordinator @Inject constructor(
 
     private fun onSubscribed(channelId: String) {
         val gen = awaitingAck[channelId] ?: return
-        if (gen == generation.get() && awaitingAck.remove(channelId, gen)) launchCatchUp(channelId)
+        startCatchUpIfAwaiting(channelId, gen)
     }
 
-    private fun launchCatchUp(channelId: String) {
-        scope.launch { step("catch up") { chat.catchUp(channelId) } }
+    /**
+     * Consumes the ack wait of [channelId] for generation [gen] and starts its
+     * catch-up, once. Returns whether a catch-up was started.
+     */
+    private fun startCatchUpIfAwaiting(channelId: String, gen: Int): Boolean {
+        val job = synchronized(catchUpLock) {
+            val catchUps = catchUpJobs
+            if (gen != generation.get() || catchUps.generation != gen) return false
+            if (!awaitingAck.remove(channelId, gen)) return false
+            scope.launch(start = CoroutineStart.LAZY) { step("catch up") { chat.catchUp(channelId) } }
+                .also { catchUps.jobs += it }
+        }
+        job.start()
+        return true
     }
 
     private fun onDmCreated(event: ServerEvent.DmCreated) {
-        val id = event.channel["id"]?.jsonPrimitive?.contentOrNull ?: return
+        // A malformed event must not throw: that would end the collector for good.
+        val id = (event.channel["id"] as? JsonPrimitive)?.contentOrNull ?: return
         chat.trackDmChannel(id)
     }
 

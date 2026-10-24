@@ -487,10 +487,20 @@ class RealtimeConnectionManager internal constructor(
     private fun onForegroundProbeDue(pongsAtSend: Long) {
         if (_status.value != RealtimeStatus.Connected) return
         if (pongCount != pongsAtSend) return
-        logger.warning("no pong after foreground probe, reconnecting")
+        dropSocketAndReconnect("no pong after foreground probe, reconnecting")
+    }
+
+    /** The socket is considered dead: close it and reconnect (or wait, if offline or logged out). */
+    private fun dropSocketAndReconnect(reason: String) {
+        logger.warning(reason)
         stopHeartbeat()
         socketActive = false
         socket.disconnect()
+        if (!isLoggedIn()) return
+        if (!connectivity.isConnected.value) {
+            setStatus(RealtimeStatus.Offline)
+            return
+        }
         enterReconnecting()
     }
 
@@ -502,11 +512,7 @@ class RealtimeConnectionManager internal constructor(
         if (_status.value != RealtimeStatus.Connected) return
         val silentFor = clock.nowMillis() - lastPongAt
         if (silentFor > PONG_TIMEOUT_MS) {
-            logger.warning("no pong within timeout, reconnecting")
-            stopHeartbeat()
-            socketActive = false
-            socket.disconnect()
-            enterReconnecting()
+            dropSocketAndReconnect("no pong within timeout, reconnecting")
         } else {
             val generation = heartbeatGeneration
             heartbeatJobs = heartbeatJobs.filter { it.isActive } +

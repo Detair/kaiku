@@ -2,6 +2,7 @@ package io.wolftown.kaiku.data.sync
 
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -14,12 +15,16 @@ import io.wolftown.kaiku.data.ws.WsJson
 import io.wolftown.kaiku.domain.model.DmConversation
 import io.wolftown.kaiku.testutil.Golden
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.buildJsonObject
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -107,15 +112,100 @@ class ResyncCoordinatorTest {
         coVerify(exactly = 0) { chat.catchUp("a") }
     }
 
+    /** Acks every channel the coordinator subscribes in these tests. */
+    private suspend fun TestScope.ackAll() {
+        listOf("a", "dm-1", "dm-2").forEach { emit(ServerEvent.Subscribed(it)) }
+    }
+
     @Test
     fun `ready reloads channels and dms and subscribes every dm channel`() = runTest {
         startCoordinator()
 
         emit(ready)
 
-        coVerify(exactly = 1) { guilds.reloadSelectedGuildChannels() }
         coVerify(exactly = 1) { dms.loadDms() }
         verify(exactly = 1) { chat.setDmChannels(listOf("dm-1", "dm-2")) }
+
+        ackAll()
+        advanceTimeBy(1_000)
+        runCurrent()
+        coVerify(exactly = 1) { guilds.reloadSelectedGuildChannels() }
+    }
+
+    @Test
+    fun `channel reload runs after the catch-up unread increments`() = runTest {
+        coEvery { chat.catchUp("a") } coAnswers {
+            delay(2_000)
+            guilds.onMessageReceived("a")
+            guilds.onMessageReceived("a")
+        }
+        startCoordinator()
+
+        emit(ready)
+        ackAll()
+        advanceTimeBy(1_000)
+        runCurrent()
+        coVerify(exactly = 0) { guilds.reloadSelectedGuildChannels() }
+
+        advanceTimeBy(2_000)
+        runCurrent()
+        coVerifyOrder {
+            guilds.onMessageReceived("a")
+            guilds.onMessageReceived("a")
+            guilds.reloadSelectedGuildChannels()
+        }
+    }
+
+    @Test
+    fun `channel reload waits at most for the ack fallback without acks`() = runTest {
+        startCoordinator()
+        emit(ready)
+
+        advanceTimeBy(ResyncCoordinator.SUBSCRIBED_TIMEOUT_MS - 1)
+        coVerify(exactly = 0) { guilds.reloadSelectedGuildChannels() }
+
+        advanceTimeBy(1_000)
+        runCurrent()
+        coVerify(exactly = 1) { guilds.reloadSelectedGuildChannels() }
+    }
+
+    @Test
+    fun `channel reload is bounded when a catch-up hangs`() = runTest {
+        coEvery { chat.catchUp("a") } coAnswers { awaitCancellation() }
+        startCoordinator()
+        emit(ready)
+        ackAll()
+
+        advanceTimeBy(ResyncCoordinator.CATCH_UP_SETTLE_TIMEOUT_MS + 1)
+        runCurrent()
+
+        coVerify(exactly = 1) { guilds.reloadSelectedGuildChannels() }
+    }
+
+    @Test
+    fun `dm list of a superseded ready is not subscribed`() = runTest {
+        var calls = 0
+        coEvery { dms.loadDms() } coAnswers { if (calls++ == 0) delay(1_000) }
+        startCoordinator()
+
+        emit(ready)
+        emit(ready)
+        advanceTimeBy(2_000)
+        runCurrent()
+
+        verify(exactly = 1) { chat.setDmChannels(any()) }
+    }
+
+    @Test
+    fun `malformed dm_created does not stop the coordinator`() = runTest {
+        startCoordinator()
+
+        emit(ServerEvent.DmCreated(buildJsonObject { put("id", buildJsonObject { }) }))
+        emit(ServerEvent.DmCreated(buildJsonObject { put("id", JsonNull) }))
+        emit(ready)
+
+        verify(exactly = 0) { chat.trackDmChannel(any()) }
+        verify(exactly = 1) { chat.resubscribeAll() }
     }
 
     @Test

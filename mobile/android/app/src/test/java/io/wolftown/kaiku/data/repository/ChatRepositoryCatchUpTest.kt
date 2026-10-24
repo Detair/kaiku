@@ -228,6 +228,36 @@ class ChatRepositoryCatchUpTest {
     }
 
     @Test
+    fun `catch up follows next_cursor past an empty filtered page`() = runTest {
+        // The server computes next_cursor before dropping blocked users'
+        // messages, so a page can be empty while has_more is true.
+        val repository = createRepository { _, index ->
+            when (index) {
+                0 -> CursorPage(emptyList(), hasMore = true, nextCursor = "x")
+                else -> CursorPage(listOf(missed(1)), hasMore = false)
+            }
+        }
+        repository.loadMessages(CHANNEL_ID)
+
+        repository.catchUp(CHANNEL_ID)
+
+        assertEquals(listOf(NEWER_ID, "x"), afterRequests().map { it.url.parameters["after"] })
+        assertEquals(listOf(OLDER_ID, NEWER_ID, missed(1).id), repository.ids())
+        verify(exactly = 1) { guildRepository.onMessageReceived(CHANNEL_ID) }
+    }
+
+    @Test
+    fun `catch up stops when has_more comes without next_cursor`() = runTest {
+        val repository = createRepository { _, _ -> CursorPage(listOf(missed(1)), hasMore = true) }
+        repository.loadMessages(CHANNEL_ID)
+
+        repository.catchUp(CHANNEL_ID)
+
+        assertEquals(1, afterRequests().size)
+        assertEquals(listOf(OLDER_ID, NEWER_ID, missed(1).id), repository.ids())
+    }
+
+    @Test
     fun `catch up beyond page cap reloads latest page`() = runTest {
         val repository = createRepository { _, index ->
             CursorPage(listOf(missed(index)), hasMore = true, nextCursor = missed(index).id)

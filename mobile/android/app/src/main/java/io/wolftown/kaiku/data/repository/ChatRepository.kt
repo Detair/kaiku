@@ -15,6 +15,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -150,8 +151,9 @@ class ChatRepository @Inject constructor(
      * in the local list and merges them in (deduplicated by id). This is the
      * reconnect catch-up and the Phase 2 wake-fetch seam.
      *
-     * Pages forwards with `after = <newest id>` and `limit = `[CATCH_UP_PAGE_SIZE]
-     * while the server reports `has_more`, up to [CATCH_UP_MAX_PAGES] pages. If
+     * Pages forwards with `after = <newest id>`, then `after = next_cursor`,
+     * and `limit = `[CATCH_UP_PAGE_SIZE] while the server reports `has_more`
+     * with a `next_cursor`, up to [CATCH_UP_MAX_PAGES] pages. If
      * more remain after that, the list is replaced with the latest page
      * ([loadMessages]) instead of fetching everything. Every newly added
      * message is reported to [GuildRepository.onMessageReceived] (unread badge
@@ -180,16 +182,17 @@ class ChatRepository @Inject constructor(
                 }
                 throw e
             }
-            val known = flow.value.mapTo(HashSet()) { it.id }
-            flow.update { current -> MessageOrdering.merge(current, page.items) }
+            val previous = flow.getAndUpdate { current -> MessageOrdering.merge(current, page.items) }
+            val known = previous.mapTo(HashSet()) { it.id }
             val added = page.items.mapTo(HashSet()) { it.id }.count { it !in known }
             repeat(added) { guildRepository.onMessageReceived(channelId) }
 
-            // Next cursor: the newest message of this page, not of the local
-            // list, which may already hold newer live messages.
-            val newest = MessageOrdering.merge(emptyList(), page.items).lastOrNull()
-            if (!page.hasMore || newest == null) return
-            after = newest.id
+            // Follow the server's cursor, not the newest returned item: the
+            // server computes `next_cursor` before filtering out messages of
+            // blocked users, so a page can be empty while more messages follow.
+            val next = page.nextCursor
+            if (!page.hasMore || next == null) return
+            after = next
         }
 
         logger.info("catch-up for a channel exceeded $CATCH_UP_MAX_PAGES pages, reloading latest page")
