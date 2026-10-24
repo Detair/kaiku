@@ -25,6 +25,9 @@ dependencies {
     compileOnly("com.android.tools.lint:lint-api:$lintVersion")
     compileOnly("com.android.tools.lint:lint-checks:$lintVersion")
 
+    // compileOnly is not visible to tests; lint-tests does not expose lint-api on its own.
+    testImplementation("com.android.tools.lint:lint-api:$lintVersion")
+    testImplementation("com.android.tools.lint:lint-checks:$lintVersion")
     testImplementation("com.android.tools.lint:lint-tests:$lintVersion")
     testImplementation("junit:junit:4.13.2")
 }
