@@ -186,6 +186,7 @@ fn android_golden_auth_response() {
         expires_in: 900,
         token_type: "Bearer".to_string(),
         setup_required: false,
+        password_change_required: false,
     };
 
     check_golden(
