@@ -15,7 +15,9 @@ use tauri::Emitter;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use super::format::{negotiate_capture_format, CaptureFormat, CaptureFrontEnd};
+use super::format::{
+    negotiate_capture_format, push_chunk_len, CaptureFormat, CaptureFrontEnd, MAX_PUSH_SAMPLES,
+};
 use super::{
     AudioDevice, AudioDeviceList, AudioError, VadConfig, CHANNELS, FRAME_SIZE, RNNOISE_FRAME_SIZE,
     SAMPLE_RATE,
@@ -721,10 +723,20 @@ impl AudioHandle {
     /// device while keeping the same sample buffer, so audio moves to the
     /// new speaker mid-call without dropping frames.
     ///
-    /// Errors if the named device doesn't exist (the stored name is still
-    /// updated, matching the lookup-or-default behavior at stream start).
+    /// Errors if a running playback cannot move to the device (not found or
+    /// cannot be opened); the previous choice is then kept, matching the
+    /// speaker that is actually playing.
     pub async fn set_output_device(&mut self, device_id: Option<String>) -> Result<(), AudioError> {
-        self.output_device_name = device_id;
+        let previous = std::mem::replace(&mut self.output_device_name, device_id);
+        let result = self.switch_running_playback().await;
+        if result.is_err() {
+            self.output_device_name = previous;
+        }
+        result
+    }
+
+    /// Move a running playback stream to `output_device_name`.
+    async fn switch_running_playback(&self) -> Result<(), AudioError> {
         if let Some(control) = &self.playback_control {
             let device = self.get_device(self.output_device_name.as_deref(), false)?;
             let label = device_label(&device);
@@ -1084,8 +1096,10 @@ where
 
     let mut processor = CaptureProcessor::new(output_tx, vad_config, app_handle)?;
     let mut front_end = CaptureFrontEnd::new(format);
-    // Device samples as f32 (pre-allocated; grows only on an unusually large callback).
-    let mut converted: Vec<f32> = Vec::with_capacity(8192);
+    // Device samples as f32; filled in chunks of at most its capacity, so it
+    // never reallocates in the callback.
+    let mut converted: Vec<f32> = Vec::with_capacity(MAX_PUSH_SAMPLES);
+    let channels = format.channels;
 
     let stream = device
         .build_input_stream(
@@ -1099,9 +1113,9 @@ where
                     processor.on_muted();
                     return;
                 }
-                converted.clear();
-                converted.extend(data.iter().map(|&s| f32::from_sample(s)));
-                front_end.push(&converted, |frame| processor.process_frame(frame));
+                convert_in_chunks(data, channels, &mut converted, |chunk| {
+                    front_end.push(chunk, |frame| processor.process_frame(frame));
+                });
             },
             stream_error_callback(reporter),
             None,
@@ -1112,6 +1126,25 @@ where
         .play()
         .map_err(|e| AudioError::StreamError(e.to_string()))?;
     Ok(stream)
+}
+
+/// Convert device samples to f32 in whole-frame chunks of at most
+/// [`MAX_PUSH_SAMPLES`], reusing `converted` (sized to that) so the audio
+/// callback never reallocates, however large the backend's period is.
+fn convert_in_chunks<T>(
+    data: &[T],
+    channels: u16,
+    converted: &mut Vec<f32>,
+    mut sink: impl FnMut(&[f32]),
+) where
+    T: SizedSample,
+    f32: FromSample<T>,
+{
+    for chunk in data.chunks(push_chunk_len(channels)) {
+        converted.clear();
+        converted.extend(chunk.iter().map(|&s| f32::from_sample(s)));
+        sink(converted);
+    }
 }
 
 /// Speech hold-open duration: keep gate open for 300ms after last speech detection
@@ -1730,6 +1763,24 @@ mod tests {
             notices(&events),
             vec![AudioNotice::Failed, AudioNotice::Recovered]
         );
+    }
+
+    #[test]
+    fn oversized_callbacks_convert_without_growing_the_buffer() {
+        let mut converted: Vec<f32> = Vec::with_capacity(MAX_PUSH_SAMPLES);
+        let capacity = converted.capacity();
+        // A huge i16 stereo period, far beyond the scratch size.
+        let data: Vec<i16> = (0..MAX_PUSH_SAMPLES * 3 + 6)
+            .map(|i| if i % 2 == 0 { i16::MAX } else { 0 })
+            .collect();
+        let mut seen = 0usize;
+        convert_in_chunks(&data, 2, &mut converted, |chunk| {
+            assert_eq!(chunk.len() % 2, 0, "chunks keep whole frames");
+            assert!((chunk[0] - 1.0).abs() < 1e-3);
+            seen += chunk.len();
+        });
+        assert_eq!(seen, data.len());
+        assert_eq!(converted.capacity(), capacity);
     }
 
     // --- Mic switching (make-before-break, retry, restore) ---
