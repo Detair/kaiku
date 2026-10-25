@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.data.repository
 
+import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
@@ -56,5 +57,22 @@ class AuthRepositoryAccountSwitchTest {
         verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
         verify(exactly = 0) { tokenStorage.clear() }
         assertEquals(running, authState.session.value)
+    }
+
+    @Test
+    fun `sign-in that loses the race to another sign-in installs nothing`() = runTest {
+        val authState = AuthState(backgroundScope)
+        val repository = AuthRepository(authApi, tokenStorage, authState, noTeardown(authState))
+        coEvery { authApi.authenticatedGetMe(any(), any()) } coAnswers {
+            authState.setLoggedIn("user-qr") // e.g. a QR redeem finished first
+            io.wolftown.kaiku.domain.model.User(id = "user-oidc", username = "o", displayName = "O")
+        }
+
+        val result = repository.completeOidcLogin("oidc-access", "oidc-refresh", 900)
+
+        assertTrue(result.exceptionOrNull() is AlreadySignedInException)
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
+        verify(exactly = 0) { tokenStorage.clear() }
+        assertEquals("user-qr", (authState.session.value as AuthSession.LoggedIn).userId)
     }
 }

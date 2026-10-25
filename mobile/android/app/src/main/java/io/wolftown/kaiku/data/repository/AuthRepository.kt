@@ -101,6 +101,34 @@ class AuthRepository @Inject constructor(
         if (authState.session.value is AuthSession.LoggedIn) Result.failure(AlreadySignedInException()) else null
 
     /**
+     * The one place a new session is stored and started, used by every
+     * sign-in path: under [pendingLock], refuses while a session runs or if
+     * [precondition] fails, otherwise saves the tokens, runs [onInstalled]
+     * and sets LoggedIn. Two sign-ins racing while logged out (a QR redeem
+     * and an OIDC deep link) can therefore never both install. Returns
+     * whether it installed.
+     */
+    private fun installSession(
+        accessToken: String,
+        refreshToken: String?,
+        expiresIn: Int,
+        userId: String,
+        precondition: () -> Boolean = { true },
+        onInstalled: () -> Unit = {},
+    ): Boolean = synchronized(pendingLock) {
+        if (authState.session.value is AuthSession.LoggedIn || !precondition()) return false
+        tokenStorage.saveTokens(
+            accessToken = accessToken,
+            refreshToken = refreshToken,
+            expiresIn = expiresIn,
+            userId = userId
+        )
+        onInstalled()
+        authState.setLoggedIn(userId)
+        true
+    }
+
+    /**
      * Logs in. If the server reports `password_change_required`, nothing is
      * persisted and [getMe][AuthApi.authenticatedGetMe] is skipped: the session
      * is kept in memory and [PasswordChangeRequiredException] is returned, and
@@ -150,22 +178,10 @@ class AuthRepository @Inject constructor(
 
             // Persist only for the latest attempt and the server it went to: a
             // server change mid-login must not store server A's tokens under B.
-            val persisted = synchronized(pendingLock) {
-                if (loginAttempt != attempt || tokenStorage.getServerUrl() != serverUrl ||
-                    authState.session.value is AuthSession.LoggedIn
-                ) {
-                    false
-                } else {
-                    tokenStorage.saveTokens(
-                        accessToken = authResponse.accessToken,
-                        refreshToken = authResponse.refreshToken,
-                        expiresIn = authResponse.expiresIn,
-                        userId = user.id
-                    )
-                    authState.setLoggedIn(user.id)
-                    true
-                }
-            }
+            val persisted = installSession(
+                authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id,
+                precondition = { loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl },
+            )
             if (!persisted) return supersededResult()
             Result.success(user)
         } catch (_: MfaRequiredApiException) {
@@ -217,23 +233,11 @@ class AuthRepository @Inject constructor(
             sessionTeardown.awaitIdle()
 
             // Check and persist under the lock: a cancel can't slip in between.
-            val persisted = synchronized(pendingLock) {
-                if (pendingPasswordChange !== changed || !isSameServer(pending) ||
-                    authState.session.value is AuthSession.LoggedIn
-                ) {
-                    false
-                } else {
-                    tokenStorage.saveTokens(
-                        accessToken = pending.accessToken,
-                        refreshToken = pending.refreshToken,
-                        expiresIn = pending.expiresIn,
-                        userId = user.id
-                    )
-                    pendingPasswordChange = null
-                    authState.setLoggedIn(user.id)
-                    true
-                }
-            }
+            val persisted = installSession(
+                pending.accessToken, pending.refreshToken, pending.expiresIn, user.id,
+                precondition = { pendingPasswordChange === changed && isSameServer(pending) },
+                onInstalled = { pendingPasswordChange = null },
+            )
             if (!persisted) return cancelledResult()
             Result.success(user)
         } catch (e: CancellationException) {
@@ -270,15 +274,9 @@ class AuthRepository @Inject constructor(
 
             // The previous session's teardown finishes before this one starts.
             sessionTeardown.awaitIdle()
-            signedInRefusal()?.let { return it }
-            tokenStorage.saveTokens(
-                accessToken = authResponse.accessToken,
-                refreshToken = authResponse.refreshToken,
-                expiresIn = authResponse.expiresIn,
-                userId = user.id
-            )
-
-            authState.setLoggedIn(user.id)
+            if (!installSession(authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id)) {
+                return Result.failure(AlreadySignedInException())
+            }
             Result.success(user)
         } catch (e: CancellationException) {
             throw e
@@ -385,15 +383,9 @@ class AuthRepository @Inject constructor(
 
             // The previous session's teardown finishes before this one starts.
             sessionTeardown.awaitIdle()
-            signedInRefusal()?.let { return it }
-            tokenStorage.saveTokens(
-                accessToken = accessToken,
-                refreshToken = refreshToken,
-                expiresIn = expiresIn,
-                userId = user.id
-            )
-
-            authState.setLoggedIn(user.id)
+            if (!installSession(accessToken, refreshToken, expiresIn, user.id)) {
+                return Result.failure(AlreadySignedInException())
+            }
             Result.success(user)
         } catch (e: CancellationException) {
             throw e
@@ -420,15 +412,9 @@ class AuthRepository @Inject constructor(
 
             // The previous session's teardown finishes before this one starts.
             sessionTeardown.awaitIdle()
-            signedInRefusal()?.let { return it }
-            tokenStorage.saveTokens(
-                accessToken = authResponse.accessToken,
-                refreshToken = authResponse.refreshToken,
-                expiresIn = authResponse.expiresIn,
-                userId = user.id
-            )
-
-            authState.setLoggedIn(user.id)
+            if (!installSession(authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id)) {
+                return Result.failure(AlreadySignedInException())
+            }
             Result.success(user)
         } catch (e: CancellationException) {
             throw e
@@ -457,15 +443,9 @@ class AuthRepository @Inject constructor(
 
             // The previous session's teardown finishes before this one starts.
             sessionTeardown.awaitIdle()
-            signedInRefusal()?.let { return it }
-            tokenStorage.saveTokens(
-                accessToken = authResponse.accessToken,
-                refreshToken = authResponse.refreshToken,
-                expiresIn = authResponse.expiresIn,
-                userId = user.id
-            )
-
-            authState.setLoggedIn(user.id)
+            if (!installSession(authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id)) {
+                return Result.failure(AlreadySignedInException())
+            }
             Result.success(user)
         } catch (e: CancellationException) {
             throw e

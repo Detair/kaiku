@@ -443,6 +443,12 @@ class ChatRepository internal constructor(
      * server would refuse are rejected early ([AttachmentException.UnsupportedType]);
      * every other failure is [AttachmentException.Failed]. The created message
      * is merged into the channel list; the WebSocket echo is deduplicated by id.
+     *
+     * The upload is bound to the session it starts in. When that session
+     * ends ([clearSession]), the coroutine calling this is cancelled (its
+     * [Job] is registered for the duration of the upload), so callers see a
+     * [kotlinx.coroutines.CancellationException], and nothing is sent or
+     * published in another session.
      */
     suspend fun sendAttachment(channelId: String, uri: Uri, caption: String?): Result<Message> {
         val reader = attachments ?: return Result.failure(AttachmentException.Failed())
