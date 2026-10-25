@@ -131,7 +131,14 @@ For single sign-on with Authentik, Keycloak, etc:
 OIDC_ISSUER_URL=https://auth.yourdomain.com/application/o/voicechat/
 OIDC_CLIENT_ID=your-client-id
 OIDC_CLIENT_SECRET=your-client-secret
+PUBLIC_URL=https://chat.yourdomain.com
 ```
+
+`PUBLIC_URL` is required for every OIDC flow, including sign-in from the
+desktop app. In your identity provider, register exactly
+`https://chat.yourdomain.com/auth/oidc/callback` (`$PUBLIC_URL/auth/oidc/callback`)
+as the redirect URI. The desktop app's local `127.0.0.1` address is never sent
+to the provider and does not need to be registered.
 
 ## Monitoring (Optional)
 
