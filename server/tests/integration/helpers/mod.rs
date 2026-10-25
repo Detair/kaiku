@@ -242,7 +242,15 @@ impl TestApp {
 /// - `AWS_ACCESS_KEY_ID=rustfsdev`
 /// - `AWS_SECRET_ACCESS_KEY=rustfsdev_secret`
 pub async fn fresh_test_app_with_s3_and_pool(pool: PgPool) -> (TestApp, String) {
-    let mut config = Config::default_for_test();
+    fresh_test_app_with_s3_and_config(pool, Config::default_for_test()).await
+}
+
+/// Like [`fresh_test_app_with_s3_and_pool`], starting from `config` (its S3
+/// settings are overwritten).
+pub async fn fresh_test_app_with_s3_and_config(
+    pool: PgPool,
+    mut config: Config,
+) -> (TestApp, String) {
     let bucket = format!("test-{}", Uuid::now_v7());
     config.s3_endpoint = Some("http://localhost:9000".to_string());
     config.s3_bucket = bucket.clone();

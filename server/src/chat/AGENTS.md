@@ -19,7 +19,8 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 - `messages.rs` — Message handlers (list, create, edit, delete)
 - `dm.rs` — DM channel creation and management
 - `uploads.rs` — File upload/download handlers with multipart form support
-- `send.rs` — Shared send path: `authorize_send` (access, permissions, blocks, mentions, content filter) and `dispatch_new_message` (broadcast, crosspost, DM push wake, bot events) used by both text messages and uploads
+- `send.rs` — Shared send path: `authorize_send` (access, permissions, blocks, mentions, content filter) and `dispatch_new_message` (broadcast, crosspost, push wake via `push::spawn_wake_for_new_message`, bot events) used by both text messages and uploads
+- `mentions.rs` — C21 @mention tokenizer (`extract_mentions`) and per-user push targets (`resolve_mention_targets`)
 - `s3.rs` — S3Client wrapper for object storage (AWS S3, RustFS, etc.)
 
 ## For AI Agents
@@ -135,6 +136,15 @@ S3_PUBLIC_URL=https://cdn.example.com  # Optional CDN
 **Leave DM**: `POST /api/dm/:id/leave` removes user from `dm_participants` (other user retains access)
 
 **Read Receipts**: `POST /api/dm/:id/read` updates `last_read_message_id` in `dm_participants` (future feature)
+
+### Mentions (C21)
+
+**Syntax**: `@username` counts only when the `@` starts the text or follows whitespace or one of `( [ { < " ' ,`; the username is `[A-Za-z0-9_]{3,32}` (lowercased) and is not glued to a further letter/digit. Fenced and inline code spans are stripped first, so e-mail addresses and code never mention anyone. `@everyone`/`@here` follow the same boundary rule.
+
+**Rules**:
+- `extract_mentions` is the only tokenizer: `detect_mention_type` (message-level `mention_type`) and the `MENTION_EVERYONE` check in `authorize_send` both use it. Do not add `contains("@...")` checks.
+- `MentionSet.usernames` is deduplicated and capped at `MAX_MENTIONED_USERNAMES` (20).
+- `resolve_mention_targets` returns push targets for guild channels only: author dropped, every target must pass `permissions::require_channel_access`, block in either direction (one batched Postgres `friendships` query, the source of truth; the Redis block cache is not consulted) or a failed block lookup drops the target. `@everyone` loads at most 101 members; the result is capped at `MENTION_EVERYONE_PUSH_CAP` (100). `@here` never pushes.
 
 ### Message Editing
 

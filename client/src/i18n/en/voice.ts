@@ -1,0 +1,14 @@
+export const voice = {
+  "voice.mute": "Mute",
+  "voice.deafen": "Deafen",
+  "voice.settings": "Voice settings",
+  "voice.webcamStart": "Start camera",
+  "voice.webcamStop": "Stop camera",
+  "voice.screenShare": "Share screen",
+  "voice.screenShareAnother": "Share another screen ({{count}}/{{max}})",
+  "voice.screenShareLimit": "Screen share limit reached ({{count}}/{{max}})",
+  "voice.ptt.plainKeyRefused": "Choose a key with Ctrl, Alt or ⌘, or F13–F24, so your game still gets the key.",
+  "voice.ptt.conflict": "PTT and PTM keys must be different",
+  "voice.ptt.focusOnlyTitle": "Push-to-talk works only in Kaiku",
+  "voice.ptt.focusOnly": "Your push-to-talk key has no Ctrl, Alt or ⌘, so it works only while Kaiku is focused. Choose a new key in Voice settings to use it in games.",
+} as const satisfies Record<`voice.${string}`, string>;

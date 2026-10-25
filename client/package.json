@@ -11,6 +11,8 @@
     "lint": "eslint src",
     "lint:handlers": "bash scripts/check-dead-handlers.sh",
     "lint:tauri-commands": "bun scripts/check-tauri-commands.ts",
+    "i18n:check": "bun scripts/check-i18n.ts",
+    "i18n:sync": "bun scripts/check-i18n.ts --write",
     "format": "prettier --write src",
     "test": "vitest",
     "test:run": "vitest run",
