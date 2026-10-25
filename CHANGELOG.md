@@ -53,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
-- Unlocking admin actions and creating new backup codes ask for your password or authenticator code. New accounts can be added to servers right away, and people land in their server after signing in.
+- Unlocking admin actions asks you to confirm with your password or your sign-in provider, and creating new backup codes asks for an authenticator code. New accounts can be added to servers right away, and people land in their server after signing in.
 - Each phone now holds one push registration; signing in with another account on the same phone stops notifications for the previous account.
 - **End-to-end encryption paused for 1.0**: End-to-end encryption setup is no longer offered and the DM padlock is removed; direct messages are protected in transit (TLS) and on the server, and end-to-end encryption will return in a later release.
 - Windows releases ship a single `-setup.exe` installer (MSI dropped)

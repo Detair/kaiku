@@ -122,7 +122,41 @@ describe("ReauthDialog", () => {
     setup({ methods: [OIDC], onOidc });
     expect(screen.queryByLabelText(/your password/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
-    await waitFor(() => expect(onOidc).toHaveBeenCalledWith(OIDC));
+    await waitFor(() => expect(onOidc).toHaveBeenCalledWith(OIDC, null));
+  });
+
+  it("OIDC path needs the authenticator code when MFA is on and passes it", async () => {
+    const onOidc = vi.fn().mockResolvedValue(undefined);
+    setup({ methods: [OIDC], onOidc, mfaEnabled: true });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(onOidc).not.toHaveBeenCalled();
+    type(/authenticator code/i, "111 222");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
+    await waitFor(() => expect(onOidc).toHaveBeenCalledWith(OIDC, "111222"));
+  });
+
+  it("REAUTH_OIDC_REQUIRED switches to the provider method", async () => {
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValue(new HttpError(400, "x", "REAUTH_OIDC_REQUIRED"));
+    setup({ methods: [...PW, OIDC], onSubmit, onOidc: vi.fn() });
+    type(/password/i, "pw");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.queryByLabelText(/your password/i)).toBeNull());
+    expect(screen.getByRole("button", { name: "Confirm with Keycloak" })).toBeTruthy();
+  });
+
+  it("REAUTH_UNAVAILABLE shows the unavailable text", async () => {
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValue(new HttpError(400, "x", "REAUTH_UNAVAILABLE"));
+    setup({ onSubmit });
+    type(/password/i, "pw");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(screen.getByText(/not available for this account/i)).toBeTruthy(),
+    );
   });
 
   it("both methods: password form and provider button", () => {

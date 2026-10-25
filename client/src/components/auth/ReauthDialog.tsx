@@ -8,7 +8,7 @@
 import { Component, createSignal, For, Show } from "solid-js";
 import { X } from "lucide-solid";
 import type { ReauthRequest } from "@/lib/types";
-import { reauthErrorText, type ReauthMethod } from "@/lib/reauth";
+import { reauthErrorCode, reauthErrorText, type ReauthMethod } from "@/lib/reauth";
 import { createDialog } from "@/lib/a11y/dialog";
 import { t } from "@/i18n";
 
@@ -19,7 +19,10 @@ export interface ReauthDialogProps {
   methods: ReauthMethod[];
   onSubmit: (req: ReauthRequest) => Promise<void>;
   /** Called when the user picks a provider method. */
-  onOidc?: (method: Extract<ReauthMethod, { kind: "oidc" }>) => Promise<void>;
+  onOidc?: (
+    method: Extract<ReauthMethod, { kind: "oidc" }>,
+    mfaCode: string | null,
+  ) => Promise<void>;
   onClose: () => void;
 }
 
@@ -29,17 +32,26 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
   const [code, setCode] = createSignal("");
   const [error, setError] = createSignal("");
   const [busy, setBusy] = createSignal(false);
+  // The server can tell us mid-way that the password path is not for this
+  // account (switch to the provider) or that nothing is available.
+  const [passwordHidden, setPasswordHidden] = createSignal(false);
+  const [serverUnavailable, setServerUnavailable] = createSignal(false);
 
   const mfaOnly = () => props.mode === "mfaOnly";
   const showPassword = () =>
-    !mfaOnly() && props.methods.some((m) => m.kind === "password");
+    !mfaOnly() &&
+    !passwordHidden() &&
+    props.methods.some((m) => m.kind === "password");
   const oidcMethods = () =>
     props.methods.filter(
       (m): m is Extract<ReauthMethod, { kind: "oidc" }> => m.kind === "oidc",
     );
-  const showCode = () => props.mfaEnabled && (mfaOnly() || showPassword());
+  // The code is needed on every path (password and provider alike).
+  const showCode = () =>
+    props.mfaEnabled && (mfaOnly() || showPassword() || oidcMethods().length > 0);
   const unavailable = () =>
-    !mfaOnly() && !showPassword() && oidcMethods().length === 0;
+    !mfaOnly() &&
+    (serverUnavailable() || (!showPassword() && oidcMethods().length === 0));
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -47,6 +59,12 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
     try {
       await action();
     } catch (err) {
+      const code = reauthErrorCode(err);
+      if (code === "REAUTH_OIDC_REQUIRED" && oidcMethods().length > 0) {
+        setPasswordHidden(true);
+      } else if (code === "REAUTH_UNAVAILABLE") {
+        setServerUnavailable(true);
+      }
       setError(reauthErrorText(err));
     } finally {
       setBusy(false);
@@ -184,7 +202,13 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
                       class={`${secondaryBtn} w-full`}
                       onClick={() => {
                         const { onOidc } = props;
-                        if (onOidc) void run(() => onOidc(m));
+                        if (!onOidc) return;
+                        const mfa = code().replace(/\s+/g, "");
+                        if (showCode() && mfa === "") {
+                          setError(t("admin.reauth.error.mfaRequired"));
+                          return;
+                        }
+                        void run(() => onOidc(m, showCode() ? mfa : null));
                       }}
                     >
                       {t("admin.reauth.oidc", { provider: m.label })}

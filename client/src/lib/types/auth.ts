@@ -76,3 +76,11 @@ export interface ReauthRequest {
   password: string;
   mfa_code: string | null;
 }
+
+/** `GET /auth/reauth/methods` (contract C24): how this session can re-authenticate. */
+export interface ReauthMethodsResponse {
+  password: boolean;
+  /** An authenticator code is needed on every path. */
+  mfa_required: boolean;
+  oidc: { provider_id: string; display_name: string }[];
+}

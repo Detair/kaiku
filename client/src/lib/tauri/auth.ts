@@ -5,6 +5,7 @@
 
 import type {
   IdentityListResponse,
+  ReauthMethodsResponse,
   RevokeAllResponse,
   ServerSettings,
   SessionListResponse,
@@ -438,6 +439,61 @@ export async function linkIdentity(
     `/auth/me/identities/authorize/${encodeURIComponent(providerSlug)}?response=json`,
   );
   return { mode: "browser", authUrl: resp.url };
+}
+
+// ============================================================================
+// Re-authentication (contract C24)
+// ============================================================================
+
+/** Which re-authentication methods this session can use. */
+export async function getReauthMethods(): Promise<ReauthMethodsResponse> {
+  return httpRequest<ReauthMethodsResponse>("GET", "/auth/reauth/methods");
+}
+
+/** Turn a native command error code into an `HttpError` for the shared mapping. */
+function nativeReauthError(err: unknown): HttpError {
+  const raw = typeof err === "string" ? err : err instanceof Error ? err.message : "";
+  const status = /^HTTP_(\d{3})$/.exec(raw);
+  if (status) return new HttpError(Number(status[1]), raw);
+  return new HttpError(0, raw, raw || "REAUTH_FAILED");
+}
+
+/**
+ * Start re-authenticating with a sign-in provider.
+ *
+ * Tauri: the native command runs the whole flow (system browser, loopback
+ * callback) and resolves once the server reports the confirmation. Browser:
+ * the server returns the provider URL for the caller to open in a popup; the
+ * result arrives as an `oidc-reauth-callback` message.
+ */
+export async function startOidcReauth(
+  providerId: string,
+  opts: { reason?: string | null; mfaCode?: string | null },
+): Promise<{ mode: "tauri" } | { mode: "browser"; url: string }> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      await invoke("oidc_reauth", {
+        serverUrl: getServerUrl().replace(/\/+$/, ""),
+        providerId,
+        reason: opts.reason ?? null,
+        mfaCode: opts.mfaCode ?? null,
+      });
+    } catch (err) {
+      throw nativeReauthError(err);
+    }
+    return { mode: "tauri" };
+  }
+  const resp = await httpRequest<{ url: string }>(
+    "POST",
+    `/auth/reauth/oidc/authorize/${encodeURIComponent(providerId)}`,
+    {
+      redirect_uri: null,
+      reason: opts.reason ?? null,
+      mfa_code: opts.mfaCode ?? null,
+    },
+  );
+  return { mode: "browser", url: resp.url };
 }
 
 // ============================================================================
