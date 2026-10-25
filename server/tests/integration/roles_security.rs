@@ -61,3 +61,59 @@ fn test_everyone_role_validation_logic() {
         "Safe permissions should pass validation"
     );
 }
+
+#[sqlx::test]
+async fn migration_strips_forbidden_bits_from_default_roles_only(pool: PgPool) -> sqlx::Result<()> {
+    let owner = vc_server::db::create_user(&pool, "owner", "Owner", None, "password123")
+        .await
+        .expect("create user");
+    let guild_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
+        .bind(guild_id)
+        .bind("Test Guild")
+        .bind(owner.id)
+        .execute(&pool)
+        .await?;
+
+    let july = GuildPermissions::MANAGE_POSTS
+        | GuildPermissions::SEND_ANNOUNCEMENTS
+        | GuildPermissions::MANAGE_EVENTS
+        | GuildPermissions::MANAGE_WEBHOOKS;
+    let base = GuildPermissions::SEND_MESSAGES | GuildPermissions::VOICE_CONNECT;
+    let everyone_id = uuid::Uuid::new_v4();
+    let custom_id = uuid::Uuid::new_v4();
+    for (id, name, is_default) in [
+        (everyone_id, "@everyone", true),
+        (custom_id, "Helpers", false),
+    ] {
+        sqlx::query(
+            "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+             VALUES ($1, $2, $3, $4, 0, $5)",
+        )
+        .bind(id)
+        .bind(guild_id)
+        .bind(name)
+        .bind((base | july).to_db())
+        .bind(is_default)
+        .execute(&pool)
+        .await?;
+    }
+
+    // Run the migration SQL (twice: it must be idempotent).
+    let sql = include_str!("../../migrations/20261110000100_strip_everyone_forbidden.sql");
+    sqlx::raw_sql(sql).execute(&pool).await?;
+    sqlx::raw_sql(sql).execute(&pool).await?;
+
+    let perms = |id| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT permissions FROM guild_roles WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+        }
+    };
+    assert_eq!(perms(everyone_id).await?, base.to_db());
+    assert_eq!(perms(custom_id).await?, (base | july).to_db());
+    Ok(())
+}
