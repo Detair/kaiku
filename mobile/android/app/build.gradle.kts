@@ -165,7 +165,13 @@ dependencies {
     // UnifiedPush connector (push transport for phones without Google services).
     // 3.0.10 (Maven Central, 2025-06-12) is the newest 3.x built with Kotlin 2.0.x; 3.2+ need Kotlin 2.2/2.3
     // metadata, newer than this project's Kotlin 2.1.0. Pulls in Tink (Apache-2.0) for Web Push decryption.
-    implementation("org.unifiedpush.android:connector:3.0.10")
+    implementation("org.unifiedpush.android:connector:3.0.10") {
+        // Tink ships as `tink` (JVM) and `tink-android` with the same classes; security-crypto already
+        // brings tink-android, so the connector's `tink` is swapped for it (duplicate classes otherwise).
+        exclude(group = "com.google.crypto.tink", module = "tink")
+    }
+    // Single Tink for security-crypto (wants 1.8.0) and the connector (built against 1.17.0); released 2025-03-13.
+    implementation("com.google.crypto.tink:tink-android:1.17.0")
 
     // Ktor
     implementation("io.ktor:ktor-client-okhttp:3.1.0")
