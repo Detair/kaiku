@@ -41,6 +41,9 @@ import type { MfaBackupCodeCountResponse } from "@/lib/tauri";
 import { authState } from "@/stores/auth";
 import { updateUser } from "@/stores/auth";
 import { showToast } from "@/components/ui/Toast";
+import ReauthDialog from "@/components/auth/ReauthDialog";
+import type { ReauthRequest } from "@/lib/types";
+import { t } from "@/i18n";
 
 const MfaSetupModal = lazy(() => import("./MfaSetupModal"));
 const BackupCodesDisplay = lazy(() => import("./BackupCodesDisplay"));
@@ -85,6 +88,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
   const [showRegenCodes, setShowRegenCodes] = createSignal(false);
   const [regenCodes, setRegenCodes] = createSignal<string[]>([]);
   const [isRegenerating, setIsRegenerating] = createSignal(false);
+  const [showReauth, setShowReauth] = createSignal(false);
 
   const isMfaEnabled = () => authState.user?.mfa_enabled ?? false;
 
@@ -135,28 +139,21 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
     }
   };
 
-  const handleRegenerateBackupCodes = async () => {
+  // Creating new backup codes asks for a current authenticator code first.
+  const handleRegenerateBackupCodes = () => setShowReauth(true);
+
+  const submitRegenerate = async (req: ReauthRequest) => {
     setIsRegenerating(true);
     try {
-      const result = await mfaGenerateBackupCodes();
-      setRegenCodes(result.codes);
+      const codes = await mfaGenerateBackupCodes(req.mfa_code ?? "");
+      setShowReauth(false);
+      setRegenCodes(codes);
       setShowRegenCodes(true);
       await fetchBackupCodeCount();
       showToast({
         type: "success",
-        title: "Codes Regenerated",
-        message: "New backup codes generated. Old codes are now invalid.",
+        title: t("settings.security.backupCodesRegenerated"),
         duration: 5000,
-      });
-    } catch (err) {
-      showToast({
-        type: "error",
-        title: "Regeneration Failed",
-        message:
-          err instanceof Error
-            ? err.message
-            : "Could not regenerate backup codes.",
-        duration: 8000,
       });
     } finally {
       setIsRegenerating(false);
@@ -506,6 +503,17 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
             </form>
           </div>
         </div>
+      </Show>
+
+      <Show when={showReauth()}>
+        <ReauthDialog
+          title={t("admin.reauth.backupCodesTitle")}
+          mode="mfaOnly"
+          mfaEnabled={true}
+          methods={[]}
+          onSubmit={submitRegenerate}
+          onClose={() => setShowReauth(false)}
+        />
       </Show>
 
       {/* Regenerated Backup Codes Modal */}

@@ -41,7 +41,7 @@ import {
 import { authState } from "@/stores/auth";
 import flokiDone from "@/assets/images/floki_onboard_done.webp";
 import { getThemeImage } from "@/lib/themeImage";
-import { joinViaInviteCode } from "@/stores/guilds";
+import { joinViaInviteCode, guildsState } from "@/stores/guilds";
 import { showToast } from "@/components/ui/Toast";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds, joinDiscoverable } from "@/lib/tauri";
@@ -51,6 +51,8 @@ import { t } from "@/i18n";
 const MicTestPanel = lazy(() => import("@/components/voice/MicTestPanel"));
 
 const TOTAL_STEPS = 5;
+const JOIN_STEP = 3;
+const ALL_STEPS = [0, 1, 2, 3, 4];
 
 // Don't render if onboarding is complete, setup wizard is showing, or auth not initialized yet
 const shouldShow = () =>
@@ -129,18 +131,28 @@ const OnboardingDialog: Component = () => {
     updatePreference("onboarding_completed", true);
   };
 
+  // People who already belong to a server (e.g. an admin added them) skip the
+  // join step.
+  const steps = () =>
+    guildsState.guilds.length > 0
+      ? ALL_STEPS.filter((s) => s !== JOIN_STEP)
+      : ALL_STEPS;
+  const position = () => Math.max(0, steps().indexOf(step()));
+
   const next = () => {
-    if (step() < TOTAL_STEPS - 1) {
+    const target = steps()[position() + 1];
+    if (target !== undefined) {
       // Load discovery guilds when entering the join step
-      if (step() + 1 === 3) {
+      if (target === JOIN_STEP) {
         loadDiscoveryGuilds();
       }
-      setStep(step() + 1);
+      setStep(target);
     }
   };
 
   const back = () => {
-    if (step() > 0) setStep(step() - 1);
+    const target = steps()[position() - 1];
+    if (target !== undefined) setStep(target);
   };
 
   const handleSaveDisplayName = async () => {
@@ -275,18 +287,18 @@ const OnboardingDialog: Component = () => {
         <div
           class="flex justify-center gap-2 pt-5 pb-2"
           role="progressbar"
-          aria-valuenow={step() + 1}
+          aria-valuenow={position() + 1}
           aria-valuemin={1}
-          aria-valuemax={TOTAL_STEPS}
-          aria-label={`Step ${step() + 1} of ${TOTAL_STEPS}`}
+          aria-valuemax={steps().length}
+          aria-label={`Step ${position() + 1} of ${steps().length}`}
         >
-          <For each={Array.from({ length: TOTAL_STEPS })}>
-            {(_, i) => (
+          <For each={steps()}>
+            {(s) => (
               <div
                 class="w-2 h-2 rounded-full transition-colors"
                 classList={{
-                  "bg-accent-primary": i() === step(),
-                  "bg-white/20": i() !== step(),
+                  "bg-accent-primary": s === step(),
+                  "bg-white/20": s !== step(),
                 }}
               />
             )}

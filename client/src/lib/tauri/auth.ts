@@ -479,9 +479,19 @@ export async function mfaDisable(code: string): Promise<void> {
   await httpRequest<unknown>("POST", "/auth/mfa/disable", { code });
 }
 
-/** Generate (or regenerate) MFA backup codes. */
-export async function mfaGenerateBackupCodes(): Promise<MfaBackupCodesResponse> {
-  return httpRequest<MfaBackupCodesResponse>("POST", "/auth/mfa/backup-codes");
+/**
+ * Generate (or regenerate) MFA backup codes. Needs a current authenticator
+ * code; backup codes are not accepted here.
+ */
+export async function mfaGenerateBackupCodes(
+  mfaCode: string,
+): Promise<string[]> {
+  const res = await httpRequest<MfaBackupCodesResponse>(
+    "POST",
+    "/auth/mfa/backup-codes",
+    { mfa_code: mfaCode },
+  );
+  return res.codes;
 }
 
 /** Get remaining MFA backup code count. */

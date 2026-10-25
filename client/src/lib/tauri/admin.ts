@@ -21,6 +21,7 @@ import type {
   ObservabilitySummary,
   ObsTimeRange,
   PaginatedResponse,
+  ReauthRequest,
   TopErrorsResponse,
   TopRoutesResponse,
   TracesResponse,
@@ -267,10 +268,12 @@ export async function adminGetAuditLog(
  * Elevate admin session.
  */
 export async function adminElevate(
-  reason?: string,
+  req: ReauthRequest & { reason?: string },
 ): Promise<ElevateResponse> {
   return httpRequest<ElevateResponse>("POST", "/api/admin/elevate", {
-    reason,
+    password: req.password,
+    mfa_code: req.mfa_code,
+    reason: req.reason ?? null,
   });
 }
 

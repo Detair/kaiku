@@ -602,6 +602,8 @@ export class HttpError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    /** Machine-readable server error code (e.g. `INVALID_CREDENTIALS`), when sent. */
+    public readonly code?: string,
   ) {
     super(message);
     this.name = "HttpError";
@@ -723,7 +725,11 @@ async function sendHttpRequest<T>(
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     }
 
-    throw new HttpError(response.status, errorMessage);
+    throw new HttpError(
+      response.status,
+      errorMessage,
+      typeof errorBody?.error === "string" ? errorBody.error : undefined,
+    );
   }
 
   // Handle empty responses

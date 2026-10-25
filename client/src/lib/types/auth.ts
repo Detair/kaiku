@@ -70,3 +70,9 @@ export interface AdminOidcProvider {
   position: number;
   created_at: string;
 }
+
+/** Re-authentication for sensitive actions (contract C24). */
+export interface ReauthRequest {
+  password: string;
+  mfa_code: string | null;
+}

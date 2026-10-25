@@ -25,6 +25,8 @@ import type {
   ObsTraceEntry,
   ObsLinksResponse,
   ObsTimeRange,
+  ElevateResponse,
+  ReauthRequest,
 } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import type { AuditLogFilters } from "@/lib/tauri";
@@ -298,15 +300,16 @@ export async function loadAdminStats(): Promise<void> {
 }
 
 /**
- * Elevate admin session
+ * Elevate admin session. The caller proves who they are (contract C24); a
+ * failed attempt is rethrown so the re-auth dialog can show why.
  */
 export async function elevateSession(
-  reason?: string,
-): Promise<boolean> {
+  req: ReauthRequest & { reason?: string },
+): Promise<ElevateResponse> {
   setAdminState({ isElevating: true, error: null });
 
   try {
-    const response = await tauri.adminElevate(reason);
+    const response = await tauri.adminElevate(req);
     setAdminState({
       isElevated: response.elevated,
       elevationExpiresAt: response.expires_at,
@@ -318,14 +321,10 @@ export async function elevateSession(
       startElevationTimer();
     }
 
-    return response.elevated;
+    return response;
   } catch (err) {
-    console.error("[Admin] Failed to elevate session:", err);
-    setAdminState({
-      error: err instanceof Error ? err.message : "Failed to elevate session",
-      isElevating: false,
-    });
-    return false;
+    setAdminState({ isElevating: false });
+    throw err;
   }
 }
 
