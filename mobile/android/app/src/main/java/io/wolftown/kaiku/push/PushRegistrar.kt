@@ -380,7 +380,11 @@ class PushRegistrar @Inject constructor(
         val previous = lastKind ?: store.load()?.let { kindOf(it.provider) }
         if (previous != null && previous != kind) {
             logger.info("push transport changed: from=${previous.wire} to=${kind?.wire ?: "off"}")
-            transportFor(previous)?.let { unregisterQuietly(it) }
+            // Background like the logout's: a stalled unregister must not hold the lock.
+            // The next pass that picks a transport joins it (bounded).
+            transportFor(previous)?.let { old ->
+                pendingTransportUnregister = scope.launch { unregisterQuietly(old) }
+            }
             store.clear()
             lastKind = null
         }
@@ -501,9 +505,9 @@ class PushRegistrar @Inject constructor(
         val pending = pendingTransportUnregister ?: return
         if (withTimeoutOrNull(UNREGISTER_JOIN_TIMEOUT_MS) { pending.join() } == null) {
             logger.info("push transport unregister still running; continuing")
-        } else if (pendingTransportUnregister === pending) {
-            pendingTransportUnregister = null
         }
+        // Waited once: a stalled task must not delay every later pass as well.
+        if (pendingTransportUnregister === pending) pendingTransportUnregister = null
     }
 
     private suspend fun rollbackRegistration(deviceId: String) {

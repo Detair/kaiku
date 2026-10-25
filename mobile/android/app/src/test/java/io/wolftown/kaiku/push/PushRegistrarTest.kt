@@ -301,6 +301,7 @@ class PushRegistrarTest {
         platform.installed = listOf(DISTRIBUTOR)
         assertEquals(RefreshOutcome.REGISTERED, registrar.refresh())
 
+        runCurrent()
         assertEquals(1, fcm.unregisters)
         assertEquals(0, up.unregisters)
         coVerify(exactly = 1) {
@@ -316,6 +317,7 @@ class PushRegistrarTest {
 
         coEvery { api.getConfig() } returns upOnlyConfig
         assertEquals(RefreshOutcome.OFF, registrar.refresh())
+        runCurrent()
 
         assertEquals(1, fcm.unregisters)
         assertNull(store.record)
@@ -398,6 +400,28 @@ class PushRegistrarTest {
 
         assertEquals(RefreshOutcome.REGISTERED, pass.await())
         assertEquals(listOf("request", "unregistered", "request"), fcm.events)
+    }
+
+    @Test
+    fun `stalled unregister of the old transport does not hold the lock`() = runTest {
+        val registrar = newRegistrar()
+        registrar.refresh() // FCM
+        fcm.unregisterGate = CompletableDeferred() // never completes
+        platform.installed = listOf(DISTRIBUTOR)
+        coEvery { api.getConfig() } returns upOnlyConfig
+
+        // The switching pass itself returns at once (UnifiedPush) or after the join cap at most.
+        val pass = async { registrar.refresh() }
+        advanceTimeBy(PushRegistrar.UNREGISTER_JOIN_TIMEOUT_MS + 1)
+        runCurrent()
+        assertEquals(RefreshOutcome.REGISTERED, pass.await())
+
+        // A later pass and the logout are not blocked by the stalled task.
+        val before = currentTime
+        assertEquals(RefreshOutcome.UNCHANGED, registrar.refresh())
+        registrar.unregisterForLogout()
+        assertEquals(before, currentTime)
+        coVerify(exactly = 1) { api.unregisterDevice(DEVICE_ID) }
     }
 
     @Test
