@@ -40,9 +40,9 @@ const ScreenShareButton: Component<ScreenShareButtonProps> = (props) => {
   };
 
   const buttonTitle = () => {
-    if (atLimit()) return t("voice.screenShareLimit", { count: MAX_SCREEN_SHARES, max: MAX_SCREEN_SHARES });
-    if (voiceState.screenSharing) return t("voice.screenShareAnother", { count: ownShareCount(), max: MAX_SCREEN_SHARES });
-    return t("voice.screenShare");
+    if (atLimit()) return t("voice.screenShare.limit", { count: MAX_SCREEN_SHARES, max: MAX_SCREEN_SHARES });
+    if (voiceState.screenSharing) return t("voice.screenShare.another", { count: ownShareCount(), max: MAX_SCREEN_SHARES });
+    return t("voice.screenShare.start");
   };
 
   return (

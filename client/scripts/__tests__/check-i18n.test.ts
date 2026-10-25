@@ -7,12 +7,25 @@ import {
   checkUnusedAllowlist,
   parseAndroidStrings,
   checkPlaceholders,
+  findDuplicateValues,
   findUnusedKeys,
   syncLocaleFiles,
   toAndroidName,
 } from "../check-i18n";
 
 describe("check-i18n", () => {
+  it("warns about the same text under three or more keys, not about plural siblings", () => {
+    const en = {
+      "a.x": "Loading...", "b.y": "Loading...", "c.z": "Loading...",
+      "d.e": "Twice", "f.g": "Twice",
+      "h.one": "N item", "h.other": "N item", "i.one": "N item", "i.other": "N item",
+    };
+    const warnings = findDuplicateValues(en);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("Loading...");
+    expect(findDuplicateValues(en, 2)).toHaveLength(3);
+  });
+
   it("reports missing and unknown locale keys", () => {
     const en = { "a.b": "B", "a.c": "C" };
     const de = { de: { "a.b": "", "a.x": "" } };

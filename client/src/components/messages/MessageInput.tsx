@@ -9,8 +9,9 @@ import AutocompletePopup from "./AutocompletePopup";
 import { guildsState } from "@/stores/guilds";
 import { channelsState } from "@/stores/channels";
 import { listGuildCommands, type GuildCommand } from "@/lib/api/bots";
-import { t } from "@/i18n";
 import PositionedEmojiPicker from "@/components/emoji/PositionedEmojiPicker";
+import { plural, t } from "@/i18n";
+import { CHAT_SEND_ERRORS, errorText } from "@/i18n/errors";
 
 interface MessageInputProps {
   channelId: string;
@@ -34,6 +35,10 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   const [isDragging, setIsDragging] = createSignal(false);
   const [uploadError, setUploadError] = createSignal<string | null>(null);
   const [pendingFiles, setPendingFiles] = createSignal<PendingFile[]>([]);
+  const sendLabel = () =>
+    pendingFiles().length > 0
+      ? plural(pendingFiles().length, { one: "chat.composer.sendFiles.one", other: "chat.composer.sendFiles.other" })
+      : t("chat.composer.send");
   const [isComposing, setIsComposing] = createSignal(false);
   // Autocomplete state
   const [autocompleteType, setAutocompleteType] = createSignal<"user" | "emoji" | "channel" | "command" | null>(null);
@@ -371,8 +376,13 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       console.error("Send failed:", err);
       showToast({
         type: "error",
-        title: "Failed to Send Message",
-        message: "Could not send your message. Please try again.",
+        title: t("chat.send.failed.title"),
+        message: errorText(
+          err,
+          "chat.send.failed.message",
+          CHAT_SEND_ERRORS.byCode,
+          CHAT_SEND_ERRORS.byStatus,
+        ),
         duration: 8000,
       });
     } finally {
@@ -492,8 +502,8 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       <Show when={isDragging()}>
         <div class="absolute inset-0 z-50 bg-surface-base/90 backdrop-blur-sm rounded-lg border-2 border-dashed border-accent-primary flex flex-col items-center justify-center pointer-events-none m-4">
           <UploadCloud class="w-12 h-12 text-accent-primary mb-2" />
-          <p class="text-text-primary font-medium">Drop files to upload</p>
-          <p class="text-xs text-text-secondary mt-1">Maximum size: {getUploadLimitText('attachment')}</p>
+          <p class="text-text-primary font-medium">{t("chat.composer.dropFiles")}</p>
+          <p class="text-xs text-text-secondary mt-1">{t("chat.composer.maxSize", { limit: getUploadLimitText('attachment') })}</p>
         </div>
       </Show>
 
@@ -516,14 +526,17 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         <div class="mb-2 p-3 bg-surface-layer2 rounded-xl border border-white/5">
           <div class="flex items-center justify-between mb-2">
             <span class="text-xs text-text-secondary font-medium">
-              {pendingFiles().length} file{pendingFiles().length > 1 ? "s" : ""} ready to send
+              {plural(pendingFiles().length, {
+                one: "chat.composer.filesReady.one",
+                other: "chat.composer.filesReady.other",
+              })}
             </span>
             <button
               type="button"
               onClick={clearPendingFiles}
               class="text-xs text-text-secondary hover:text-accent-danger transition-colors"
             >
-              Clear all
+              {t("chat.composer.clearAll")}
             </button>
           </div>
           <div class="flex gap-2 overflow-x-auto pb-1">
@@ -551,7 +564,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
                     type="button"
                     onClick={() => removePendingFile(index())}
                     class="absolute -top-1.5 -right-1.5 p-0.5 bg-accent-danger rounded-full text-white opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity shadow-lg"
-                    title="Remove file"
+                    title={t("chat.composer.removeFile")}
                     aria-label={t("chat.composer.removeFile")}
                   >
                     <X class="w-3 h-3" />
@@ -566,16 +579,16 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       <div class="relative flex flex-col rounded-xl border border-white/5 focus-within:border-accent-primary/30 transition-colors" style={{"background-color":"var(--color-surface-layer2)"}}>
         {/* Formatting toolbar */}
         <div class="flex items-center gap-1 px-2 py-1 border-b border-white/5">
-          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Bold (Ctrl+B)" aria-label="Bold (Ctrl+B)" onClick={() => insertFormatting("**", "**")}>
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title={t("chat.composer.bold")} aria-label={t("chat.composer.bold")} onClick={() => insertFormatting("**", "**")}>
             <Bold class="w-4 h-4" />
           </button>
-          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Italic (Ctrl+I)" aria-label="Italic (Ctrl+I)" onClick={() => insertFormatting("*", "*")}>
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title={t("chat.composer.italic")} aria-label={t("chat.composer.italic")} onClick={() => insertFormatting("*", "*")}>
             <Italic class="w-4 h-4" />
           </button>
-          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Code (Ctrl+E)" aria-label="Code (Ctrl+E)" onClick={() => insertFormatting("`", "`")}>
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title={t("chat.composer.code")} aria-label={t("chat.composer.code")} onClick={() => insertFormatting("`", "`")}>
             <Code class="w-4 h-4" />
           </button>
-          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title="Spoiler" aria-label="Spoiler" onClick={() => insertFormatting("||", "||")}>
+          <button type="button" class="p-1.5 rounded hover:bg-white/10 text-text-primary/50 hover:text-text-primary transition-colors" title={t("chat.composer.spoiler")} aria-label={t("chat.composer.spoiler")} onClick={() => insertFormatting("||", "||")}>
             <EyeOff class="w-4 h-4" />
           </button>
         </div>
@@ -585,7 +598,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
           <button
             type="button"
             class="p-3 text-text-secondary hover:text-text-primary transition-colors"
-            title="Add files" aria-label="Add files"
+            title={t("chat.composer.addFiles")} aria-label={t("chat.composer.addFiles")}
             onClick={handleFileSelect}
           >
             <PlusCircle class="w-5 h-5" />
@@ -604,7 +617,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
             onCompositionEnd={() => setIsComposing(false)}
             class="flex-1 bg-transparent py-3 text-text-input placeholder-text-secondary focus:outline-none resize-none overflow-y-auto"
             style={{ "min-height": "24px", "max-height": "192px" }}
-            placeholder={`Message #${props.channelName}`}
+            placeholder={t("chat.composer.placeholder", { channel: props.channelName })}
             disabled={isSending()}
             rows={1}
           />
@@ -614,7 +627,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
             ref={emojiButtonRef}
             type="button"
             class={`p-2 transition-colors ${showEmojiPicker() ? "text-accent-primary" : "text-text-secondary hover:text-text-primary"}`}
-            title="Add emoji" aria-label="Add emoji"
+            title={t("chat.composer.addEmoji")} aria-label={t("chat.composer.addEmoji")}
             onClick={() => setShowEmojiPicker((prev) => !prev)}
           >
             <Smile class="w-5 h-5" />
@@ -627,11 +640,11 @@ const MessageInput: Component<MessageInputProps> = (props) => {
               <div class="flex flex-col items-end pr-2 gap-0.5 pointer-events-none">
                 <Show when={lengthStats().totalLength > lengthStats().regularLength}>
                   <span class={`text-[9px] ${lengthStats().totalLength > lengthStats().totalLimit ? 'text-accent-danger font-bold' : 'text-text-secondary'}`}>
-                    Total: {lengthStats().totalLength}/{lengthStats().totalLimit}
+                    {t("chat.composer.lengthTotal", { length: lengthStats().totalLength, limit: lengthStats().totalLimit })}
                   </span>
                 </Show>
                 <span class={`text-[10px] leading-tight ${lengthStats().regularLength > lengthStats().regularLimit ? 'text-accent-danger font-bold' : 'text-text-secondary'}`}>
-                  Text: {lengthStats().regularLength}/{lengthStats().regularLimit}
+                  {t("chat.composer.lengthText", { length: lengthStats().regularLength, limit: lengthStats().regularLimit })}
                 </span>
               </div>
             </Show>
@@ -643,8 +656,8 @@ const MessageInput: Component<MessageInputProps> = (props) => {
                 data-testid="message-send"
                 class="p-2 text-accent-primary hover:text-accent-primary/80 transition-colors disabled:opacity-50"
                 disabled={isSending() || isOverLimit()}
-                title={pendingFiles().length > 0 ? `Send ${pendingFiles().length} file(s)` : "Send message"}
-                aria-label={pendingFiles().length > 0 ? `Send ${pendingFiles().length} file(s)` : "Send message"}
+                title={sendLabel()}
+                aria-label={sendLabel()}
               >
                 <Send class="w-5 h-5" />
               </button>
@@ -654,9 +667,9 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       </div>
 
       {/* Error display */}
-      <Show when={messagesState.error}>
+      <Show when={messagesState.sendError}>
         <div class="mt-2 text-sm" style={{"color":"var(--color-error-text)"}}>
-          Failed to send: {messagesState.error}
+          {messagesState.sendError}
         </div>
       </Show>
 

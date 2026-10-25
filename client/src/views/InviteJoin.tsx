@@ -8,6 +8,8 @@ import { Component, createSignal, onMount, Show } from "solid-js";
 import { useParams, useNavigate } from "@solidjs/router";
 import { joinViaInviteCode } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
 
 const InviteJoin: Component = () => {
   const params = useParams<{ code: string }>();
@@ -32,9 +34,7 @@ const InviteJoin: Component = () => {
       // The joinViaInviteCode function already navigates to the guild
     } catch (err) {
       setStatus("error");
-      setErrorMessage(
-        err instanceof Error ? err.message : "Failed to join guild",
-      );
+      setErrorMessage(errorText(err, "auth.invite.failed"));
     }
   });
 
@@ -48,25 +48,25 @@ const InviteJoin: Component = () => {
         style={{"background-color":"var(--color-surface-layer1)"}}
       >
         <Show when={status() === "loading"}>
-          <div class="text-text-primary text-lg mb-2">Joining guild...</div>
-          <div class="text-text-secondary">Please wait</div>
+          <div class="text-text-primary text-lg mb-2">{t("auth.invite.joining")}</div>
+          <div class="text-text-secondary">{t("auth.invite.wait")}</div>
         </Show>
 
         <Show when={status() === "success"}>
-          <div class="text-accent-primary text-lg mb-2">Success!</div>
+          <div class="text-accent-primary text-lg mb-2">{t("auth.invite.success")}</div>
           <div class="text-text-secondary">
-            You've joined the guild. Redirecting...
+            {t("auth.invite.joined")}
           </div>
         </Show>
 
         <Show when={status() === "error"}>
-          <div class="text-accent-danger text-lg mb-2">Failed to Join</div>
+          <div class="text-accent-danger text-lg mb-2">{t("auth.invite.failedTitle")}</div>
           <div class="text-text-secondary mb-4">{errorMessage()}</div>
           <button
             onClick={() => navigate("/")}
             class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg hover:opacity-90"
           >
-            Go Home
+            {t("common.goHome")}
           </button>
         </Show>
       </div>

@@ -3,6 +3,8 @@ import { Monitor, Smartphone, LogOut } from "lucide-solid";
 import * as tauri from "@/lib/tauri";
 import { formatRelativeTimeShort } from "@/lib/utils";
 import type { SessionInfo } from "@/lib/types";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
 
 const SessionsSection: Component = () => {
   const [sessions, setSessions] = createSignal<SessionInfo[]>([]);
@@ -16,7 +18,7 @@ const SessionsSection: Component = () => {
       const resp = await tauri.listSessions();
       setSessions(resp.sessions);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err, "settings.sessions.loadFailed"));
     } finally {
       setLoading(false);
     }
@@ -29,7 +31,7 @@ const SessionsSection: Component = () => {
       await tauri.revokeSession(sessionId);
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err, "settings.sessions.revokeFailed"));
     }
   };
 
@@ -38,7 +40,7 @@ const SessionsSection: Component = () => {
       await tauri.revokeAllOtherSessions();
       setSessions((prev) => prev.filter((s) => s.is_current));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err, "settings.sessions.revokeAllFailed"));
     }
   };
 
@@ -46,7 +48,7 @@ const SessionsSection: Component = () => {
     if (session.city && session.country)
       return `${session.city}, ${session.country}`;
     if (session.country) return session.country;
-    return "Unknown location";
+    return t("settings.sessions.unknownLocation");
   };
 
   const getDeviceIcon = (device: string) => {
@@ -65,21 +67,21 @@ const SessionsSection: Component = () => {
     <div class="space-y-3">
       <div class="flex items-center justify-between">
         <h4 class="text-sm font-semibold text-text-secondary uppercase tracking-wide">
-          Active Sessions
+          {t("settings.sessions.title")}
         </h4>
         <Show when={sessions().filter((s) => !s.is_current).length > 0}>
           <button
             onClick={handleRevokeAll}
             class="text-xs px-2 py-1 rounded-lg text-status-danger hover:bg-status-danger/10 transition-colors"
           >
-            Log out all other devices
+            {t("settings.sessions.logOutOthers")}
           </button>
         </Show>
       </div>
 
       <Show when={loading()}>
         <div class="text-sm text-text-secondary py-4 text-center">
-          Loading sessions...
+          {t("settings.sessions.loading")}
         </div>
       </Show>
 
@@ -106,14 +108,14 @@ const SessionsSection: Component = () => {
                       </span>
                       <Show when={session.is_current}>
                         <span class="px-1.5 py-0.5 text-[10px] rounded-md bg-status-success/20 text-text-primary font-medium">
-                          Current
+                          {t("settings.sessions.current")}
                         </span>
                       </Show>
                     </div>
                     <div class="flex items-center gap-2 text-xs text-text-secondary mt-0.5">
                       <span>{formatLocation(session)}</span>
                       <span class="opacity-40">&middot;</span>
-                      <span>{session.ip_address ?? "Unknown IP"}</span>
+                      <span>{session.ip_address ?? t("settings.sessions.unknownIp")}</span>
                       <span class="opacity-40">&middot;</span>
                       <span>{formatRelativeTimeShort(session.created_at)}</span>
                     </div>
@@ -122,7 +124,7 @@ const SessionsSection: Component = () => {
                     <button
                       onClick={() => handleRevoke(session.id)}
                       class="shrink-0 p-1.5 rounded-lg text-text-secondary hover:text-status-danger hover:bg-status-danger/10 transition-colors"
-                      title="Revoke session"
+                      title={t("settings.sessions.revoke")}
                     >
                       <LogOut size={16} />
                     </button>

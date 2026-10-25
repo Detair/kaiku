@@ -65,7 +65,7 @@ const MessageEmbeds: Component<{ embeds: MessageEmbed[] }> = (props) => {
             <Show when={e.image}>
               <img
                 src={e.image}
-                alt=""
+                alt={""}
                 class="mt-2 rounded max-w-full"
                 loading="lazy"
               />

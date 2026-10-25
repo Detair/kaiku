@@ -8,12 +8,13 @@
 import { Component, createSignal, Show } from "solid-js";
 import { X } from "lucide-solid";
 import { adminState, createUser } from "@/stores/admin";
-import { getServerUrl, HttpError } from "@/lib/tauri";
+import { getServerUrl } from "@/lib/tauri";
 import { generateTemporaryPassword } from "@/lib/passwords";
 import { showToast } from "@/components/ui/Toast";
 import { copyHandoverText, canDismissCreateAccount } from "@/lib/adminHandover";
 import { t } from "@/i18n";
 import { createDialog } from "@/lib/a11y/dialog";
+import { errorText } from "@/i18n/errors";
 
 const USERNAME_RE = /^[a-z0-9_]{3,32}$/;
 
@@ -45,7 +46,7 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
   const copy = async (text: string) => {
     try {
       await copyHandoverText(text);
-      showToast({ type: "success", title: t("admin.createAccount.copied"), duration: 2000 });
+      showToast({ type: "success", title: t("common.copied"), duration: 2000 });
     } catch {
       showToast({
         type: "error",
@@ -83,11 +84,14 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
         server: getServerUrl(),
       });
     } catch (err) {
-      if (err instanceof HttpError && err.status === 409) {
-        setError(t("admin.createAccount.usernameTaken"));
-      } else {
-        setError(t("admin.createAccount.failed"));
-      }
+      setError(
+        errorText(
+          err,
+          "admin.createAccount.failed",
+          { USER_EXISTS: "admin.createAccount.usernameTaken" },
+          { 409: "admin.createAccount.usernameTaken" },
+        ),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -118,7 +122,7 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
           <button
             type="button"
             onClick={props.onClose}
-            aria-label={t("admin.createAccount.close")}
+            aria-label={t("common.close")}
             class="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-text-secondary"
           >
             <X class="w-5 h-5" />
@@ -136,7 +140,7 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
               </Show>
 
               <label class="block space-y-1">
-                <span class="text-sm text-text-secondary">{t("admin.createAccount.username")}</span>
+                <span class="text-sm text-text-secondary">{t("common.username")}</span>
                 <input
                   type="text"
                   value={username()}
@@ -190,7 +194,7 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
                     {t("admin.createAccount.generate")}
                   </button>
                   <button type="button" class={secondaryBtn} onClick={() => copy(password())}>
-                    {t("admin.createAccount.copy")}
+                    {t("common.copy")}
                   </button>
                 </div>
               </div>
@@ -203,14 +207,14 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
 
               <div class="flex justify-end gap-2 pt-2">
                 <button type="button" class={secondaryBtn} onClick={props.onClose}>
-                  {t("admin.createAccount.cancel")}
+                  {t("common.cancel")}
                 </button>
                 <button
                   type="submit"
                   disabled={!adminState.isElevated || submitting()}
                   class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  {t("admin.createAccount.submit")}
+                  {t("admin.createAccount.title")}
                 </button>
               </div>
             </form>
@@ -224,7 +228,7 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
                   <dd class="text-text-primary font-mono break-all">{c().server}</dd>
                 </div>
                 <div>
-                  <dt class="text-text-secondary">{t("admin.createAccount.username")}</dt>
+                  <dt class="text-text-secondary">{t("common.username")}</dt>
                   <dd class="text-text-primary font-mono">{c().username}</dd>
                 </div>
                 <div>
@@ -252,7 +256,7 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
                   onClick={props.onClose}
                   class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
                 >
-                  {t("admin.createAccount.close")}
+                  {t("common.close")}
                 </button>
               </div>
             </div>

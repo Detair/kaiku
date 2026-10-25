@@ -13,6 +13,9 @@ import { KeyRound, ShieldAlert } from "lucide-solid";
 import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
+import { REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "@/lib/authErrors";
 
 /** Map icon_hint to a Lucide icon component. */
 function providerIcon(hint: string | null) {
@@ -28,7 +31,7 @@ function providerIcon(hint: string | null) {
 }
 
 const Register: Component = () => {
-  document.title = "Create Account | Kaiku";
+  document.title = `${t("auth.register.pageTitle")} | Kaiku`;
   onCleanup(() => { document.title = "Kaiku"; });
   const navigate = useNavigate();
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
@@ -58,31 +61,31 @@ const Register: Component = () => {
     clearError();
 
     if (!username().trim()) {
-      setLocalError("Username is required");
+      setLocalError(t("auth.register.usernameRequired"));
       return;
     }
     if (username().length < 3) {
-      setLocalError("Username must be at least 3 characters");
+      setLocalError(t("auth.register.usernameShort"));
       return;
     }
     if (username().length > 32) {
-      setLocalError("Username must be 32 characters or fewer");
+      setLocalError(t("auth.register.usernameLong"));
       return;
     }
     if (!/^[a-z0-9_]+$/.test(username())) {
-      setLocalError("Username can only contain lowercase letters, numbers, and underscores");
+      setLocalError(t("auth.register.usernameChars"));
       return;
     }
     if (!password()) {
-      setLocalError("Password is required");
+      setLocalError(t("auth.register.passwordRequired"));
       return;
     }
     if (password().length < 8) {
-      setLocalError("Password must be at least 8 characters");
+      setLocalError(t("auth.register.passwordShort"));
       return;
     }
     if (password() !== confirmPassword()) {
-      setLocalError("Passwords do not match");
+      setLocalError(t("auth.register.mismatch"));
       return;
     }
 
@@ -97,8 +100,14 @@ const Register: Component = () => {
       navigate("/", { replace: true });
     } catch (err) {
       if (!authState.error) {
-        const msg = err instanceof Error ? err.message : "Registration failed. Please try again.";
-        setLocalError(msg);
+        setLocalError(
+          errorText(
+            err,
+            "auth.register.failed",
+            REGISTER_ERRORS,
+            REGISTER_STATUS_ERRORS,
+          ),
+        );
       }
     }
   };
@@ -138,7 +147,7 @@ const Register: Component = () => {
             })
             .catch((err) => {
               if (!authState.error) {
-                setLocalError(err instanceof Error ? err.message : "SSO registration failed");
+                setLocalError(errorText(err, "auth.register.ssoFailed"));
               }
             })
             .finally(() => {
@@ -162,8 +171,7 @@ const Register: Component = () => {
         }
       }, 500);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      setLocalError(error);
+      setLocalError(errorText(err, "auth.register.ssoFailed"));
       setOidcLoading(null);
     }
   };
@@ -193,14 +201,14 @@ const Register: Component = () => {
     <div class="flex items-center justify-center min-h-screen overflow-y-auto bg-background-primary py-8">
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         <div class="hidden lg:flex w-1/2 items-start justify-center pt-16 p-8 bg-surface-base">
-          <img src={getThemeImage("floki_auth_register.png")} alt="Floki holding membership badge" class="w-full max-w-xs object-contain" loading="eager" decoding="async" fetchpriority="high" />
+          <img src={getThemeImage("floki_auth_register.png")} alt={t("auth.register.illustrationAlt")} class="w-full max-w-xs object-contain" loading="eager" decoding="async" fetchpriority="high" />
         </div>
         <div class="w-full lg:w-1/2 p-8">
         <h1 class="text-2xl font-bold mb-2 text-center text-text-primary">
-          Create an account
+          {t("auth.register.heading")}
         </h1>
         <p class="text-text-secondary text-center mb-6">
-          Join Kaiku to start chatting
+          {t("auth.register.subtitle")}
         </p>
 
         {/* Server URL input hidden during beta — hardcoded to kaiku.pmind.de */}
@@ -211,11 +219,10 @@ const Register: Component = () => {
             <ShieldAlert class="w-5 h-5 flex-shrink-0" />
             <div>
               <p class="font-medium text-text-primary">
-                Registration is closed
+                {t("auth.register.closedTitle")}
               </p>
               <p class="text-sm mt-1">
-                This server is not accepting new registrations. Contact the
-                server admin for an invite.
+                {t("auth.register.closedBody")}
               </p>
             </div>
           </div>
@@ -242,7 +249,7 @@ const Register: Component = () => {
                     >
                       <Icon class="w-4 h-4" />
                     </Show>
-                    Sign up with {provider.display_name}
+                    {t("auth.register.signUpWith", { provider: provider.display_name })}
                   </button>
                 );
               }}
@@ -256,7 +263,7 @@ const Register: Component = () => {
               </div>
               <div class="relative flex justify-center text-xs">
                 <span class="bg-background-secondary px-3 text-text-muted">
-                  or
+                  {t("auth.register.or")}
                 </span>
               </div>
             </div>
@@ -268,7 +275,7 @@ const Register: Component = () => {
           <form onSubmit={handleRegister} method="post" noValidate class="space-y-4">
             <div>
               <label for="register-username" class="block text-sm font-medium text-text-secondary mb-1">
-                Username <span class="text-error-text">*</span>
+                {t("common.username")} <span class="text-error-text">*</span>
               </label>
               <input
                 id="register-username"
@@ -277,7 +284,7 @@ const Register: Component = () => {
                 name="username"
                 autocomplete="username"
                 data-testid="register-username"
-                placeholder="Choose a username"
+                placeholder={t("auth.register.usernamePlaceholder")}
                 pattern="^[a-z0-9_]{3,32}$"
                 minLength={3}
                 maxLength={32}
@@ -287,14 +294,13 @@ const Register: Component = () => {
                 required
               />
               <p class="text-xs text-text-muted mt-1">
-                3-32 characters, lowercase letters, numbers, and underscores
-                only
+                {t("auth.register.usernameHint")}
               </p>
             </div>
 
             <div>
               <label for="register-email" class="block text-sm font-medium text-text-secondary mb-1">
-                Email <span class="text-text-muted">(optional)</span>
+                {t("auth.register.email")} <span class="text-text-muted">{t("auth.register.optional")}</span>
               </label>
               <input
                 id="register-email"
@@ -302,7 +308,7 @@ const Register: Component = () => {
                 class="input-field"
                 name="email"
                 autocomplete="email"
-                placeholder="your@email.com"
+                placeholder={t("auth.register.emailPlaceholder")}
                 value={email()}
                 onInput={(e) => setEmail(e.currentTarget.value)}
                 disabled={authState.isLoading}
@@ -311,7 +317,7 @@ const Register: Component = () => {
 
             <div>
               <label for="register-display-name" class="block text-sm font-medium text-text-secondary mb-1">
-                Display Name <span class="text-text-muted">(optional)</span>
+                {t("auth.register.displayName")} <span class="text-text-muted">{t("auth.register.optional")}</span>
               </label>
               <input
                 id="register-display-name"
@@ -319,7 +325,7 @@ const Register: Component = () => {
                 class="input-field"
                 name="name"
                 autocomplete="name"
-                placeholder="How others will see you"
+                placeholder={t("auth.register.displayNamePlaceholder")}
                 value={displayName()}
                 onInput={(e) => setDisplayName(e.currentTarget.value)}
                 disabled={authState.isLoading}
@@ -328,7 +334,7 @@ const Register: Component = () => {
 
             <div>
               <label for="register-password" class="block text-sm font-medium text-text-secondary mb-1">
-                Password <span class="text-error-text">*</span>
+                {t("auth.register.password")} <span class="text-error-text">*</span>
               </label>
               <PasswordInput
                 id="register-password"
@@ -336,18 +342,18 @@ const Register: Component = () => {
                 name="new-password"
                 autocomplete="new-password"
                 data-testid="register-password"
-                placeholder="Create a password"
+                placeholder={t("auth.register.passwordPlaceholder")}
                 value={password()}
                 onInput={(e) => setPassword(e.currentTarget.value)}
                 disabled={authState.isLoading}
                 required
               />
-              <p class="text-xs text-text-muted mt-1">At least 8 characters</p>
+              <p class="text-xs text-text-muted mt-1">{t("auth.register.passwordHint")}</p>
             </div>
 
             <div>
               <label for="register-confirm-password" class="block text-sm font-medium text-text-secondary mb-1">
-                Confirm Password <span class="text-error-text">*</span>
+                {t("auth.register.confirmPassword")} <span class="text-error-text">*</span>
               </label>
               <PasswordInput
                 id="register-confirm-password"
@@ -355,7 +361,7 @@ const Register: Component = () => {
                 name="confirm-password"
                 autocomplete="new-password"
                 data-testid="register-password-confirm"
-                placeholder="Confirm your password"
+                placeholder={t("auth.register.confirmPasswordPlaceholder")}
                 value={confirmPassword()}
                 onInput={(e) => setConfirmPassword(e.currentTarget.value)}
                 disabled={authState.isLoading}
@@ -374,9 +380,7 @@ const Register: Component = () => {
             </Show>
 
             <p class="text-xs text-text-muted text-center">
-              By creating an account, you agree to the server's
-              Terms of Service and Privacy Policy, if applicable.
-              These are available in the server's Library after login.
+              {t("auth.register.terms")}
             </p>
 
             <button
@@ -390,11 +394,11 @@ const Register: Component = () => {
                 fallback={
                   <>
                     <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Creating account...
+                    {t("auth.register.submitting")}
                   </>
                 }
               >
-                Create Account
+                {t("auth.register.submit")}
               </Show>
             </button>
           </form>
@@ -411,10 +415,10 @@ const Register: Component = () => {
           </div>
         </Show>
 
-        <p class="text-center text-sm text-text-secondary mt-4">
-          Already have an account?{" "}
+        <p class="flex justify-center gap-1 text-sm text-text-secondary mt-4">
+          <span>{t("auth.register.haveAccount")}</span>
           <A href="/login" class="text-primary auth-link">
-            Login
+            {t("common.login")}
           </A>
         </p>
         </div>

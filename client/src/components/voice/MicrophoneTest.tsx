@@ -5,6 +5,7 @@
  */
 
 import MicTestPanel from "./MicTestPanel";
+import { t } from "@/i18n";
 
 interface Props {
   onClose: () => void;
@@ -20,10 +21,11 @@ function MicrophoneTest(props: Props) {
         {/* Header */}
         <div class="flex items-center justify-between p-4 border-b border-white/5">
           <h3 class="text-lg font-semibold text-text-primary">
-            Microphone Test
+            {t("voice.micTest.title")}
           </h3>
           <button
             onClick={props.onClose}
+            aria-label={t("common.close")}
             class="text-text-secondary hover:text-text-primary transition-colors"
           >
             &times;

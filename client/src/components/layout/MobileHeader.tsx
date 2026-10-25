@@ -7,9 +7,11 @@
  */
 
 import { Component, Show } from "solid-js";
+import { t } from "@/i18n";
 import { Menu } from "lucide-solid";
 import { getActiveGuild } from "@/stores/guilds";
 import { selectedChannel } from "@/stores/channels";
+import { APP_NAME } from "@/lib/brand";
 
 interface MobileHeaderProps {
   onMenuClick: () => void;
@@ -24,7 +26,7 @@ const MobileHeader: Component<MobileHeaderProps> = (props) => {
       <button
         class="p-2 rounded-lg hover:bg-white/10 transition-colors"
         onClick={props.onMenuClick}
-        aria-label="Open navigation"
+        aria-label={t("home.mobile.openNavigation")}
       >
         <Menu class="w-5 h-5 text-text-primary" />
       </button>
@@ -43,7 +45,7 @@ const MobileHeader: Component<MobileHeaderProps> = (props) => {
           </span>
         </Show>
         <Show when={!activeGuild() && !channel()}>
-          <span class="text-text-primary font-medium">Kaiku</span>
+          <span class="text-text-primary font-medium">{APP_NAME}</span>
         </Show>
       </div>
     </header>

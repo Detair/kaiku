@@ -1,17 +1,18 @@
 import { Component } from "solid-js";
 import type { ConnectionMetrics } from "../../lib/webrtc/types";
 import type { QualityLevel } from "../../lib/types";
+import { t, type MessageKey } from "@/i18n";
 
 interface QualityTooltipProps {
   metrics: ConnectionMetrics;
 }
 
 // Map semantic quality levels to user-friendly labels
-const qualityLabels: Record<QualityLevel, string> = {
-  good: "Excellent",
-  warning: "Fair",
-  poor: "Poor",
-  unknown: "Unknown",
+const qualityLabels: Record<QualityLevel, MessageKey> = {
+  good: "voice.quality.level.good",
+  warning: "voice.quality.level.warning",
+  poor: "voice.quality.level.poor",
+  unknown: "voice.quality.level.unknown",
 };
 
 // Thresholds for individual metric status (uses warning/poor levels)
@@ -25,9 +26,9 @@ function getMetricStatus(
   value: number,
   metric: keyof typeof thresholds,
 ): "ok" | "warning" | "critical" {
-  const t = thresholds[metric];
-  if (value >= t.poor) return "critical";
-  if (value >= t.warning) return "warning";
+  const limits = thresholds[metric];
+  if (value >= limits.poor) return "critical";
+  if (value >= limits.warning) return "warning";
   return "ok";
 }
 
@@ -62,13 +63,13 @@ export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
   return (
     <div class="bg-surface-layer2 rounded-lg p-3 shadow-lg min-w-48">
       <div class="text-sm font-medium text-text-primary mb-2">
-        Connection Quality
+        {t("voice.quality.title")}
       </div>
       <div class="border-t border-surface-layer1 my-2" />
 
       <div class="space-y-1.5 text-xs">
         <div class="flex justify-between items-center">
-          <span class="text-text-secondary">Latency:</span>
+          <span class="text-text-secondary">{t("voice.quality.latency")}</span>
           <span class="flex items-center gap-1">
             <span
               class={
@@ -77,7 +78,7 @@ export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
                   : "text-text-secondary"
               }
             >
-              {m()?.latency}ms
+              {t("common.unit.ms", { value: m()?.latency ?? "" })}
             </span>
             <span class={statusColor(latencyStatus())}>
               {statusIcon(latencyStatus())}
@@ -86,7 +87,7 @@ export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
         </div>
 
         <div class="flex justify-between items-center">
-          <span class="text-text-secondary">Packet Loss:</span>
+          <span class="text-text-secondary">{t("voice.quality.packetLoss")}</span>
           <span class="flex items-center gap-1">
             <span
               class={
@@ -95,7 +96,9 @@ export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
                   : "text-text-secondary"
               }
             >
-              {m()?.packetLoss?.toFixed(1) ?? "0.0"}%
+              {t("common.unit.percent", {
+                value: m()?.packetLoss?.toFixed(1) ?? "0.0",
+              })}
             </span>
             <span class={statusColor(lossStatus())}>
               {statusIcon(lossStatus())}
@@ -104,7 +107,7 @@ export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
         </div>
 
         <div class="flex justify-between items-center">
-          <span class="text-text-secondary">Jitter:</span>
+          <span class="text-text-secondary">{t("voice.quality.jitter")}</span>
           <span class="flex items-center gap-1">
             <span
               class={
@@ -113,7 +116,7 @@ export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
                   : "text-text-secondary"
               }
             >
-              {m()?.jitter}ms
+              {t("common.unit.ms", { value: m()?.jitter ?? "" })}
             </span>
             <span class={statusColor(jitterStatus())}>
               {statusIcon(jitterStatus())}
@@ -125,10 +128,9 @@ export const QualityTooltip: Component<QualityTooltipProps> = (props) => {
       <div class="border-t border-surface-layer1 my-2" />
 
       <div class="text-xs text-text-secondary">
-        Quality:{" "}
-        <span class="text-text-primary">
-          {qualityLabels[m()?.quality ?? "unknown"]}
-        </span>
+        {t("voice.quality.summary", {
+          level: t(qualityLabels[m()?.quality ?? "unknown"]),
+        })}
       </div>
     </div>
   );

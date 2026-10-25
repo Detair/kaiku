@@ -130,7 +130,7 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
                       onClick={generateQr}
                       class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
                     >
-                      {t("qr.tryAgain")}
+                      {t("common.tryAgain")}
                     </button>
                   </div>
                 }

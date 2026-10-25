@@ -9,6 +9,8 @@ import type { ChannelWithUnread } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { subscribeChannel, waitForConnection } from "@/stores/websocket";
 import { showToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
 
 // Channels state interface
 interface ChannelsState {
@@ -102,7 +104,7 @@ export async function loadChannelsForGuild(guildId: string): Promise<void> {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to load guild channels:", error);
-    setChannelsState({ isLoading: false, error });
+    setChannelsState({ isLoading: false, error: errorText(err, "channels.list.loadFailed") });
   }
 }
 
@@ -168,7 +170,7 @@ export async function loadDMChannels(): Promise<void> {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to load DM channels:", error);
-    setChannelsState({ isLoading: false, error });
+    setChannelsState({ isLoading: false, error: errorText(err, "channels.list.loadFailed") });
   }
 }
 
@@ -302,8 +304,8 @@ export async function markAllGuildChannelsAsRead(
     console.error("[Channels] Failed to mark all guild channels as read:", err);
     showToast({
       type: "error",
-      title: "Mark All Read Failed",
-      message: "Could not mark all channels as read. Please try again.",
+      title: t("home.unread.toast.markReadFailedTitle"),
+      message: t("channels.markAllReadFailed.message"),
       duration: 8000,
     });
   }

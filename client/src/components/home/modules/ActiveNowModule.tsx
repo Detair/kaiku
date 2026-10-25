@@ -7,6 +7,7 @@
 
 import { Component, Show, For } from "solid-js";
 import { Coffee } from "lucide-solid";
+import { t } from "@/i18n";
 import { getOnlineFriends } from "@/stores/friends";
 import { getUserActivity } from "@/stores/presence";
 import CollapsibleModule from "./CollapsibleModule";
@@ -21,7 +22,7 @@ const ActiveNowModule: Component = () => {
   return (
     <CollapsibleModule
       id="active_now"
-      title="Active Now"
+      title={t("home.active.title")}
       badge={activeFriends().length}
     >
       <Show
@@ -29,9 +30,9 @@ const ActiveNowModule: Component = () => {
         fallback={
           <div class="flex flex-col items-center justify-center py-4 text-center">
             <Coffee class="w-8 h-8 text-text-secondary mb-2 opacity-50" />
-            <p class="text-sm text-text-secondary">It's quiet for now...</p>
+            <p class="text-sm text-text-secondary">{t("home.active.empty")}</p>
             <p class="text-xs text-text-muted mt-1">
-              When friends start playing, they'll show here!
+              {t("home.active.emptyHint")}
             </p>
           </div>
         }

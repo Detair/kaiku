@@ -1,5 +1,6 @@
 import { Component, Show, createMemo } from "solid-js";
 import { typingState } from "@/stores/websocket";
+import { plural } from "@/i18n";
 
 interface TypingIndicatorProps {
   channelId: string;
@@ -16,9 +17,7 @@ const TypingIndicator: Component<TypingIndicatorProps> = (props) => {
   const typingText = createMemo(() => {
     const users = typingUsers();
     if (users.length === 0) return null;
-    if (users.length === 1) return `Someone is typing...`;
-    if (users.length === 2) return `2 people are typing...`;
-    return `${users.length} people are typing...`;
+    return plural(users.length, { one: "chat.typing.one", other: "chat.typing.other" });
   });
 
   return (

@@ -20,6 +20,7 @@ import { QualityIndicator } from "./QualityIndicator";
 import { QualityTooltip } from "./QualityTooltip";
 import type { ConnectionMetrics } from "@/lib/webrtc/types";
 import VoiceControls from "./VoiceControls";
+import { t } from "@/i18n";
 
 /**
  * Voice panel shown when connected or connecting to a voice channel.
@@ -93,10 +94,10 @@ const VoicePanel: Component = () => {
                   "text-amber-400 animate-pulse": isConnecting(),
                 }}
               >
-                {isConnected() ? "Voice Connected" : "Connecting..."}
+                {isConnected() ? t("voice.panel.connected") : t("voice.status.connecting")}
               </div>
               <div class="text-xs text-text-secondary truncate flex items-center gap-1.5">
-                <span class="hover:text-text-primary transition-colors">{channel()?.name || "Voice Channel"}</span>
+                <span class="hover:text-text-primary transition-colors">{channel()?.name || t("voice.panel.fallbackChannel")}</span>
                 <Show when={isConnected()}>
                   <span class="text-text-muted">&middot;</span>
                   <span class="font-mono">{elapsedTime()}</span>
@@ -124,7 +125,7 @@ const VoicePanel: Component = () => {
             data-testid="voice-disconnect"
             onClick={handleDisconnect}
             class="p-1.5 text-text-secondary hover:text-accent-danger hover:bg-white/10 rounded transition-colors"
-            title="Disconnect"
+            title={t("voice.panel.disconnect")}
           >
             <PhoneOff class="w-4 h-4" />
           </button>
@@ -141,7 +142,7 @@ const VoicePanel: Component = () => {
                         ? "bg-accent-success/20 text-accent-success border border-accent-success/30 shadow-[0_0_8px_rgba(163,190,140,0.3)]"
                         : "bg-white/5 text-text-secondary border border-transparent"
                       } ${participant.muted ? "opacity-50" : "transition-all duration-200"}`}
-                    title={participant.muted ? "Muted" : undefined}
+                    title={participant.muted ? t("voice.participants.muted") : undefined}
                   >
                     <div class="w-4 h-4 rounded-full bg-accent-primary/20 flex items-center justify-center text-accent-primary">
                       {getParticipantDisplayName(participant).charAt(0).toUpperCase()}
@@ -162,7 +163,7 @@ const VoicePanel: Component = () => {
                           }
                         }}
                         class="p-0.5 hover:bg-accent-success/30 rounded transition-colors"
-                        title="View screen share"
+                        title={t("voice.panel.viewScreenShare")}
                       >
                         <MonitorUp class="w-3 h-3 text-accent-success" />
                       </button>
@@ -177,7 +178,7 @@ const VoicePanel: Component = () => {
         {/* Active screen shares */}
         <Show when={voiceState.screenShares.length > 0}>
           <div class="px-3 pb-2 border-t border-white/5 pt-2">
-            <div class="text-xs text-text-secondary/70 mb-1">Screen Shares</div>
+            <div class="text-xs text-text-secondary/70 mb-1">{t("voice.panel.screenShares")}</div>
             <For each={voiceState.screenShares}>
               {(share) => (
                 <div
@@ -190,8 +191,9 @@ const VoicePanel: Component = () => {
                       {share.username || share.user_id.slice(0, 8)}
                     </div>
                     <div class="text-xs text-text-secondary">
-                      {share.quality} •{" "}
-                      {share.has_audio ? "With audio" : "No audio"}
+                      {share.has_audio
+                        ? t("voice.panel.shareWithAudio", { quality: share.quality })
+                        : t("voice.panel.shareNoAudio", { quality: share.quality })}
                     </div>
                   </div>
                 </div>

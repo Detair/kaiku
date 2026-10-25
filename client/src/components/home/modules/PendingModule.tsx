@@ -8,6 +8,7 @@
 
 import { Component, Show, For } from "solid-js";
 import { UserPlus } from "lucide-solid";
+import { t } from "@/i18n";
 import {
   friendsState,
   acceptFriendRequest,
@@ -47,15 +48,15 @@ const PendingModule: Component = () => {
   };
 
   return (
-    <CollapsibleModule id="pending" title="Pending" badge={pendingCount()}>
+    <CollapsibleModule id="pending" title={t("home.pending.title")} badge={pendingCount()}>
       <Show
         when={pendingCount() > 0}
         fallback={
           <div class="text-center py-4">
             <UserPlus class="w-8 h-8 text-text-secondary mx-auto mb-2 opacity-50" />
-            <p class="text-sm text-text-secondary">No pending requests</p>
+            <p class="text-sm text-text-secondary">{t("home.pending.empty")}</p>
             <p class="text-xs text-text-muted mt-1">
-              Add friends by their username
+              {t("home.pending.emptyHint")}
             </p>
           </div>
         }
@@ -87,14 +88,14 @@ const PendingModule: Component = () => {
                         <button
                           onClick={() => handleAccept(request)}
                           class="p-1 rounded-full bg-white/5 hover:bg-status-success/20 transition-colors flex items-center justify-center w-8 h-8"
-                          title="Accept"
+                          title={t("home.pending.accept")}
                         >
                           <div style={{ "background-image": "var(--icon-accept)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
                         </button>
                         <button
                           onClick={() => handleDecline(request)}
                           class="p-1 rounded-full bg-white/5 hover:bg-status-error/20 transition-colors flex items-center justify-center w-8 h-8"
-                          title="Decline"
+                          title={t("home.pending.decline")}
                         >
                           <div style={{ "background-image": "var(--icon-decline)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
                         </button>
@@ -104,9 +105,9 @@ const PendingModule: Component = () => {
                     <button
                       onClick={() => handleCancel(request)}
                       class="px-2.5 py-1 rounded-lg text-xs font-medium bg-white/5 text-text-secondary hover:bg-status-error/20 hover:text-text-primary transition-colors"
-                      title="Cancel request"
+                      title={t("home.pending.cancelRequest")}
                     >
-                      Cancel
+                      {t("common.cancel")}
                     </button>
                   </Show>
                 </div>

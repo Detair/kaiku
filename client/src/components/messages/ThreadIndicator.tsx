@@ -12,6 +12,7 @@ import { openThread } from "@/stores/threads";
 import { threadsState } from "@/stores/threads";
 import { formatRelativeTime } from "@/lib/utils";
 import Avatar from "@/components/ui/Avatar";
+import { plural, t } from "@/i18n";
 
 interface ThreadIndicatorProps {
   message: Message;
@@ -68,11 +69,14 @@ const ThreadIndicator: Component<ThreadIndicatorProps> = (props) => {
         <span
           class={`text-sm text-accent-primary group-hover/thread:underline ${hasUnread() ? "font-bold" : "font-medium"}`}
         >
-          {replyCount()} {replyCount() === 1 ? "reply" : "replies"}
+          {plural(replyCount(), {
+            one: "chat.thread.replies.one",
+            other: "chat.thread.replies.other",
+          })}
         </span>
         <Show when={lastReplyAt()}>
           <span class="text-xs text-text-secondary">
-            Last reply {formatRelativeTime(lastReplyAt()!)}
+            {t("chat.thread.lastReply", { time: formatRelativeTime(lastReplyAt()!) })}
           </span>
         </Show>
       </button>

@@ -2,10 +2,18 @@ import { Component, createSignal, Show, onCleanup } from "solid-js";
 import { A } from "@solidjs/router";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
-import { isTauri } from "@/lib/tauri/common";
+import { HttpError } from "@/lib/tauri/common";
+import { t, type MessageKey } from "@/i18n";
+import { errorText } from "@/i18n/errors";
+
+/** Server codes for a reset code that cannot be used. */
+const RESET_ERRORS: Partial<Record<string, MessageKey>> = {
+  INVALID_TOKEN: "auth.reset.codeInvalid",
+  TOKEN_EXPIRED: "auth.reset.codeInvalid",
+};
 
 const ResetPassword: Component = () => {
-  document.title = "Reset Password | Kaiku";
+  document.title = `${t("auth.reset.title")} | Kaiku`;
   onCleanup(() => { document.title = "Kaiku"; });
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const [serverUrl] = createSignal(defaultServerUrl);
@@ -22,15 +30,15 @@ const ResetPassword: Component = () => {
     setSuccess(false);
 
     if (!token().trim()) {
-      setError("Reset code is required");
+      setError(t("auth.reset.codeRequired"));
       return;
     }
     if (newPassword().length < 8 || newPassword().length > 128) {
-      setError("Password must be between 8 and 128 characters");
+      setError(t("auth.reset.length"));
       return;
     }
     if (newPassword() !== confirmPassword()) {
-      setError("Passwords do not match");
+      setError(t("auth.reset.mismatch"));
       return;
     }
 
@@ -50,13 +58,16 @@ const ResetPassword: Component = () => {
           console.warn("[ResetPassword] Could not parse error response:", e.message);
           return null;
         });
-        throw new Error(data?.message || `Request failed (${res.status})`);
+        throw new HttpError(
+          res.status,
+          (typeof data?.message === "string" && data.message) || `Request failed (${res.status})`,
+          typeof data?.error === "string" ? data.error : undefined,
+        );
       }
 
       setSuccess(true);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "An error occurred";
-      setError(isTauri() ? message : `${message} (server: ${serverUrl()})`);
+      setError(errorText(err, "auth.reset.failed", RESET_ERRORS));
     } finally {
       setIsLoading(false);
     }
@@ -66,14 +77,14 @@ const ResetPassword: Component = () => {
     <div class="flex items-center justify-center min-h-screen overflow-y-auto bg-background-primary">
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
-          <img src={getThemeImage("floki_auth_forgot.png")} alt="Floki turning a combination lock" class="w-full max-w-xs object-contain" loading="eager" decoding="async" fetchpriority="high" />
+          <img src={getThemeImage("floki_auth_forgot.png")} alt={t("auth.reset.illustrationAlt")} class="w-full max-w-xs object-contain" loading="eager" decoding="async" fetchpriority="high" />
         </div>
         <div class="w-full lg:w-1/2 p-8">
         <h1 class="text-2xl font-bold mb-2 text-center text-text-primary">
-          Reset Password
+          {t("auth.reset.title")}
         </h1>
         <p class="text-text-secondary text-center mb-6">
-          Enter the code from your email and a new password
+          {t("auth.reset.subtitle")}
         </p>
 
         <Show when={!success()}>
@@ -85,7 +96,7 @@ const ResetPassword: Component = () => {
                 for="rp-token"
                 class="block text-sm font-medium text-text-secondary mb-1"
               >
-                Reset Code
+                {t("auth.reset.code")}
               </label>
               <input
                 id="rp-token"
@@ -93,7 +104,7 @@ const ResetPassword: Component = () => {
                 class="input-field"
                 name="token"
                 autocomplete="off"
-                placeholder="Paste reset code from email"
+                placeholder={t("auth.reset.codePlaceholder")}
                 value={token()}
                 onInput={(e) => setToken(e.currentTarget.value)}
                 disabled={isLoading()}
@@ -106,14 +117,14 @@ const ResetPassword: Component = () => {
                 for="rp-new-password"
                 class="block text-sm font-medium text-text-secondary mb-1"
               >
-                New Password
+                {t("auth.reset.newPassword")}
               </label>
               <PasswordInput
                 id="rp-new-password"
                 class="input-field"
                 name="new-password"
                 autocomplete="new-password"
-                placeholder="Enter new password"
+                placeholder={t("auth.reset.newPasswordPlaceholder")}
                 value={newPassword()}
                 onInput={(e) => setNewPassword(e.currentTarget.value)}
                 disabled={isLoading()}
@@ -128,14 +139,14 @@ const ResetPassword: Component = () => {
                 for="rp-confirm-password"
                 class="block text-sm font-medium text-text-secondary mb-1"
               >
-                Confirm Password
+                {t("auth.reset.confirmPassword")}
               </label>
               <PasswordInput
                 id="rp-confirm-password"
                 class="input-field"
                 name="confirm-password"
                 autocomplete="new-password"
-                placeholder="Confirm new password"
+                placeholder={t("auth.reset.confirmPasswordPlaceholder")}
                 value={confirmPassword()}
                 onInput={(e) => setConfirmPassword(e.currentTarget.value)}
                 disabled={isLoading()}
@@ -163,17 +174,17 @@ const ResetPassword: Component = () => {
                 fallback={
                   <>
                     <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Resetting...
+                    {t("auth.reset.submitting")}
                   </>
                 }
               >
-                Reset Password
+                {t("auth.reset.submit")}
               </Show>
             </button>
 
             <p class="text-center text-sm text-text-secondary mt-4">
               <A href="/login" class="text-primary auth-link">
-                Back to Login
+                {t("auth.reset.backToLogin")}
               </A>
             </p>
           </form>
@@ -183,14 +194,13 @@ const ResetPassword: Component = () => {
           <div
             class="p-4 rounded-md text-sm mb-4 bg-status-success/10 border border-status-success/30 text-status-success"
           >
-            Password has been reset successfully. You can now log in with your
-            new password.
+            {t("auth.reset.success")}
           </div>
           <A
             href="/login"
             class="btn-primary w-full flex items-center justify-center"
           >
-            Go to Login
+            {t("auth.reset.goToLogin")}
           </A>
         </Show>
         </div>

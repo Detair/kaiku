@@ -6,6 +6,7 @@
  * Checks: key format, Android-name collisions, locale JSON key sets and
  * `{{placeholder}}` parity, unused keys, and the Android `values*` folders
  * (valid names, locale names known, each locale folder empty or complete).
+ * Warns (without failing) when the same English text sits under 3+ keys.
  *
  * Run: bun run i18n:check            (exit 1 on any error, one per line)
  *      bun run i18n:sync             (rewrite locales/*.json from en)
@@ -101,6 +102,21 @@ export function findUnusedKeys(keys: string[], sources: Map<string, string>): st
   );
 }
 
+/**
+ * Warning only: English text that appears under `min` or more keys (plural
+ * siblings count once). Candidates for a shared `common.*` key.
+ */
+export function findDuplicateValues(source: Catalog, min = 3): string[] {
+  const byValue = new Map<string, Set<string>>();
+  for (const [key, value] of Object.entries(source)) {
+    const base = key.replace(/\.(zero|one|two|few|many|other)$/, "");
+    byValue.set(value, (byValue.get(value) ?? new Set()).add(base));
+  }
+  return [...byValue]
+    .filter(([, bases]) => bases.size >= min)
+    .map(([value, bases]) => `duplicate text ${JSON.stringify(value)} under ${bases.size} keys: ${[...bases].join(", ")}`);
+}
+
 /** Throws on malformed XML (jsdom returns a parsererror document instead). */
 export function parseAndroidStrings(xml: string): AndroidStrings {
   const doc = new (new JSDOM("").window.DOMParser)().parseFromString(xml, "text/xml");
@@ -145,9 +161,6 @@ export function checkAndroidLocales(
  * one/other pair). Delete an entry as soon as a component references it.
  */
 export const UNUSED_ALLOWLIST: readonly string[] = [
-  "common.retry",
-  "common.copy",
-  "common.copied",
   "connection.attempt.one",
   "connection.attempt.other",
 ];
@@ -279,6 +292,7 @@ function main(argv: string[]): number {
     ...android.errors,
     ...checkAndroidLocales(android.def, android.locales),
   ];
+  for (const warning of findDuplicateValues(source)) console.warn(`warning: ${warning}`);
   for (const error of errors) console.error(error);
   if (errors.length > 0) return 1;
   console.log(

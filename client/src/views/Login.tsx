@@ -14,6 +14,9 @@ import { KeyRound, ShieldCheck } from "lucide-solid";
 import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
+import { LOGIN_ERRORS } from "@/lib/authErrors";
 
 /** Map icon_hint to a Lucide icon component. */
 function providerIcon(hint: string | null) {
@@ -29,7 +32,7 @@ function providerIcon(hint: string | null) {
 }
 
 const Login: Component = () => {
-  document.title = "Login | Kaiku";
+  document.title = `${t("common.login")} | Kaiku`;
   onCleanup(() => { document.title = "Kaiku"; });
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -67,17 +70,17 @@ const Login: Component = () => {
     clearError();
 
     if (!username().trim()) {
-      setLocalError("Username is required");
+      setLocalError(t("auth.login.usernameRequired"));
       return;
     }
     if (!password()) {
-      setLocalError("Password is required");
+      setLocalError(t("auth.login.passwordRequired"));
       return;
     }
 
     // If MFA is required and no code provided
     if (authState.mfaRequired && !mfaCode().trim()) {
-      setLocalError("MFA code is required");
+      setLocalError(t("auth.login.mfaRequired"));
       return;
     }
 
@@ -102,7 +105,7 @@ const Login: Component = () => {
       if (msg === "MFA_REQUIRED") {
         setMfaCode("");
       } else if (!authState.error) {
-        setLocalError(msg || "Login failed. Please try again.");
+        setLocalError(errorText(err, "auth.login.failed", LOGIN_ERRORS));
       }
     }
   };
@@ -148,7 +151,7 @@ const Login: Component = () => {
             })
             .catch((err) => {
               if (!authState.error) {
-                setLocalError(err instanceof Error ? err.message : "SSO login failed");
+                setLocalError(errorText(err, "auth.login.ssoFailed"));
               }
             })
             .finally(() => {
@@ -173,8 +176,7 @@ const Login: Component = () => {
         }
       }, 500);
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      setLocalError(error);
+      setLocalError(errorText(err, "auth.login.ssoFailed"));
       setOidcLoading(null);
     }
   };
@@ -197,15 +199,15 @@ const Login: Component = () => {
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         {/* Left: Floki illustration */}
         <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
-          <img src={getThemeImage("floki_auth_welcome.png")} alt="Floki welcomes you" class="w-full max-w-xs object-contain" loading="eager" decoding="async" fetchpriority="high" />
+          <img src={getThemeImage("floki_auth_welcome.png")} alt={t("auth.login.illustrationAlt")} class="w-full max-w-xs object-contain" loading="eager" decoding="async" fetchpriority="high" />
         </div>
         {/* Right: Form */}
         <div class="w-full lg:w-1/2 p-8">
         <h1 class="text-2xl font-bold mb-2 text-center text-text-primary">
-          Welcome back!
+          {t("auth.login.heading")}
         </h1>
         <p class="text-text-secondary text-center mb-6">
-          Login to continue to Kaiku
+          {t("auth.login.subtitle")}
         </p>
 
         {/* Server URL input hidden during beta — hardcoded to kaiku.pmind.de */}
@@ -216,14 +218,13 @@ const Login: Component = () => {
             <div class="flex items-center gap-3 p-3 bg-accent-primary/10 border border-accent-primary/20 rounded-lg">
               <ShieldCheck class="w-5 h-5 text-accent-primary flex-shrink-0" />
               <p class="text-sm text-text-secondary">
-                Two-factor authentication is enabled. Enter a code from your
-                authenticator app or a backup code.
+                {t("auth.login.mfaIntro")}
               </p>
             </div>
 
             <div>
               <label for="login-mfa-code" class="block text-sm font-medium text-text-secondary mb-1">
-                MFA Code
+                {t("auth.login.mfaCode")}
               </label>
               <input
                 id="login-mfa-code"
@@ -231,7 +232,7 @@ const Login: Component = () => {
                 class="input-field font-mono text-center text-lg tracking-widest"
                 name="one-time-code"
                 autocomplete="one-time-code"
-                placeholder="000000"
+                placeholder={"000000"}
                 value={mfaCode()}
                 onInput={(e) =>
                   setMfaCode(e.currentTarget.value.replace(/\s/g, ""))
@@ -242,7 +243,7 @@ const Login: Component = () => {
                 required
               />
               <p class="text-xs text-text-muted mt-1">
-                Enter a 6-digit TOTP code or an 8-character backup code.
+                {t("auth.login.mfaHint")}
               </p>
             </div>
 
@@ -266,11 +267,11 @@ const Login: Component = () => {
                 fallback={
                   <>
                     <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Verifying...
+                    {t("auth.login.verifying")}
                   </>
                 }
               >
-                Verify
+                {t("auth.login.verify")}
               </Show>
             </button>
 
@@ -279,7 +280,7 @@ const Login: Component = () => {
               onClick={handleBackToLogin}
               class="w-full text-sm text-text-secondary hover:text-text-primary transition-colors"
             >
-              Back to login
+              {t("auth.login.backToLogin")}
             </button>
           </form>
         </Show>
@@ -307,7 +308,7 @@ const Login: Component = () => {
                       >
                         <Icon class="w-4 h-4" />
                       </Show>
-                      Continue with {provider.display_name}
+                      {t("auth.login.continueWith", { provider: provider.display_name })}
                     </button>
                   );
                 }}
@@ -321,7 +322,7 @@ const Login: Component = () => {
                 </div>
                 <div class="relative flex justify-center text-xs">
                   <span class="bg-background-secondary px-3 text-text-muted">
-                    or
+                    {t("auth.login.or")}
                   </span>
                 </div>
               </div>
@@ -333,7 +334,7 @@ const Login: Component = () => {
             <form onSubmit={handleLogin} method="post" noValidate class="space-y-4">
               <div>
                 <label for="login-username" class="block text-sm font-medium text-text-secondary mb-1">
-                  Username
+                  {t("common.username")}
                 </label>
                 <input
                   id="login-username"
@@ -341,7 +342,7 @@ const Login: Component = () => {
                   class="input-field"
                   name="username"
                   autocomplete="username"
-                  placeholder="Enter your username"
+                  placeholder={t("auth.login.usernamePlaceholder")}
                   data-testid="login-username"
                   value={username()}
                   onInput={(e) => setUsername(e.currentTarget.value)}
@@ -352,14 +353,14 @@ const Login: Component = () => {
 
               <div>
                 <label for="login-password" class="block text-sm font-medium text-text-secondary mb-1">
-                  Password
+                  {t("auth.login.password")}
                 </label>
                 <PasswordInput
                   id="login-password"
                   class="input-field"
                   name="password"
                   autocomplete="current-password"
-                  placeholder="Enter your password"
+                  placeholder={t("auth.login.passwordPlaceholder")}
                   data-testid="login-password"
                   value={password()}
                   onInput={(e) => setPassword(e.currentTarget.value)}
@@ -373,7 +374,7 @@ const Login: Component = () => {
                   href="/forgot-password"
                   class="text-sm text-primary auth-link"
                 >
-                  Forgot password?
+                  {t("auth.login.forgotPassword")}
                 </A>
               </div>
 
@@ -399,11 +400,11 @@ const Login: Component = () => {
                   fallback={
                     <>
                       <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      Logging in...
+                      {t("auth.login.submitting")}
                     </>
                   }
                 >
-                  Login
+                  {t("common.login")}
                 </Show>
               </button>
             </form>
@@ -420,10 +421,10 @@ const Login: Component = () => {
             </div>
           </Show>
 
-          <p class="text-center text-sm text-text-secondary mt-4">
-            Don't have an account?{" "}
+          <p class="flex justify-center gap-1 text-sm text-text-secondary mt-4">
+            <span>{t("auth.login.noAccount")}</span>
             <A href="/register" class="text-primary auth-link">
-              Register
+              {t("auth.login.registerLink")}
             </A>
           </p>
         </Show>

@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, X } from "lucide-solid";
 import { updatePassword, revokeAllOtherSessions } from "@/lib/tauri";
 import { createDialog } from "@/lib/a11y/dialog";
 import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
 
 interface ChangePasswordModalProps {
     onClose: () => void;
@@ -24,12 +25,12 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
         if (isLoading()) return;
 
         if (newPassword() !== confirmPassword()) {
-            setError("New passwords do not match");
+            setError(t("auth.changePassword.mismatch"));
             return;
         }
 
         if (newPassword().length < 8) {
-            setError("New password must be at least 8 characters long");
+            setError(t("auth.changePassword.tooShort"));
             return;
         }
 
@@ -40,7 +41,11 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
             await updatePassword(currentPassword(), newPassword());
             setShowRevokePrompt(true);
         } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to update password");
+            setError(
+                errorText(err, "auth.changePassword.failed", {
+                    INVALID_CREDENTIALS: "auth.changePassword.wrongCurrent",
+                }),
+            );
         } finally {
             setIsLoading(false);
         }
@@ -69,7 +74,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                 onClick={(e) => e.stopPropagation()}
             >
                 <div class="px-6 py-4 border-b border-white/10 flex items-center justify-between sticky top-0 bg-surface-base z-10">
-                    <h2 id={dialog.titleId} class="text-xl font-bold text-text-primary">Change Password</h2>
+                    <h2 id={dialog.titleId} class="text-xl font-bold text-text-primary">{t("common.changePassword")}</h2>
                     <button
                         type="button"
                         aria-label={t("common.close")}
@@ -92,7 +97,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                         <form onSubmit={handleSubmit} class="space-y-4">
                             <div>
                                 <label class="block text-sm font-medium text-text-primary mb-2">
-                                    Current Password
+                                    {t("auth.changePassword.current")}
                                 </label>
                                 <input
                                     type="password"
@@ -106,7 +111,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
 
                             <div>
                                 <label class="block text-sm font-medium text-text-primary mb-2">
-                                    New Password
+                                    {t("auth.changePassword.new")}
                                 </label>
                                 <input
                                     type="password"
@@ -117,12 +122,12 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                                     minLength={8}
                                     disabled={isLoading()}
                                 />
-                                <p class="text-xs text-text-secondary mt-1">Must be at least 8 characters long.</p>
+                                <p class="text-xs text-text-secondary mt-1">{t("auth.changePassword.newHint")}</p>
                             </div>
 
                             <div>
                                 <label class="block text-sm font-medium text-text-primary mb-2">
-                                    Confirm New Password
+                                    {t("auth.changePassword.confirm")}
                                 </label>
                                 <input
                                     type="password"
@@ -142,7 +147,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                                     class="px-5 py-2 text-text-primary hover:bg-white/5 rounded-xl font-medium transition-colors"
                                     disabled={isLoading()}
                                 >
-                                    Cancel
+                                    {t("common.cancel")}
                                 </button>
                                 <button
                                     type="submit"
@@ -152,7 +157,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                                     {isLoading() ? (
                                         <div class="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                                     ) : (
-                                        "Change Password"
+                                        t("common.changePassword")
                                     )}
                                 </button>
                             </div>
@@ -162,11 +167,11 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                     <div class="p-6 space-y-4">
                         <div class="flex items-center gap-3 p-4 bg-status-success/10 border border-status-success/20 rounded-xl text-text-primary">
                             <CheckCircle2 class="w-5 h-5 shrink-0" />
-                            <p class="text-sm font-medium">Password changed successfully!</p>
+                            <p class="text-sm font-medium">{t("auth.changePassword.success")}</p>
                         </div>
                         <div class="text-center space-y-2">
                             <p class="text-sm text-text-secondary">
-                                Would you like to log out of all other devices?
+                                {t("auth.changePassword.revokePrompt")}
                             </p>
                         </div>
                         <div class="flex gap-3 justify-end pt-2">
@@ -175,7 +180,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                                 class="px-5 py-2 text-text-primary hover:bg-white/5 rounded-xl font-medium transition-colors"
                                 disabled={isRevoking()}
                             >
-                                No
+                                {t("auth.changePassword.revokeNo")}
                             </button>
                             <button
                                 onClick={handleRevokeAll}
@@ -185,7 +190,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                                 {isRevoking() ? (
                                     <div class="w-5 h-5 border-2 border-current/30 border-t-current rounded-full animate-spin" />
                                 ) : (
-                                    "Yes, log out other devices"
+                                    t("auth.changePassword.revokeYes")
                                 )}
                             </button>
                         </div>

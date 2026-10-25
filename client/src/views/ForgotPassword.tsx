@@ -1,10 +1,12 @@
 import { Component, createSignal, Show, onCleanup } from "solid-js";
 import { A } from "@solidjs/router";
 import { getThemeImage } from "@/lib/themeImage";
-import { isTauri } from "@/lib/tauri/common";
+import { HttpError } from "@/lib/tauri/common";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
 
 const ForgotPassword: Component = () => {
-  document.title = "Forgot Password | Kaiku";
+  document.title = `${t("auth.forgot.title")} | Kaiku`;
   onCleanup(() => { document.title = "Kaiku"; });
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const [serverUrl] = createSignal(defaultServerUrl);
@@ -19,7 +21,7 @@ const ForgotPassword: Component = () => {
     setSuccess(false);
 
     if (!email().trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email())) {
-      setError("Please enter a valid email address");
+      setError(t("auth.forgot.invalidEmail"));
       return;
     }
 
@@ -39,13 +41,16 @@ const ForgotPassword: Component = () => {
           console.warn("[ForgotPassword] Could not parse error response:", e.message);
           return null;
         });
-        throw new Error(data?.message || `Request failed (${res.status})`);
+        throw new HttpError(
+          res.status,
+          (typeof data?.message === "string" && data.message) || `Request failed (${res.status})`,
+          typeof data?.error === "string" ? data.error : undefined,
+        );
       }
 
       setSuccess(true);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "An error occurred";
-      setError(isTauri() ? message : `${message} (server: ${serverUrl()})`);
+      setError(errorText(err, "auth.forgot.failed"));
     } finally {
       setIsLoading(false);
     }
@@ -55,14 +60,14 @@ const ForgotPassword: Component = () => {
     <div class="flex items-center justify-center min-h-screen overflow-y-auto bg-background-primary">
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
-          <img src={getThemeImage("floki_auth_forgot.png")} alt="Floki turning a combination lock" class="w-full max-w-xs object-contain" loading="eager" decoding="async" fetchpriority="high" />
+          <img src={getThemeImage("floki_auth_forgot.png")} alt={t("auth.forgot.illustrationAlt")} class="w-full max-w-xs object-contain" loading="eager" decoding="async" fetchpriority="high" />
         </div>
         <div class="w-full lg:w-1/2 p-8">
         <h1 class="text-2xl font-bold mb-2 text-center text-text-primary">
-          Forgot Password
+          {t("auth.forgot.title")}
         </h1>
         <p class="text-text-secondary text-center mb-6">
-          Enter your email to receive a reset code
+          {t("auth.forgot.subtitle")}
         </p>
 
         <Show when={!success()}>
@@ -74,7 +79,7 @@ const ForgotPassword: Component = () => {
                 for="fp-email"
                 class="block text-sm font-medium text-text-secondary mb-1"
               >
-                Email
+                {t("auth.forgot.email")}
               </label>
               <input
                 id="fp-email"
@@ -82,7 +87,7 @@ const ForgotPassword: Component = () => {
                 class="input-field"
                 name="email"
                 autocomplete="email"
-                placeholder="you@example.com"
+                placeholder={t("auth.forgot.emailPlaceholder")}
                 value={email()}
                 onInput={(e) => setEmail(e.currentTarget.value)}
                 disabled={isLoading()}
@@ -110,17 +115,17 @@ const ForgotPassword: Component = () => {
                 fallback={
                   <>
                     <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    Sending...
+                    {t("auth.forgot.submitting")}
                   </>
                 }
               >
-                Send Reset Code
+                {t("auth.forgot.submit")}
               </Show>
             </button>
 
             <p class="text-center text-sm text-text-secondary mt-4">
               <A href="/login" class="text-primary auth-link">
-                Back to Login
+                {t("auth.reset.backToLogin")}
               </A>
             </p>
           </form>
@@ -130,19 +135,18 @@ const ForgotPassword: Component = () => {
           <div
             class="p-4 rounded-md text-sm mb-4 bg-status-success/10 border border-status-success/30 text-status-success"
           >
-            If an account with that email exists, a reset code has been sent.
-            Check your inbox.
+            {t("auth.forgot.sent")}
           </div>
           <div class="space-y-3">
             <A
               href={`/reset-password?serverUrl=${encodeURIComponent(serverUrl())}`}
               class="btn-primary w-full flex items-center justify-center"
             >
-              Enter Reset Code
+              {t("auth.forgot.enterCode")}
             </A>
             <p class="text-center text-sm text-text-secondary">
               <A href="/login" class="text-primary auth-link">
-                Back to Login
+                {t("auth.reset.backToLogin")}
               </A>
             </p>
           </div>

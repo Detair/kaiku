@@ -24,33 +24,11 @@ import { appSettings } from "@/stores/settings";
 import { currentUser } from "@/stores/auth";
 import * as tauri from "@/lib/tauri";
 import { showToast, dismissToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
+import { voiceErrorText } from "@/lib/webrtc/voiceErrorText";
 import { PttController, createTauriPttListeners, type PttFullConfig } from "@/lib/pttManager";
 
-// Helper to get error message from VoiceError
-function getErrorMessage(error: VoiceError): string {
-  switch (error.type) {
-    case "permission_denied":
-    case "device_not_found":
-    case "device_in_use":
-    case "ice_failed":
-    case "cancelled":
-    case "not_found":
-    case "hardware_error":
-    case "constraint_error":
-    case "unknown":
-      return error.message;
-    case "server_rejected":
-      return `Server rejected: ${error.message} (${error.code})`;
-    case "connection_failed":
-      return `Connection failed: ${error.reason}`;
-    case "timeout":
-      return `Timeout during ${error.operation}`;
-    case "already_connected":
-      return `Already connected to channel ${error.channelId}`;
-    case "not_connected":
-      return "Not connected to voice channel";
-  }
-}
+const getErrorMessage = voiceErrorText;
 
 // Voice connection state
 type VoiceState = "disconnected" | "connecting" | "connected";
@@ -176,8 +154,10 @@ function checkPacketLossThresholds(metrics: ConnectionMetrics): void {
         // Critical packet loss - persistent error toast
         showToast({
           type: "error",
-          title: "Connection severely degraded",
-          message: `${metrics.packetLoss.toFixed(1)}% packet loss`,
+          title: t("voice.toast.degraded"),
+          message: t("voice.toast.packetLoss", {
+            percent: metrics.packetLoss.toFixed(1),
+          }),
           duration: 0,
           id: "connection-critical",
         });
@@ -185,8 +165,10 @@ function checkPacketLossThresholds(metrics: ConnectionMetrics): void {
         // Warning level packet loss
         showToast({
           type: "warning",
-          title: "Your connection is unstable",
-          message: `${metrics.packetLoss.toFixed(1)}% packet loss`,
+          title: t("voice.toast.unstable"),
+          message: t("voice.toast.packetLoss", {
+            percent: metrics.packetLoss.toFixed(1),
+          }),
           duration: 5000,
           id: "connection-warning",
         });
@@ -196,8 +178,10 @@ function checkPacketLossThresholds(metrics: ConnectionMetrics): void {
       dismissToast("connection-warning");
       showToast({
         type: "error",
-        title: "Connection severely degraded",
-        message: `${metrics.packetLoss.toFixed(1)}% packet loss`,
+        title: t("voice.toast.degraded"),
+        message: t("voice.toast.packetLoss", {
+            percent: metrics.packetLoss.toFixed(1),
+          }),
         duration: 0,
         id: "connection-critical",
       });
@@ -718,7 +702,7 @@ export async function startScreenShare(
   sourceId?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   if (voiceState.state !== "connected" || !voiceState.channelId) {
-    return { ok: false, error: "Not connected to voice channel" };
+    return { ok: false, error: t("voice.error.notConnected") };
   }
 
   // Generate a stream ID for this screen share
@@ -752,7 +736,7 @@ export async function startScreenShare(
     console.error("Failed to notify server of screen share start:", err);
     // Stop capture since server notification failed
     await adapter.stopScreenShare(streamId);
-    return { ok: false, error: "Failed to notify server" };
+    return { ok: false, error: t("voice.error.notifyFailed") };
   }
 
   // Register our own capture track for self-preview. The SFU forwards our track
@@ -806,8 +790,8 @@ export async function stopScreenShare(streamId?: string): Promise<void> {
         console.error("Failed to notify server of screen share stop:", err);
         showToast({
           type: "warning",
-          title: "Screen share stopped locally",
-          message: "Server may still show you as sharing. Reconnect if needed.",
+          title: t("voice.toast.shareStopped.title"),
+          message: t("voice.toast.shareStopped.message"),
           duration: 5000,
           id: "screen-share-stop-warning",
         });
@@ -853,11 +837,11 @@ export async function startWebcam(
   deviceId?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   if (voiceState.state !== "connected" || !voiceState.channelId) {
-    return { ok: false, error: "Not connected to voice channel" };
+    return { ok: false, error: t("voice.error.notConnected") };
   }
 
   if (voiceState.webcamActive) {
-    return { ok: false, error: "Webcam already active" };
+    return { ok: false, error: t("voice.error.webcamActive") };
   }
 
   const adapter = await createVoiceAdapter();
@@ -875,7 +859,7 @@ export async function startWebcam(
   } catch (err) {
     console.error("Failed to notify server of webcam start:", err);
     await adapter.stopWebcam();
-    return { ok: false, error: "Failed to notify server" };
+    return { ok: false, error: t("voice.error.notifyFailed") };
   }
 
   setVoiceState({ webcamActive: true });
@@ -946,7 +930,7 @@ export function getVoiceChannelInfo(): { id: string; name: string } | null {
   );
 
   if (!channel) {
-    return { id: voiceState.channelId, name: "Unknown Channel" };
+    return { id: voiceState.channelId, name: t("voice.channel.unknown") };
   }
 
   return { id: channel.id, name: channel.name };

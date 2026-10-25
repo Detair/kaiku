@@ -25,6 +25,7 @@ vi.mock("@/components/ui/Toast", () => ({
 
 import * as tauri from "@/lib/tauri";
 import { t } from "@/i18n";
+import { HttpError } from "@/lib/tauri/common";
 import { showToast } from "@/components/ui/Toast";
 import type { Message, PaginatedMessages } from "@/lib/types";
 import {
@@ -82,7 +83,8 @@ describe("messages store", () => {
       byChannel: {},
       loadingChannels: {},
       hasMore: {},
-      error: null,
+      loadError: null,
+      sendError: null,
     });
   });
 
@@ -91,7 +93,8 @@ describe("messages store", () => {
       expect(messagesState.byChannel).toEqual({});
       expect(messagesState.loadingChannels).toEqual({});
       expect(messagesState.hasMore).toEqual({});
-      expect(messagesState.error).toBeNull();
+      expect(messagesState.loadError).toBeNull();
+      expect(messagesState.sendError).toBeNull();
     });
   });
 
@@ -156,7 +159,7 @@ describe("messages store", () => {
 
       await loadMessages("ch-1");
 
-      expect(messagesState.error).toBe("Network error");
+      expect(messagesState.loadError).toBe("Could not load messages. Please try again.");
       expect(messagesState.loadingChannels["ch-1"]).toBe(false);
     });
   });
@@ -341,7 +344,29 @@ describe("messages store", () => {
       expect(showToast).toHaveBeenCalledWith(
         expect.objectContaining({ type: "error", title: "Send Failed" }),
       );
-      expect(messagesState.error).toBe("fail");
+      expect(messagesState.sendError).toBe("Could not send message. Please try again.");
+      expect(messagesState.loadError).toBeNull();
+    });
+
+    it("maps FORBIDDEN to the forbidden sentence", async () => {
+      vi.mocked(tauri.sendMessageWithStatus).mockRejectedValue(
+        new HttpError(403, "You do not have permission", "FORBIDDEN"),
+      );
+
+      await sendMessage("ch-1", "hello");
+
+      expect(messagesState.sendError).toBe("You can't send messages here.");
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ message: "You can't send messages here." }),
+      );
+    });
+
+    it("maps a 413 without a code to the file-too-large sentence", async () => {
+      vi.mocked(tauri.sendMessageWithStatus).mockRejectedValue(new HttpError(413, "big"));
+
+      await sendMessage("ch-1", "hello");
+
+      expect(messagesState.sendError).toBe("A file is too large to send.");
     });
   });
 
@@ -428,7 +453,7 @@ describe("messages store", () => {
       msg.encrypted = true;
       msg.content = "ciphertext-blob";
       const result = await decryptMessageIfNeeded(msg);
-      expect(result.content).toBe(t("chat.encryptedPlaceholder"));
+      expect(result.content).toBe(t("chat.message.encryptedPlaceholder"));
     });
 
     it("encrypted messages render the placeholder when E2EE is off", async () => {

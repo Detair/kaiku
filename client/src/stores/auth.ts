@@ -24,6 +24,8 @@ import { clearAllDrafts, cleanupDrafts } from "./drafts";
 import { resetE2EEState } from "./e2ee";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
+import { LOGIN_ERRORS, REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "@/lib/authErrors";
 import { isTauri, PASSWORD_CHANGE_REQUIRED_EVENT } from "@/lib/tauri/common";
 
 // Auth state interface
@@ -312,8 +314,8 @@ function warnIfNotRemembered(result: tauri.AuthResult): void {
   if (result.persisted === false) {
     showToast({
       type: "warning",
-      title: t("auth.notRememberedTitle"),
-      message: t("auth.notRemembered"),
+      title: t("auth.session.notRememberedTitle"),
+      message: t("auth.session.notRemembered"),
     });
   }
 }
@@ -378,7 +380,7 @@ async function runStart(
         console.error("[Auth] WebSocket connection failed:", wsErr);
         if (showWsError) {
           setAuthState({
-            error: "Real-time messaging temporarily unavailable. Reconnecting...",
+            error: t("connection.realtime.unavailable"),
           });
         }
       }),
@@ -523,8 +525,8 @@ async function attemptRestore(): Promise<void> {
     if (result.error_reason === "session_expired") {
       showToast({
         type: "warning",
-        title: "Session Expired",
-        message: "Please log in again.",
+        title: t("auth.sessionExpired.title"),
+        message: t("auth.sessionExpired.toast"),
       });
     }
   } catch (err) {
@@ -594,10 +596,10 @@ export async function login(
 
     return result.user;
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
+    const raw = err instanceof Error ? err.message : String(err);
 
     // Detect MFA_REQUIRED
-    if (error === "MFA_REQUIRED") {
+    if (raw === "MFA_REQUIRED") {
       setAuthState({
         isLoading: false,
         error: null,
@@ -607,8 +609,9 @@ export async function login(
       throw new Error("MFA_REQUIRED", { cause: err });
     }
 
+    const error = errorText(err, "auth.login.failed", LOGIN_ERRORS);
     setAuthState({ isLoading: false, error });
-    throw new Error(error, { cause: err });
+    throw new Error(raw, { cause: err });
   }
 }
 
@@ -653,9 +656,14 @@ export async function register(
 
     return result.user;
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
+    const error = errorText(
+      err,
+      "auth.register.failed",
+      REGISTER_ERRORS,
+      REGISTER_STATUS_ERRORS,
+    );
     setAuthState({ isLoading: false, error });
-    throw new Error(error, { cause: err });
+    throw new Error(err instanceof Error ? err.message : String(err), { cause: err });
   }
 }
 
@@ -721,9 +729,9 @@ export async function loginWithOidc(
 
     if (!authState.passwordChangeRequired) await startSessionServices();
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
+    const error = errorText(err, "auth.login.ssoFailed");
     setAuthState({ isLoading: false, error });
-    throw new Error(error, { cause: err });
+    throw new Error(err instanceof Error ? err.message : String(err), { cause: err });
   }
 }
 
@@ -755,7 +763,7 @@ export async function logout(): Promise<void> {
   } catch (err) {
     console.error("[Auth] Logout failed:", err);
     resetE2EEState();
-    const error = err instanceof Error ? err.message : String(err);
+    const error = errorText(err, "auth.logout.failed");
     setAuthState({
       user: null,
       isLoading: false,
@@ -769,12 +777,8 @@ export const PASSWORD_SAVED_REFRESH_FAILED = "PASSWORD_SAVED_REFRESH_FAILED";
 
 /** Whether a failed change means the temporary password itself was wrong. */
 function isInvalidCredentials(err: unknown): boolean {
-  const status =
-    typeof err === "object" && err !== null && "status" in err
-      ? (err as { status: unknown }).status
-      : undefined;
-  const message = err instanceof Error ? err.message : String(err);
-  return status === 401 || /invalid credentials/i.test(message);
+  const { status, code } = (err ?? {}) as { status?: unknown; code?: unknown };
+  return status === 401 || code === "INVALID_CREDENTIALS";
 }
 
 /**

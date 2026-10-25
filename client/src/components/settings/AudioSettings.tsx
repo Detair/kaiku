@@ -3,6 +3,7 @@ import { appSettings, updateAudioSetting, isSettingsLoading } from "@/stores/set
 import { createVoiceAdapter, getVoiceAdapter } from "@/lib/webrtc";
 import type { AudioDevice } from "@/lib/webrtc";
 import { Mic, Volume2 } from "lucide-solid";
+import { t } from "@/i18n";
 
 const AudioSettings: Component = () => {
     const [inputDevices, setInputDevices] = createSignal<AudioDevice[]>([]);
@@ -51,31 +52,31 @@ const AudioSettings: Component = () => {
     return (
         <div class="space-y-6">
             <div>
-                <h3 class="text-lg font-semibold text-text-primary mb-1">Audio Settings</h3>
+                <h3 class="text-lg font-semibold text-text-primary mb-1">{t("settings.audio.title")}</h3>
                 <p class="text-sm text-text-secondary">
-                    Configure your input and output devices and volume.
+                    {t("settings.audio.subtitle")}
                 </p>
             </div>
 
-            <Show when={!isSettingsLoading() && appSettings()} fallback={<p class="text-text-secondary">Loading...</p>}>
+            <Show when={!isSettingsLoading() && appSettings()} fallback={<p class="text-text-secondary">{t("common.loading")}</p>}>
                 {(settings) => (
                     <>
                         <div class="space-y-4">
                             <div>
                                 <label class="text-sm font-medium text-text-primary flex items-center gap-2 mb-2">
                                     <Mic class="w-4 h-4 text-text-secondary" />
-                                    Input Device
+                                    {t("settings.audio.inputDevice")}
                                 </label>
                                 <select
                                     class="w-full px-4 py-2 bg-surface-base border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors appearance-none cursor-pointer"
                                     value={settings().audio.input_device || "default"}
                                     onChange={(e) => changeDevice("input", e.currentTarget.value)}
                                 >
-                                    <option value="default">Default Device</option>
+                                    <option value="default">{t("settings.audio.defaultDevice")}</option>
                                     <For each={inputDevices()}>
                                         {(device) => (
                                             <option value={device.deviceId}>
-                                                {device.label || `Microphone (${device.deviceId.slice(0, 5)}...)`}
+                                                {device.label || t("settings.audio.microphoneFallback", { id: device.deviceId.slice(0, 5) })}
                                             </option>
                                         )}
                                     </For>
@@ -84,7 +85,7 @@ const AudioSettings: Component = () => {
 
                             <div>
                                 <label class="text-sm font-medium text-text-primary flex items-center gap-2 mb-2 mt-4">
-                                    Input Volume
+                                    {t("settings.audio.inputVolume")}
                                 </label>
                                 <input
                                     type="range"
@@ -101,18 +102,18 @@ const AudioSettings: Component = () => {
                             <div>
                                 <label class="text-sm font-medium text-text-primary flex items-center gap-2 mb-2">
                                     <Volume2 class="w-4 h-4 text-text-secondary" />
-                                    Output Device
+                                    {t("settings.audio.outputDevice")}
                                 </label>
                                 <select
                                     class="w-full px-4 py-2 bg-surface-base border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors appearance-none cursor-pointer"
                                     value={settings().audio.output_device || "default"}
                                     onChange={(e) => changeDevice("output", e.currentTarget.value)}
                                 >
-                                    <option value="default">Default Device</option>
+                                    <option value="default">{t("settings.audio.defaultDevice")}</option>
                                     <For each={outputDevices()}>
                                         {(device) => (
                                             <option value={device.deviceId}>
-                                                {device.label || `Speaker (${device.deviceId.slice(0, 5)}...)`}
+                                                {device.label || t("settings.audio.speakerFallback", { id: device.deviceId.slice(0, 5) })}
                                             </option>
                                         )}
                                     </For>
@@ -121,7 +122,7 @@ const AudioSettings: Component = () => {
 
                             <div>
                                 <label class="text-sm font-medium text-text-primary flex items-center gap-2 mb-2 mt-4">
-                                    Output Volume
+                                    {t("settings.audio.outputVolume")}
                                 </label>
                                 <input
                                     type="range"

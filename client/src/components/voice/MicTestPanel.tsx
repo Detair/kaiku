@@ -18,6 +18,12 @@ import {
   type AudioDevice,
   type VoiceError,
 } from "@/lib/webrtc";
+import { t } from "@/i18n";
+import { voiceErrorText } from "@/lib/webrtc/voiceErrorText";
+
+// Errors raised by the panel itself get their own types so the message is
+// translated at render time, while adapter errors keep their own text.
+type PanelError = VoiceError | { type: "init_failed" } | { type: "play_failed" };
 
 interface MicTestPanelProps {
   /** Reduced spacing for embedding in compact layouts */
@@ -33,7 +39,7 @@ function MicTestPanel(props: MicTestPanelProps) {
   const [selectedOutput, setSelectedOutput] = createSignal<string>("");
   const [micLevel, setMicLevel] = createSignal(0);
   const [isTesting, setIsTesting] = createSignal(false);
-  const [error, setError] = createSignal<VoiceError | null>(null);
+  const [error, setError] = createSignal<PanelError | null>(null);
   const [testPassed, setTestPassed] = createSignal(false);
 
   let levelInterval: number | undefined;
@@ -55,10 +61,7 @@ function MicTestPanel(props: MicTestPanelProps) {
       }
     } catch (err) {
       console.error("Failed to initialize mic test:", err);
-      setError({
-        type: "unknown",
-        message: "Failed to initialize audio system.",
-      } as VoiceError);
+      setError({ type: "init_failed" });
     }
   });
 
@@ -134,38 +137,18 @@ function MicTestPanel(props: MicTestPanelProps) {
       }, 500);
     } catch (err) {
       console.error("Failed to play test sound:", err);
-      setError({
-        type: "unknown",
-        message: "Could not play test sound. Check your audio settings.",
-      } as VoiceError);
+      setError({ type: "play_failed" });
     }
   };
 
-  const getErrorMessage = (err: VoiceError): string => {
+  const getErrorMessage = (err: PanelError): string => {
     switch (err.type) {
-      case "permission_denied":
-        return "Microphone access denied. Please allow microphone in browser settings.";
-      case "device_not_found":
-        return "No microphone found. Please connect a microphone.";
-      case "device_in_use":
-        return "Microphone is being used by another app.";
-      case "ice_failed":
-      case "cancelled":
-      case "not_found":
-      case "hardware_error":
-      case "constraint_error":
-      case "unknown":
-        return err.message;
-      case "server_rejected":
-        return `Server rejected: ${err.message} (${err.code})`;
-      case "connection_failed":
-        return `Connection failed: ${err.reason}`;
-      case "timeout":
-        return `Timeout during ${err.operation}`;
-      case "already_connected":
-        return `Already connected to channel ${err.channelId}`;
-      case "not_connected":
-        return "Not connected to voice channel";
+      case "init_failed":
+        return t("voice.micTest.error.initFailed");
+      case "play_failed":
+        return t("voice.micTest.error.playFailed");
+      default:
+        return voiceErrorText(err);
     }
   };
 
@@ -179,7 +162,7 @@ function MicTestPanel(props: MicTestPanelProps) {
           for={inputId}
           class="block text-sm font-medium text-text-secondary mb-1"
         >
-          Input Device:
+          {t("voice.micTest.inputDevice")}
         </label>
         <select
           id={inputId}
@@ -201,7 +184,7 @@ function MicTestPanel(props: MicTestPanelProps) {
           for={outputId}
           class="block text-sm font-medium text-text-secondary mb-1"
         >
-          Output Device:
+          {t("voice.micTest.outputDevice")}
         </label>
         <select
           id={outputId}
@@ -238,7 +221,7 @@ function MicTestPanel(props: MicTestPanelProps) {
           />
         </div>
         <div class="text-xs text-text-secondary mt-1 text-center">
-          Mic Level: {micLevel()}%
+          {t("voice.micTest.level", { level: micLevel() })}
         </div>
       </div>
 
@@ -248,7 +231,7 @@ function MicTestPanel(props: MicTestPanelProps) {
           onClick={playTestSound}
           class="flex-1 px-3 py-2 bg-surface-layer2 hover:bg-surface-highlight text-text-primary rounded-lg transition-colors text-sm"
         >
-          Play Test Sound
+          {t("voice.micTest.playSound")}
         </button>
         <Show
           when={!isTesting()}
@@ -257,7 +240,7 @@ function MicTestPanel(props: MicTestPanelProps) {
               onClick={stopTest}
               class="flex-1 px-3 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors text-sm"
             >
-              Stop Test
+              {t("voice.micTest.stop")}
             </button>
           }
         >
@@ -265,7 +248,7 @@ function MicTestPanel(props: MicTestPanelProps) {
             onClick={startTest}
             class="flex-1 px-3 py-2 bg-accent-primary hover:bg-primary-hover text-on-accent rounded-lg transition-colors text-sm"
           >
-            Start Test
+            {t("voice.micTest.start")}
           </button>
         </Show>
       </div>
@@ -282,17 +265,17 @@ function MicTestPanel(props: MicTestPanelProps) {
 
       <Show when={testPassed()}>
         <div class="p-3 bg-green-900/50 border border-green-700 rounded-lg text-green-200 text-sm">
-          Microphone is working!
+          {t("voice.micTest.working")}
         </div>
       </Show>
 
       {/* Instructions */}
       <Show when={!props.compact}>
         <div class="text-xs text-text-secondary space-y-1">
-          <p>1. Select your microphone and speakers</p>
-          <p>2. Click "Start Test" and speak into your microphone</p>
-          <p>3. Watch the level meter respond to your voice</p>
-          <p>4. Click "Play Test Sound" to test your speakers</p>
+          <p>{t("voice.micTest.step1")}</p>
+          <p>{t("voice.micTest.step2")}</p>
+          <p>{t("voice.micTest.step3")}</p>
+          <p>{t("voice.micTest.step4")}</p>
         </div>
       </Show>
     </div>

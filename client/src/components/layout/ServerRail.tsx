@@ -15,6 +15,7 @@
  */
 
 import { Component, createSignal, For, Show, lazy, Suspense } from "solid-js";
+import { t } from "@/i18n";
 import { Home, Plus, UserPlus, Compass } from "lucide-solid";
 import {
   guildsState,
@@ -77,7 +78,7 @@ const ServerRail: Component<ServerRailProps> = (props) => {
 
   return (
     <nav
-      aria-label="Servers"
+      aria-label={t("home.rail.label")}
       class={`${props.compact ? 'w-[56px]' : 'w-[72px]'} flex flex-col items-center py-3 gap-2 bg-surface-base border-r border-border-solid z-20`}
       data-testid="server-rail"
     >
@@ -101,7 +102,7 @@ const ServerRail: Component<ServerRailProps> = (props) => {
           onMouseEnter={() => setHoveredServerId("home")}
           onMouseLeave={() => setHoveredServerId(null)}
           onClick={() => selectHome()}
-          title="Home"
+          title={t("home.rail.home")}
         >
           <Home class="w-6 h-6 text-accent-primary" />
         </button>
@@ -175,7 +176,7 @@ const ServerRail: Component<ServerRailProps> = (props) => {
         <Show when={guildsState.error}>
           <button
             class={`${iconSize()} flex items-center justify-center bg-error-bg/20 rounded-full cursor-pointer text-error-text hover:bg-error-bg/30 transition-colors`}
-            title={`Failed to load servers: ${guildsState.error}. Click to retry.`}
+            title={t("home.rail.loadFailed")}
             onClick={() => loadGuilds()}
           >
             !
@@ -205,8 +206,8 @@ const ServerRail: Component<ServerRailProps> = (props) => {
           onMouseEnter={() => setHoveredServerId("discover")}
           onMouseLeave={() => setHoveredServerId(null)}
           onClick={() => selectDiscovery()}
-          aria-label="Explore Servers"
-          title="Explore Servers"
+          aria-label={t("home.rail.explore")}
+          title={t("home.rail.explore")}
         >
           <Compass class="w-5 h-5 text-accent-primary" />
         </button>
@@ -224,7 +225,7 @@ const ServerRail: Component<ServerRailProps> = (props) => {
           onMouseEnter={() => setHoveredServerId("add")}
           onMouseLeave={() => setHoveredServerId(null)}
           onClick={() => setShowCreateModal(true)}
-          title="Create Server"
+          title={t("home.rail.create")}
         >
           <Plus class="w-6 h-6 text-accent-primary transition-transform duration-200 group-hover:rotate-90" />
         </button>
@@ -241,7 +242,7 @@ const ServerRail: Component<ServerRailProps> = (props) => {
           onMouseEnter={() => setHoveredServerId("join")}
           onMouseLeave={() => setHoveredServerId(null)}
           onClick={() => setShowJoinModal(true)}
-          title="Join Server"
+          title={t("home.rail.join")}
         >
           <UserPlus class="w-5 h-5 text-accent-primary" />
         </button>

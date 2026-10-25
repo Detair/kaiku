@@ -13,6 +13,7 @@ import {
   Trash2,
   ExternalLink,
 } from "lucide-solid";
+import { t } from "@/i18n";
 import flokiCool from "@/assets/emotes/floki_emote_4.webp";
 import { pins, loadPins, createPin, deletePin, updatePin } from "@/stores/pins";
 import type { Pin as PinItem, PinType } from "@/lib/types";
@@ -64,6 +65,9 @@ const PinsModule: Component = () => {
     setEditContent("");
   };
 
+  const contentPlaceholder = () =>
+    addType() === "link" ? t("home.pins.urlPlaceholder") : t("home.pins.notePlaceholder");
+
   const getPinIcon = (type: PinType) => {
     switch (type) {
       case "note":
@@ -76,7 +80,7 @@ const PinsModule: Component = () => {
   };
 
   return (
-    <CollapsibleModule id="pins" title="Pins" badge={pins().length}>
+    <CollapsibleModule id="pins" title={t("home.pins.title")} badge={pins().length}>
       <div class="space-y-2">
         {/* Add button */}
         <Show when={!isAdding()}>
@@ -85,7 +89,7 @@ const PinsModule: Component = () => {
             class="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg border border-dashed border-white/20 text-text-secondary hover:border-white/40 hover:text-text-primary transition-colors"
           >
             <Plus class="w-4 h-4" />
-            <span class="text-sm">Add Pin</span>
+            <span class="text-sm">{t("home.pins.add")}</span>
           </button>
         </Show>
 
@@ -101,7 +105,7 @@ const PinsModule: Component = () => {
                     : "bg-white/10 text-text-secondary hover:bg-white/20"
                 }`}
               >
-                Note
+                {t("home.pins.note")}
               </button>
               <button
                 onClick={() => setAddType("link")}
@@ -111,20 +115,20 @@ const PinsModule: Component = () => {
                     : "bg-white/10 text-text-secondary hover:bg-white/20"
                 }`}
               >
-                Link
+                {t("home.pins.link")}
               </button>
             </div>
             <Show when={addType() === "link"}>
               <input
                 type="text"
-                placeholder="Title (optional)"
+                placeholder={t("home.pins.titlePlaceholder")}
                 value={newTitle()}
                 onInput={(e) => setNewTitle(e.currentTarget.value)}
                 class="w-full px-3 py-1.5 rounded bg-surface-base border border-white/10 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-primary"
               />
             </Show>
             <textarea
-              placeholder={addType() === "link" ? "URL" : "Note content..."}
+              placeholder={contentPlaceholder()}
               value={newContent()}
               onInput={(e) => setNewContent(e.currentTarget.value)}
               rows={addType() === "note" ? 3 : 1}
@@ -135,14 +139,14 @@ const PinsModule: Component = () => {
                 onClick={() => setIsAdding(false)}
                 class="px-3 py-1.5 rounded text-sm text-text-secondary hover:bg-white/10"
               >
-                Cancel
+                {t("common.cancel")}
               </button>
               <button
                 onClick={handleCreate}
                 disabled={!newContent().trim()}
                 class="px-3 py-1.5 rounded text-sm bg-accent-primary text-on-accent hover:bg-accent-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Save
+                {t("common.save")}
               </button>
             </div>
           </div>
@@ -190,7 +194,7 @@ const PinsModule: Component = () => {
                     <button
                       onClick={() => handleDelete(pin.id)}
                       class="opacity-0 group-hover:opacity-100 p-1 rounded text-text-muted hover:text-status-error hover:bg-status-error/10 transition-all"
-                      title="Delete"
+                      title={t("home.pins.delete")}
                     >
                       <Trash2 class="w-4 h-4" />
                     </button>
@@ -210,13 +214,13 @@ const PinsModule: Component = () => {
                       onClick={cancelEdit}
                       class="px-2 py-1 rounded text-xs text-text-secondary hover:bg-white/10"
                     >
-                      Cancel
+                      {t("common.cancel")}
                     </button>
                     <button
                       onClick={() => saveEdit(pin.id)}
                       class="px-2 py-1 rounded text-xs bg-accent-primary text-on-accent hover:bg-accent-primary/80"
                     >
-                      Save
+                      {t("common.save")}
                     </button>
                   </div>
                 </div>
@@ -228,10 +232,10 @@ const PinsModule: Component = () => {
         {/* Empty state */}
         <Show when={pins().length === 0 && !isAdding()}>
           <div class="text-center py-4">
-            <img src={flokiCool} alt="" class="w-10 h-10 mx-auto mb-2 object-contain" loading="lazy" />
-            <p class="text-sm text-text-secondary">No pins yet</p>
+            <img src={flokiCool} alt={""} class="w-10 h-10 mx-auto mb-2 object-contain" loading="lazy" />
+            <p class="text-sm text-text-secondary">{t("home.pins.empty")}</p>
             <p class="text-xs text-text-muted mt-1">
-              Save notes and links for quick access
+              {t("home.pins.emptyHint")}
             </p>
           </div>
         </Show>

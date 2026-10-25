@@ -67,7 +67,7 @@ const LoadingScreen: Component = () => {
     <div class="flex items-center justify-center min-h-screen bg-background-primary">
       <div class="flex flex-col items-center gap-4">
         <div class="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
-        <p class="text-text-secondary">Loading...</p>
+        <p class="text-text-secondary">{t("common.loading")}</p>
       </div>
     </div>
   );
@@ -96,7 +96,7 @@ const RestorePendingScreen: Component = () => {
             onClick={() => retryRestoreNow()}
             class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium transition-colors hover:bg-accent-primary/90"
           >
-            {t("auth.restore.retryNow")}
+            {t("common.tryAgain")}
           </button>
           <button
             type="button"

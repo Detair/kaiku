@@ -7,6 +7,8 @@
 import { Component, createSignal, For, Show, createMemo, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X, Search, Check } from "lucide-solid";
+import { t, plural } from "@/i18n";
+import { errorText } from "@/i18n/errors";
 import { friendsState, loadFriends } from "@/stores/friends";
 import { loadDMs, selectDM } from "@/stores/dms";
 import * as tauri from "@/lib/tauri";
@@ -45,6 +47,15 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
     );
   });
 
+  const emptyListText = () =>
+    search() ? t("dm.new.noFriendsFound") : t("dm.new.noFriends");
+
+  const submitLabel = () => {
+    if (isCreating()) return t("dm.new.creating");
+    if (selectedIds().length > 1) return t("dm.new.createGroup");
+    return t("dm.new.create");
+  };
+
   const toggleFriend = (userId: string) => {
     setSelectedIds((prev) =>
       prev.includes(userId)
@@ -70,9 +81,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
       selectDM(channelId);
       props.onClose();
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to create conversation",
-      );
+      setError(errorText(err, "dm.new.createFailed"));
     } finally {
       setIsCreating(false);
     }
@@ -91,7 +100,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
         >
           {/* Header */}
           <div class="flex items-center justify-between p-4 border-b border-white/10">
-            <h2 class="text-lg font-bold text-text-primary">New Message</h2>
+            <h2 class="text-lg font-bold text-text-primary">{t("dm.new.title")}</h2>
             <button
               onClick={props.onClose}
               class="p-1 rounded hover:bg-white/10 transition-colors"
@@ -109,16 +118,20 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
                 type="text"
                 value={search()}
                 onInput={(e) => setSearch(e.currentTarget.value)}
-                placeholder="Search friends..."
+                placeholder={t("dm.new.searchPlaceholder")}
                 class="w-full pl-9 pr-4 py-2 border border-white/10 rounded-lg text-text-input placeholder-text-secondary focus:outline-none focus:border-accent-primary"
                 style={{"background-color":"var(--color-surface-layer1)"}}
               />
             </div>
             <Show when={selectedIds().length > 0}>
               <p class="mt-2 text-sm text-text-secondary">
-                {selectedIds().length} friend
-                {selectedIds().length > 1 ? "s" : ""} selected
-                {selectedIds().length > 1 && " (Group DM)"}
+                {plural(selectedIds().length, {
+                  one: "dm.new.selected.one",
+                  other: "dm.new.selected.other",
+                })}
+                <Show when={selectedIds().length > 1}>
+                  <span class="ml-1">{t("dm.new.groupHint")}</span>
+                </Show>
               </p>
             </Show>
           </div>
@@ -129,7 +142,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
               when={filteredFriends().length > 0}
               fallback={
                 <div class="text-center py-8 text-text-secondary">
-                  {search() ? "No friends found" : "No friends to message"}
+                  {emptyListText()}
                 </div>
               }
             >
@@ -163,11 +176,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
               disabled={selectedIds().length === 0 || isCreating()}
               class="w-full py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isCreating()
-                ? "Creating..."
-                : selectedIds().length > 1
-                  ? "Create Group DM"
-                  : "Create DM"}
+              {submitLabel()}
             </button>
           </div>
         </div>
