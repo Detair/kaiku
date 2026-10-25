@@ -15,7 +15,7 @@ use axum::Json;
 use uuid::Uuid;
 
 use super::error::{AuthError, AuthResult};
-use super::login::start_oidc_flow;
+use super::login::{start_oidc_flow, OidcFlowPurpose};
 use super::middleware::AuthUser;
 use super::types::{IdentityInfo, IdentityListResponse, OidcAuthorizeQuery};
 use crate::api::AppState;
@@ -95,7 +95,7 @@ pub async fn link_authorize(
         &state,
         &provider,
         query.redirect_uri.as_deref(),
-        Some(auth_user.id),
+        OidcFlowPurpose::Link(auth_user.id),
         want_json,
     )
     .await

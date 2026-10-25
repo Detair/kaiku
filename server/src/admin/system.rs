@@ -14,6 +14,7 @@ use fred::interfaces::ClientLike;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 use uuid::Uuid;
+use validator::Validate;
 
 use super::error::AdminError;
 use super::queries;
@@ -24,7 +25,6 @@ use super::types::{
 use crate::api::AppState;
 use crate::auth::{AuthError, AuthUser};
 use crate::permissions::queries::{create_elevated_session, write_audit_log};
-use validator::Validate;
 
 /// De-elevate response.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -219,9 +219,8 @@ pub async fn elevate_session(
     body: Result<Json<ElevateRequest>, JsonRejection>,
 ) -> Result<Json<ElevateResponse>, AdminError> {
     let Json(body) = body.map_err(|e| AuthError::Validation(e.body_text()))?;
-    body.validate().map_err(|e| {
-        AuthError::Validation(crate::validation::format_validation_errors(&e))
-    })?;
+    body.validate()
+        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
 
     // The elevation belongs to the access token's session. It must be a live
     // session row (elevated_sessions.session_id references sessions.id).
@@ -229,7 +228,9 @@ pub async fn elevate_session(
         .session_id
         .ok_or_else(|| AdminError::Validation("No active session found".to_string()))?;
     if !queries::is_active_session(&state.db, admin.user_id, session_id).await? {
-        return Err(AdminError::Validation("No active session found".to_string()));
+        return Err(AdminError::Validation(
+            "No active session found".to_string(),
+        ));
     }
 
     let client_ip = crate::auth::reauth::client_ip(&state, &headers, addr);
@@ -243,34 +244,18 @@ pub async fn elevate_session(
     )
     .await?;
 
-    // Create elevated session (15 minutes)
-    let ip_address = client_ip.to_string();
-    let elevated = create_elevated_session(
-        &state.db,
+    let method = if body.mfa_code.is_some() {
+        "password+totp"
+    } else {
+        "password"
+    };
+    let elevated = record_elevation(
+        &state,
         admin.user_id,
         session_id,
-        &ip_address,
-        15, // 15 minutes
+        &client_ip.to_string(),
         body.reason.as_deref(),
-    )
-    .await?;
-
-    // Cache elevated status in Redis (TTL = 15 minutes = 900 seconds)
-    super::cache_elevated_status(&state.redis, session_id, true, 900).await;
-
-    // Log the elevation
-    write_audit_log(
-        &state.db,
-        admin.user_id,
-        "admin.session.elevated",
-        Some("user"),
-        Some(admin.user_id),
-        Some(serde_json::json!({
-            "reason": body.reason,
-            "session_id": session_id,
-            "mfa": body.mfa_code.is_some(),
-        })),
-        Some(&ip_address),
+        method,
     )
     .await?;
 
@@ -279,6 +264,53 @@ pub async fn elevate_session(
         expires_at: elevated.expires_at,
         session_id: elevated.id,
     }))
+}
+
+/// Elevation lifetime in minutes.
+const ELEVATION_MINUTES: i64 = 15;
+
+/// Elevate `session_id` of a re-authenticated admin: create (or extend) the
+/// elevation record, cache it per session and write the audit entry.
+///
+/// Shared by the password path (`elevate_session`) and the OIDC
+/// re-authentication callback; the caller has already verified the admin.
+pub(crate) async fn record_elevation(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Uuid,
+    ip_address: &str,
+    reason: Option<&str>,
+    method: &str,
+) -> Result<crate::permissions::ElevatedSession, AdminError> {
+    let elevated = create_elevated_session(
+        &state.db,
+        user_id,
+        session_id,
+        ip_address,
+        ELEVATION_MINUTES,
+        reason,
+    )
+    .await?;
+
+    // Cache elevated status in Redis for the elevation's lifetime
+    super::cache_elevated_status(&state.redis, session_id, true, ELEVATION_MINUTES * 60).await;
+
+    write_audit_log(
+        &state.db,
+        user_id,
+        "admin.session.elevated",
+        Some("user"),
+        Some(user_id),
+        Some(serde_json::json!({
+            "reason": reason,
+            "session_id": session_id,
+            "method": method,
+        })),
+        Some(ip_address),
+    )
+    .await?;
+
+    Ok(elevated)
 }
 
 /// De-elevate admin session.

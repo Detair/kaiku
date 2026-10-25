@@ -191,7 +191,7 @@ pub(super) async fn find_elevated_session(
 ///
 /// Elevation requires an existing session row because
 /// `elevated_sessions.session_id` references `sessions.id`.
-pub(super) async fn is_active_session(
+pub(crate) async fn is_active_session(
     pool: &PgPool,
     user_id: Uuid,
     session_id: Uuid,
@@ -215,12 +215,11 @@ pub(super) async fn delete_elevated_sessions(
     pool: &PgPool,
     user_id: Uuid,
 ) -> Result<Vec<Uuid>, AdminError> {
-    let ids = sqlx::query_scalar(
-        "DELETE FROM elevated_sessions WHERE user_id = $1 RETURNING session_id",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await?;
+    let ids =
+        sqlx::query_scalar("DELETE FROM elevated_sessions WHERE user_id = $1 RETURNING session_id")
+            .bind(user_id)
+            .fetch_all(pool)
+            .await?;
     Ok(ids)
 }
 

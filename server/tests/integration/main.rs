@@ -45,6 +45,7 @@ mod ratelimit;
 mod ratelimit_http;
 mod reaction_roles;
 mod reauth;
+mod reauth_oidc;
 mod reports;
 mod roles_security;
 mod screening_http;

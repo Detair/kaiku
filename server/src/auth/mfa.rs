@@ -23,8 +23,7 @@ use super::types::{
     AuthResponse, BackupCodesRequest, MfaBackupCodeCountResponse, MfaBackupCodesResponse,
     MfaSetupResponse, MfaVerifyRequest, QrCreateResponse, QrRedeemRequest,
 };
-use super::reauth;
-use super::{cookies, hash_token};
+use super::{cookies, hash_token, reauth};
 use crate::api::AppState;
 use crate::db::{
     count_all_mfa_backup_codes, count_unused_mfa_backup_codes, create_session,

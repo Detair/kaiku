@@ -20,7 +20,9 @@ use vc_server::config::Config;
 use vc_server::ratelimit::{RateLimitConfig, RateLimiter, RateLimits};
 use vc_server::voice::sfu::SfuServer;
 
-use super::helpers::{create_session_with_token, make_admin, spawn_test_server, TestApp, TestServer};
+use super::helpers::{
+    create_session_with_token, make_admin, spawn_test_server, TestApp, TestServer,
+};
 
 const PASSWORD: &str = "Correct-Horse-42";
 
@@ -96,7 +98,9 @@ async fn enable_mfa(pool: &PgPool, config: &Config, user_id: Uuid, username: &st
         6,
         1,
         30,
-        Secret::Encoded(secret_str).to_bytes().expect("secret bytes"),
+        Secret::Encoded(secret_str)
+            .to_bytes()
+            .expect("secret bytes"),
         Some("Kaiku".to_string()),
         username.to_string(),
     )
@@ -119,7 +123,12 @@ fn wrong_code(totp: &TOTP) -> String {
         .expect("a wrong code exists")
 }
 
-async fn post_json(server: &TestServer, path: &str, token: &str, body: Option<Value>) -> (u16, Value) {
+async fn post_json(
+    server: &TestServer,
+    path: &str,
+    token: &str,
+    body: Option<Value>,
+) -> (u16, Value) {
     let client = reqwest::Client::new();
     let mut req = client
         .post(format!("{}{path}", server.url))
@@ -273,8 +282,13 @@ async fn test_backup_code_regeneration_requires_totp(pool: PgPool) {
 
     // The first verify hands out the initial backup codes.
     let code = totp.generate_current().expect("code");
-    let (status, body) =
-        post_json(&server, "/auth/mfa/verify", &token, Some(json!({ "code": code }))).await;
+    let (status, body) = post_json(
+        &server,
+        "/auth/mfa/verify",
+        &token,
+        Some(json!({ "code": code })),
+    )
+    .await;
     assert_eq!(status, 200, "first verify: {body}");
     let backup_code = body["backup_codes"][0]
         .as_str()

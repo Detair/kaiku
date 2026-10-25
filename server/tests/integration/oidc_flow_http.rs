@@ -60,7 +60,10 @@ async fn oidc_app(pool: &PgPool, public_url: &str) -> OidcApp {
         http_client: reqwest::Client::new(),
     });
     OidcApp {
-        router: create_router(state.clone()),
+        // The callback reads the peer address (re-authentication audit IP).
+        router: create_router(state.clone()).layer(axum::extract::connect_info::MockConnectInfo(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        )),
         state,
         config,
     }
@@ -99,6 +102,7 @@ fn flow(client: Option<&str>, link_user_id: Option<Uuid>) -> OidcFlowState {
         created_at: 0,
         link_user_id,
         client_redirect_uri: client.map(str::to_string),
+        reauth: None,
     }
 }
 

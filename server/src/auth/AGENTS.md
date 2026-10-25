@@ -149,6 +149,49 @@ A ban (single or bulk), a single-session revoke, "revoke all other sessions", a 
 - **Stable session id:** refresh rotates the session row in place, so the `sid` stays the same for the whole login. Do not change refresh back to delete-and-insert: sockets and tokens from before a refresh would then escape revocation.
 - **Possible follow-up:** a durable revocation outbox (a DB row per pending end, drained to Valkey) would close the residual window.
 
+### Re-authentication (C24)
+
+Admin elevation and backup-code regeneration ask the caller to prove the account again (`reauth.rs`).
+
+- **Password path:** `POST /api/admin/elevate` with `{"password": string, "mfa_code": string|null, "reason": string|null}`.
+  - A current TOTP code is required when MFA is on. Backup codes are never accepted.
+  - `POST /auth/mfa/backup-codes` takes `{"mfa_code": string}`, which must be a current TOTP code.
+- **OIDC path (elevation only):** `GET /auth/reauth/oidc/authorize/{provider}?redirect_uri=&response=json&reason=` (bearer auth, system admin).
+  - It starts a fresh provider login (`prompt=login`, `max_age=0`).
+  - The flow state is encrypted, single use, with a 300 s TTL. It is bound to purpose `reauth`, the user and the token's `sid`.
+  - The shared `/auth/oidc/callback` hands the flow to `complete_oidc_reauth`, which checks in this order:
+    1. purpose;
+    2. ID token signature, issuer, audience, expiry and nonce;
+    3. `auth_time` present, with no fallback;
+    4. `auth_time` at most 300 s old (30 s skew);
+    5. (provider, `sub`) linked to that user;
+    6. the session still live and not revoked;
+    7. the user still a system admin.
+  - Only then does `admin::system::record_elevation` elevate that session. It is the same record, cache and audit entry as the password path.
+  - The result is handed back like the identity-link flow (`login::oidc_hand_back`):
+    - desktop: a localhost redirect with `reauth=elevated&expires_at=<RFC 3339>` or `reauth_error=<CODE>`;
+    - browser: a `postMessage` of `{"type": "oidc-reauth-callback", "success", "error_code", "expires_at"}`.
+  - Only enabled providers with OIDC discovery qualify. Plain OAuth2 providers have no ID token and so no `auth_time`.
+- **Methods:** `GET /auth/reauth/methods` (bearer) returns `{"password": bool, "mfa_required": bool, "oidc": [{"provider_id": string, "display_name": string}]}`.
+  - `mfa_required` applies to the password path.
+  - `oidc` lists linked, usable providers. It is empty when OIDC sign-in is off.
+- **Errors:**
+  - 400 `VALIDATION_ERROR` (missing field or body)
+  - 400 `MFA_CODE_REQUIRED`
+  - 401 `INVALID_CREDENTIALS` (wrong password or code; it never says which)
+  - 400 `REAUTH_OIDC_REQUIRED` (no password, but a linked provider exists)
+  - 400 `REAUTH_UNAVAILABLE` (neither a password nor a linked provider)
+  - 400 `REAUTH_PROVIDER_UNAVAILABLE` (OIDC start for a provider that is not linked or not usable)
+  - 429 (rate limited or locked)
+  - Callback codes: `REAUTH_AUTH_TIME_MISSING`, `REAUTH_STALE`, `REAUTH_IDENTITY_MISMATCH`, `REAUTH_SESSION_INVALID`, `REAUTH_NOT_ALLOWED`, `OIDC_EXCHANGE_FAILED`. A missing or reused state is HTTP 400 `OIDC_STATE_MISMATCH`.
+- **Session binding:** an elevation belongs to the access token's `sid`.
+  - `require_elevated`, `/api/admin/status` and the WebSocket admin subscription look up `(user_id, session_id)`.
+  - The Valkey cache key is `admin:elevated:{session_id}`.
+- **Limits:**
+  - `/auth/me/password`, `/auth/mfa/verify`, `/auth/mfa/disable`, `/auth/mfa/backup-codes`, `/auth/reauth/oidc/authorize/*` and `POST /api/admin/elevate` have `check_ip_not_blocked`, `AuthOther` and `rate_limit_by_user` (`with_reauth_limits`).
+  - Each wrong password or code is recorded per IP and per account (`reauth:{user_id}`). Ten failures lock both for the failed-auth block time.
+  - Limiter errors fail closed. The 503 mapping for Valkey errors comes with the Valkey hardening change.
+
 ### Error Handling
 
 **AuthError** variants map to HTTP status codes in handlers:

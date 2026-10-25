@@ -76,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 - Updated the Markdown sanitizer, diagram renderer and UI runtime libraries to versions without known vulnerabilities; the frontend dependency audit now blocks CI on production advisories.
+- Unlocking admin actions and creating new MFA backup codes now ask for your password (and authenticator code if MFA is on); password and MFA endpoints are rate limited. Admins who sign in through a linked identity provider can unlock admin actions by signing in at the provider again. Unlocking applies only to the device session where it was done.
 - Banning an account, signing out a session, or changing your password with 'sign out other devices' now ends those sessions right away, including open connections.
 - Accept RUSTSEC-2026-0387 (`crypto-bigint` 0.5.5 timing variability) with a dated justification until the `elliptic-curve` 0.14 ecosystem lands in `dtls`, `jsonwebtoken` and `openidconnect`; Kaiku signs its own tokens with EdDSA and is not affected on that path
 - Update `tokio` 1.52.3 → 1.54.1 (RUSTSEC-2026-0386, unsound `AsyncFd::new`; lockfile-only), restoring the License Compliance / Security Audit checks to green

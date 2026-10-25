@@ -25,7 +25,9 @@ pub use shared::{cache_elevated_status, is_elevated_admin};
 pub use types::{ElevatedAdmin, SystemAdminUser};
 
 use crate::api::AppState;
-use crate::ratelimit::{check_ip_not_blocked, rate_limit_by_user, with_category, RateLimitCategory};
+use crate::ratelimit::{
+    check_ip_not_blocked, rate_limit_by_user, with_category, RateLimitCategory,
+};
 
 /// Create the admin router.
 ///

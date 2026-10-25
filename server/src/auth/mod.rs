@@ -68,6 +68,9 @@ use crate::ratelimit::{
 /// - POST /mfa/disable - Disable MFA (rate limited)
 /// - POST /mfa/backup-codes - Generate MFA backup codes (current TOTP code; rate limited)
 /// - POST /qr/create - Create a one-time QR login token
+/// - GET /reauth/methods - Re-authentication methods of the caller (C24)
+/// - GET /reauth/oidc/authorize/{provider} - Start an OIDC re-authentication that elevates the
+///   session (rate limited)
 pub fn router(state: AppState) -> Router<AppState> {
     // Login route with IP block check and rate limiting
     let login_route = Router::new()
@@ -199,6 +202,10 @@ pub fn router(state: AppState) -> Router<AppState> {
     ));
     let mfa_reauth_routes = with_reauth_limits(
         Router::new()
+            .route(
+                "/reauth/oidc/authorize/{provider}",
+                get(reauth::oidc_reauth_authorize),
+            )
             .route("/mfa/verify", post(mfa::mfa_verify))
             .route("/mfa/disable", post(mfa::mfa_disable))
             .route("/mfa/backup-codes", post(mfa::mfa_generate_backup_codes)),
@@ -224,6 +231,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/me/identities", get(identities::list_identities))
         .route("/me/identities/{id}", delete(identities::unlink_identity))
         .route("/mfa/setup", post(mfa::mfa_setup))
+        .route("/reauth/methods", get(reauth::get_reauth_methods))
         .route("/mfa/backup-codes/count", get(mfa::mfa_backup_code_count))
         .route("/qr/create", post(mfa::qr_create))
         .layer(axum_middleware::from_fn_with_state(

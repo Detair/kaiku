@@ -125,6 +125,16 @@ pub enum AuthError {
     #[error("This account has no password to confirm with")]
     ReauthUnavailable,
 
+    /// The account has no password but can re-authenticate with a linked
+    /// provider (`GET /auth/reauth/methods`).
+    #[error("Confirm with your linked sign-in provider instead")]
+    ReauthOidcRequired,
+
+    /// The provider is not linked to this account or cannot confirm a fresh
+    /// sign-in.
+    #[error("This sign-in provider cannot be used to confirm your identity")]
+    ReauthProviderUnavailable,
+
     /// Too many failed re-authentication attempts; try again later.
     #[error("Too many failed attempts. Try again later.")]
     TooManyAttempts {
@@ -184,6 +194,10 @@ impl IntoResponse for AuthError {
             Self::ServiceUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),
             Self::MfaCodeRequired => (StatusCode::BAD_REQUEST, "MFA_CODE_REQUIRED"),
             Self::ReauthUnavailable => (StatusCode::BAD_REQUEST, "REAUTH_UNAVAILABLE"),
+            Self::ReauthOidcRequired => (StatusCode::BAD_REQUEST, "REAUTH_OIDC_REQUIRED"),
+            Self::ReauthProviderUnavailable => {
+                (StatusCode::BAD_REQUEST, "REAUTH_PROVIDER_UNAVAILABLE")
+            }
             Self::TooManyAttempts { .. } => (StatusCode::TOO_MANY_REQUESTS, "TOO_MANY_ATTEMPTS"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         };

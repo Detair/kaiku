@@ -323,6 +323,7 @@ fn test_flow_state_serialization_roundtrip() {
         created_at: 1706745600,
         link_user_id: Some(link_user),
         client_redirect_uri: Some("http://127.0.0.1:12345/callback".to_string()),
+        reauth: None,
     };
 
     let json = serde_json::to_string(&state).expect("Serialization should succeed");
@@ -361,6 +362,7 @@ fn test_flow_state_json_format() {
         created_at: 0,
         link_user_id: None,
         client_redirect_uri: None,
+        reauth: None,
     };
 
     let json: serde_json::Value = serde_json::to_value(&state).unwrap();
@@ -807,6 +809,7 @@ fn flow_state_with_client(client: Option<&str>) -> OidcFlowState {
         created_at: 0,
         link_user_id: None,
         client_redirect_uri: client.map(str::to_string),
+        reauth: None,
     }
 }
 

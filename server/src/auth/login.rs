@@ -21,7 +21,7 @@ use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
 use super::oidc::{
     append_collision_suffix, client_return_url, generate_username_from_claims,
-    resolve_flow_redirects, FlowRedirectError, OidcFlowState, OidcUserInfo,
+    resolve_flow_redirects, FlowRedirectError, OidcFlowState, OidcReauthBinding, OidcUserInfo,
 };
 use super::password::{hash_password, verify_password};
 use super::queries::{self, InsertSessionParams};
@@ -512,18 +512,35 @@ pub async fn oidc_authorize(
         &state,
         &provider,
         query.redirect_uri.as_deref(),
-        None,
+        OidcFlowPurpose::Login,
         want_json,
     )
     .await
 }
 
+/// What an OIDC flow is for; persisted in the encrypted flow state so the
+/// shared callback knows how to finish it.
+pub enum OidcFlowPurpose {
+    /// Log in (or register) with the provider.
+    Login,
+    /// Link the provider identity to this signed-in user.
+    Link(Uuid),
+    /// Re-authenticate this user and elevate the bound session (C24). Asks
+    /// the provider for a fresh login and uses a shorter state TTL.
+    Reauth(OidcReauthBinding),
+}
+
+/// Flow-state TTL of a login or link flow.
+const OIDC_STATE_TTL_SECS: i64 = 600;
+/// Flow-state TTL of a re-authentication flow.
+const OIDC_REAUTH_STATE_TTL_SECS: i64 = 300;
+
 /// Begin an OIDC authorization flow and redirect to the provider.
 ///
-/// Shared by the public login flow (`link_user_id = None`) and the
-/// authenticated identity-link flow (`link_user_id = Some(current user)`); the
-/// only difference is what gets persisted in the encrypted Redis flow state, so
-/// the callback can tell a login apart from a link.
+/// Shared by the public login flow, the authenticated identity-link flow and
+/// the re-authentication flow; the only difference is what gets persisted in
+/// the encrypted Redis flow state (see [`OidcFlowPurpose`]), so the callback
+/// can tell them apart.
 ///
 /// When `want_json` is set, the provider authorization URL is returned as a JSON
 /// body (`{"url": ...}`) instead of a 307 redirect — for the browser link flow,
@@ -532,9 +549,14 @@ pub async fn start_oidc_flow(
     state: &AppState,
     provider: &str,
     redirect_uri: Option<&str>,
-    link_user_id: Option<Uuid>,
+    purpose: OidcFlowPurpose,
     want_json: bool,
 ) -> Result<Response, AuthError> {
+    let (link_user_id, reauth) = match purpose {
+        OidcFlowPurpose::Login => (None, None),
+        OidcFlowPurpose::Link(user_id) => (Some(user_id), None),
+        OidcFlowPurpose::Reauth(binding) => (None, Some(binding)),
+    };
     let auth_methods = get_auth_methods_allowed(&state.db).await?;
     if !auth_methods.oidc {
         return Err(AuthError::AuthMethodDisabled);
@@ -567,7 +589,7 @@ pub async fn start_oidc_flow(
         })?;
 
     let (auth_url, csrf_state, nonce, pkce_verifier) = oidc_manager
-        .generate_auth_url(provider, &redirects.provider_redirect_uri)
+        .generate_auth_url_with(provider, &redirects.provider_redirect_uri, reauth.is_some())
         .await
         .map_err(|e| {
             tracing::error!(error = %e, provider = %provider, "Failed to generate OIDC auth URL");
@@ -584,7 +606,13 @@ pub async fn start_oidc_flow(
         redirect_uri: redirects.provider_redirect_uri,
         created_at: Utc::now().timestamp(),
         link_user_id,
+        reauth,
         client_redirect_uri: redirects.client_redirect_uri,
+    };
+    let ttl = if flow_state.reauth.is_some() {
+        OIDC_REAUTH_STATE_TTL_SECS
+    } else {
+        OIDC_STATE_TTL_SECS
     };
 
     let flow_json =
@@ -606,7 +634,7 @@ pub async fn start_oidc_flow(
         .set::<(), _, _>(
             &redis_key,
             encrypted_flow.as_str(),
-            Some(Expiration::EX(600)),
+            Some(Expiration::EX(ttl)),
             None,
             false,
         )
@@ -616,7 +644,7 @@ pub async fn start_oidc_flow(
             AuthError::Internal("Failed to store OIDC state".to_string())
         })?;
 
-    tracing::info!(provider = %provider, link = link_user_id.is_some(), json = want_json, "Starting OIDC provider flow");
+    tracing::info!(provider = %provider, link = link_user_id.is_some(), reauth = flow_state.reauth.is_some(), json = want_json, "Starting OIDC provider flow");
     if want_json {
         Ok(Json(serde_json::json!({ "url": auth_url })).into_response())
     } else {
@@ -642,9 +670,11 @@ pub async fn start_oidc_flow(
         (status = 400, description = "Invalid or unknown state"),
     ),
 )]
-#[tracing::instrument(skip(state, jar, query))]
+#[tracing::instrument(skip(state, jar, headers, query))]
 pub async fn oidc_callback(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     jar: CookieJar,
     axum::extract::Query(query): axum::extract::Query<OidcCallbackQuery>,
 ) -> Result<Response, AuthError> {
@@ -693,6 +723,14 @@ pub async fn oidc_callback(
             return Ok(flow_failure_response(&flow_state, OIDC_PROVIDER_ERROR));
         }
     };
+
+    // Re-authentication flow: verify the fresh provider login and elevate the
+    // bound session; never logs in or links.
+    if let Some(binding) = flow_state.reauth.clone() {
+        let client_ip = super::reauth::client_ip(&state, &headers, addr);
+        return super::reauth::complete_oidc_reauth(&state, &flow_state, &binding, code, client_ip)
+            .await;
+    }
 
     // Exchange code for tokens (also verifies ID token nonce for OIDC providers)
     let access_token = match oidc_manager
@@ -1069,7 +1107,11 @@ const OIDC_EXCHANGE_FAILED: &str = "OIDC_EXCHANGE_FAILED";
 /// |-------|------------------------|------------------------------------------------------|
 /// | login | `?error=CODE`          | `{type: "oidc-callback", error}`                     |
 /// | link  | `?link_error=CODE`     | `{type: "oidc-link-callback", success: false, error_code}` |
+/// | reauth | `?reauth_error=CODE`  | `{type: "oidc-reauth-callback", success: false, error_code, expires_at: null}` |
 fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Response {
+    if flow_state.reauth.is_some() {
+        return super::reauth::reauth_failure_response(flow_state, code);
+    }
     let is_link = flow_state.link_user_id.is_some();
     if let Some(mut redirect_url) = client_return_url(flow_state) {
         let key = if is_link { "link_error" } else { "error" };
@@ -1113,6 +1155,29 @@ if (window.opener) {{
 document.body.innerText = "{fallback}";
 </script></body></html>"#,
     )
+}
+
+/// Hand a token-less OIDC flow result back to the client that started it.
+///
+/// Desktop (`return_url`, see [`client_return_url`]): redirect there with
+/// `query` appended. Browser: a popup page that posts `payload` to the opener
+/// window and closes itself.
+pub(super) fn oidc_hand_back(
+    return_url: Option<openidconnect::url::Url>,
+    query: &[(&str, String)],
+    payload: &serde_json::Value,
+) -> Response {
+    if let Some(mut redirect_url) = return_url {
+        {
+            let mut pairs = redirect_url.query_pairs_mut();
+            for (key, value) in query {
+                pairs.append_pair(key, value);
+            }
+        }
+        Redirect::temporary(redirect_url.as_str()).into_response()
+    } else {
+        axum::response::Html(popup_result_page(payload, true)).into_response()
+    }
 }
 
 // ============================================================================

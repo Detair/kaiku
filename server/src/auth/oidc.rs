@@ -77,6 +77,10 @@ pub struct OidcFlowState {
     /// restarted; the states expire after 10 minutes, so no migration is needed.
     #[serde(default)]
     pub client_redirect_uri: Option<String>,
+    /// Set for a re-authentication flow (C24): the callback elevates this
+    /// session instead of logging in or linking.
+    #[serde(default)]
+    pub reauth: Option<OidcReauthBinding>,
 }
 
 /// Where an OIDC flow sends the provider and, afterwards, the client.
@@ -148,6 +152,31 @@ pub fn client_return_url(flow_state: &OidcFlowState) -> Option<openidconnect::ur
         .as_deref()
         .and_then(|uri| openidconnect::url::Url::parse(uri).ok())
         .filter(is_loopback_client_redirect)
+}
+
+/// Purpose marker of a re-authentication flow state.
+pub const OIDC_PURPOSE_REAUTH: &str = "reauth";
+
+/// What a re-authentication flow is bound to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OidcReauthBinding {
+    /// Always [`OIDC_PURPOSE_REAUTH`].
+    pub purpose: String,
+    /// The signed-in user who started the flow.
+    pub user_id: Uuid,
+    /// The session (access token `sid`) to elevate.
+    pub session_id: Uuid,
+    /// Elevation reason for the audit log.
+    pub reason: Option<String>,
+}
+
+/// Verified ID token claims needed for re-authentication.
+#[derive(Debug, Clone)]
+pub struct VerifiedIdClaims {
+    /// `sub` of the verified ID token.
+    pub subject: String,
+    /// `auth_time`, when the provider sent it.
+    pub auth_time: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Cached provider configuration with pre-built client.
@@ -275,6 +304,28 @@ impl OidcProviderManager {
         slug: &str,
         redirect_uri: &str,
     ) -> anyhow::Result<(String, String, String, String)> {
+        self.generate_auth_url_with(slug, redirect_uri, false).await
+    }
+
+    /// Whether the provider uses OIDC discovery, so its code exchange returns
+    /// a verified ID token (needed for re-authentication).
+    pub async fn issues_id_tokens(&self, slug: &str) -> bool {
+        self.providers
+            .read()
+            .await
+            .get(slug)
+            .is_some_and(|p| p.oidc_client.is_some())
+    }
+
+    /// Like [`Self::generate_auth_url`]; `force_login` asks the provider for
+    /// a fresh login (`prompt=login`, `max_age=0`), as re-authentication
+    /// needs. It is only honoured by OIDC discovery providers.
+    pub async fn generate_auth_url_with(
+        &self,
+        slug: &str,
+        redirect_uri: &str,
+        force_login: bool,
+    ) -> anyhow::Result<(String, String, String, String)> {
         let providers = self.providers.read().await;
         let cached = providers
             .get(slug)
@@ -288,7 +339,7 @@ impl OidcProviderManager {
             // OIDC discovery flow
             let state_clone = state.clone();
             let nonce_clone = nonce.clone();
-            let (url, _, _) = client
+            let mut request = client
                 .authorize_url(
                     AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
                     move || state_clone,
@@ -304,8 +355,13 @@ impl OidcProviderManager {
                         .scopes
                         .split_whitespace()
                         .map(|s| Scope::new(s.to_string())),
-                )
-                .url();
+                );
+            if force_login {
+                request = request
+                    .add_prompt(openidconnect::core::CoreAuthPrompt::Login)
+                    .set_max_age(std::time::Duration::ZERO);
+            }
+            let (url, _, _) = request.url();
             url.to_string()
         } else {
             // Manual OAuth2 endpoints (GitHub etc.)
@@ -347,6 +403,22 @@ impl OidcProviderManager {
         redirect_uri: &str,
         nonce: &str,
     ) -> anyhow::Result<(String, Option<String>)> {
+        let (access_token, id_token) = self
+            .exchange_code_verified(slug, code, pkce_verifier, redirect_uri, nonce)
+            .await?;
+        Ok((access_token, id_token.map(|(raw, _)| raw)))
+    }
+
+    /// Like [`Self::exchange_code`], but also returns the verified ID token
+    /// claims (signature, issuer, audience, expiry and nonce checked).
+    pub async fn exchange_code_verified(
+        &self,
+        slug: &str,
+        code: &str,
+        pkce_verifier: &str,
+        redirect_uri: &str,
+        nonce: &str,
+    ) -> anyhow::Result<(String, Option<(String, VerifiedIdClaims)>)> {
         let providers = self.providers.read().await;
         let cached = providers
             .get(slug)
@@ -367,20 +439,24 @@ impl OidcProviderManager {
                 .await
                 .map_err(|e| anyhow::anyhow!("Token exchange failed: {e}"))?;
 
-            // Verify ID token nonce if present
-            if let Some(id_token) = token_response.extra_fields().id_token() {
-                let verifier = client.id_token_verifier();
-                let expected_nonce = Nonce::new(nonce.to_string());
-                id_token
-                    .claims(&verifier, &expected_nonce)
-                    .map_err(|e| anyhow::anyhow!("ID token verification failed: {e}"))?;
-            }
+            // Verify the ID token (incl. nonce) if present
+            let id_token = match token_response.extra_fields().id_token() {
+                Some(id_token) => {
+                    let verifier = client.id_token_verifier();
+                    let expected_nonce = Nonce::new(nonce.to_string());
+                    let claims = id_token
+                        .claims(&verifier, &expected_nonce)
+                        .map_err(|e| anyhow::anyhow!("ID token verification failed: {e}"))?;
+                    let verified = VerifiedIdClaims {
+                        subject: claims.subject().to_string(),
+                        auth_time: claims.auth_time(),
+                    };
+                    Some((id_token.to_string(), verified))
+                }
+                None => None,
+            };
 
             let access_token = token_response.access_token().secret().clone();
-            let id_token = token_response
-                .extra_fields()
-                .id_token()
-                .map(|t| t.to_string());
 
             Ok((access_token, id_token))
         } else {
