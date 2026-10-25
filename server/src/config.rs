@@ -710,17 +710,25 @@ fn env_opt(name: &str) -> Option<String> {
     env::var(name).ok().filter(|v| !v.trim().is_empty())
 }
 
-/// Parse `VALKEY_COMMAND_TIMEOUT_MS`: a positive number of milliseconds;
-/// unset means [`crate::db::DEFAULT_VALKEY_COMMAND_TIMEOUT`]. Anything else
-/// refuses startup (`0` would disable the timeout).
+/// Exclusive upper bound for `VALKEY_COMMAND_TIMEOUT_MS`: the WebSocket
+/// pub/sub setup must fail on its own before its 5 s ready timeout.
+const MAX_VALKEY_COMMAND_TIMEOUT_MS: u64 = 5000;
+
+/// Parse `VALKEY_COMMAND_TIMEOUT_MS`: milliseconds in `1..5000`; unset means
+/// [`crate::db::DEFAULT_VALKEY_COMMAND_TIMEOUT`]. Anything else refuses
+/// startup (`0` would disable the timeout).
 fn parse_valkey_command_timeout(raw: Option<&str>) -> Result<std::time::Duration> {
     let Some(raw) = raw.map(str::trim) else {
         return Ok(crate::db::DEFAULT_VALKEY_COMMAND_TIMEOUT);
     };
     match raw.parse::<u64>() {
-        Ok(ms) if ms > 0 => Ok(std::time::Duration::from_millis(ms)),
+        Ok(ms) if ms > 0 && ms < MAX_VALKEY_COMMAND_TIMEOUT_MS => {
+            Ok(std::time::Duration::from_millis(ms))
+        }
         _ => anyhow::bail!(
-            "Invalid VALKEY_COMMAND_TIMEOUT_MS value '{raw}'. Must be a positive number of milliseconds"
+            "Invalid VALKEY_COMMAND_TIMEOUT_MS value '{raw}'. Must be a number of milliseconds \
+             from 1 to {} (below the 5000 ms WebSocket ready timeout)",
+            MAX_VALKEY_COMMAND_TIMEOUT_MS - 1
         ),
     }
 }
@@ -1007,6 +1015,23 @@ mod valkey_command_timeout_tests {
             parse_valkey_command_timeout(Some(" 1500 ")).unwrap(),
             Duration::from_millis(1500)
         );
+    }
+
+    #[test]
+    fn rejects_values_not_below_the_websocket_ready_timeout() {
+        assert_eq!(
+            parse_valkey_command_timeout(Some("4999")).unwrap(),
+            Duration::from_millis(4999)
+        );
+        for raw in ["5000", "30000"] {
+            let err = parse_valkey_command_timeout(Some(raw))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("VALKEY_COMMAND_TIMEOUT_MS") && err.contains("5000"),
+                "{raw}: {err}"
+            );
+        }
     }
 
     #[test]

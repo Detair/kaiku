@@ -45,6 +45,9 @@ const PUBSUB_READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// torn down.
 const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// How long a post-connect socket may take to send its `Authenticate` frame.
+const AUTH_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Close code: authentication rejected (policy violation).
 const CLOSE_POLICY_VIOLATION: u16 = 1008;
 
@@ -138,11 +141,15 @@ pub async fn handler(
 
         // Reject access tokens whose session was logged out or revoked.
         if let Some(sid) = claims.sid.as_deref() {
-            match crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
-                Ok(false) => {}
-                Ok(true) => return error_response(401, "Session revoked"),
-                // Fail closed: the denylist cannot be checked.
-                Err(_) => return error_response(503, "Service temporarily unavailable"),
+            match check_session(&state, sid).await {
+                SessionCheck::Active => {}
+                SessionCheck::Revoked => return error_response(401, "Session revoked"),
+                // Fail closed with the shared JSON 503 body.
+                SessionCheck::Unavailable => {
+                    return axum::response::IntoResponse::into_response(
+                        crate::auth::AuthError::ServiceUnavailable,
+                    );
+                }
             }
         }
 
@@ -187,13 +194,16 @@ pub async fn handler(
 async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
     let (ws_sender, mut ws_receiver) = socket.split();
 
-    // Wait up to 5 seconds for the Authenticate frame
-    let user_id = match tokio::time::timeout(
-        Duration::from_secs(5),
-        wait_for_auth_frame(&mut ws_receiver, &state),
-    )
-    .await
-    {
+    // The 5 s budget covers receiving the Authenticate frame only; validating
+    // it (session denylist, user lookup) runs afterwards on its own budget.
+    let received =
+        match tokio::time::timeout(AUTH_FRAME_TIMEOUT, wait_for_auth_frame(&mut ws_receiver)).await
+        {
+            Ok(Ok(token)) => Ok(validate_auth_token(&state, &token).await),
+            Ok(Err(e)) => Ok(Err(e)),
+            Err(elapsed) => Err(elapsed),
+        };
+    let user_id = match received {
         Ok(Ok(uid)) => uid,
         Ok(Err(AuthFrameError::PasswordChangeRequired)) => {
             debug!("Post-connect auth refused: password change required");
@@ -293,39 +303,14 @@ async fn refuse_password_change_required(
     let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, refuse).await;
 }
 
-/// Read frames until an `Authenticate` event arrives and validate its token.
+/// Read frames until an `Authenticate` event arrives and return its token.
 async fn wait_for_auth_frame(
     receiver: &mut futures::stream::SplitStream<WebSocket>,
-    state: &AppState,
-) -> Result<Uuid, AuthFrameError> {
+) -> Result<String, AuthFrameError> {
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => match serde_json::from_str::<ClientEvent>(&text) {
-                Ok(ClientEvent::Authenticate { token }) => {
-                    let claims = jwt::validate_access_token(&token, &state.config.jwt_public_key)
-                        .map_err(|e| format!("Invalid token: {e}"))?;
-
-                    // Reject access tokens whose session was logged out or revoked.
-                    if let Some(sid) = claims.sid.as_deref() {
-                        match crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
-                            Ok(false) => {}
-                            Ok(true) => return Err("Session revoked".to_string().into()),
-                            // Fail closed: the denylist cannot be checked.
-                            Err(_) => return Err(AuthFrameError::Unavailable),
-                        }
-                    }
-
-                    let user_id = Uuid::parse_str(&claims.sub)
-                        .map_err(|_| "Invalid user ID in token".to_string())?;
-
-                    // Verify the user exists and has no pending forced password change.
-                    return match user_must_change_password(state, user_id).await {
-                        Ok(Some(false)) => Ok(user_id),
-                        Ok(Some(true)) => Err(AuthFrameError::PasswordChangeRequired),
-                        Ok(None) => Err("User not found".to_string().into()),
-                        Err(e) => Err(format!("Database error: {e}").into()),
-                    };
-                }
+                Ok(ClientEvent::Authenticate { token }) => return Ok(token),
                 Ok(_) => {
                     // Ignore non-Authenticate events during pre-auth
                 }
@@ -343,6 +328,52 @@ async fn wait_for_auth_frame(
         }
     }
     Err("Connection closed before authentication".to_string().into())
+}
+
+/// Validate a post-connect `Authenticate` token: signature, session denylist
+/// (fail closed, see [`check_session`]) and user state.
+async fn validate_auth_token(state: &AppState, token: &str) -> Result<Uuid, AuthFrameError> {
+    let claims = jwt::validate_access_token(token, &state.config.jwt_public_key)
+        .map_err(|e| format!("Invalid token: {e}"))?;
+
+    // Reject access tokens whose session was logged out or revoked.
+    if let Some(sid) = claims.sid.as_deref() {
+        match check_session(state, sid).await {
+            SessionCheck::Active => {}
+            SessionCheck::Revoked => return Err("Session revoked".to_string().into()),
+            SessionCheck::Unavailable => return Err(AuthFrameError::Unavailable),
+        }
+    }
+
+    let user_id =
+        Uuid::parse_str(&claims.sub).map_err(|_| "Invalid user ID in token".to_string())?;
+
+    // Verify the user exists and has no pending forced password change.
+    match user_must_change_password(state, user_id).await {
+        Ok(Some(false)) => Ok(user_id),
+        Ok(Some(true)) => Err(AuthFrameError::PasswordChangeRequired),
+        Ok(None) => Err("User not found".to_string().into()),
+        Err(e) => Err(format!("Database error: {e}").into()),
+    }
+}
+
+/// Outcome of the session denylist check during WebSocket auth.
+enum SessionCheck {
+    Active,
+    Revoked,
+    /// Valkey errored or did not answer within the command timeout.
+    Unavailable,
+}
+
+/// Check the session denylist, bounded by the Valkey command timeout. Fails
+/// closed: an error or timeout is [`SessionCheck::Unavailable`].
+async fn check_session(state: &AppState, sid: &str) -> SessionCheck {
+    let check = crate::auth::revocation::is_session_revoked(&state.redis, sid);
+    match tokio::time::timeout(state.config.valkey_command_timeout, check).await {
+        Ok(Ok(false)) => SessionCheck::Active,
+        Ok(Ok(true)) => SessionCheck::Revoked,
+        Ok(Err(_)) | Err(_) => SessionCheck::Unavailable,
+    }
 }
 
 /// Handle WebSocket connection.

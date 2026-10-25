@@ -21,7 +21,7 @@ The rate limiting system is built on Valkey (a BSD-3-Clause licensed Redis fork)
 |----------|---------|-------------|
 | `RATE_LIMIT_ENABLED` | `true` | Enable or disable rate limiting entirely |
 | `RATE_LIMIT_PREFIX` | `canis:rl` | Prefix for Valkey keys |
-| `RATE_LIMIT_FAIL_OPEN` | `false` | Also let authentication-limited requests through while Valkey is unavailable (general limits always fail open) |
+| `RATE_LIMIT_FAIL_OPEN` | `false` | Also let authentication-limited requests through while Valkey is unavailable (general limits always fail open). Not recommended: weakens brute-force protection during an outage |
 | `RATE_LIMIT_TRUSTED_PROXIES` | unset (trust none) | Comma-separated CIDRs or IPs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted |
 | `RATE_LIMIT_TRUST_PROXY` | - | Deprecated and ignored; use `RATE_LIMIT_TRUSTED_PROXIES` |
 | `RATE_LIMIT_ALLOWLIST` | (empty) | Comma-separated list of IPs to bypass rate limiting |
@@ -204,7 +204,7 @@ A rate limit check that gets no answer from Valkey within `VALKEY_COMMAND_TIMEOU
 | Authentication: `auth_login` (login, QR login redeem), `auth_register`, `auth_pwd_reset`, `auth_other` (token refresh, OIDC, account linking), failed-login IP blocking | **Fail closed**: `503` with `{"error": "SERVICE_UNAVAILABLE"}` |
 | Everything else: `write`, `social`, `read`, `search`, `data_governance`, `ws_connect`, `ws_message`, `voice_join`, `webhook_execute` | **Fail open**: the request proceeds without a limit |
 
-`RATE_LIMIT_FAIL_OPEN=true` makes the authentication categories fail open as well. Leave it unset unless availability matters more to you than brute-force protection during an outage.
+`RATE_LIMIT_FAIL_OPEN=true` makes the authentication categories fail open as well. **This is not recommended:** during a Valkey outage it switches off login, registration and password-reset limits and failed-login IP blocking, so brute-force protection is gone until Valkey is back. Only set it if keeping logins possible during an outage matters more to you than that protection.
 
 Each such check increments `kaiku_ratelimit_valkey_unavailable_total` (labels `category`, `outcome` = `fail_open` / `fail_closed`). The server logs one warning per minute at most while the outage lasts.
 

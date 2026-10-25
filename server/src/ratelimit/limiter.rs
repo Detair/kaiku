@@ -54,7 +54,10 @@ impl RateLimiter {
     /// throttled warning and counts the outcome
     /// (`kaiku_ratelimit_valkey_unavailable_total`).
     pub fn allow_during_outage(&self, category: RateLimitCategory) -> bool {
-        static WARN: crate::db::LogThrottle = crate::db::LogThrottle::new();
+        // One throttle per outcome, so a fail-open line never hides a
+        // fail-closed one (and vice versa).
+        static WARN_OPEN: crate::db::LogThrottle = crate::db::LogThrottle::new();
+        static WARN_CLOSED: crate::db::LogThrottle = crate::db::LogThrottle::new();
 
         let allowed = !category.is_auth() || self.config.fail_open;
         let outcome = if allowed { "fail_open" } else { "fail_closed" };
@@ -62,13 +65,23 @@ impl RateLimiter {
             category.as_str(),
             outcome,
         );
-        if WARN.allow(std::time::Duration::from_mins(1)) {
-            warn!(
-                category = %category.as_str(),
-                outcome,
-                "Valkey unavailable: general rate limits are not enforced, \
-                 authentication rate limits reject requests (503). Logged at most once a minute."
-            );
+        let throttle = if allowed { &WARN_OPEN } else { &WARN_CLOSED };
+        if throttle.allow(std::time::Duration::from_mins(1)) {
+            if allowed {
+                warn!(
+                    category = %category.as_str(),
+                    outcome,
+                    "Valkey unavailable: rate limit not enforced, request allowed. \
+                     Logged at most once a minute."
+                );
+            } else {
+                warn!(
+                    category = %category.as_str(),
+                    outcome,
+                    "Valkey unavailable: authentication rate limit cannot be checked, \
+                     request rejected (503). Logged at most once a minute."
+                );
+            }
         }
         allowed
     }

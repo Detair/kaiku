@@ -253,6 +253,68 @@ async fn login_fails_closed_with_503_when_valkey_hangs(pool: PgPool) {
     assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
 }
 
+/// Registration (an authentication rate limit without the IP-block layer)
+/// also fails closed with 503.
+#[sqlx::test]
+async fn register_fails_closed_with_503_when_valkey_hangs(pool: PgPool) {
+    let proxy = ValkeyProxy::spawn().await;
+    let (server, _config) = spawn_via_proxy(pool, &proxy, Some(false)).await;
+
+    proxy.freeze();
+
+    let response = tokio::time::timeout(
+        HANG_GUARD,
+        reqwest::Client::new()
+            .post(format!("{}/auth/register", server.url))
+            .json(&serde_json::json!({
+                "username": "outage_user",
+                "password": "correct-horse-battery-staple"
+            }))
+            .send(),
+    )
+    .await
+    .expect("register hung while Valkey was unavailable")
+    .expect("request failed");
+
+    assert_eq!(response.status(), 503);
+    let body: serde_json::Value = response.json().await.expect("JSON body");
+    assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
+}
+
+/// Header-based WebSocket auth cannot check the session denylist: the upgrade
+/// is refused with the shared JSON 503 body.
+#[sqlx::test]
+async fn websocket_header_auth_answers_503_when_valkey_hangs(pool: PgPool) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Error as WsError;
+
+    let proxy = ValkeyProxy::spawn().await;
+    let (server, config) = spawn_via_proxy(pool.clone(), &proxy, None).await;
+    let (user_id, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&config, user_id);
+
+    proxy.freeze();
+
+    let mut request = format!("ws://{}/ws", server.addr)
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!("access_token.{token}").parse().unwrap(),
+    );
+    let result = tokio::time::timeout(HANG_GUARD, tokio_tungstenite::connect_async(request))
+        .await
+        .expect("WebSocket header auth hung while Valkey was unavailable");
+
+    let Err(WsError::Http(response)) = result else {
+        panic!("expected an HTTP error response, got {result:?}");
+    };
+    assert_eq!(response.status(), 503);
+    let body: serde_json::Value =
+        serde_json::from_slice(response.body().as_deref().unwrap_or_default()).expect("JSON body");
+    assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
+}
+
 /// WebSocket post-connect auth cannot check the session denylist: the socket
 /// is closed with 1013 (try again later) instead of hanging or being admitted.
 #[sqlx::test]
