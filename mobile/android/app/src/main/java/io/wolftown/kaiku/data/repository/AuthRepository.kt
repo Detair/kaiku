@@ -90,6 +90,17 @@ class AuthRepository @Inject constructor(
     fun hasPendingPasswordChange(): Boolean = pendingPasswordChange != null
 
     /**
+     * Every sign-in path refuses to replace a running session (e.g. scanning
+     * another account's QR code from Settings, or a stray OIDC deep link):
+     * the user signs out first, so the old session is always torn down
+     * completely before another one starts, and its token is never sent
+     * along with the new sign-in. Checked at the start and again right
+     * before the new session is stored.
+     */
+    private fun signedInRefusal(): Result<User>? =
+        if (authState.session.value is AuthSession.LoggedIn) Result.failure(AlreadySignedInException()) else null
+
+    /**
      * Logs in. If the server reports `password_change_required`, nothing is
      * persisted and [getMe][AuthApi.authenticatedGetMe] is skipped: the session
      * is kept in memory and [PasswordChangeRequiredException] is returned, and
@@ -101,6 +112,7 @@ class AuthRepository @Inject constructor(
         password: String,
         mfaCode: String? = null
     ): Result<User> {
+        signedInRefusal()?.let { return it }
         val attempt = invalidateLogin()
         // The server this login goes to; a pending change is bound to it.
         val serverUrl = tokenStorage.getServerUrl()
@@ -139,7 +151,9 @@ class AuthRepository @Inject constructor(
             // Persist only for the latest attempt and the server it went to: a
             // server change mid-login must not store server A's tokens under B.
             val persisted = synchronized(pendingLock) {
-                if (loginAttempt != attempt || tokenStorage.getServerUrl() != serverUrl) {
+                if (loginAttempt != attempt || tokenStorage.getServerUrl() != serverUrl ||
+                    authState.session.value is AuthSession.LoggedIn
+                ) {
                     false
                 } else {
                     tokenStorage.saveTokens(
@@ -179,6 +193,7 @@ class AuthRepository @Inject constructor(
      * meanwhile, the pending change is dropped and nothing is sent.
      */
     suspend fun completePasswordChange(newPassword: String): Result<User> {
+        signedInRefusal()?.let { return it }
         val pending = pendingPasswordChange
             ?: return Result.failure(IllegalStateException("No password change pending"))
         if (!isSameServer(pending)) {
@@ -203,7 +218,9 @@ class AuthRepository @Inject constructor(
 
             // Check and persist under the lock: a cancel can't slip in between.
             val persisted = synchronized(pendingLock) {
-                if (pendingPasswordChange !== changed || !isSameServer(pending)) {
+                if (pendingPasswordChange !== changed || !isSameServer(pending) ||
+                    authState.session.value is AuthSession.LoggedIn
+                ) {
                     false
                 } else {
                     tokenStorage.saveTokens(
@@ -243,6 +260,7 @@ class AuthRepository @Inject constructor(
         email: String?,
         displayName: String?
     ): Result<User> {
+        signedInRefusal()?.let { return it }
         // Fetch the profile from the server that issued the token.
         val serverUrl = tokenStorage.getServerUrl()
         return try {
@@ -252,6 +270,7 @@ class AuthRepository @Inject constructor(
 
             // The previous session's teardown finishes before this one starts.
             sessionTeardown.awaitIdle()
+            signedInRefusal()?.let { return it }
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken,
@@ -360,11 +379,13 @@ class AuthRepository @Inject constructor(
         refreshToken: String?,
         expiresIn: Int
     ): Result<User> {
+        signedInRefusal()?.let { return it }
         return try {
             val user = authApi.authenticatedGetMe(accessToken)
 
             // The previous session's teardown finishes before this one starts.
             sessionTeardown.awaitIdle()
+            signedInRefusal()?.let { return it }
             tokenStorage.saveTokens(
                 accessToken = accessToken,
                 refreshToken = refreshToken,
@@ -388,6 +409,7 @@ class AuthRepository @Inject constructor(
      * This is a fallback path if the server does not redirect with tokens directly.
      */
     suspend fun exchangeOidcCode(code: String, state: String, codeVerifier: String? = null): Result<User> {
+        signedInRefusal()?.let { return it }
         // Fetch the profile from the server that issued the token.
         val serverUrl = tokenStorage.getServerUrl()
         return try {
@@ -398,6 +420,7 @@ class AuthRepository @Inject constructor(
 
             // The previous session's teardown finishes before this one starts.
             sessionTeardown.awaitIdle()
+            signedInRefusal()?.let { return it }
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken,
@@ -423,6 +446,7 @@ class AuthRepository @Inject constructor(
      * calling getMe. Tokens are only persisted after getMe succeeds.
      */
     suspend fun redeemQrToken(serverUrl: String, token: String): Result<User> {
+        signedInRefusal()?.let { return it }
         return try {
             val authResponse = authApi.redeemQrToken(serverUrl, token)
 
@@ -433,6 +457,7 @@ class AuthRepository @Inject constructor(
 
             // The previous session's teardown finishes before this one starts.
             sessionTeardown.awaitIdle()
+            signedInRefusal()?.let { return it }
             tokenStorage.saveTokens(
                 accessToken = authResponse.accessToken,
                 refreshToken = authResponse.refreshToken,
@@ -454,3 +479,6 @@ class AuthRepository @Inject constructor(
         return authState.isLoggedIn.value
     }
 }
+
+/** A sign-in was refused because a session is running; sign out first. */
+class AlreadySignedInException : IllegalStateException("A session is running; sign out first")

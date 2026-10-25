@@ -16,7 +16,6 @@ fun SettingsScreen(
     appVersion: String,
     onNavigateBack: () -> Unit,
     onLogout: () -> Unit,
-    onScanQrCode: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val user by viewModel.user.collectAsState()
@@ -83,14 +82,8 @@ fun SettingsScreen(
 
             SettingsRow(label = "Server URL", value = serverUrl ?: "Not configured")
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            OutlinedButton(
-                onClick = onScanQrCode,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Scan QR Code")
-            }
+            // No QR sign-in here: switching accounts needs signing out first
+            // (AuthRepository refuses to replace a running session).
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
