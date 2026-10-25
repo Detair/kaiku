@@ -7,6 +7,7 @@
  */
 
 import type { SoundEvent, SoundEventType } from "./sound/types";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "@/lib/tauri/common";
 
 // ============================================================================
@@ -31,6 +32,26 @@ interface FormattedNotification {
 
 let permissionGranted = false;
 let permissionChecked = false;
+
+// ============================================================================
+// Focus
+// ============================================================================
+
+/**
+ * Whether Kaiku has keyboard focus. A window that is visible but not focused
+ * (e.g. open on a second screen next to a game) counts as unfocused, which
+ * `document.hidden` cannot tell apart.
+ */
+export async function isAppFocused(): Promise<boolean> {
+  if (isTauri()) {
+    try {
+      return await getCurrentWindow().isFocused();
+    } catch (error) {
+      console.warn("[Notifications] Failed to read window focus:", error);
+    }
+  }
+  return typeof document !== "undefined" && document.hasFocus();
+}
 
 // ============================================================================
 // Permission Management
@@ -165,7 +186,8 @@ export function formatNotificationContent(
 // ============================================================================
 
 /**
- * Send an OS notification. By default, only sends when the window is not focused.
+ * Send an OS notification. By default, only sends when Kaiku is not focused
+ * (see {@link isAppFocused}); while focused, the in-app sound is enough.
  * Pass `force: true` to bypass the focus check (e.g. for test notifications).
  */
 export async function sendOsNotification(
@@ -174,8 +196,8 @@ export async function sendOsNotification(
   showContent: boolean,
   force = false,
 ): Promise<void> {
-  // Only notify when window is not focused (unless forced)
-  if (!force && !document.hidden) return;
+  // Only notify when Kaiku is not focused (unless forced)
+  if (!force && (await isAppFocused())) return;
 
   // Permission not granted
   if (!permissionGranted) return;

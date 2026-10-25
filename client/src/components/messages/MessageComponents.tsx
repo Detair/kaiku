@@ -14,8 +14,8 @@ const BUTTON_STYLES: Record<string, string> = {
   primary: "bg-accent-primary text-on-accent hover:bg-accent-primary/90",
   secondary:
     "bg-[var(--color-surface-layer2)] text-text-primary hover:bg-white/10",
-  success: "bg-accent-success text-on-accent hover:bg-accent-success/90",
-  danger: "bg-accent-danger text-on-accent hover:bg-accent-danger/90",
+  success: "bg-accent-success text-on-success hover:bg-accent-success/90",
+  danger: "bg-accent-danger text-on-danger hover:bg-accent-danger/90",
   link: "bg-[var(--color-surface-layer2)] text-accent-primary hover:underline",
 };
 

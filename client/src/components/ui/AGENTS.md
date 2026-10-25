@@ -184,7 +184,8 @@ From CSS custom properties:
 - `--color-surface-layer1` - Elevated background
 - `--color-surface-layer2` - More elevated
 - `--color-error-text` - Error messages
-- `--color-success-text` - Success messages
+- `--color-text-on-success` - Text on a success fill
+- `--color-text-on-danger` - Text on a danger fill
 
 ### Spacing
 

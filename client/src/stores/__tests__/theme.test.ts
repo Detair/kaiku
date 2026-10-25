@@ -1,6 +1,26 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+const mockPrefs = vi.hoisted(() => {
+  let current = { theme: "focused-hybrid" };
+  const listeners = new Set<() => void>();
+  return {
+    get: () => current,
+    set: (theme: string) => {
+      current = { theme };
+    },
+    listeners,
+  };
+});
+
+vi.mock("../preferences", () => ({
+  preferences: () => mockPrefs.get(),
+  updatePreference: vi.fn(),
+}));
+
 import {
   availableThemes,
+  selectableThemes,
+  pickerThemes,
   THEME_IDS,
   getCurrentTheme,
   getThemeFamily,
@@ -115,6 +135,27 @@ describe("theme store", () => {
       const current = getCurrentTheme();
       expect(current).toBeDefined();
       expect(availableThemes).toContain(current);
+    });
+  });
+
+  describe("hidden themes", () => {
+    it("solarized themes are not selectable", () => {
+      const ids = selectableThemes.map((t) => t.id);
+      expect(ids).not.toContain("solarized-dark");
+      expect(ids).not.toContain("solarized-light");
+      expect(ids).toContain("focused-hybrid");
+    });
+
+    it("stored hidden theme still applies", () => {
+      mockPrefs.set("solarized-dark");
+      const hidden = availableThemes.find((t) => t.id === "solarized-dark");
+      expect(getCurrentTheme()).toBe(hidden);
+      expect(pickerThemes()).toEqual([...selectableThemes, hidden]);
+    });
+
+    it("picker lists only selectable themes for a normal theme", () => {
+      mockPrefs.set("focused-hybrid");
+      expect(pickerThemes()).toEqual(selectableThemes);
     });
   });
 });
