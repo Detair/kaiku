@@ -5,7 +5,7 @@
  * admin hands to the new user.
  */
 
-import { Component, createSignal, For, Show } from "solid-js";
+import { Component, createEffect, createSignal, For, Show } from "solid-js";
 import { X } from "lucide-solid";
 import { adminState, createUser } from "@/stores/admin";
 import { guildsState } from "@/stores/guilds";
@@ -32,9 +32,15 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
   const [error, setError] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
   // Every server the admin belongs to is ticked by default (up to the limit).
-  const [checkedGuilds, setCheckedGuilds] = createSignal<Set<string>>(
-    new Set(guildsState.guilds.slice(0, MAX_GUILDS).map((g) => g.id)),
-  );
+  const [checkedGuilds, setCheckedGuilds] = createSignal<Set<string>>(new Set());
+  // Seed once the list is known (it may arrive after the dialog opens); after
+  // that the admin's choices are left alone.
+  let seeded = false;
+  createEffect(() => {
+    if (seeded || guildsState.guilds.length === 0) return;
+    seeded = true;
+    setCheckedGuilds(new Set(guildsState.guilds.slice(0, MAX_GUILDS).map((g) => g.id)));
+  });
   const toggleGuild = (id: string, on: boolean) =>
     setCheckedGuilds((prev) => {
       const next = new Set(prev);
@@ -237,6 +243,7 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
                             checked={checkedGuilds().has(g.id)}
                             disabled={
                               !adminState.isElevated ||
+                              submitting() ||
                               (!checkedGuilds().has(g.id) &&
                                 checkedGuilds().size >= MAX_GUILDS)
                             }

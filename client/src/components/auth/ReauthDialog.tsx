@@ -60,7 +60,7 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
       setError(t("admin.reauth.error.validation"));
       return;
     }
-    const mfa = code().trim();
+    const mfa = code().replace(/\s+/g, "");
     if (showCode() && mfa === "") {
       setError(t("admin.reauth.error.mfaRequired"));
       return;

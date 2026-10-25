@@ -11,6 +11,8 @@ const loadChannelsForGuild = vi.fn(async () => {
     { id: "t2", channel_type: "text", position: 2 },
     { id: "t1", channel_type: "text", position: 1 },
   ];
+  // Mirrors the real loader: it selects the first text channel in API order.
+  channelsState.selectedChannelId = "t2";
 });
 
 vi.mock("@/lib/tauri", () => ({ getGuildMembers: vi.fn(async () => []) }));

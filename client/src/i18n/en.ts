@@ -121,6 +121,7 @@ export const en = {
   "admin.reauth.error.validation": "Please fill in all fields.",
   "admin.reauth.error.rateLimited": "Too many attempts. Wait a moment and try again.",
   "admin.reauth.error.generic": "Could not confirm. Please try again.",
+  "settings.security.backupCountFailed": "The remaining-codes count could not be refreshed.",
   "settings.security.backupCodesRegenerated": "New backup codes created. The old ones no longer work.",
 } as const;
 

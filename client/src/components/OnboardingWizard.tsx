@@ -14,6 +14,7 @@ import {
   Component,
   createSignal,
   createEffect,
+  createComputed,
   on,
   Show,
   For,
@@ -133,10 +134,14 @@ const OnboardingDialog: Component = () => {
 
   // People who already belong to a server (e.g. an admin added them) skip the
   // join step.
+  // The decision follows the server list only until the join step is reached;
+  // from there on it is frozen so joining a server does not reshuffle steps.
+  const [skipJoin, setSkipJoin] = createSignal(false);
+  createComputed(() => {
+    if (step() < JOIN_STEP) setSkipJoin(guildsState.guilds.length > 0);
+  });
   const steps = () =>
-    guildsState.guilds.length > 0
-      ? ALL_STEPS.filter((s) => s !== JOIN_STEP)
-      : ALL_STEPS;
+    skipJoin() ? ALL_STEPS.filter((s) => s !== JOIN_STEP) : ALL_STEPS;
   const position = () => Math.max(0, steps().indexOf(step()));
 
   const next = () => {

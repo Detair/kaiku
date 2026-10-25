@@ -93,13 +93,14 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
   const isMfaEnabled = () => authState.user?.mfa_enabled ?? false;
 
   // Fetch backup code count when MFA is enabled
-  const fetchBackupCodeCount = async () => {
-    if (!isMfaEnabled()) return;
+  const fetchBackupCodeCount = async (): Promise<boolean> => {
+    if (!isMfaEnabled()) return true;
     try {
       const count = await mfaBackupCodeCount();
       setBackupCodeCount(count);
+      return true;
     } catch {
-      // Non-critical
+      return false;
     }
   };
 
@@ -149,10 +150,11 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
       setShowReauth(false);
       setRegenCodes(codes);
       setShowRegenCodes(true);
-      await fetchBackupCodeCount();
+      const countLoaded = await fetchBackupCodeCount();
       showToast({
-        type: "success",
+        type: countLoaded ? "success" : "warning",
         title: t("settings.security.backupCodesRegenerated"),
+        message: countLoaded ? undefined : t("settings.security.backupCountFailed"),
         duration: 5000,
       });
     } finally {
@@ -509,7 +511,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
         <ReauthDialog
           title={t("admin.reauth.backupCodesTitle")}
           mode="mfaOnly"
-          mfaEnabled={true}
+          mfaEnabled={isMfaEnabled()}
           methods={[]}
           onSubmit={submitRegenerate}
           onClose={() => setShowReauth(false)}

@@ -96,6 +96,15 @@ describe("ReauthDialog", () => {
     );
   });
 
+  it("strips whitespace from the code", async () => {
+    const { onSubmit } = setup({ mode: "mfaOnly", mfaEnabled: true, methods: [] });
+    type(/authenticator code/i, " 123 456 ");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({ password: "", mfa_code: "123456" }),
+    );
+  });
+
   it("password-only: no OIDC button", () => {
     setup();
     expect(screen.getByLabelText(/your password/i)).toBeTruthy();

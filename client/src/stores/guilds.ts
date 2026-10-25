@@ -197,11 +197,14 @@ export function landOnFirstServerIfIdle(): void {
     if (channelsState.selectedChannelId || dmsState.selectedDMId) return;
 
     await selectGuild(first.id);
-    // The user may have picked something while the server was loading.
+    // The user may have picked something else while the server was loading.
     if (guildsState.activeGuildId !== first.id) return;
-    if (channelsState.selectedChannelId) return;
+    // selectGuild picks the first text channel in API order; the landing
+    // channel is the first one by position.
     const channel = textChannels()[0];
-    if (channel) selectChannel(channel.id);
+    if (channel && channelsState.selectedChannelId !== channel.id) {
+      selectChannel(channel.id);
+    }
   })().catch((err) => console.error("Failed to land on the first server:", err));
 }
 
