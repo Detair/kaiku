@@ -23,6 +23,7 @@ use crate::config::ObservabilityConfig;
 static HTTP_REQUESTS_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
 static HTTP_REQUEST_DURATION_MS: OnceLock<Histogram<f64>> = OnceLock::new();
 static VOICE_JOINS_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
+static PUSH_DELIVERIES_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
 static WS_CONNECTIONS_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
 
 // ============================================================================
@@ -162,6 +163,13 @@ pub fn register_metrics() {
         meter
             .u64_counter("kaiku_voice_joins_total")
             .with_description("Total voice join attempts")
+            .build()
+    });
+
+    PUSH_DELIVERIES_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_push_deliveries_total")
+            .with_description("Total push deliveries by provider and outcome")
             .build()
     });
 
@@ -389,6 +397,20 @@ pub fn record_voice_join(success: bool) {
     let outcome = if success { "success" } else { "failure" };
     if let Some(counter) = VOICE_JOINS_TOTAL.get() {
         counter.add(1, &[KeyValue::new("outcome", outcome)]);
+    }
+}
+
+/// Record one push delivery attempt (`provider`: `fcm|unifiedpush|other`,
+/// `outcome`: `sent|gone|failed`).
+pub fn record_push_delivery(provider: &'static str, outcome: &'static str) {
+    if let Some(counter) = PUSH_DELIVERIES_TOTAL.get() {
+        counter.add(
+            1,
+            &[
+                KeyValue::new("provider", provider),
+                KeyValue::new("outcome", outcome),
+            ],
+        );
     }
 }
 

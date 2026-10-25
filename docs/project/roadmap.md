@@ -1,7 +1,7 @@
 # Kaiku Roadmap
 
-**Current Phase:** Phase 6 (Competitive Differentiators & Mastery) - Near complete
-**Last Updated:** 2026-05-07
+**Current Phase:** v1.0 Family Release — target Christmas 2026 (see `../developer-guide/project/goals.md` Goal 8 and `../reviews/2026-10-22-v1-family-release-readiness.md`)
+**Last Updated:** 2026-10-22
 
 ## Recent Deliveries
 
