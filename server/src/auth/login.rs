@@ -21,7 +21,7 @@ use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
 use super::oidc::{
     append_collision_suffix, client_return_url, generate_username_from_claims,
-    resolve_flow_redirects, FlowRedirectError, OidcFlowState, OidcReauthBinding, OidcUserInfo,
+    resolve_flow_redirects, FlowRedirectError, OidcFlowPurpose, OidcFlowState, OidcUserInfo,
 };
 use super::password::{hash_password, verify_password};
 use super::queries::{self, InsertSessionParams};
@@ -518,18 +518,6 @@ pub async fn oidc_authorize(
     .await
 }
 
-/// What an OIDC flow is for; persisted in the encrypted flow state so the
-/// shared callback knows how to finish it.
-pub enum OidcFlowPurpose {
-    /// Log in (or register) with the provider.
-    Login,
-    /// Link the provider identity to this signed-in user.
-    Link(Uuid),
-    /// Re-authenticate this user and elevate the bound session (C24). Asks
-    /// the provider for a fresh login and uses a shorter state TTL.
-    Reauth(OidcReauthBinding),
-}
-
 /// Flow-state TTL of a login or link flow.
 const OIDC_STATE_TTL_SECS: i64 = 600;
 /// Flow-state TTL of a re-authentication flow.
@@ -552,11 +540,7 @@ pub async fn start_oidc_flow(
     purpose: OidcFlowPurpose,
     want_json: bool,
 ) -> Result<Response, AuthError> {
-    let (link_user_id, reauth) = match purpose {
-        OidcFlowPurpose::Login => (None, None),
-        OidcFlowPurpose::Link(user_id) => (Some(user_id), None),
-        OidcFlowPurpose::Reauth(binding) => (None, Some(binding)),
-    };
+    let is_reauth = matches!(purpose, OidcFlowPurpose::Reauth(_));
     let auth_methods = get_auth_methods_allowed(&state.db).await?;
     if !auth_methods.oidc {
         return Err(AuthError::AuthMethodDisabled);
@@ -589,7 +573,7 @@ pub async fn start_oidc_flow(
         })?;
 
     let (auth_url, csrf_state, nonce, pkce_verifier) = oidc_manager
-        .generate_auth_url_with(provider, &redirects.provider_redirect_uri, reauth.is_some())
+        .generate_auth_url_with(provider, &redirects.provider_redirect_uri, is_reauth)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, provider = %provider, "Failed to generate OIDC auth URL");
@@ -605,11 +589,10 @@ pub async fn start_oidc_flow(
         nonce,
         redirect_uri: redirects.provider_redirect_uri,
         created_at: Utc::now().timestamp(),
-        link_user_id,
-        reauth,
+        purpose,
         client_redirect_uri: redirects.client_redirect_uri,
     };
-    let ttl = if flow_state.reauth.is_some() {
+    let ttl = if is_reauth {
         OIDC_REAUTH_STATE_TTL_SECS
     } else {
         OIDC_STATE_TTL_SECS
@@ -644,7 +627,7 @@ pub async fn start_oidc_flow(
             AuthError::Internal("Failed to store OIDC state".to_string())
         })?;
 
-    tracing::info!(provider = %provider, link = link_user_id.is_some(), reauth = flow_state.reauth.is_some(), json = want_json, "Starting OIDC provider flow");
+    tracing::info!(provider = %provider, purpose = flow_state.purpose.kind(), json = want_json, "Starting OIDC provider flow");
     if want_json {
         Ok(Json(serde_json::json!({ "url": auth_url })).into_response())
     } else {
@@ -726,9 +709,9 @@ pub async fn oidc_callback(
 
     // Re-authentication flow: verify the fresh provider login and elevate the
     // bound session; never logs in or links.
-    if let Some(binding) = flow_state.reauth.clone() {
+    if let OidcFlowPurpose::Reauth(ref binding) = flow_state.purpose {
         let client_ip = super::reauth::client_ip(&state, &headers, addr);
-        return super::reauth::complete_oidc_reauth(&state, &flow_state, &binding, code, client_ip)
+        return super::reauth::complete_oidc_reauth(&state, &flow_state, binding, code, client_ip)
             .await;
     }
 
@@ -774,8 +757,19 @@ pub async fn oidc_callback(
 
     // Link flow: attach this identity to the already-authenticated user instead
     // of logging in or creating an account.
-    if let Some(link_user_id) = flow_state.link_user_id {
-        return handle_identity_link(&state, &flow_state, &user_info, link_user_id).await;
+    if let OidcFlowPurpose::Link {
+        user_id: link_user_id,
+        session_id: link_session_id,
+    } = flow_state.purpose
+    {
+        return handle_identity_link(
+            &state,
+            &flow_state,
+            &user_info,
+            link_user_id,
+            link_session_id,
+        )
+        .await;
     }
 
     // User resolution: resolve the external identity to an account.
@@ -1028,6 +1022,7 @@ async fn handle_identity_link(
     flow_state: &OidcFlowState,
     user_info: &OidcUserInfo,
     link_user_id: Uuid,
+    link_session_id: Option<Uuid>,
 ) -> Result<Response, AuthError> {
     // Determine the link outcome. Genuine server faults (DB errors) propagate as
     // AuthError; a *conflict* instead becomes a generic error code carried back to
@@ -1057,7 +1052,26 @@ async fn handle_identity_link(
         )
         .await
         {
-            Ok(_) => {
+            Ok(identity) => {
+                // Linked from an elevated session: may confirm re-authentication
+                // right away (C24); otherwise only sessions started later can.
+                if let Some(session_id) = link_session_id {
+                    if crate::admin::queries::has_active_elevated_session(
+                        &state.db,
+                        link_user_id,
+                        session_id,
+                    )
+                    .await
+                    .map_err(|e| AuthError::Internal(format!("Elevation lookup failed: {e}")))?
+                    {
+                        sqlx::query(
+                            "UPDATE user_identities SET linked_while_elevated = TRUE WHERE id = $1",
+                        )
+                        .bind(identity.id)
+                        .execute(&state.db)
+                        .await?;
+                    }
+                }
                 tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, "Linked OIDC identity to account");
                 None
             }
@@ -1109,10 +1123,13 @@ const OIDC_EXCHANGE_FAILED: &str = "OIDC_EXCHANGE_FAILED";
 /// | link  | `?link_error=CODE`     | `{type: "oidc-link-callback", success: false, error_code}` |
 /// | reauth | `?reauth_error=CODE`  | `{type: "oidc-reauth-callback", success: false, error_code, expires_at: null}` |
 fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Response {
-    if flow_state.reauth.is_some() {
-        return super::reauth::reauth_failure_response(flow_state, code);
-    }
-    let is_link = flow_state.link_user_id.is_some();
+    let is_link = match flow_state.purpose {
+        OidcFlowPurpose::Reauth(_) => {
+            return super::reauth::reauth_failure_response(flow_state, code);
+        }
+        OidcFlowPurpose::Link { .. } => true,
+        OidcFlowPurpose::Login => false,
+    };
     if let Some(mut redirect_url) = client_return_url(flow_state) {
         let key = if is_link { "link_error" } else { "error" };
         redirect_url.query_pairs_mut().append_pair(key, code);

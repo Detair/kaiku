@@ -27,10 +27,10 @@ use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 
 use super::error::{AuthError, AuthResult};
-use super::login::{oidc_hand_back, start_oidc_flow, OidcFlowPurpose};
+use super::login::{oidc_hand_back, start_oidc_flow};
 use super::mfa_crypto::decrypt_mfa_secret;
 use super::middleware::AuthUser;
-use super::oidc::{client_return_url, OidcFlowState, OidcReauthBinding, OIDC_PURPOSE_REAUTH};
+use super::oidc::{client_return_url, OidcFlowPurpose, OidcFlowState, OidcReauthBinding};
 use super::password::verify_password;
 use super::types::{OidcReauthQuery, ReauthMethodsResponse, ReauthOidcProvider};
 use crate::api::AppState;
@@ -118,13 +118,24 @@ pub async fn password_matches(password: &str, hash: &str) -> AuthResult<bool> {
         .map_err(|e| AuthError::Internal(format!("Password check failed: {e}")))
 }
 
-/// Check a TOTP code against the account's encrypted MFA secret.
-pub fn totp_matches(
-    state: &AppState,
-    encrypted_secret: &str,
-    username: &str,
-    code: &str,
-) -> AuthResult<bool> {
+/// Lifetime of the last accepted TOTP step per user (covers the ±1 step
+/// window).
+const TOTP_STEP_TTL_SECS: i64 = 90;
+
+/// Store `step` as the user's last accepted TOTP step unless an equal or later
+/// step was already accepted. Returns 1 when stored, 0 for a replay.
+const TOTP_ACCEPT_SCRIPT: &str = r"
+local last = redis.call('GET', KEYS[1])
+if last and tonumber(last) >= tonumber(ARGV[1]) then
+    return 0
+end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+return 1
+";
+
+/// Build the TOTP generator of an account (no skew; steps are checked one by
+/// one so the matching step is known).
+fn account_totp(state: &AppState, encrypted_secret: &str, username: &str) -> AuthResult<TOTP> {
     let encryption_key = state
         .config
         .mfa_encryption_key
@@ -134,10 +145,10 @@ pub fn totp_matches(
         .map_err(|_| AuthError::Internal("Invalid MFA encryption key".to_string()))?;
     let secret_str = decrypt_mfa_secret(encrypted_secret, &key_bytes)
         .map_err(|e| AuthError::Internal(format!("Failed to decrypt MFA secret: {e}")))?;
-    let totp = TOTP::new(
+    TOTP::new(
         Algorithm::SHA1,
         6,
-        1,
+        0,
         30,
         Secret::Encoded(secret_str)
             .to_bytes()
@@ -145,23 +156,93 @@ pub fn totp_matches(
         Some("Kaiku".to_string()),
         username.to_string(),
     )
-    .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {e}")))?;
-    totp.check_current(code)
-        .map_err(|e| AuthError::Internal(format!("Failed to verify TOTP code: {e}")))
+    .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {e}")))
+}
+
+/// Accept a TOTP code for this user at most once.
+///
+/// The code may match the current, previous or next 30-second step. The
+/// matched step must be later than the last step accepted for the user
+/// (stored in Valkey for 90 s), so a code cannot be replayed on the
+/// re-authentication paths. Returns `false` for a wrong or replayed code.
+/// Fails closed with 503 when Valkey cannot be used.
+pub async fn accept_totp(
+    state: &AppState,
+    user_id: Uuid,
+    encrypted_secret: &str,
+    username: &str,
+    code: &str,
+) -> AuthResult<bool> {
+    use fred::interfaces::LuaInterface;
+
+    let totp = account_totp(state, encrypted_secret, username)?;
+    let now = u64::try_from(Utc::now().timestamp()).unwrap_or(0);
+    let current = now / 30;
+    let matched = [current.saturating_sub(1), current, current + 1]
+        .into_iter()
+        .find(|step| totp.check(code, step * 30));
+    let Some(step) = matched else {
+        return Ok(false);
+    };
+
+    let stored: i64 = state
+        .redis
+        .eval(
+            TOTP_ACCEPT_SCRIPT,
+            vec![format!("mfa:totp_step:{user_id}")],
+            vec![step.to_string(), TOTP_STEP_TTL_SECS.to_string()],
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, %user_id, "Cannot record the accepted TOTP step; refusing");
+            AuthError::ServiceUnavailable
+        })?;
+    if stored == 0 {
+        tracing::info!(%user_id, "Replayed TOTP code refused");
+    }
+    Ok(stored == 1)
+}
+
+/// The factors a successful [`verify_reauth`] actually checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReauthFactors {
+    /// The password was verified.
+    pub password: bool,
+    /// A TOTP code was verified.
+    pub totp: bool,
+}
+
+impl ReauthFactors {
+    /// Audit label of the verified factors, prefixed by `base` when given
+    /// (e.g. `oidc+totp`).
+    pub fn method(self, base: Option<&str>) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if let Some(base) = base {
+            parts.push(base);
+        }
+        if self.password {
+            parts.push("password");
+        }
+        if self.totp {
+            parts.push("totp");
+        }
+        parts.join("+")
+    }
 }
 
 /// Confirm the account again before a sensitive action (C24).
 ///
 /// - `require_password`: the account password must be given and match; an account without a local
-///   password gets `REAUTH_UNAVAILABLE`.
+///   password gets `REAUTH_UNAVAILABLE` (the elevate handler turns that into `REAUTH_OIDC_REQUIRED`
+///   when a usable linked provider exists).
 /// - When the account has MFA on, `mfa_code` must be a current TOTP code (`MFA_CODE_REQUIRED` when
-///   missing). Backup codes are not accepted.
+///   missing). Backup codes are not accepted, and a code is accepted only once.
 /// - A wrong password or code answers `INVALID_CREDENTIALS` without saying which one was wrong, and
 ///   is recorded as a failed attempt.
 /// - While the account is locked after failures the answer is 429.
 ///
 /// The missing-code check runs before any secret is verified, so that answer
-/// says nothing about the password.
+/// says nothing about the password. Returns the factors that were verified.
 pub async fn verify_reauth(
     state: &AppState,
     user_id: Uuid,
@@ -169,7 +250,7 @@ pub async fn verify_reauth(
     mfa_code: Option<&str>,
     require_password: bool,
     client_ip: IpAddr,
-) -> Result<(), AuthError> {
+) -> Result<ReauthFactors, AuthError> {
     ensure_not_locked(state, user_id).await?;
 
     let user = find_user_by_id(&state.db, user_id)
@@ -181,16 +262,10 @@ pub async fn verify_reauth(
     let mfa_code = mfa_code.map(str::trim).filter(|c| !c.is_empty());
 
     let password_check = if require_password {
-        let Some(hash) = user.password_hash.as_deref() else {
-            // No password: point to a linked provider when there is one.
-            return Err(
-                if linked_reauth_providers(state, user_id).await?.is_empty() {
-                    AuthError::ReauthUnavailable
-                } else {
-                    AuthError::ReauthOidcRequired
-                },
-            );
-        };
+        let hash = user
+            .password_hash
+            .as_deref()
+            .ok_or(AuthError::ReauthUnavailable)?;
         let given =
             password.ok_or_else(|| AuthError::Validation("password: is required".to_string()))?;
         Some((given, hash))
@@ -208,15 +283,24 @@ pub async fn verify_reauth(
     }
 
     let mut confirmed = true;
+    let mut factors = ReauthFactors {
+        password: false,
+        totp: false,
+    };
     if let Some((given, hash)) = password_check {
-        confirmed &= password_matches(given, hash).await?;
+        let ok = password_matches(given, hash).await?;
+        confirmed &= ok;
+        factors.password = ok;
     }
+    // The TOTP step is only consumed when the password was right.
     if let (Some(secret), Some(code)) = (mfa_secret, mfa_code) {
-        confirmed &= totp_matches(state, secret, &user.username, code)?;
+        let ok = confirmed && accept_totp(state, user_id, secret, &user.username, code).await?;
+        confirmed &= ok;
+        factors.totp = ok;
     }
 
     if confirmed {
-        Ok(())
+        Ok(factors)
     } else {
         record_failure(state, user_id, client_ip).await?;
         tracing::info!(%user_id, "Re-authentication failed");
@@ -228,22 +312,43 @@ pub async fn verify_reauth(
 // Methods and OIDC re-authentication
 // ============================================================================
 
-/// Linked providers that can confirm a fresh sign-in for this user: enabled,
-/// using OIDC discovery (so the code exchange yields a verified ID token with
-/// `auth_time`), and OIDC sign-in allowed on this server.
-async fn linked_reauth_providers(
+/// Linked providers that can confirm a fresh sign-in for this session.
+///
+/// A provider qualifies when it is enabled, uses OIDC discovery (so the code
+/// exchange yields a verified ID token with `auth_time`), OIDC sign-in is
+/// allowed on this server, and the identity is eligible for this session:
+/// linked no later than the session was first authenticated, or linked from
+/// an elevated session. A session without a live row has no providers.
+pub async fn linked_reauth_providers(
     state: &AppState,
     user_id: Uuid,
+    session_id: Option<Uuid>,
 ) -> AuthResult<Vec<ReauthOidcProvider>> {
     let Some(ref manager) = state.oidc_manager else {
+        return Ok(Vec::new());
+    };
+    let Some(session_id) = session_id else {
         return Ok(Vec::new());
     };
     if !get_auth_methods_allowed(&state.db).await?.oidc {
         return Ok(Vec::new());
     }
+    let slugs: Vec<String> = sqlx::query_scalar(
+        r"SELECT i.provider_slug
+          FROM user_identities i
+          JOIN sessions s ON s.id = $2 AND s.user_id = i.user_id
+          WHERE i.user_id = $1
+            AND (i.created_at <= s.created_at OR i.linked_while_elevated)
+          ORDER BY i.created_at",
+    )
+    .bind(user_id)
+    .bind(session_id)
+    .fetch_all(&state.db)
+    .await?;
+
     let mut providers = Vec::new();
-    for identity in crate::db::list_user_identities(&state.db, user_id).await? {
-        let Some(row) = manager.get_provider_row(&identity.provider_slug).await else {
+    for slug in slugs {
+        let Some(row) = manager.get_provider_row(&slug).await else {
             continue;
         };
         if row.enabled && manager.issues_id_tokens(&row.slug).await {
@@ -278,7 +383,7 @@ pub async fn get_reauth_methods(
     Ok(Json(ReauthMethodsResponse {
         password: user.password_hash.is_some(),
         mfa_required: user.mfa_secret.is_some(),
-        oidc: linked_reauth_providers(&state, user.id).await?,
+        oidc: linked_reauth_providers(&state, user.id, auth_user.session_id).await?,
     }))
 }
 
@@ -287,7 +392,9 @@ pub async fn get_reauth_methods(
 /// The provider is asked for a fresh login (`prompt=login`, `max_age=0`). The
 /// flow state (single use, 5-minute TTL) is bound to the caller, the access
 /// token's session and the purpose `reauth`; the shared OIDC callback then
-/// elevates that session only.
+/// elevates that session only. When the account has MFA on, `mfa_code` (a
+/// current TOTP code) is verified here, with the same lockout and replay
+/// protection as the password path, and the result is bound into the state.
 ///
 /// GET /auth/reauth/oidc/authorize/{provider}
 #[utoipa::path(
@@ -296,22 +403,26 @@ pub async fn get_reauth_methods(
     tag = "auth",
     params(
         ("provider" = String, Path, description = "Linked provider (`provider_id` from the methods list)"),
-        ("redirect_uri" = Option<String>, Query, description = "Optional localhost redirect (desktop)"),
+        ("redirect_uri" = Option<String>, Query, description = "Optional localhost return URI (desktop)"),
         ("response" = Option<String>, Query, description = "`json` returns {\"url\": ...} instead of a redirect"),
         ("reason" = Option<String>, Query, description = "Elevation reason for the audit log"),
+        ("mfa_code" = Option<String>, Query, description = "Current TOTP code; required when MFA is on"),
     ),
     responses(
         (status = 307, description = "Redirect to the provider"),
-        (status = 400, description = "REAUTH_PROVIDER_UNAVAILABLE or VALIDATION_ERROR"),
+        (status = 400, description = "MFA_CODE_REQUIRED, REAUTH_PROVIDER_UNAVAILABLE or VALIDATION_ERROR"),
+        (status = 401, description = "INVALID_CREDENTIALS (wrong TOTP code)"),
         (status = 403, description = "Not a system admin"),
         (status = 429, description = "Too many attempts"),
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, query), fields(provider = %provider, user_id = %auth_user.id))]
+#[tracing::instrument(skip(state, headers, query), fields(provider = %provider, user_id = %auth_user.id))]
 pub async fn oidc_reauth_authorize(
     State(state): State<AppState>,
     auth_user: AuthUser,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(provider): Path<String>,
     axum::extract::Query(query): axum::extract::Query<OidcReauthQuery>,
 ) -> Result<Response, AuthError> {
@@ -333,7 +444,7 @@ pub async fn oidc_reauth_authorize(
     {
         return Err(AuthError::Forbidden);
     }
-    if !linked_reauth_providers(&state, auth_user.id)
+    if !linked_reauth_providers(&state, auth_user.id, Some(session_id))
         .await?
         .iter()
         .any(|p| p.provider_id == provider)
@@ -341,11 +452,28 @@ pub async fn oidc_reauth_authorize(
         return Err(AuthError::ReauthProviderUnavailable);
     }
 
+    // MFA on: the TOTP code is part of this re-authentication.
+    let mfa_verified = if auth_user.mfa_enabled || has_mfa(&state, auth_user.id).await? {
+        let client_ip = client_ip(&state, &headers, addr);
+        verify_reauth(
+            &state,
+            auth_user.id,
+            None,
+            query.mfa_code.as_deref(),
+            false,
+            client_ip,
+        )
+        .await?
+        .totp
+    } else {
+        false
+    };
+
     let binding = OidcReauthBinding {
-        purpose: OIDC_PURPOSE_REAUTH.to_string(),
         user_id: auth_user.id,
         session_id,
         reason: query.reason.clone(),
+        mfa_verified,
     };
     start_oidc_flow(
         &state,
@@ -355,6 +483,14 @@ pub async fn oidc_reauth_authorize(
         query.response.as_deref() == Some("json"),
     )
     .await
+}
+
+/// Whether the account has MFA on (read from the DB, not the token).
+async fn has_mfa(state: &AppState, user_id: Uuid) -> AuthResult<bool> {
+    Ok(find_user_by_id(&state.db, user_id)
+        .await
+        .map_err(AuthError::Database)?
+        .is_some_and(|u| u.mfa_secret.is_some()))
 }
 
 /// The access token's session, if it is a live session row of the user.
@@ -374,13 +510,15 @@ async fn active_session(state: &AppState, auth_user: &AuthUser) -> AuthResult<Uu
 
 /// Outcome codes of an OIDC re-authentication, handed back to the client.
 mod reauth_code {
-    pub const PURPOSE_MISMATCH: &str = "OIDC_STATE_MISMATCH";
     pub const PROVIDER_ERROR: &str = "OIDC_EXCHANGE_FAILED";
     pub const AUTH_TIME_MISSING: &str = "REAUTH_AUTH_TIME_MISSING";
     pub const STALE: &str = "REAUTH_STALE";
     pub const IDENTITY_MISMATCH: &str = "REAUTH_IDENTITY_MISMATCH";
     pub const SESSION_INVALID: &str = "REAUTH_SESSION_INVALID";
     pub const NOT_ADMIN: &str = "REAUTH_NOT_ALLOWED";
+    pub const IDENTITY_NOT_ELIGIBLE: &str = "REAUTH_IDENTITY_NOT_ELIGIBLE";
+    pub const MFA_REQUIRED: &str = "MFA_CODE_REQUIRED";
+    pub const FAILED: &str = "REAUTH_FAILED";
 }
 
 /// Finish an OIDC re-authentication (called by the shared OIDC callback after
@@ -404,7 +542,14 @@ pub async fn complete_oidc_reauth(
     code: &str,
     client_ip: IpAddr,
 ) -> Result<Response, AuthError> {
-    let outcome = check_oidc_reauth(state, flow_state, binding, code, client_ip).await?;
+    let outcome = match check_oidc_reauth(state, flow_state, binding, code, client_ip).await {
+        Ok(outcome) => outcome,
+        // A server fault still completes the hand-back, with a generic code.
+        Err(e) => {
+            tracing::error!(error = %e, user_id = %binding.user_id, provider = %flow_state.slug, "OIDC re-authentication failed with a server error");
+            Err(reauth_code::FAILED)
+        }
+    };
     match &outcome {
         Ok(_) => {
             tracing::info!(user_id = %binding.user_id, provider = %flow_state.slug, "Session elevated after OIDC re-authentication");
@@ -461,9 +606,6 @@ async fn check_oidc_reauth(
     code: &str,
     client_ip: IpAddr,
 ) -> AuthResult<Result<chrono::DateTime<Utc>, &'static str>> {
-    if binding.purpose != OIDC_PURPOSE_REAUTH {
-        return Ok(Err(reauth_code::PURPOSE_MISMATCH));
-    }
     let manager = state
         .oidc_manager
         .as_ref()
@@ -506,12 +648,18 @@ async fn check_oidc_reauth(
         crate::admin::queries::is_active_session(&state.db, binding.user_id, binding.session_id)
             .await
             .map_err(|e| AuthError::Internal(format!("Session lookup failed: {e}")))?;
-    // Fails closed: an unreachable denylist is a server fault (503).
+    // Fails closed: an unreachable denylist is a server fault.
     let revoked =
         super::revocation::is_session_revoked(&state.redis, &binding.session_id.to_string())
             .await?;
     if !session_live || revoked {
         return Ok(Err(reauth_code::SESSION_INVALID));
+    }
+
+    // The identity must have been linked before this session began, or from
+    // an elevated session (an identity linked later cannot unlock it).
+    if !identity_eligible(state, binding, &flow_state.slug, &claims.subject).await? {
+        return Ok(Err(reauth_code::IDENTITY_NOT_ELIGIBLE));
     }
 
     if crate::permissions::queries::get_system_admin(&state.db, binding.user_id)
@@ -521,15 +669,49 @@ async fn check_oidc_reauth(
         return Ok(Err(reauth_code::NOT_ADMIN));
     }
 
+    // MFA on: the TOTP code verified at the start is required.
+    if has_mfa(state, binding.user_id).await? && !binding.mfa_verified {
+        return Ok(Err(reauth_code::MFA_REQUIRED));
+    }
+
+    let factors = ReauthFactors {
+        password: false,
+        totp: binding.mfa_verified,
+    };
     let elevated = crate::admin::system::record_elevation(
         state,
         binding.user_id,
         binding.session_id,
         &client_ip.to_string(),
         binding.reason.as_deref(),
-        "oidc",
+        &factors.method(Some("oidc")),
     )
     .await
     .map_err(|e| AuthError::Internal(format!("Elevation failed: {e}")))?;
     Ok(Ok(elevated.expires_at))
+}
+
+/// Whether the (provider, `sub`) identity of the user may confirm the bound
+/// session (see [`linked_reauth_providers`]).
+async fn identity_eligible(
+    state: &AppState,
+    binding: &OidcReauthBinding,
+    slug: &str,
+    subject: &str,
+) -> AuthResult<bool> {
+    let eligible: bool = sqlx::query_scalar(
+        r"SELECT EXISTS(
+            SELECT 1 FROM user_identities i
+            JOIN sessions s ON s.id = $4 AND s.user_id = i.user_id
+            WHERE i.provider_slug = $1 AND i.subject = $2 AND i.user_id = $3
+              AND (i.created_at <= s.created_at OR i.linked_while_elevated)
+        )",
+    )
+    .bind(slug)
+    .bind(subject)
+    .bind(binding.user_id)
+    .bind(binding.session_id)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(eligible)
 }

@@ -333,6 +333,8 @@ pub struct OidcReauthQuery {
     pub response: Option<String>,
     /// Elevation reason for the audit log (max 255 characters).
     pub reason: Option<String>,
+    /// Current TOTP code; required when the account has MFA on.
+    pub mfa_code: Option<String>,
 }
 
 /// A linked provider that can confirm a fresh sign-in.

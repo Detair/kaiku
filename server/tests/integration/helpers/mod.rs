@@ -327,11 +327,15 @@ pub struct TestServer {
 /// }
 /// ```
 pub async fn spawn_test_server(router: Router) -> TestServer {
-    use std::net::SocketAddr;
-
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("Failed to bind test server");
+    serve_test_router(listener, router)
+}
+
+/// Like [`spawn_test_server`] on an already bound listener (for tests that
+/// must know the server URL before building the router).
+pub fn serve_test_router(listener: tokio::net::TcpListener, router: Router) -> TestServer {
     let addr = listener.local_addr().expect("Failed to get local addr");
     let url = format!("http://{addr}");
 

@@ -67,7 +67,7 @@ use crate::ratelimit::{
 /// - POST /mfa/verify - Verify MFA (TOTP or backup code; rate limited)
 /// - POST /mfa/disable - Disable MFA (rate limited)
 /// - POST /mfa/backup-codes - Generate MFA backup codes (current TOTP code; rate limited)
-/// - POST /qr/create - Create a one-time QR login token
+/// - POST /qr/create - Create a one-time QR login token (rate limited)
 /// - GET /reauth/methods - Re-authentication methods of the caller (C24)
 /// - GET /reauth/oidc/authorize/{provider} - Start an OIDC re-authentication that elevates the
 ///   session (rate limited)
@@ -208,7 +208,8 @@ pub fn router(state: AppState) -> Router<AppState> {
             )
             .route("/mfa/verify", post(mfa::mfa_verify))
             .route("/mfa/disable", post(mfa::mfa_disable))
-            .route("/mfa/backup-codes", post(mfa::mfa_generate_backup_codes)),
+            .route("/mfa/backup-codes", post(mfa::mfa_generate_backup_codes))
+            .route("/qr/create", post(mfa::qr_create)),
         &state,
     )
     .layer(axum_middleware::from_fn_with_state(
@@ -233,7 +234,6 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/mfa/setup", post(mfa::mfa_setup))
         .route("/reauth/methods", get(reauth::get_reauth_methods))
         .route("/mfa/backup-codes/count", get(mfa::mfa_backup_code_count))
-        .route("/qr/create", post(mfa::qr_create))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             require_auth,

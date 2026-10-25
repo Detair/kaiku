@@ -22,7 +22,7 @@ Content-Type: application/json
 {"password": "<your password>", "mfa_code": "123456", "reason": "create family accounts"}
 ```
 
-If your admin account signs in through a linked identity provider instead of a password, open `GET /auth/reauth/oidc/authorize/{provider}` and sign in at the provider again. `GET /auth/reauth/methods` lists the options your account has.
+If your admin account signs in through a linked identity provider instead of a password, open `GET /auth/reauth/oidc/authorize/{provider}` and sign in at the provider again. Add `mfa_code=<code>` if MFA is on. `GET /auth/reauth/methods` lists the options your account has. A provider you linked after this sign-in only becomes usable after you sign in again, unless you linked it while elevated.
 
 The elevation applies only to the session you elevated, and it is time-limited. Elevate again if it has expired. Repeated wrong attempts are blocked for a while.
 

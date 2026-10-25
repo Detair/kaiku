@@ -234,7 +234,7 @@ pub async fn elevate_session(
     }
 
     let client_ip = crate::auth::reauth::client_ip(&state, &headers, addr);
-    crate::auth::reauth::verify_reauth(
+    let factors = match crate::auth::reauth::verify_reauth(
         &state,
         admin.user_id,
         Some(&body.password),
@@ -242,20 +242,34 @@ pub async fn elevate_session(
         true,
         client_ip,
     )
-    .await?;
-
-    let method = if body.mfa_code.is_some() {
-        "password+totp"
-    } else {
-        "password"
+    .await
+    {
+        Ok(factors) => factors,
+        // No password: point to a provider that can confirm this session.
+        Err(AuthError::ReauthUnavailable) => {
+            let providers = crate::auth::reauth::linked_reauth_providers(
+                &state,
+                admin.user_id,
+                Some(session_id),
+            )
+            .await?;
+            return Err(if providers.is_empty() {
+                AuthError::ReauthUnavailable
+            } else {
+                AuthError::ReauthOidcRequired
+            }
+            .into());
+        }
+        Err(e) => return Err(e.into()),
     };
+
     let elevated = record_elevation(
         &state,
         admin.user_id,
         session_id,
         &client_ip.to_string(),
         body.reason.as_deref(),
-        method,
+        &factors.method(None),
     )
     .await?;
 
@@ -323,13 +337,14 @@ pub(crate) async fn record_elevation(
     responses((status = 200, body = DeElevateResponse)),
     security(("bearer_auth" = []))
 )]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, headers))]
 pub async fn de_elevate_session(
     State(state): State<AppState>,
     Extension(admin): Extension<SystemAdminUser>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> Result<Json<DeElevateResponse>, AdminError> {
-    let ip_address = addr.ip().to_string();
+    let ip_address = crate::auth::reauth::client_ip(&state, &headers, addr).to_string();
 
     // Delete all elevated sessions for this user
     let removed_sessions = queries::delete_elevated_sessions(&state.db, admin.user_id).await?;

@@ -17,7 +17,7 @@ use super::backup_codes::{find_matching_backup_code, generate_backup_codes, BACK
 use super::error::{AuthError, AuthResult};
 use super::helpers::{extract_user_agent, should_return_refresh_token};
 use super::jwt::generate_token_pair;
-use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
+use super::mfa_crypto::encrypt_mfa_secret;
 use super::middleware::AuthUser;
 use super::types::{
     AuthResponse, BackupCodesRequest, MfaBackupCodeCountResponse, MfaBackupCodesResponse,
@@ -138,18 +138,7 @@ pub async fn mfa_verify(
 ) -> AuthResult<Json<serde_json::Value>> {
     reauth::ensure_not_locked(&state, auth_user.id).await?;
 
-    // Check if encryption key is configured
-    let encryption_key = state
-        .config
-        .mfa_encryption_key
-        .as_ref()
-        .ok_or_else(|| AuthError::Internal("MFA encryption not configured".to_string()))?;
-
-    // Decode encryption key from hex
-    let key_bytes = hex::decode(encryption_key)
-        .map_err(|_| AuthError::Internal("Invalid MFA encryption key".to_string()))?;
-
-    // Get user to retrieve encrypted MFA secret
+    // Get user to retrieve encrypted MFA secret (the TOTP check decrypts it)
     let user = find_user_by_id(&state.db, auth_user.id)
         .await
         .map_err(|_| AuthError::Internal("Database error".to_string()))?
@@ -171,10 +160,6 @@ pub async fn mfa_verify(
         }
     };
 
-    // Decrypt the secret
-    let secret_str = decrypt_mfa_secret(&encrypted_secret, &key_bytes)
-        .map_err(|e| AuthError::Internal(format!("Failed to decrypt MFA secret: {e}")))?;
-
     // Count all backup codes (used + unused) BEFORE verification to detect first-time setup.
     // This must happen before any backup code is consumed, otherwise exhausting the last
     // code would be indistinguishable from never having had codes.
@@ -182,27 +167,15 @@ pub async fn mfa_verify(
         .await
         .map_err(AuthError::Database)?;
 
-    // Parse the secret
-    let secret = Secret::Encoded(secret_str);
-
-    // Create TOTP instance
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        6,
-        1,
-        30,
-        secret
-            .to_bytes()
-            .map_err(|_| AuthError::Internal("Invalid TOTP secret encoding".into()))?,
-        Some("Kaiku".to_string()),
-        user.username,
+    // Try TOTP code first (accepted once per step: replay protection)
+    let totp_valid = reauth::accept_totp(
+        &state,
+        auth_user.id,
+        &encrypted_secret,
+        &user.username,
+        &request.code,
     )
-    .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {e}")))?;
-
-    // Try TOTP code first
-    let totp_valid = totp
-        .check_current(&request.code)
-        .map_err(|e| AuthError::Internal(format!("Failed to verify TOTP code: {e}")))?;
+    .await?;
 
     if !totp_valid {
         // TOTP failed — try backup code
@@ -301,7 +274,9 @@ pub async fn mfa_disable(
     )
     .await
     .map_err(|e| match e {
-        AuthError::TooManyAttempts { .. } | AuthError::Internal(_) => e,
+        AuthError::TooManyAttempts { .. }
+        | AuthError::ServiceUnavailable
+        | AuthError::Internal(_) => e,
         _ => AuthError::InvalidMfaCode,
     })?;
 

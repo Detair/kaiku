@@ -51,7 +51,12 @@ pub struct OidcUserInfo {
 }
 
 /// OIDC state stored in Redis during the auth flow.
+///
+/// Deserialized through [`OidcFlowStateWire`] so states written before the
+/// `purpose` field existed (a bare `link_user_id`, or neither) still finish
+/// as the flow they were started as.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(from = "OidcFlowStateWire")]
 pub struct OidcFlowState {
     /// Provider slug.
     pub slug: String,
@@ -63,11 +68,9 @@ pub struct OidcFlowState {
     pub redirect_uri: String,
     /// When the state was created (for debugging).
     pub created_at: i64,
-    /// When set, this is a *link* flow: the resulting identity is attached to
-    /// this already-authenticated user instead of logging in / creating an
-    /// account. `None` (the default) is an ordinary login flow.
-    #[serde(default)]
-    pub link_user_id: Option<Uuid>,
+    /// What the flow is for: login, link or re-authentication. Exactly one;
+    /// the callback finishes the flow according to it.
+    pub purpose: OidcFlowPurpose,
     /// Desktop (Tauri) loopback address the server hands the flow result to
     /// after it has exchanged the code at its own callback. `None` is the
     /// browser popup flow (result via `postMessage`). Never sent to the provider.
@@ -77,10 +80,101 @@ pub struct OidcFlowState {
     /// restarted; the states expire after 10 minutes, so no migration is needed.
     #[serde(default)]
     pub client_redirect_uri: Option<String>,
-    /// Set for a re-authentication flow (C24): the callback elevates this
-    /// session instead of logging in or linking.
+}
+
+/// What an OIDC flow is for; persisted in the encrypted flow state so the
+/// shared callback knows how to finish it. The variants exclude each other.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OidcFlowPurpose {
+    /// Log in (or register) with the provider.
+    #[default]
+    Login,
+    /// Link the provider identity to this signed-in user; the session that
+    /// started the flow, if known (an identity linked from an elevated session
+    /// may confirm re-authentication right away, C24).
+    Link {
+        user_id: Uuid,
+        #[serde(default)]
+        session_id: Option<Uuid>,
+    },
+    /// Re-authenticate this user and elevate the bound session (C24). Asks
+    /// the provider for a fresh login and uses a shorter state TTL.
+    Reauth(OidcReauthBinding),
+}
+
+impl OidcFlowPurpose {
+    /// Short name for logs.
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Login => "login",
+            Self::Link { .. } => "link",
+            Self::Reauth(_) => "reauth",
+        }
+    }
+}
+
+/// Serialized form of [`OidcFlowState`], also accepting the legacy
+/// `link_user_id` field of states written before `purpose` existed.
+#[derive(Deserialize)]
+struct OidcFlowStateWire {
+    slug: String,
+    pkce_verifier: String,
+    nonce: String,
+    redirect_uri: String,
+    created_at: i64,
     #[serde(default)]
-    pub reauth: Option<OidcReauthBinding>,
+    purpose: Option<OidcFlowPurpose>,
+    #[serde(default)]
+    link_user_id: Option<Uuid>,
+    #[serde(default)]
+    client_redirect_uri: Option<String>,
+}
+
+impl From<OidcFlowStateWire> for OidcFlowState {
+    fn from(wire: OidcFlowStateWire) -> Self {
+        let purpose = match (wire.purpose, wire.link_user_id) {
+            (Some(purpose), _) => purpose,
+            (None, Some(user_id)) => OidcFlowPurpose::Link {
+                user_id,
+                session_id: None,
+            },
+            (None, None) => OidcFlowPurpose::Login,
+        };
+        Self {
+            slug: wire.slug,
+            pkce_verifier: wire.pkce_verifier,
+            nonce: wire.nonce,
+            redirect_uri: wire.redirect_uri,
+            created_at: wire.created_at,
+            purpose,
+            client_redirect_uri: wire.client_redirect_uri,
+        }
+    }
+}
+
+/// What a re-authentication flow is bound to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OidcReauthBinding {
+    /// The signed-in user who started the flow.
+    pub user_id: Uuid,
+    /// The session (access token `sid`) to elevate.
+    pub session_id: Uuid,
+    /// Elevation reason for the audit log.
+    pub reason: Option<String>,
+    /// A TOTP code was verified when the flow started (required when the
+    /// account has MFA on).
+    #[serde(default)]
+    pub mfa_verified: bool,
+}
+
+/// Verified ID token claims needed for re-authentication.
+#[derive(Debug, Clone)]
+pub struct VerifiedIdClaims {
+    /// `sub` of the verified ID token.
+    pub subject: String,
+    /// `auth_time`, when the provider sent it.
+    pub auth_time: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Where an OIDC flow sends the provider and, afterwards, the client.
@@ -152,31 +246,6 @@ pub fn client_return_url(flow_state: &OidcFlowState) -> Option<openidconnect::ur
         .as_deref()
         .and_then(|uri| openidconnect::url::Url::parse(uri).ok())
         .filter(is_loopback_client_redirect)
-}
-
-/// Purpose marker of a re-authentication flow state.
-pub const OIDC_PURPOSE_REAUTH: &str = "reauth";
-
-/// What a re-authentication flow is bound to.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OidcReauthBinding {
-    /// Always [`OIDC_PURPOSE_REAUTH`].
-    pub purpose: String,
-    /// The signed-in user who started the flow.
-    pub user_id: Uuid,
-    /// The session (access token `sid`) to elevate.
-    pub session_id: Uuid,
-    /// Elevation reason for the audit log.
-    pub reason: Option<String>,
-}
-
-/// Verified ID token claims needed for re-authentication.
-#[derive(Debug, Clone)]
-pub struct VerifiedIdClaims {
-    /// `sub` of the verified ID token.
-    pub subject: String,
-    /// `auth_time`, when the provider sent it.
-    pub auth_time: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Cached provider configuration with pre-built client.
