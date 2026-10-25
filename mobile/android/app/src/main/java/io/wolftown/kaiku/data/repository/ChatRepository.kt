@@ -2,6 +2,7 @@ package io.wolftown.kaiku.data.repository
 
 import android.net.Uri
 import io.ktor.http.HttpStatusCode
+import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.MessageApi
@@ -23,6 +24,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -159,6 +161,9 @@ class ChatRepository internal constructor(
     @Volatile
     private var epoch = 0L
 
+    /** Jobs of uploads in flight; [clearSession] cancels them. */
+    private val uploadJobs: MutableSet<Job> = ConcurrentHashMap.newKeySet()
+
     /** Runs [publish] only if [startEpoch] is still current; returns whether it ran. */
     private inline fun publishIfCurrent(startEpoch: Long, publish: () -> Unit): Boolean =
         synchronized(epochLock) {
@@ -182,6 +187,10 @@ class ChatRepository internal constructor(
      */
     fun clearSession() = synchronized(epochLock) {
         epoch++
+        // An upload of the ended session must not go out later (with whatever
+        // token is stored then): cancel every one in flight.
+        uploadJobs.forEach { it.cancel() }
+        uploadJobs.clear()
         channelMessages.values.forEach { it.value = emptyList() }
         channelMessages.clear()
         channelTypingUsers.values.forEach { it.value = emptyMap() }
@@ -438,6 +447,13 @@ class ChatRepository internal constructor(
     suspend fun sendAttachment(channelId: String, uri: Uri, caption: String?): Result<Message> {
         val reader = attachments ?: return Result.failure(AttachmentException.Failed())
         val startEpoch = epoch
+        // Bound to the session it starts in: never sent in another one.
+        val sessionId = (authState.session.value as? AuthSession.LoggedIn)?.sessionId
+        val uploadJob = currentCoroutineContext()[Job]
+        if (uploadJob != null) {
+            val registered = publishIfCurrent(startEpoch) { uploadJobs += uploadJob }
+            if (!registered) return Result.failure(AttachmentException.Failed())
+        }
         return try {
             val limit = uploadLimits().maxUploadSize
             val message = withContext(ioDispatcher) {
@@ -457,11 +473,16 @@ class ChatRepository internal constructor(
                 val opened = mutableListOf(probe)
                 var probeUsed = false
                 try {
+                    // The session may have ended while the limits or the file were read.
+                    if (epoch != startEpoch) {
+                        return@withContext Result.failure<Message>(AttachmentException.Failed())
+                    }
                     val sent = messageApi.uploadMessageWithFile(
                         channelId = channelId,
                         fileName = name,
                         mimeType = mime,
                         size = declared,
+                        sessionId = sessionId,
                         open = {
                             val stream = if (!probeUsed) probe.also { probeUsed = true }
                             else (reader.open(uri) ?: throw java.io.IOException("cannot open attachment"))
@@ -503,6 +524,8 @@ class ChatRepository internal constructor(
                     else -> AttachmentException.Failed(e)
                 }
             )
+        } finally {
+            if (uploadJob != null) uploadJobs -= uploadJob
         }
     }
 

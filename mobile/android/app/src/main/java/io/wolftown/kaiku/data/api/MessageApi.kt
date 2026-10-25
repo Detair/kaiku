@@ -49,7 +49,9 @@ interface MessageApi {
         mimeType: String,
         size: Long?,
         open: () -> InputStream,
-        content: String?
+        content: String?,
+        /** Session the upload belongs to; it is never sent in another session (see [KaikuHttpClient.RequiredSessionId]). */
+        sessionId: Long? = null
     ): Message
 
     /** `GET /api/config/upload-limits`; callers cache it per session. */
@@ -187,7 +189,8 @@ class MessageApiImpl @Inject constructor(
         mimeType: String,
         size: Long?,
         open: () -> InputStream,
-        content: String?
+        content: String?,
+        sessionId: Long?
     ): Message {
         val response = httpClient.submitFormWithBinaryData(
             url = "/api/messages/channel/$channelId/upload",
@@ -198,7 +201,9 @@ class MessageApiImpl @Inject constructor(
                 })
                 if (!content.isNullOrBlank()) append("content", content)
             }
-        )
+        ) {
+            if (sessionId != null) attributes.put(KaikuHttpClient.RequiredSessionId, sessionId)
+        }
 
         if (!response.status.isSuccess()) {
             val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()

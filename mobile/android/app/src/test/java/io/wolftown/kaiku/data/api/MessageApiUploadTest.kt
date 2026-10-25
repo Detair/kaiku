@@ -9,8 +9,10 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.mockk.every
 import io.mockk.mockk
+import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -141,5 +143,28 @@ class MessageApiUploadTest {
         val body = bodyFor("Bär.png")
         assertTrue(body, body.contains("filename=\"B_r.png\""))
         assertTrue(body, body.contains("filename*=UTF-8''B%C3%A4r.png"))
+    }
+
+    @Test
+    fun `upload bound to an ended session is not sent`() = runTest {
+        every { authState.session } returns MutableStateFlow(AuthSession.LoggedIn("u2", sessionId = 2L))
+        every { tokenStorage.getAccessToken() } returns "token-of-session-2"
+        var requests = 0
+        val engine = MockEngine {
+            requests++
+            respond(messageJson, HttpStatusCode.Created, json)
+        }
+        val api = MessageApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient())
+
+        val failure = runCatching {
+            api.uploadMessageWithFile("c1", "a.png", "image/png", 1L, { byteArrayOf(1).inputStream() }, null, sessionId = 1L)
+        }.exceptionOrNull()
+
+        assertTrue(failure is SessionChangedException)
+        assertEquals(0, requests)
+
+        // The current session's upload goes out normally.
+        api.uploadMessageWithFile("c1", "a.png", "image/png", 1L, { byteArrayOf(1).inputStream() }, null, sessionId = 2L)
+        assertEquals(1, requests)
     }
 }

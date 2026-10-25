@@ -11,18 +11,22 @@ import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.MessageApi
 import io.wolftown.kaiku.data.api.UploadLimits
+import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.data.ws.WallClock
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.domain.model.User
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -66,18 +70,22 @@ class ChatRepositoryAttachmentTest {
 
     /** Stands in for the real API: reads the stream the way Ktor would. */
     private fun streamingApi(onRead: ((ByteArray) -> Unit)? = null) {
-        coEvery { api.uploadMessageWithFile(any(), any(), any(), any(), any(), any()) } coAnswers {
+        coEvery { api.uploadMessageWithFile(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
             val open = arg<() -> java.io.InputStream>(4)
             onRead?.invoke(open().use { it.readBytes() })
             sent
         }
     }
 
-    private fun kotlinx.coroutines.test.TestScope.repository(reader: AttachmentReader): ChatRepository {
+    private fun kotlinx.coroutines.test.TestScope.repository(
+        reader: AttachmentReader,
+        session: AuthSession = AuthSession.LoggedOut,
+    ): ChatRepository {
         val webSocket = mockk<KaikuWebSocket>(relaxed = true)
         every { webSocket.events } returns events
         val authState = mockk<AuthState>(relaxed = true)
         every { authState.currentUserId } returns MutableStateFlow<String?>("me")
+        every { authState.session } returns MutableStateFlow(session)
         coEvery { api.getUploadLimits() } returns UploadLimits(maxUploadSize = 100)
         val dispatcher = UnconfinedTestDispatcher(testScheduler)
         return ChatRepository(
@@ -87,7 +95,7 @@ class ChatRepositoryAttachmentTest {
         )
     }
 
-    private suspend fun MockKMatcherScope.anyUpload() = api.uploadMessageWithFile(any(), any(), any(), any(), any(), any())
+    private suspend fun MockKMatcherScope.anyUpload() = api.uploadMessageWithFile(any(), any(), any(), any(), any(), any(), any())
 
     @Test
     fun `oversized file rejected before upload`() = runTest {
@@ -219,34 +227,50 @@ class ChatRepositoryAttachmentTest {
     }
 
     @Test
-    fun `upload completing after clearSession publishes nothing`() = runTest {
+    fun `clearSession cancels an upload in flight and publishes nothing`() = runTest {
         val repo = repository(FakeReader())
-        val messages = repo.getMessages("c1")
-        // The session ends (logout) while the upload is in flight.
-        coEvery { anyUpload() } coAnswers {
-            repo.clearSession()
-            sent
-        }
+        val response = CompletableDeferred<Message>()
+        coEvery { anyUpload() } coAnswers { response.await() }
 
-        val result = repo.sendAttachment("c1", uri, null)
+        val upload = launch { repo.sendAttachment("c1", uri, null) }
+        runCurrent()
+        repo.clearSession() // logout while the request is in flight
+        response.complete(sent)
+        runCurrent()
 
-        assertTrue(result.isSuccess)
-        assertTrue(messages.value.isEmpty())
+        assertTrue(upload.isCancelled)
         assertTrue(repo.getMessages("c1").value.isEmpty())
     }
 
     @Test
-    fun `upload limits fetched across clearSession are not cached`() = runTest {
+    fun `upload whose session ended during the limits lookup is never sent`() = runTest {
         streamingApi()
         val repo = repository(FakeReader())
+        var limitCalls = 0
         coEvery { api.getUploadLimits() } coAnswers {
-            repo.clearSession()
+            limitCalls++
+            if (limitCalls == 1) repo.clearSession() // the session ends while the lookup runs
             UploadLimits(maxUploadSize = 100)
         }
 
+        val first = launch { repo.sendAttachment("c1", uri, null) }
+        runCurrent()
+
+        assertTrue(first.isCancelled)
+        coVerify(exactly = 0) { anyUpload() }
+
+        // The next session fetches the limits again: the old lookup was not cached.
         repo.sendAttachment("c1", uri, null)
+        assertEquals(2, limitCalls)
+    }
+
+    @Test
+    fun `upload is bound to the session it started in`() = runTest {
+        streamingApi()
+        val repo = repository(FakeReader(), session = AuthSession.LoggedIn("me", sessionId = 7L))
+
         repo.sendAttachment("c1", uri, null)
 
-        coVerify(exactly = 2) { api.getUploadLimits() }
+        coVerify { api.uploadMessageWithFile("c1", any(), any(), any(), any(), any(), 7L) }
     }
 }
