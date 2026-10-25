@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.data.session
 
+import io.wolftown.kaiku.testutil.appScope
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -79,7 +80,7 @@ class SessionTeardownTest {
         val runner = SessionTeardownRunner(
             setOf(CacheSessionTeardown(resync, chat, guilds, dms)),
             authState,
-            backgroundScope,
+            appScope(),
         )
         runner.start()
         runCurrent()
@@ -104,7 +105,7 @@ class SessionTeardownTest {
     fun `rejected session tears down once`() = runTest {
         val authState = AuthState(backgroundScope)
         val step = Counting(10)
-        val runner = SessionTeardownRunner(setOf(step), authState, backgroundScope)
+        val runner = SessionTeardownRunner(setOf(step), authState, appScope())
         runner.start()
         authState.setLoggedIn("user-1")
         val session = authState.session.value as AuthSession.LoggedIn
@@ -120,7 +121,7 @@ class SessionTeardownTest {
     fun `same session is not torn down twice`() = runTest {
         val authState = AuthState(backgroundScope)
         val step = Counting(10)
-        val runner = SessionTeardownRunner(setOf(step), authState, backgroundScope)
+        val runner = SessionTeardownRunner(setOf(step), authState, appScope())
         runner.start()
         authState.setLoggedIn("user-1")
         val session = authState.session.value as AuthSession.LoggedIn
@@ -137,7 +138,7 @@ class SessionTeardownTest {
     fun `quick logins and logouts tear down every session`() = runTest {
         val authState = AuthState(backgroundScope)
         val step = Counting(10)
-        val runner = SessionTeardownRunner(setOf(step), authState, backgroundScope)
+        val runner = SessionTeardownRunner(setOf(step), authState, appScope())
         runner.start()
 
         // All before the observer resumes: a StateFlow would conflate them.
@@ -163,7 +164,7 @@ class SessionTeardownTest {
             }
         }
         val second = Counting(30)
-        val runner = SessionTeardownRunner(setOf(first, second), authState, backgroundScope)
+        val runner = SessionTeardownRunner(setOf(first, second), authState, appScope())
         runner.start()
 
         runner.tearDown(old.sessionId).join()
@@ -190,7 +191,7 @@ class SessionTeardownTest {
                 if (starts == 1) gate.await()
             }
         }
-        val runner = SessionTeardownRunner(setOf(step), authState, backgroundScope)
+        val runner = SessionTeardownRunner(setOf(step), authState, appScope())
 
         val first = runner.tearDown(session.sessionId)
         runCurrent()
@@ -205,7 +206,7 @@ class SessionTeardownTest {
     fun `logged out at start does not trigger a teardown`() = runTest {
         val authState = AuthState(backgroundScope)
         val step = Counting(10)
-        val runner = SessionTeardownRunner(setOf(step), authState, backgroundScope)
+        val runner = SessionTeardownRunner(setOf(step), authState, appScope())
         runner.start()
 
         authState.setLoggedOut()

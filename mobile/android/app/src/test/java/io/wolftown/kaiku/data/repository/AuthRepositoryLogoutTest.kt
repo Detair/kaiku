@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.data.repository
 
+import io.wolftown.kaiku.testutil.appScope
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.toByteArray
@@ -19,9 +20,11 @@ import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.session.SessionTeardown
 import io.wolftown.kaiku.data.session.SessionTeardownRunner
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -79,7 +82,7 @@ class AuthRepositoryLogoutTest {
         val runner = SessionTeardownRunner(
             setOf(Step(30, log), Step(10, log), Step(20, log)),
             authState,
-            backgroundScope,
+            appScope(),
         )
         val repository = AuthRepository(authApi, tokenStorage, authState, runner)
 
@@ -103,7 +106,7 @@ class AuthRepositoryLogoutTest {
                 Step(30, log),
             ),
             authState,
-            backgroundScope,
+            appScope(),
         )
         val repository = AuthRepository(authApi, tokenStorage, authState, runner)
 
@@ -133,7 +136,7 @@ class AuthRepositoryLogoutTest {
                 Step(30, log),
             ),
             authState,
-            backgroundScope,
+            appScope(),
         )
         val repository = AuthRepository(authApi, tokenStorage, authState, runner)
 
@@ -164,7 +167,7 @@ class AuthRepositoryLogoutTest {
                 },
             ),
             authState,
-            backgroundScope,
+            appScope(),
         )
         val repository = AuthRepository(authApi, tokenStorage, authState, runner)
 
@@ -184,7 +187,7 @@ class AuthRepositoryLogoutTest {
         coEvery { authApi.logoutSession(any(), any(), any()) } throws java.io.IOException("offline")
         val repository = AuthRepository(
             authApi, tokenStorage, authState,
-            SessionTeardownRunner(setOf(Step(10, log)), authState, backgroundScope),
+            SessionTeardownRunner(setOf(Step(10, log)), authState, appScope()),
         )
 
         repository.logout()
@@ -197,7 +200,7 @@ class AuthRepositoryLogoutTest {
     fun `explicit logout tears down once although it ends in LoggedOut`() = runTest {
         val authState = AuthState(backgroundScope)
         authState.setLoggedIn("user-1")
-        val runner = SessionTeardownRunner(setOf(Step(10, log)), authState, backgroundScope)
+        val runner = SessionTeardownRunner(setOf(Step(10, log)), authState, appScope())
         runner.start()
         runCurrent()
         val repository = AuthRepository(authApi, tokenStorage, authState, runner)
@@ -225,10 +228,13 @@ class AuthRepositoryLogoutTest {
             AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
             tokenStorage,
             authState,
-            SessionTeardownRunner(emptySet(), authState, backgroundScope),
+            SessionTeardownRunner(emptySet(), authState, appScope()),
         )
 
-        repository.logout()
+        // Off the test dispatcher: the server logout's timeout must run in real
+        // time while MockEngine answers on its own threads (under virtual time
+        // the timeout would fire before the request is sent).
+        withContext(Dispatchers.Default) { repository.logout() }
 
         assertEquals("/auth/logout", path)
         assertEquals("Bearer $ACCESS", authorization)
@@ -262,10 +268,13 @@ class AuthRepositoryLogoutTest {
             AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
             tokenStorage,
             authState,
-            SessionTeardownRunner(emptySet(), authState, backgroundScope),
+            SessionTeardownRunner(emptySet(), authState, appScope()),
         )
 
-        repository.logout()
+        // Off the test dispatcher: the server logout's timeout must run in real
+        // time while MockEngine answers on its own threads (under virtual time
+        // the timeout would fire before the request is sent).
+        withContext(Dispatchers.Default) { repository.logout() }
 
         assertEquals(3, sentAuthorizations.size) // body+bearer, bearer only, body only
         assertTrue(sentAuthorizations.none { it?.contains("session-b") == true })
@@ -287,7 +296,7 @@ class AuthRepositoryLogoutTest {
                 Step(20, log) { sessionAtLastStep += authState.session.value },
             ),
             authState,
-            backgroundScope,
+            appScope(),
         )
         coEvery { authApi.login("b", "pw", null) } returns io.wolftown.kaiku.domain.model.AuthResponse(
             accessToken = "session-b-access",
