@@ -94,9 +94,9 @@ Config::default()  // Uses OWASP-recommended defaults
 
 **Flow**:
 1. `GET /auth/oidc/authorize/:provider` redirects to IdP with state parameter
-2. IdP redirects back to `GET /auth/oidc/callback?code=...&state=...`
+2. IdP redirects back to `GET /auth/oidc/callback?code=...&state=...` — always the server's own callback (`{PUBLIC_URL}/auth/oidc/callback`, `OidcFlowState.redirect_uri`), also for desktop
 3. Exchange code for tokens, fetch userinfo, create/update user
-4. Return access + refresh tokens
+4. Return the result: browser → HttpOnly refresh cookie + `postMessage` page; desktop (Tauri, authorize called with `?redirect_uri=http://127.0.0.1:PORT/callback`, stored as `OidcFlowState.client_redirect_uri`, never sent to the IdP) → 307 to that loopback URL with tokens (link flow: `?linked=`/`?link_error=`). Use `oidc::client_return_url` to pick the branch.
 
 **State Parameter**: Prevents CSRF. Generated as random UUID, stored in Redis with 10min TTL (`oidc:state:{uuid}` key).
 

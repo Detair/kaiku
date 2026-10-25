@@ -20,7 +20,8 @@ use super::jwt::{generate_token_pair, validate_refresh_token};
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
 use super::oidc::{
-    append_collision_suffix, generate_username_from_claims, OidcFlowState, OidcUserInfo,
+    append_collision_suffix, client_return_url, generate_username_from_claims,
+    resolve_flow_redirects, FlowRedirectError, OidcFlowState, OidcUserInfo,
 };
 use super::password::{hash_password, verify_password};
 use super::queries::{self, InsertSessionParams};
@@ -466,7 +467,7 @@ pub async fn oidc_providers(State(state): State<AppState>) -> AuthResult<Json<se
     tag = "auth",
     params(
         ("provider" = String, Path, description = "OIDC provider name"),
-        ("redirect_uri" = Option<String>, Query, description = "Optional redirect URI override"),
+        ("redirect_uri" = Option<String>, Query, description = "Optional desktop loopback return address (Tauri); the provider always returns to the server callback"),
     ),
     responses(
         (status = 307, description = "Redirect to provider authorization URL"),
@@ -523,33 +524,25 @@ pub async fn start_oidc_flow(
         return Err(AuthError::OidcProviderNotFound);
     }
 
-    // Determine callback URL
-    let callback_base = if let Some(redirect_uri) = redirect_uri {
-        // Tauri flow: validate the redirect URI is a localhost callback
-        let parsed = openidconnect::url::Url::parse(redirect_uri)
-            .map_err(|_| AuthError::Validation("Invalid redirect_uri".to_string()))?;
-        if matches!(
-            (parsed.scheme(), parsed.host_str()),
-            ("http", Some("localhost" | "127.0.0.1"))
-        ) {
-            redirect_uri.to_string()
-        } else {
-            tracing::warn!(redirect_uri = %redirect_uri, "Rejected non-localhost redirect_uri");
-            return Err(AuthError::Validation(
-                "redirect_uri must be http://localhost or http://127.0.0.1".to_string(),
-            ));
-        }
-    } else {
-        // Browser flow: use the server's own callback endpoint
-        let public_url = std::env::var("PUBLIC_URL").map_err(|_| {
-            tracing::error!("PUBLIC_URL env var is not set; required for OIDC browser flow");
-            AuthError::Internal("Server misconfiguration: PUBLIC_URL is not set".to_string())
+    // Provider always returns to the server's callback; a desktop (Tauri)
+    // loopback address is only where the server hands the result back.
+    let public_url = std::env::var("PUBLIC_URL").ok();
+    let redirects =
+        resolve_flow_redirects(redirect_uri, public_url.as_deref()).map_err(|e| match e {
+            FlowRedirectError::InvalidClientRedirect => {
+                tracing::warn!(redirect_uri = ?redirect_uri, "Rejected non-localhost redirect_uri");
+                AuthError::Validation(
+                    "redirect_uri must be http://localhost or http://127.0.0.1".to_string(),
+                )
+            }
+            FlowRedirectError::MissingPublicUrl => {
+                tracing::error!("PUBLIC_URL env var is not set; required for OIDC");
+                AuthError::Internal("Server misconfiguration: PUBLIC_URL is not set".to_string())
+            }
         })?;
-        format!("{public_url}/auth/oidc/callback")
-    };
 
     let (auth_url, csrf_state, nonce, pkce_verifier) = oidc_manager
-        .generate_auth_url(provider, &callback_base)
+        .generate_auth_url(provider, &redirects.provider_redirect_uri)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, provider = %provider, "Failed to generate OIDC auth URL");
@@ -563,9 +556,10 @@ pub async fn start_oidc_flow(
         slug: provider.to_string(),
         pkce_verifier,
         nonce,
-        redirect_uri: callback_base,
+        redirect_uri: redirects.provider_redirect_uri,
         created_at: Utc::now().timestamp(),
         link_user_id,
+        client_redirect_uri: redirects.client_redirect_uri,
     };
 
     let flow_json =
@@ -897,17 +891,8 @@ pub async fn oidc_callback(
 
     tracing::info!(user_id = %user.id, provider = %flow_state.slug, "User logged in via OIDC");
 
-    // Check if redirect_uri is a localhost callback (Tauri flow)
-    let parsed_redirect = openidconnect::url::Url::parse(&flow_state.redirect_uri)
-        .map_err(|e| AuthError::Internal(format!("Invalid redirect URI: {e}")))?;
-    let is_localhost = matches!(
-        (parsed_redirect.scheme(), parsed_redirect.host_str()),
-        ("http", Some("localhost" | "127.0.0.1"))
-    );
-
-    if is_localhost {
-        // Tauri flow: redirect with tokens in query params
-        let mut redirect_url = parsed_redirect;
+    if let Some(mut redirect_url) = client_return_url(&flow_state) {
+        // Tauri flow: redirect to the desktop loopback with tokens in query params
         redirect_url
             .query_pairs_mut()
             .append_pair("access_token", &tokens.access_token)
@@ -1006,15 +991,7 @@ async fn handle_identity_link(
     // Token-less result response (mirrors the login callback's Tauri-vs-browser
     // split, minus the session/cookie since the caller is already authenticated).
     // Always completes the handshake — success or a generic error code.
-    let parsed_redirect = openidconnect::url::Url::parse(&flow_state.redirect_uri)
-        .map_err(|e| AuthError::Internal(format!("Invalid redirect URI: {e}")))?;
-    let is_localhost = matches!(
-        (parsed_redirect.scheme(), parsed_redirect.host_str()),
-        ("http", Some("localhost" | "127.0.0.1"))
-    );
-
-    if is_localhost {
-        let mut redirect_url = parsed_redirect;
+    if let Some(mut redirect_url) = client_return_url(flow_state) {
         match error_code {
             Some(code) => redirect_url
                 .query_pairs_mut()
