@@ -526,9 +526,8 @@ pub async fn start_oidc_flow(
 
     // Provider always returns to the server's callback; a desktop (Tauri)
     // loopback address is only where the server hands the result back.
-    let public_url = std::env::var("PUBLIC_URL").ok();
-    let redirects =
-        resolve_flow_redirects(redirect_uri, public_url.as_deref()).map_err(|e| match e {
+    let redirects = resolve_flow_redirects(redirect_uri, state.config.public_url.as_deref())
+        .map_err(|e| match e {
             FlowRedirectError::InvalidClientRedirect => {
                 tracing::warn!(redirect_uri = ?redirect_uri, "Rejected non-localhost redirect_uri");
                 AuthError::Validation(
@@ -607,12 +606,14 @@ pub async fn start_oidc_flow(
     path = "/auth/oidc/callback",
     tag = "auth",
     params(
-        ("code" = String, Query, description = "Authorization code from provider"),
+        ("code" = Option<String>, Query, description = "Authorization code from provider (absent on provider error)"),
         ("state" = String, Query, description = "CSRF state parameter"),
+        ("error" = Option<String>, Query, description = "Provider error; returned to the sign-in origin as OIDC_PROVIDER_ERROR"),
     ),
     responses(
-        (status = 307, description = "Redirect to client with auth token"),
-        (status = 400, description = "Invalid callback parameters"),
+        (status = 200, description = "Browser popup result page (postMessage to opener), success or generic error code"),
+        (status = 307, description = "Redirect to the desktop loopback with the result or a generic error code"),
+        (status = 400, description = "Invalid or unknown state"),
     ),
 )]
 #[tracing::instrument(skip(state, jar, query))]
@@ -654,32 +655,48 @@ pub async fn oidc_callback(
     let flow_state: OidcFlowState =
         serde_json::from_str(&flow_json).map_err(|e| AuthError::Internal(e.to_string()))?;
 
+    // From here on the state is valid and consumed: failures go back to the
+    // sign-in origin (desktop loopback / browser popup) with a generic code
+    // instead of an HTTP error the origin never sees.
+    let code = match (query.code.as_deref(), query.error.as_deref()) {
+        (Some(code), None) => code,
+        (_, provider_error) => {
+            let provider_error: Option<String> =
+                provider_error.map(|e| e.chars().take(64).collect());
+            tracing::info!(provider = %flow_state.slug, provider_error = ?provider_error, "OIDC provider returned no authorization code");
+            return Ok(flow_failure_response(&flow_state, OIDC_PROVIDER_ERROR));
+        }
+    };
+
     // Exchange code for tokens (also verifies ID token nonce for OIDC providers)
-    let (access_token, _id_token) = oidc_manager
+    let access_token = match oidc_manager
         .exchange_code(
             &flow_state.slug,
-            &query.code,
+            code,
             &flow_state.pkce_verifier,
             &flow_state.redirect_uri,
             &flow_state.nonce,
         )
         .await
-        .map_err(|e| {
+    {
+        Ok((access_token, _id_token)) => access_token,
+        Err(e) => {
             tracing::warn!(error = %e, provider = %flow_state.slug, "OIDC code exchange failed");
-            AuthError::OidcCodeExchangeFailed(e.to_string())
-        })?;
+            return Ok(flow_failure_response(&flow_state, OIDC_EXCHANGE_FAILED));
+        }
+    };
 
     // Extract user info
-    let user_info = oidc_manager
-        .extract_user_info(
-            &flow_state.slug,
-            &access_token,
-        )
+    let user_info = match oidc_manager
+        .extract_user_info(&flow_state.slug, &access_token)
         .await
-        .map_err(|e| {
+    {
+        Ok(user_info) => user_info,
+        Err(e) => {
             tracing::warn!(error = %e, provider = %flow_state.slug, "Failed to extract OIDC user info");
-            AuthError::OidcCodeExchangeFailed(format!("Failed to extract user info: {e}"))
-        })?;
+            return Ok(flow_failure_response(&flow_state, OIDC_EXCHANGE_FAILED));
+        }
+    };
 
     // Composite external_id: "{provider_slug}:{subject}". Retained as the
     // user's primary-identity marker; the authoritative lookup is the
@@ -984,43 +1001,87 @@ async fn handle_identity_link(
         },
     };
 
-    if let Some(code) = error_code {
-        tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, error_code = code, "OIDC identity link rejected");
-    }
-
     // Token-less result response (mirrors the login callback's Tauri-vs-browser
     // split, minus the session/cookie since the caller is already authenticated).
     // Always completes the handshake — success or a generic error code.
+    if let Some(code) = error_code {
+        tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, error_code = code, "OIDC identity link rejected");
+        return Ok(flow_failure_response(flow_state, code));
+    }
+
     if let Some(mut redirect_url) = client_return_url(flow_state) {
-        match error_code {
-            Some(code) => redirect_url
-                .query_pairs_mut()
-                .append_pair("link_error", code),
-            None => redirect_url
-                .query_pairs_mut()
-                .append_pair("linked", &flow_state.slug),
-        };
+        redirect_url
+            .query_pairs_mut()
+            .append_pair("linked", &flow_state.slug);
         Ok(Redirect::temporary(redirect_url.as_str()).into_response())
     } else {
         let payload = serde_json::json!({
             "type": "oidc-link-callback",
-            "success": error_code.is_none(),
+            "success": true,
             "provider_slug": flow_state.slug,
-            "error_code": error_code,
+            "error_code": null,
         });
-        let html = format!(
-            r#"<!DOCTYPE html>
+        Ok(axum::response::Html(popup_result_page(&payload, true)).into_response())
+    }
+}
+
+/// Generic code: the provider returned an error instead of an authorization code.
+const OIDC_PROVIDER_ERROR: &str = "OIDC_PROVIDER_ERROR";
+/// Generic code: code exchange or user-info lookup with the provider failed.
+const OIDC_EXCHANGE_FAILED: &str = "OIDC_EXCHANGE_FAILED";
+
+/// Hand a failed flow back to its origin with a generic error code (never
+/// provider text). Only used once the flow state has been validated, so the
+/// return target is the stored, re-validated loopback — never callback input.
+///
+/// | flow  | desktop loopback       | browser popup (`postMessage`)                        |
+/// |-------|------------------------|------------------------------------------------------|
+/// | login | `?error=CODE`          | `{type: "oidc-callback", error}`                     |
+/// | link  | `?link_error=CODE`     | `{type: "oidc-link-callback", success: false, error_code}` |
+fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Response {
+    let is_link = flow_state.link_user_id.is_some();
+    if let Some(mut redirect_url) = client_return_url(flow_state) {
+        let key = if is_link { "link_error" } else { "error" };
+        redirect_url.query_pairs_mut().append_pair(key, code);
+        return Redirect::temporary(redirect_url.as_str()).into_response();
+    }
+    let payload = if is_link {
+        serde_json::json!({
+            "type": "oidc-link-callback",
+            "success": false,
+            "provider_slug": flow_state.slug,
+            "error_code": code,
+        })
+    } else {
+        serde_json::json!({ "type": "oidc-callback", "error": code })
+    };
+    // The link UI handles failures itself (closes the popup); the login page
+    // only reacts to success, so a failed login keeps the popup open with a hint.
+    axum::response::Html(popup_result_page(&payload, is_link)).into_response()
+}
+
+/// Popup page that posts `payload` to the opener (same origin only). With
+/// `close` it closes itself afterwards; otherwise it stays open showing that
+/// sign-in failed.
+fn popup_result_page(payload: &serde_json::Value, close: bool) -> String {
+    let (close_js, fallback) = if close {
+        ("window.close();", "You can close this window.")
+    } else {
+        (
+            "",
+            "Sign-in did not complete. Close this window and try again.",
+        )
+    };
+    format!(
+        r#"<!DOCTYPE html>
 <html><body><script>
 if (window.opener) {{
     window.opener.postMessage({payload}, window.location.origin);
-    window.close();
-}} else {{
-    document.body.innerText = "You can close this window.";
+    {close_js}
 }}
+document.body.innerText = "{fallback}";
 </script></body></html>"#,
-        );
-        Ok(axum::response::Html(html).into_response())
-    }
+    )
 }
 
 // ============================================================================

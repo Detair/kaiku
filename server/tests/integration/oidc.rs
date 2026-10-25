@@ -11,7 +11,8 @@
 use sqlx::PgPool;
 use vc_server::auth::oidc::{
     append_collision_suffix, client_return_url, generate_username_from_claims,
-    resolve_flow_redirects, FlowRedirectError, OidcFlowState, OidcProviderManager, OidcUserInfo,
+    is_loopback_client_redirect, resolve_flow_redirects, FlowRedirectError, OidcFlowState,
+    OidcProviderManager, OidcUserInfo,
 };
 
 // ============================================================================
@@ -633,19 +634,13 @@ async fn test_load_providers_from_database(pool: PgPool) {
 // Redirect URI Validation Tests (Unit tests - no database required)
 // ============================================================================
 
-/// These tests document which `redirect_uri` values the server's validation
-/// accepts or rejects. The server uses `Url::parse()` + pattern matching on
-/// `(scheme(), host_str())` against `("http", Some("localhost" | "127.0.0.1"))`.
-///
-/// We test the validation contract by examining URL host parsing behavior.
-/// The `url` crate's `Url::parse("http://X").host_str()` returns:
-///   - "localhost" for "<http://localhost:1234/path>"
-///   - "localhost.evil.com" for "<http://localhost.evil.com>" (NOT "localhost")
-///   - "evil.com" for "<http://localhost@evil.com>" (userinfo, NOT host)
+// Which desktop `redirect_uri` values the server accepts, checked against the
+// server's own rule (`is_loopback_client_redirect`). Note the `url` crate's
+// `host_str()` returns "localhost.evil.com" for `http://localhost.evil.com`
+// and "evil.com" for `http://localhost@evil.com` (userinfo, not host).
 
 #[test]
 fn test_redirect_uri_valid_patterns() {
-    // These should be accepted by the server's validation
     let valid = [
         "http://localhost:12345/callback",
         "http://localhost/callback",
@@ -654,18 +649,15 @@ fn test_redirect_uri_valid_patterns() {
     ];
     for uri in valid {
         let parsed = openidconnect::url::Url::parse(uri).expect(uri);
-        assert_eq!(parsed.scheme(), "http", "scheme for {uri}");
         assert!(
-            matches!(parsed.host_str(), Some("localhost" | "127.0.0.1")),
-            "host_str() for {uri} should be localhost or 127.0.0.1, got {:?}",
-            parsed.host_str()
+            is_loopback_client_redirect(&parsed),
+            "{uri} should be accepted"
         );
     }
 }
 
 #[test]
 fn test_redirect_uri_rejected_patterns() {
-    // These should be rejected by the server's validation
     let invalid: Vec<(&str, &str)> = vec![
         // Prefix-based bypass attempts (host_str != "localhost")
         (
@@ -686,36 +678,26 @@ fn test_redirect_uri_rejected_patterns() {
         // External hosts
         ("http://evil.com/callback", "external host"),
         ("http://example.com/auth/callback", "external host"),
+        // Not a URL with a host at all
+        ("javascript:alert(1)", "scheme is javascript"),
     ];
     for (uri, reason) in invalid {
         let parsed = openidconnect::url::Url::parse(uri).expect(uri);
-        let is_valid = matches!(
-            (parsed.scheme(), parsed.host_str()),
-            ("http", Some("localhost" | "127.0.0.1"))
+        assert!(
+            !is_loopback_client_redirect(&parsed),
+            "{uri} should be rejected ({reason})"
         );
-        assert!(!is_valid, "{uri} should be rejected ({reason})");
     }
 }
 
 #[test]
 fn test_redirect_uri_unparseable_rejected() {
-    // These should fail URL parsing entirely
-    let invalid = ["not-a-url", "", "javascript:alert(1)"];
-    for uri in invalid {
-        // "javascript:alert(1)" actually parses as a valid URL with scheme "javascript"
-        // so the scheme check rejects it. Empty and "not-a-url" fail parsing.
-        let result = openidconnect::url::Url::parse(uri);
-        if let Ok(parsed) = result {
-            let is_valid = matches!(
-                (parsed.scheme(), parsed.host_str()),
-                ("http", Some("localhost" | "127.0.0.1"))
-            );
-            assert!(
-                !is_valid,
-                "{uri} parsed but should be rejected by scheme/host check"
-            );
-        }
-        // If parsing fails, the server also rejects it — that's fine
+    for uri in ["not-a-url", ""] {
+        assert_eq!(
+            resolve_flow_redirects(Some(uri), Some("https://chat.example.com")),
+            Err(FlowRedirectError::InvalidClientRedirect),
+            "{uri:?} must be rejected"
+        );
     }
 }
 
@@ -778,6 +760,41 @@ fn test_flow_redirects_reject_non_loopback_client() {
             Err(FlowRedirectError::InvalidClientRedirect),
             "{uri} must be rejected"
         );
+    }
+}
+
+#[test]
+fn test_flow_redirects_trim_public_url_trailing_slash() {
+    let r = resolve_flow_redirects(None, Some("https://chat.example.com/")).unwrap();
+    assert_eq!(
+        r.provider_redirect_uri,
+        "https://chat.example.com/auth/oidc/callback"
+    );
+}
+
+/// The desktop contract is exactly `http://{localhost|127.0.0.1}[:port]/callback`.
+#[test]
+fn test_loopback_client_redirect_contract() {
+    for ok in [
+        "http://127.0.0.1:54321/callback",
+        "http://localhost:12345/callback",
+        "http://127.0.0.1/callback",
+    ] {
+        let u = openidconnect::url::Url::parse(ok).unwrap();
+        assert!(is_loopback_client_redirect(&u), "{ok} must be accepted");
+    }
+    for bad in [
+        "http://127.0.0.1:1/",
+        "http://127.0.0.1:1/other",
+        "http://127.0.0.1:1/callback/extra",
+        "http://127.0.0.1:1/callback?x=1",
+        "http://127.0.0.1:1/callback?",
+        "http://127.0.0.1:1/callback#frag",
+        "http://user@127.0.0.1:1/callback",
+        "http://user:pw@localhost:1/callback",
+    ] {
+        let u = openidconnect::url::Url::parse(bad).unwrap();
+        assert!(!is_loopback_client_redirect(&u), "{bad} must be rejected");
     }
 }
 

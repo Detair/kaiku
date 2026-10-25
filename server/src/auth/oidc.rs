@@ -71,6 +71,10 @@ pub struct OidcFlowState {
     /// Desktop (Tauri) loopback address the server hands the flow result to
     /// after it has exchanged the code at its own callback. `None` is the
     /// browser popup flow (result via `postMessage`). Never sent to the provider.
+    ///
+    /// Flow states stored before this field existed deserialize as `None`
+    /// (browser). Such in-flight *desktop* flows cannot complete and must be
+    /// restarted; the states expire after 10 minutes, so no migration is needed.
     #[serde(default)]
     pub client_redirect_uri: Option<String>,
 }
@@ -93,13 +97,18 @@ pub enum FlowRedirectError {
     MissingPublicUrl,
 }
 
-/// Whether `url` is an acceptable desktop return address
-/// (`http://localhost` or `http://127.0.0.1`, any port/path).
+/// Whether `url` matches the desktop return-address contract:
+/// `http://{localhost|127.0.0.1}[:port]/callback` — no userinfo, no query,
+/// no fragment, path exactly `/callback`, any port.
 pub fn is_loopback_client_redirect(url: &openidconnect::url::Url) -> bool {
     matches!(
         (url.scheme(), url.host_str()),
         ("http", Some("localhost" | "127.0.0.1"))
-    )
+    ) && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/callback"
+        && url.query().is_none()
+        && url.fragment().is_none()
 }
 
 /// Resolve the provider and client redirect targets for a new flow.
@@ -126,7 +135,7 @@ pub fn resolve_flow_redirects(
         .transpose()?;
     let public_url = public_url.ok_or(FlowRedirectError::MissingPublicUrl)?;
     Ok(FlowRedirects {
-        provider_redirect_uri: format!("{public_url}/auth/oidc/callback"),
+        provider_redirect_uri: format!("{}/auth/oidc/callback", public_url.trim_end_matches('/')),
         client_redirect_uri,
     })
 }
