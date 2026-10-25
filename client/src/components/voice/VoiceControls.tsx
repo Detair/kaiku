@@ -7,6 +7,7 @@ import ScreenShareQualityPicker from "./ScreenShareQualityPicker";
 import ScreenShareSourcePicker from "./ScreenShareSourcePicker";
 import WebcamButton from "./WebcamButton";
 import { isTauri } from "@/lib/tauri/common";
+import { t } from "@/i18n";
 
 /**
  * Voice controls for mute/deafen/settings.
@@ -47,7 +48,10 @@ const VoiceControls: Component = () => {
       <div class="px-3 py-2 flex items-center justify-center gap-2 border-t border-white/10">
         {/* Mute button */}
         <button
+          type="button"
           data-testid="voice-mute"
+          aria-label={t("voice.mute")}
+          aria-pressed={voiceState.muted}
           onClick={() => { if (!isPttActive()) toggleMute(); }}
           class={`p-2 rounded-full transition-colors ${
             voiceState.muted
@@ -72,7 +76,10 @@ const VoiceControls: Component = () => {
 
         {/* Deafen button */}
         <button
+          type="button"
           data-testid="voice-deafen"
+          aria-label={t("voice.deafen")}
+          aria-pressed={voiceState.deafened}
           onClick={() => toggleDeafen()}
           class={`p-2 rounded-full transition-colors ${
             voiceState.deafened
@@ -102,7 +109,9 @@ const VoiceControls: Component = () => {
 
         {/* Settings button */}
         <button
+          type="button"
           data-testid="voice-settings"
+          aria-label={t("voice.settings")}
           onClick={() => setShowMicTest(true)}
           class="p-2 rounded-full bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary transition-colors"
           title="Voice Settings"

@@ -6,7 +6,7 @@
 
 import { Component, For } from "solid-js";
 import { Check, RotateCcw } from "lucide-solid";
-import { availableThemes, theme as currentTheme, setTheme, type ThemeDefinition } from "@/stores/theme";
+import { pickerThemes, theme as currentTheme, setTheme, type ThemeDefinition } from "@/stores/theme";
 import { updatePreference } from "@/stores/preferences";
 import { showToast } from "@/components/ui/Toast";
 
@@ -19,7 +19,7 @@ const AppearanceSettings: Component = () => {
       </p>
 
       <div class="space-y-3">
-        <For each={availableThemes}>
+        <For each={pickerThemes()}>
           {(theme) => (
             <button
               onClick={() => setTheme(theme.id)}
@@ -42,7 +42,7 @@ const AppearanceSettings: Component = () => {
                   }}
                 >
                   {currentTheme() === theme.id && (
-                    <Check class="w-3 h-3 text-white" />
+                    <Check class="w-3 h-3 text-on-accent" />
                   )}
                 </div>
 

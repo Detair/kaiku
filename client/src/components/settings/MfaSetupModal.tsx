@@ -7,13 +7,15 @@
  * 3. Display backup codes with copy/download
  */
 
-import { Component, createSignal, Show, Match, Switch, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, Show, Match, Switch } from "solid-js";
 import { X, ShieldCheck, QrCode, KeyRound } from "lucide-solid";
 import { mfaSetup, mfaVerify } from "@/lib/tauri";
 import type { MfaSetupResponse } from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
 import BackupCodesDisplay from "./BackupCodesDisplay";
 import QRCode from "qrcode";
+import { createDialog } from "@/lib/a11y/dialog";
+import { t } from "@/i18n";
 
 type Step = "qr" | "verify" | "backup";
 
@@ -23,13 +25,7 @@ interface MfaSetupModalProps {
 }
 
 const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
-  });
+  const dialog = createDialog({ onClose: () => props.onClose() });
 
   const [step, setStep] = createSignal<Step>("qr");
   const [setupData, setSetupData] = createSignal<MfaSetupResponse | null>(null);
@@ -104,6 +100,8 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
       onClick={props.onClose}
     >
       <div
+        {...dialog.dialogProps}
+        ref={dialog.ref}
         class="bg-background-secondary rounded-xl shadow-2xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
@@ -111,11 +109,13 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
         <div class="flex items-center justify-between p-4 border-b border-white/10">
           <div class="flex items-center gap-3">
             <ShieldCheck class="w-5 h-5 text-accent-primary" />
-            <h2 class="text-lg font-semibold text-text-primary">
+            <h2 id={dialog.titleId} class="text-lg font-semibold text-text-primary">
               Set Up Two-Factor Authentication
             </h2>
           </div>
           <button
+            type="button"
+            aria-label={t("common.close")}
             onClick={props.onClose}
             class="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-text-secondary"
           >

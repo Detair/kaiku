@@ -35,6 +35,7 @@ import {
 } from "@/stores/channels";
 import { areThreadsEnabled } from "@/stores/guilds";
 import { shouldGroupWithPrevious } from "@/lib/utils";
+import { isEscapeForOverlay } from "@/lib/a11y/dialog";
 
 interface MessageListProps {
   channelId: string;
@@ -358,8 +359,7 @@ const MessageList: Component<MessageListProps> = (props) => {
   const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       // Don't trigger if a modal, context menu, or search overlay is open
-      const hasOverlay = document.querySelector("[role='dialog'], [data-context-menu], [data-search-overlay]");
-      if (hasOverlay) return;
+      if (isEscapeForOverlay(e)) return;
 
       const msgs = messages();
       const lastMsg = msgs[msgs.length - 1];

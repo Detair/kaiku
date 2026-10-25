@@ -197,13 +197,13 @@ const FriendSelectItem: Component<FriendSelectItemProps> = (props) => {
         }}
       >
         <Show when={props.selected}>
-          <Check class="w-3 h-3 text-white" />
+          <Check class="w-3 h-3 text-on-accent" />
         </Show>
       </div>
 
       {/* Avatar */}
       <div class="w-8 h-8 rounded-full bg-accent-primary flex items-center justify-center">
-        <span class="text-xs font-semibold text-white">
+        <span class="text-xs font-semibold text-on-accent">
           {props.friend.display_name.charAt(0).toUpperCase()}
         </span>
       </div>

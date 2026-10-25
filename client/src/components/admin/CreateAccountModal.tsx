@@ -5,7 +5,7 @@
  * admin hands to the new user.
  */
 
-import { Component, createSignal, onCleanup, onMount, Show } from "solid-js";
+import { Component, createSignal, Show } from "solid-js";
 import { X } from "lucide-solid";
 import { adminState, createUser } from "@/stores/admin";
 import { getServerUrl, HttpError } from "@/lib/tauri";
@@ -13,6 +13,7 @@ import { generateTemporaryPassword } from "@/lib/passwords";
 import { showToast } from "@/components/ui/Toast";
 import { copyHandoverText, canDismissCreateAccount } from "@/lib/adminHandover";
 import { t } from "@/i18n";
+import { createDialog } from "@/lib/a11y/dialog";
 
 const USERNAME_RE = /^[a-z0-9_]{3,32}$/;
 
@@ -33,14 +34,12 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
     server: string;
   } | null>(null);
 
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && canDismissCreateAccount(created() !== null)) {
-        props.onClose();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  // Escape stops here; the one-time success view ignores it so the handover
+  // details are not lost by accident.
+  const dialog = createDialog({
+    onClose: () => {
+      if (canDismissCreateAccount(created() !== null)) props.onClose();
+    },
   });
 
   const copy = async (text: string) => {
@@ -108,12 +107,12 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
     >
       <div
         class="bg-background-secondary rounded-xl shadow-2xl w-full max-w-md mx-4"
-        role="dialog"
-        aria-modal="true"
+        {...dialog.dialogProps}
+        ref={dialog.ref}
         onClick={(e) => e.stopPropagation()}
       >
         <div class="flex items-center justify-between p-4 border-b border-white/10">
-          <h2 class="text-lg font-semibold text-text-primary">
+          <h2 id={dialog.titleId} class="text-lg font-semibold text-text-primary">
             {created() ? t("admin.createAccount.created") : t("admin.createAccount.title")}
           </h2>
           <button
