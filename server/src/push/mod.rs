@@ -12,9 +12,16 @@
 //!   configured ([`service::PushService`]). Its hosts are fixed, so the SSRF guard does not apply.
 //!
 //! Wire format: contract C20 (`dm`, `mention`, `read`; `call` reserved).
+//!
+//! Triggers: [`targets::spawn_wake_for_new_message`] resolves recipients of a
+//! new message off the request path; [`PushService::notify`] coalesces per
+//! (recipient, channel) ([`coalesce`]); [`PushService::notify_read`] sends
+//! `read` after a wake. Coalescing state is in memory: **single replica only**.
 
+pub mod coalesce;
 pub mod fcm;
 pub mod service;
+pub mod targets;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -24,6 +31,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 pub use service::PushService;
 use sqlx::FromRow;
+pub use targets::{spawn_wake_for_new_message, wake_targets};
 use uuid::Uuid;
 use validator::Validate;
 
@@ -126,16 +134,6 @@ pub enum Delivery {
 // ============================================================================
 // Dispatch
 // ============================================================================
-
-/// Deliver a wake signal to all of a user's devices. Spawned off the hot path so
-/// push latency never blocks message handling.
-pub fn spawn_dispatch(state: AppState, user_id: Uuid, signal: WakeSignal) {
-    tokio::spawn(async move {
-        if let Err(e) = deliver(&state, user_id, &signal).await {
-            tracing::warn!(error = %e, user_id = %user_id, "push dispatch failed");
-        }
-    });
-}
 
 /// Deliver a wake signal to every subscription of `user_id`. Subscriptions that
 /// report `Gone` are pruned; successful ones get `last_used_at` updated.
