@@ -335,6 +335,10 @@ jobs:
         working-directory: client
         run: bun run lint:tauri-commands
 
+      - name: Check i18n catalogs
+        working-directory: client
+        run: bun run i18n:check
+
       - name: Audit production dependencies
         run: bun audit --prod --audit-level=moderate
 

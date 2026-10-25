@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Dates in the direct-message list and the sessions list are shorter ("Oct 22" instead of "10/22/2026", year only when it differs) and follow your region's format.
 - Each phone now holds one push registration; signing in with another account on the same phone stops notifications for the previous account.
 - **End-to-end encryption paused for 1.0**: End-to-end encryption setup is no longer offered and the DM padlock is removed; direct messages are protected in transit (TLS) and on the server, and end-to-end encryption will return in a later release.
 - Windows releases ship a single `-setup.exe` installer (MSI dropped)

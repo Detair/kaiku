@@ -14,8 +14,11 @@ import "./styles/highlight-theme.css";
 import "./styles/themes-pixel-highlight.css";
 import AppRoutes from "./App";
 import { applyInitialTheme } from "./stores/theme";
+import { initLocale } from "./i18n";
 
 applyInitialTheme();
+// Load the stored UI language before the first render (never rejects).
+await initLocale();
 
 const root = document.getElementById("root");
 

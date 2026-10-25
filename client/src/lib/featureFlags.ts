@@ -12,3 +12,12 @@
 export function isE2EEEnabled(): boolean {
   return import.meta.env.VITE_FEATURE_E2EE === "true";
 }
+
+/**
+ * Language picker in Appearance settings, and the stored language choice.
+ * Off for v1.0 until a translation is complete (contract C17).
+ * Enabled only by building with `VITE_FEATURE_LOCALE_SWITCH=true`.
+ */
+export function isLocaleSwitchEnabled(): boolean {
+  return import.meta.env.VITE_FEATURE_LOCALE_SWITCH === "true";
+}
