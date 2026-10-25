@@ -324,17 +324,32 @@ pub struct OidcAuthorizeQuery {
     pub response: Option<String>,
 }
 
-/// Query of `GET /auth/reauth/oidc/authorize/{provider}` (C24).
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct OidcReauthQuery {
-    /// Optional localhost redirect (desktop), as for the login flow.
+/// Body of `POST /auth/reauth/oidc/authorize/{provider}` (C24).
+///
+/// A JSON body, so the TOTP code never appears in a URL.
+#[derive(Deserialize, Validate, utoipa::ToSchema)]
+pub struct OidcReauthRequest {
+    /// Desktop loopback return address; omit (or `null`) for the browser flow.
+    #[serde(default)]
     pub redirect_uri: Option<String>,
-    /// When `"json"`, return `{"url": ...}` instead of a 307 redirect.
-    pub response: Option<String>,
     /// Elevation reason for the audit log (max 255 characters).
+    #[serde(default)]
+    #[validate(length(max = 255))]
     pub reason: Option<String>,
     /// Current TOTP code; required when the account has MFA on.
+    #[serde(default)]
+    #[validate(length(max = 16))]
     pub mfa_code: Option<String>,
+}
+
+impl std::fmt::Debug for OidcReauthRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OidcReauthRequest")
+            .field("redirect_uri", &self.redirect_uri)
+            .field("reason", &self.reason)
+            .field("mfa_code", &self.mfa_code.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 /// A linked provider that can confirm a fresh sign-in.
@@ -353,7 +368,7 @@ pub struct ReauthMethodsResponse {
     pub password: bool,
     /// The password path also needs a current TOTP code (`mfa_code`).
     pub mfa_required: bool,
-    /// Linked providers usable for `GET /auth/reauth/oidc/authorize/{provider_id}`.
+    /// Linked providers usable for `POST /auth/reauth/oidc/authorize/{provider_id}`.
     pub oidc: Vec<ReauthOidcProvider>,
 }
 

@@ -160,7 +160,9 @@ Admin elevation and backup-code regeneration ask the caller to prove the account
   - It is used by elevation, the OIDC start, backup-code regeneration and `/auth/mfa/verify` (also behind `/auth/mfa/disable`).
   - A replayed code counts as a wrong code.
   - If Valkey errors, the request gets 503 `SERVICE_UNAVAILABLE` (fail closed).
-- **OIDC path (elevation only):** `GET /auth/reauth/oidc/authorize/{provider_id}?redirect_uri=&response=json&reason=&mfa_code=` (bearer, system admin).
+- **OIDC path (elevation only):** `POST /auth/reauth/oidc/authorize/{provider_id}` (bearer, system admin) with the JSON body `{"redirect_uri": string|null, "reason": string|null, "mfa_code": string|null}`.
+  - It answers 200 `{"url": string}` (the provider URL to open); there is no redirect variant.
+  - Secrets never go into a URL. A missing or invalid body is 400 `VALIDATION_ERROR`; `reason` has a 255-character limit.
   - When MFA is on, `mfa_code` (TOTP) is verified here, with the same lockout and replay protection. The result is bound into the flow state. `amr` never replaces it.
   - The provider is asked for a fresh login (`prompt=login`, `max_age=0`); normal login flows do not get these parameters.
   - The provider always redirects to `{PUBLIC_URL}/auth/oidc/callback` (`Config::public_url`, trailing slash ignored).
@@ -196,7 +198,7 @@ Admin elevation and backup-code regeneration ask the caller to prove the account
   - 400 `REAUTH_OIDC_REQUIRED` (no password, but a usable, eligible provider exists)
   - 400 `REAUTH_UNAVAILABLE` (neither)
   - 400 `REAUTH_PROVIDER_UNAVAILABLE` (OIDC start for a provider that is not linked, not usable or not eligible)
-  - 403 (OIDC start by a non-admin)
+  - 403 (OIDC start by a non-admin; `GET` on the start path is 405)
   - 429 (rate limited or locked)
   - 503 `SERVICE_UNAVAILABLE` (replay store unavailable)
 - **Callback codes:**

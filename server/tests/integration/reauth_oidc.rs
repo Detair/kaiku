@@ -389,15 +389,31 @@ async fn start_json(ctx: &Ctx, path: &str, token: &str, extra: &[(&str, &str)]) 
     (status, resp.json().await.unwrap_or(Value::Null))
 }
 
+/// POST the re-authentication start with a JSON body (or `None`: no body);
+/// returns `(status, body)`.
+async fn post_reauth_start(ctx: &Ctx, token: &str, body: Option<Value>) -> (u16, Value) {
+    let mut req = client()
+        .post(format!(
+            "{}/auth/reauth/oidc/authorize/{}",
+            ctx.server.url, ctx.slug
+        ))
+        .bearer_auth(token);
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    let resp = req.send().await.expect("start reauth");
+    let status = resp.status().as_u16();
+    (status, resp.json().await.unwrap_or(Value::Null))
+}
+
+/// Desktop start body with an optional TOTP code.
+fn start_body(mfa_code: Option<&str>) -> Value {
+    json!({ "redirect_uri": DESKTOP_RETURN, "reason": null, "mfa_code": mfa_code })
+}
+
 /// Start a re-authentication; returns the provider URL.
-async fn start_reauth(ctx: &Ctx, token: &str, extra: &[(&str, &str)]) -> String {
-    let (status, body) = start_json(
-        ctx,
-        &format!("/auth/reauth/oidc/authorize/{}", ctx.slug),
-        token,
-        extra,
-    )
-    .await;
+async fn start_reauth(ctx: &Ctx, token: &str, mfa_code: Option<&str>) -> String {
+    let (status, body) = post_reauth_start(ctx, token, Some(start_body(mfa_code))).await;
     assert_eq!(status, 200, "start reauth: {body}");
     body["url"].as_str().expect("url").to_string()
 }
@@ -513,7 +529,7 @@ async fn test_oidc_reauth_elevates_only_this_session(pool: PgPool) {
     let ctx = setup(&pool).await;
     let (admin, (_, token_a), (_, token_b)) = admin_with_two_sessions(&ctx, "sub-admin").await;
 
-    let provider_url = start_reauth(&ctx, &token_a, &[]).await;
+    let provider_url = start_reauth(&ctx, &token_a, None).await;
     let params = query_of(&provider_url);
     assert_eq!(params.get("prompt").map(String::as_str), Some("login"));
     assert_eq!(params.get("max_age").map(String::as_str), Some("0"));
@@ -565,7 +581,7 @@ async fn test_oidc_reauth_requires_auth_time(pool: PgPool) {
     let ctx = setup(&pool).await;
     let (_, (_, token), _) = admin_with_two_sessions(&ctx, "sub-admin").await;
 
-    let url = start_reauth(&ctx, &token, &[]).await;
+    let url = start_reauth(&ctx, &token, None).await;
     issue(
         &ctx,
         NextToken {
@@ -584,7 +600,7 @@ async fn test_oidc_reauth_rejects_stale_or_future_auth_time(pool: PgPool) {
     let (_, (_, token), _) = admin_with_two_sessions(&ctx, "sub-admin").await;
 
     for auth_time in [now() - 6 * 60, now() + 120] {
-        let url = start_reauth(&ctx, &token, &[]).await;
+        let url = start_reauth(&ctx, &token, None).await;
         issue(
             &ctx,
             NextToken {
@@ -616,7 +632,7 @@ async fn test_oidc_reauth_rejects_bad_signature_and_wrong_nonce(pool: PgPool) {
         ..fresh("sub-admin")
     };
     for next in [bad_signature, wrong_nonce] {
-        let url = start_reauth(&ctx, &token, &[]).await;
+        let url = start_reauth(&ctx, &token, None).await;
         issue(&ctx, next);
         let chain = follow(&url).await;
         assert_eq!(reauth_error(&chain), Some("OIDC_EXCHANGE_FAILED"));
@@ -632,7 +648,7 @@ async fn test_oidc_reauth_rejects_sub_of_another_user(pool: PgPool) {
     link(&ctx, other, "sub-other").await;
 
     for sub in ["sub-other", "sub-unlinked"] {
-        let url = start_reauth(&ctx, &token, &[]).await;
+        let url = start_reauth(&ctx, &token, None).await;
         issue(&ctx, fresh(sub));
         let chain = follow(&url).await;
         assert_eq!(
@@ -650,7 +666,7 @@ async fn test_oidc_reauth_state_is_single_use_and_session_bound(pool: PgPool) {
     let (_, (session_a, token_a), (_, token_b)) = admin_with_two_sessions(&ctx, "sub-admin").await;
 
     // Reused state: replaying the callback finds no state.
-    let url = start_reauth(&ctx, &token_a, &[]).await;
+    let url = start_reauth(&ctx, &token_a, None).await;
     issue(&ctx, fresh("sub-admin"));
     let chain = follow(&url).await;
     assert_eq!(
@@ -671,7 +687,7 @@ async fn test_oidc_reauth_state_is_single_use_and_session_bound(pool: PgPool) {
         .await
         .expect("de-elevate");
     assert_eq!(resp.status().as_u16(), 200);
-    let url = start_reauth(&ctx, &token_a, &[]).await;
+    let url = start_reauth(&ctx, &token_a, None).await;
     let resp = client()
         .delete(format!("{}/auth/sessions/{session_a}", ctx.server.url))
         .bearer_auth(&token_b)
@@ -718,7 +734,7 @@ async fn test_link_and_reauth_flows_do_not_cross(pool: PgPool) {
     assert!(!is_elevated(&ctx, &token).await, "a link never elevates");
 
     // A reauth flow only elevates: no tokens, no new link.
-    let url = start_reauth(&ctx, &token, &[]).await;
+    let url = start_reauth(&ctx, &token, None).await;
     issue(&ctx, fresh("sub-admin"));
     let chain = follow(&url).await;
     assert_eq!(
@@ -761,13 +777,7 @@ async fn test_identity_linked_after_session_start_cannot_elevate(pool: PgPool) {
 
     // Not usable to elevate that session.
     assert_eq!(methods(&ctx, &token).await["oidc"], json!([]));
-    let (status, body) = start_json(
-        &ctx,
-        &format!("/auth/reauth/oidc/authorize/{}", ctx.slug),
-        &token,
-        &[],
-    )
-    .await;
+    let (status, body) = post_reauth_start(&ctx, &token, Some(start_body(None))).await;
     assert_eq!(
         (status, body["error"].clone()),
         (400, json!("REAUTH_PROVIDER_UNAVAILABLE"))
@@ -818,21 +828,20 @@ async fn test_oidc_reauth_requires_totp_when_mfa_enabled(pool: PgPool) {
     let ctx = setup(&pool).await;
     let (admin, (_, token), _) = admin_with_two_sessions(&ctx, "sub-admin").await;
     let totp = enable_mfa(&ctx, admin).await;
-    let path = format!("/auth/reauth/oidc/authorize/{}", ctx.slug);
-
-    let (status, body) = start_json(&ctx, &path, &token, &[]).await;
+    let (status, body) = post_reauth_start(&ctx, &token, Some(start_body(None))).await;
     assert_eq!(
         (status, body["error"].clone()),
         (400, json!("MFA_CODE_REQUIRED"))
     );
-    let (status, body) = start_json(&ctx, &path, &token, &[("mfa_code", &wrong_code(&totp))]).await;
+    let (status, body) =
+        post_reauth_start(&ctx, &token, Some(start_body(Some(&wrong_code(&totp))))).await;
     assert_eq!(
         (status, body["error"].clone()),
         (401, json!("INVALID_CREDENTIALS"))
     );
 
     let code = totp.generate_current().expect("code");
-    let url = start_reauth(&ctx, &token, &[("mfa_code", &code)]).await;
+    let url = start_reauth(&ctx, &token, Some(&code)).await;
     issue(&ctx, fresh("sub-admin"));
     let chain = follow(&url).await;
     assert_eq!(
@@ -845,7 +854,7 @@ async fn test_oidc_reauth_requires_totp_when_mfa_enabled(pool: PgPool) {
     );
 
     // The same code cannot start another re-authentication.
-    let (status, _) = start_json(&ctx, &path, &token, &[("mfa_code", &code)]).await;
+    let (status, _) = post_reauth_start(&ctx, &token, Some(start_body(Some(&code)))).await;
     assert_eq!(status, 401, "replayed TOTP code");
 }
 
@@ -864,14 +873,64 @@ async fn test_failed_password_attempts_lock_oidc_start(pool: PgPool) {
             .expect("elevate");
         assert_eq!(resp.status().as_u16(), 401, "attempt {attempt}");
     }
-    let (status, _) = start_json(
-        &ctx,
-        &format!("/auth/reauth/oidc/authorize/{}", ctx.slug),
-        &token,
-        &[],
-    )
-    .await;
+    let (status, _) = post_reauth_start(&ctx, &token, Some(start_body(None))).await;
     assert_eq!(status, 429);
+}
+
+#[sqlx::test]
+async fn test_oidc_reauth_start_takes_a_json_body(pool: PgPool) {
+    let ctx = setup(&pool).await;
+    let (_, (_, token), _) = admin_with_two_sessions(&ctx, "sub-admin").await;
+
+    // No body, or invalid JSON: 400 VALIDATION_ERROR.
+    let (status, body) = post_reauth_start(&ctx, &token, None).await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (400, json!("VALIDATION_ERROR"))
+    );
+    let resp = client()
+        .post(format!(
+            "{}/auth/reauth/oidc/authorize/{}",
+            ctx.server.url, ctx.slug
+        ))
+        .bearer_auth(&token)
+        .header("content-type", "application/json")
+        .body("{not json")
+        .send()
+        .await
+        .expect("start");
+    assert_eq!(resp.status().as_u16(), 400);
+    let body: Value = resp.json().await.expect("json");
+    assert_eq!(body["error"], "VALIDATION_ERROR");
+
+    // The answer is always {"url"}; the old GET form is gone.
+    let (status, body) = post_reauth_start(&ctx, &token, Some(json!({}))).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body["url"].is_string());
+    let resp = client()
+        .get(format!(
+            "{}/auth/reauth/oidc/authorize/{}",
+            ctx.server.url, ctx.slug
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("get");
+    assert_eq!(resp.status().as_u16(), 405);
+}
+
+#[sqlx::test]
+async fn test_oidc_reauth_callback_requires_totp_enabled_after_start(pool: PgPool) {
+    let ctx = setup(&pool).await;
+    let (admin, (_, token), _) = admin_with_two_sessions(&ctx, "sub-admin").await;
+
+    // Started without MFA; MFA is turned on before the provider returns.
+    let url = start_reauth(&ctx, &token, None).await;
+    enable_mfa(&ctx, admin).await;
+    issue(&ctx, fresh("sub-admin"));
+    let chain = follow(&url).await;
+    assert_eq!(reauth_error(&chain), Some("MFA_CODE_REQUIRED"));
+    assert!(!is_elevated(&ctx, &token).await);
 }
 
 #[sqlx::test]
@@ -948,7 +1007,7 @@ async fn test_oidc_reauth_provider_error_hands_back(pool: PgPool) {
     let ctx = setup(&pool).await;
     let (_, (_, token_a), _) = admin_with_two_sessions(&ctx, "sub-admin").await;
 
-    let provider_url = start_reauth(&ctx, &token_a, &[]).await;
+    let provider_url = start_reauth(&ctx, &token_a, None).await;
     let state = query_of(&provider_url)
         .remove("state")
         .expect("state parameter");

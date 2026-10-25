@@ -69,7 +69,7 @@ use crate::ratelimit::{
 /// - POST /mfa/backup-codes - Generate MFA backup codes (current TOTP code; rate limited)
 /// - POST /qr/create - Create a one-time QR login token (rate limited)
 /// - GET /reauth/methods - Re-authentication methods of the caller (C24)
-/// - GET /reauth/oidc/authorize/{provider} - Start an OIDC re-authentication that elevates the
+/// - POST /reauth/oidc/authorize/{provider} - Start an OIDC re-authentication that elevates the
 ///   session (rate limited)
 pub fn router(state: AppState) -> Router<AppState> {
     // Login route with IP block check and rate limiting
@@ -204,7 +204,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         Router::new()
             .route(
                 "/reauth/oidc/authorize/{provider}",
-                get(reauth::oidc_reauth_authorize),
+                post(reauth::oidc_reauth_authorize),
             )
             .route("/mfa/verify", post(mfa::mfa_verify))
             .route("/mfa/disable", post(mfa::mfa_disable))

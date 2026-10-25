@@ -367,6 +367,7 @@ use utoipa::{Modify, OpenApi};
         crate::auth::types::MfaVerifyRequest,
         crate::auth::types::BackupCodesRequest,
         crate::auth::types::ReauthMethodsResponse,
+        crate::auth::types::OidcReauthRequest,
         crate::auth::types::ReauthOidcProvider,
         crate::auth::types::UpdateProfileRequest,
         crate::auth::types::UpdateProfileResponse,

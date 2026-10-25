@@ -6,7 +6,7 @@
 //! password with the same helpers.
 //!
 //! Admin elevation can instead be confirmed with a fresh sign-in at a linked
-//! OIDC provider (`GET /auth/reauth/oidc/authorize/{provider}`); the shared
+//! OIDC provider (`POST /auth/reauth/oidc/authorize/{provider}`); the shared
 //! OIDC callback hands that flow to [`complete_oidc_reauth`].
 //! `GET /auth/reauth/methods` reports which methods the caller has.
 //!
@@ -18,6 +18,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
@@ -25,6 +26,7 @@ use axum::Json;
 use chrono::Utc;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
+use validator::Validate;
 
 use super::error::{AuthError, AuthResult};
 use super::login::{oidc_hand_back, start_oidc_flow};
@@ -32,7 +34,7 @@ use super::mfa_crypto::decrypt_mfa_secret;
 use super::middleware::AuthUser;
 use super::oidc::{client_return_url, OidcFlowPurpose, OidcFlowState, OidcReauthBinding};
 use super::password::verify_password;
-use super::types::{OidcReauthQuery, ReauthMethodsResponse, ReauthOidcProvider};
+use super::types::{OidcReauthRequest, ReauthMethodsResponse, ReauthOidcProvider};
 use crate::api::AppState;
 use crate::db::{find_user_by_id, find_user_id_by_identity, get_auth_methods_allowed};
 use crate::ratelimit::{extract_client_ip, normalize_ip};
@@ -396,45 +398,37 @@ pub async fn get_reauth_methods(
 /// current TOTP code) is verified here, with the same lockout and replay
 /// protection as the password path, and the result is bound into the state.
 ///
-/// GET /auth/reauth/oidc/authorize/{provider}
+/// POST /auth/reauth/oidc/authorize/{provider}
 #[utoipa::path(
-    get,
+    post,
     path = "/auth/reauth/oidc/authorize/{provider}",
     tag = "auth",
     params(
         ("provider" = String, Path, description = "Linked provider (`provider_id` from the methods list)"),
-        ("redirect_uri" = Option<String>, Query, description = "Optional localhost return URI (desktop)"),
-        ("response" = Option<String>, Query, description = "`json` returns {\"url\": ...} instead of a redirect"),
-        ("reason" = Option<String>, Query, description = "Elevation reason for the audit log"),
-        ("mfa_code" = Option<String>, Query, description = "Current TOTP code; required when MFA is on"),
     ),
+    request_body = OidcReauthRequest,
     responses(
-        (status = 307, description = "Redirect to the provider"),
+        (status = 200, description = "Provider authorization URL: `{\"url\": string}`"),
         (status = 400, description = "MFA_CODE_REQUIRED, REAUTH_PROVIDER_UNAVAILABLE or VALIDATION_ERROR"),
         (status = 401, description = "INVALID_CREDENTIALS (wrong TOTP code)"),
         (status = 403, description = "Not a system admin"),
         (status = 429, description = "Too many attempts"),
+        (status = 503, description = "SERVICE_UNAVAILABLE"),
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, headers, query), fields(provider = %provider, user_id = %auth_user.id))]
+#[tracing::instrument(skip(state, headers, body), fields(provider = %provider, user_id = %auth_user.id))]
 pub async fn oidc_reauth_authorize(
     State(state): State<AppState>,
     auth_user: AuthUser,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(provider): Path<String>,
-    axum::extract::Query(query): axum::extract::Query<OidcReauthQuery>,
+    body: Result<Json<OidcReauthRequest>, JsonRejection>,
 ) -> Result<Response, AuthError> {
-    if query
-        .reason
-        .as_deref()
-        .is_some_and(|r| r.chars().count() > 255)
-    {
-        return Err(AuthError::Validation(
-            "reason: at most 255 characters".to_string(),
-        ));
-    }
+    let Json(body) = body.map_err(|e| AuthError::Validation(e.body_text()))?;
+    body.validate()
+        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
     let session_id = active_session(&state, &auth_user).await?;
     ensure_not_locked(&state, auth_user.id).await?;
     // Elevation is the only action this flow completes.
@@ -459,7 +453,7 @@ pub async fn oidc_reauth_authorize(
             &state,
             auth_user.id,
             None,
-            query.mfa_code.as_deref(),
+            body.mfa_code.as_deref(),
             false,
             client_ip,
         )
@@ -472,15 +466,16 @@ pub async fn oidc_reauth_authorize(
     let binding = OidcReauthBinding {
         user_id: auth_user.id,
         session_id,
-        reason: query.reason.clone(),
+        reason: body.reason.clone(),
         mfa_verified,
     };
     start_oidc_flow(
         &state,
         &provider,
-        query.redirect_uri.as_deref(),
+        body.redirect_uri.as_deref(),
         OidcFlowPurpose::Reauth(binding),
-        query.response.as_deref() == Some("json"),
+        // Always `{"url"}`: a bearer-authenticated call is never a navigation.
+        true,
     )
     .await
 }
