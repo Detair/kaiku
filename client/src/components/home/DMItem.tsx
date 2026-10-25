@@ -115,7 +115,7 @@ const DMItem: Component<DMItemProps> = (props) => {
                 when={isGroupDM()}
                 fallback={
                   <div class="w-10 h-10 rounded-full bg-accent-primary flex items-center justify-center">
-                    <span class="text-sm font-semibold text-white">
+                    <span class="text-sm font-semibold text-on-accent">
                       {otherParticipants()[0]
                         ?.display_name?.charAt(0)
                         .toUpperCase() || "?"}

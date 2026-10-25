@@ -15,7 +15,7 @@ export default defineConfig({
     server: {
       deps: {
         // Ensure solid-js store uses the same browser build as user code
-        inline: [/solid-js/],
+        inline: [/solid-js/, /@solidjs/],
       },
     },
   },

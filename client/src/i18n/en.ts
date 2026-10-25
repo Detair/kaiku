@@ -16,6 +16,8 @@ import { dm } from "./en/dm";
 import { time } from "./en/time";
 import { admin } from "./en/admin";
 import { settings } from "./en/settings";
+import { voice } from "./en/voice";
+import { onboarding } from "./en/onboarding";
 
 export const en = {
   ...common,
@@ -27,6 +29,8 @@ export const en = {
   ...time,
   ...admin,
   ...settings,
+  ...voice,
+  ...onboarding,
 } as const;
 
 export type MessageKey = keyof typeof en;

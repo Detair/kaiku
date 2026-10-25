@@ -2,7 +2,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockSetMute = vi.fn().mockResolvedValue(undefined);
 
-import { resolveState, PttController, mapCodeToTauriShortcut, keyCodeToLabel } from "@/lib/pttManager";
+const hoisted = vi.hoisted(() => ({
+  native: false,
+  register: vi.fn().mockResolvedValue(undefined),
+  unregister: vi.fn().mockResolvedValue(undefined),
+  showToast: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => hoisted.native }));
+vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
+  register: hoisted.register,
+  unregister: hoisted.unregister,
+}));
+vi.mock("@/components/ui/Toast", () => ({ showToast: hoisted.showToast }));
+
+import {
+  resolveState,
+  PttController,
+  mapCodeToTauriShortcut,
+  keyCodeToLabel,
+  checkGlobalPttBinding,
+  formatKeyBinding,
+  parseKeyBinding,
+  createBrowserPttListeners,
+  createTauriPttListeners,
+  resetPttFallbackNotice,
+  type PttFullConfig,
+} from "@/lib/pttManager";
 
 describe("resolveState", () => {
   it("returns muted when PTT enabled and no keys held", () => {
@@ -220,4 +246,151 @@ describe("keyCodeToLabel", () => {
   it("maps function keys", () => expect(keyCodeToLabel("F12")).toBe("F12"));
   it("maps numpad keys", () => expect(keyCodeToLabel("Numpad5")).toBe("Numpad 5"));
   it("returns raw code for unknown keys", () => expect(keyCodeToLabel("ContextMenu")).toBe("ContextMenu"));
+
+  describe("modifier labels", () => {
+    const setPlatform = (platform: string) =>
+      vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    afterEach(() => vi.restoreAllMocks());
+
+    it("shows Meta off macOS, in canonical order", () => {
+      setPlatform("Linux x86_64");
+      expect(keyCodeToLabel("Ctrl+Alt+Meta+KeyV")).toBe("Ctrl+Alt+Meta+V");
+    });
+    it("shows the Command symbol on macOS", () => {
+      setPlatform("MacIntel");
+      expect(keyCodeToLabel("Ctrl+Meta+KeyV")).toBe("Ctrl+⌘+V");
+    });
+    it("keeps the stored form unchanged on macOS", () => {
+      setPlatform("MacIntel");
+      expect(formatKeyBinding(parseKeyBinding("Meta+Ctrl+KeyV"))).toBe("Ctrl+Meta+KeyV");
+    });
+  });
+});
+
+function pttConfig(pttKey: string): PttFullConfig {
+  return {
+    pttEnabled: true, pttKey, pttReleaseDelay: 0,
+    ptmEnabled: false, ptmKey: null, ptmReleaseDelay: 0,
+  };
+}
+
+describe("window-focused push-to-talk", () => {
+  let cleanup: (() => void) | null = null;
+
+  afterEach(() => {
+    cleanup?.();
+    cleanup = null;
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("keydown in a text field does not transmit", () => {
+    const controller = new PttController(mockSetMute);
+    controller.activate(pttConfig("Space"));
+    cleanup = createBrowserPttListeners(controller);
+    mockSetMute.mockClear();
+
+    for (const html of ["<input />", "<textarea></textarea>", '<div contenteditable="true"></div>']) {
+      document.body.innerHTML = html;
+      const field = document.body.firstElementChild as HTMLElement;
+      field.dispatchEvent(new KeyboardEvent("keydown", { code: "Space", bubbles: true }));
+    }
+    expect(mockSetMute).not.toHaveBeenCalledWith(false);
+
+    // The same key outside a text field still transmits.
+    document.body.innerHTML = "<button></button>";
+    document.body.firstElementChild!.dispatchEvent(
+      new KeyboardEvent("keydown", { code: "Space", bubbles: true }),
+    );
+    expect(mockSetMute).toHaveBeenLastCalledWith(false);
+    controller.deactivate();
+  });
+
+  it("modifier binding needs its modifier in the window", () => {
+    const controller = new PttController(mockSetMute);
+    controller.activate(pttConfig("Ctrl+KeyV"));
+    cleanup = createBrowserPttListeners(controller);
+    mockSetMute.mockClear();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyV" }));
+    expect(mockSetMute).not.toHaveBeenCalled();
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyV", ctrlKey: true }));
+    expect(mockSetMute).toHaveBeenLastCalledWith(false);
+    controller.deactivate();
+  });
+});
+
+describe("checkGlobalPttBinding", () => {
+  it("plain V refused for global binding", () => {
+    expect(checkGlobalPttBinding(parseKeyBinding("KeyV"))).toEqual({ ok: false, reason: "plainKey" });
+    expect(checkGlobalPttBinding(parseKeyBinding("Space"))).toEqual({ ok: false, reason: "plainKey" });
+    expect(checkGlobalPttBinding(parseKeyBinding("Shift+KeyV"))).toEqual({ ok: false, reason: "plainKey" });
+    expect(checkGlobalPttBinding(parseKeyBinding("F12"))).toEqual({ ok: false, reason: "plainKey" });
+  });
+
+  it("Ctrl+V and F13 accepted", () => {
+    expect(checkGlobalPttBinding(parseKeyBinding("Ctrl+KeyV"))).toEqual({ ok: true });
+    expect(checkGlobalPttBinding(parseKeyBinding("Alt+Space"))).toEqual({ ok: true });
+    expect(checkGlobalPttBinding(parseKeyBinding("Meta+KeyV"))).toEqual({ ok: true });
+    expect(checkGlobalPttBinding(parseKeyBinding("F13"))).toEqual({ ok: true });
+    expect(checkGlobalPttBinding(parseKeyBinding("F24"))).toEqual({ ok: true });
+  });
+
+  it("labels modifier bindings", () => {
+    expect(keyCodeToLabel("Ctrl+KeyV")).toBe("Ctrl+V");
+    expect(keyCodeToLabel("F13")).toBe("F13");
+  });
+});
+
+describe("createTauriPttListeners", () => {
+  let cleanup: (() => void | Promise<void>) | null = null;
+
+  beforeEach(() => {
+    hoisted.native = true;
+    resetPttFallbackNotice();
+  });
+
+  afterEach(async () => {
+    await cleanup?.();
+    cleanup = null;
+    hoisted.native = false;
+    vi.clearAllMocks();
+  });
+
+  it("stored plain binding falls back to focus-only", async () => {
+    const controller = new PttController(mockSetMute);
+    const config = pttConfig("KeyV");
+    controller.activate(config);
+    cleanup = await createTauriPttListeners(controller, config);
+
+    expect(hoisted.register).not.toHaveBeenCalled();
+    expect(hoisted.showToast).toHaveBeenCalledTimes(1);
+
+    mockSetMute.mockClear();
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyV" }));
+    expect(mockSetMute).toHaveBeenLastCalledWith(false);
+    window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyV" }));
+
+    // Re-activating (e.g. joining another channel) does not toast again.
+    await cleanup();
+    cleanup = await createTauriPttListeners(controller, config);
+    expect(hoisted.showToast).toHaveBeenCalledTimes(1);
+    controller.deactivate();
+  });
+
+  it("registers a modifier binding as a global shortcut", async () => {
+    const controller = new PttController(mockSetMute);
+    const config = pttConfig("Ctrl+KeyV");
+    controller.activate(config);
+    cleanup = await createTauriPttListeners(controller, config);
+
+    expect(hoisted.register).toHaveBeenCalledWith("Control+V", expect.any(Function));
+    expect(hoisted.showToast).not.toHaveBeenCalled();
+
+    const handler = hoisted.register.mock.calls[0][1] as (e: { state: string }) => void;
+    mockSetMute.mockClear();
+    handler({ state: "Pressed" });
+    expect(mockSetMute).toHaveBeenLastCalledWith(false);
+    controller.deactivate();
+  });
 });

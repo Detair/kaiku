@@ -2,7 +2,7 @@
  * ChannelSettingsModal - Channel settings with permissions tab
  */
 
-import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X, Hash, Settings, Shield, Check, Bell, BellOff } from "lucide-solid";
 import { channelsState } from "@/stores/channels";
@@ -10,6 +10,8 @@ import { memberHasPermission } from "@/stores/permissions";
 import { authState } from "@/stores/auth";
 import { isGuildOwner } from "@/stores/guilds";
 import { PermissionBits } from "@/lib/permissionConstants";
+import { createDialog } from "@/lib/a11y/dialog";
+import { t } from "@/i18n";
 import ChannelPermissions from "./ChannelPermissions";
 import {
   getChannelNotificationLevel,
@@ -28,13 +30,7 @@ type TabId = "overview" | "permissions";
 const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
   const [activeTab, setActiveTab] = createSignal<TabId>("overview");
 
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
-  });
+  const dialog = createDialog({ onClose: () => props.onClose() });
 
   const channel = () =>
     channelsState.channels.find((c) => c.id === props.channelId);
@@ -63,6 +59,8 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
         onClick={handleBackdropClick}
       >
         <div
+          {...dialog.dialogProps}
+          ref={dialog.ref}
           class="border border-white/10 rounded-2xl w-[550px] max-h-[80vh] flex flex-col shadow-2xl"
           style={{"background-color":"var(--color-surface-base)"}}
         >
@@ -71,13 +69,15 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
             <div class="flex items-center gap-3">
               <Hash class="w-5 h-5 text-text-secondary" />
               <div>
-                <h2 class="text-lg font-bold text-text-primary">
+                <h2 id={dialog.titleId} class="text-lg font-bold text-text-primary">
                   {channel()?.name}
                 </h2>
                 <p class="text-sm text-text-secondary">Channel Settings</p>
               </div>
             </div>
             <button
+              type="button"
+              aria-label={t("common.close")}
               onClick={props.onClose}
               class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
             >
@@ -88,6 +88,7 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
           {/* Tabs */}
           <div class="flex border-b border-white/10">
             <button
+              type="button"
               onClick={() => setActiveTab("overview")}
               class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
               classList={{
@@ -102,6 +103,7 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
             </button>
             <Show when={canManageChannel()}>
               <button
+                type="button"
                 onClick={() => setActiveTab("permissions")}
                 data-testid="channel-settings-permissions-tab"
                 class="flex items-center gap-2 px-6 py-3 font-medium transition-colors"
@@ -200,6 +202,7 @@ const NotificationOption: Component<{
 
   return (
     <button
+      type="button"
       onClick={() => setChannelNotificationLevel(props.channelId, props.level)}
       class="w-full text-left p-3 rounded-xl border-2 transition-all duration-200"
       classList={{
@@ -217,7 +220,7 @@ const NotificationOption: Component<{
             "border-white/30": !isSelected(),
           }}
         >
-          {isSelected() && <Check class="w-3 h-3 text-white" />}
+          {isSelected() && <Check class="w-3 h-3 text-on-accent" />}
         </div>
 
         {/* Content */}
