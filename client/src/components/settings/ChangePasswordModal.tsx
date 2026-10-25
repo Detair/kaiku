@@ -1,19 +1,15 @@
-import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, Show } from "solid-js";
 import { AlertCircle, CheckCircle2, X } from "lucide-solid";
 import { updatePassword, revokeAllOtherSessions } from "@/lib/tauri";
+import { createDialog } from "@/lib/a11y/dialog";
+import { t } from "@/i18n";
 
 interface ChangePasswordModalProps {
     onClose: () => void;
 }
 
 const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
-    onMount(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === "Escape") props.onClose();
-        };
-        document.addEventListener("keydown", handleKeyDown);
-        onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
-    });
+    const dialog = createDialog({ onClose: () => props.onClose() });
 
     const [currentPassword, setCurrentPassword] = createSignal("");
     const [newPassword, setNewPassword] = createSignal("");
@@ -67,12 +63,16 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
             onClick={props.onClose}
         >
             <div
+                {...dialog.dialogProps}
+                ref={dialog.ref}
                 class="bg-surface-base w-full max-w-md rounded-2xl shadow-xl border border-white/10 flex flex-col overflow-hidden animate-in zoom-in-95 duration-200"
                 onClick={(e) => e.stopPropagation()}
             >
                 <div class="px-6 py-4 border-b border-white/10 flex items-center justify-between sticky top-0 bg-surface-base z-10">
-                    <h2 class="text-xl font-bold text-text-primary">Change Password</h2>
+                    <h2 id={dialog.titleId} class="text-xl font-bold text-text-primary">Change Password</h2>
                     <button
+                        type="button"
+                        aria-label={t("common.close")}
                         onClick={props.onClose}
                         class="p-2 -mr-2 text-text-secondary hover:text-text-primary hover:bg-white/5 rounded-xl transition-colors"
                     >

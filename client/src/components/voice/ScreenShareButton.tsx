@@ -2,6 +2,7 @@ import { Component, createMemo } from "solid-js";
 import { MonitorUp, MonitorOff } from "lucide-solid";
 import { voiceState } from "@/stores/voice";
 import { currentUser } from "@/stores/auth";
+import { t } from "@/i18n";
 
 /** Maximum concurrent screen shares per user. */
 const MAX_SCREEN_SHARES = 3;
@@ -39,13 +40,15 @@ const ScreenShareButton: Component<ScreenShareButtonProps> = (props) => {
   };
 
   const buttonTitle = () => {
-    if (atLimit()) return `Limit reached (${MAX_SCREEN_SHARES}/${MAX_SCREEN_SHARES})`;
-    if (voiceState.screenSharing) return `Share Another Screen (${ownShareCount()}/${MAX_SCREEN_SHARES})`;
-    return "Share Screen";
+    if (atLimit()) return t("voice.screenShareLimit", { count: MAX_SCREEN_SHARES, max: MAX_SCREEN_SHARES });
+    if (voiceState.screenSharing) return t("voice.screenShareAnother", { count: ownShareCount(), max: MAX_SCREEN_SHARES });
+    return t("voice.screenShare");
   };
 
   return (
     <button
+      type="button"
+      aria-label={buttonTitle()}
       onClick={handleClick}
       disabled={voiceState.state !== "connected" || atLimit()}
       class={`p-2 rounded-full transition-colors ${

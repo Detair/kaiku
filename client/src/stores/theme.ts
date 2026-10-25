@@ -19,6 +19,8 @@ export interface ThemeDefinition {
   description: string;
   isDark: boolean;
   family: ThemeFamily;
+  /** Low-contrast themes: still applied when stored, but not offered in pickers. */
+  hidden?: boolean;
   preview: {
     surface: string;
     accent: string;
@@ -62,6 +64,7 @@ export const availableThemes: ThemeDefinition[] = [
     description: "Precision colors for machines and people",
     isDark: true,
     family: "standard",
+    hidden: true,
     preview: { surface: "#002b36", accent: "#268bd2", text: "#839496" },
   },
   {
@@ -70,6 +73,7 @@ export const availableThemes: ThemeDefinition[] = [
     description: "Warm light theme for daytime use",
     isDark: false,
     family: "standard",
+    hidden: true,
     preview: { surface: "#fdf6e3", accent: "#268bd2", text: "#657b83" },
   },
   {
@@ -81,6 +85,20 @@ export const availableThemes: ThemeDefinition[] = [
     preview: { surface: "#2C2418", accent: "#7BAE7F", text: "#E8D8C4" },
   },
 ];
+
+/** Themes offered in pickers (hidden ones excluded). */
+export const selectableThemes: ThemeDefinition[] = availableThemes.filter(
+  (t) => !t.hidden,
+);
+
+/**
+ * Themes for a picker: the selectable ones, plus the current theme when it is
+ * hidden so a stored choice stays visible and keeps working.
+ */
+export function pickerThemes(): ThemeDefinition[] {
+  const current = getCurrentTheme();
+  return current?.hidden ? [...selectableThemes, current] : selectableThemes;
+}
 
 /** Theme IDs derived from availableThemes for validation use. */
 export const THEME_IDS = availableThemes.map((t) => t.id);

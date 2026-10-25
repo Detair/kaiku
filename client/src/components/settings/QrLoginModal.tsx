@@ -6,13 +6,14 @@
  * The QR code includes a single-use token with a countdown timer.
  */
 
-import { Component, createSignal, onMount, onCleanup, Show } from "solid-js";
+import { Component, createSignal, onCleanup, Show } from "solid-js";
 import { X, Smartphone } from "lucide-solid";
 import QRCode from "qrcode";
 import { qrLoginCreate } from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
 import { buildQrLoginUri } from "@/lib/qrLogin";
 import { t } from "@/i18n";
+import { createDialog } from "@/lib/a11y/dialog";
 
 interface QrLoginModalProps {
   serverUrl: string;
@@ -20,13 +21,7 @@ interface QrLoginModalProps {
 }
 
 const QrLoginModal: Component<QrLoginModalProps> = (props) => {
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
-  });
+  const dialog = createDialog({ onClose: () => props.onClose() });
 
   const [qrDataUrl, setQrDataUrl] = createSignal<string | null>(null);
   const [isLoading, setIsLoading] = createSignal(false);
@@ -93,6 +88,8 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
       onClick={props.onClose}
     >
       <div
+        {...dialog.dialogProps}
+        ref={dialog.ref}
         class="bg-background-secondary rounded-xl shadow-2xl w-full max-w-sm mx-4"
         onClick={(e) => e.stopPropagation()}
       >
@@ -100,11 +97,13 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
         <div class="flex items-center justify-between p-4 border-b border-white/10">
           <div class="flex items-center gap-3">
             <Smartphone class="w-5 h-5 text-accent-primary" />
-            <h2 class="text-lg font-semibold text-text-primary">
+            <h2 id={dialog.titleId} class="text-lg font-semibold text-text-primary">
               {t("qr.title")}
             </h2>
           </div>
           <button
+            type="button"
+            aria-label={t("common.close")}
             onClick={props.onClose}
             class="p-1.5 hover:bg-white/10 rounded-lg transition-colors text-text-secondary"
           >
@@ -127,6 +126,7 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
                   <div class="text-center py-8">
                     <p class="text-sm text-red-400 mb-3">{error()}</p>
                     <button
+                      type="button"
                       onClick={generateQr}
                       class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
                     >
@@ -155,6 +155,7 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
                 <div class="text-center">
                   <p class="text-sm text-text-secondary mb-2">{t("qr.expired")}</p>
                   <button
+                    type="button"
                     onClick={generateQr}
                     class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
                   >
@@ -173,6 +174,7 @@ const QrLoginModal: Component<QrLoginModalProps> = (props) => {
         {/* Footer */}
         <div class="p-4 border-t border-white/10">
           <button
+            type="button"
             onClick={props.onClose}
             class="w-full px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-text-primary text-sm"
           >

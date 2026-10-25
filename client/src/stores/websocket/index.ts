@@ -359,7 +359,9 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
     case "message_new":
       await addMessage(event.message);
       updateDMLastMessage(event.channel_id, event.message);
-      handleMessageNotification(event.message);
+      handleMessageNotification(event.message).catch((err) => {
+        console.warn("[WebSocket] Message notification failed:", err);
+      });
       // Increment unread count if message is not in the selected channel
       {
         const isActiveGuildChannel = event.channel_id === channelsState.selectedChannelId;
