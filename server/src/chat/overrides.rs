@@ -110,9 +110,9 @@ pub async fn set_override(
     }
 
     // Verify role belongs to this guild
-    if !queries::guild_role_exists(&state.db, role_id, guild_id).await? {
-        return Err(ChatError::RoleNotFound);
-    }
+    let is_default_role = queries::guild_role_is_default(&state.db, role_id, guild_id)
+        .await?
+        .ok_or(ChatError::RoleNotFound)?;
 
     // Security: Prevent permission escalation via channel overrides
     // Users cannot grant permissions they don't have themselves
@@ -122,6 +122,14 @@ pub async fn set_override(
         return Err(ChatError::Permission(PermissionError::CannotEscalate(
             escalation,
         )));
+    }
+
+    // The default role can never be granted the permissions in EVERYONE_FORBIDDEN,
+    // not even per channel. `deny` is unrestricted.
+    if is_default_role && !allow_perms.validate_for_everyone() {
+        return Err(ChatError::Validation(
+            "Cannot grant dangerous permissions to @everyone role".to_string(),
+        ));
     }
 
     let allow = body.allow.unwrap_or(0) as i64;

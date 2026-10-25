@@ -44,7 +44,12 @@ pub fn compute_guild_permissions(
 
         for role in user_roles {
             if let Some(ovr) = overrides.iter().find(|o| o.role_id == role.id) {
-                role_allow |= ovr.allow_permissions;
+                // The default role can never gain forbidden bits through an override.
+                role_allow |= if role.is_default {
+                    ovr.allow_permissions & GuildPermissions::EVERYONE_ALLOWED
+                } else {
+                    ovr.allow_permissions
+                };
                 role_deny |= ovr.deny_permissions;
             }
         }
@@ -280,6 +285,51 @@ mod tests {
         assert!(!perms.has(GuildPermissions::SEND_MESSAGES)); // denied by override
         assert!(perms.has(GuildPermissions::EMBED_LINKS)); // still from everyone
         assert!(perms.has(GuildPermissions::ATTACH_FILES)); // allowed by override
+    }
+
+    #[test]
+    fn default_role_override_cannot_allow_forbidden_bits() {
+        let user_id = Uuid::new_v4();
+        let owner_id = Uuid::new_v4();
+        let role_id = Uuid::new_v4();
+        let mk_role = |is_default| GuildRole {
+            id: role_id,
+            guild_id: Uuid::new_v4(),
+            name: "r".to_string(),
+            color: None,
+            permissions: GuildPermissions::empty(),
+            position: 999,
+            is_default,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let ovr = ChannelOverride {
+            id: Uuid::new_v4(),
+            channel_id: Uuid::new_v4(),
+            role_id,
+            allow_permissions: GuildPermissions::ATTACH_FILES | GuildPermissions::MANAGE_WEBHOOKS,
+            deny_permissions: GuildPermissions::empty(),
+        };
+        let everyone = GuildPermissions::EVERYONE_DEFAULT;
+
+        let masked = compute_guild_permissions(
+            user_id,
+            owner_id,
+            everyone,
+            &[mk_role(true)],
+            Some(std::slice::from_ref(&ovr)),
+        );
+        assert!(masked.has(GuildPermissions::ATTACH_FILES));
+        assert!(!masked.has(GuildPermissions::MANAGE_WEBHOOKS));
+
+        let normal = compute_guild_permissions(
+            user_id,
+            owner_id,
+            everyone,
+            &[mk_role(false)],
+            Some(std::slice::from_ref(&ovr)),
+        );
+        assert!(normal.has(GuildPermissions::MANAGE_WEBHOOKS));
     }
 
     #[test]

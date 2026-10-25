@@ -76,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 - Updated the Markdown sanitizer, diagram renderer and UI runtime libraries to versions without known vulnerabilities; the frontend dependency audit now blocks CI on production advisories.
-- The default role can no longer be given webhook, post, event or announcement management rights.
+- The default role can no longer be given webhook, post, event or announcement management rights, including through channel permission overrides.
 - Unlocking admin actions and creating new MFA backup codes now ask for your password (and authenticator code if MFA is on); password and MFA endpoints are rate limited. Admins can instead unlock admin actions by signing in again at a linked identity provider; the authenticator code is still required when MFA is on, and a provider linked after the current sign-in cannot be used for this unless it was linked while unlocked. Unlocking applies only to the device session where it was done, and each authenticator code is accepted only once.
 - Attachment downloads with a `?token=` link are refused while the server cannot check whether the session has ended.
 - Banning an account, signing out a session, or changing your password with 'sign out other devices' now ends those sessions right away, including open connections.
