@@ -664,12 +664,13 @@ pub async fn download(
             .map_err(|_| ChatError::Forbidden)?;
         // This path bypasses `require_auth`, so apply its rules here: ended
         // sessions, banned accounts and a pending forced password change.
+        // Fails closed: if the denylist cannot be read, refuse with 503
+        // rather than serve a possibly revoked token.
         if let Some(sid) = claims.sid.as_deref() {
-            if matches!(
-                crate::auth::revocation::is_session_revoked(&state.redis, sid).await,
-                Ok(true)
-            ) {
-                return Err(ChatError::SessionEnded);
+            match crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
+                Ok(false) => {}
+                Ok(true) => return Err(ChatError::SessionEnded),
+                Err(_) => return Err(ChatError::ServiceUnavailable),
             }
         }
         let caller: Option<(bool, bool)> = sqlx::query_as(

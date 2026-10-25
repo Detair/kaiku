@@ -398,6 +398,23 @@ async fn test_attachment_download_token_respects_revocation(pool: PgPool) {
     assert_eq!(error_code(resp).await, "INVALID_TOKEN");
 }
 
+/// A `?token=` download fails closed when the revocation list cannot be read.
+#[sqlx::test]
+async fn test_attachment_download_token_fails_closed_without_valkey(pool: PgPool) {
+    let (server, config) = server_with_failing_valkey(&pool).await;
+    let (user_id, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&config, user_id);
+    let download = format!(
+        "{}/api/messages/attachments/{}/download?token={token}",
+        server.url,
+        Uuid::now_v7(),
+    );
+
+    let resp = reqwest::get(&download).await.expect("download");
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error_code(resp).await, "SERVICE_UNAVAILABLE");
+}
+
 /// A ban closes every open socket of the user, also one whose session row is
 /// already gone.
 #[sqlx::test]
