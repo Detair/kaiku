@@ -100,6 +100,12 @@ export const en = {
   "admin.createAccount.created": "Account created",
   "admin.createAccount.server": "Server",
   "admin.createAccount.handover": "Give these to {{name}}. They will choose their own password the first time they sign in.",
+  "connection.session.expiredTitle": "Session Expired",
+  "connection.session.expired": "Your session has expired. Please log in again to continue.",
+  "connection.session.endedTitle": "Signed out",
+  "connection.session.revoked": "Your session was ended on another device or by an admin. Please log in again to continue.",
+  "connection.session.banned": "This account has been suspended, so you were signed out.",
+  "connection.session.logIn": "Log in",
 } as const;
 
 export type MessageKey = keyof typeof en;

@@ -835,6 +835,17 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     case "error":
       console.error("WebSocket error:", event.code, event.message);
+      // Native: Rust acts on these itself.
+      if (!isTauri()) {
+        if (event.code === "SESSION_REVOKED") {
+          handleSessionRevoked();
+          break;
+        }
+        if (event.code === tauri.PASSWORD_CHANGE_REQUIRED) {
+          handleBrowserPasswordChangeRequired();
+          break;
+        }
+      }
       setWsState({ error: event.message });
       break;
 
@@ -1119,6 +1130,50 @@ async function handleNativeAuthRejected(): Promise<void> {
   tauri.expireNativeSession();
 }
 
+/**
+ * Browser: the session was ended elsewhere (revoke, ban, password change).
+ * Sign out at once; no refresh and no reconnect, the server closes with 1008
+ * right after this event.
+ */
+function handleSessionRevoked(): void {
+  console.warn("[WS] Session revoked by the server — signing out");
+  supervisor?.stop();
+  browserDriver.close();
+  tauri.endBrowserSession("revoked");
+}
+
+/**
+ * Browser: the server refuses the socket until the temporary password is
+ * replaced (error frame, then close 1008). Retrying cannot help.
+ */
+function handleBrowserPasswordChangeRequired(): void {
+  console.warn("[WS] Password change required — stopping reconnects");
+  supervisor?.stop();
+  browserDriver.close();
+  window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_REQUIRED_EVENT));
+}
+
+/**
+ * Browser: the server refused the token again right after a refresh (the
+ * supervisor has stopped). Password change pending → change screen, anything
+ * else → the session-expired prompt (no silent retry, which would loop).
+ */
+async function handleBrowserAuthRejected(): Promise<void> {
+  console.warn("[WS] Server rejected a fresh token — stopping reconnects");
+  browserDriver.close();
+  let passwordChangePending = false;
+  try {
+    passwordChangePending = await tauri.isPasswordChangePending();
+  } catch (err) {
+    console.warn("[WS] Account check after auth rejection failed:", err);
+  }
+  if (passwordChangePending) {
+    window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_REQUIRED_EVENT));
+    return;
+  }
+  tauri.endBrowserSession("expired");
+}
+
 function getSupervisor(): ConnectionSupervisor {
   supervisor ??= createConnectionSupervisor({
     driver: isTauri() ? nativeDriver : browserDriver,
@@ -1133,7 +1188,12 @@ function getSupervisor(): ConnectionSupervisor {
       });
     },
     onRecovered: handleReconnect,
-    ensureFreshToken: () => tauri.ensureFreshAccessToken(),
+    ensureFreshToken: (force) =>
+      force
+        ? // Infinity: no token counts as fresh, so a real refresh runs.
+          tauri.ensureFreshAccessToken(Number.POSITIVE_INFINITY)
+        : tauri.ensureFreshAccessToken(),
+    onAuthRejected: () => void handleBrowserAuthRejected(),
   });
   return supervisor;
 }
@@ -1162,7 +1222,8 @@ export async function connect(): Promise<void> {
     setWsState({ error: null });
     if (!isTauri()) {
       tauri.setBrowserSocketHooks({
-        onClose: (intentional) => supervisor?.notifyClosed(intentional),
+        onClose: (intentional, code) =>
+          supervisor?.notifyClosed(intentional, code),
         onFrame: () => supervisor?.notifyFrame(),
       });
     }

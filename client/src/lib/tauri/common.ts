@@ -257,6 +257,20 @@ if (typeof localStorage !== "undefined") {
     localStorage.getItem("serverUrl") || browserState.serverUrl;
 }
 
+/** Window event: the session ended for good (no silent refresh retry). */
+export const SESSION_ENDED_EVENT = "kaiku:session-ended";
+
+/** Why the session ended; selects the message shown on the sign-in prompt. */
+export type SessionEndReason = "expired" | "revoked" | "banned";
+
+/** Browser: drop the local session and tell the app to show the sign-in prompt. */
+export function endBrowserSession(reason: SessionEndReason): void {
+  clearBrowserTokens();
+  window.dispatchEvent(
+    new CustomEvent(SESSION_ENDED_EVENT, { detail: { reason } }),
+  );
+}
+
 /** Clear in-memory browser auth state. */
 export function clearBrowserTokens() {
   if (browserState.refreshTimer) {
@@ -439,6 +453,16 @@ export function refreshAccessToken(): Promise<boolean> {
   return refreshInFlight;
 }
 
+/** Whether a 403 refresh response carries the `ACCOUNT_BANNED` code. */
+async function isAccountBanned(response: Response): Promise<boolean> {
+  try {
+    const body = (await response.json()) as { error?: unknown };
+    return body?.error === "ACCOUNT_BANNED";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Native refresh. `null` from Rust means the session has ended; a rejected
  * invoke (offline, 5xx) is transient and keeps the cached token.
@@ -478,6 +502,10 @@ async function doRefreshAccessToken(): Promise<boolean> {
       // Only an explicit rejection ends the session. Other statuses (e.g. a
       // 502/503 from a proxy while the server restarts) are transient, like a
       // network error: keep the tokens so the caller can retry later.
+      if (response.status === 403 && (await isAccountBanned(response))) {
+        endBrowserSession("banned");
+        return false;
+      }
       if (response.status === 401 || response.status === 403) {
         clearBrowserTokens();
       }

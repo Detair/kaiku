@@ -32,9 +32,23 @@ export interface SupervisorOptions {
   onStatus(status: ConnectionState, attempt: number): void;
   /** Runs after a connection came back (not after the very first open). */
   onRecovered(): Promise<void>;
-  /** Resolves `false` when the session cannot be renewed. */
-  ensureFreshToken(): Promise<boolean>;
-  timings?: { pingEveryMs: number; silenceLimitMs: number };
+  /**
+   * Resolves `false` when the session cannot be renewed. `force` asks for a
+   * real refresh even if the current token still looks valid (the server just
+   * refused it).
+   */
+  ensureFreshToken(force?: boolean): Promise<boolean>;
+  /**
+   * Managed mode: the server refused the token again right after a refresh,
+   * so reconnecting cannot help. The supervisor has already stopped.
+   */
+  onAuthRejected?(): void;
+  timings?: {
+    pingEveryMs: number;
+    silenceLimitMs: number;
+    /** A connection this long up resets the one-refresh-per-streak allowance. */
+    healthyAfterMs?: number;
+  };
 }
 
 export interface ConnectionSupervisor {
@@ -47,12 +61,26 @@ export interface ConnectionSupervisor {
   start(): Promise<boolean>;
   stop(): void;
   notifyOpened(): void;
-  notifyClosed(intentional: boolean): void;
+  /** `code` is the WebSocket close code of an unintentional close, if known. */
+  notifyClosed(intentional: boolean, code?: number): void;
   notifyFrame(): void;
   triggerNow(reason: "online" | "visible" | "user"): void;
 }
 
-const DEFAULT_TIMINGS = { pingEveryMs: 20_000, silenceLimitMs: 45_000 };
+const DEFAULT_TIMINGS: NonNullable<SupervisorOptions["timings"]> = {
+  pingEveryMs: 20_000,
+  silenceLimitMs: 45_000,
+};
+/** Same as the native client: a connection this long up counts as healthy. */
+const HEALTHY_AFTER_MS = 60_000;
+/** WebSocket close code "policy violation": the server refused the auth. */
+const CLOSE_AUTH = 1008;
+
+/** Close code carried by a rejected open (`closeCode`), if the socket closed. */
+function closeCodeOf(err: unknown): number | undefined {
+  const code = (err as { closeCode?: unknown } | null)?.closeCode;
+  return typeof code === "number" ? code : undefined;
+}
 const BASE_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 const JITTER = 0.4; // total spread, i.e. ±20 %
@@ -95,6 +123,11 @@ export function createConnectionSupervisor(
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let silenceTimer: ReturnType<typeof setTimeout> | null = null;
   let listening = false;
+  // Managed mode, auth handling: at most one forced refresh per streak of
+  // failures; a connection that stays up for `healthyAfterMs` ends the streak.
+  let refreshedThisStreak = false;
+  let refreshPending = false;
+  let healthyTimer: ReturnType<typeof setTimeout> | null = null;
 
   // --- timers -------------------------------------------------------------
 
@@ -113,6 +146,10 @@ export function createConnectionSupervisor(
     if (silenceTimer !== null) {
       clearTimeout(silenceTimer);
       silenceTimer = null;
+    }
+    if (healthyTimer !== null) {
+      clearTimeout(healthyTimer);
+      healthyTimer = null;
     }
   }
 
@@ -149,8 +186,26 @@ export function createConnectionSupervisor(
 
   // --- state transitions --------------------------------------------------
 
-  function connectionLost(): void {
+  /**
+   * `code`: close code of the lost socket. `beforeOpen`: it never opened, so
+   * a refused handshake (invisible to the browser, close 1006) is possible.
+   */
+  function connectionLost(code?: number, beforeOpen = false): void {
     stopWatchdog();
+    if (opts.mode === "managed") {
+      const authClose = code === CLOSE_AUTH;
+      const maybeAuth = beforeOpen && code !== undefined;
+      if (authClose || maybeAuth) {
+        if (!refreshedThisStreak) {
+          refreshedThisStreak = true;
+          refreshPending = true;
+        } else if (authClose) {
+          stop();
+          opts.onAuthRejected?.();
+          return;
+        }
+      }
+    }
     phase = "waiting";
     attempt += 1;
     opts.onStatus("reconnecting", attempt);
@@ -173,6 +228,12 @@ export function createConnectionSupervisor(
     attempt = 0;
     opts.onStatus("connected", 0);
     startWatchdog();
+    if (opts.mode === "managed") {
+      healthyTimer = setTimeout(() => {
+        healthyTimer = null;
+        refreshedThisStreak = false;
+      }, timings.healthyAfterMs ?? HEALTHY_AFTER_MS);
+    }
     if (recovered) {
       try {
         await opts.onRecovered();
@@ -191,8 +252,10 @@ export function createConnectionSupervisor(
 
     if (attempt > 0) {
       let fresh: boolean;
+      const force = refreshPending;
+      refreshPending = false;
       try {
-        fresh = await opts.ensureFreshToken();
+        fresh = await opts.ensureFreshToken(force);
       } catch (err) {
         // Treat as transient (e.g. network): back off and try again.
         console.warn("[WS] Token check failed before reconnect:", err);
@@ -215,7 +278,9 @@ export function createConnectionSupervisor(
     try {
       await driver.open();
     } catch (err) {
-      if (gen === generation && phase === "opening") connectionLost();
+      if (gen === generation && phase === "opening") {
+        connectionLost(closeCodeOf(err), true);
+      }
       throw err;
     }
 
@@ -262,6 +327,8 @@ export function createConnectionSupervisor(
     }
     generation += 1;
     attempt = 0;
+    refreshedThisStreak = false;
+    refreshPending = false;
     addListeners();
     return attemptOpen();
   }
@@ -284,7 +351,7 @@ export function createConnectionSupervisor(
     void opened();
   }
 
-  function notifyClosed(intentional: boolean): void {
+  function notifyClosed(intentional: boolean, code?: number): void {
     // Only a close of the live connection matters; failures of an attempt in
     // flight are handled by attemptOpen(), and a close after the watchdog
     // dropped the socket is already accounted for. External mode is the
@@ -300,7 +367,7 @@ export function createConnectionSupervisor(
       opts.onStatus("disconnected", 0);
       return;
     }
-    connectionLost();
+    connectionLost(code);
   }
 
   function notifyFrame(): void {
