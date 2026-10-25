@@ -259,13 +259,18 @@ export function createConnectionSupervisor(
       } catch (err) {
         // Treat as transient (e.g. network): back off and try again.
         console.warn("[WS] Token check failed before reconnect:", err);
+        // Transient: the forced refresh is still owed on the next attempt.
+        if (force) refreshPending = true;
         if (gen === generation) connectionLost();
         throw err;
       }
       if (gen !== generation) return false;
       if (!fresh) {
         stop();
-        window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+        // Managed: end the session directly (the legacy event would refresh
+        // once more). Native keeps the legacy path.
+        if (opts.onAuthRejected) opts.onAuthRejected();
+        else window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
         return false;
       }
     }

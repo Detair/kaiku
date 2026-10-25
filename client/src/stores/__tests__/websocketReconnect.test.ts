@@ -182,6 +182,7 @@ describe("connection supervisor", () => {
     try {
       const { supervisor, driver } = makeSupervisor({
         ensureFreshToken: vi.fn(async () => false),
+        onAuthRejected: undefined, // native: legacy expiry event
       });
       active = supervisor;
       await supervisor.start();
@@ -384,22 +385,37 @@ describe("connection supervisor close codes (C11/C25)", () => {
     expect(opts.ensureFreshToken).toHaveBeenCalledTimes(1);
   });
 
+  it("a transient refresh failure after 1008 backs off and retries the refresh", async () => {
+    const ensureFreshToken = vi
+      .fn<SupervisorOptions["ensureFreshToken"]>()
+      .mockRejectedValueOnce(new Error("503"))
+      .mockResolvedValue(true);
+    const { supervisor, driver, opts } = makeSupervisor({ ensureFreshToken });
+    active = supervisor;
+    await supervisor.start();
+
+    supervisor.notifyClosed(false, 1008);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(opts.onAuthRejected).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(ensureFreshToken.mock.calls.map((c) => c[0])).toEqual([true, true]);
+    expect(driver.open).toHaveBeenCalledTimes(2);
+    expect(opts.onAuthRejected).not.toHaveBeenCalled();
+  });
+
   it("a rejected refresh after 1008 ends the session", async () => {
     const { supervisor, driver, opts } = makeSupervisor({
       ensureFreshToken: vi.fn().mockResolvedValue(false),
     });
     active = supervisor;
-    const expired = vi.fn();
-    window.addEventListener("kaiku:session-expired", expired);
     await supervisor.start();
 
     supervisor.notifyClosed(false, 1008);
     await vi.advanceTimersByTimeAsync(120_000);
-    window.removeEventListener("kaiku:session-expired", expired);
 
     expect(driver.open).toHaveBeenCalledTimes(1);
-    expect(expired).toHaveBeenCalledTimes(1);
-    expect(opts.onAuthRejected).not.toHaveBeenCalled();
+    expect(opts.onAuthRejected).toHaveBeenCalledTimes(1);
   });
 
   it.each([1011, 1013])(

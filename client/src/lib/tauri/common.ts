@@ -548,6 +548,19 @@ async function doRefreshAccessToken(): Promise<boolean> {
 }
 
 /**
+ * Refresh now, whatever the token's remaining lifetime. Resolves `false` only
+ * when the session is definitively over; throws on a transient failure
+ * (offline, 5xx) so the caller backs off instead of treating the stale token
+ * as renewed.
+ */
+export async function forceRefreshAccessToken(): Promise<boolean> {
+  if (await refreshAccessToken()) return true;
+  const kept = isTauri() ? nativeAuthInfo !== null : browserState.accessToken !== null;
+  if (!kept) return false;
+  throw new Error("Token refresh failed; will retry");
+}
+
+/**
  * Make sure the access token is valid for at least `minValidityMs` more,
  * refreshing it if not. Used before a WebSocket reconnect (the socket
  * authenticates with the access token, which may have expired during sleep).

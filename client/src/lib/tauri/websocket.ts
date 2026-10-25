@@ -106,11 +106,7 @@ export async function wsConnect(): Promise<void> {
     };
 
     ws.onclose = (event) => {
-      if (!isCurrent()) {
-        // Replaced or closed on purpose while connecting: settle the promise.
-        reject(new SocketClosedError(event.code));
-        return;
-      }
+      if (!isCurrent()) return;
       browserWs = null;
       browserWsStatus = { type: "disconnected" };
       console.log("[WebSocket] Connection closed");

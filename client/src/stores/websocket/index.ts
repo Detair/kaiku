@@ -1189,10 +1189,7 @@ function getSupervisor(): ConnectionSupervisor {
     },
     onRecovered: handleReconnect,
     ensureFreshToken: (force) =>
-      force
-        ? // Infinity: no token counts as fresh, so a real refresh runs.
-          tauri.ensureFreshAccessToken(Number.POSITIVE_INFINITY)
-        : tauri.ensureFreshAccessToken(),
+      force ? tauri.forceRefreshAccessToken() : tauri.ensureFreshAccessToken(),
     onAuthRejected: () => void handleBrowserAuthRejected(),
   });
   return supervisor;

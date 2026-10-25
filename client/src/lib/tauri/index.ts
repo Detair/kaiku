@@ -91,6 +91,7 @@ export {
   httpRequest,
   refreshAccessToken,
   ensureFreshAccessToken,
+  forceRefreshAccessToken,
   getAuthContext,
   setNativeAuthInfo,
   expireNativeSession,

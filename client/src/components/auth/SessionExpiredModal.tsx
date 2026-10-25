@@ -5,6 +5,12 @@ import { LogIn } from "lucide-solid";
 import { t } from "@/i18n";
 import { authState, setAuthState, logout } from "@/stores/auth";
 
+const REASON_TEXT = {
+  expired: "connection.session.expired",
+  revoked: "connection.session.revoked",
+  banned: "connection.session.banned",
+} as const;
+
 const SessionExpiredModal: Component = () => {
   const navigate = useNavigate();
 
@@ -49,7 +55,7 @@ const SessionExpiredModal: Component = () => {
 
             <div class="p-5 space-y-4">
               <p class="text-text-secondary text-sm">
-                {t(`connection.session.${authState.sessionEndReason}`)}
+                {t(REASON_TEXT[authState.sessionEndReason])}
               </p>
 
               <div class="flex justify-end">

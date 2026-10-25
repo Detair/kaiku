@@ -66,4 +66,20 @@ describe("browser WebSocket close reporting", () => {
 
     await expect(connected).rejects.toMatchObject({ closeCode: 1006 });
   });
+
+  it("a replaced socket closing late stays silent", async () => {
+    const { ws, onClose } = await load();
+    const first = ws.wsConnect();
+    const stale = FakeSocket.instances[0];
+    await ws.wsDisconnect();
+    onClose.mockClear();
+
+    stale.closeWith(1006);
+
+    const settled = vi.fn();
+    void first.then(settled, settled);
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });

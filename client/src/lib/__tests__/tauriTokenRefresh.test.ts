@@ -50,6 +50,19 @@ describe("token refresh failure handling", () => {
     expect(common.browserState.accessToken).toBeNull();
   });
 
+  it("a forced refresh that hits a 503 throws instead of claiming success", async () => {
+    fetchMock.mockResolvedValue(respond(503));
+
+    await expect(common.forceRefreshAccessToken()).rejects.toThrow();
+    expect(common.browserState.accessToken).toBe("old-token");
+  });
+
+  it("a forced refresh rejected with 401 resolves false", async () => {
+    fetchMock.mockResolvedValue(respond(401));
+
+    expect(await common.forceRefreshAccessToken()).toBe(false);
+  });
+
   it("a 403 ACCOUNT_BANNED refresh ends the session as banned", async () => {
     fetchMock.mockResolvedValue(respond(403, { error: "ACCOUNT_BANNED" }));
     const ended = vi.fn();
