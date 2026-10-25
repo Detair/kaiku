@@ -182,8 +182,11 @@ class RealtimeConnectionManager internal constructor(
      * a refresh must not keep the old socket delivering events past the
      * step's timeout. [closedSessionId] is set first (volatile), so every
      * actor path treats the session as logged out from now on, and
-     * [KaikuWebSocket] drops frames of a socket it no longer holds. The
-     * actor input then stops timers and retries; this returns once it ran.
+     * [KaikuWebSocket] drops frames of a socket it no longer holds. If the
+     * actor was already past its session check and opens a socket after
+     * this close, it closes that socket itself right after connecting, and
+     * the actor input closes whatever is still open and stops timers and
+     * retries; this returns once that input ran.
      */
     suspend fun closeForLogout(sessionId: Long?) {
         val current = authState.session.value
@@ -258,8 +261,11 @@ class RealtimeConnectionManager internal constructor(
         if (current is AuthSession.LoggedIn && current.sessionId != sessionId) return
         logger.info("closing for logout")
         if (sessionId != null) closedSessionId = sessionId
-        // closeForLogout already closed the socket directly.
+        // closeForLogout closed the socket directly, but the actor may have
+        // opened one since (it was past its session check). disconnect() is
+        // idempotent: close whatever is open now.
         socketActive = false
+        socket.disconnect()
         stopAfterSessionEnded()
     }
 
@@ -319,6 +325,16 @@ class RealtimeConnectionManager internal constructor(
         // Only after connect() returned: if it threw, the actor's catch schedules a retry.
         socketActive = true
         socketSessionGeneration = generation
+        if (!isLoggedIn()) {
+            // closeForLogout ran on another thread after the checks above: its
+            // direct close found no socket yet, so close this one now.
+            logger.info("session closed while connecting, closing the new socket")
+            socketActive = false
+            socket.disconnect()
+            cancelTokenRefresh()
+            setStatus(RealtimeStatus.Idle)
+            return
+        }
         armConnectTimeout()
     }
 
