@@ -38,7 +38,12 @@ import javax.inject.Singleton
  */
 interface SessionTeardown {
     val order: Int
-    suspend fun onLogout()
+
+    /**
+     * Tears down what belongs to the ended session [sessionId] (null when
+     * nobody was logged in). Must leave a newer session alone.
+     */
+    suspend fun onLogout(sessionId: Long?)
 }
 
 /**
@@ -157,7 +162,7 @@ class SessionTeardownRunner @Inject constructor(
                     logger.info("a newer session started, remaining teardown skipped")
                     return
                 }
-                runStep(step)
+                runStep(step, sessionId)
             }
         }
     }
@@ -167,11 +172,11 @@ class SessionTeardownRunner @Inject constructor(
         return now is AuthSession.LoggedIn && now.sessionId != sessionId
     }
 
-    private suspend fun runStep(step: SessionTeardown) {
+    private suspend fun runStep(step: SessionTeardown, sessionId: Long?) {
         val name = step::class.simpleName
         try {
             val finished = withTimeoutOrNull(STEP_TIMEOUT_MS) {
-                step.onLogout()
+                step.onLogout(sessionId)
                 true
             }
             if (finished == null) logger.warning("teardown $name timed out")
@@ -188,7 +193,7 @@ class VoiceSessionTeardown @Inject constructor(
     private val voiceRepository: VoiceRepository,
 ) : SessionTeardown {
     override val order: Int = 10
-    override suspend fun onLogout() = voiceRepository.leaveChannel()
+    override suspend fun onLogout(sessionId: Long?) = voiceRepository.leaveChannel()
 }
 
 /**
@@ -199,7 +204,7 @@ class RealtimeSessionTeardown @Inject constructor(
     private val realtimeConnectionManager: RealtimeConnectionManager,
 ) : SessionTeardown {
     override val order: Int = 20
-    override suspend fun onLogout() = realtimeConnectionManager.closeForLogout()
+    override suspend fun onLogout(sessionId: Long?) = realtimeConnectionManager.closeForLogout(sessionId)
 }
 
 /**
@@ -213,7 +218,7 @@ class CacheSessionTeardown @Inject constructor(
     private val dmRepository: DmRepository,
 ) : SessionTeardown {
     override val order: Int = 30
-    override suspend fun onLogout() {
+    override suspend fun onLogout(sessionId: Long?) {
         // First: a resync still running must not refill the caches.
         resyncCoordinator.cancelForLogout()
         chatRepository.clearSession()

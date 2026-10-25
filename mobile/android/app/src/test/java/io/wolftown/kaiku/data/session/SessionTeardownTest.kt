@@ -55,7 +55,7 @@ class SessionTeardownTest {
 
     private class Counting(override val order: Int) : SessionTeardown {
         var calls = 0
-        override suspend fun onLogout() {
+        override suspend fun onLogout(sessionId: Long?) {
             calls++
         }
     }
@@ -158,7 +158,7 @@ class SessionTeardownTest {
         val old = authState.session.value as AuthSession.LoggedIn
         val first = object : SessionTeardown {
             override val order = 10
-            override suspend fun onLogout() {
+            override suspend fun onLogout(sessionId: Long?) {
                 authState.setLoggedOut()
                 authState.setLoggedIn("user-1") // the same user signs in again mid-teardown
             }
@@ -186,7 +186,7 @@ class SessionTeardownTest {
         var starts = 0
         val step = object : SessionTeardown {
             override val order = 10
-            override suspend fun onLogout() {
+            override suspend fun onLogout(sessionId: Long?) {
                 starts++
                 if (starts == 1) gate.await()
             }
@@ -213,5 +213,26 @@ class SessionTeardownTest {
         advanceUntilIdle()
 
         assertEquals(0, step.calls)
+    }
+
+    @Test
+    fun `steps receive the ended session id`() = runTest {
+        val authState = AuthState(backgroundScope)
+        val received = mutableListOf<Long?>()
+        val step = object : SessionTeardown {
+            override val order = 20
+            override suspend fun onLogout(sessionId: Long?) {
+                received += sessionId
+            }
+        }
+        val runner = SessionTeardownRunner(setOf(step), authState, appScope())
+        runner.start()
+        authState.setLoggedIn("user-1")
+        val ended = (authState.session.value as AuthSession.LoggedIn).sessionId
+
+        authState.setLoggedOut()
+        advanceUntilIdle()
+
+        assertEquals(listOf<Long?>(ended), received)
     }
 }

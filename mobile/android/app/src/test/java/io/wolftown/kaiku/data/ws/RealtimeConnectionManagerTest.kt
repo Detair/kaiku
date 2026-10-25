@@ -9,7 +9,6 @@ import io.wolftown.kaiku.data.auth.TokenRefresher
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -137,6 +136,8 @@ class RealtimeConnectionManagerTest {
         private val log: MutableList<String>,
     ) : TokenRefresher {
         var ensureResult = RefreshResult.SUCCESS
+        /** When set, ensureFresh suspends until it completes (an actor busy in a refresh). */
+        var ensureGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         var forceResult = RefreshResult.SUCCESS
         var ensureCalls = 0
         var forceCalls = 0
@@ -144,6 +145,7 @@ class RealtimeConnectionManagerTest {
         override suspend fun ensureFresh(minValidityMs: Long): RefreshResult {
             ensureCalls++
             log += "ensureFresh"
+            ensureGate?.await()
             val result = ensureResult
             if (result == RefreshResult.SUCCESS && tokens.expiresAt - now() < minValidityMs) tokens.rotate()
             endSessionIfRejected(result)
@@ -575,7 +577,8 @@ class RealtimeConnectionManagerTest {
         connected(h)
         val connectsBefore = h.socket.connects.size
 
-        val closing = backgroundScope.launch { h.manager.closeForLogout() }
+        val sessionId = (h.authState.session.value as AuthSession.LoggedIn).sessionId
+        val closing = backgroundScope.launch { h.manager.closeForLogout(sessionId) }
         runCurrent()
 
         assertTrue(closing.isCompleted)
@@ -602,15 +605,48 @@ class RealtimeConnectionManagerTest {
     @Test
     fun `close for logout leaves a newer session alone`() = runManagerTest { h ->
         connected(h)
+        val ended = (h.authState.session.value as AuthSession.LoggedIn).sessionId
         h.authState.setLoggedOut()
-        // The teardown of the ended session is queued (it captured LoggedOut)...
-        val closing = backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) { h.manager.closeForLogout() }
-        // ...and a newer login lands before the actor handles it.
-        h.authState.setLoggedIn("user-2")
+        h.authState.setLoggedIn("user-2") // a newer login before the old session's teardown step
+        runCurrent()
+        h.socket.ready()
+        runCurrent()
+        val disconnectsBefore = h.socket.disconnects
+
+        val closing = backgroundScope.launch { h.manager.closeForLogout(ended) }
         runCurrent()
 
         assertTrue(closing.isCompleted)
-        assertEquals(0, h.socket.disconnects)
+        assertEquals(disconnectsBefore, h.socket.disconnects)
         assertEquals(RealtimeStatus.Connected, h.manager.status.value)
+    }
+
+    @Test
+    fun `close for logout closes the socket even while the actor is busy`() = runManagerTest { h ->
+        // Proactive refresh due 10 s after connecting (expiry 70 s, lead 60 s),
+        // well before the pong watchdog.
+        h.tokens.expiresAt = 70_000L
+        connected(h)
+        val sessionId = (h.authState.session.value as AuthSession.LoggedIn).sessionId
+        val connectsBefore = h.socket.connects.size
+        // The proactive refresh hangs: the actor is stuck in ensureFresh, socket still open.
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        h.refresher.ensureGate = gate
+        advanceTimeBy(RealtimeConnectionManager.MIN_REFRESH_DELAY_MS + 1)
+        assertTrue(h.log.count { it == "ensureFresh" } >= 2) // the refresh is in progress
+        assertEquals(RealtimeStatus.Connected, h.manager.status.value)
+
+        val closing = backgroundScope.launch { h.manager.closeForLogout(sessionId) }
+        runCurrent()
+
+        // Closed at once, although the actor has not handled the request yet.
+        assertEquals(1, h.socket.disconnects)
+        assertTrue(!closing.isCompleted)
+
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(closing.isCompleted)
+        advanceTimeBy(fiveMinutes)
+        assertEquals(connectsBefore, h.socket.connects.size) // no reconnect for the closed session
     }
 }

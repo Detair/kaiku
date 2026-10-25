@@ -144,6 +144,7 @@ class RealtimeConnectionManager internal constructor(
      * refresh. A new login has a new id and connects normally; LoggedOut
      * resets it.
      */
+    @Volatile
     private var closedSessionId: Long? = null
 
     /** Starts observing; idempotent. */
@@ -171,15 +172,26 @@ class RealtimeConnectionManager internal constructor(
     }
 
     /**
-     * Session teardown (order 20): closes the socket and keeps it closed for
-     * the current session, so the explicit logout can end the session on the
-     * server without the socket reconnecting or refreshing in between. Goes
-     * through the actor like every other input. If a newer login took over,
-     * nothing is closed. Returns once the actor handled it.
+     * Session teardown (order 20) for the ended session [sessionId]: closes
+     * the socket and keeps it closed for that session, so no more events of
+     * it reach the caches and the explicit logout can end it on the server
+     * without a reconnect or refresh in between. Does nothing if a newer
+     * login is current.
+     *
+     * The close happens right here, not only on the actor: an actor busy in
+     * a refresh must not keep the old socket delivering events past the
+     * step's timeout. [closedSessionId] is set first (volatile), so every
+     * actor path treats the session as logged out from now on, and
+     * [KaikuWebSocket] drops frames of a socket it no longer holds. The
+     * actor input then stops timers and retries; this returns once it ran.
      */
-    suspend fun closeForLogout() {
+    suspend fun closeForLogout(sessionId: Long?) {
+        val current = authState.session.value
+        if (current is AuthSession.LoggedIn && current.sessionId != sessionId) return
+        if (sessionId != null) closedSessionId = sessionId
+        logger.info("closing for logout")
+        socket.disconnect()
         val done = CompletableDeferred<Unit>()
-        val sessionId = (authState.session.value as? AuthSession.LoggedIn)?.sessionId
         inbox.send(Input.CloseForLogout(sessionId, done))
         done.await()
     }
@@ -245,7 +257,9 @@ class RealtimeConnectionManager internal constructor(
         // A newer login than the one being torn down: leave its connection alone.
         if (current is AuthSession.LoggedIn && current.sessionId != sessionId) return
         logger.info("closing for logout")
-        if (current is AuthSession.LoggedIn) closedSessionId = current.sessionId
+        if (sessionId != null) closedSessionId = sessionId
+        // closeForLogout already closed the socket directly.
+        socketActive = false
         stopAfterSessionEnded()
     }
 

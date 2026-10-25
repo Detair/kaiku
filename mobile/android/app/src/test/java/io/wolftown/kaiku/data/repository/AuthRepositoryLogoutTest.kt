@@ -63,7 +63,7 @@ class AuthRepositoryLogoutTest {
         private val log: MutableList<String>,
         private val action: suspend () -> Unit = {},
     ) : SessionTeardown {
-        override suspend fun onLogout() {
+        override suspend fun onLogout(sessionId: Long?) {
             log += "teardown-$order"
             action()
         }
