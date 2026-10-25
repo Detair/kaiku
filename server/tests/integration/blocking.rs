@@ -245,3 +245,38 @@ async fn test_block_prevents_message_in_dm(pool: PgPool) {
     let json = body_to_json(resp).await;
     assert_eq!(json["error"], "BLOCKED");
 }
+
+/// The Redis block cache expires; a block that exists only in Postgres must still
+/// refuse DM sends in both directions.
+#[sqlx::test]
+async fn test_db_only_block_refuses_dm_send(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_a, _) = create_test_user(&app.pool).await;
+    let (user_b, _) = create_test_user(&app.pool).await;
+    let token_a = generate_access_token(&app.config, user_a);
+    let token_b = generate_access_token(&app.config, user_b);
+    let channel_id = create_dm_channel(&app.pool, user_a, user_b).await;
+
+    // A blocks B directly in the DB: no Redis cache entry exists.
+    sqlx::query(
+        "INSERT INTO friendships (requester_id, addressee_id, status) VALUES ($1, $2, 'blocked')",
+    )
+    .bind(user_a)
+    .bind(user_b)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    for token in [&token_b, &token_a] {
+        let req = TestApp::request(Method::POST, &format!("/api/messages/channel/{channel_id}"))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                serde_json::json!({ "content": "Hello!" }).to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await;
+        assert_eq!(resp.status(), 403);
+        assert_eq!(body_to_json(resp).await["error"], "BLOCKED");
+    }
+}

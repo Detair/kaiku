@@ -416,7 +416,7 @@ pub async fn mark_as_read(
     // The WHERE clause inside the query ensures the read cursor only moves
     // forward by comparing message timestamps, preventing stale requests
     // from moving it backward.
-    queries::upsert_channel_read_state(
+    let marked = queries::upsert_channel_read_state(
         &state.db,
         auth.id,
         channel_id,
@@ -424,6 +424,10 @@ pub async fn mark_as_read(
         body.last_read_message_id,
     )
     .await?;
+    if marked {
+        // Clear the phone notification, if one was pushed (C20 `read`).
+        state.push.notify_read(&state, auth.id, channel_id);
+    }
 
     // 4. Broadcast ChannelRead event to all user's other sessions
     if let Err(e) = broadcast_to_user(

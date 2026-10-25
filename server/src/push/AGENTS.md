@@ -8,13 +8,64 @@ authenticated channel.
 
 ## Files
 
-- `mod.rs` - `WakeSignal`, `deliver` / `spawn_dispatch`, `send_one` (provider
-  dispatch), UnifiedPush transport, subscription CRUD.
+- `mod.rs` - `WakeSignal`, `deliver`, `send_one` (provider dispatch),
+  UnifiedPush transport, subscription CRUD.
 - `fcm.rs` - FCM HTTP v1 transport: service-account loading, RS256 OAuth2
   assertion, cached access token (single flight), `fcm_message` (C20),
   `classify_fcm_response`.
 - `service.rs` - `PushService` on `AppState.push`; holds the FCM client when a
-  service account is configured.
+  service account is configured and the `Coalescer`. `notify` (coalesced
+  wake) and `notify_read` (read gate) are the only entry points for triggers.
+- `coalesce.rs` - `Coalescer`: per-(user, channel) window, per-user cap, read
+  gate, idle sweep. Pure `Instant` arithmetic; unit-tested.
+- `targets.rs` - `wake_targets` (DM participants; guild `@mention` targets via
+  `chat::mentions`) and `spawn_wake_for_new_message`, called from
+  `chat::send::dispatch_new_message` for text and file messages.
+
+## Triggers and coalescing (C20)
+
+- Sending never waits on push: `spawn_wake_for_new_message` resolves targets
+  (mention resolution costs a channel-access check per candidate) inside a
+  spawned task.
+- Per (recipient, channel): the first message pushes at once (`count` 1);
+  messages within `WINDOW` (10 s) fold into one trailing push with the folded
+  count; a non-empty flush re-arms the window. At most
+  `USER_MAX_PER_MINUTE` (30) pushes per user per sliding minute, trailing
+  flushes included; over the cap a wake is dropped.
+- `read` goes out only when a dm/mention wake for that (user, channel) was
+  sent within `READ_GATE` (24 h) and not cleared yet, and only for channels a
+  mark-read handler actually marked (`chat::channels::mark_as_read`,
+  `chat::dm::mark_as_read` / `mark_all_dms_read`, `chat::unread::mark_all_read`,
+  `guild::settings::mark_all_channels_read`). Consuming the read gate has no
+  other effect: the window and a pending trailing push stay, so a message that
+  arrives after the read cursor (or between the read query and `notify_read`)
+  is still pushed, and alternating message/read does not produce repeated
+  immediate wakes.
+- A flush timer that has not run a full `WINDOW` after its deadline counts as
+  lost; the next message pushes immediately instead of waiting forever.
+- Ordering on the device is not guaranteed: FCM does not order messages, and
+  target resolution and delivery are asynchronous, so a `read` can arrive
+  before or after a wake for the same channel. `read` and wakes share
+  `collapse_key` = channel id, so FCM may drop a `read` while the phone is
+  offline. Clients must therefore, on every wake, fetch the messages after the
+  server's read cursor; if none are unread, they must clear any existing
+  notification for that channel (the `read` may have been collapsed or
+  reordered). They should also clear the channel's notification on `read`.
+- `/api/me/read-all` and guild read-all mark only text channels, so a mention
+  wake in an announcement or forum channel is cleared only by a per-channel
+  read.
+- Concurrency: the coalescer state is a `std::sync::Mutex` that is never held
+  across `.await`; timers are spawned `sleep_until` tasks that call `flush`.
+- Memory: every 256th `admit` sweeps entries idle for 1 h that hold no
+  unexpired read gate (gated entries live at most 24 h). Rate history per user
+  is dropped once older than a minute. A cap-dropped admission allocates
+  nothing (the cap is checked before an entry is created).
+- `MAX_ENTRIES` (65,536) is a hard cap. Trade-off: at the cap a new entry
+  evicts every entry idle for 1 h, **read gates included**, so those channels
+  get no `read` signal (their phone notification stays until opened or
+  replaced). If nothing is idle, the message is pushed immediately without
+  coalescing and without state (no read gate); eviction is retried at most
+  once per second.
 
 ## Transports
 
@@ -68,6 +119,8 @@ advisory locks in a fixed order: the per-user lock (seed 65,
 
 ## Single replica
 
-The access-token cache is per process. Any per-user push state (e.g.
-coalescing) kept in memory assumes a single server replica; running several
-replicas needs shared state first.
+The access-token cache and the coalescer (windows, per-user cap, read gates)
+are per process and assume a single server replica. Several replicas would
+each coalesce and rate-limit on their own (more pushes, read gates that miss);
+that needs shared state (e.g. Valkey) first. A restart forgets pending
+trailing pushes and read gates.
