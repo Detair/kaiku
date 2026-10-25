@@ -113,7 +113,8 @@ async fn authenticate(
     // are stateless, so without this check a token keeps working until it
     // expires even after the user logs out.
     if let Some(sid) = claims.sid.as_deref() {
-        if super::revocation::is_session_revoked(&state.redis, sid).await {
+        // Fails closed: without the denylist the request gets a 503.
+        if super::revocation::is_session_revoked(&state.redis, sid).await? {
             return Err(AuthError::InvalidToken);
         }
     }

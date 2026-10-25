@@ -392,15 +392,20 @@ async fn handle_bot_event(
 ) -> Result<(), String> {
     if let Some(rate_limiter) = &state.rate_limiter {
         let identifier = format!("bot_ws:{bot_user_id}");
-        let rate_result = rate_limiter
+        let rate_result = match rate_limiter
             .check(RateLimitCategory::WsMessage, &identifier)
             .await
-            .map_err(|e| {
+        {
+            Ok(result) => Some(result),
+            // WebSocket limits fail open while Valkey is unavailable.
+            Err(_) if rate_limiter.allow_during_outage(RateLimitCategory::WsMessage) => None,
+            Err(e) => {
                 warn!(error = %e, bot_user_id = %bot_user_id, "Bot WS rate limit check failed");
-                "Bot rate limiting unavailable".to_string()
-            })?;
+                return Err("Bot rate limiting unavailable".to_string());
+            }
+        };
 
-        if !rate_result.allowed {
+        if let Some(rate_result) = rate_result.filter(|r| !r.allowed) {
             return Err(format!(
                 "Rate limit exceeded; retry after {} seconds",
                 rate_result.retry_after

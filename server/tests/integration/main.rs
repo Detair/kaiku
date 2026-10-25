@@ -55,6 +55,7 @@ mod tenancy_isolation;
 mod threads;
 mod upload_limits;
 mod uploads_http;
+mod valkey_outage;
 mod voice_mute_enforcement;
 mod voice_rate_limit;
 mod voice_sfu;

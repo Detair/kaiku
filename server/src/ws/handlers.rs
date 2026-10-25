@@ -138,8 +138,11 @@ pub async fn handler(
 
         // Reject access tokens whose session was logged out or revoked.
         if let Some(sid) = claims.sid.as_deref() {
-            if crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
-                return error_response(401, "Session revoked");
+            match crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
+                Ok(false) => {}
+                Ok(true) => return error_response(401, "Session revoked"),
+                // Fail closed: the denylist cannot be checked.
+                Err(_) => return error_response(503, "Service temporarily unavailable"),
             }
         }
 
@@ -197,6 +200,11 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
             refuse_password_change_required(ws_sender).await;
             return;
         }
+        Ok(Err(AuthFrameError::Unavailable)) => {
+            debug!("Post-connect auth refused: session check unavailable");
+            close_pre_auth(ws_sender, CLOSE_TRY_AGAIN_LATER, "service unavailable").await;
+            return;
+        }
         Ok(Err(AuthFrameError::Failed(reason))) => {
             warn!("Post-connect auth failed: {}", reason);
             let mut ws_sender = ws_sender;
@@ -235,6 +243,9 @@ async fn user_must_change_password(
 enum AuthFrameError {
     /// The user must change their password first (close 1008 with an error event).
     PasswordChangeRequired,
+    /// The session could not be checked (Valkey unavailable): close 1013 so
+    /// the client retries later.
+    Unavailable,
     /// Any other failure; the socket is simply closed.
     Failed(String),
 }
@@ -243,6 +254,19 @@ impl From<String> for AuthFrameError {
     fn from(reason: String) -> Self {
         Self::Failed(reason)
     }
+}
+
+/// Close a pre-auth socket with `code`, bounded by [`CLOSE_FLUSH_TIMEOUT`].
+async fn close_pre_auth(
+    mut ws_sender: futures::stream::SplitSink<WebSocket, Message>,
+    code: u16,
+    reason: &'static str,
+) {
+    let close = ws_sender.send(Message::Close(Some(CloseFrame {
+        code,
+        reason: reason.into(),
+    })));
+    let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, close).await;
 }
 
 /// Tell a pre-auth socket that the password must be changed first, then close
@@ -283,8 +307,11 @@ async fn wait_for_auth_frame(
 
                     // Reject access tokens whose session was logged out or revoked.
                     if let Some(sid) = claims.sid.as_deref() {
-                        if crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
-                            return Err("Session revoked".to_string().into());
+                        match crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
+                            Ok(false) => {}
+                            Ok(true) => return Err("Session revoked".to_string().into()),
+                            // Fail closed: the denylist cannot be checked.
+                            Err(_) => return Err(AuthFrameError::Unavailable),
                         }
                     }
 
@@ -1138,11 +1165,12 @@ async fn handle_component_interaction(
     // publish + DB reads, so spammed clicks must not flood a bot or Redis.
     if let Some(rate_limiter) = &state.rate_limiter {
         let identifier = format!("component_interaction:{user_id}");
-        let allowed = rate_limiter
-            .check(crate::ratelimit::RateLimitCategory::WsMessage, &identifier)
-            .await
-            .map(|r| r.allowed)
-            .unwrap_or(true); // fail-open on limiter error (availability)
+        let category = crate::ratelimit::RateLimitCategory::WsMessage;
+        let allowed = match rate_limiter.check(category, &identifier).await {
+            Ok(r) => r.allowed,
+            // Fail open (logged, counted) while Valkey is unavailable.
+            Err(_) => rate_limiter.allow_during_outage(category),
+        };
         if !allowed {
             send_err("rate_limited", "You're interacting too quickly").await?;
             return Ok(());
@@ -2003,14 +2031,56 @@ mod pubsub_tests {
         ));
     }
 
+    /// A Valkey that accepts connections but never answers.
+    async fn hung_valkey_url() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                // Keep the socket open without ever answering.
+                tokio::spawn(async move {
+                    let _socket = socket;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        format!("redis://{addr}")
+    }
+
+    #[tokio::test]
+    async fn subscriber_setup_against_hung_valkey_ends_as_pipeline_failure() {
+        let base =
+            crate::db::build_redis_client(&hung_valkey_url().await, Duration::from_millis(500))
+                .unwrap();
+        let subscriber = new_subscriber_client(&base);
+        let (params, _rx) = test_params(16);
+        let (ready_tx, _ready_rx) = oneshot::channel();
+        let (_start_tx, start_rx) = oneshot::channel();
+
+        // Must give up on its own, before the socket's ready timeout.
+        let exit = tokio::time::timeout(
+            PUBSUB_READY_TIMEOUT,
+            handle_pubsub(subscriber.clone(), params, ready_tx, start_rx),
+        )
+        .await
+        .expect("subscriber setup hung while Valkey was unavailable");
+        let _ = subscriber.quit().await;
+
+        assert!(
+            matches!(
+                exit,
+                PubsubExit::ConnectFailed | PubsubExit::SubscribeFailed
+            ),
+            "{exit:?}"
+        );
+        assert_eq!(exit.close_code(), Some(CLOSE_INTERNAL_ERROR));
+    }
+
     #[test]
     fn subscriber_client_gets_larger_broadcast_capacity() {
-        let base = Client::new(
-            fred::types::config::Config::default(),
-            None,
-            None,
-            Some(ReconnectPolicy::new_constant(0, 100)),
-        );
+        let base =
+            crate::db::build_redis_client("redis://127.0.0.1:6379", Duration::from_millis(1234))
+                .unwrap();
         assert!(base.perf_config().broadcast_channel_capacity < SUBSCRIBER_BROADCAST_CAPACITY);
 
         let subscriber = new_subscriber_client(&base);
@@ -2019,6 +2089,12 @@ mod pubsub_tests {
             SUBSCRIBER_BROADCAST_CAPACITY
         );
         assert!(subscriber.has_reconnect_policy());
+        // The command timeout carries over, so a hung Valkey fails the
+        // subscriber's commands instead of blocking them.
+        assert_eq!(
+            subscriber.perf_config().default_command_timeout,
+            Duration::from_millis(1234)
+        );
         // The shared base client is left untouched.
         assert!(base.perf_config().broadcast_channel_capacity < SUBSCRIBER_BROADCAST_CAPACITY);
     }
