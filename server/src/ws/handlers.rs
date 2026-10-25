@@ -195,11 +195,17 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
     let (ws_sender, mut ws_receiver) = socket.split();
 
     // The 5 s budget covers receiving the Authenticate frame only; validating
-    // it (session denylist, user lookup) runs afterwards on its own budget.
+    // it (session denylist, user lookup) runs afterwards on its own 5 s budget,
+    // and running out of that one closes with 1013 like a Valkey outage.
     let received =
         match tokio::time::timeout(AUTH_FRAME_TIMEOUT, wait_for_auth_frame(&mut ws_receiver)).await
         {
-            Ok(Ok(token)) => Ok(validate_auth_token(&state, &token).await),
+            Ok(Ok(token)) => Ok(tokio::time::timeout(
+                AUTH_FRAME_TIMEOUT,
+                validate_auth_token(&state, &token),
+            )
+            .await
+            .unwrap_or(Err(AuthFrameError::Unavailable))),
             Ok(Err(e)) => Ok(Err(e)),
             Err(elapsed) => Err(elapsed),
         };
@@ -217,8 +223,7 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
         }
         Ok(Err(AuthFrameError::Failed(reason))) => {
             warn!("Post-connect auth failed: {}", reason);
-            let mut ws_sender = ws_sender;
-            let _ = ws_sender.close().await;
+            close_pre_auth(ws_sender, CLOSE_POLICY_VIOLATION, "authentication failed").await;
             return;
         }
         Err(_) => {
