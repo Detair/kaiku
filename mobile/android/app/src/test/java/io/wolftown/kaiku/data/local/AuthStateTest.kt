@@ -6,6 +6,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -163,5 +164,39 @@ class AuthStateTest {
 
         assertFalse(authState.isLoggedIn.value)
         assertNull(authState.currentUserId.value)
+    }
+
+    // ========================================================================
+    // initialize on Activity recreation (Task 19 final review)
+    // ========================================================================
+
+    @Test
+    fun `initialize keeps a running session`() = runTest {
+        authState.setLoggedIn("user-1")
+        val running = authState.session.value as AuthSession.LoggedIn
+        val ended = mutableListOf<AuthSession.LoggedIn>()
+        val collector = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            authState.endedSessions.collect { ended += it }
+        }
+        val tokenStorage = mockk<TokenStorage>()
+        every { tokenStorage.getAccessToken() } returns "valid-token"
+        every { tokenStorage.getUserId() } returns "user-1"
+        every { tokenStorage.isAccessTokenExpired() } returns false
+        every { tokenStorage.getRefreshToken() } returns "refresh-token"
+
+        // Rotation / dark mode / split screen recreate MainActivity.
+        authState.initialize(tokenStorage)
+        assertEquals(running, authState.session.value)
+
+        // Mid-logout: the tokens are already cleared; the logout itself ends the session.
+        every { tokenStorage.getAccessToken() } returns null
+        every { tokenStorage.getUserId() } returns null
+        every { tokenStorage.getRefreshToken() } returns null
+        authState.initialize(tokenStorage)
+        assertEquals(running, authState.session.value)
+        assertTrue(authState.setLoggedOutIf(running.sessionId))
+
+        assertEquals(listOf(running), ended)
+        collector.cancel()
     }
 }

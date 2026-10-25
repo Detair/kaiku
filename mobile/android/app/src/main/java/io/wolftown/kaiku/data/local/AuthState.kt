@@ -101,11 +101,17 @@ class AuthState @Inject constructor(
     /**
      * Restores auth state from persisted tokens on app start.
      *
+     * No-op while a session is running: MainActivity calls this in every
+     * onCreate (rotation, dark mode, split screen), and a recreation must
+     * neither start a new session identity nor end the running one, e.g.
+     * while a logout has cleared the tokens but not yet ended its session.
+     *
      * If valid tokens exist (non-expired, or expired with a refresh token
      * available), the user is considered logged in — the HTTP interceptor
      * will refresh the token transparently on the first API call.
      */
     fun initialize(tokenStorage: TokenStorage) {
+        if (_session.value is AuthSession.LoggedIn) return
         val token = tokenStorage.getAccessToken()
         val userId = tokenStorage.getUserId()
         val refreshToken = tokenStorage.getRefreshToken()
