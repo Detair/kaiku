@@ -1899,6 +1899,7 @@ pub(crate) async fn forward_pubsub_messages(
                             user_id,
                             revoking,
                             block,
+                            op,
                         } => {
                             audience_mod::on_audience_notice(
                                 &params.presence,
@@ -1910,6 +1911,7 @@ pub(crate) async fn forward_pubsub_messages(
                                     user: user_id,
                                     revoking,
                                     block,
+                                    op,
                                 },
                             )
                             .await;
@@ -2014,6 +2016,7 @@ pub(crate) async fn forward_pubsub_messages(
                     user_id,
                     revoking,
                     block,
+                    op,
                 }) = serde_json::from_str(&payload)
                 {
                     audience_mod::on_audience_notice(
@@ -2026,6 +2029,7 @@ pub(crate) async fn forward_pubsub_messages(
                             user: user_id,
                             revoking,
                             block,
+                            op,
                         },
                     )
                     .await;
@@ -2582,6 +2586,7 @@ mod pubsub_tests {
                 user_id,
                 revoking: false,
                 block: false,
+                op: None,
             })
             .unwrap()
         };
@@ -2640,6 +2645,7 @@ mod pubsub_tests {
             user_id: Some(other),
             revoking: true,
             block: true,
+            op: Some(Uuid::from_u128(0xff)),
         })
         .unwrap();
         forwarded_statuses(

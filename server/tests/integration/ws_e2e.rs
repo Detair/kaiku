@@ -1962,3 +1962,121 @@ async fn test_stale_reload_cannot_undo_applied_block(pool: PgPool) {
     expect_no_ws_event(&mut ws_b, "message_new", QUIET_WINDOW).await;
     read2.release.notify_one();
 }
+
+/// Wait for a pause hook.
+async fn reached(pause: &vc_server::ws::test_hooks::Pause) {
+    tokio::time::timeout(EVENT_TIMEOUT, pause.reached.notified())
+        .await
+        .expect("hook reached");
+}
+
+/// (1) A socket that connects after a block's pre-commit notice (and so never
+/// saw it) still keeps the users apart: the durable pending-revocation key is
+/// checked by its connect-time validation. Nothing about the blocker reaches
+/// it, not even in the commit window.
+#[sqlx::test]
+async fn test_socket_connecting_during_revocation_sees_nothing(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (u, b, _guild) = presence_pair(&pool, false).await;
+    let token_u = generate_access_token(&app.config, u);
+    let token_b = generate_access_token(&app.config, b);
+    let mut ws_u = connect_ready(&server, &token_u).await;
+
+    let before = vc_server::ws::test_hooks::pause_before_revocation_commit(u);
+    let after = vc_server::ws::test_hooks::pause_after_revocation_commit(u);
+    let blocking = {
+        let url = format!("{}/api/friends/{b}/block", server.url);
+        let token = token_u.clone();
+        tokio::spawn(async move { post_ok(url, &token).await })
+    };
+    reached(&before).await;
+
+    // `b` connects now: after the pre-commit notice, before the commit.
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    before.release.notify_one();
+    reached(&after).await;
+    // Commit window: `u`'s device publishes.
+    set_status_handled(&mut ws_u, "busy").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    after.release.notify_one();
+    blocking.await.expect("block request");
+
+    expect_nothing_about(&mut ws_b, u).await;
+}
+
+/// (2) Two concurrent leaves (servers G1 and G2, the only ones `u` and `b`
+/// share): G1's completion does not end G2's pending revocation.
+#[sqlx::test]
+async fn test_one_revocation_does_not_end_another(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (u, b, g1) = presence_pair(&pool, false).await;
+    let g2 = super::helpers::create_guild(&pool, b).await;
+    super::helpers::add_guild_member(&pool, g2, u).await;
+    let token_u = generate_access_token(&app.config, u);
+    let token_b = generate_access_token(&app.config, b);
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut ws_u = connect_ready(&server, &token_u).await;
+    next_presence(&mut ws_b, u, "online").await;
+
+    // Leaving G2 stops before its commit.
+    let before = vc_server::ws::test_hooks::pause_before_revocation_commit(u);
+    let leaving_g2 = {
+        let url = format!("{}/api/guilds/{g2}/leave", server.url);
+        let token = token_u.clone();
+        tokio::spawn(async move { post_ok(url, &token).await })
+    };
+    reached(&before).await;
+    // Leaving G1 completes meanwhile.
+    post_ok(format!("{}/api/guilds/{g1}/leave", server.url), &token_u).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // G2 still pending: `u` stays suspended for `b`.
+    set_status_handled(&mut ws_u, "busy").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    before.release.notify_one();
+    leaving_g2.await.expect("leave G2");
+
+    // Only the final `offline`, never `busy`.
+    expect_no_ws_event_about(&mut ws_b, u).await;
+}
+
+/// (3) A revoking write that takes long (here: paused before its commit)
+/// keeps the user suspended through any revalidation until it completed;
+/// no elapsed time lifts it.
+#[sqlx::test]
+async fn test_slow_revocation_stays_suspended_through_revalidation(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (u, b, guild) = presence_pair(&pool, false).await;
+    let token_u = generate_access_token(&app.config, u);
+    let token_b = generate_access_token(&app.config, b);
+    let backstop = vc_server::ws::test_hooks::run_backstop(b);
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut ws_u = connect_ready(&server, &token_u).await;
+    next_presence(&mut ws_b, u, "online").await;
+
+    let before = vc_server::ws::test_hooks::pause_before_revocation_commit(u);
+    let leaving = {
+        let url = format!("{}/api/guilds/{guild}/leave", server.url);
+        let token = token_u.clone();
+        tokio::spawn(async move { post_ok(url, &token).await })
+    };
+    reached(&before).await;
+
+    // A full revalidation runs while the write is pending (the database
+    // still shows the membership).
+    let read = vc_server::ws::test_hooks::pause_in_audience_reload(b);
+    backstop.notify_one();
+    reached(&read).await;
+    read.release.notify_one();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    set_status_handled(&mut ws_u, "busy").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    before.release.notify_one();
+    leaving.await.expect("leave");
+
+    expect_no_ws_event_about(&mut ws_b, u).await;
+}

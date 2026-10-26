@@ -300,7 +300,10 @@ pub async fn block_user(
     // Both sides stop forwarding each other at once (presence and channel
     // events), before the block is committed; re-checked after the commit,
     // whatever its outcome.
-    crate::presence::connections::notify_pair_revoking(&state.redis, auth.id, user_id, true).await;
+    let revocation =
+        crate::presence::connections::begin_pair_revocation(&state.redis, auth.id, user_id, true)
+            .await;
+    crate::ws::test_hooks::before_revocation_commit(auth.id).await;
     let committed = async {
         // Check if friendship already exists
         let existing = queries::find_friendship_between(&state.db, auth.id, user_id).await?;
@@ -339,7 +342,13 @@ pub async fn block_user(
     crate::ws::test_hooks::after_revocation_commit(auth.id).await;
     // Both sides re-check each other from the database (the blocked user's
     // sockets are not told who blocked them).
-    crate::presence::connections::notify_pair_changed(&state.redis, auth.id, user_id).await;
+    crate::presence::connections::finish_pair_revocation(
+        &state.redis,
+        revocation,
+        auth.id,
+        user_id,
+    )
+    .await;
     let result = committed?;
 
     Ok(Json(result))
@@ -419,7 +428,7 @@ pub async fn remove_friend(
 
     // Presence peers change on both sides: suspended before the commit,
     // re-checked after it, whatever the outcome.
-    crate::presence::connections::notify_pair_revoking(
+    let revocation = crate::presence::connections::begin_pair_revocation(
         &state.redis,
         friendship.requester_id,
         friendship.addressee_id,
@@ -427,8 +436,9 @@ pub async fn remove_friend(
     )
     .await;
     let deleted = queries::delete_friendship(&state.db, friendship_id).await;
-    crate::presence::connections::notify_pair_changed(
+    crate::presence::connections::finish_pair_revocation(
         &state.redis,
+        revocation,
         friendship.requester_id,
         friendship.addressee_id,
     )

@@ -1034,15 +1034,19 @@ pub enum PresenceNotice {
         user_id: Option<Uuid>,
         /// Sent **before** a revoking change (block, unfriend, leave, kick,
         /// server deletion) is committed: the receiver suspends the user (or
-        /// everyone) until the notice sent after the commit (without this
-        /// flag) or, if that never comes, a revalidation after a grace
-        /// period.
+        /// everyone) at once. The durable pending-revocation keys
+        /// ([`begin_pair_revocation`], [`begin_user_revocation`]) keep the
+        /// suspension until the operation finished, for every socket.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         revoking: bool,
         /// The revoking change is a block: the receiver also treats the user
         /// as blocked for channel events (messages, typing) at once.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         block: bool,
+        /// The revoking operation (pre-commit and completion notices): ending
+        /// one operation never ends another one's suspension.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        op: Option<Uuid>,
     },
     /// A socket's own fence (on its `user:{id}` channel): once the socket has
     /// processed it, every notice published before it has been applied.
@@ -1052,32 +1056,29 @@ pub enum PresenceNotice {
     },
 }
 
-/// The relation between `a` and `b` changed (friendship, block, unblock):
-/// sent after the change committed (or failed).
+/// The relation between `a` and `b` changed (friend accept, unblock):
+/// sent after the change committed.
 ///
-/// Each one's sockets get a notice naming the other, stop forwarding them at
-/// once and re-check them from the database. Best effort with a bounded
-/// retry.
+/// Each one's sockets get a notice naming the other and re-check them from
+/// the database. Best effort with a bounded retry.
 pub async fn notify_pair_changed(redis: &Client, a: Uuid, b: Uuid) {
-    notify_pair(redis, a, b, false, false).await;
+    notify_pair(redis, a, b, false, false, None).await;
 }
 
-/// The relation between `a` and `b` is about to be revoked (block, unfriend).
-///
-/// Sent **before** the change is committed, so neither side forwards the
-/// other from now on, not even in the moment between the commit and the
-/// [`notify_pair_changed`] that must follow it (whatever the outcome).
-/// `block`: also treat each other as blocked for channel events at once.
-pub async fn notify_pair_revoking(redis: &Client, a: Uuid, b: Uuid, block: bool) {
-    notify_pair(redis, a, b, true, block).await;
-}
-
-async fn notify_pair(redis: &Client, a: Uuid, b: Uuid, revoking: bool, block: bool) {
+async fn notify_pair(
+    redis: &Client,
+    a: Uuid,
+    b: Uuid,
+    revoking: bool,
+    block: bool,
+    op: Option<Uuid>,
+) {
     for (recipient, counterpart) in [(a, b), (b, a)] {
         let notice = PresenceNotice::PresenceAudienceChanged {
             user_id: Some(counterpart),
             revoking,
             block,
+            op,
         };
         publish_notice(
             redis,
@@ -1088,29 +1089,25 @@ async fn notify_pair(redis: &Client, a: Uuid, b: Uuid, revoking: bool, block: bo
     }
 }
 
-/// A server's membership changed; sent after the change committed (or
-/// failed).
+/// A server's membership changed (join); sent after the change committed.
 ///
-/// `changed` joined or left (members get a notice naming that user; `changed`
-/// itself reloads everything), or `None` (server deleted: everyone reloads).
+/// Members get a notice naming `changed`, who itself reloads everything.
 pub async fn notify_guild_audience_changed(redis: &Client, guild_id: Uuid, changed: Option<Uuid>) {
-    notify_guild(redis, guild_id, changed, false).await;
+    notify_guild(redis, guild_id, changed, false, None).await;
 }
 
-/// A server's membership is about to be revoked (leave, kick, server
-/// deletion).
-///
-/// Sent **before** the change is committed (see [`notify_pair_revoking`]);
-/// [`notify_guild_audience_changed`] must follow it, whatever the outcome.
-pub async fn notify_guild_revoking(redis: &Client, guild_id: Uuid, changed: Option<Uuid>) {
-    notify_guild(redis, guild_id, changed, true).await;
-}
-
-async fn notify_guild(redis: &Client, guild_id: Uuid, changed: Option<Uuid>, revoking: bool) {
+async fn notify_guild(
+    redis: &Client,
+    guild_id: Uuid,
+    changed: Option<Uuid>,
+    revoking: bool,
+    op: Option<Uuid>,
+) {
     let notice = PresenceNotice::PresenceAudienceChanged {
         user_id: changed,
         revoking,
         block: false,
+        op,
     };
     publish_notice(
         redis,
@@ -1124,8 +1121,211 @@ async fn notify_guild(redis: &Client, guild_id: Uuid, changed: Option<Uuid>, rev
             user_id: None,
             revoking,
             block: false,
+            op,
         };
         publish_notice(redis, &own, vec![crate::ws::channels::user_events(user)]).await;
+    }
+}
+
+/// How long a pending-revocation key lives at most: only a safety net for a
+/// server that crashed mid-operation (normally the operation removes it).
+pub const REVOCATION_TTL: Duration = Duration::from_mins(5);
+
+/// Durable pending-revocation key for one direction of a pair: "a revocation
+/// between `viewer` and `peer` is pending" (sorted set of operation ids,
+/// scored by expiry).
+#[must_use]
+pub fn revoking_pair_key(viewer: Uuid, peer: Uuid) -> String {
+    format!("presence:revoking:pair:{viewer}:{peer}")
+}
+
+/// Durable pending-revocation key for a user: "a revocation involving `user`
+/// is pending" (server leave, kick or deletion; sorted set of operation ids).
+#[must_use]
+pub fn revoking_user_key(user: Uuid) -> String {
+    format!("presence:revoking:user:{user}")
+}
+
+/// A revoking operation in progress: its id and the keys it holds open.
+#[derive(Debug, Clone)]
+pub struct Revocation {
+    /// Operation id (carried by its notices).
+    pub op: Uuid,
+    keys: Vec<String>,
+}
+
+/// Open the keys of a revocation (before its database change).
+const BEGIN_REVOCATION_SCRIPT: &str = r"
+for _, key in ipairs(KEYS) do
+  redis.call('ZADD', key, ARGV[2], ARGV[1])
+  redis.call('PEXPIRE', key, ARGV[3])
+end
+return 1
+";
+
+/// Close the keys of a revocation (after its database change or error).
+const END_REVOCATION_SCRIPT: &str = r"
+for _, key in ipairs(KEYS) do
+  redis.call('ZREM', key, ARGV[1])
+end
+return 1
+";
+
+/// Which peers have an open revocation with a viewer. KEYS = the viewer's
+/// user key, then per peer: the pair key (viewer → peer) and the peer's user
+/// key. Returns 1/0 per peer (all 1 if the viewer's own key is open).
+const OPEN_REVOCATIONS_SCRIPT: &str = r"
+local now = ARGV[1]
+local function open(key)
+  return redis.call('ZCOUNT', key, '(' .. now, '+inf') > 0
+end
+local own = open(KEYS[1])
+local out = {}
+for i = 2, #KEYS, 2 do
+  if own or open(KEYS[i]) or open(KEYS[i + 1]) then
+    out[#out + 1] = 1
+  else
+    out[#out + 1] = 0
+  end
+end
+return out
+";
+
+async fn open_keys(redis: &Client, keys: Vec<String>) -> Revocation {
+    let op = Uuid::new_v4();
+    let ttl = i64::try_from(REVOCATION_TTL.as_millis()).unwrap_or(i64::MAX);
+    let opened: Result<i64, fred::error::Error> = redis
+        .eval(
+            BEGIN_REVOCATION_SCRIPT,
+            keys.clone(),
+            vec![
+                op.to_string(),
+                now_ms().saturating_add(ttl).to_string(),
+                ttl.to_string(),
+            ],
+        )
+        .await;
+    if let Err(e) = opened {
+        // Valkey is unreachable: presence cannot flow either; the change
+        // proceeds.
+        log_unavailable(&PresenceError(e));
+    }
+    Revocation { op, keys }
+}
+
+async fn close_keys(redis: &Client, revocation: &Revocation) {
+    let closed: Result<i64, fred::error::Error> = redis
+        .eval(
+            END_REVOCATION_SCRIPT,
+            revocation.keys.clone(),
+            vec![revocation.op.to_string()],
+        )
+        .await;
+    if let Err(e) = closed {
+        // The key expires after `REVOCATION_TTL`.
+        log_unavailable(&PresenceError(e));
+    }
+}
+
+/// Begin revoking the relation between `a` and `b` (block, unfriend).
+///
+/// **Before** the database change, open a durable pending-revocation key for
+/// both directions, then publish the pre-commit notice (fast path for open
+/// sockets). Every audience validation checks the keys, so a socket that
+/// connects meanwhile also keeps the users apart. `block`: also treat each
+/// other as blocked for channel events at once. Must be followed by
+/// [`finish_pair_revocation`], whatever the outcome.
+pub async fn begin_pair_revocation(redis: &Client, a: Uuid, b: Uuid, block: bool) -> Revocation {
+    let revocation = open_keys(
+        redis,
+        vec![revoking_pair_key(a, b), revoking_pair_key(b, a)],
+    )
+    .await;
+    notify_pair(redis, a, b, true, block, Some(revocation.op)).await;
+    revocation
+}
+
+/// Finish a pair revocation (after the database change or its error): close
+/// exactly this operation's keys, then publish the completion notice.
+pub async fn finish_pair_revocation(redis: &Client, revocation: Revocation, a: Uuid, b: Uuid) {
+    close_keys(redis, &revocation).await;
+    notify_pair(redis, a, b, false, false, Some(revocation.op)).await;
+}
+
+/// Begin a server revocation (leave, kick, server deletion).
+///
+/// **Before** the database change, open a durable pending-revocation key for
+/// each user in `users` (the member, or every member of a deleted server),
+/// then publish the pre-commit notice. `changed`: the member (leave, kick),
+/// `None` for a deletion. Must be followed by [`finish_guild_revocation`].
+pub async fn begin_user_revocation(
+    redis: &Client,
+    guild_id: Uuid,
+    changed: Option<Uuid>,
+    users: &[Uuid],
+) -> Revocation {
+    let keys = users.iter().map(|user| revoking_user_key(*user)).collect();
+    let revocation = open_keys(redis, keys).await;
+    notify_guild(redis, guild_id, changed, true, Some(revocation.op)).await;
+    revocation
+}
+
+/// Finish a server revocation: close exactly this operation's keys, then
+/// publish the completion notice.
+pub async fn finish_guild_revocation(
+    redis: &Client,
+    revocation: Revocation,
+    guild_id: Uuid,
+    changed: Option<Uuid>,
+) {
+    close_keys(redis, &revocation).await;
+    notify_guild(redis, guild_id, changed, false, Some(revocation.op)).await;
+}
+
+/// Members of a server (for a deletion's pending-revocation keys). On a
+/// database error: none (the server-wide pre-commit notice still suspends
+/// open sockets).
+pub async fn guild_member_ids(db: &sqlx::PgPool, guild_id: Uuid) -> Vec<Uuid> {
+    let rows: Result<Vec<(Uuid,)>, sqlx::Error> =
+        sqlx::query_as("SELECT user_id FROM guild_members WHERE guild_id = $1")
+            .bind(guild_id)
+            .fetch_all(db)
+            .await;
+    match rows {
+        Ok(rows) => rows.into_iter().map(|(id,)| id).collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, %guild_id, "Failed to list members for presence revocation");
+            Vec::new()
+        }
+    }
+}
+
+/// The peers among `peers` with an open revocation towards `viewer` (pair
+/// key, the peer's or the viewer's own user key). One round trip. On a
+/// Valkey error every peer counts as open (fail closed).
+pub async fn open_revocations(redis: &Client, viewer: Uuid, peers: &[Uuid]) -> HashSet<Uuid> {
+    if peers.is_empty() {
+        return HashSet::new();
+    }
+    let mut keys = vec![revoking_user_key(viewer)];
+    for peer in peers {
+        keys.push(revoking_pair_key(viewer, *peer));
+        keys.push(revoking_user_key(*peer));
+    }
+    let open: Result<Vec<i64>, fred::error::Error> = redis
+        .eval(OPEN_REVOCATIONS_SCRIPT, keys, vec![now_ms().to_string()])
+        .await;
+    match open {
+        Ok(open) => peers
+            .iter()
+            .zip(open)
+            .filter(|(_, open)| *open == 1)
+            .map(|(peer, _)| *peer)
+            .collect(),
+        Err(e) => {
+            log_unavailable(&PresenceError(e));
+            peers.iter().copied().collect()
+        }
     }
 }
 

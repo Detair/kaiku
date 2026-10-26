@@ -221,9 +221,11 @@ pub async fn delete_message(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bo
 
 Who may see a user's online status, activity and custom status (friends and members of a shared server, never blocked users) is enforced per WebSocket under one lock, at the moment each event is queued. Friendship, block and server-membership changes notify the affected sockets, which stop forwarding the user at once. See `src/ws/AGENTS.md` ("Presence System").
 
-Revoking changes (block, unfriend, leaving or being removed from a server, server deletion) notify **before** the database change, so nothing passes even in the moment between the commit and the follow-up notice. For a block this covers channel events too.
+Revoking changes (block, unfriend, leaving or being removed from a server, server deletion) record a durable *pending revocation* in Valkey **before** the database change and remove it after the change (or its error). Every socket, including one connecting meanwhile, checks these records whenever it validates who it may show. A user stays hidden from the other side while a revocation is pending and is shown again only when none is pending and a fresh read authorizes. Notices sent before and after the change make already-open sockets react at once. For a block this covers channel events too.
 
-**Known limit (v1.0):** the notices are best effort with a bounded retry. If they are all lost (Valkey outage, server crash), an observer can keep receiving that user's presence until its socket's periodic revalidation, about 60 seconds later, or until it reconnects. Without such an infrastructure failure, a change takes effect immediately.
+**Known limits (v1.0):**
+- **Infrastructure failure:** the records and notices depend on Valkey. If Valkey is unreachable when a revocation starts, or a server crashes mid-operation, an observer can keep receiving that user's presence until its socket's periodic revalidation (about 60 seconds) or until it reconnects. A record left behind by a crash expires after 5 minutes.
+- **Concurrency residual:** what remains only occurs with concurrent operations, connects or lock waits in the millisecond-to-second range. It affects only status and activity, never message content.
 
 ## Rate Limiting
 

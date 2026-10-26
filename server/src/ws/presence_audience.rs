@@ -95,18 +95,16 @@ pub struct Audience {
     pub versions: HashMap<Uuid, u64>,
     /// Last rich-presence version sent per peer and kind.
     pub rich: HashMap<(Uuid, RichKind), u64>,
-    /// Users whose relation is being revoked (a pre-commit notice arrived,
-    /// the post-commit one not yet): suspended regardless of any read, until
-    /// that notice or [`REVOKE_GRACE`] has passed.
-    pub revoking: HashMap<Uuid, std::time::Instant>,
-    /// Everyone is being revoked (pre-commit notice without a user).
-    pub revoking_all: Option<std::time::Instant>,
+    /// Fast path: revoking operations announced by pre-commit notices and
+    /// not completed yet, per user (operation ids).
+    pub revoking: HashMap<Uuid, HashSet<Uuid>>,
+    /// Fast path: revoking operations without a user (server deletion, own
+    /// membership).
+    pub revoking_all: HashSet<Uuid>,
+    /// Users with an open durable pending-revocation key at the last check
+    /// (authoritative; see `connections::open_revocations`).
+    pub durable: HashSet<Uuid>,
 }
-
-/// How long a pending revocation (pre-commit notice without its post-commit
-/// notice) keeps a user suspended at most; afterwards a revalidation may
-/// authorize again (e.g. the change failed and its second notice was lost).
-pub const REVOKE_GRACE: Duration = Duration::from_secs(30);
 
 impl Audience {
     /// Audience as read at connect (validated before anything is sent).
@@ -140,36 +138,75 @@ impl Audience {
         }
     }
 
-    /// Whether a revocation of `user` (or everyone) is pending.
+    /// Whether a revocation of `user` (or everyone) is pending: announced
+    /// by a pre-commit notice and not completed, or an open durable key.
     pub fn revoking_active(&self, user: &Uuid) -> bool {
-        let active = |since: &std::time::Instant| since.elapsed() < REVOKE_GRACE;
-        self.revoking_all.as_ref().is_some_and(active)
-            || self.revoking.get(user).is_some_and(active)
+        !self.revoking_all.is_empty()
+            || self.revoking.get(user).is_some_and(|ops| !ops.is_empty())
+            || self.durable.contains(user)
     }
 
-    /// A pre-commit notice: suspend `user` (or everyone) until the change is
-    /// confirmed.
-    pub fn begin_revocation(&mut self, user: Option<Uuid>) {
+    /// A pre-commit notice of operation `op`: suspend `user` (or everyone)
+    /// until that operation completed.
+    pub fn begin_revocation(&mut self, user: Option<Uuid>, op: Uuid) {
         self.invalidate(user);
-        let now = std::time::Instant::now();
         match user {
             Some(user) => {
-                self.revoking.insert(user, now);
+                self.revoking.entry(user).or_default().insert(op);
             }
-            None => self.revoking_all = Some(now),
+            None => {
+                self.revoking_all.insert(op);
+            }
         }
     }
 
-    /// The post-commit (or granting) notice: the revocation is no longer
-    /// pending; the user (or everyone) stays suspended until a fresh read.
-    pub fn end_revocation(&mut self, user: Option<Uuid>) {
-        match user {
-            Some(user) => {
-                self.revoking.remove(&user);
+    /// A completion (or granting) notice: operation `op` (if any) is no
+    /// longer pending. Other operations' suspensions stay; the user (or
+    /// everyone) stays suspended until a fresh read finds no open operation.
+    pub fn end_revocation(&mut self, user: Option<Uuid>, op: Option<Uuid>) {
+        if let Some(op) = op {
+            match user {
+                Some(user) => {
+                    if let Some(ops) = self.revoking.get_mut(&user) {
+                        ops.remove(&op);
+                        if ops.is_empty() {
+                            self.revoking.remove(&user);
+                        }
+                    }
+                }
+                None => {
+                    self.revoking_all.remove(&op);
+                }
             }
-            None => self.revoking_all = None,
         }
         self.invalidate(user);
+    }
+
+    /// Apply a durable pending-revocation check made after a read that
+    /// started at `start`: users with an open key stay suspended; for users
+    /// without one the fast-path entries are cleared, unless a notice
+    /// overtook the check (not fresh). `everyone`: the check covered the
+    /// whole audience (a full reload), so server-wide fast-path entries are
+    /// covered by the keys too.
+    fn apply_durable(
+        &mut self,
+        checked: &HashSet<Uuid>,
+        open: &HashSet<Uuid>,
+        start: u64,
+        everyone: bool,
+    ) {
+        for user in checked {
+            if open.contains(user) {
+                self.durable.insert(*user);
+                self.suspended.insert(*user);
+            } else if self.fresh_for(user, start) {
+                self.durable.remove(user);
+                self.revoking.remove(user);
+            }
+        }
+        if everyone && self.all_invalidated <= start {
+            self.revoking_all.clear();
+        }
     }
 
     /// Whether a read started at epoch `start` is still valid for `user`.
@@ -180,23 +217,16 @@ impl Audience {
     /// A full read started at `start` was applied: lift every suspension it
     /// covers (invalidations before it began).
     fn lift(&mut self, start: u64) {
-        // Pending revocations outlive any read (the read may predate the
-        // commit) until their grace period ends.
-        if self
-            .revoking_all
-            .is_some_and(|since| since.elapsed() >= REVOKE_GRACE)
-        {
-            self.revoking_all = None;
-        }
-        self.revoking
-            .retain(|_, since| since.elapsed() < REVOKE_GRACE);
-        if self.all_invalidated <= start && self.revoking_all.is_none() {
+        // Pending revocations outlive any read: the read may predate the
+        // commit. They end only when their operation completed.
+        if self.all_invalidated <= start && self.revoking_all.is_empty() {
             self.suspend_all = false;
         }
         self.invalidated.retain(|_, epoch| *epoch > start);
-        let (invalidated, revoking) = (&self.invalidated, &self.revoking);
-        self.suspended
-            .retain(|user| invalidated.contains_key(user) || revoking.contains_key(user));
+        let (invalidated, revoking, durable) = (&self.invalidated, &self.revoking, &self.durable);
+        self.suspended.retain(|user| {
+            invalidated.contains_key(user) || revoking.contains_key(user) || durable.contains(user)
+        });
     }
 
     /// Clear the suspension of `user` after a fresh re-check.
@@ -308,14 +338,14 @@ pub async fn on_audience_notice(
     {
         let mut audience = presence.audience.lock().await;
         if notice.revoking {
-            audience.begin_revocation(target);
+            audience.begin_revocation(target, notice.op.unwrap_or_default());
             if notice.block {
                 if let Some(user) = target {
                     audience.blocked.insert(user);
                 }
             }
         } else {
-            audience.end_revocation(target);
+            audience.end_revocation(target, notice.op);
         }
     }
     if notice.revoking {
@@ -354,6 +384,8 @@ pub struct AudienceNotice {
     pub revoking: bool,
     /// The revoking change is a block.
     pub block: bool,
+    /// The revoking operation (pre-commit and completion notices).
+    pub op: Option<Uuid>,
 }
 
 /// Forwarder: this socket's fence arrived.
@@ -543,9 +575,16 @@ pub async fn refresh_full(ctx: &AudienceCtx<'_>, mode: ReloadMode) -> Result<boo
         if mode == ReloadMode::Update {
             crate::ws::test_hooks::in_audience_reload(ctx.user_id).await;
         }
+        // Pending revocations, checked after the read: a revoking change that
+        // began before this check has its key open (set before its
+        // pre-commit notice); one that begins later sends its notice to this
+        // socket's live subscriptions.
+        let wanted_list: Vec<Uuid> = wanted.iter().copied().collect();
+        let open = connections::open_revocations(&ctx.state.redis, ctx.user_id, &wanted_list).await;
 
         let (removed, added) = {
             let mut audience = ctx.presence.audience.lock().await;
+            audience.apply_durable(&wanted, &open, start, true);
             // Block state from this read applies only where it is fresh: a
             // block (or unblock) processed after the read began, or a pending
             // revocation, is never overwritten by it.
@@ -653,16 +692,21 @@ pub async fn recheck(ctx: &AudienceCtx<'_>, targets: HashSet<Uuid>) -> Result<()
             }
         }
         crate::ws::test_hooks::in_audience_reload(ctx.user_id).await;
+        let checked: HashSet<Uuid> = results.iter().map(|(target, _)| *target).collect();
+        let checked_list: Vec<Uuid> = checked.iter().copied().collect();
+        let open =
+            connections::open_revocations(&ctx.state.redis, ctx.user_id, &checked_list).await;
 
         let mut retry = HashSet::new();
         let mut removed = Vec::new();
         let mut to_subscribe = Vec::new();
         {
             let mut audience = ctx.presence.audience.lock().await;
+            audience.apply_durable(&checked, &open, start, false);
             for (target, relation) in results {
                 if audience.revoking_active(&target) {
-                    // The change is not confirmed yet: stays suspended; the
-                    // post-commit notice re-checks it.
+                    // A revocation is still pending: stays suspended; its
+                    // completion notice (or the revalidation) re-checks it.
                     continue;
                 }
                 if !audience.apply_block_read(target, relation.blocked, start) {

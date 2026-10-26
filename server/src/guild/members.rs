@@ -44,11 +44,19 @@ pub async fn leave_guild(
 
     // Remove membership. The leaver and the remaining members stop seeing
     // each other's presence: suspended before the commit, re-checked after.
-    crate::presence::connections::notify_guild_revoking(&state.redis, guild_id, Some(auth.id))
-        .await;
-    let removed = core_q::delete_guild_member(&state.db, guild_id, auth.id).await;
-    crate::presence::connections::notify_guild_audience_changed(
+    let revocation = crate::presence::connections::begin_user_revocation(
         &state.redis,
+        guild_id,
+        Some(auth.id),
+        &[auth.id],
+    )
+    .await;
+    crate::ws::test_hooks::before_revocation_commit(auth.id).await;
+    let removed = core_q::delete_guild_member(&state.db, guild_id, auth.id).await;
+    crate::ws::test_hooks::after_revocation_commit(auth.id).await;
+    crate::presence::connections::finish_guild_revocation(
+        &state.redis,
+        revocation,
         guild_id,
         Some(auth.id),
     )
@@ -159,11 +167,17 @@ pub async fn kick_member(
 
     // Remove membership (presence suspended before the commit, re-checked
     // after it, whatever the outcome).
-    crate::presence::connections::notify_guild_revoking(&state.redis, guild_id, Some(user_id))
-        .await;
-    let rows_affected = core_q::delete_guild_member(&state.db, guild_id, user_id).await;
-    crate::presence::connections::notify_guild_audience_changed(
+    let revocation = crate::presence::connections::begin_user_revocation(
         &state.redis,
+        guild_id,
+        Some(user_id),
+        &[user_id],
+    )
+    .await;
+    let rows_affected = core_q::delete_guild_member(&state.db, guild_id, user_id).await;
+    crate::presence::connections::finish_guild_revocation(
+        &state.redis,
+        revocation,
         guild_id,
         Some(user_id),
     )

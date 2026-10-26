@@ -439,9 +439,13 @@ pub async fn delete_guild(
 
     // Delete guild (cascades to channels, messages, roles, members, invites, etc.)
     // Presence: suspended before the commit, re-checked after it.
-    crate::presence::connections::notify_guild_revoking(&state.redis, guild_id, None).await;
+    let members = crate::presence::connections::guild_member_ids(&state.db, guild_id).await;
+    let revocation =
+        crate::presence::connections::begin_user_revocation(&state.redis, guild_id, None, &members)
+            .await;
     let deleted = queries::delete_guild(&state.db, guild_id).await;
-    crate::presence::connections::notify_guild_audience_changed(&state.redis, guild_id, None).await;
+    crate::presence::connections::finish_guild_revocation(&state.redis, revocation, guild_id, None)
+        .await;
     let deleted = deleted?;
 
     if deleted == 0 {

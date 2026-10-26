@@ -280,11 +280,16 @@ while let Some(msg) = ws_receiver.next().await {
 **Audience** (`ws::presence_audience`): presence peers = friends ∪ members of the user's servers, without users blocked either way, capped at 500.
 - **One lock**: `Audience` holds validated `peers` (forwarded), `subscribed` channels, `blocked` (either way), suspensions, invalidation epochs and the status and rich versions sent. **Every** presence event (live, snapshot, backstop, final `offline`) is authorized and queued while holding it.
 - **Notices name the counterpart**: friendship, block and unblock changes notify both users (`notify_pair_changed`); join, leave and kick notify the server channel with the member's id and the member's own channel without one; server deletion has no user.
-- **Revoking changes notify twice**: block, unfriend, leave, kick and server deletion each send a notice **before** the database change (`notify_pair_revoking` / `notify_guild_revoking`, `revoking: true`; for a block also `block: true`). The normal notice follows **after** the change, whatever its outcome.
-  - The pre-commit notice suspends the user (or everyone) as *revoking*. No read lifts a revoking suspension: it may predate the commit. Only the post-commit notice (which bumps the epoch and queues the re-check) ends it, or `REVOKE_GRACE` (30 s) if that notice was lost.
+- **Revoking changes are durable pending revocations**: block, unfriend, leave, kick and server deletion (owner or admin) each run as an operation with an `op` id.
+  1. **Before** the database change, the operation opens durable keys in Valkey (`begin_pair_revocation` / `begin_user_revocation`), then publishes a pre-commit notice (`revoking: true`, `op`; for a block also `block: true`) as a fast path. The keys are sorted sets of op ids scored by expiry, with a 5 min TTL as a crash safety net only:
+     - `presence:revoking:pair:{viewer}:{peer}`, both directions, for blocks and unfriends
+     - `presence:revoking:user:{u}` for the leaving or kicked member, or every member of a deleted server
+  2. **After** the change, or on its error, it closes exactly its own op in the keys, then publishes the completion notice with the same `op` (`finish_*_revocation`).
+  - A user stays suspended while any operation is pending: announced by a pre-commit notice and not completed (per op, so one completion never ends another), or with an open key.
+  - **Every** validation checks the keys after its database read (`open_revocations`: one call for all peers; the viewer's own user key, and per peer the pair key and the peer's user key). This covers the connect-time validation after the subscription barrier, reloads, re-checks and the periodic revalidation. A key opened before the check is seen; a revocation that begins later publishes its pre-commit notice to the socket's live subscriptions.
+  - A suspension ends only when no operation is pending **and** a fresh read authorizes. Nothing ends it by elapsed time (there is no grace period).
   - For a block, the pre-commit notice also adds the user to the socket's block sets at once, so channel events (messages, typing) of a user being blocked are dropped like those of a blocked user.
-  - So nothing passes between the commit and the second notice. Granting changes (accept, join, unblock) notify only after the commit.
-  - The forwarder applies a notice **synchronously**: it suspends the named user (or everyone, for a notice without a user), bumps the epoch, then records the work (`AudiencePending`) and wakes the socket loop. Nothing of a suspended user is forwarded.
+  - Granting changes (accept, join, unblock) notify only after the commit.
 - **Revalidation**: a reload (`refresh_full`) or re-check (`recheck`, one query per named user; more than 16 fall back to a full reload) remembers the epoch it started at.
   - Results for users invalidated after that start are discarded and read again; only fresh results authorize and lift suspensions.
   - New peers are subscribed behind a barrier and stay unauthorized until a read after that barrier confirms them.
@@ -305,7 +310,8 @@ while let Some(msg) = ws_receiver.next().await {
 
 #### Known limits (v1.0)
 
-- **Lost audience notices:** revoking changes publish a notice before and after the commit (3 attempts each). If both are lost (Valkey outage, server crash), an observer can keep receiving that user's presence until its next revalidation. That is about 60 s (plus up to 10 s jitter) and happens only after an infrastructure failure. Reconnecting also revalidates. If only the post-commit notice is lost, the user stays suspended until the revalidation after `REVOKE_GRACE`; if that change failed, the user is re-authorized then.
+- **Infrastructure failures:** the pending-revocation keys and notices live in Valkey. If Valkey is unreachable when a revoking change starts (no key, no notice) or a server crashes mid-operation, an observer can keep receiving that user's presence until its next revalidation (about 60 s plus jitter) or reconnect. A key left by a crash expires after 5 min, and until then the pair stays suspended. If only the completion notice is lost, the users stay suspended until the next revalidation sees the key closed.
+- **Concurrency residual (accepted for v1.0):** what remains only occurs with concurrent operations, connects or lock waits in the millisecond-to-second range and affects only status or activity, never message content. Examples: an update published in the instant between a connecting socket's key check and its subscriptions going live, or a reload racing a notice that is still in flight on another server.
 - **Stale but not leaking:**
   - A status or rich presence can be stale until the next periodic reconcile or backstop (about 60 s). Examples: concurrent rich updates from two devices published out of database order, or a reconcile that briefly publishes the rich value it read just before a newer one.
   - REST readers (member list, friends, message authors) derive status from the database plus live sockets, not from the published state.
