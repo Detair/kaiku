@@ -9,27 +9,10 @@ import { Component, createSignal, Show, onMount, onCleanup } from "solid-js";
 import { X } from "lucide-solid";
 import { joinViaInviteCode } from "@/stores/guilds";
 import { Portal } from "solid-js/web";
+import { extractInviteCode } from "@/lib/invites";
 
 interface JoinGuildModalProps {
   onClose: () => void;
-}
-
-/**
- * Extract invite code from either a bare code or a full URL.
- * Returns null if the input doesn't match either format.
- */
-function extractInviteCode(input: string): string | null {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-
-  // Try URL match: /invite/<code>, ignoring trailing slash and query params
-  const urlMatch = trimmed.match(/\/invite\/([A-Za-z0-9]+)\/?(?:\?.*)?$/);
-  if (urlMatch) return urlMatch[1];
-
-  // Try bare invite code (8-16 char alphanumeric)
-  if (/^[A-Za-z0-9]{8,16}$/.test(trimmed)) return trimmed;
-
-  return null;
 }
 
 const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {

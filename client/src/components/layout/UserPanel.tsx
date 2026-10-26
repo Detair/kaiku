@@ -11,11 +11,17 @@ import {
   Component,
   Show,
   createSignal,
+  createEffect,
   onMount,
   lazy,
   Suspense,
 } from "solid-js";
 import { t } from "@/i18n";
+import {
+  settingsRequest,
+  clearSettingsRequest,
+  type SettingsTab,
+} from "@/stores/settingsNav";
 import { Settings, Shield, LogOut } from "lucide-solid";
 import { authState, logout } from "@/stores/auth";
 import { adminState, checkAdminStatus } from "@/stores/admin";
@@ -35,6 +41,15 @@ const AdminQuickModal = lazy(
 const UserPanel: Component = () => {
   const user = () => authState.user;
   const [showSettings, setShowSettings] = createSignal(false);
+  const [settingsTab, setSettingsTab] = createSignal<SettingsTab | undefined>(undefined);
+  createEffect(() => {
+    const requested = settingsRequest();
+    if (requested) {
+      setSettingsTab(requested);
+      setShowSettings(true);
+      clearSettingsRequest();
+    }
+  });
   const [showAdmin, setShowAdmin] = createSignal(false);
   const [showStatusPicker, setShowStatusPicker] = createSignal(false);
   const [showCustomStatusModal, setShowCustomStatusModal] = createSignal(false);
@@ -163,7 +178,13 @@ const UserPanel: Component = () => {
       <Show when={showSettings()}>
         <LazyErrorBoundary name="SettingsModal">
           <Suspense fallback={<ModalFallback />}>
-            <SettingsModal onClose={() => setShowSettings(false)} />
+            <SettingsModal
+              initialTab={settingsTab()}
+              onClose={() => {
+                setShowSettings(false);
+                setSettingsTab(undefined);
+              }}
+            />
           </Suspense>
         </LazyErrorBoundary>
       </Show>

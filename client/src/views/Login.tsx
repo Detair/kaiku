@@ -192,6 +192,9 @@ const Login: Component = () => {
     return s?.oidc_enabled && s.oidc_providers.length > 0;
   };
 
+  // Offer registration only when the server says it is open.
+  const showRegisterLink = () => settings()?.registration_policy === "open";
+
   const error = () => localError() || authState.error;
 
   return (
@@ -421,12 +424,14 @@ const Login: Component = () => {
             </div>
           </Show>
 
-          <p class="flex justify-center gap-1 text-sm text-text-secondary mt-4">
-            <span>{t("auth.login.noAccount")}</span>
-            <A href="/register" class="text-primary auth-link">
-              {t("auth.login.registerLink")}
-            </A>
-          </p>
+          <Show when={showRegisterLink()}>
+            <p class="flex justify-center gap-1 text-sm text-text-secondary mt-4">
+              <span>{t("auth.login.noAccount")}</span>
+              <A href="/register" class="text-primary auth-link">
+                {t("auth.login.registerLink")}
+              </A>
+            </p>
+          </Show>
         </Show>
         </div>
       </div>

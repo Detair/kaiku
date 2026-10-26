@@ -42,6 +42,7 @@ import { authState } from "@/stores/auth";
 import flokiDone from "@/assets/images/floki_onboard_done.webp";
 import { getThemeImage } from "@/lib/themeImage";
 import { joinViaInviteCode } from "@/stores/guilds";
+import { extractInviteCode } from "@/lib/invites";
 import { showToast } from "@/components/ui/Toast";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds, joinDiscoverable } from "@/lib/tauri";
@@ -234,8 +235,15 @@ const OnboardingDialog: Component = () => {
   };
 
   const handleJoinInvite = async () => {
-    const code = inviteCode().trim();
-    if (!code) return;
+    const code = extractInviteCode(inviteCode());
+    if (!code) {
+      showToast({
+        type: "error",
+        title: t("onboarding.join.invalidInviteTitle"),
+        message: t("onboarding.join.invalidInvite"),
+      });
+      return;
+    }
     setJoiningInvite(true);
     try {
       await joinViaInviteCode(code);
@@ -589,7 +597,6 @@ const OnboardingDialog: Component = () => {
                   value={inviteCode()}
                   onInput={(e) => setInviteCode(e.currentTarget.value)}
                   placeholder={t("onboarding.join.invitePlaceholder")}
-                  maxLength={8}
                   class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleJoinInvite();

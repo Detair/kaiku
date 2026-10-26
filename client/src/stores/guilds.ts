@@ -337,11 +337,11 @@ export async function joinViaInviteCode(code: string): Promise<void> {
     console.error("Post-join UI setup failed (join succeeded):", err);
     showToast({
       type: "warning",
-      title: "Joined Guild",
+      title: "Joined Server",
       message:
-        "Guild joined successfully. Refresh the page if it doesn't appear.",
+        "Server joined successfully. Refresh the page if it doesn't appear.",
     });
-    // Don't rethrow — the join worked, guild will appear on next load
+    // Don't rethrow — the join worked, server will appear on next load
   }
 }
 

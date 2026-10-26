@@ -336,7 +336,7 @@ const UnreadModule: Component = () => {
                       <button
                         onClick={() => handleMarkGuildRead(guild.guild_id)}
                         class="text-text-muted hover:text-accent-primary transition-colors"
-                        title={t("home.unread.markGuildRead", { guild: guild.guild_name })}
+                        title={t("home.unread.markGuildRead", { server: guild.guild_name })}
                       >
                         <CheckCheck class="w-3.5 h-3.5" />
                       </button>

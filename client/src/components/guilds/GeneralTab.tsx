@@ -87,7 +87,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
       showToast({
         type: "error",
         title: "Settings Error",
-        message: "Could not load guild settings.",
+        message: "Could not load server settings.",
         duration: 8000,
       });
     } finally {

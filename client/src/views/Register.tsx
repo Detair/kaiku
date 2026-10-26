@@ -222,7 +222,7 @@ const Register: Component = () => {
                 {t("auth.register.closedTitle")}
               </p>
               <p class="text-sm mt-1">
-                {t("auth.register.closedBody")}
+                {t("auth.register.closed")}
               </p>
             </div>
           </div>
