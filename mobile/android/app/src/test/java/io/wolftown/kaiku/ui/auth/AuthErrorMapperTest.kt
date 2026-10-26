@@ -51,6 +51,14 @@ class AuthErrorMapperTest {
     }
 
     @Test
+    fun `timeouts map to network`() {
+        val ktor = io.ktor.client.plugins.HttpRequestTimeoutException("https://s/auth/login", 1000L)
+        val socket = java.net.SocketTimeoutException("read timed out")
+        assertEquals(R.string.errors_network, AuthErrorMapper.login(ktor))
+        assertEquals(R.string.errors_network, AuthErrorMapper.login(socket))
+    }
+
+    @Test
     fun `429 and 5xx map to rate limited and server`() {
         val limited = ApiException(HttpStatusCode.TooManyRequests, "server text")
         val broken = ApiException(HttpStatusCode.BadGateway, "server text")

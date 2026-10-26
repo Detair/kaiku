@@ -17,24 +17,17 @@ fun QrRedeemScreen(
     onSuccess: () -> Unit,
     onError: () -> Unit
 ) {
-    var isLoading by remember { mutableStateOf(true) }
-
     val viewModel: QrRedeemViewModel = hiltViewModel()
-    val errorRes by viewModel.errorRes.collectAsState()
+    val state by viewModel.uiState.collectAsState()
 
-    LaunchedEffect(Unit) {
-        if (viewModel.redeem(serverUrl, token)) {
-            onSuccess()
-        } else {
-            isLoading = false
-        }
-    }
+    LaunchedEffect(Unit) { viewModel.start(serverUrl, token) }
+    LaunchedEffect(state.succeeded) { if (state.succeeded) onSuccess() }
 
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        if (isLoading) {
+        if (state.isLoading || state.succeeded) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator()
                 Spacer(modifier = Modifier.height(16.dp))
@@ -44,17 +37,16 @@ fun QrRedeemScreen(
                 )
             }
         } else {
-            errorRes?.let { message ->
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = stringResource(message),
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodyLarge
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(onClick = onError) {
-                        Text(stringResource(R.string.common_back))
-                    }
+            // Not loading and not signed in: always say why, even if no specific error was stored.
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = stringResource(state.errorRes ?: R.string.qr_redeem_failed),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(onClick = onError) {
+                    Text(stringResource(R.string.common_back))
                 }
             }
         }

@@ -163,6 +163,7 @@ fun QrScannerScreen(
                                     imageAnalysis
                                 )
                             } catch (e: Exception) {
+                                logger.log(java.util.logging.Level.WARNING, "Camera bind failed: ${e.javaClass.simpleName}")
                                 cameraErrorRes = R.string.qr_scanner_camera_failed
                             }
                         }, ContextCompat.getMainExecutor(ctx))
