@@ -13,8 +13,16 @@ import { isTauri } from "@/lib/tauri/common";
 /** Delay before the startup check so it never competes with app boot. */
 const STARTUP_CHECK_DELAY_MS = 10_000;
 
+/** Set once per app session: a remounted layout must not start a second download. */
+let started = false;
+
+/**
+ * Schedule the startup update check. Safe to call more than once: only the
+ * first call per app session schedules a check.
+ */
 export function initUpdater(): void {
-  if (!isTauri()) return;
+  if (!isTauri() || started) return;
+  started = true;
 
   window.setTimeout(() => {
     void checkForUpdate();

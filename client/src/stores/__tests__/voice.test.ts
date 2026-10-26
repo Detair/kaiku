@@ -92,6 +92,8 @@ import {
   updateVadFromSettings,
   isPttActive,
   applyStoredAudioDevices,
+  trayVoiceReport,
+  handleTrayVoiceAction,
 } from "../voice";
 import { appSettings } from "@/stores/settings";
 import type { VoiceAdapter } from "@/lib/webrtc/types";
@@ -291,6 +293,57 @@ describe("voice store", () => {
       expect(voiceState.connectedAt).not.toBeNull();
     });
 
+    it("tells the user when the microphone or speaker stops working", async () => {
+      const { showToast } = await import("@/components/ui/Toast");
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+
+      const calls = mockAdapter.setEventHandlers.mock.calls;
+      const handlers = calls[calls.length - 1][0];
+      handlers.onAudioError({ kind: "capture_failed", device: "USB Mic" });
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          title: "Microphone stopped working. Check your audio settings.",
+          message: "USB Mic",
+          duration: 0,
+        }),
+      );
+
+      handlers.onAudioError({ kind: "playback_failed", device: "Headset" });
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "error",
+          title: "Speaker stopped working. Check your audio settings.",
+          message: "Headset",
+        }),
+      );
+    });
+
+    it("withdraws the notice when audio works again and ignores errors after leaving", async () => {
+      const { showToast, dismissToast } = await import("@/components/ui/Toast");
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      mockAdapter.leave.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      const calls = mockAdapter.setEventHandlers.mock.calls;
+      const handlers = calls[calls.length - 1][0];
+
+      handlers.onAudioError({ kind: "capture_failed", device: "USB Mic" });
+      const toastCalls = vi.mocked(showToast).mock.calls;
+      const toastId = toastCalls[toastCalls.length - 1]?.[0].id;
+      expect(toastId).toBeTruthy();
+
+      vi.mocked(dismissToast).mockClear();
+      handlers.onAudioRecovered({ kind: "capture_failed", device: "Other Mic" });
+      expect(dismissToast).toHaveBeenCalledWith(toastId);
+
+      await leaveVoice();
+      vi.mocked(showToast).mockClear();
+      // A stream error that races the leave must not show a stale notice.
+      handlers.onAudioError({ kind: "capture_failed", device: "USB Mic" });
+      expect(showToast).not.toHaveBeenCalled();
+    });
+
     it("resets state on join error", async () => {
       mockAdapter.join.mockResolvedValue({
         ok: false,
@@ -466,6 +519,34 @@ describe("voice store", () => {
       await joinVoice("ch-1");
 
       expect(mockAdapter.setOutputDevice).toHaveBeenCalledWith("Headset");
+    });
+  });
+  describe("tray voice sync", () => {
+    it("reports connecting as in voice", () => {
+      expect(trayVoiceReport("connecting", false)).toEqual({ inVoice: true, muted: false });
+      expect(trayVoiceReport("connected", true)).toEqual({ inVoice: true, muted: true });
+      expect(trayVoiceReport("disconnected", false)).toEqual({ inVoice: false, muted: false });
+    });
+
+    it("tray Leave voice leaves the call", async () => {
+      setVoiceState({ state: "connected", channelId: "ch-1" });
+      mockAdapter.leave.mockResolvedValue({ ok: true });
+
+      await handleTrayVoiceAction("leave");
+
+      expect(mockAdapter.leave).toHaveBeenCalled();
+      expect(voiceState.state).toBe("disconnected");
+    });
+
+    it("tray Mute toggles mute only while in voice", async () => {
+      mockAdapter.setMute.mockResolvedValue({ ok: true });
+
+      await handleTrayVoiceAction("toggle_mute");
+      expect(mockAdapter.setMute).not.toHaveBeenCalled();
+
+      setVoiceState({ state: "connected", channelId: "ch-1" });
+      await handleTrayVoiceAction("toggle_mute");
+      expect(mockAdapter.setMute).toHaveBeenCalledWith(true);
     });
   });
 });
