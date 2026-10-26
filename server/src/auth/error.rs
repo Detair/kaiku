@@ -109,9 +109,19 @@ pub enum AuthError {
     #[error("Cannot remove your only login method; set a password or link another account first")]
     CannotUnlinkLastIdentity,
 
+    /// A dependency needed to authenticate (Valkey) is unavailable.
+    #[error("Service temporarily unavailable")]
+    ServiceUnavailable,
+
     /// Internal server error.
     #[error("Internal server error")]
     Internal(String),
+}
+
+impl From<crate::db::ValkeyUnavailable> for AuthError {
+    fn from(_: crate::db::ValkeyUnavailable) -> Self {
+        Self::ServiceUnavailable
+    }
 }
 
 /// Error response body for JSON responses.
@@ -151,6 +161,7 @@ impl IntoResponse for AuthError {
             Self::AuthMethodDisabled => (StatusCode::FORBIDDEN, "AUTH_METHOD_DISABLED"),
             Self::PasswordChangeRequired => (StatusCode::FORBIDDEN, "PASSWORD_CHANGE_REQUIRED"),
             Self::CannotUnlinkLastIdentity => (StatusCode::CONFLICT, "CANNOT_UNLINK_LAST_IDENTITY"),
+            Self::ServiceUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         };
 

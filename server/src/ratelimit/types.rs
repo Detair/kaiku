@@ -56,6 +56,22 @@ impl RateLimitCategory {
         }
     }
 
+    /// Whether this is an authentication limit (login, registration, password
+    /// reset, token refresh / OIDC, failed-login IP blocking).
+    ///
+    /// While Valkey is unavailable these fail closed (503) unless
+    /// `RATE_LIMIT_FAIL_OPEN=true`; every other category fails open.
+    pub const fn is_auth(&self) -> bool {
+        matches!(
+            self,
+            Self::AuthLogin
+                | Self::AuthRegister
+                | Self::AuthPasswordReset
+                | Self::AuthOther
+                | Self::FailedAuth
+        )
+    }
+
     /// Returns all categories except `FailedAuth` (which is handled separately).
     pub const fn all() -> &'static [Self] {
         &[
@@ -73,6 +89,37 @@ impl RateLimitCategory {
             Self::DataGovernance,
             Self::WebhookExecute,
         ]
+    }
+}
+
+#[cfg(test)]
+mod outage_policy_tests {
+    use super::RateLimitCategory;
+
+    #[test]
+    fn only_auth_categories_are_auth_limits() {
+        for category in [
+            RateLimitCategory::AuthLogin,
+            RateLimitCategory::AuthRegister,
+            RateLimitCategory::AuthPasswordReset,
+            RateLimitCategory::AuthOther,
+            RateLimitCategory::FailedAuth,
+        ] {
+            assert!(category.is_auth(), "{category:?}");
+        }
+        for category in [
+            RateLimitCategory::Write,
+            RateLimitCategory::Social,
+            RateLimitCategory::Read,
+            RateLimitCategory::WsConnect,
+            RateLimitCategory::WsMessage,
+            RateLimitCategory::VoiceJoin,
+            RateLimitCategory::Search,
+            RateLimitCategory::DataGovernance,
+            RateLimitCategory::WebhookExecute,
+        ] {
+            assert!(!category.is_auth(), "{category:?}");
+        }
     }
 }
 

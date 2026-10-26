@@ -11,7 +11,7 @@ The rate limiting system is built on Valkey (a BSD-3-Clause licensed Redis fork)
 - **User-based rate limiting**: For authenticated endpoints (uses user ID)
 - **Failed authentication tracking**: Blocks IPs after repeated failed login attempts
 - **IPv6 /64 normalization**: Prevents circumvention using multiple IPv6 addresses
-- **Fail-open behavior**: Optionally allows requests when Redis is unavailable
+- **Valkey outage behavior**: General limits fail open, authentication limits fail closed (see [When Valkey is unavailable](#when-valkey-is-unavailable))
 
 ## Configuration
 
@@ -21,7 +21,7 @@ The rate limiting system is built on Valkey (a BSD-3-Clause licensed Redis fork)
 |----------|---------|-------------|
 | `RATE_LIMIT_ENABLED` | `true` | Enable or disable rate limiting entirely |
 | `RATE_LIMIT_PREFIX` | `canis:rl` | Prefix for Valkey keys |
-| `RATE_LIMIT_FAIL_OPEN` | `true` | Allow requests when Valkey is unavailable |
+| `RATE_LIMIT_FAIL_OPEN` | `false` | Also let authentication-limited requests through while Valkey is unavailable (general limits always fail open). Not recommended: weakens brute-force protection during an outage |
 | `RATE_LIMIT_TRUSTED_PROXIES` | unset (trust none) | Comma-separated CIDRs or IPs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted |
 | `RATE_LIMIT_TRUST_PROXY` | - | Deprecated and ignored; use `RATE_LIMIT_TRUSTED_PROXIES` |
 | `RATE_LIMIT_ALLOWLIST` | (empty) | Comma-separated list of IPs to bypass rate limiting |
@@ -195,6 +195,21 @@ The list must cover the peer address Kaiku actually sees. In k3s with the bundle
 
 **Migration**: `RATE_LIMIT_TRUST_PROXY` is deprecated and no longer has any effect. If it is set to `true` without `RATE_LIMIT_TRUSTED_PROXIES`, the server logs a warning at startup and trusts no proxy, so all clients behind your reverse proxy share the proxy's address for rate limiting until you set the new variable.
 
+### When Valkey is unavailable
+
+A rate limit check that gets no answer from Valkey within `VALKEY_COMMAND_TIMEOUT_MS` (default 3 s) follows a per-category rule:
+
+| Categories | Behavior |
+|------------|----------|
+| Authentication: `auth_login` (login, QR login redeem), `auth_register`, `auth_pwd_reset`, `auth_other` (token refresh, OIDC, account linking), failed-login IP blocking | **Fail closed**: `503` with `{"error": "SERVICE_UNAVAILABLE"}` |
+| Everything else: `write`, `social`, `read`, `search`, `data_governance`, `ws_connect`, `ws_message`, `voice_join`, `webhook_execute` | **Fail open**: the request proceeds without a limit |
+
+`RATE_LIMIT_FAIL_OPEN=true` makes the authentication categories fail open as well. **This is not recommended:** during a Valkey outage it switches off login, registration and password-reset limits and failed-login IP blocking, so brute-force protection is gone until Valkey is back. Only set it if keeping logins possible during an outage matters more to you than that protection.
+
+Each such check increments `kaiku_ratelimit_valkey_unavailable_total` (labels `category`, `outcome` = `fail_open` / `fail_closed`). The server logs one warning per minute at most while the outage lasts.
+
+MFA verification, backup codes, QR login creation and admin elevation have no rate limit of their own. They require a signed-in session, and the session check also fails closed (`503`) while Valkey is unavailable.
+
 ### IPv6 Normalization
 
 IPv6 addresses are normalized to their /64 prefix to prevent rate limit circumvention. For example:
@@ -208,7 +223,7 @@ This ensures that clients cannot bypass rate limits by using multiple addresses 
 
 1. **Check if enabled**: Verify `RATE_LIMIT_ENABLED` is not set to `false`
 2. **Check Valkey connection**: Ensure Valkey is running and accessible
-3. **Check fail-open**: If `RATE_LIMIT_FAIL_OPEN=true`, requests pass through when Valkey is unavailable
+3. **Check Valkey**: While Valkey is unavailable, general limits are not enforced (and authentication limits are not enforced either if `RATE_LIMIT_FAIL_OPEN=true`); watch `kaiku_ratelimit_valkey_unavailable_total`
 
 ### Too Many False Positives
 
