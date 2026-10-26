@@ -260,7 +260,13 @@ firebase-messaging pulls in Google Play services client libraries (e.g. `play-se
 
 - **License:** MPL-2.0
 - **Location:** `third_party/env-libvpx-sys/` (crates.io 5.1.3, only the bindgen build-dependency bumped; see its README.md)
-- **Note:** MPL-2.0 is file-level copyleft: the vendored files stay under MPL-2.0 with their origin documented, and the rest of the project is unaffected. Was already a transitive dependency (via vpx-encode and kaiku-vp8-decoder) before vendoring.
+- **Note:** MPL-2.0 is file-level copyleft: the vendored files stay under MPL-2.0 (full text in `third_party/env-libvpx-sys/LICENSE`) with their origin documented, and the rest of the project is unaffected. Was already a transitive dependency (via vpx-encode and kaiku-vp8-decoder) before vendoring.
+
+### libspa-sys / pipewire-sys (vendored)
+
+- **License:** MIT (licence file kept in each directory)
+- **Location:** `third_party/libspa-sys/`, `third_party/pipewire-sys/` (upstream pipewire-rs commit `93138d01`, version 0.8.0 on bindgen 0.72; see their README.md)
+- **Note:** Linux only (screen capture via scap → pipewire 0.8). Were already transitive dependencies before vendoring.
 
 ### openh264
 

@@ -5266,7 +5266,6 @@ dependencies = [
 [[package]]
 name = "libspa-sys"
 version = "0.8.0"
-source = "git+https://gitlab.freedesktop.org/pipewire/pipewire-rs.git?rev=93138d01b23628521b29b5604bbebe991cba4c65#93138d01b23628521b29b5604bbebe991cba4c65"
 dependencies = [
  "bindgen 0.72.1",
  "cc",
@@ -7259,7 +7258,6 @@ dependencies = [
 [[package]]
 name = "pipewire-sys"
 version = "0.8.0"
-source = "git+https://gitlab.freedesktop.org/pipewire/pipewire-rs.git?rev=93138d01b23628521b29b5604bbebe991cba4c65#93138d01b23628521b29b5604bbebe991cba4c65"
 dependencies = [
  "bindgen 0.72.1",
  "libspa-sys",
@@ -11942,9 +11940,11 @@ dependencies = [
  "kaiku-vp8-decoder",
  "keyring",
  "keyring-core",
+ "libspa-sys",
  "nnnoiseless",
  "nokhwa",
  "opus",
+ "pipewire-sys",
  "rand 0.8.5",
  "reqwest 0.13.2",
  "rodio",
