@@ -22,9 +22,10 @@ import {
   StarOff,
   Copy,
 } from "lucide-solid";
-import type { ChannelWithUnread } from "@/lib/types";
+import type { ChannelWithUnread, VoiceParticipant } from "@/lib/types";
 import { isInChannel, getParticipants, voiceState } from "@/stores/voice";
 import { authState } from "@/stores/auth";
+import { getMember } from "@/stores/members";
 import { isChannelMuted, setChannelNotificationLevel } from "@/stores/sound";
 import { markChannelAsRead, isChannelUnread } from "@/stores/channels";
 import { isFavorited, toggleFavorite } from "@/stores/favorites";
@@ -66,6 +67,19 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
       // Only show participants from connected channel, excluding current user
       return isConnected() && p.user_id !== currentUserId;
     });
+  };
+
+  // Never show an id: member store name first, then what the voice event carried.
+  const participantName = (p: VoiceParticipant) => {
+    const member = props.guildId ? getMember(props.guildId, p.user_id) : undefined;
+    return (
+      member?.nickname ||
+      member?.display_name ||
+      p.display_name ||
+      p.username ||
+      member?.username ||
+      t("channels.item.unknownParticipant")
+    );
   };
 
   // Total count includes local user when connected
@@ -327,7 +341,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
             <For each={participants()
               .slice(0, 5)}>{(participant) => (
                 <p class="text-sm text-text-primary truncate">
-                  {participant.user_id.slice(0, 8)}...
+                  {participantName(participant)}
                 </p>
               )}</For>
             <Show when={participantCount() > 5}>

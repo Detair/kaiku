@@ -114,7 +114,7 @@ export const SessionList: Component = () => {
                   </span>
                   <Show when={session.guild_name}>
                     <span class="text-text-secondary text-xs">
-                      {t("settings.sessionList.inGuild", { guild: session.guild_name ?? "" })}
+                      {t("settings.sessionList.inGuild", { server: session.guild_name ?? "" })}
                     </span>
                   </Show>
                 </div>

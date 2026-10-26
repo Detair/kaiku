@@ -1,5 +1,5 @@
 import { Component, createSignal, createResource, Show, For, onCleanup } from "solid-js";
-import { A, useNavigate } from "@solidjs/router";
+import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import {
   register,
   loginWithOidc,
@@ -14,6 +14,7 @@ import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
 import { t } from "@/i18n";
+import { safeReturnUrl } from "@/lib/returnUrl";
 import { errorText } from "@/i18n/errors";
 import { REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "@/lib/authErrors";
 
@@ -34,6 +35,8 @@ const Register: Component = () => {
   document.title = `${t("auth.register.pageTitle")} | Kaiku`;
   onCleanup(() => { document.title = "Kaiku"; });
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const afterRegister = () => safeReturnUrl(searchParams.returnUrl) ?? "/";
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const [serverUrl] = createSignal(defaultServerUrl);
   const [username, setUsername] = createSignal("");
@@ -97,7 +100,7 @@ const Register: Component = () => {
         email() || undefined,
         displayName() || undefined,
       );
-      navigate("/", { replace: true });
+      navigate(afterRegister(), { replace: true });
     } catch (err) {
       if (!authState.error) {
         setLocalError(
@@ -123,7 +126,7 @@ const Register: Component = () => {
       if (result.mode === "tauri") {
         // Tauri: Rust kept the tokens and returned the user
         await completeNativeOidcLogin(serverUrl(), result.result);
-        navigate("/", { replace: true });
+        navigate(afterRegister(), { replace: true });
         setOidcLoading(null);
         return;
       }
@@ -143,7 +146,7 @@ const Register: Component = () => {
             event.data.setup_required ?? false,
           )
             .then(() => {
-              navigate("/", { replace: true });
+              navigate(afterRegister(), { replace: true });
             })
             .catch((err) => {
               if (!authState.error) {
@@ -222,7 +225,7 @@ const Register: Component = () => {
                 {t("auth.register.closedTitle")}
               </p>
               <p class="text-sm mt-1">
-                {t("auth.register.closedBody")}
+                {t("auth.register.closed")}
               </p>
             </div>
           </div>

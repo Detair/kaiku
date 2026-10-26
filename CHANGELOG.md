@@ -136,6 +136,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- The app says "server" everywhere, invite codes can be copied and pasted reliably, the sign-in screen no longer offers registration when it is closed, and a failed voice join says why.
 - Android: a notification no longer reappears for a message you already read on another device.
 - Channels no longer stay marked as unread after replies in a thread, and notifications skip messages you have already read.
 - Direct-message calls show why they ended, and calling someone you've blocked says so.

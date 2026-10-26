@@ -12,6 +12,7 @@ import {
   getGuildInvites,
 } from "@/stores/guilds";
 import { secureCopy } from "@/lib/clipboard";
+import { t } from "@/i18n";
 import type { InviteExpiry } from "@/lib/types";
 
 interface InvitesTabProps {
@@ -50,8 +51,8 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
   };
 
   const handleCopy = async (code: string) => {
-    const url = `${window.location.origin}/invite/${code}`;
-    await secureCopy(url, "invite_link");
+    // The code, not a link: the family server has no browser client to open one.
+    await secureCopy(code, "invite_link");
     setCopiedCode(code);
     setTimeout(() => setCopiedCode(null), 2000);
   };
@@ -152,7 +153,7 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
                 >
                   <div class="flex-1 min-w-0">
                     <code data-testid="invite-code" class="text-sm text-accent-primary font-mono truncate block">
-                      {window.location.origin}/invite/{invite.code}
+                      {invite.code}
                     </code>
                     <div class="text-xs text-text-secondary mt-1">
                       {formatExpiry(invite.expires_at)} &bull;{" "}
@@ -163,7 +164,7 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
                     <button
                       onClick={() => handleCopy(invite.code)}
                       class="p-2 text-text-secondary hover:text-accent-primary hover:bg-white/10 rounded-lg transition-colors"
-                      title="Copy invite link"
+                      title={t("settings.invites.copyCode")}
                     >
                       <Show
                         when={copiedCode() === invite.code}

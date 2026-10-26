@@ -13,6 +13,7 @@ export const channels = {
   "channels.item.members.one": "{{count}} member",
   "channels.item.members.other": "{{count}} members",
   "channels.item.moreParticipants": "+{{count}} more",
+  "channels.item.unknownParticipant": "Someone",
   "channels.item.menu.markRead": "Mark as Read",
   "channels.item.menu.mute": "Mute Channel",
   "channels.item.menu.unmute": "Unmute Channel",

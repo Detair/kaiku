@@ -17,9 +17,9 @@ test.describe("Invite Links", () => {
     const inviteCode = page.getByTestId("invite-code");
     await expect(inviteCode).toBeVisible({ timeout: 10000 });
 
-    // Verify the invite code contains a URL
+    // The list shows the bare code, not a link
     const codeText = await inviteCode.textContent();
-    expect(codeText).toContain("/invite/");
+    expect(codeText?.trim()).toMatch(/^[a-zA-Z0-9]+$/);
   });
 
   test("join guild via invite route", async ({ page, browser }) => {
@@ -34,11 +34,8 @@ test.describe("Invite Links", () => {
     const inviteCode = page.getByTestId("invite-code");
     await expect(inviteCode).toBeVisible({ timeout: 10000 });
 
-    // Extract the invite code from the URL text
-    const codeText = await inviteCode.textContent();
-    const inviteMatch = codeText?.match(/\/invite\/([a-zA-Z0-9]+)/);
-    expect(inviteMatch).toBeTruthy();
-    const code = inviteMatch![1];
+    const code = (await inviteCode.textContent())?.trim();
+    expect(code).toMatch(/^[a-zA-Z0-9]+$/);
 
     // Second user joins via invite
     const context2 = await browser.newContext({ ignoreHTTPSErrors: true });

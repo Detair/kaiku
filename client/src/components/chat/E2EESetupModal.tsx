@@ -136,7 +136,7 @@ const E2EESetupModal: Component<E2EESetupModalProps> = (props) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "canis-recovery-key.txt";
+    a.download = "kaiku-recovery-key.txt";
     a.click();
     URL.revokeObjectURL(url);
   };
