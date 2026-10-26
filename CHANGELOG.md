@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Admins can add a new account to servers while creating it.
 - **Mobile push notifications (server side)**: the server can wake the Android app through Firebase Cloud Messaging (when an FCM service account is configured) or UnifiedPush. Phones are now also notified about @mentions, not only DMs (photo and file DMs already pushed before). Bursts of messages are coalesced into one notification, and reading a conversation on another device clears its notification. Wake signals carry only a type, channel and count, never message text, so end-to-end encryption is preserved. Blocked users never trigger a notification, and blocks are enforced for DMs even when cached data has expired. Endpoints are registered per device under `/api/me/push-subscriptions`, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
 - Android: you can send photos and videos from your phone.
 - Android: new messages show as notifications with the sender and text, grouped per conversation; tapping one opens the conversation, and reading it anywhere clears the notification.

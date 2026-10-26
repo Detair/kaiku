@@ -161,13 +161,33 @@ pub async fn create_user(
     let password_hash = crate::auth::hash_password(&body.temporary_password)
         .map_err(|_| AdminError::Internal("Password processing failed".to_string()))?;
 
-    // Insert and audit entry commit together: an audit failure must not leave
-    // an account behind (a retry would then hit 409).
+    // Deduplicated and sorted: a stable lock order across concurrent joins.
+    let guild_ids: Vec<Uuid> = body
+        .guild_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    // Existence check, insert, memberships and audit entry commit together: a
+    // failure must not leave an account behind (a retry would then hit 409).
     let mut tx = state.db.begin().await?;
+    if !guild_ids.is_empty() {
+        let existing = queries::count_existing_guilds(&mut *tx, &guild_ids).await?;
+        if usize::try_from(existing).ok() != Some(guild_ids.len()) {
+            return Err(AdminError::UnknownServer);
+        }
+    }
     let (id, username, display_name, email, avatar_url, created_at, is_banned) =
         queries::insert_admin_created_user(&mut *tx, &body.username, display_name, &password_hash)
             .await?
             .ok_or_else(|| AdminError::Conflict("Username already taken".to_string()))?;
+
+    // An admin-added member is active right away, never pending screening.
+    for guild_id in &guild_ids {
+        join_guild(&state, &mut tx, *guild_id, id).await?;
+    }
 
     // Never include the temporary password in the audit entry.
     let ip_address = addr.ip().to_string();
@@ -177,11 +197,30 @@ pub async fn create_user(
         "admin.users.create",
         Some("user"),
         Some(id),
-        Some(serde_json::json!({"username": username, "display_name": display_name})),
+        Some(serde_json::json!({
+            "username": username,
+            "display_name": display_name,
+            "guild_ids": guild_ids,
+        })),
         Some(&ip_address),
     )
     .await?;
     tx.commit().await?;
+
+    // Best effort, as after an invite join: read state can be rebuilt on
+    // channel access, so a failure here never fails the request.
+    for guild_id in &guild_ids {
+        if let Err(err) =
+            crate::guild::members::initialize_channel_read_state(&state.db, *guild_id, id).await
+        {
+            tracing::error!(
+                ?err,
+                guild_id = %guild_id,
+                user_id = %id,
+                "Failed to initialize channel read state for admin-created account"
+            );
+        }
+    }
 
     tracing::info!(admin_id = %admin.user_id, user_id = %id, "Admin created user account");
 
@@ -197,6 +236,39 @@ pub async fn create_user(
             is_banned,
         }),
     ))
+}
+
+/// Add a freshly created account to a guild inside the creation transaction.
+///
+/// Serialises with other joins to the same guild and honours the member limit,
+/// like an invite join. Membership is always `active` (screening is for
+/// self-joins; the admin vouches for the account).
+async fn join_guild(
+    state: &AppState,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    guild_id: Uuid,
+    user_id: Uuid,
+) -> Result<(), AdminError> {
+    let guild_err = |e: crate::guild::GuildError| {
+        tracing::error!(error = ?e, %guild_id, "Admin-created account guild join failed");
+        AdminError::Internal("Failed to add account to server".to_string())
+    };
+    crate::guild::queries::invites::lock_member_join(tx, guild_id)
+        .await
+        .map_err(guild_err)?;
+    let members = crate::guild::queries::invites::count_guild_members_tx(tx, guild_id)
+        .await
+        .map_err(guild_err)?;
+    if members >= state.config.max_members_per_guild {
+        return Err(AdminError::Validation(format!(
+            "server has reached the maximum number of members ({})",
+            state.config.max_members_per_guild
+        )));
+    }
+    crate::guild::queries::invites::insert_member_idempotent(tx, guild_id, user_id, false)
+        .await
+        .map_err(guild_err)?;
+    Ok(())
 }
 
 /// Get detailed user information.

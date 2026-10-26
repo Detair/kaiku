@@ -94,6 +94,11 @@ pub struct CreateUserRequest {
     /// Temporary password handed to the user (8-128 characters).
     #[validate(length(min = 8, max = 128))]
     pub temporary_password: String,
+    /// Servers (guilds) the new account joins as an active member. Optional,
+    /// at most 10; duplicates are ignored and every id must exist.
+    #[serde(default)]
+    #[validate(length(max = 10))]
+    pub guild_ids: Vec<Uuid>,
 }
 
 impl std::fmt::Debug for CreateUserRequest {
@@ -102,6 +107,7 @@ impl std::fmt::Debug for CreateUserRequest {
             .field("username", &self.username)
             .field("display_name", &self.display_name)
             .field("temporary_password", &"[REDACTED]")
+            .field("guild_ids", &self.guild_ids)
             .finish()
     }
 }
