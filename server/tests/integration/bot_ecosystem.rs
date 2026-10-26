@@ -1734,3 +1734,126 @@ async fn test_builtin_ping_returns_pong(pool: PgPool) {
         .await
         .unwrap();
 }
+
+/// Open Valkey connections as reported by `INFO clients`.
+async fn valkey_connected_clients(redis: &fred::clients::Client) -> i64 {
+    let info: String = redis
+        .info(Some(fred::types::InfoKind::Clients))
+        .await
+        .expect("INFO clients");
+    info.lines()
+        .find_map(|l| l.strip_prefix("connected_clients:"))
+        .and_then(|v| v.trim().parse().ok())
+        .expect("connected_clients")
+}
+
+/// Slash commands must not leave a Valkey connection open per invocation.
+///
+/// Parallel tests add a little noise to the global connection count, so the
+/// test issues many commands and bounds the growth well below one
+/// connection per command.
+#[sqlx::test]
+async fn test_slash_command_does_not_leak_valkey_connections(pool: PgPool) {
+    const COMMANDS: usize = 30;
+    const ALLOWED_GROWTH: i64 = 10;
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, user_id);
+
+    let application_id = uuid::Uuid::new_v4();
+    let bot_user_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id, username, display_name, password_hash, is_bot, bot_owner_id) \
+         VALUES ($1, $2, 'Leak Bot', 'x', true, $3)",
+    )
+    .bind(bot_user_id)
+    .bind(format!("leakbot{}", &bot_user_id.simple().to_string()[..8]))
+    .bind(user_id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO bot_applications (id, owner_id, name, token_hash, bot_user_id) \
+         VALUES ($1, $2, 'Leak Bot', 'x', $3)",
+    )
+    .bind(application_id)
+    .bind(user_id)
+    .bind(bot_user_id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO slash_commands (application_id, name, description) VALUES ($1, 'hello', 'Say hello')",
+    )
+    .bind(application_id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    let guild_id = uuid::Uuid::new_v4();
+    let channel_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, 'Leak Guild', $2)")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
+        .bind(guild_id)
+        .bind(user_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO channels (id, guild_id, name, channel_type) VALUES ($1, $2, 'cmds', 'text')",
+    )
+    .bind(channel_id)
+    .bind(guild_id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO guild_bot_installations (guild_id, application_id, installed_by) VALUES ($1, $2, $3)",
+    )
+    .bind(guild_id)
+    .bind(application_id)
+    .bind(user_id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .unwrap();
+
+    let send = || {
+        TestApp::request(Method::POST, &format!("/api/messages/channel/{channel_id}"))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                serde_json::to_string(&json!({ "content": "/hello x" })).unwrap(),
+            ))
+            .unwrap()
+    };
+
+    // Warm up so lazily created shared connections are not counted.
+    let warm = app.oneshot(send()).await;
+    assert_eq!(warm.status(), 202, "slash command should be routed");
+    let before = valkey_connected_clients(&redis).await;
+
+    for _ in 0..COMMANDS {
+        let resp = app.oneshot(send()).await;
+        assert_eq!(resp.status(), 202);
+    }
+    // Give the server a moment to finish any bounded close.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let after = valkey_connected_clients(&redis).await;
+    redis.quit().await.expect("quit test Valkey client");
+    assert!(
+        after - before < ALLOWED_GROWTH,
+        "{COMMANDS} slash commands grew Valkey connections by {} (before {before}, after {after})",
+        after - before
+    );
+}
