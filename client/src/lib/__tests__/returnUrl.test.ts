@@ -19,6 +19,17 @@ describe("safeReturnUrl", () => {
     expect(safeReturnUrl("%2F%5Cevil.example")).toBeNull();
   });
 
+  it("rejects control characters that browsers strip into //host", () => {
+    expect(safeReturnUrl("/%09/evil.example")).toBeNull();
+    expect(safeReturnUrl("/\t/evil.example")).toBeNull();
+    expect(safeReturnUrl("/%0A/evil.example")).toBeNull();
+    expect(safeReturnUrl("/%00/evil.example")).toBeNull();
+  });
+
+  it("keeps the query and fragment of an in-app path", () => {
+    expect(safeReturnUrl("/invite/abc?x=1#top")).toBe("/invite/abc?x=1#top");
+  });
+
   it("returns null for malformed escapes instead of throwing", () => {
     expect(safeReturnUrl("%E0%A4%A")).toBeNull();
   });
