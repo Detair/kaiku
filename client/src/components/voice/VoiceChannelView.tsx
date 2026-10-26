@@ -13,6 +13,8 @@ import VoiceControls from "./VoiceControls";
 import VoiceTileGrid from "./VoiceTileGrid";
 import { showToast } from "@/components/ui/Toast";
 import { t, plural } from "@/i18n";
+import { errorText } from "@/i18n/errors";
+import { requestSettings } from "@/stores/settingsNav";
 
 interface VoiceChannelViewProps {
   channelId: string;
@@ -29,10 +31,23 @@ const VoiceChannelView: Component<VoiceChannelViewProps> = (props) => {
   const handleJoin = async () => {
     try {
       await joinVoice(props.channelId);
-    } catch {
+    } catch (err) {
+      // joinVoice records the adapter's error type before throwing.
+      const micProblem =
+        voiceState.error?.type === "permission_denied" ||
+        voiceState.error?.type === "device_not_found";
       showToast({
         type: "error",
         title: t("voice.channel.joinFailed"),
+        message: micProblem
+          ? t("voice.join.micUnavailable")
+          : errorText(err, "voice.channel.joinFailed"),
+        action: micProblem
+          ? {
+              label: t("voice.join.openAudioSettings"),
+              onClick: () => requestSettings("audio"),
+            }
+          : undefined,
         duration: 8000,
       });
     }

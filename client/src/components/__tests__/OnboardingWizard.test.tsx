@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   joinDiscoverable: vi.fn(),
   discoverGuilds: vi.fn(),
   showToast: vi.fn(),
+  joinViaInviteCode: vi.fn(),
 }));
 
 vi.mock("@/lib/tauri", () => ({
@@ -18,7 +19,7 @@ vi.mock("@/components/ui/Toast", () => ({ showToast: mocks.showToast }));
 vi.mock("@/stores/guilds", () => ({
   // No server yet, so the join step is shown.
   guildsState: { guilds: [] },
-  joinViaInviteCode: vi.fn(),
+  joinViaInviteCode: mocks.joinViaInviteCode,
   loadGuilds: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/stores/preferences", async (orig) => ({
@@ -66,5 +67,20 @@ describe("OnboardingWizard", () => {
         expect.objectContaining({ message: "You've joined Familie." }),
       ),
     );
+  });
+
+  it("invite field accepts a pasted link and joins with the code", async () => {
+    mocks.discoverGuilds.mockResolvedValue({ guilds: [] });
+    mocks.joinViaInviteCode.mockResolvedValue(undefined);
+    open();
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    fireEvent.click(await screen.findByRole("tab", { name: t("onboarding.join.tabInvite") }));
+    const input = screen.getByPlaceholderText(t("onboarding.join.invitePlaceholder")) as HTMLInputElement;
+    expect(input.maxLength).toBe(-1);
+    fireEvent.input(input, { target: { value: "https://kaiku.example/invite/AbCd1234" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(mocks.joinViaInviteCode).toHaveBeenCalledWith("AbCd1234"));
   });
 });

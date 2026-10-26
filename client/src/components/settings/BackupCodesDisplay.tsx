@@ -49,7 +49,7 @@ const BackupCodesDisplay: Component<BackupCodesDisplayProps> = (props) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "voicechat-backup-codes.txt";
+    a.download = "kaiku-backup-codes.txt";
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

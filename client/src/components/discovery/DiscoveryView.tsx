@@ -64,8 +64,8 @@ const DiscoveryView: Component = () => {
       setIsPermanentError(isDisabled);
       setError(
         isDisabled
-          ? "Guild discovery is not enabled on this server."
-          : "Could not load guilds. Please try again.",
+          ? "Server discovery is not enabled on this server."
+          : "Could not load servers. Please try again.",
       );
     } finally {
       if (thisRequest === requestId) setLoading(false);

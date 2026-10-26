@@ -32,7 +32,7 @@ export const home = {
   "home.unread.title": "Unread",
   "home.unread.markAllRead": "Mark all as read",
   "home.unread.markAllReadButton": "Mark All as Read",
-  "home.unread.markGuildRead": "Mark all in {{guild}} as read",
+  "home.unread.markGuildRead": "Mark all in {{server}} as read",
   "home.unread.markDmsRead": "Mark all DMs as read",
   "home.unread.caughtUp": "All caught up!",
   "home.unread.none": "No unread messages",
@@ -46,7 +46,7 @@ export const home = {
   "home.unread.toast.navigateDmFailed": "Could not navigate to DM. Please try again.",
   "home.unread.toast.markReadFailedTitle": "Mark All Read Failed",
   "home.unread.toast.markAllFailed": "Could not mark all as read.",
-  "home.unread.toast.markGuildFailed": "Could not mark guild channels as read.",
+  "home.unread.toast.markGuildFailed": "Could not mark server channels as read.",
   "home.unread.toast.markDmsFailed": "Could not mark DMs as read.",
 
   "home.guildSidebar.events": "Events",
