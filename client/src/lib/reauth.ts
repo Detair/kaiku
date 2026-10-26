@@ -14,8 +14,8 @@ import {
   HttpError,
 } from "@/lib/tauri";
 import type { ReauthMethodsResponse } from "@/lib/types";
-import { t } from "@/i18n";
 import type { MessageKey } from "@/i18n";
+import { errorText } from "@/i18n/errors";
 
 export type ReauthMethod =
   | { kind: "password" }
@@ -168,6 +168,8 @@ export const defaultReauthStrategy: ReauthStrategy = {
 
 const REAUTH_ERRORS: Record<string, MessageKey> = {
   INVALID_CREDENTIALS: "admin.reauth.error.invalidCredentials",
+  INVALID_MFA: "admin.reauth.error.invalidCredentials",
+  INVALID_MFA_CODE: "admin.reauth.error.invalidCredentials",
   MFA_CODE_REQUIRED: "admin.reauth.error.mfaRequired",
   REAUTH_UNAVAILABLE: "admin.reauth.error.unavailable",
   REAUTH_OIDC_REQUIRED: "admin.reauth.error.oidcRequired",
@@ -195,15 +197,34 @@ export function reauthErrorCode(err: unknown): string | undefined {
   return err instanceof HttpError ? err.code : undefined;
 }
 
-/** User-facing text for a failed re-authentication call (never server text). */
+const REAUTH_STATUS_ERRORS: Partial<Record<number, MessageKey>> = {
+  429: "admin.reauth.error.rateLimited",
+  403: "admin.reauth.error.forbidden",
+  503: "admin.reauth.error.serviceUnavailable",
+};
+
+/** Codes that mean "the password or code was wrong" (a code may be a replay). */
+const WRONG_CODE = new Set(["INVALID_CREDENTIALS", "INVALID_MFA", "INVALID_MFA_CODE"]);
+
+/**
+ * True when a submit that carried an authenticator code was rejected as wrong.
+ * The server refuses a code already used in the same 30 s step (also one just
+ * used to sign in), so the dialog adds a "wait for the next code" hint.
+ */
+export function isRejectedCode(err: unknown): boolean {
+  const code = reauthErrorCode(err);
+  return code !== undefined && WRONG_CODE.has(code.toUpperCase());
+}
+
+/**
+ * User-facing text for a failed re-authentication call (never server text).
+ * One shared mapping (R12): the re-auth codes on top of `errorText()`.
+ */
 export function reauthErrorText(err: unknown): string {
-  if (err instanceof HttpError) {
-    // Servers spell some codes in lowercase; the mapping is case-insensitive.
-    const key = err.code ? REAUTH_ERRORS[err.code.toUpperCase()] : undefined;
-    if (key) return t(key);
-    if (err.status === 429) return t("admin.reauth.error.rateLimited");
-    if (err.status === 403) return t("admin.reauth.error.forbidden");
-    if (err.status === 503) return t("admin.reauth.error.serviceUnavailable");
-  }
-  return t("admin.reauth.error.generic");
+  // Servers spell some codes in lowercase; the lookup is case-insensitive.
+  const normalised =
+    err instanceof HttpError && err.code && err.code !== err.code.toUpperCase()
+      ? new HttpError(err.status, err.message, err.code.toUpperCase())
+      : err;
+  return errorText(normalised, "admin.reauth.error.generic", REAUTH_ERRORS, REAUTH_STATUS_ERRORS);
 }

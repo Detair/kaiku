@@ -5,16 +5,10 @@ const confirmElevation = vi.hoisted(() => vi.fn());
 const reauthWithOidc = vi.hoisted(() => vi.fn());
 const loadInfo = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/tauri", () => ({
-  HttpError: class extends Error {
-    constructor(
-      public status: number,
-      m: string,
-      public code?: string,
-    ) {
-      super(m);
-    }
-  },
+vi.mock("@/lib/tauri", async () => ({
+  // The real class, so the shared errorText() recognises it.
+  HttpError: (await vi.importActual<typeof import("@/lib/tauri/common")>("@/lib/tauri/common"))
+    .HttpError,
 }));
 vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 vi.mock("@/stores/admin", () => ({

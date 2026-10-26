@@ -1,15 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-vi.mock("@/lib/tauri", () => {
-  class HttpError extends Error {
-    constructor(
-      public status: number,
-      message: string,
-      public code?: string,
-    ) {
-      super(message);
-    }
-  }
+vi.mock("@/lib/tauri", async () => {
+  // The real class, so the shared errorText() recognises it.
+  const { HttpError } = await vi.importActual<typeof import("@/lib/tauri/common")>(
+    "@/lib/tauri/common",
+  );
   return {
     HttpError,
     getServerUrl: () => "https://chat.example",
@@ -26,6 +21,8 @@ import {
   reauthErrorText,
   defaultReauthStrategy,
 } from "../reauth";
+import { errorText } from "@/i18n/errors";
+import { LOGIN_ERRORS } from "@/lib/authErrors";
 
 const kc = [{ provider_id: "kc", display_name: "Keycloak" }];
 
@@ -241,5 +238,34 @@ describe("reauthErrorText", () => {
       "provider reported a problem",
     );
     expect(reauthErrorText(new Error("boom"))).toBe("Could not confirm. Please try again.");
+  });
+
+  it("goes through the shared errorText mapping (R12)", () => {
+    // Common cases come from errorText(), not from a second mapping.
+    expect(reauthErrorText(new TypeError("fetch failed"))).toBe(
+      "Can't reach the server. Check your connection.",
+    );
+    expect(reauthErrorText(new HttpError(500, "boom"))).toBe(
+      "Something went wrong on the server. Please try again in a moment.",
+    );
+    // A wrapped failure is unwrapped the same way.
+    expect(
+      reauthErrorText(new Error("wrapped", { cause: new HttpError(0, "x", "REAUTH_STALE") })),
+    ).toContain("too old");
+  });
+
+  it("sign-in words a rejected authenticator code the same way (C15)", () => {
+    expect(errorText(new HttpError(401, "x", "INVALID_MFA"), "admin.reauth.error.generic", LOGIN_ERRORS)).toBe(
+      "That code didn't work. If you just used it, wait for the next code and try again.",
+    );
+  });
+
+  it("maps the server's wrong-code codes like a wrong password", () => {
+    expect(reauthErrorText(new HttpError(401, "x", "INVALID_MFA"))).toBe(
+      "That password or code is not correct.",
+    );
+    expect(reauthErrorText(new HttpError(401, "x", "invalid_mfa_code"))).toBe(
+      "That password or code is not correct.",
+    );
   });
 });

@@ -20,6 +20,7 @@
   "admin.createAccount.usernameTaken": "",
   "admin.reauth.backupCodesTitle": "",
   "admin.reauth.cancel": "",
+  "admin.reauth.codeUsedHint": "",
   "admin.reauth.elevateTitle": "",
   "admin.reauth.error.cancelled": "",
   "admin.reauth.error.forbidden": "",

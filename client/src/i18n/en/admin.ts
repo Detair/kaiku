@@ -49,4 +49,5 @@ export const admin = {
   "admin.reauth.error.providerError": "The sign-in provider reported a problem. Please try again.",
   "admin.reauth.loading": "Checking how you can confirm...",
   "admin.reauth.error.popupBlocked": "The sign-in window was blocked. Allow pop-ups for this page and try again.",
+  "admin.reauth.codeUsedHint": "That code didn't work. If you just used it, wait for the next code and try again.",
 } as const satisfies Record<`admin.${string}`, string>;

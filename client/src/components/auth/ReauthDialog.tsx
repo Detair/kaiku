@@ -8,7 +8,12 @@
 import { Component, createSignal, For, onCleanup, Show } from "solid-js";
 import { X } from "lucide-solid";
 import type { ReauthRequest } from "@/lib/types";
-import { reauthErrorCode, reauthErrorText, type ReauthMethod } from "@/lib/reauth";
+import {
+  isRejectedCode,
+  reauthErrorCode,
+  reauthErrorText,
+  type ReauthMethod,
+} from "@/lib/reauth";
 import { createDialog } from "@/lib/a11y/dialog";
 import { t } from "@/i18n";
 
@@ -39,6 +44,8 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
     setCode("");
   });
   const [error, setError] = createSignal("");
+  // A rejected code may have been used moments ago (one use per 30 s step).
+  const [codeHint, setCodeHint] = createSignal(false);
   const [busy, setBusy] = createSignal(false);
   // The server can tell us mid-way that the password path is not for this
   // account (switch to the provider) or that nothing is available.
@@ -61,9 +68,10 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
     !mfaOnly() &&
     (serverUnavailable() || (!showPassword() && oidcMethods().length === 0));
 
-  const run = async (action: () => Promise<void>) => {
+  const run = async (action: () => Promise<void>, sentCode: boolean) => {
     setBusy(true);
     setError("");
+    setCodeHint(false);
     try {
       await action();
     } catch (err) {
@@ -75,6 +83,7 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
         setServerUnavailable(true);
       }
       setError(reauthErrorText(err));
+      setCodeHint(sentCode && isRejectedCode(err));
     } finally {
       if (!abort.signal.aborted) setBusy(false);
     }
@@ -84,19 +93,23 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
     e.preventDefault();
     if (busy()) return;
     if (showPassword() && password() === "") {
+      setCodeHint(false);
       setError(t("admin.reauth.error.validation"));
       return;
     }
     const mfa = code().replace(/\s+/g, "");
     if (showCode() && mfa === "") {
+      setCodeHint(false);
       setError(t("admin.reauth.error.mfaRequired"));
       return;
     }
-    void run(() =>
-      props.onSubmit({
-        password: showPassword() ? password() : "",
-        mfa_code: showCode() ? mfa : null,
-      }),
+    void run(
+      () =>
+        props.onSubmit({
+          password: showPassword() ? password() : "",
+          mfa_code: showCode() ? mfa : null,
+        }),
+      showCode(),
     );
   };
 
@@ -178,9 +191,12 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
             </Show>
 
             <Show when={error()}>
-              <p role="alert" class="text-sm text-status-error">
-                {error()}
-              </p>
+              <div role="alert" class="text-sm text-status-error space-y-1">
+                <p>{error()}</p>
+                <Show when={codeHint()}>
+                  <p>{t("admin.reauth.codeUsedHint")}</p>
+                </Show>
+              </div>
             </Show>
 
             <div class="flex justify-end gap-2">
@@ -214,14 +230,17 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
                         if (!onOidc) return;
                         const mfa = code().replace(/\s+/g, "");
                         if (showCode() && mfa === "") {
+                          setCodeHint(false);
                           setError(t("admin.reauth.error.mfaRequired"));
                           return;
                         }
                         // The server uses the code up; never offer it for a retry.
-                        void run(() =>
-                          onOidc(m, showCode() ? mfa : null, abort.signal).finally(() =>
-                            setCode(""),
-                          ),
+                        void run(
+                          () =>
+                            onOidc(m, showCode() ? mfa : null, abort.signal).finally(() =>
+                              setCode(""),
+                            ),
+                          showCode(),
                         );
                       }}
                     >

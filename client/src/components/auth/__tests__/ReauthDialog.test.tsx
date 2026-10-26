@@ -1,16 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
 
-vi.mock("@/lib/tauri", () => {
-  class HttpError extends Error {
-    constructor(
-      public status: number,
-      message: string,
-      public code?: string,
-    ) {
-      super(message);
-    }
-  }
+vi.mock("@/lib/tauri", async () => {
+  // The real class, so the shared errorText() recognises it.
+  const { HttpError } = await vi.importActual<typeof import("@/lib/tauri/common")>(
+    "@/lib/tauri/common",
+  );
   return { HttpError };
 });
 
@@ -74,6 +69,56 @@ describe("ReauthDialog", () => {
         "That password or code is not correct.",
       ),
     );
+  });
+
+  const USED_HINT =
+    "That code didn't work. If you just used it, wait for the next code and try again.";
+
+  it.each(["INVALID_CREDENTIALS", "INVALID_MFA"])(
+    "a rejected submit with a code (%s) adds the already-used hint",
+    async (code) => {
+      const onSubmit = vi.fn().mockRejectedValue(new HttpError(401, "x", code));
+      setup({ onSubmit, mfaEnabled: true });
+      type(/password/i, "pw");
+      type(/authenticator code/i, "123456");
+      fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(USED_HINT));
+    },
+  );
+
+  it("no already-used hint when no code was sent", async () => {
+    const onSubmit = vi.fn().mockRejectedValue(new HttpError(401, "x", "INVALID_CREDENTIALS"));
+    setup({ onSubmit });
+    type(/password/i, "bad");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(screen.getByRole("alert").textContent).not.toContain("wait for the next code");
+  });
+
+  it("the provider path with a rejected code adds the already-used hint", async () => {
+    const onOidc = vi.fn().mockRejectedValue(new HttpError(401, "x", "INVALID_CREDENTIALS"));
+    setup({ methods: [OIDC], onOidc, mfaEnabled: true });
+    type(/authenticator code/i, "111222");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(USED_HINT));
+  });
+
+  it("the hint is gone on the next attempt", async () => {
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValueOnce(new HttpError(401, "x", "INVALID_CREDENTIALS"))
+      .mockRejectedValueOnce(new HttpError(429, "slow"));
+    setup({ onSubmit, mfaEnabled: true });
+    type(/password/i, "pw");
+    type(/authenticator code/i, "123456");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(USED_HINT));
+    type(/authenticator code/i, "654321");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("Too many attempts"),
+    );
+    expect(screen.getByRole("alert").textContent).not.toContain(USED_HINT);
   });
 
   it("shows a rate limit message for 429", async () => {
