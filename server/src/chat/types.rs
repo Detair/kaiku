@@ -119,6 +119,10 @@ pub struct AuthorProfile {
     pub username: String,
     pub display_name: String,
     pub avatar_url: Option<String>,
+    /// Deprecated: always `"offline"`. Kept for wire compatibility; it is not
+    /// the author's presence. Live presence is delivered only over the
+    /// WebSocket (`presence_update` events to the presence audience).
+    #[schema(deprecated, example = "offline")]
     pub status: String,
 }
 

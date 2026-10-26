@@ -1216,9 +1216,10 @@ async fn test_future_seq_repair_never_undoes_a_newer_change(pool: PgPool) {
     redis.quit().await.expect("quit test Valkey client");
 }
 
-/// Message authors show what others see: a connected busy author is `busy`.
+/// Message authors never carry live presence: even a connected busy author is
+/// sent with the constant `offline` placeholder.
 #[sqlx::test]
-async fn test_message_author_status_is_shown_status(pool: PgPool) {
+async fn test_message_author_status_is_constant_offline(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let server = spawn_test_server(app.router.clone()).await;
     let redis = db::create_redis_client(&app.config.redis_url)
@@ -1247,7 +1248,7 @@ async fn test_message_author_status_is_shown_status(pool: PgPool) {
         .json()
         .await
         .expect("message JSON");
-    assert_eq!(body["author"]["status"], "busy");
+    assert_eq!(body["author"]["status"], "offline");
 
     redis.quit().await.expect("quit test Valkey client");
 }

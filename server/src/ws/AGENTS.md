@@ -274,7 +274,7 @@ while let Some(msg) = ws_receiver.next().await {
 **Stored vs. shown status**: `users.status` is the chosen status.
 - Connecting sets `online` only when the stored status is `offline`.
 - The last device closing resets only a stored `online`.
-- REST readers use `effective_status(stored, live)` with `live_users`: the member list (blocked users either way show `offline`), the friends list, message authors and the bot gateway author.
+- REST readers use `effective_status(stored, live)` with `live_users`: the member list (blocked users either way show `offline`) and the friends list. Message, pin, thread and bot-gateway author payloads carry no presence (`AuthorProfile.status` is always `"offline"`, see `chat/AGENTS.md`).
 - `users.invisible` is deprecated (always `false`).
 
 **Audience** (`ws::presence_audience`): presence peers = friends ∪ members of the user's servers, without users blocked either way, capped at 500.
@@ -314,7 +314,7 @@ while let Some(msg) = ws_receiver.next().await {
 - **Concurrency residual (accepted for v1.0):** what remains only occurs with concurrent operations, connects or lock waits in the millisecond-to-second range and affects only status or activity, never message content. Examples: an update published in the instant between a connecting socket's key check and its subscriptions going live, or a reload racing a notice that is still in flight on another server.
 - **Stale but not leaking:**
   - A status or rich presence can be stale until the next periodic reconcile or backstop (about 60 s). Examples: concurrent rich updates from two devices published out of database order, or a reconcile that briefly publishes the rich value it read just before a newer one.
-  - REST readers (member list, friends, message authors) derive status from the database plus live sockets, not from the published state.
+  - REST readers (member list, friends) derive status from the database plus live sockets, not from the published state.
 - **Reconcile cursor:** above the bound of 1000 connected users the periodic reconcile walks the due set by rank. Ranks shift as users connect and disconnect, so coverage within ceil(n/bound) runs holds for a stable population; with churn a user can occasionally wait one extra run.
 - **Notice churn:** if a reload or re-check cannot settle within four rounds (the audience keeps changing, or the same user is invalidated again and again), the socket closes with 1011 and the client reconnects with a fresh state.
 - **Pending block at connect (accepted):** a block that is still pending while a socket connects is applied to presence immediately (the durable key). Hiding that user's channel messages starts only with the block's completion notice, or, in a rare case of a concurrent leave and block, only after a reconnect.
