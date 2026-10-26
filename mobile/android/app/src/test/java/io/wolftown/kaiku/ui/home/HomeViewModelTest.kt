@@ -334,7 +334,7 @@ class HomeViewModelTest {
             guildsFlow.value = listOf(sampleGuilds.first())
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         verify { guildRepository.selectGuild("guild-1") }
@@ -345,7 +345,7 @@ class HomeViewModelTest {
     fun `auto-select opens the first server when nothing is selected`() = runTest {
         coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = sampleGuilds }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         verify { guildRepository.selectGuild("guild-1") }
@@ -357,7 +357,7 @@ class HomeViewModelTest {
         selectedGuildIdFlow.value = "guild-2"
         coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = sampleGuilds }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         verify(exactly = 0) { guildRepository.selectGuild(any()) }
@@ -367,7 +367,7 @@ class HomeViewModelTest {
     fun `no servers selects nothing`() = runTest {
         coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = emptyList() }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         verify(exactly = 0) { guildRepository.selectGuild(any()) }
