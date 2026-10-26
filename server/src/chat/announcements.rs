@@ -32,6 +32,9 @@ pub enum AnnouncementError {
     FollowNotFound,
     #[error("Cannot view the source channel")]
     SourceForbidden,
+    /// The target is a forum channel while the forum feature is off.
+    #[error("This feature is turned off on this server.")]
+    FeatureDisabled,
     #[error("{0}")]
     Permission(#[from] PermissionError),
     #[error("Database error")]
@@ -53,6 +56,11 @@ impl IntoResponse for AnnouncementError {
             Self::AlreadyFollowing => (StatusCode::CONFLICT, "ALREADY_FOLLOWING", self.to_string()),
             Self::FollowNotFound => (StatusCode::NOT_FOUND, "FOLLOW_NOT_FOUND", self.to_string()),
             Self::SourceForbidden => (StatusCode::FORBIDDEN, "SOURCE_FORBIDDEN", self.to_string()),
+            Self::FeatureDisabled => (
+                StatusCode::BAD_REQUEST,
+                crate::features::FEATURE_DISABLED,
+                self.to_string(),
+            ),
             Self::Permission(_) => (StatusCode::FORBIDDEN, "PERMISSION_DENIED", self.to_string()),
             Self::Database(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -119,7 +127,10 @@ pub async fn follow_channel(
     }
 
     // The actor must manage channels in the FOLLOWER (target) guild.
-    let target_guild = channel_guild(&state, target_channel_id).await?;
+    let target = db::find_channel_by_id(&state.db, target_channel_id)
+        .await?
+        .ok_or(AnnouncementError::ChannelNotFound)?;
+    let target_guild = target.guild_id.ok_or(AnnouncementError::ChannelNotFound)?;
     require_guild_permission(
         &state.db,
         target_guild,
@@ -127,6 +138,11 @@ pub async fn follow_channel(
         GuildPermissions::MANAGE_CHANNELS,
     )
     .await?;
+
+    // No new crosspost target in a forum channel while the forum feature is off.
+    if !crate::features::channel_writable(&state.config.optional_features, &target.channel_type) {
+        return Err(AnnouncementError::FeatureDisabled);
+    }
 
     let row: Option<(Uuid, DateTime<Utc>)> = sqlx::query_as(
         "INSERT INTO announcement_follows (source_channel_id, target_channel_id, created_by)
@@ -223,15 +239,21 @@ pub async fn list_followers(
 ///
 /// Does nothing while the announcements feature is off: the source channel
 /// keeps working and its follow rows are kept, but nothing is forwarded.
+/// Forum targets are skipped while the forum feature is off (rows kept).
 pub fn spawn_crosspost(state: AppState, source_channel_id: Uuid, content: String) {
     if !state.config.optional_features.announcements {
         return;
     }
     tokio::spawn(async move {
         let follows: Vec<(Uuid,)> = match sqlx::query_as(
-            "SELECT target_channel_id FROM announcement_follows WHERE source_channel_id = $1",
+            "SELECT f.target_channel_id
+             FROM announcement_follows f
+             JOIN channels c ON c.id = f.target_channel_id
+             WHERE f.source_channel_id = $1
+               AND ($2 OR c.channel_type <> 'forum')",
         )
         .bind(source_channel_id)
+        .bind(state.config.optional_features.forum)
         .fetch_all(&state.db)
         .await
         {

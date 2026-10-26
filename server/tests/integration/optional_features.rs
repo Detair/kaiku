@@ -464,3 +464,125 @@ async fn test_forum_webhooks_and_sends_rejected_when_disabled(pool: PgPool) {
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_to_json(res).await["error"], "FEATURE_DISABLED");
 }
+
+#[sqlx::test]
+async fn test_crosspost_skips_forum_targets_when_forum_disabled(pool: PgPool) {
+    let app = TestApp::with_pool_and_config(
+        pool.clone(),
+        config_with(OptionalFeatures {
+            announcements: true,
+            ..OptionalFeatures::default()
+        }),
+    )
+    .await;
+    let (owner, _) = create_test_user(&pool).await;
+    let guild = create_guild_with_default_role(&pool, owner, all_perms()).await;
+    let source = insert_channel_of_type(&pool, guild, "news", "announcement").await;
+    let forum = insert_channel_of_type(&pool, guild, "board", "forum").await;
+    let text = create_channel(&pool, guild, "inbox").await;
+    let token = generate_access_token(&app.config, owner);
+
+    // A new follow into a forum channel is refused; a text target is fine.
+    let follow = |target: Uuid| {
+        authed(
+            Method::POST,
+            &format!("/api/channels/{target}/follow"),
+            &token,
+        )
+        .body(Body::from(
+            json!({ "source_channel_id": source }).to_string(),
+        ))
+        .unwrap()
+    };
+    let res = app.oneshot(follow(forum)).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_to_json(res).await["error"], "FEATURE_DISABLED");
+    let res = app.oneshot(follow(text)).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    // An existing follow row into the forum (from before) is kept but skipped.
+    sqlx::query(
+        "INSERT INTO announcement_follows (source_channel_id, target_channel_id, created_by)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(source)
+    .bind(forum)
+    .bind(owner)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let res = app
+        .oneshot(
+            authed(
+                Method::POST,
+                &format!("/api/messages/channel/{source}"),
+                &token,
+            )
+            .body(Body::from(
+                json!({ "content": "big news", "encrypted": false }).to_string(),
+            ))
+            .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    let count = |channel: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM messages WHERE channel_id = $1")
+                .bind(channel)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    // Wait for the text target's crosspost, then check the forum got nothing.
+    for _ in 0..50 {
+        if count(text).await == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(count(text).await, 1, "text target gets the crosspost");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(count(forum).await, 0, "forum target is skipped");
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM announcement_follows WHERE source_channel_id = $1",
+    )
+    .bind(source)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, 2, "follow rows are kept");
+}
+
+#[sqlx::test]
+async fn test_pin_in_forum_rejected_when_disabled(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let guild = create_guild_with_default_role(&pool, owner, all_perms()).await;
+    let forum = insert_channel_of_type(&pool, guild, "board", "forum").await;
+    let message = crate::helpers::insert_message(&pool, forum, owner, "old post").await;
+    let token = generate_access_token(&app.config, owner);
+
+    let res = app
+        .oneshot(
+            authed(
+                Method::PUT,
+                &format!("/api/channels/{forum}/messages/{message}/pin"),
+                &token,
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_to_json(res).await["error"], "FEATURE_DISABLED");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE channel_id = $1")
+        .bind(forum)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "no system message added");
+}

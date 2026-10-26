@@ -93,6 +93,17 @@ pub const fn channel_type_enabled(
     }
 }
 
+/// Whether new content may be written into an existing channel of
+/// `channel_type`: forum channels take nothing new while the forum feature is
+/// off (user sends, bot messages, crossposts, pins, webhooks).
+#[must_use]
+pub fn channel_writable(
+    features: &OptionalFeatures,
+    channel_type: &crate::db::ChannelType,
+) -> bool {
+    *channel_type != crate::db::ChannelType::Forum || features.forum
+}
+
 /// JSON error response for a disabled feature with the given status.
 #[must_use]
 pub fn feature_disabled_response(status: StatusCode) -> Response {
