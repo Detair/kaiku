@@ -42,15 +42,18 @@ pub async fn leave_guild(
         ));
     }
 
-    // Remove membership
-    core_q::delete_guild_member(&state.db, guild_id, auth.id).await?;
-    // The leaver and the remaining members stop seeing each other's presence.
+    // Remove membership. The leaver and the remaining members stop seeing
+    // each other's presence: suspended before the commit, re-checked after.
+    crate::presence::connections::notify_guild_revoking(&state.redis, guild_id, Some(auth.id))
+        .await;
+    let removed = core_q::delete_guild_member(&state.db, guild_id, auth.id).await;
     crate::presence::connections::notify_guild_audience_changed(
         &state.redis,
         guild_id,
         Some(auth.id),
     )
     .await;
+    removed?;
 
     // Dispatch MemberLeft to bot ecosystem (non-blocking)
     {
@@ -154,18 +157,22 @@ pub async fn kick_member(
         ));
     }
 
-    // Remove membership
-    let rows_affected = core_q::delete_guild_member(&state.db, guild_id, user_id).await?;
-
-    if rows_affected == 0 {
-        return Err(GuildError::NotFound);
-    }
+    // Remove membership (presence suspended before the commit, re-checked
+    // after it, whatever the outcome).
+    crate::presence::connections::notify_guild_revoking(&state.redis, guild_id, Some(user_id))
+        .await;
+    let rows_affected = core_q::delete_guild_member(&state.db, guild_id, user_id).await;
     crate::presence::connections::notify_guild_audience_changed(
         &state.redis,
         guild_id,
         Some(user_id),
     )
     .await;
+    let rows_affected = rows_affected?;
+
+    if rows_affected == 0 {
+        return Err(GuildError::NotFound);
+    }
 
     // Dispatch MemberLeft to bot ecosystem (non-blocking)
     {

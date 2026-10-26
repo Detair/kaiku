@@ -95,7 +95,18 @@ pub struct Audience {
     pub versions: HashMap<Uuid, u64>,
     /// Last rich-presence version sent per peer and kind.
     pub rich: HashMap<(Uuid, RichKind), u64>,
+    /// Users whose relation is being revoked (a pre-commit notice arrived,
+    /// the post-commit one not yet): suspended regardless of any read, until
+    /// that notice or [`REVOKE_GRACE`] has passed.
+    pub revoking: HashMap<Uuid, std::time::Instant>,
+    /// Everyone is being revoked (pre-commit notice without a user).
+    pub revoking_all: Option<std::time::Instant>,
 }
+
+/// How long a pending revocation (pre-commit notice without its post-commit
+/// notice) keeps a user suspended at most; afterwards a revalidation may
+/// authorize again (e.g. the change failed and its second notice was lost).
+pub const REVOKE_GRACE: Duration = Duration::from_secs(30);
 
 impl Audience {
     /// Audience as read at connect (validated before anything is sent).
@@ -110,7 +121,8 @@ impl Audience {
 
     /// Whether presence of `user` may be sent now.
     pub fn allowed(&self, user: &Uuid) -> bool {
-        !self.suspend_all
+        !self.revoking_active(user)
+            && !self.suspend_all
             && self.peers.contains(user)
             && !self.blocked.contains(user)
             && !self.suspended.contains(user)
@@ -128,6 +140,38 @@ impl Audience {
         }
     }
 
+    /// Whether a revocation of `user` (or everyone) is pending.
+    pub fn revoking_active(&self, user: &Uuid) -> bool {
+        let active = |since: &std::time::Instant| since.elapsed() < REVOKE_GRACE;
+        self.revoking_all.as_ref().is_some_and(active)
+            || self.revoking.get(user).is_some_and(active)
+    }
+
+    /// A pre-commit notice: suspend `user` (or everyone) until the change is
+    /// confirmed.
+    pub fn begin_revocation(&mut self, user: Option<Uuid>) {
+        self.invalidate(user);
+        let now = std::time::Instant::now();
+        match user {
+            Some(user) => {
+                self.revoking.insert(user, now);
+            }
+            None => self.revoking_all = Some(now),
+        }
+    }
+
+    /// The post-commit (or granting) notice: the revocation is no longer
+    /// pending; the user (or everyone) stays suspended until a fresh read.
+    pub fn end_revocation(&mut self, user: Option<Uuid>) {
+        match user {
+            Some(user) => {
+                self.revoking.remove(&user);
+            }
+            None => self.revoking_all = None,
+        }
+        self.invalidate(user);
+    }
+
     /// Whether a read started at epoch `start` is still valid for `user`.
     pub fn fresh_for(&self, user: &Uuid, start: u64) -> bool {
         self.all_invalidated <= start && self.invalidated.get(user).is_none_or(|e| *e <= start)
@@ -136,18 +180,48 @@ impl Audience {
     /// A full read started at `start` was applied: lift every suspension it
     /// covers (invalidations before it began).
     fn lift(&mut self, start: u64) {
-        if self.all_invalidated <= start {
+        // Pending revocations outlive any read (the read may predate the
+        // commit) until their grace period ends.
+        if self
+            .revoking_all
+            .is_some_and(|since| since.elapsed() >= REVOKE_GRACE)
+        {
+            self.revoking_all = None;
+        }
+        self.revoking
+            .retain(|_, since| since.elapsed() < REVOKE_GRACE);
+        if self.all_invalidated <= start && self.revoking_all.is_none() {
             self.suspend_all = false;
         }
         self.invalidated.retain(|_, epoch| *epoch > start);
-        let invalidated = &self.invalidated;
-        self.suspended.retain(|user| invalidated.contains_key(user));
+        let (invalidated, revoking) = (&self.invalidated, &self.revoking);
+        self.suspended
+            .retain(|user| invalidated.contains_key(user) || revoking.contains_key(user));
     }
 
     /// Clear the suspension of `user` after a fresh re-check.
     fn clear_suspension(&mut self, user: &Uuid) {
+        if self.revoking_active(user) {
+            return;
+        }
         self.suspended.remove(user);
         self.invalidated.remove(user);
+    }
+
+    /// Apply a block state read at epoch `start` for `user`: only if the read
+    /// is fresh for that user (no block, unblock or other invalidation
+    /// processed since it began) and no revocation is pending. Returns
+    /// whether it was applied.
+    fn apply_block_read(&mut self, user: Uuid, blocked: bool, start: u64) -> bool {
+        if !self.fresh_for(&user, start) || self.revoking_active(&user) {
+            return false;
+        }
+        if blocked {
+            self.blocked.insert(user);
+        } else {
+            self.blocked.remove(&user);
+        }
+        true
     }
 
     /// Record a status version for `user` if it is newer than what was sent.
@@ -226,11 +300,36 @@ pub async fn on_audience_notice(
     presence: &PresenceState,
     pending: &std::sync::Mutex<AudiencePending>,
     wake: &mpsc::Sender<()>,
+    blocked_users: &RwLock<HashSet<Uuid>>,
     own_id: Uuid,
-    changed: Option<Uuid>,
+    notice: AudienceNotice,
 ) {
-    let target = changed.filter(|user| *user != own_id);
-    presence.audience.lock().await.invalidate(target);
+    let target = notice.user.filter(|user| *user != own_id);
+    {
+        let mut audience = presence.audience.lock().await;
+        if notice.revoking {
+            audience.begin_revocation(target);
+            if notice.block {
+                if let Some(user) = target {
+                    audience.blocked.insert(user);
+                }
+            }
+        } else {
+            audience.end_revocation(target);
+        }
+    }
+    if notice.revoking {
+        if notice.block {
+            // Channel events (messages, typing) of a user being blocked are
+            // dropped from now on, like those of a blocked user.
+            if let Some(user) = target {
+                blocked_users.write().await.insert(user);
+            }
+        }
+        // Nothing to re-check yet: the change is not committed. The notice
+        // sent after the commit (or the revalidation) follows.
+        return;
+    }
     {
         let mut pending = pending
             .lock()
@@ -244,6 +343,17 @@ pub async fn on_audience_notice(
     }
     // A full queue already holds a wake-up.
     let _ = wake.try_send(());
+}
+
+/// An audience notice as the forwarder hands it over.
+#[derive(Debug, Clone, Copy)]
+pub struct AudienceNotice {
+    /// The counterpart, if named.
+    pub user: Option<Uuid>,
+    /// Sent before a revoking change commits.
+    pub revoking: bool,
+    /// The revoking change is a block.
+    pub block: bool,
 }
 
 /// Forwarder: this socket's fence arrived.
@@ -434,10 +544,16 @@ pub async fn refresh_full(ctx: &AudienceCtx<'_>, mode: ReloadMode) -> Result<boo
             crate::ws::test_hooks::in_audience_reload(ctx.user_id).await;
         }
 
-        (*ctx.blocked_users.write().await).clone_from(&blocked);
         let (removed, added) = {
             let mut audience = ctx.presence.audience.lock().await;
-            audience.blocked = blocked;
+            // Block state from this read applies only where it is fresh: a
+            // block (or unblock) processed after the read began, or a pending
+            // revocation, is never overwritten by it.
+            let current = audience.blocked.clone();
+            for user in current.union(&blocked).copied().collect::<Vec<_>>() {
+                audience.apply_block_read(user, blocked.contains(&user), start);
+            }
+            (*ctx.blocked_users.write().await).clone_from(&audience.blocked);
             let removed: Vec<Uuid> = audience.subscribed.difference(&wanted).copied().collect();
             drop_peers(&mut audience, &removed, mode, ctx.tx).await?;
             let added: Vec<Uuid> = wanted.difference(&audience.subscribed).copied().collect();
@@ -537,16 +653,6 @@ pub async fn recheck(ctx: &AudienceCtx<'_>, targets: HashSet<Uuid>) -> Result<()
             }
         }
         crate::ws::test_hooks::in_audience_reload(ctx.user_id).await;
-        {
-            let mut blocked_users = ctx.blocked_users.write().await;
-            for (target, relation) in &results {
-                if relation.blocked {
-                    blocked_users.insert(*target);
-                } else {
-                    blocked_users.remove(target);
-                }
-            }
-        }
 
         let mut retry = HashSet::new();
         let mut removed = Vec::new();
@@ -554,14 +660,22 @@ pub async fn recheck(ctx: &AudienceCtx<'_>, targets: HashSet<Uuid>) -> Result<()
         {
             let mut audience = ctx.presence.audience.lock().await;
             for (target, relation) in results {
-                if relation.blocked {
-                    audience.blocked.insert(target);
-                } else {
-                    audience.blocked.remove(&target);
+                if audience.revoking_active(&target) {
+                    // The change is not confirmed yet: stays suspended; the
+                    // post-commit notice re-checks it.
+                    continue;
                 }
-                if !audience.fresh_for(&target, start) {
+                if !audience.apply_block_read(target, relation.blocked, start) {
                     retry.insert(target);
                     continue;
+                }
+                {
+                    let mut blocked_users = ctx.blocked_users.write().await;
+                    if relation.blocked {
+                        blocked_users.insert(target);
+                    } else {
+                        blocked_users.remove(&target);
+                    }
                 }
                 let allowed = relation.related && !relation.blocked;
                 if !allowed {

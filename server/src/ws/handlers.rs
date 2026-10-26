@@ -1895,13 +1895,22 @@ pub(crate) async fn forward_pubsub_messages(
                         PresenceNotice::PresenceFence { id } => {
                             audience_mod::on_fence(&params.presence, id);
                         }
-                        PresenceNotice::PresenceAudienceChanged { user_id: changed } => {
+                        PresenceNotice::PresenceAudienceChanged {
+                            user_id,
+                            revoking,
+                            block,
+                        } => {
                             audience_mod::on_audience_notice(
                                 &params.presence,
                                 &params.audience_pending,
                                 &params.audience_tx,
+                                &params.blocked_users,
                                 params.user_id,
-                                changed,
+                                audience_mod::AudienceNotice {
+                                    user: user_id,
+                                    revoking,
+                                    block,
+                                },
                             )
                             .await;
                         }
@@ -2002,15 +2011,22 @@ pub(crate) async fn forward_pubsub_messages(
             // Forward guild/member patch events to all guild members
             if let Some(payload) = message.value.as_str() {
                 if let Ok(crate::presence::connections::PresenceNotice::PresenceAudienceChanged {
-                    user_id: changed,
+                    user_id,
+                    revoking,
+                    block,
                 }) = serde_json::from_str(&payload)
                 {
                     audience_mod::on_audience_notice(
                         &params.presence,
                         &params.audience_pending,
                         &params.audience_tx,
+                        &params.blocked_users,
                         params.user_id,
-                        changed,
+                        audience_mod::AudienceNotice {
+                            user: user_id,
+                            revoking,
+                            block,
+                        },
                     )
                     .await;
                     continue;
@@ -2562,7 +2578,12 @@ mod pubsub_tests {
         let (audience_tx, mut audience_rx) = mpsc::channel(1);
         params.audience_tx = audience_tx;
         let notice = |user_id| {
-            serde_json::to_string(&PresenceNotice::PresenceAudienceChanged { user_id }).unwrap()
+            serde_json::to_string(&PresenceNotice::PresenceAudienceChanged {
+                user_id,
+                revoking: false,
+                block: false,
+            })
+            .unwrap()
         };
         let guild = Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00dd);
 
@@ -2609,6 +2630,27 @@ mod pubsub_tests {
         assert!(rx.try_recv().is_err(), "notice must not be forwarded");
         assert_eq!(audience_rx.try_recv(), Ok(()));
         assert!(params.audience_pending.lock().unwrap().full);
+
+        // A pre-commit (revoking) block notice: suspended and treated as
+        // blocked for channel events at once; nothing queued until the
+        // post-commit notice.
+        let other = Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00ee);
+        params.presence.audience.lock().await.peers.insert(other);
+        let revoking = serde_json::to_string(&PresenceNotice::PresenceAudienceChanged {
+            user_id: Some(other),
+            revoking: true,
+            block: true,
+        })
+        .unwrap();
+        forwarded_statuses(
+            &params,
+            &mut rx,
+            vec![raw_message(channels::user_events(own), revoking)],
+        )
+        .await;
+        assert!(audience_rx.try_recv().is_err(), "nothing to re-check yet");
+        assert!(!params.presence.audience.lock().await.allowed(&other));
+        assert!(params.blocked_users.read().await.contains(&other));
     }
 
     #[tokio::test]

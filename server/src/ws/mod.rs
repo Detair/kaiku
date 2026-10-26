@@ -283,6 +283,26 @@ pub mod test_hooks {
             .remove(&user_id)
     }
 
+    fn revocation_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next block made by `user_id` after it committed and before
+    /// its post-commit audience notice.
+    pub fn pause_after_revocation_commit(user_id: Uuid) -> Pause {
+        let pause = Pause::default();
+        revocation_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub async fn after_revocation_commit(user_id: Uuid) {
+        wait(revocation_pauses(), user_id).await;
+    }
+
     async fn wait(map: &Mutex<HashMap<Uuid, Pause>>, user_id: Uuid) {
         let pause = map
             .lock()

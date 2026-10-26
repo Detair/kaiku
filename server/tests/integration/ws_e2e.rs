@@ -1859,3 +1859,106 @@ async fn test_lost_notice_is_caught_by_periodic_revalidation(pool: PgPool) {
 
     redis.quit().await.expect("quit test Valkey client");
 }
+
+/// Users `u` and `b` in a server with a channel both may read and post in;
+/// returns the channel.
+async fn shared_channel(pool: &PgPool) -> (Uuid, Uuid, Uuid) {
+    use vc_server::permissions::GuildPermissions;
+
+    let (u, _) = create_test_user(pool).await;
+    let (b, _) = create_test_user(pool).await;
+    let guild = super::helpers::create_guild_with_default_role(
+        pool,
+        b,
+        GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES,
+    )
+    .await;
+    super::helpers::add_guild_member(pool, guild, u).await;
+    let channel = super::helpers::create_channel(pool, guild, "general").await;
+    (u, b, channel)
+}
+
+/// Blocking: nothing of the blocked relation passes in the moment between the
+/// block's commit and its post-commit notice (the pre-commit notice already
+/// suspended it).
+#[sqlx::test]
+async fn test_block_commit_window_discloses_nothing(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (u, b, _guild) = presence_pair(&pool, false).await;
+    let token_u = generate_access_token(&app.config, u);
+    let token_b = generate_access_token(&app.config, b);
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut ws_u = connect_ready(&server, &token_u).await;
+    next_presence(&mut ws_b, u, "online").await;
+
+    // `u` blocks `b`; the request stops after the commit.
+    let pause = vc_server::ws::test_hooks::pause_after_revocation_commit(u);
+    let blocking = {
+        let url = format!("{}/api/friends/{b}/block", server.url);
+        let token = token_u.clone();
+        tokio::spawn(async move { post_ok(url, &token).await })
+    };
+    tokio::time::timeout(EVENT_TIMEOUT, pause.reached.notified())
+        .await
+        .expect("block committed");
+
+    // `u`'s other device publishes in that window.
+    set_status_handled(&mut ws_u, "busy").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    pause.release.notify_one();
+    blocking.await.expect("block request");
+
+    // Only the final `offline` (the dropped peer), never `busy`.
+    expect_no_ws_event_about(&mut ws_b, u).await;
+}
+
+/// A reload that read the block set before a block was applied cannot undo
+/// it: channel messages of the blocked user stay filtered while the reload
+/// reads again.
+#[sqlx::test]
+async fn test_stale_reload_cannot_undo_applied_block(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (u, b, channel) = shared_channel(&pool).await;
+    let token_u = generate_access_token(&app.config, u);
+    let token_b = generate_access_token(&app.config, b);
+
+    let backstop = vc_server::ws::test_hooks::run_backstop(b);
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let subscribe = serde_json::json!({ "type": "subscribe", "channel_id": channel }).to_string();
+    ws_b.send(Message::Text(subscribe.into()))
+        .await
+        .expect("subscribe");
+    next_ws_event(&mut ws_b, "subscribed", EVENT_TIMEOUT).await;
+
+    // `b`'s revalidation reads an empty block set and stops.
+    let read1 = vc_server::ws::test_hooks::pause_in_audience_reload(b);
+    backstop.notify_one();
+    tokio::time::timeout(EVENT_TIMEOUT, read1.reached.notified())
+        .await
+        .expect("stale read");
+
+    // `b` blocks `u`; the socket applies it.
+    post_ok(format!("{}/api/friends/{u}/block", server.url), &token_b).await;
+    next_ws_event(&mut ws_b, "user_blocked", EVENT_TIMEOUT).await;
+
+    // The stale read resumes; the replacement read stops.
+    let read2 = vc_server::ws::test_hooks::pause_in_audience_reload(b);
+    read1.release.notify_one();
+    tokio::time::timeout(EVENT_TIMEOUT, read2.reached.notified())
+        .await
+        .expect("replacement read");
+
+    // `u` posts in the shared channel meanwhile: not forwarded to `b`.
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/messages/channel/{channel}", server.url))
+        .bearer_auth(&token_u)
+        .json(&serde_json::json!({ "content": "can you see this" }))
+        .send()
+        .await
+        .expect("POST message");
+    assert!(resp.status().is_success(), "POST: {}", resp.status());
+    expect_no_ws_event(&mut ws_b, "message_new", QUIET_WINDOW).await;
+    read2.release.notify_one();
+}

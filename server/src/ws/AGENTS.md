@@ -280,6 +280,10 @@ while let Some(msg) = ws_receiver.next().await {
 **Audience** (`ws::presence_audience`): presence peers = friends ∪ members of the user's servers, without users blocked either way, capped at 500.
 - **One lock**: `Audience` holds validated `peers` (forwarded), `subscribed` channels, `blocked` (either way), suspensions, invalidation epochs and the status and rich versions sent. **Every** presence event (live, snapshot, backstop, final `offline`) is authorized and queued while holding it.
 - **Notices name the counterpart**: friendship, block and unblock changes notify both users (`notify_pair_changed`); join, leave and kick notify the server channel with the member's id and the member's own channel without one; server deletion has no user.
+- **Revoking changes notify twice**: block, unfriend, leave, kick and server deletion each send a notice **before** the database change (`notify_pair_revoking` / `notify_guild_revoking`, `revoking: true`; for a block also `block: true`). The normal notice follows **after** the change, whatever its outcome.
+  - The pre-commit notice suspends the user (or everyone) as *revoking*. No read lifts a revoking suspension: it may predate the commit. Only the post-commit notice (which bumps the epoch and queues the re-check) ends it, or `REVOKE_GRACE` (30 s) if that notice was lost.
+  - For a block, the pre-commit notice also adds the user to the socket's block sets at once, so channel events (messages, typing) of a user being blocked are dropped like those of a blocked user.
+  - So nothing passes between the commit and the second notice. Granting changes (accept, join, unblock) notify only after the commit.
   - The forwarder applies a notice **synchronously**: it suspends the named user (or everyone, for a notice without a user), bumps the epoch, then records the work (`AudiencePending`) and wakes the socket loop. Nothing of a suspended user is forwarded.
 - **Revalidation**: a reload (`refresh_full`) or re-check (`recheck`, one query per named user; more than 16 fall back to a full reload) remembers the epoch it started at.
   - Results for users invalidated after that start are discarded and read again; only fresh results authorize and lift suspensions.
@@ -290,6 +294,7 @@ while let Some(msg) = ws_receiver.next().await {
 - **At connect** the audience is revalidated after the subscription barrier and before `Ready`, the snapshot or any forwarding; a database error there closes with 1011.
 - **Periodic revalidation**: each socket's backstop (about every minute) first revalidates the whole audience against the database (`presence_audience::backstop` → `refresh_full`), then re-sends what advanced. This catches an audience notice that was lost after its change committed. Notices are published with a bounded retry (3 attempts).
 - A block or unblock processed by the socket (`set_blocked`) also invalidates the user, so a read started earlier cannot overwrite it. Re-authorized peers (a suspension lifted) are re-sent what advanced, not only new peers.
+- **Block state is freshness-checked**: a reload or re-check applies a block or unblock it read, both to the presence block set and to the `blocked_users` set used for channel events, only if the read is fresh for that user (no invalidation since it began) and no revocation is pending (`apply_block_read`). A stale read never undoes a block the socket already applied.
 - Test hooks (`ws::test_hooks`, `#[doc(hidden)]`):
   - `pause_after_audience_read`: connect, between the audience read and subscribing
   - `pause_in_audience_reload`: after a reload's or re-check's read
@@ -300,7 +305,7 @@ while let Some(msg) = ws_receiver.next().await {
 
 #### Known limits (v1.0)
 
-- **Lost audience notice:** a friendship, block or server-membership change commits to the database and then publishes its notice (3 attempts). If every attempt is lost (Valkey outage, server crash between commit and publish), an observer can keep receiving that user's presence until its next revalidation. That is about 60 s (plus up to 10 s jitter) and happens only after an infrastructure failure. Reconnecting also revalidates.
+- **Lost audience notices:** revoking changes publish a notice before and after the commit (3 attempts each). If both are lost (Valkey outage, server crash), an observer can keep receiving that user's presence until its next revalidation. That is about 60 s (plus up to 10 s jitter) and happens only after an infrastructure failure. Reconnecting also revalidates. If only the post-commit notice is lost, the user stays suspended until the revalidation after `REVOKE_GRACE`; if that change failed, the user is re-authorized then.
 - **Stale but not leaking:**
   - A status or rich presence can be stale until the next periodic reconcile or backstop (about 60 s). Examples: concurrent rich updates from two devices published out of database order, or a reconcile that briefly publishes the rich value it read just before a newer one.
   - REST readers (member list, friends, message authors) derive status from the database plus live sockets, not from the published state.

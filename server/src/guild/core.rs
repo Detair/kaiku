@@ -280,10 +280,13 @@ pub async fn delete_guild(
         return Err(GuildError::Forbidden);
     }
 
-    core_q::delete_guild(&state.db, guild_id).await?;
     // Former members stop seeing each other's presence (unless they share
-    // another server or are friends).
+    // another server or are friends): suspended before the commit,
+    // re-checked after it, whatever the outcome.
+    crate::presence::connections::notify_guild_revoking(&state.redis, guild_id, None).await;
+    let deleted = core_q::delete_guild(&state.db, guild_id).await;
     crate::presence::connections::notify_guild_audience_changed(&state.redis, guild_id, None).await;
+    deleted?;
 
     Ok(StatusCode::NO_CONTENT)
 }

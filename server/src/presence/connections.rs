@@ -1032,6 +1032,17 @@ pub enum PresenceNotice {
         /// server deleted) everything is reloaded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user_id: Option<Uuid>,
+        /// Sent **before** a revoking change (block, unfriend, leave, kick,
+        /// server deletion) is committed: the receiver suspends the user (or
+        /// everyone) until the notice sent after the commit (without this
+        /// flag) or, if that never comes, a revalidation after a grace
+        /// period.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        revoking: bool,
+        /// The revoking change is a block: the receiver also treats the user
+        /// as blocked for channel events (messages, typing) at once.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        block: bool,
     },
     /// A socket's own fence (on its `user:{id}` channel): once the socket has
     /// processed it, every notice published before it has been applied.
@@ -1041,14 +1052,32 @@ pub enum PresenceNotice {
     },
 }
 
-/// The relation between `a` and `b` changed (friendship, block).
+/// The relation between `a` and `b` changed (friendship, block, unblock):
+/// sent after the change committed (or failed).
 ///
 /// Each one's sockets get a notice naming the other, stop forwarding them at
-/// once and re-check them. Best effort: failures are logged (throttled).
+/// once and re-check them from the database. Best effort with a bounded
+/// retry.
 pub async fn notify_pair_changed(redis: &Client, a: Uuid, b: Uuid) {
+    notify_pair(redis, a, b, false, false).await;
+}
+
+/// The relation between `a` and `b` is about to be revoked (block, unfriend).
+///
+/// Sent **before** the change is committed, so neither side forwards the
+/// other from now on, not even in the moment between the commit and the
+/// [`notify_pair_changed`] that must follow it (whatever the outcome).
+/// `block`: also treat each other as blocked for channel events at once.
+pub async fn notify_pair_revoking(redis: &Client, a: Uuid, b: Uuid, block: bool) {
+    notify_pair(redis, a, b, true, block).await;
+}
+
+async fn notify_pair(redis: &Client, a: Uuid, b: Uuid, revoking: bool, block: bool) {
     for (recipient, counterpart) in [(a, b), (b, a)] {
         let notice = PresenceNotice::PresenceAudienceChanged {
             user_id: Some(counterpart),
+            revoking,
+            block,
         };
         publish_notice(
             redis,
@@ -1059,11 +1088,30 @@ pub async fn notify_pair_changed(redis: &Client, a: Uuid, b: Uuid) {
     }
 }
 
-/// A server's membership changed: `changed` joined or left (members get a
-/// notice naming that user; `changed` itself reloads everything), or `None`
-/// (server deleted: everyone reloads).
+/// A server's membership changed; sent after the change committed (or
+/// failed).
+///
+/// `changed` joined or left (members get a notice naming that user; `changed`
+/// itself reloads everything), or `None` (server deleted: everyone reloads).
 pub async fn notify_guild_audience_changed(redis: &Client, guild_id: Uuid, changed: Option<Uuid>) {
-    let notice = PresenceNotice::PresenceAudienceChanged { user_id: changed };
+    notify_guild(redis, guild_id, changed, false).await;
+}
+
+/// A server's membership is about to be revoked (leave, kick, server
+/// deletion).
+///
+/// Sent **before** the change is committed (see [`notify_pair_revoking`]);
+/// [`notify_guild_audience_changed`] must follow it, whatever the outcome.
+pub async fn notify_guild_revoking(redis: &Client, guild_id: Uuid, changed: Option<Uuid>) {
+    notify_guild(redis, guild_id, changed, true).await;
+}
+
+async fn notify_guild(redis: &Client, guild_id: Uuid, changed: Option<Uuid>, revoking: bool) {
+    let notice = PresenceNotice::PresenceAudienceChanged {
+        user_id: changed,
+        revoking,
+        block: false,
+    };
     publish_notice(
         redis,
         &notice,
@@ -1072,7 +1120,11 @@ pub async fn notify_guild_audience_changed(redis: &Client, guild_id: Uuid, chang
     .await;
     if let Some(user) = changed {
         // The user may not follow the server channel (yet): a full reload.
-        let own = PresenceNotice::PresenceAudienceChanged { user_id: None };
+        let own = PresenceNotice::PresenceAudienceChanged {
+            user_id: None,
+            revoking,
+            block: false,
+        };
         publish_notice(redis, &own, vec![crate::ws::channels::user_events(user)]).await;
     }
 }
