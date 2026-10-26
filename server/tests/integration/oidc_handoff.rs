@@ -43,6 +43,7 @@ async fn start_desktop_login(ctx: &Ctx, challenge: Option<&str>) -> (u16, Value)
             ctx.server.url, ctx.slug
         ))
         .query(&query)
+        .header("x-kaiku-client", "desktop")
         .send()
         .await
         .expect("authorize");
@@ -134,6 +135,76 @@ async fn test_desktop_login_hands_back_only_a_code(pool: PgPool) {
     let (status, body) = exchange(&ctx, &code, VERIFIER).await;
     assert_eq!(status, 400);
     assert_eq!(body["error"], "OIDC_HANDOFF_INVALID");
+}
+
+/// The hand-back redirect to the loopback (it carries the code) is never
+/// cached and never sent on as a referrer.
+#[sqlx::test]
+async fn test_desktop_hand_back_is_no_store_no_referrer(pool: PgPool) {
+    let ctx = setup(&pool).await;
+    linked_user(&ctx, "sub-headers").await;
+    let url = provider_url(&ctx).await;
+    issue(&ctx, fresh("sub-headers"));
+
+    let resp = client().get(&url).send().await.expect("provider");
+    let callback = resp.headers()["location"].to_str().unwrap().to_string();
+    let resp = client().get(&callback).send().await.expect("callback");
+    assert_eq!(resp.status().as_u16(), 307);
+    let h = resp.headers();
+    assert!(h["location"].to_str().unwrap().starts_with(DESKTOP_RETURN));
+    assert_eq!(h["cache-control"], "no-store");
+    assert_eq!(h["referrer-policy"], "no-referrer");
+}
+
+/// Error hand-backs to the loopback carry the same headers.
+#[sqlx::test]
+async fn test_desktop_error_hand_back_is_no_store_no_referrer(pool: PgPool) {
+    let ctx = setup(&pool).await;
+    let url = provider_url(&ctx).await;
+    let state = query_of(&url)["state"].clone();
+    let resp = client()
+        .get(format!(
+            "{}/auth/oidc/callback?error=access_denied&state={state}",
+            ctx.server.url
+        ))
+        .send()
+        .await
+        .expect("callback");
+    assert_eq!(resp.status().as_u16(), 307);
+    let h = resp.headers();
+    assert!(h["location"]
+        .to_str()
+        .unwrap()
+        .contains("error=OIDC_PROVIDER_ERROR"));
+    assert_eq!(h["cache-control"], "no-store");
+    assert_eq!(h["referrer-policy"], "no-referrer");
+}
+
+/// The session created at redemption records the desktop's address and
+/// user agent.
+#[sqlx::test]
+async fn test_exchange_records_ip_and_user_agent(pool: PgPool) {
+    let ctx = setup(&pool).await;
+    let user = linked_user(&ctx, "sub-ua").await;
+    let url = provider_url(&ctx).await;
+    issue(&ctx, fresh("sub-ua"));
+    let code = follow(&url).await.result["code"].clone();
+    let resp = client()
+        .post(format!("{}/auth/oidc/desktop/exchange", ctx.server.url))
+        .header("user-agent", "Kaiku-Desktop-Test/1.0")
+        .json(&json!({ "code": code, "verifier": VERIFIER }))
+        .send()
+        .await
+        .expect("exchange");
+    assert_eq!(resp.status().as_u16(), 200);
+    let (ip, ua): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT host(ip_address), user_agent FROM sessions WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&ctx.pool)
+            .await
+            .expect("session");
+    assert_eq!(ip.as_deref(), Some("127.0.0.1"));
+    assert_eq!(ua.as_deref(), Some("Kaiku-Desktop-Test/1.0"));
 }
 
 /// Without the verifier the code is worthless, and a wrong guess burns it.

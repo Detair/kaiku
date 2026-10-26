@@ -43,6 +43,7 @@ async fn oidc_app(pool: &PgPool, public_url: &str) -> OidcApp {
     config.public_url = Some(public_url.to_string());
     // The default test MFA key is not 32 bytes; the OIDC flow state needs one.
     config.mfa_encryption_key = Some("11".repeat(32));
+    config.cors_allowed_origins = vec![public_url.trim_end_matches('/').to_string()];
     let redis = db::create_redis_client(&config.redis_url)
         .await
         .expect("Redis");
@@ -112,12 +113,23 @@ fn flow(client: Option<&str>, link_user_id: Option<Uuid>) -> OidcFlowState {
 }
 
 async fn get(app: &OidcApp, uri: &str) -> axum::response::Response {
+    get_with(app, uri, &[]).await
+}
+
+async fn get_with(app: &OidcApp, uri: &str, headers: &[(&str, &str)]) -> axum::response::Response {
+    let mut req = Request::get(uri);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
     app.router
         .clone()
-        .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+        .oneshot(req.body(Body::empty()).unwrap())
         .await
         .unwrap()
 }
+
+/// Header the desktop app sends on every SSO start.
+const DESKTOP: (&str, &str) = ("x-kaiku-client", "desktop");
 
 fn location(resp: &axum::response::Response) -> String {
     resp.headers()
@@ -208,7 +220,7 @@ async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool
 
     // Trailing slash on PUBLIC_URL must not produce "//auth/oidc/callback".
     let app = oidc_app(&pool, "https://chat.example.com/").await;
-    let resp = get(
+    let resp = get_with(
         &app,
         &authorize_uri(
             &slug,
@@ -217,19 +229,24 @@ async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool
                 ("client_challenge", CHALLENGE),
             ],
         ),
+        &[DESKTOP],
     )
     .await;
-    assert!(resp.status().is_redirection(), "status {}", resp.status());
+    // A desktop start always answers with JSON, never a redirect.
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().get("location").is_none());
+    let body: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    let provider_url = body["url"].as_str().expect("url").to_string();
 
-    let auth_url = openidconnect::url::Url::parse(&location(&resp)).unwrap();
+    let auth_url = openidconnect::url::Url::parse(&provider_url).unwrap();
     let q: std::collections::HashMap<_, _> = auth_url.query_pairs().into_owned().collect();
     assert_eq!(
         q.get("redirect_uri").map(String::as_str),
         Some("https://chat.example.com/auth/oidc/callback")
     );
     // Nothing of the desktop's values reaches the provider.
-    assert!(!location(&resp).contains(CHALLENGE));
-    assert!(!location(&resp).contains("perflowvalue"));
+    assert!(!provider_url.contains(CHALLENGE));
+    assert!(!provider_url.contains("perflowvalue"));
 
     let stored: Option<String> = app
         .state
@@ -259,10 +276,98 @@ async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool
 async fn test_authorize_desktop_without_challenge_is_outdated(pool: PgPool) {
     let slug = create_manual_provider(&pool).await;
     let app = oidc_app(&pool, PUBLIC_URL).await;
-    let resp = get(&app, &authorize_uri(&slug, &[("redirect_uri", LOOPBACK)])).await;
+    // An app that sends the desktop header but no challenge is outdated too.
+    for headers in [&[][..], &[DESKTOP][..]] {
+        let resp = get_with(
+            &app,
+            &authorize_uri(&slug, &[("redirect_uri", LOOPBACK)]),
+            headers,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(resp.headers().get("location").is_none());
+        assert_eq!(error_code(resp).await, "OIDC_CLIENT_OUTDATED");
+    }
+}
+
+/// A desktop start (loopback `redirect_uri` or `client_challenge`) without the
+/// desktop header — e.g. a link someone clicked in a browser — never
+/// redirects to the provider.
+#[sqlx::test]
+async fn test_desktop_start_without_header_never_redirects(pool: PgPool) {
+    let slug = create_manual_provider(&pool).await;
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    for query in [
+        &[
+            ("redirect_uri", LOOPBACK_WITH_FLOW),
+            ("client_challenge", CHALLENGE),
+        ][..],
+        &[("client_challenge", CHALLENGE)][..],
+        &[
+            ("redirect_uri", LOOPBACK_WITH_FLOW),
+            ("client_challenge", CHALLENGE),
+            ("response", "json"),
+        ][..],
+    ] {
+        let resp = get(&app, &authorize_uri(&slug, query)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{query:?}");
+        assert!(resp.headers().get("location").is_none(), "{query:?}");
+        assert_eq!(error_code(resp).await, "OIDC_CLIENT_OUTDATED");
+    }
+    // Any other header value is not the desktop app either.
+    let resp = get_with(
+        &app,
+        &authorize_uri(
+            &slug,
+            &[
+                ("redirect_uri", LOOPBACK_WITH_FLOW),
+                ("client_challenge", CHALLENGE),
+            ],
+        ),
+        &[("x-kaiku-client", "web")],
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert!(resp.headers().get("location").is_none());
-    assert_eq!(error_code(resp).await, "OIDC_CLIENT_OUTDATED");
+}
+
+/// Browsers cannot send the desktop header cross-site: the CORS preflight
+/// does not allow it, for foreign origins and also for the Tauri webview
+/// origins (the desktop sends it from Rust, which has no Origin and no
+/// preflight).
+#[sqlx::test]
+async fn test_cors_preflight_does_not_allow_the_desktop_header(pool: PgPool) {
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    for origin in ["https://evil.example", "tauri://localhost", PUBLIC_URL] {
+        let resp = app
+            .router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/auth/oidc/authorize/any")
+                    .header("origin", origin)
+                    .header("access-control-request-method", "GET")
+                    .header("access-control-request-headers", "x-kaiku-client")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let allowed = resp
+            .headers()
+            .get("access-control-allow-headers")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_lowercase();
+        assert!(!allowed.contains("x-kaiku-client"), "{origin}: {allowed}");
+        if origin == "https://evil.example" {
+            assert!(
+                resp.headers().get("access-control-allow-origin").is_none(),
+                "foreign origin is not allowed"
+            );
+        }
+    }
 }
 
 #[sqlx::test]
@@ -270,20 +375,22 @@ async fn test_authorize_rejects_malformed_or_misplaced_challenge(pool: PgPool) {
     let slug = create_manual_provider(&pool).await;
     let app = oidc_app(&pool, PUBLIC_URL).await;
     // Not an S256 digest.
-    let resp = get(
+    let resp = get_with(
         &app,
         &authorize_uri(
             &slug,
             &[("redirect_uri", LOOPBACK), ("client_challenge", "plain")],
         ),
+        &[DESKTOP],
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert_eq!(error_code(resp).await, "VALIDATION_ERROR");
-    // Browser flow: there is no desktop to redeem a code.
-    let resp = get(
+    // No loopback: there is no desktop listener to hand a code to.
+    let resp = get_with(
         &app,
         &authorize_uri(&slug, &[("client_challenge", CHALLENGE)]),
+        &[DESKTOP],
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

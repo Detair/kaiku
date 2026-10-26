@@ -573,6 +573,7 @@ async fn test_login_flow_does_not_force_a_fresh_login(pool: PgPool) {
                 "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
             ),
         ])
+        .header("x-kaiku-client", "desktop")
         .send()
         .await
         .expect("authorize");

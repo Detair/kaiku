@@ -469,11 +469,13 @@ pub async fn oidc_providers(State(state): State<AppState>) -> AuthResult<Json<se
         ("provider" = String, Path, description = "OIDC provider name"),
         ("redirect_uri" = Option<String>, Query, description = "Optional desktop loopback return address (Tauri): `http://{127.0.0.1|localhost}[:port]/callback`, optionally with one per-flow value `?flow=<base64url, 22-128 chars>` that is handed back unchanged; the provider always returns to the server callback"),
         ("client_challenge" = Option<String>, Query, description = "Required with `redirect_uri`, refused without it: S256 challenge (unpadded base64url SHA-256, 43 chars) of the desktop's verifier. The loopback then receives `?code=` (one-time, 60 s), redeemed at `POST /auth/oidc/desktop/exchange`"),
-        ("response" = Option<String>, Query, description = "`json` returns `{\"url\": ...}` instead of a 307"),
+        ("response" = Option<String>, Query, description = "`json` returns `{\"url\": ...}` instead of a 307 (always JSON for a desktop start)"),
+        ("X-Kaiku-Client" = Option<String>, Header, description = "Must be `desktop` for a desktop start (`redirect_uri` or `client_challenge` given); otherwise 400 `OIDC_CLIENT_OUTDATED`"),
     ),
     responses(
-        (status = 307, description = "Redirect to provider authorization URL"),
-        (status = 400, description = "Invalid redirect_uri or client_challenge (`VALIDATION_ERROR`), or desktop sign-in without client_challenge (`OIDC_CLIENT_OUTDATED`)"),
+        (status = 200, description = "Desktop start: `{\"url\": provider authorization URL}`"),
+        (status = 307, description = "Browser: redirect to provider authorization URL"),
+        (status = 400, description = "Invalid redirect_uri or client_challenge (`VALIDATION_ERROR`), or a desktop start without the desktop header or client_challenge (`OIDC_CLIENT_OUTDATED`)"),
         (status = 403, description = "Auth method disabled"),
     ),
     security(()),
@@ -482,9 +484,18 @@ pub async fn oidc_providers(State(state): State<AppState>) -> AuthResult<Json<se
 pub async fn oidc_authorize(
     State(state): State<AppState>,
     Path(provider): Path<String>,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<OidcAuthorizeQuery>,
 ) -> Result<Response, AuthError> {
-    let want_json = query.response.as_deref() == Some("json");
+    // A desktop start must come from the app itself: browsers cannot send the
+    // header cross-site (not allowed by CORS) and a clicked link cannot set
+    // it, so a crafted start link never reaches the provider. The app reads
+    // the provider URL from JSON instead of following a redirect.
+    let is_desktop_start = query.redirect_uri.is_some() || query.client_challenge.is_some();
+    if is_desktop_start && !is_desktop_client(&headers) {
+        return Err(AuthError::OidcClientOutdated);
+    }
+    let want_json = is_desktop_start || query.response.as_deref() == Some("json");
     start_oidc_flow(
         &state,
         &provider,
@@ -494,6 +505,16 @@ pub async fn oidc_authorize(
         want_json,
     )
     .await
+}
+
+/// Header (`X-Kaiku-Client: desktop`) the desktop app sends on SSO starts.
+pub const DESKTOP_CLIENT_HEADER: &str = "x-kaiku-client";
+
+/// Whether the request carries `X-Kaiku-Client: desktop`.
+fn is_desktop_client(headers: &HeaderMap) -> bool {
+    headers
+        .get(DESKTOP_CLIENT_HEADER)
+        .is_some_and(|v| v.as_bytes() == b"desktop")
 }
 
 /// Flow-state TTL of a login or link flow.
@@ -954,7 +975,8 @@ pub async fn oidc_callback(
         return Ok(desktop_login_hand_back(&state, &flow_state, redirect_url, user.id).await);
     }
 
-    let (tokens, setup_complete) = issue_oidc_session(&state, user.id).await?;
+    let (tokens, setup_complete) =
+        issue_oidc_session(&state, user.id, &SessionClient::default()).await?;
 
     tracing::info!(user_id = %user.id, provider = %flow_state.slug, "User logged in via OIDC");
 
@@ -986,11 +1008,19 @@ if (window.opener) {{
     Ok((jar, axum::response::Html(html)).into_response())
 }
 
+/// Client address and user agent recorded with a new session.
+#[derive(Default)]
+struct SessionClient {
+    ip: Option<String>,
+    user_agent: Option<String>,
+}
+
 /// Start a session for an OIDC login; returns the token pair and whether
 /// server setup is complete.
 async fn issue_oidc_session(
     state: &AppState,
     user_id: Uuid,
+    client: &SessionClient,
 ) -> AuthResult<(super::jwt::TokenPair, bool)> {
     let tokens = generate_token_pair(
         user_id,
@@ -1006,8 +1036,8 @@ async fn issue_oidc_session(
         user_id,
         &token_hash,
         expires_at,
-        None,
-        None,
+        client.ip.as_deref(),
+        client.user_agent.as_deref(),
         None,
         None,
     )
@@ -1060,7 +1090,12 @@ async fn desktop_login_hand_back(
     }
     tracing::info!(user_id = %user_id, provider = %flow_state.slug, "OIDC desktop login handed off");
     redirect_url.query_pairs_mut().append_pair("code", &code);
-    let mut response = Redirect::temporary(redirect_url.as_str()).into_response();
+    loopback_redirect(&redirect_url)
+}
+
+/// 307 to the desktop loopback: never cached, never sent on as a referrer.
+fn loopback_redirect(url: &openidconnect::url::Url) -> Response {
+    let mut response = Redirect::temporary(url.as_str()).into_response();
     let headers = response.headers_mut();
     headers.insert(
         axum::http::header::CACHE_CONTROL,
@@ -1098,6 +1133,8 @@ async fn desktop_login_hand_back(
 #[tracing::instrument(skip(state, body))]
 pub async fn oidc_desktop_exchange(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<OidcHandoffExchangeRequest>,
 ) -> AuthResult<Json<AuthResponse>> {
     if body.code.is_empty() || body.code.len() > 128 {
@@ -1129,7 +1166,11 @@ pub async fn oidc_desktop_exchange(
         return Err(AuthError::AccountBanned);
     }
 
-    let (tokens, setup_complete) = issue_oidc_session(&state, user.id).await?;
+    let client = SessionClient {
+        ip: Some(addr.ip().to_string()),
+        user_agent: extract_user_agent(&headers),
+    };
+    let (tokens, setup_complete) = issue_oidc_session(&state, user.id, &client).await?;
     tracing::info!(user_id = %user.id, provider = %grant.slug, "User logged in via OIDC (desktop)");
 
     Ok(Json(AuthResponse {
@@ -1237,7 +1278,7 @@ async fn handle_identity_link(
         redirect_url
             .query_pairs_mut()
             .append_pair("linked", &flow_state.slug);
-        Ok(Redirect::temporary(redirect_url.as_str()).into_response())
+        Ok(loopback_redirect(&redirect_url))
     } else {
         let payload = serde_json::json!({
             "type": "oidc-link-callback",
@@ -1274,7 +1315,7 @@ fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Resp
     if let Some(mut redirect_url) = client_return_url(flow_state) {
         let key = if is_link { "link_error" } else { "error" };
         redirect_url.query_pairs_mut().append_pair(key, code);
-        return Redirect::temporary(redirect_url.as_str()).into_response();
+        return loopback_redirect(&redirect_url);
     }
     let payload = if is_link {
         serde_json::json!({
@@ -1332,7 +1373,7 @@ pub(super) fn oidc_hand_back(
                 pairs.append_pair(key, value);
             }
         }
-        Redirect::temporary(redirect_url.as_str()).into_response()
+        loopback_redirect(&redirect_url)
     } else {
         axum::response::Html(popup_result_page(payload, true)).into_response()
     }
