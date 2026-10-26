@@ -231,17 +231,17 @@ pub enum CallState {
 ```
 
 **Call Flow**:
-1. `POST /api/dm/:id/call/start` — Initiator starts call
-2. Server broadcasts `IncomingCall { channel_id, initiator, initiator_name }` to all DM participants
+1. `POST /api/dm/:id/call/start` — Initiator starts call (refused with 403 `blocked` if a DB or cached block exists either way, same rule as DM send)
+2. Server sends `IncomingCall { channel_id, initiator, initiator_name }` with `broadcast_to_users` to every DM participant except the caller (user channels, so a callee without the DM open still rings). All call events (`CallParticipantJoined/Left`, `CallDeclined`, `CallEnded`) go to the members' user channels, not the DM channel.
 3. Recipients see ringing notification in client
-4. Recipient clicks "Accept": Client sends `VoiceJoin { channel_id }` (same as guild voice)
+4. Recipient accepts: `POST .../call/join`, then `VoiceJoin { channel_id }` (same as guild voice)
 5. Initiator and recipient both join SFU room (DM channel acts as voice room)
-6. Auto-end call if no one joins within 60 seconds
 
-**Endpoints**:
-- `POST /api/dm/:id/call/start` — Start call (initiator)
-- `POST /api/dm/:id/call/accept` — Accept call (recipient, future: may be implicit via VoiceJoin)
-- `POST /api/dm/:id/call/end` — End call (any participant)
+**Call end** (`call_service.rs`): a call ends — its stream is deleted and `CallEnded` is sent once — on the last decline (`all_declined`), ring timeout (`no_answer`, `Config::call_ring_timeout_secs`, 90 s), initiator cancel or last REST leave, when the last SFU peer leaves the DM room (hook in `leave::leave_voice_internal`: `last_left`, or `cancelled` while ringing), and when the caller's last socket closes while ringing (`cancelled`; open sockets counted with `PUBSUB NUMSUB user:{id}`, re-checked for up to 4 s in a detached task). `end_call(state, channel_id, reason)` ends whatever call is current.
+
+**Concurrency**: the stream's first entry holds a random `call_id` (generation). Every change is a Lua compare-and-set on `call_id` + last entry id; on a mismatch the caller re-reads and decides again. Start is "create if absent". So ending is idempotent, exactly one ender broadcasts, a stale ring timer (`ring_timeout_fired(channel, call_id)`) or late hook cannot touch a newer call, and a new call right after an end succeeds. The ringing stream also has a TTL (timeout + 30 s) as a backstop if the ring timer is lost.
+
+**Endpoints**: `GET /api/dm/{id}/call`, `POST /api/dm/{id}/call/{start,join,decline,leave}`.
 
 ### Latency Optimization
 

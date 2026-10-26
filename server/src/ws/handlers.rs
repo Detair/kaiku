@@ -799,6 +799,17 @@ async fn handle_socket(
     )
     .await;
 
+    // A caller whose last socket closed cannot be reached: cancel their
+    // ringing DM calls. Runs after the subscriber quit, so this socket no
+    // longer counts as open. Detached: it may re-check for a few seconds.
+    let call_redis = state.redis.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::voice::call_service::caller_socket_closed(&call_redis, user_id).await
+        {
+            warn!("Failed to cancel ringing calls on disconnect: {}", e);
+        }
+    });
+
     // Update user presence to offline
     if let Err(e) = update_presence(&state, user_id, "offline").await {
         warn!("Failed to update presence on disconnect: {}", e);
