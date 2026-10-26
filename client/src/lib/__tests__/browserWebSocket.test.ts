@@ -31,11 +31,25 @@ describe("browser WebSocket close reporting", () => {
   beforeEach(() => {
     FakeSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeSocket);
+    // Importing tauri/common fires a session-restore fetch in browser mode.
+    // Left real, it fails with ECONNREFUSED and logs after the file finished
+    // (vitest "Closing rpc while onUserConsoleLog was pending"). A fetch that
+    // never settles keeps it silent and deterministic.
+    vi.stubGlobal("fetch", () => new Promise<Response>(() => {}));
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
   });
-  afterEach(() => {
+  afterEach(async () => {
+    // Detach any socket a test left open so nothing reports after teardown.
+    await loaded?.wsDisconnect();
+    loaded = null;
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.resetModules();
   });
+
+  let loaded: typeof import("../tauri/websocket") | null = null;
 
   async function load() {
     const common = await import("../tauri/common");
@@ -43,6 +57,7 @@ describe("browser WebSocket close reporting", () => {
     const ws = await import("../tauri/websocket");
     const onClose = vi.fn();
     ws.setBrowserSocketHooks({ onClose, onFrame: vi.fn() });
+    loaded = ws;
     return { ws, onClose };
   }
 
