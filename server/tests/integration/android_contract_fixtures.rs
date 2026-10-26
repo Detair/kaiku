@@ -91,7 +91,7 @@ fn author() -> AuthorProfile {
         username: "alice".to_string(),
         display_name: "Alice".to_string(),
         avatar_url: None,
-        status: "online".to_string(),
+        status: "offline".to_string(),
     }
 }
 
@@ -447,7 +447,7 @@ fn android_golden_ws_dm_read() {
 }
 
 /// `GET /api/me/unread`: Android's wake fetch reads the server's unread count
-/// of the woken channel (guild channels count all authors, DMs only others).
+/// of the woken channel (only messages from others, without thread replies).
 #[test]
 fn android_golden_unread_aggregate() {
     let aggregate = UnreadAggregate {

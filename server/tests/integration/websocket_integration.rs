@@ -407,7 +407,7 @@ async fn test_websocket_subscribe_denied_without_permission(pool: PgPool) {
 
     match event {
         OutboundMsg::Event(ServerEvent::Error { code, message }) => {
-            assert_eq!(code, "forbidden");
+            assert_eq!(code, "FORBIDDEN");
             assert!(message.contains("permission"));
         }
         _ => panic!("Expected Error event, got {event:?}"),
@@ -595,7 +595,7 @@ async fn test_ws_subscribe_denied_for_foreign_guild_outsider(pool: PgPool) {
         .expect("Channel should not be closed");
     match event {
         OutboundMsg::Event(ServerEvent::Error { code, .. }) => {
-            assert_eq!(code, "forbidden");
+            assert_eq!(code, "FORBIDDEN");
         }
         _ => panic!("Expected Error event, got {event:?}"),
     }

@@ -170,8 +170,8 @@ pub async fn kick_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Initialize `channel_read_state` for all text channels in a guild.
-/// Sets `last_read_at` to `NOW()` so pre-existing messages don't appear as unread.
+/// Initialize `channel_read_state` for the guild's read-tracked channels the
+/// user may view, so pre-existing messages don't appear as unread.
 ///
 /// Called by the invite-join and discovery-join handlers after a user joins a guild.
 pub(crate) async fn initialize_channel_read_state(

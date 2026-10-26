@@ -3,7 +3,8 @@
 //! Shared by the explicit `VoiceLeave` event, WebSocket close and the
 //! stale-peer reaper, so every path has the same side effects: screen share
 //! and webcam stop broadcasts, session finalization, rate-limit cleanup,
-//! `VoiceUserLeft` and empty-room cleanup.
+//! `VoiceUserLeft`, empty-room cleanup and ending the DM call of a room whose
+//! last peer left.
 
 use std::sync::Arc;
 
@@ -96,6 +97,7 @@ pub async fn leave_voice_internal(
         None => room.remove_peer(user_id).await,
     };
     let removed = removed_peer.is_some();
+    let removed_connected_at = removed_peer.as_ref().map(|p| p.connected_at);
     if let Some(peer) = removed_peer {
         // Record voice session end metric
         let duration_s = (chrono::Utc::now() - peer.connected_at)
@@ -181,6 +183,19 @@ pub async fn leave_voice_internal(
             },
         )
         .await;
+    }
+
+    // The last peer of a DM room left: its call is over.
+    if let (Some(connected_at), Some(redis)) = (removed_connected_at, sfu.call_redis()) {
+        if room.is_empty().await {
+            let calls = super::call_service::CallService::new(redis.clone(), pool.clone());
+            if let Err(e) =
+                super::call_service::last_voice_peer_left(&calls, channel_id, user_id, connected_at)
+                    .await
+            {
+                warn!(channel_id = %channel_id, error = %e, "Failed to end DM call after last peer left");
+            }
+        }
     }
 
     sfu.cleanup_room_if_empty(channel_id).await;
