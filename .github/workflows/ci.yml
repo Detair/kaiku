@@ -413,10 +413,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Pinned: ubuntu-latest moved to 26.04, whose PipeWire headers
-          # break libspa 0.8 bindings (spa_pod_builder fields). Same pin as
-          # tauri-build.yml / release.yml until the pipewire crate is upgraded.
-          - platform: ubuntu-24.04
+          # Follows ubuntu-latest again: the vendored -sys crates in
+          # third_party/ use bindgen 0.72.1, which handles Clang >= 22
+          # (ubuntu-latest = 26.04). release.yml stays on 24.04 (glibc baseline).
+          - platform: ubuntu-latest
             allow_failure: false
           - platform: windows-latest
             allow_failure: false
@@ -456,11 +456,11 @@ jobs:
 
       # Rust unit tests of the desktop shell (session manager, native WebSocket).
       - name: Test Tauri client library (Ubuntu)
-        if: matrix.platform == 'ubuntu-24.04'
+        if: matrix.platform == 'ubuntu-latest'
         run: cargo test -p vc-client --lib
 
       - name: Upload artifacts (Ubuntu)
-        if: matrix.platform == 'ubuntu-24.04'
+        if: matrix.platform == 'ubuntu-latest'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tauri-linux
