@@ -317,6 +317,10 @@ The guild owner always has every permission. Per-user overrides do not exist.
 
 To keep a user out of a channel, make sure none of their roles allows the permission on that channel; a deny on one role does not override an allow on another.
 
+### Bots and Webhooks
+
+> **Note:** Bot events and webhooks currently receive all channels of the guild regardless of channel overrides; only install trusted bots.
+
 ---
 
 ## DM vs Guild Channels
