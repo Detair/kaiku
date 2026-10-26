@@ -49,6 +49,10 @@ Text messaging with end-to-end encryption (E2EE) using vodozemac (Olm/Megolm), f
 
 **Soft Deletes**: Messages set `deleted_at` timestamp instead of hard delete. Content replaced with `[deleted]` in responses.
 
+### Author Shape and Presence
+
+`AuthorProfile` (`types.rs`) is `{ id, username, display_name, avatar_url, status }`. `status` is a wire-compat placeholder that is always `"offline"` (`AUTHOR_STATUS_PLACEHOLDER`); message, pin, thread and bot-gateway payloads never carry live presence. Live presence reaches clients only through the WebSocket presence store (`presence_update` events to the presence audience). Do not populate `status` from `users.status`.
+
 ### File Upload Flow
 
 **Storage Options**:

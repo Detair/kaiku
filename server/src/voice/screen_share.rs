@@ -107,7 +107,7 @@ pub struct ScreenShareCheckResponse {
 
 /// Screen share error reasons.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ScreenShareError {
     /// User doesn't have `SCREEN_SHARE` permission
     NoPermission,
@@ -125,6 +125,22 @@ pub enum ScreenShareError {
     InvalidSourceLabel,
     /// User already has an active screen share
     AlreadySharing,
+}
+
+impl ScreenShareError {
+    /// Machine-readable error code (the serialized, upper-case form).
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::NoPermission => "NO_PERMISSION",
+            Self::LimitReached => "LIMIT_REACHED",
+            Self::NotInChannel => "NOT_IN_CHANNEL",
+            Self::QualityNotAllowed => "QUALITY_NOT_ALLOWED",
+            Self::RenegotiationFailed => "RENEGOTIATION_FAILED",
+            Self::InternalError => "INTERNAL_ERROR",
+            Self::InvalidSourceLabel => "INVALID_SOURCE_LABEL",
+            Self::AlreadySharing => "ALREADY_SHARING",
+        }
+    }
 }
 
 impl ScreenShareCheckResponse {
@@ -460,7 +476,7 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
 
         assert!(json.contains("\"allowed\":false"));
-        assert!(json.contains("\"error\":\"no_permission\""));
+        assert!(json.contains("\"error\":\"NO_PERMISSION\""));
         // granted_quality should be skipped when None
         assert!(!json.contains("\"granted_quality\""));
     }
@@ -546,19 +562,19 @@ mod tests {
 
     #[test]
     fn test_screen_share_error_serialization() {
-        // All variants should serialize to snake_case
+        // All variants should serialize to SCREAMING_SNAKE_CASE
         let test_cases = [
-            (ScreenShareError::NoPermission, "no_permission"),
-            (ScreenShareError::LimitReached, "limit_reached"),
-            (ScreenShareError::NotInChannel, "not_in_channel"),
-            (ScreenShareError::QualityNotAllowed, "quality_not_allowed"),
+            (ScreenShareError::NoPermission, "NO_PERMISSION"),
+            (ScreenShareError::LimitReached, "LIMIT_REACHED"),
+            (ScreenShareError::NotInChannel, "NOT_IN_CHANNEL"),
+            (ScreenShareError::QualityNotAllowed, "QUALITY_NOT_ALLOWED"),
             (
                 ScreenShareError::RenegotiationFailed,
-                "renegotiation_failed",
+                "RENEGOTIATION_FAILED",
             ),
-            (ScreenShareError::InternalError, "internal_error"),
-            (ScreenShareError::InvalidSourceLabel, "invalid_source_label"),
-            (ScreenShareError::AlreadySharing, "already_sharing"),
+            (ScreenShareError::InternalError, "INTERNAL_ERROR"),
+            (ScreenShareError::InvalidSourceLabel, "INVALID_SOURCE_LABEL"),
+            (ScreenShareError::AlreadySharing, "ALREADY_SHARING"),
         ];
 
         for (error, expected) in test_cases {
@@ -569,10 +585,10 @@ mod tests {
 
     #[test]
     fn test_screen_share_error_deserialization() {
-        let error: ScreenShareError = serde_json::from_str("\"no_permission\"").unwrap();
+        let error: ScreenShareError = serde_json::from_str("\"NO_PERMISSION\"").unwrap();
         assert_eq!(error, ScreenShareError::NoPermission);
 
-        let error: ScreenShareError = serde_json::from_str("\"limit_reached\"").unwrap();
+        let error: ScreenShareError = serde_json::from_str("\"LIMIT_REACHED\"").unwrap();
         assert_eq!(error, ScreenShareError::LimitReached);
     }
 

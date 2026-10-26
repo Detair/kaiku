@@ -102,22 +102,13 @@ pub async fn get_member_permission_context(
         return Ok(None);
     };
 
-    let is_owner = guild_info.guild_owner_id == user_id;
-
-    // Screening short-circuit: a `pending` member (hasn't accepted the rules)
-    // has NO permissions regardless of roles — no VIEW_CHANNEL, no send, no
-    // voice, and (since WS subscribe resolves through here) no channel subscribe.
-    // The owner is never pending, but guard anyway.
-    if guild_info.membership_state == "pending" && !is_owner {
-        return Ok(Some(MemberPermissionContext {
-            guild_owner_id: guild_info.guild_owner_id,
-            everyone_permissions: GuildPermissions::empty(),
-            everyone_role_id: None,
-            member_roles: Vec::new(),
-            computed_permissions: GuildPermissions::empty(),
-            highest_role_position: None,
-            is_owner: false,
-        }));
+    if is_pending_non_owner(&guild_info, user_id) {
+        return Ok(Some(assemble_context(
+            user_id,
+            &guild_info,
+            None,
+            Vec::new(),
+        )));
     }
 
     // Get @everyone role permissions
@@ -131,9 +122,6 @@ pub async fn get_member_permission_context(
     .bind(guild_id)
     .fetch_optional(pool)
     .await?;
-
-    let everyone_role_id = everyone_role.as_ref().map(|r| r.id);
-    let everyone_permissions = everyone_role.map(|r| r.permissions).unwrap_or_default();
 
     // Get all roles assigned to the member
     let member_roles: Vec<GuildRole> = sqlx::query_as(
@@ -150,10 +138,54 @@ pub async fn get_member_permission_context(
     .fetch_all(pool)
     .await?;
 
+    Ok(Some(assemble_context(
+        user_id,
+        &guild_info,
+        everyone_role.as_ref(),
+        member_roles,
+    )))
+}
+
+/// Screening: a `pending` member (hasn't accepted the rules) has NO
+/// permissions regardless of roles — no `VIEW_CHANNEL`, no send, no voice, and
+/// (since WS subscribe resolves through here) no channel subscribe. The owner
+/// is never pending, but guard anyway. While the server's screening feature
+/// is off, `pending` counts as active (rows unchanged).
+fn is_pending_non_owner(guild_info: &GuildInfo, user_id: Uuid) -> bool {
+    guild_info.membership_state == "pending"
+        && guild_info.guild_owner_id != user_id
+        && crate::features::screening_enforced()
+}
+
+/// Build a member's guild-level permission context from preloaded rows.
+///
+/// Single source for [`get_member_permission_context`] and the batched
+/// [`filter_viewable_channels_in_guilds`], so both resolve identically.
+fn assemble_context(
+    user_id: Uuid,
+    guild_info: &GuildInfo,
+    everyone_role: Option<&GuildRole>,
+    mut member_roles: Vec<GuildRole>,
+) -> MemberPermissionContext {
+    if is_pending_non_owner(guild_info, user_id) {
+        return MemberPermissionContext {
+            guild_owner_id: guild_info.guild_owner_id,
+            everyone_permissions: GuildPermissions::empty(),
+            everyone_role_id: None,
+            member_roles: Vec::new(),
+            computed_permissions: GuildPermissions::empty(),
+            highest_role_position: None,
+            is_owner: false,
+        };
+    }
+
+    member_roles.sort_by_key(|r| r.position);
+    let everyone_role_id = everyone_role.map(|r| r.id);
+    let everyone_permissions = everyone_role.map(|r| r.permissions).unwrap_or_default();
+
     // Compute highest role position (lowest number = highest rank)
     let highest_role_position = member_roles.iter().map(|r| r.position).min();
 
-    // Compute permissions
     let computed_permissions = compute_guild_permissions(
         user_id,
         guild_info.guild_owner_id,
@@ -162,15 +194,41 @@ pub async fn get_member_permission_context(
         None, // No channel overrides for guild-level context
     );
 
-    Ok(Some(MemberPermissionContext {
+    MemberPermissionContext {
         guild_owner_id: guild_info.guild_owner_id,
         everyone_permissions,
         everyone_role_id,
         member_roles,
         computed_permissions,
         highest_role_position,
-        is_owner,
-    }))
+        is_owner: guild_info.guild_owner_id == user_id,
+    }
+}
+
+/// Effective permissions of a (non-owner) member in one channel, given that
+/// channel's overrides. Shared by [`require_channel_access`] and the batched
+/// channel filters so every `VIEW_CHANNEL` decision is made the same way.
+fn channel_permissions(
+    ctx: &MemberPermissionContext,
+    user_id: Uuid,
+    overrides: Option<&[super::models::ChannelOverride]>,
+) -> GuildPermissions {
+    let mut perms = compute_guild_permissions(
+        user_id,
+        ctx.guild_owner_id,
+        ctx.everyone_permissions,
+        &ctx.member_roles,
+        overrides,
+    );
+    if let Some(everyone_role_id) = ctx.everyone_role_id {
+        if let Some(override_entry) =
+            overrides.and_then(|v| v.iter().find(|ovr| ovr.role_id == everyone_role_id))
+        {
+            perms |= override_entry.allow_permissions & GuildPermissions::EVERYONE_ALLOWED;
+            perms &= !override_entry.deny_permissions;
+        }
+    }
+    perms
 }
 
 /// Load permission context and require a specific permission.
@@ -276,19 +334,7 @@ pub async fn require_channel_access(
         .map_err(|e| PermissionError::DatabaseError(e.to_string()))?;
 
     // Compute channel-specific permissions
-    let mut perms = compute_guild_permissions(
-        user_id,
-        ctx.guild_owner_id,
-        ctx.everyone_permissions,
-        &ctx.member_roles,
-        Some(&overrides),
-    );
-    if let Some(everyone_role_id) = ctx.everyone_role_id {
-        if let Some(override_entry) = overrides.iter().find(|ovr| ovr.role_id == everyone_role_id) {
-            perms |= override_entry.allow_permissions & GuildPermissions::EVERYONE_ALLOWED;
-            perms &= !override_entry.deny_permissions;
-        }
-    }
+    let perms = channel_permissions(&ctx, user_id, Some(&overrides));
 
     if !perms.has(GuildPermissions::VIEW_CHANNEL) {
         return Err(PermissionError::MissingPermission(
@@ -354,28 +400,154 @@ pub async fn filter_accessible_channels(
     // 5. Compute VIEW_CHANNEL for each channel in-memory
     let mut accessible = Vec::with_capacity(channel_ids.len());
     for &channel_id in channel_ids {
-        let overrides = overrides_by_channel.get(&channel_id);
-        let mut perms = compute_guild_permissions(
-            user_id,
-            ctx.guild_owner_id,
-            ctx.everyone_permissions,
-            &ctx.member_roles,
-            overrides.map(|v| v.as_slice()),
-        );
-        if let Some(everyone_role_id) = ctx.everyone_role_id {
-            if let Some(override_entry) =
-                overrides.and_then(|v| v.iter().find(|ovr| ovr.role_id == everyone_role_id))
-            {
-                perms |= override_entry.allow_permissions & GuildPermissions::EVERYONE_ALLOWED;
-                perms &= !override_entry.deny_permissions;
-            }
-        }
-        if perms.has(GuildPermissions::VIEW_CHANNEL) {
+        let overrides = overrides_by_channel.get(&channel_id).map(Vec::as_slice);
+        if channel_permissions(&ctx, user_id, overrides).has(GuildPermissions::VIEW_CHANNEL) {
             accessible.push(channel_id);
         }
     }
 
     Ok(accessible)
+}
+
+/// Filter guild channels across any number of guilds down to those the user
+/// can view, with the same rules as [`require_channel_access`].
+///
+/// `channels` are `(guild_id, channel_id)` pairs. Everything is loaded in at
+/// most four queries in total, independent of the number of guilds and
+/// channels (membership + owner, `@everyone` roles, member roles, channel
+/// overrides); the permissions are then resolved in memory per guild. Channels
+/// in guilds the user is not a member of are dropped.
+#[tracing::instrument(skip(pool, channels), fields(channels = channels.len()))]
+pub async fn filter_viewable_channels_in_guilds(
+    pool: &PgPool,
+    user_id: Uuid,
+    channels: &[(Uuid, Uuid)],
+) -> sqlx::Result<std::collections::HashSet<Uuid>> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut viewable = HashSet::new();
+    if channels.is_empty() {
+        return Ok(viewable);
+    }
+    let mut guild_ids: Vec<Uuid> = channels.iter().map(|(g, _)| *g).collect();
+    guild_ids.sort_unstable();
+    guild_ids.dedup();
+
+    // 1. Membership + owner for every guild at once.
+    let infos: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        r"
+        SELECT g.id, g.owner_id, gm.membership_state
+        FROM guilds g
+        INNER JOIN guild_members gm ON gm.guild_id = g.id AND gm.user_id = $1
+        WHERE g.id = ANY($2)
+        ",
+    )
+    .bind(user_id)
+    .bind(&guild_ids)
+    .fetch_all(pool)
+    .await?;
+    let infos: HashMap<Uuid, GuildInfo> = infos
+        .into_iter()
+        .map(|(guild_id, guild_owner_id, membership_state)| {
+            (
+                guild_id,
+                GuildInfo {
+                    guild_owner_id,
+                    membership_state,
+                },
+            )
+        })
+        .collect();
+
+    // Guilds whose channels need role/override resolution: not owned (owner
+    // sees everything) and not pending (sees nothing).
+    let resolve_ids: Vec<Uuid> = infos
+        .iter()
+        .filter(|(_, info)| info.guild_owner_id != user_id && !is_pending_non_owner(info, user_id))
+        .map(|(id, _)| *id)
+        .collect();
+
+    let mut everyone_roles: HashMap<Uuid, GuildRole> = HashMap::new();
+    let mut member_roles: HashMap<Uuid, Vec<GuildRole>> = HashMap::new();
+    let mut overrides_by_channel: HashMap<Uuid, Vec<super::models::ChannelOverride>> =
+        HashMap::new();
+    if !resolve_ids.is_empty() {
+        // 2. Every @everyone role.
+        let roles: Vec<GuildRole> = sqlx::query_as(
+            r"
+            SELECT id, guild_id, name, color, permissions, position, is_default, created_at, updated_at
+            FROM guild_roles
+            WHERE guild_id = ANY($1) AND is_default = true
+            ",
+        )
+        .bind(&resolve_ids)
+        .fetch_all(pool)
+        .await?;
+        everyone_roles.extend(roles.into_iter().map(|r| (r.guild_id, r)));
+
+        // 3. Every role of the member.
+        let roles: Vec<GuildRole> = sqlx::query_as(
+            r"
+            SELECT r.id, r.guild_id, r.name, r.color, r.permissions, r.position, r.is_default, r.created_at, r.updated_at
+            FROM guild_roles r
+            INNER JOIN guild_member_roles gmr ON gmr.role_id = r.id
+            WHERE gmr.user_id = $1 AND gmr.guild_id = ANY($2)
+            ",
+        )
+        .bind(user_id)
+        .bind(&resolve_ids)
+        .fetch_all(pool)
+        .await?;
+        for role in roles {
+            member_roles.entry(role.guild_id).or_default().push(role);
+        }
+
+        // 4. Overrides of the channels in those guilds.
+        let resolve_set: HashSet<Uuid> = resolve_ids.iter().copied().collect();
+        let channel_ids: Vec<Uuid> = channels
+            .iter()
+            .filter(|(g, _)| resolve_set.contains(g))
+            .map(|(_, c)| *c)
+            .collect();
+        for ovr in crate::db::get_channel_overrides_batch(pool, &channel_ids).await? {
+            overrides_by_channel
+                .entry(ovr.channel_id)
+                .or_default()
+                .push(ovr);
+        }
+    }
+
+    let contexts: HashMap<Uuid, MemberPermissionContext> = infos
+        .iter()
+        .map(|(guild_id, info)| {
+            (
+                *guild_id,
+                assemble_context(
+                    user_id,
+                    info,
+                    everyone_roles.get(guild_id),
+                    member_roles.remove(guild_id).unwrap_or_default(),
+                ),
+            )
+        })
+        .collect();
+
+    for (guild_id, channel_id) in channels {
+        let Some(ctx) = contexts.get(guild_id) else {
+            continue; // not a member
+        };
+        let can_view = ctx.is_owner
+            || channel_permissions(
+                ctx,
+                user_id,
+                overrides_by_channel.get(channel_id).map(Vec::as_slice),
+            )
+            .has(GuildPermissions::VIEW_CHANNEL);
+        if can_view {
+            viewable.insert(*channel_id);
+        }
+    }
+    Ok(viewable)
 }
 
 /// Internal struct for guild membership query.

@@ -29,7 +29,14 @@ const NEW_PASSWORD: &str = "my-own-secret-456";
 
 /// Spin up a server and an elevated system admin; returns the admin's token.
 async fn setup_admin(pool: &PgPool) -> (TestApp, TestServer, String) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    setup_admin_with(pool, vc_server::config::Config::default_for_test()).await
+}
+
+async fn setup_admin_with(
+    pool: &PgPool,
+    config: vc_server::config::Config,
+) -> (TestApp, TestServer, String) {
+    let app = TestApp::with_pool_and_config(pool.clone(), config).await;
     let server = spawn_test_server(app.router.clone()).await;
     let (admin_id, _) = create_test_user(pool).await;
     make_admin(pool, admin_id).await;
@@ -156,7 +163,7 @@ async fn create_user_requires_elevation(pool: PgPool) {
     let resp = create_user(&server, &token, "oma", TEMP_PASSWORD).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["error"], "elevation_required");
+    assert_eq!(body["error"], "ELEVATION_REQUIRED");
 
     // Listing users stays available without elevation.
     let resp = reqwest::Client::new()
@@ -188,7 +195,7 @@ async fn create_user_duplicate_username_409(pool: PgPool) {
     let resp = create_user(&server, &token, "oma", TEMP_PASSWORD).await;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["error"], "conflict");
+    assert_eq!(body["error"], "CONFLICT");
 }
 
 #[sqlx::test]
@@ -561,4 +568,290 @@ async fn audit_failure_rolls_back_created_account(pool: PgPool) {
         .unwrap();
     let resp = create_user(&server, &token, "oma", TEMP_PASSWORD).await;
     assert_eq!(resp.status(), StatusCode::CREATED, "retry must succeed");
+}
+
+// ---------------------------------------------------------------------------
+// C23: guild_ids on admin-created accounts
+// ---------------------------------------------------------------------------
+
+async fn create_user_in_guilds(
+    server: &TestServer,
+    token: &str,
+    username: &str,
+    guild_ids: serde_json::Value,
+) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/api/admin/users", server.url))
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "username": username,
+            "display_name": null,
+            "temporary_password": TEMP_PASSWORD,
+            "guild_ids": guild_ids,
+        }))
+        .send()
+        .await
+        .expect("POST /api/admin/users")
+}
+
+async fn guild_state(pool: &PgPool, guild_id: Uuid, username: &str) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT gm.membership_state::text FROM guild_members gm
+         JOIN users u ON u.id = gm.user_id
+         WHERE gm.guild_id = $1 AND u.username = $2",
+    )
+    .bind(guild_id)
+    .bind(username)
+    .fetch_optional(pool)
+    .await
+    .expect("membership query")
+}
+
+#[sqlx::test]
+async fn test_create_user_joins_requested_guilds(pool: PgPool) {
+    let (_app, server, token) = setup_admin(&pool).await;
+    let (owner_id, _) = create_test_user(&pool).await;
+    let guild_a = super::helpers::create_guild(&pool, owner_id).await;
+    let guild_b = super::helpers::create_guild(&pool, owner_id).await;
+    let guild_c = super::helpers::create_guild(&pool, owner_id).await;
+
+    let resp = create_user_in_guilds(
+        &server,
+        &token,
+        "oma",
+        serde_json::json!([guild_a, guild_b]),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    assert_eq!(
+        guild_state(&pool, guild_a, "oma").await.as_deref(),
+        Some("active")
+    );
+    assert_eq!(
+        guild_state(&pool, guild_b, "oma").await.as_deref(),
+        Some("active")
+    );
+    assert_eq!(guild_state(&pool, guild_c, "oma").await, None);
+
+    // The audit entry records the servers.
+    let details: serde_json::Value = sqlx::query_scalar(
+        "SELECT details FROM system_audit_log WHERE action = 'admin.users.create'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("audit row");
+    let mut logged: Vec<String> = details["guild_ids"]
+        .as_array()
+        .expect("guild_ids in audit")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    logged.sort();
+    let mut expected = vec![guild_a.to_string(), guild_b.to_string()];
+    expected.sort();
+    assert_eq!(logged, expected);
+
+    // After the password change the new user sees the servers.
+    let login_body: serde_json::Value = login(&server, "oma", TEMP_PASSWORD)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let access = login_body["access_token"].as_str().unwrap();
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/auth/me/password", server.url))
+        .bearer_auth(access)
+        .json(&serde_json::json!({
+            "current_password": TEMP_PASSWORD,
+            "new_password": NEW_PASSWORD,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = client
+        .get(format!("{}/api/guilds", server.url))
+        .bearer_auth(access)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let guilds: serde_json::Value = resp.json().await.unwrap();
+    let ids: Vec<&str> = guilds
+        .as_array()
+        .expect("guild list")
+        .iter()
+        .filter_map(|g| g["id"].as_str())
+        .collect();
+    assert_eq!(ids.len(), 2, "guilds: {guilds}");
+    assert!(ids.contains(&guild_a.to_string().as_str()));
+    assert!(ids.contains(&guild_b.to_string().as_str()));
+}
+
+#[sqlx::test]
+async fn test_create_user_with_unknown_guild_creates_nothing(pool: PgPool) {
+    let (_app, server, token) = setup_admin(&pool).await;
+    let (owner_id, _) = create_test_user(&pool).await;
+    let guild = super::helpers::create_guild(&pool, owner_id).await;
+
+    let resp = create_user_in_guilds(
+        &server,
+        &token,
+        "oma",
+        serde_json::json!([guild, Uuid::now_v7()]),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "VALIDATION_ERROR");
+    assert_eq!(body["message"], "unknown server");
+
+    let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = 'oma'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(users, 0);
+    let audit: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_audit_log WHERE action = 'admin.users.create'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit, 0);
+    assert_eq!(guild_state(&pool, guild, "oma").await, None);
+
+    // The same username can be created afterwards.
+    let resp = create_user_in_guilds(&server, &token, "oma", serde_json::json!([guild])).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+#[sqlx::test]
+async fn test_create_user_without_guild_ids_unchanged(pool: PgPool) {
+    let (_app, server, token) = setup_admin(&pool).await;
+
+    // Field omitted entirely (the helper above sends no guild_ids).
+    let resp = create_user(&server, &token, "oma", TEMP_PASSWORD).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let memberships: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM guild_members gm JOIN users u ON u.id = gm.user_id
+         WHERE u.username = 'oma'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(memberships, 0);
+    let details: serde_json::Value = sqlx::query_scalar(
+        "SELECT details FROM system_audit_log WHERE action = 'admin.users.create'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(details["guild_ids"], serde_json::json!([]));
+}
+
+#[sqlx::test]
+async fn test_create_user_guild_ids_duplicates_empty_and_limit(pool: PgPool) {
+    let (_app, server, token) = setup_admin(&pool).await;
+    let (owner_id, _) = create_test_user(&pool).await;
+    let guild = super::helpers::create_guild(&pool, owner_id).await;
+
+    // Duplicates are deduplicated, not an error.
+    let resp = create_user_in_guilds(
+        &server,
+        &token,
+        "oma",
+        serde_json::json!([guild, guild, guild]),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(
+        guild_state(&pool, guild, "oma").await.as_deref(),
+        Some("active")
+    );
+    let details: serde_json::Value = sqlx::query_scalar(
+        "SELECT details FROM system_audit_log WHERE action = 'admin.users.create'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(details["guild_ids"], serde_json::json!([guild.to_string()]));
+
+    // An explicit empty list works.
+    let resp = create_user_in_guilds(&server, &token, "opa", serde_json::json!([])).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // More than 10 entries is a validation error and creates nothing.
+    let many: Vec<Uuid> = (0..11).map(|_| guild).collect();
+    let resp = create_user_in_guilds(&server, &token, "tante", serde_json::json!(many)).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "VALIDATION_ERROR");
+    let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = 'tante'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(users, 0);
+}
+
+#[sqlx::test]
+async fn test_create_user_full_guild_creates_nothing(pool: PgPool) {
+    let mut config = vc_server::config::Config::default_for_test();
+    config.max_members_per_guild = 2;
+    let (_app, server, token) = setup_admin_with(&pool, config).await;
+    let (owner_id, _) = create_test_user(&pool).await;
+    let (other_id, _) = create_test_user(&pool).await;
+    // Guild A has room (1/2), guild B is full (2/2).
+    let guild_a = super::helpers::create_guild(&pool, owner_id).await;
+    let guild_b = super::helpers::create_guild(&pool, owner_id).await;
+    super::helpers::add_guild_member(&pool, guild_b, other_id).await;
+
+    let resp = create_user_in_guilds(
+        &server,
+        &token,
+        "oma",
+        serde_json::json!([guild_a, guild_b]),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "VALIDATION_ERROR");
+
+    let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = 'oma'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(users, 0, "no account is created");
+    let members_a: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM guild_members WHERE guild_id = $1")
+            .bind(guild_a)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        members_a, 1,
+        "no membership is added in the guild with room"
+    );
+}
+
+#[sqlx::test]
+async fn test_create_user_member_is_active_even_with_screening_on(pool: PgPool) {
+    // Screening is on for the server, so only the admin path keeps it active.
+    let (_app, server, token) =
+        setup_admin_with(&pool, super::helpers::all_features_config()).await;
+    let (owner_id, _) = create_test_user(&pool).await;
+    let guild = super::helpers::create_guild(&pool, owner_id).await;
+    sqlx::query("UPDATE guilds SET screening_enabled = true WHERE id = $1")
+        .bind(guild)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let resp = create_user_in_guilds(&server, &token, "oma", serde_json::json!([guild])).await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(
+        guild_state(&pool, guild, "oma").await.as_deref(),
+        Some("active")
+    );
 }

@@ -39,7 +39,7 @@
 9. Main loop (`select!`): client messages, server heartbeat, and the pub/sub task's exit
 10. On disconnect / any exit: abort background tasks, `QUIT` the socket's own subscriber client (bounded by 1 s; fred keeps the connection and its subscriptions alive if the client is merely dropped), set presence to `offline`
 
-**Pub/sub pipeline failure** (`PubsubExit`): the pub/sub task returns why it stopped. Every reason except `ClientGone` closes the socket with a Close frame (reason `"resync"`), giving the sender task at most 1 s to flush it:
+**Pub/sub pipeline failure** (`PubsubExit`): the pub/sub task returns why it stopped. Every reason except `ClientGone` closes the socket with a Close frame (reason `"RESYNC"`), giving the sender task at most 1 s to flush it:
 - `ConnectFailed`, `SubscribeFailed`, `StreamEnded`, `Lagged` → **1011** (server-side event pipeline failed). A subscriber reconnect counts as `StreamEnded`, because a plain fred client does not restore its subscriptions.
 - `SlowClient` → **1013** (client too slow: the outbound queue stayed full for `SLOW_CLIENT_SEND_TIMEOUT` = 1 s; no silent drops)
 - `ClientGone` → no Close frame (the socket is already going away)
@@ -297,7 +297,7 @@ ClientEvent::VoiceJoin { .. }
 **Client Errors** (malformed JSON, invalid channel ID):
 ```rust
 send_outbound(tx, OutboundMsg::Event(ServerEvent::Error {
-    code: "invalid_request".to_string(),
+    code: "INVALID_REQUEST".to_string(),
     message: "Channel not found".to_string(),
 }))
 .await?; // never a raw `tx.send(..).await`: a stalled client would block the socket loop

@@ -12,6 +12,7 @@
  */
 
 import { Component, createSignal, createEffect, Show } from "solid-js";
+import { codeIs } from "@/lib/errorCode";
 import { authState, clearSetupRequired } from "@/stores/auth";
 import { AlertCircle, CheckCircle, Server } from "lucide-solid";
 import { getAuthContext, getServerUrl } from "@/lib/tauri";
@@ -128,7 +129,7 @@ async function completeSetup(config: SetupConfig): Promise<void> {
         // Handle specific error codes
         if (
           response.status === 403 &&
-          errorBody.error === "SETUP_ALREADY_COMPLETE"
+          codeIs(errorBody.error, "SETUP_ALREADY_COMPLETE")
         ) {
           // Setup was completed by another admin - close the wizard
           console.warn(

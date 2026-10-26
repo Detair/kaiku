@@ -183,6 +183,33 @@ export async function selectHome(): Promise<void> {
 }
 
 /**
+ * After login or restore, when nothing is selected (no server, no DM, no
+ * channel) and no deep link is pending (the app sits at the root path), open
+ * the first server and its first text channel. Never overrides a selection.
+ */
+export function landOnFirstServerIfIdle(): void {
+  const first = guildsState.guilds[0];
+  if (!first || guildsState.activeGuildId) return;
+  if (typeof window !== "undefined" && window.location.pathname !== "/") return;
+
+  void (async () => {
+    const [{ channelsState, textChannels, selectChannel }, { dmsState }] =
+      await Promise.all([import("./channels"), import("./dms")]);
+    if (channelsState.selectedChannelId || dmsState.selectedDMId) return;
+
+    await selectGuild(first.id);
+    // The user may have picked something else while the server was loading.
+    if (guildsState.activeGuildId !== first.id) return;
+    // selectGuild picks the first text channel in API order; the landing
+    // channel is the first one by position.
+    const channel = textChannels()[0];
+    if (channel && channelsState.selectedChannelId !== channel.id) {
+      selectChannel(channel.id);
+    }
+  })().catch((err) => console.error("Failed to land on the first server:", err));
+}
+
+/**
  * Get the currently active guild
  */
 export function getActiveGuild(): Guild | null {

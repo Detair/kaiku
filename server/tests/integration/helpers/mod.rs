@@ -60,7 +60,26 @@ pub struct TestApp {
     pub state: AppState,
 }
 
+/// Test config with every optional feature (`KAIKU_OPTIONAL_FEATURES`) on.
+/// The plain test config keeps the production default (all off).
+pub fn all_features_config() -> Config {
+    let mut config = Config::default_for_test();
+    config.optional_features = vc_server::features::OptionalFeatures {
+        forum: true,
+        announcements: true,
+        events: true,
+        screening: true,
+    };
+    config
+}
+
 impl TestApp {
+    /// [`TestApp::with_pool`] with every optional feature turned on, for tests
+    /// of forum/announcement channels, scheduled events and screening.
+    pub async fn with_all_features(pool: PgPool) -> Self {
+        Self::with_pool_and_config(pool, all_features_config()).await
+    }
+
     /// Canonical pool-injecting constructor for integration tests.
     ///
     /// Pass a pool from `#[sqlx::test]`'s fixture. The returned `TestApp`

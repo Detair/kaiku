@@ -56,6 +56,11 @@ describe("errorText", () => {
     expect(errorText(err, "auth.register.failed")).toBe(t("auth.register.failed"));
   });
 
+  it("does not show the code when message and code differ only in case", () => {
+    const err = new HttpError(400, "validation_error", "VALIDATION_ERROR");
+    expect(errorText(err, "auth.register.failed")).toBe(t("auth.register.failed"));
+  });
+
   it("ignores prototype-shaped codes", () => {
     for (const code of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
       const text = errorText(

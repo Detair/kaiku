@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Superseded pull-request runs are cancelled to free the scarce macOS runners;
+# pushes to main/develop get one group per commit, so every commit runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -407,7 +413,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: ubuntu-latest
+          # Pinned: ubuntu-latest moved to 26.04, whose PipeWire headers
+          # break libspa 0.8 bindings (spa_pod_builder fields). Same pin as
+          # tauri-build.yml / release.yml until the pipewire crate is upgraded.
+          - platform: ubuntu-24.04
             allow_failure: false
           - platform: windows-latest
             allow_failure: false
@@ -447,11 +456,11 @@ jobs:
 
       # Rust unit tests of the desktop shell (session manager, native WebSocket).
       - name: Test Tauri client library (Ubuntu)
-        if: matrix.platform == 'ubuntu-latest'
+        if: matrix.platform == 'ubuntu-24.04'
         run: cargo test -p vc-client --lib
 
       - name: Upload artifacts (Ubuntu)
-        if: matrix.platform == 'ubuntu-latest'
+        if: matrix.platform == 'ubuntu-24.04'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tauri-linux

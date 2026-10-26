@@ -6,6 +6,7 @@
 
 import { isTextLikeChannelType } from "@/lib/channelTypes";
 import { createStore } from "solid-js/store";
+import { codeIs } from "@/lib/errorCode";
 import * as tauri from "@/lib/tauri";
 import type { Message, ServerEvent } from "@/lib/types";
 import {
@@ -843,11 +844,11 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       console.error("WebSocket error:", event.code, event.message);
       // Native: Rust acts on these itself.
       if (!isTauri()) {
-        if (event.code === "SESSION_REVOKED") {
+        if (codeIs(event.code, "SESSION_REVOKED")) {
           handleSessionRevoked();
           break;
         }
-        if (event.code === tauri.PASSWORD_CHANGE_REQUIRED) {
+        if (codeIs(event.code, tauri.PASSWORD_CHANGE_REQUIRED)) {
           handleBrowserPasswordChangeRequired();
           break;
         }

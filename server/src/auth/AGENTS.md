@@ -186,12 +186,12 @@ Admin elevation and backup-code regeneration ask the caller to prove the account
     - a provider error (callback without `code`) and server faults also hand back, as `reauth_error=OIDC_PROVIDER_ERROR` / `REAUTH_FAILED` (`reauth::reauth_failure_response`, used by `login::flow_failure_response` for reauth states).
 - **Eligible identity:** linked no later than the session's original start (`sessions.created_at`, stable across refresh), or linked from an elevated session (`user_identities.linked_while_elevated`).
   - An identity linked in a non-elevated session can confirm only sessions that start later.
-  - **Admin links need elevation:** a system admin may link an identity only from an elevated session. `GET /auth/me/identities/authorize/{provider}` answers 403 `elevation_required` (same body as the admin middleware) otherwise; non-admins are unaffected. Without this, a stolen non-elevated admin token could link an attacker's identity, sign in through it (a new, later session) and elevate from there. With it, every identity an admin links carries `linked_while_elevated`.
+  - **Admin links need elevation:** a system admin may link an identity only from an elevated session. `GET /auth/me/identities/authorize/{provider}` answers 403 `ELEVATION_REQUIRED` (same body as the admin middleware) otherwise; non-admins are unaffected. Without this, a stolen non-elevated admin token could link an attacker's identity, sign in through it (a new, later session) and elevate from there. With it, every identity an admin links carries `linked_while_elevated`.
   - **Link callback re-checks the starting session** (`identities::link_refusal`, before anything is inserted). Refusals go back through the link hand-back (`?link_error=` / `oidc-link-callback`):
     - `LINK_SESSION_INVALID`: the state names no session (legacy `link_user_id` states), or the session is missing, expired or denylisted;
     - `SERVICE_UNAVAILABLE`: the denylist cannot be read (fail closed);
     - `ACCOUNT_BANNED`: the account is banned;
-    - `elevation_required`: a system admin's session is no longer elevated.
+    - `ELEVATION_REQUIRED`: a system admin's session is no longer elevated.
   - "Usable" means: an enabled provider with OIDC discovery (plain OAuth2 has no ID token, so no `auth_time`), and OIDC sign-in allowed.
 - **Methods:** `GET /auth/reauth/methods` (bearer) returns `{"password": bool, "mfa_required": bool, "oidc": [{"provider_id": string, "display_name": string}]}`.
   - `mfa_required` applies to both paths.

@@ -450,15 +450,43 @@ pub async fn oidc_link_identity(
         info!("OIDC identity linked: {}", provider_slug);
         Ok(())
     } else if let Some(code) = params.get("link_error") {
-        match code.as_str() {
-            "IDENTITY_ALREADY_LINKED" => {
-                Err("This account is already linked to another Kaiku account.".to_string())
-            }
-            other => Err(format!("Linking failed: {other}")),
-        }
+        Err(link_error_message(code))
     } else if let Some(error) = params.get("error") {
         Err(format!("Linking failed: {error}"))
     } else {
         Err("Linking failed: no result in callback".to_string())
+    }
+}
+
+/// Text for a failed link callback (`link_error` query value). The code is
+/// matched case-insensitively (the server is moving codes to `UPPER_SNAKE`).
+fn link_error_message(code: &str) -> String {
+    if code.trim().eq_ignore_ascii_case("IDENTITY_ALREADY_LINKED") {
+        "This account is already linked to another Kaiku account.".to_string()
+    } else {
+        format!("Linking failed: {code}")
+    }
+}
+
+#[cfg(test)]
+mod link_error_tests {
+    use super::link_error_message;
+
+    #[test]
+    fn already_linked_in_either_case() {
+        for code in ["IDENTITY_ALREADY_LINKED", "identity_already_linked"] {
+            assert_eq!(
+                link_error_message(code),
+                "This account is already linked to another Kaiku account."
+            );
+        }
+    }
+
+    #[test]
+    fn other_codes_pass_through() {
+        assert_eq!(
+            link_error_message("ACCOUNT_BANNED"),
+            "Linking failed: ACCOUNT_BANNED"
+        );
     }
 }

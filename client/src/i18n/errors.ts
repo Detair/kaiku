@@ -1,4 +1,5 @@
 import { HttpError } from "@/lib/tauri/common";
+import { normalizeCode } from "@/lib/errorCode";
 import { t, type MessageKey } from "./index";
 
 type ByCode = Partial<Record<string, MessageKey>>;
@@ -7,6 +8,15 @@ type ByStatus = Partial<Record<number, MessageKey>>;
 /** Own-property check (the TS lib target predates `Object.hasOwn`). */
 function hasOwn(obj: object, key: string | number): boolean {
   return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+/** `byCode[code]`, matching the map's keys case-insensitively (`code` is normalised). */
+function lookupCode(byCode: ByCode, code: string): MessageKey | undefined {
+  if (hasOwn(byCode, code)) return byCode[code];
+  for (const key of Object.keys(byCode)) {
+    if (normalizeCode(key) === code) return byCode[key];
+  }
+  return undefined;
 }
 
 /** Error carrying a `cause` (the auth store wraps failures that way). */
@@ -62,10 +72,10 @@ export function errorText(
   const cause = causeOf(err);
   if (!http && cause !== undefined) return errorText(cause, fallback, byCode, byStatus);
 
-  const code = http?.code;
+  const code = normalizeCode(http?.code);
   const status = http?.status;
 
-  const byCodeKey = code && byCode && hasOwn(byCode, code) ? byCode[code] : undefined;
+  const byCodeKey = code && byCode ? lookupCode(byCode, code) : undefined;
   if (byCodeKey) return t(byCodeKey);
   const byStatusKey =
     status !== undefined && byStatus && hasOwn(byStatus, status) ? byStatus[status] : undefined;
@@ -77,7 +87,7 @@ export function errorText(
   }
   if (err instanceof TypeError) return t("errors.network");
   // An empty server message makes HttpError.message fall back to the code.
-  if (code === "VALIDATION_ERROR" && http?.message && http.message !== code) {
+  if (code === "VALIDATION_ERROR" && http?.message && normalizeCode(http.message) !== code) {
     return http.message;
   }
   return t(fallback);

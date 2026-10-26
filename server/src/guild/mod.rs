@@ -26,10 +26,11 @@ pub use error::GuildError;
 pub use queries::limits;
 
 use crate::api::AppState;
+use crate::features::{gated, OptionalFeature};
 use crate::pages;
 
 /// Create the guild router with all endpoints
-pub fn router() -> Router<AppState> {
+pub fn router(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/", get(core::list_guilds).post(core::create_guild))
         .route(
@@ -73,25 +74,34 @@ pub fn router() -> Router<AppState> {
             "/{id}/members/{user_id}/roles/{role_id}",
             post(roles::assign_role).delete(roles::remove_role),
         )
-        // Membership screening routes
-        .route(
-            "/{id}/screening",
-            get(screening::get_screening).put(screening::update_screening),
-        )
-        .route("/{id}/screening/accept", post(screening::accept_screening))
-        // Scheduled event routes
-        .route(
-            "/{id}/events",
-            get(events::list_events).post(events::create_event),
-        )
-        .route(
-            "/{id}/events/{event_id}",
-            patch(events::update_event).delete(events::delete_event),
-        )
-        .route(
-            "/{id}/events/{event_id}/rsvp",
-            put(events::set_rsvp).delete(events::clear_rsvp),
-        )
+        // Membership screening and scheduled events are optional features.
+        .merge(gated(
+            state,
+            OptionalFeature::Screening,
+            Router::new()
+                .route(
+                    "/{id}/screening",
+                    get(screening::get_screening).put(screening::update_screening),
+                )
+                .route("/{id}/screening/accept", post(screening::accept_screening)),
+        ))
+        .merge(gated(
+            state,
+            OptionalFeature::Events,
+            Router::new()
+                .route(
+                    "/{id}/events",
+                    get(events::list_events).post(events::create_event),
+                )
+                .route(
+                    "/{id}/events/{event_id}",
+                    patch(events::update_event).delete(events::delete_event),
+                )
+                .route(
+                    "/{id}/events/{event_id}/rsvp",
+                    put(events::set_rsvp).delete(events::clear_rsvp),
+                ),
+        ))
         // Reaction-role routes
         .route(
             "/{id}/reaction-roles",

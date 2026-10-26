@@ -163,22 +163,25 @@ pub async fn count_guild_members_tx(
 }
 
 /// Insert a new guild member, ignoring duplicate `(guild_id, user_id)`. Returns
-/// the number of rows affected.
+/// the number of rows affected. `screening` = the server's screening feature
+/// flag; when false the member is never `pending`.
 pub async fn insert_member_idempotent(
     tx: &mut Transaction<'_, Postgres>,
     guild_id: Uuid,
     user_id: Uuid,
+    screening: bool,
 ) -> Result<u64, GuildError> {
     let result = sqlx::query(
-        // New joiners enter 'pending' when the guild has screening enabled,
-        // else 'active' (existing default).
+        // New joiners enter 'pending' when screening is turned on for the
+        // server (`screening`) and the guild has it enabled, else 'active'.
         "INSERT INTO guild_members (guild_id, user_id, membership_state)
-         VALUES ($1, $2, CASE WHEN (SELECT screening_enabled FROM guilds WHERE id = $1)
+         VALUES ($1, $2, CASE WHEN $3 AND (SELECT screening_enabled FROM guilds WHERE id = $1)
                               THEN 'pending' ELSE 'active' END)
          ON CONFLICT DO NOTHING",
     )
     .bind(guild_id)
     .bind(user_id)
+    .bind(screening)
     .execute(&mut **tx)
     .await?;
     Ok(result.rows_affected())

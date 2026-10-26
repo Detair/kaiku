@@ -87,6 +87,7 @@ export {
   fetchApi,
   getServerUrl,
   getAccessToken,
+  isTauri,
   HttpError,
   httpRequest,
   refreshAccessToken,

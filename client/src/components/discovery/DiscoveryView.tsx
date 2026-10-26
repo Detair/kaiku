@@ -13,6 +13,7 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
+import { messageHasCode } from "@/lib/errorCode";
 import { Search, ChevronLeft, ChevronRight } from "lucide-solid";
 import flokiThinking from "@/assets/emotes/floki_emote_2.webp";
 import type { DiscoverableGuild } from "@/lib/types";
@@ -59,7 +60,7 @@ const DiscoveryView: Component = () => {
       console.error("Failed to discover guilds:", err);
       // Distinguish discovery-disabled from transient failures
       const isDisabled =
-        err instanceof Error && err.message.includes("DISCOVERY_DISABLED");
+        err instanceof Error && messageHasCode(err.message, "DISCOVERY_DISABLED");
       setIsPermanentError(isDisabled);
       setError(
         isDisabled
