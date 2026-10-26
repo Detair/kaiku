@@ -15,16 +15,15 @@ use crate::auth::AuthUser;
 use crate::db::{self, ChannelType};
 use crate::social::block_cache;
 use crate::voice::call::CallState;
-use crate::voice::call_service::{
-    broadcast_call_ended, broadcast_to_members, spawn_ring_timeout, CallError, CallService,
-};
+use crate::voice::call_service::{CallError, CallService, Transition};
 use crate::voice::queries;
-use crate::ws::ServerEvent;
 
 /// Response for call state
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CallStateResponse {
     pub channel_id: Uuid,
+    /// Id of this call (generation); call events carry the same `call_id`.
+    pub call_id: Uuid,
     #[serde(flatten)]
     #[schema(inline)]
     pub state: CallState,
@@ -43,7 +42,7 @@ impl IntoResponse for CallError {
         let (status, code) = match &self {
             Self::CallNotFound => (StatusCode::NOT_FOUND, "call_not_found"),
             Self::CallAlreadyExists => (StatusCode::CONFLICT, "call_already_exists"),
-            Self::Contention => (StatusCode::CONFLICT, "call_conflict"),
+            Self::Contention => (StatusCode::CONFLICT, "CALL_CONFLICT"),
             Self::Redis(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
             Self::InvalidEvent(_) => (StatusCode::BAD_REQUEST, "invalid_event"),
             Self::StateTransition(_) => (StatusCode::CONFLICT, "invalid_transition"),
@@ -92,7 +91,7 @@ impl IntoResponse for CallHandlerError {
                 StatusCode::FORBIDDEN,
                 Json(CallApiError {
                     error: "Cannot call this user".to_string(),
-                    code: "blocked".to_string(),
+                    code: "BLOCKED".to_string(),
                 }),
             )
                 .into_response(),
@@ -213,17 +212,22 @@ pub async fn get_call(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<Option<CallStateResponse>>, CallHandlerError> {
-    // Verify membership
     verify_dm_participant(&state, channel_id, auth.id).await?;
 
-    let call_service = CallService::new(state.redis.clone());
-    let call_state = call_service.get_call_state(channel_id).await?;
-
-    Ok(Json(call_state.map(|state| CallStateResponse {
-        channel_id,
-        state,
-        capabilities: vec!["audio".to_string()],
+    let calls = CallService::new(state.redis.clone(), state.db.clone());
+    let call = calls.get_call(channel_id).await?;
+    Ok(Json(call.map(|(state, meta)| {
+        response(channel_id, Transition { state, meta })
     })))
+}
+
+fn response(channel_id: Uuid, t: Transition) -> CallStateResponse {
+    CallStateResponse {
+        channel_id,
+        call_id: t.meta.call_uuid(),
+        state: t.state,
+        capabilities: vec!["audio".to_string()],
+    }
 }
 
 /// Get username for a user ID
@@ -255,7 +259,6 @@ pub async fn start_call(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<CallStateResponse>), CallHandlerError> {
-    // Verify membership and get other participants
     let participants = verify_dm_participant(&state, channel_id, auth.id).await?;
     let target_users: HashSet<Uuid> = participants
         .into_iter()
@@ -270,47 +273,32 @@ pub async fn start_call(
     ensure_not_blocked(&state, auth.id, &others).await?;
 
     let initiator_name = get_username(&state, auth.id).await?;
+    let room_occupied = match state.sfu.get_room(channel_id).await {
+        Some(room) => !room.is_empty().await,
+        None => false,
+    };
 
-    let call_service = CallService::new(state.redis.clone());
-    let started = call_service
-        .start_call(
-            channel_id,
-            auth.id,
-            target_users,
-            state.config.call_ring_timeout_secs,
-        )
-        .await?;
-    spawn_ring_timeout(
-        state.redis.clone(),
-        channel_id,
-        started.meta.call_id.clone(),
-        std::time::Duration::from_secs(state.config.call_ring_timeout_secs),
-    );
+    // Run the start in its own task: once the call exists, its ring timer and
+    // `incoming_call` must not depend on this request staying alive.
+    let calls = CallService::new(state.redis.clone(), state.db.clone());
+    let ring_timeout_secs = state.config.call_ring_timeout_secs;
+    let initiator = auth.id;
+    let started = tokio::spawn(async move {
+        calls
+            .start_call(
+                channel_id,
+                initiator,
+                initiator_name,
+                target_users,
+                ring_timeout_secs,
+                room_occupied,
+            )
+            .await
+    })
+    .await
+    .map_err(|e| CallError::Redis(format!("call start task failed: {e}")))??;
 
-    // Ring every other participant on their user channel, so the call rings
-    // even if they do not have the DM open. The caller is not rung.
-    broadcast_to_members(
-        &state.redis,
-        &others,
-        &ServerEvent::IncomingCall {
-            channel_id,
-            initiator: auth.id,
-            initiator_name,
-            // Default capabilities: audio only for now
-            capabilities: vec!["audio".to_string()],
-        },
-    )
-    .await;
-    let call_state = started.state;
-
-    Ok((
-        StatusCode::CREATED,
-        Json(CallStateResponse {
-            channel_id,
-            state: call_state,
-            capabilities: vec!["audio".to_string()],
-        }),
-    ))
+    Ok((StatusCode::CREATED, Json(response(channel_id, started))))
 }
 
 /// POST /api/dm/{id}/call/join - Join an active call
@@ -333,7 +321,6 @@ pub async fn join_call(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<CallStateResponse>, CallHandlerError> {
-    // Verify membership
     let participants = verify_dm_participant(&state, channel_id, auth.id).await?;
 
     let others: Vec<Uuid> = participants
@@ -343,26 +330,10 @@ pub async fn join_call(
         .collect();
     ensure_not_blocked(&state, auth.id, &others).await?;
 
-    let call_service = CallService::new(state.redis.clone());
-    let call_state = call_service.join_call(channel_id, auth.id).await?.state;
-
     let username = get_username(&state, auth.id).await?;
-    broadcast_to_members(
-        &state.redis,
-        &participants,
-        &ServerEvent::CallParticipantJoined {
-            channel_id,
-            user_id: auth.id,
-            username,
-        },
-    )
-    .await;
-
-    Ok(Json(CallStateResponse {
-        channel_id,
-        state: call_state,
-        capabilities: vec!["audio".to_string()],
-    }))
+    let calls = CallService::new(state.redis.clone(), state.db.clone());
+    let joined = calls.join_call(channel_id, auth.id, username).await?;
+    Ok(Json(response(channel_id, joined)))
 }
 
 /// POST /api/dm/{id}/call/decline - Decline a call
@@ -385,29 +356,11 @@ pub async fn decline_call(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<CallStateResponse>, CallHandlerError> {
-    let participants = verify_dm_participant(&state, channel_id, auth.id).await?;
+    verify_dm_participant(&state, channel_id, auth.id).await?;
 
-    let call_service = CallService::new(state.redis.clone());
-    let declined = call_service.decline_call(channel_id, auth.id).await?;
-
-    broadcast_to_members(
-        &state.redis,
-        &participants,
-        &ServerEvent::CallDeclined {
-            channel_id,
-            user_id: auth.id,
-        },
-    )
-    .await;
-    // The last decline ended (and deleted) the call.
-    broadcast_call_ended(&state.redis, channel_id, &declined.meta, &declined.state).await;
-    let call_state = declined.state;
-
-    Ok(Json(CallStateResponse {
-        channel_id,
-        state: call_state,
-        capabilities: vec!["audio".to_string()],
-    }))
+    let calls = CallService::new(state.redis.clone(), state.db.clone());
+    let declined = calls.decline_call(channel_id, auth.id).await?;
+    Ok(Json(response(channel_id, declined)))
 }
 
 /// POST /api/dm/{id}/call/leave - Leave an active call
@@ -430,29 +383,11 @@ pub async fn leave_call(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<CallStateResponse>, CallHandlerError> {
-    let participants = verify_dm_participant(&state, channel_id, auth.id).await?;
+    verify_dm_participant(&state, channel_id, auth.id).await?;
 
-    let call_service = CallService::new(state.redis.clone());
-    let left = call_service.leave_call(channel_id, auth.id).await?;
-
-    broadcast_to_members(
-        &state.redis,
-        &participants,
-        &ServerEvent::CallParticipantLeft {
-            channel_id,
-            user_id: auth.id,
-        },
-    )
-    .await;
-    // Ended (and deleted) if the initiator cancelled or the last one left.
-    broadcast_call_ended(&state.redis, channel_id, &left.meta, &left.state).await;
-    let call_state = left.state;
-
-    Ok(Json(CallStateResponse {
-        channel_id,
-        state: call_state,
-        capabilities: vec!["audio".to_string()],
-    }))
+    let calls = CallService::new(state.redis.clone(), state.db.clone());
+    let left = calls.leave_call(channel_id, auth.id).await?;
+    Ok(Json(response(channel_id, left)))
 }
 
 /// Build the call router (to be nested under /api/dm)

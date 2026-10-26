@@ -1,33 +1,52 @@
 //! Valkey Streams-backed call service for DM voice calls.
 //!
-//! # Storage and concurrency
+//! # Storage
 //!
 //! A call lives in the stream `call_events:{channel_id}`. Its first entry
-//! (`Started`) carries a random `call_id` (the call generation), the target
-//! users and the start time; later entries are the call events.
+//! (`Started`) carries a random `call_id` (the call **generation**), the target
+//! users and the start time; later entries are the call events. While a call
+//! rings, `call_ringing_by:{initiator}` holds the member
+//! `{channel_id}:{call_id}` (used to cancel it when the initiator goes offline).
 //!
-//! Every change is a compare-and-set in one Lua script: it applies only if the
-//! stream still has the `call_id` **and** the last entry id that the caller
-//! read. Otherwise the caller re-reads and decides again. So concurrent
-//! decline/join/leave/timeout calls are serialized, a stale actor (an old ring
-//! timer, a late hook) can never touch a newer call on the same channel, and
-//! exactly one actor ends a call.
+//! # Concurrency
 //!
-//! A call that ends is deleted in the same atomic step, so a new call can start
-//! right away (starting is "create if the key does not exist", also atomic).
-//! The stream additionally carries a TTL while ringing as a backstop in case
-//! the ring timer is lost (process restart).
+//! - **Start** is one Lua script: create the stream only if none exists, index it and publish
+//!   `incoming_call` (to the targets) and `call_started` (to the initiator's sessions).
+//! - **Every other change** is a compare-and-set in one Lua script: it applies only if the stream
+//!   still has the `call_id` **and** the last entry id that the caller read. On a mismatch the
+//!   caller re-reads and decides again.
+//! - **Generation pinning**: an operation pins the `call_id` it first observed (or was given, e.g.
+//!   the ring timer). If a retry finds another call, the operation stops as a no-op ("call not
+//!   found"): it never acts on a replacement call.
+//! - A call that ends is deleted (and un-indexed) in the same script, so a new call can start right
+//!   away. The script also **publishes the call's events** (`call_ended`, `call_declined`, ...) to
+//!   the members' user channels, so a call's `call_ended` always precedes the next call's
+//!   `incoming_call`. All call events carry `call_id`; clients match on it.
+//! - Recipients are the DM's current participants, read right before the script runs.
+//!
+//! Streams carry TTLs as backstops only: ringing = ring timeout + 30 s (the
+//! ring timer normally ends the call first), active = 6 h, refreshed on every
+//! join/leave. An active call whose voice room is empty and that saw no event
+//! for [`ORPHAN_GRACE_SECS`] counts as orphaned (e.g. after a restart) and is
+//! ended (`last_left`) when someone starts a new call; this assumes the voice
+//! room lives on this node (single-node deployment).
+//!
+//! The scripts touch two keys (stream and ringing index); Kaiku runs a single
+//! Valkey, not a cluster.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::time::Duration;
 
 use chrono::{DateTime, TimeZone, Utc};
 use fred::prelude::*;
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::voice::call::{CallEventType, CallState, EndReason};
-use crate::ws::{broadcast_to_users, ServerEvent};
+use crate::ws::events::channels;
+use crate::ws::ServerEvent;
 
 /// Ring timeout: a call nobody answers ends after this many seconds.
 pub const RING_TIMEOUT_SECS: u64 = 90;
@@ -35,6 +54,16 @@ pub const RING_TIMEOUT_SECS: u64 = 90;
 /// normally ends the call (with a `call_ended` event); the TTL only cleans up
 /// if the timer was lost.
 const RING_TTL_GRACE_SECS: u64 = 30;
+/// Backstop lifetime of an active call stream, refreshed on every join/leave.
+pub const ACTIVE_TTL_SECS: u64 = 6 * 60 * 60;
+/// An active call whose voice room is empty counts as orphaned once its last
+/// event is this old (protects a call that was just accepted and whose
+/// members are still connecting to the room).
+pub const ORPHAN_GRACE_SECS: i64 = 30;
+/// How long after a socket closes the initiator's open sockets are counted
+/// (once) before their ringing calls are cancelled. Covers a closing socket's
+/// QUIT still in flight and quick reconnects.
+pub const DISCONNECT_GRACE: Duration = Duration::from_secs(3);
 /// Attempts for one compare-and-set transition before giving up.
 const MAX_CAS_ATTEMPTS: usize = 8;
 
@@ -43,20 +72,26 @@ pub type CallEndReason = EndReason;
 
 /// Start a call only if the channel has none. Returns 1 if started.
 ///
-/// KEYS[1] = stream; ARGV = `call_id`, Started JSON, targets JSON, start ms, TTL.
+/// KEYS: stream, ringing index of the initiator.
+/// ARGV: `call_id`, Started JSON, targets JSON, start ms, TTL, index member,
+/// then (user channel, payload) pairs to publish.
 const START_SCRIPT: &str = r"
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 redis.call('XADD', KEYS[1], '*', 'call_id', ARGV[1], 'data', ARGV[2], 'targets', ARGV[3], 'started_ms', ARGV[4])
 redis.call('EXPIRE', KEYS[1], ARGV[5])
+redis.call('SADD', KEYS[2], ARGV[6])
+redis.call('EXPIRE', KEYS[2], ARGV[5])
+for i = 7, #ARGV, 2 do redis.call('PUBLISH', ARGV[i], ARGV[i + 1]) end
 return 1
 ";
 
 /// Compare-and-set on a call stream. Returns 1 if applied, 0 if the call
 /// changed (different generation or a newer last entry) or is gone.
 ///
-/// KEYS[1] = stream; ARGV = `call_id`, last entry id, op, event JSON.
-/// op: `append`, `append_persist` (append and drop the ringing TTL) or
-/// `delete` (the call ended).
+/// KEYS: stream, ringing index of the initiator.
+/// ARGV: `call_id`, last entry id, op (`append` | `delete`), event JSON,
+/// TTL to set (`0` keeps the current one), index member, then (user channel,
+/// payload) pairs to publish once applied.
 const CAS_SCRIPT: &str = r"
 local last = redis.call('XREVRANGE', KEYS[1], '+', '-', 'COUNT', 1)
 if #last == 0 or last[1][1] ~= ARGV[2] then return 0 end
@@ -69,17 +104,20 @@ end
 if gen ~= ARGV[1] then return 0 end
 if ARGV[3] == 'delete' then
   redis.call('DEL', KEYS[1])
-  return 1
+  redis.call('SREM', KEYS[2], ARGV[6])
+else
+  redis.call('XADD', KEYS[1], '*', 'data', ARGV[4])
+  if tonumber(ARGV[5]) > 0 then redis.call('EXPIRE', KEYS[1], ARGV[5]) end
 end
-redis.call('XADD', KEYS[1], '*', 'data', ARGV[4])
-if ARGV[3] == 'append_persist' then redis.call('PERSIST', KEYS[1]) end
+for i = 7, #ARGV, 2 do redis.call('PUBLISH', ARGV[i], ARGV[i + 1]) end
 return 1
 ";
 
 /// Identity of one call (one generation of a channel's call stream).
 #[derive(Debug, Clone)]
 pub struct CallMeta {
-    /// Random id of this call; differs for every call on the channel.
+    /// Random id of this call; differs for every call on the channel (empty
+    /// for streams written before generations existed).
     pub call_id: String,
     /// Id of the newest stream entry when the call was read.
     pub last_id: String,
@@ -92,7 +130,7 @@ pub struct CallMeta {
 }
 
 impl CallMeta {
-    /// Everyone in the call's DM: the initiator and the targets.
+    /// Everyone the call rang plus the initiator (fallback recipients).
     #[must_use]
     pub fn members(&self) -> Vec<Uuid> {
         let mut members: Vec<Uuid> = self.targets.iter().copied().collect();
@@ -100,6 +138,24 @@ impl CallMeta {
             members.push(self.initiator);
         }
         members
+    }
+
+    /// `call_id` as sent on the wire (nil for a stream without one).
+    #[must_use]
+    pub fn call_uuid(&self) -> Uuid {
+        Uuid::parse_str(&self.call_id).unwrap_or_else(|_| Uuid::nil())
+    }
+
+    /// Seconds since the call's last event (stream entry ids start with the
+    /// Valkey time in ms).
+    fn idle_secs(&self) -> i64 {
+        let last_ms = self
+            .last_id
+            .split('-')
+            .next()
+            .and_then(|ms| ms.parse::<i64>().ok())
+            .unwrap_or(0);
+        (Utc::now().timestamp_millis() - last_ms) / 1000
     }
 }
 
@@ -119,14 +175,42 @@ pub struct Transition {
     pub meta: CallMeta,
 }
 
+/// The `call_ended` event for `state`, if the call ended.
+fn ended_event(channel_id: Uuid, state: &CallState, meta: &CallMeta) -> Option<ServerEvent> {
+    match state {
+        CallState::Ended {
+            reason,
+            duration_secs,
+            ..
+        } => Some(ServerEvent::CallEnded {
+            channel_id,
+            call_id: meta.call_uuid(),
+            reason: end_reason_name(*reason),
+            duration_secs: *duration_secs,
+        }),
+        _ => None,
+    }
+}
+
+/// Wire name of an end reason (`all_declined`, `no_answer`, ...).
+#[must_use]
+pub fn end_reason_name(reason: EndReason) -> String {
+    serde_json::to_value(reason)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
 /// Call service for managing DM voice call state
+#[derive(Clone)]
 pub struct CallService {
     redis: Client,
+    db: PgPool,
 }
 
 impl CallService {
-    pub const fn new(redis: Client) -> Self {
-        Self { redis }
+    pub const fn new(redis: Client, db: PgPool) -> Self {
+        Self { redis, db }
     }
 
     /// Get Redis stream key for a channel's call events
@@ -134,9 +218,14 @@ impl CallService {
         format!("call_events:{channel_id}")
     }
 
-    /// Set of channels on which `user_id` started a call that may be ringing.
+    /// Set of `{channel_id}:{call_id}` calls that `user_id` started and that
+    /// may be ringing.
     fn ringing_index_key(user_id: Uuid) -> String {
         format!("call_ringing_by:{user_id}")
+    }
+
+    fn index_member(channel_id: Uuid, call_id: &str) -> String {
+        format!("{channel_id}:{call_id}")
     }
 
     /// Read and replay a channel's call stream.
@@ -168,7 +257,7 @@ impl CallService {
                 CallEventType::Started { initiator } => Some(initiator),
                 _ => None,
             });
-        let mut meta = CallMeta {
+        let meta = CallMeta {
             call_id: first.get("call_id").cloned().unwrap_or_default(),
             last_id: last_id.clone(),
             initiator: initiator.unwrap_or_else(Uuid::nil),
@@ -180,7 +269,6 @@ impl CallService {
             tracing::warn!(%channel_id, "Call stream does not start with Started; treating as stale");
             return Ok(Some(LoadedCall { state: None, meta }));
         };
-        meta.initiator = initiator;
 
         let mut state = CallState::Ringing {
             started_by: initiator,
@@ -208,19 +296,54 @@ impl CallService {
         }))
     }
 
+    /// The channel's current (not ended) call and its identity.
+    pub async fn get_call(
+        &self,
+        channel_id: Uuid,
+    ) -> Result<Option<(CallState, CallMeta)>, CallError> {
+        Ok(self
+            .load(channel_id)
+            .await?
+            .and_then(|c| c.state.map(|s| (s, c.meta))))
+    }
+
     /// Get the current (not ended) call state of a channel.
     #[tracing::instrument(skip(self))]
     pub async fn get_call_state(&self, channel_id: Uuid) -> Result<Option<CallState>, CallError> {
-        Ok(self.load(channel_id).await?.and_then(|c| c.state))
+        Ok(self.get_call(channel_id).await?.map(|(s, _)| s))
     }
 
     /// The `call_id` of the channel's current call, if any.
     pub async fn current_call_id(&self, channel_id: Uuid) -> Result<Option<String>, CallError> {
-        Ok(self
-            .load(channel_id)
-            .await?
-            .filter(|c| c.state.is_some())
-            .map(|c| c.meta.call_id))
+        Ok(self.get_call(channel_id).await?.map(|(_, m)| m.call_id))
+    }
+
+    /// Who gets the call's events: the DM's current participants (the call's
+    /// own members if they cannot be read).
+    async fn recipients(&self, channel_id: Uuid, meta: &CallMeta) -> Vec<Uuid> {
+        match crate::voice::queries::list_dm_participant_ids(&self.db, channel_id).await {
+            Ok(ids) if !ids.is_empty() => ids,
+            Ok(_) => meta.members(),
+            Err(e) => {
+                tracing::warn!(error = %e, %channel_id, "Cannot read DM participants; using call members");
+                meta.members()
+            }
+        }
+    }
+
+    /// Script arguments publishing every event to every recipient (in event
+    /// order per recipient).
+    fn publish_args(recipients: &[Uuid], events: &[ServerEvent]) -> Result<Vec<String>, CallError> {
+        let mut args = Vec::with_capacity(recipients.len() * events.len() * 2);
+        for event in events {
+            let payload = serde_json::to_string(event)
+                .map_err(|e| CallError::Serialization(e.to_string()))?;
+            for &user in recipients {
+                args.push(channels::user_events(user));
+                args.push(payload.clone());
+            }
+        }
+        Ok(args)
     }
 
     async fn cas(
@@ -229,62 +352,101 @@ impl CallService {
         meta: &CallMeta,
         op: &str,
         event_json: &str,
+        ttl_secs: u64,
+        publish: Vec<String>,
     ) -> Result<bool, CallError> {
+        let mut args = vec![
+            meta.call_id.clone(),
+            meta.last_id.clone(),
+            op.to_string(),
+            event_json.to_string(),
+            ttl_secs.to_string(),
+            Self::index_member(channel_id, &meta.call_id),
+        ];
+        args.extend(publish);
         let applied: i64 = self
             .redis
             .eval(
                 CAS_SCRIPT,
-                vec![Self::stream_key(channel_id)],
                 vec![
-                    meta.call_id.clone(),
-                    meta.last_id.clone(),
-                    op.to_string(),
-                    event_json.to_string(),
+                    Self::stream_key(channel_id),
+                    Self::ringing_index_key(meta.initiator),
                 ],
+                args,
             )
             .await
             .map_err(|e| CallError::Redis(e.to_string()))?;
         Ok(applied == 1)
     }
 
-    /// Start a new call. Fails with [`CallError::CallAlreadyExists`] if the
-    /// channel has a call; an ended or corrupt leftover is replaced.
-    #[tracing::instrument(skip(self))]
+    /// Start a new call, ring the targets (`incoming_call`) and start its ring
+    /// timer.
+    ///
+    /// Fails with [`CallError::CallAlreadyExists`] if the channel has a call.
+    /// An ended or corrupt leftover is replaced; an orphaned active call (voice
+    /// room empty, `room_occupied == false`, idle for [`ORPHAN_GRACE_SECS`]) is
+    /// ended as `last_left` first.
+    #[tracing::instrument(skip(self, initiator_name))]
     pub async fn start_call(
         &self,
         channel_id: Uuid,
         initiator: Uuid,
+        initiator_name: String,
         target_users: HashSet<Uuid>,
         ring_timeout_secs: u64,
+        room_occupied: bool,
     ) -> Result<Transition, CallError> {
         let key = Self::stream_key(channel_id);
+        let index = Self::ringing_index_key(initiator);
         let event_json = serde_json::to_string(&CallEventType::Started { initiator })
             .map_err(|e| CallError::Serialization(e.to_string()))?;
         let targets_json = serde_json::to_string(&target_users)
             .map_err(|e| CallError::Serialization(e.to_string()))?;
+        let targets: Vec<Uuid> = target_users.iter().copied().collect();
 
         for _ in 0..MAX_CAS_ATTEMPTS {
-            let call_id = Uuid::new_v4().to_string();
+            let call_uuid = Uuid::new_v4();
+            let call_id = call_uuid.to_string();
             let started_at = Utc::now();
+            let incoming = ServerEvent::IncomingCall {
+                channel_id,
+                call_id: call_uuid,
+                initiator,
+                initiator_name: initiator_name.clone(),
+                // Default capabilities: audio only for now
+                capabilities: vec!["audio".to_string()],
+            };
+            let mut args = vec![
+                call_id.clone(),
+                event_json.clone(),
+                targets_json.clone(),
+                started_at.timestamp_millis().to_string(),
+                (ring_timeout_secs + RING_TTL_GRACE_SECS).to_string(),
+                Self::index_member(channel_id, &call_id),
+            ];
+            args.extend(Self::publish_args(&targets, &[incoming])?);
+            // The initiator's own sessions learn the new call (and its id).
+            let started_event = ServerEvent::CallStarted {
+                channel_id,
+                call_id: call_uuid,
+                initiator,
+                initiator_name: initiator_name.clone(),
+                capabilities: vec!["audio".to_string()],
+            };
+            args.extend(Self::publish_args(&[initiator], &[started_event])?);
             let started: i64 = self
                 .redis
-                .eval(
-                    START_SCRIPT,
-                    vec![key.clone()],
-                    vec![
-                        call_id.clone(),
-                        event_json.clone(),
-                        targets_json.clone(),
-                        started_at.timestamp_millis().to_string(),
-                        (ring_timeout_secs + RING_TTL_GRACE_SECS).to_string(),
-                    ],
-                )
+                .eval(START_SCRIPT, vec![key.clone(), index.clone()], args)
                 .await
                 .map_err(|e| CallError::Redis(e.to_string()))?;
 
             if started == 1 {
-                self.index_ringing(initiator, channel_id, ring_timeout_secs)
-                    .await;
+                spawn_ring_timeout(
+                    self.clone(),
+                    channel_id,
+                    call_id.clone(),
+                    Duration::from_secs(ring_timeout_secs),
+                );
                 let state = CallState::Ringing {
                     started_by: initiator,
                     started_at,
@@ -302,12 +464,23 @@ impl CallService {
             }
 
             match self.load(channel_id).await? {
+                Some(LoadedCall {
+                    state: Some(CallState::Active { .. }),
+                    meta,
+                }) if !room_occupied && meta.idle_secs() >= ORPHAN_GRACE_SECS => {
+                    tracing::info!(%channel_id, call_id = %meta.call_id, "Ending orphaned active call");
+                    self.end_call_when(channel_id, Some(&meta.call_id), |state, _| {
+                        matches!(state, CallState::Active { .. }).then_some(EndReason::LastLeft)
+                    })
+                    .await?;
+                }
                 Some(LoadedCall { state: Some(_), .. }) => {
                     return Err(CallError::CallAlreadyExists);
                 }
                 // Leftover of an ended or broken call: remove it, then retry.
                 Some(LoadedCall { state: None, meta }) => {
-                    self.cas(channel_id, &meta, "delete", "").await?;
+                    self.cas(channel_id, &meta, "delete", "", 0, Vec::new())
+                        .await?;
                 }
                 // Vanished in between: retry.
                 None => {}
@@ -316,60 +489,63 @@ impl CallService {
         Err(CallError::Contention)
     }
 
-    /// Remember that `initiator` has a ringing call on `channel_id` (used to
-    /// cancel it when the initiator goes offline). Best effort.
-    async fn index_ringing(&self, initiator: Uuid, channel_id: Uuid, ring_timeout_secs: u64) {
-        let key = Self::ringing_index_key(initiator);
-        let ttl = i64::try_from(ring_timeout_secs + RING_TTL_GRACE_SECS).unwrap_or(i64::MAX);
-        let added: Result<i64, _> = self.redis.sadd(&key, channel_id.to_string()).await;
-        if let Err(e) = added {
-            tracing::warn!(error = %e, %channel_id, "Failed to index ringing call");
-            return;
-        }
-        let expired: Result<bool, _> = self.redis.expire(&key, ttl, None).await;
-        if let Err(e) = expired {
-            tracing::warn!(error = %e, %channel_id, "Failed to expire ringing call index");
-        }
-    }
-
-    /// Apply the event chosen by `decide` to the current call, atomically.
+    /// Apply the event chosen by `decide` to the current call, atomically,
+    /// and publish the events from `announce`.
     ///
-    /// `decide` sees the current state and call; it returns the event to apply
-    /// or `None` to leave the call alone (then `Ok(None)` is returned). If the
-    /// call changed in between, the call is re-read and `decide` runs again. A
-    /// transition that ends the call deletes it.
-    pub async fn transition<F>(
+    /// The operation is pinned to `pin` (or else to the first call it reads):
+    /// if the channel then holds another call, it returns
+    /// [`CallError::CallNotFound`] without touching it. `decide` sees the
+    /// current state and call and returns the event, or `None` to leave the
+    /// call alone (`Ok(None)`). If the call changed in between, it is re-read
+    /// and `decide` runs again. A transition that ends the call deletes it.
+    /// `before_cas` runs right before each compare-and-set (a test seam;
+    /// production passes a no-op).
+    pub async fn transition_hooked<D, A, H, Fut>(
         &self,
         channel_id: Uuid,
-        mut decide: F,
+        pin: Option<&str>,
+        mut decide: D,
+        mut announce: A,
+        mut before_cas: H,
     ) -> Result<Option<Transition>, CallError>
     where
-        F: FnMut(&CallState, &CallMeta) -> Result<Option<CallEventType>, CallError>,
+        D: FnMut(&CallState, &CallMeta) -> Result<Option<CallEventType>, CallError>,
+        A: FnMut(&CallEventType, &CallState, &CallMeta) -> Vec<ServerEvent>,
+        H: FnMut() -> Fut,
+        Fut: Future<Output = ()>,
     {
+        let mut pinned = pin.map(str::to_string);
         for _ in 0..MAX_CAS_ATTEMPTS {
-            let Some(LoadedCall {
-                state: Some(state),
-                meta,
-            }) = self.load(channel_id).await?
-            else {
+            let Some((state, meta)) = self.get_call(channel_id).await? else {
                 return Err(CallError::CallNotFound);
             };
+            match &pinned {
+                Some(call_id) if *call_id != meta.call_id => return Err(CallError::CallNotFound),
+                Some(_) => {}
+                None => pinned = Some(meta.call_id.clone()),
+            }
             let Some(event) = decide(&state, &meta)? else {
                 return Ok(None);
             };
             let new_state = state
                 .apply(&event)
                 .map_err(|e| CallError::StateTransition(e.to_string()))?;
-            let op = if !new_state.is_active() {
-                "delete"
-            } else if matches!(event, CallEventType::Joined { .. }) {
-                "append_persist"
-            } else {
-                "append"
+            let (op, ttl) = match &new_state {
+                CallState::Ended { .. } => ("delete", 0),
+                CallState::Active { .. } => ("append", ACTIVE_TTL_SECS),
+                CallState::Ringing { .. } => ("append", 0),
             };
             let event_json = serde_json::to_string(&event)
                 .map_err(|e| CallError::Serialization(e.to_string()))?;
-            if self.cas(channel_id, &meta, op, &event_json).await? {
+            let mut events = announce(&event, &new_state, &meta);
+            events.extend(ended_event(channel_id, &new_state, &meta));
+            let recipients = self.recipients(channel_id, &meta).await;
+            let publish = Self::publish_args(&recipients, &events)?;
+            before_cas().await;
+            if self
+                .cas(channel_id, &meta, op, &event_json, ttl, publish)
+                .await?
+            {
                 return Ok(Some(Transition {
                     state: new_state,
                     meta,
@@ -379,16 +555,43 @@ impl CallService {
         Err(CallError::Contention)
     }
 
-    /// Record a user joining the call
-    #[tracing::instrument(skip(self))]
+    /// [`Self::transition_hooked`] without a hook.
+    pub async fn transition<D, A>(
+        &self,
+        channel_id: Uuid,
+        pin: Option<&str>,
+        decide: D,
+        announce: A,
+    ) -> Result<Option<Transition>, CallError>
+    where
+        D: FnMut(&CallState, &CallMeta) -> Result<Option<CallEventType>, CallError>,
+        A: FnMut(&CallEventType, &CallState, &CallMeta) -> Vec<ServerEvent>,
+    {
+        self.transition_hooked(channel_id, pin, decide, announce, || async {})
+            .await
+    }
+
+    /// Record a user joining the call (`call_participant_joined`).
+    #[tracing::instrument(skip(self, username))]
     pub async fn join_call(
         &self,
         channel_id: Uuid,
         user_id: Uuid,
+        username: String,
     ) -> Result<Transition, CallError> {
-        self.transition(channel_id, |_, _| {
-            Ok(Some(CallEventType::Joined { user_id }))
-        })
+        self.transition(
+            channel_id,
+            None,
+            |_, _| Ok(Some(CallEventType::Joined { user_id })),
+            |_, _, meta| {
+                vec![ServerEvent::CallParticipantJoined {
+                    channel_id,
+                    call_id: meta.call_uuid(),
+                    user_id,
+                    username: username.clone(),
+                }]
+            },
+        )
         .await?
         .ok_or(CallError::CallNotFound)
     }
@@ -400,9 +603,35 @@ impl CallService {
         channel_id: Uuid,
         user_id: Uuid,
     ) -> Result<Transition, CallError> {
-        self.transition(channel_id, |_, _| {
-            Ok(Some(CallEventType::Declined { user_id }))
-        })
+        self.decline_call_hooked(channel_id, user_id, || async {})
+            .await
+    }
+
+    /// [`Self::decline_call`] with a hook right before the compare-and-set
+    /// (test seam).
+    pub async fn decline_call_hooked<H, Fut>(
+        &self,
+        channel_id: Uuid,
+        user_id: Uuid,
+        before_cas: H,
+    ) -> Result<Transition, CallError>
+    where
+        H: FnMut() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        self.transition_hooked(
+            channel_id,
+            None,
+            |_, _| Ok(Some(CallEventType::Declined { user_id })),
+            |_, _, meta| {
+                vec![ServerEvent::CallDeclined {
+                    channel_id,
+                    call_id: meta.call_uuid(),
+                    user_id,
+                }]
+            },
+            before_cas,
+        )
         .await?
         .ok_or(CallError::CallNotFound)
     }
@@ -418,36 +647,55 @@ impl CallService {
         channel_id: Uuid,
         user_id: Uuid,
     ) -> Result<Transition, CallError> {
-        self.transition(channel_id, |state, _| match state {
-            CallState::Ringing { started_by, .. } if *started_by == user_id => {
-                Ok(Some(CallEventType::Ended {
-                    reason: EndReason::Cancelled,
-                }))
-            }
-            CallState::Ringing { .. } => Err(CallError::StateTransition(
-                "Use decline endpoint for recipients".into(),
-            )),
-            CallState::Active { .. } => Ok(Some(CallEventType::Left { user_id })),
-            CallState::Ended { .. } => Err(CallError::StateTransition("Call already ended".into())),
-        })
+        self.transition(
+            channel_id,
+            None,
+            |state, _| match state {
+                CallState::Ringing { started_by, .. } if *started_by == user_id => {
+                    Ok(Some(CallEventType::Ended {
+                        reason: EndReason::Cancelled,
+                    }))
+                }
+                CallState::Ringing { .. } => Err(CallError::StateTransition(
+                    "Use decline endpoint for recipients".into(),
+                )),
+                CallState::Active { .. } => Ok(Some(CallEventType::Left { user_id })),
+                CallState::Ended { .. } => {
+                    Err(CallError::StateTransition("Call already ended".into()))
+                }
+            },
+            |_, _, meta| {
+                vec![ServerEvent::CallParticipantLeft {
+                    channel_id,
+                    call_id: meta.call_uuid(),
+                    user_id,
+                }]
+            },
+        )
         .await?
         .ok_or(CallError::CallNotFound)
     }
 
-    /// End the current call if `decide` returns a reason for it. Returns the
-    /// ended call, or `None` if there was no call or `decide` kept it.
+    /// End the channel's call (pinned to `pin`, or else to the first call
+    /// read) if `decide` returns a reason for it. Publishes `call_ended`.
+    /// Returns the ended call, or `None` if there was no (such) call or
+    /// `decide` kept it.
     pub async fn end_call_when<F>(
         &self,
         channel_id: Uuid,
+        pin: Option<&str>,
         mut decide: F,
     ) -> Result<Option<Transition>, CallError>
     where
         F: FnMut(&CallState, &CallMeta) -> Option<EndReason>,
     {
         match self
-            .transition(channel_id, |state, meta| {
-                Ok(decide(state, meta).map(|reason| CallEventType::Ended { reason }))
-            })
+            .transition(
+                channel_id,
+                pin,
+                |state, meta| Ok(decide(state, meta).map(|reason| CallEventType::Ended { reason })),
+                |_, _, _| Vec::new(),
+            )
             .await
         {
             Err(CallError::CallNotFound) => Ok(None),
@@ -456,78 +704,15 @@ impl CallService {
     }
 }
 
-/// Send `event` to every member of the call's DM (user channels, so it
-/// reaches users who do not have the DM open).
-pub async fn broadcast_to_members(redis: &Client, members: &[Uuid], event: &ServerEvent) {
-    let events: Vec<(Uuid, ServerEvent)> = members.iter().map(|&u| (u, event.clone())).collect();
-    if let Err(e) = broadcast_to_users(redis, &events).await {
-        tracing::warn!(error = %e, "Failed to broadcast call event");
-    }
-}
-
-/// Wire name of an end reason (`all_declined`, `no_answer`, ...).
-#[must_use]
-pub fn end_reason_name(reason: EndReason) -> String {
-    serde_json::to_value(reason)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default()
-}
-
-/// Tell the call's members that it ended. No-op unless `state` is `Ended`.
-pub async fn broadcast_call_ended(
-    redis: &Client,
-    channel_id: Uuid,
-    meta: &CallMeta,
-    state: &CallState,
-) {
-    if let CallState::Ended {
-        reason,
-        duration_secs,
-        ..
-    } = state
-    {
-        broadcast_to_members(
-            redis,
-            &meta.members(),
-            &ServerEvent::CallEnded {
-                channel_id,
-                reason: end_reason_name(*reason),
-                duration_secs: *duration_secs,
-            },
-        )
-        .await;
-    }
-}
-
-/// End the call chosen by `decide` and announce it. Idempotent: returns
-/// `Ok(false)` if there is no call or `decide` keeps it.
-pub async fn end_call_when<F>(
-    redis: &Client,
-    channel_id: Uuid,
-    decide: F,
-) -> Result<bool, CallError>
-where
-    F: FnMut(&CallState, &CallMeta) -> Option<EndReason>,
-{
-    let service = CallService::new(redis.clone());
-    match service.end_call_when(channel_id, decide).await? {
-        Some(t) => {
-            broadcast_call_ended(redis, channel_id, &t.meta, &t.state).await;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
-
 /// End the channel's current call (whatever its state), delete its state and
-/// tell its members. Idempotent: no call is not an error.
+/// tell the DM's participants. Idempotent: no call is not an error.
 pub async fn end_call(
     state: &AppState,
     channel_id: Uuid,
     reason: CallEndReason,
 ) -> Result<(), CallError> {
-    end_call_when(&state.redis, channel_id, |_, _| Some(reason))
+    CallService::new(state.redis.clone(), state.db.clone())
+        .end_call_when(channel_id, None, |_, _| Some(reason))
         .await
         .map(|_| ())
 }
@@ -536,104 +721,125 @@ pub async fn end_call(
 /// still ringing. A newer call on the channel is never touched. Returns
 /// whether the call was ended.
 pub async fn ring_timeout_fired(
-    redis: &Client,
+    calls: &CallService,
     channel_id: Uuid,
     call_id: &str,
 ) -> Result<bool, CallError> {
-    end_call_when(redis, channel_id, |state, meta| {
-        (meta.call_id == call_id && matches!(state, CallState::Ringing { .. }))
-            .then_some(EndReason::NoAnswer)
-    })
-    .await
+    Ok(calls
+        .end_call_when(channel_id, Some(call_id), |state, _| {
+            matches!(state, CallState::Ringing { .. }).then_some(EndReason::NoAnswer)
+        })
+        .await?
+        .is_some())
 }
 
-/// Start the ring timer for a just-started call.
-pub fn spawn_ring_timeout(redis: Client, channel_id: Uuid, call_id: String, after: Duration) {
+/// Start the ring timer of call `call_id`.
+fn spawn_ring_timeout(calls: CallService, channel_id: Uuid, call_id: String, after: Duration) {
     tokio::spawn(async move {
         tokio::time::sleep(after).await;
-        if let Err(e) = ring_timeout_fired(&redis, channel_id, &call_id).await {
+        if let Err(e) = ring_timeout_fired(&calls, channel_id, &call_id).await {
             tracing::warn!(error = %e, %channel_id, "Failed to end unanswered call");
         }
     });
 }
 
-/// The last voice peer of `channel_id` left; end its DM call if it has one.
+/// The last voice peer of `channel_id` left; end the channel's DM call if
+/// that peer belonged to it.
 ///
-/// The peer connected at `peer_connected_at`. Ends an active call (`last_left`) or a ringing call
-/// whose caller left the room (`cancelled`). A ringing call that started after
-/// that peer joined is left alone: the peer belonged to an earlier session and
-/// the new caller has not joined the room yet.
+/// The peer belonged to `user_id` and connected at `peer_connected_at`. A
+/// peer that connected before the call started belongs to an earlier call and
+/// never ends this one. Otherwise an active call ends (`last_left`), and a
+/// ringing call ends (`cancelled`) only if `user_id` started it.
 pub async fn last_voice_peer_left(
-    redis: &Client,
+    calls: &CallService,
     channel_id: Uuid,
+    user_id: Uuid,
     peer_connected_at: DateTime<Utc>,
 ) -> Result<bool, CallError> {
-    end_call_when(redis, channel_id, |state, meta| match state {
-        CallState::Active { .. } => Some(EndReason::LastLeft),
-        CallState::Ringing { .. } if meta.started_at <= peer_connected_at => {
-            Some(EndReason::Cancelled)
-        }
-        _ => None,
-    })
-    .await
+    Ok(calls
+        .end_call_when(channel_id, None, |state, meta| {
+            if peer_connected_at < meta.started_at {
+                return None;
+            }
+            match state {
+                CallState::Active { .. } => Some(EndReason::LastLeft),
+                CallState::Ringing { started_by, .. } if *started_by == user_id => {
+                    Some(EndReason::Cancelled)
+                }
+                _ => None,
+            }
+        })
+        .await?
+        .is_some())
 }
 
-/// Delays before each check whether a user still has an open socket.
-const NUMSUB_RECHECK_DELAYS_MS: [u64; 3] = [0, 1_000, 3_000];
+/// Whether `user_id` may have a ringing call (cheap pre-check before
+/// [`caller_socket_closed`]).
+pub async fn may_have_ringing_calls(redis: &Client, user_id: Uuid) -> bool {
+    let exists: Result<i64, _> = redis.exists(CallService::ringing_index_key(user_id)).await;
+    // On error, check anyway.
+    exists.map_or(true, |n| n > 0)
+}
 
 /// Number of sockets (on any node) subscribed to `user_id`'s event channel.
 async fn open_user_sockets(redis: &Client, user_id: Uuid) -> Result<i64, CallError> {
-    let user_channel = crate::ws::events::channels::user_events(user_id);
     let numsub: Vec<Value> = redis
-        .pubsub_numsub(user_channel)
+        .pubsub_numsub(channels::user_events(user_id))
         .await
         .map_err(|e| CallError::Redis(e.to_string()))?;
     Ok(numsub.get(1).and_then(Value::as_i64).unwrap_or(0))
 }
 
-/// A socket of `user_id` closed. If the user has no other open socket, their
-/// ringing calls end as cancelled (nobody is there to talk to).
+/// A socket of `user_id` closed. After [`DISCONNECT_GRACE`], if the user has
+/// no open socket, the ringing calls they started end as `cancelled`.
 ///
-/// Open sockets are counted with `PUBSUB NUMSUB` on the user's event channel,
-/// which every socket subscribes to (on any server node). Call this after the
-/// closing socket's subscriber has quit; it may wait a few seconds, so run it
-/// off the cleanup path.
-pub async fn caller_socket_closed(redis: &Client, user_id: Uuid) -> Result<(), CallError> {
-    // The closing socket's QUIT is bounded; under load it may still be in
-    // flight. Re-check a few times before concluding another socket is open.
-    for (attempt, delay_ms) in NUMSUB_RECHECK_DELAYS_MS.iter().enumerate() {
-        if *delay_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(*delay_ms)).await;
-        }
-        if open_user_sockets(redis, user_id).await? == 0 {
-            break;
-        }
-        if attempt + 1 == NUMSUB_RECHECK_DELAYS_MS.len() {
-            return Ok(());
-        }
+/// Open sockets are counted (once, after the grace) with `PUBSUB NUMSUB` on
+/// the user's event channel, which every socket subscribes to on any node.
+/// Only the generations recorded in the user's ringing index are cancelled,
+/// never a newer call. If a closing socket's subscriber connection stays
+/// alive (its QUIT never completes), the user still counts as online and the
+/// call ends by ring timeout instead.
+pub async fn caller_socket_closed(calls: &CallService, user_id: Uuid) -> Result<(), CallError> {
+    tokio::time::sleep(DISCONNECT_GRACE).await;
+    if open_user_sockets(&calls.redis, user_id).await? > 0 {
+        return Ok(());
     }
 
     let index = CallService::ringing_index_key(user_id);
-    let channels: Vec<String> = redis
+    let members: Vec<String> = calls
+        .redis
         .smembers(&index)
         .await
         .map_err(|e| CallError::Redis(e.to_string()))?;
-    for channel in channels {
-        let Ok(channel_id) = Uuid::parse_str(&channel) else {
+    for member in members {
+        let parsed = member
+            .split_once(':')
+            .and_then(|(c, g)| Uuid::parse_str(c).ok().map(|c| (c, g.to_string())));
+        let Some((channel_id, call_id)) = parsed else {
+            let _: Result<i64, _> = calls.redis.srem(&index, member).await;
             continue;
         };
-        if let Err(e) = end_call_when(redis, channel_id, |state, _| match state {
-            CallState::Ringing { started_by, .. } if *started_by == user_id => {
-                Some(EndReason::Cancelled)
+        let ended = calls
+            .end_call_when(channel_id, Some(&call_id), |state, _| match state {
+                CallState::Ringing { started_by, .. } if *started_by == user_id => {
+                    Some(EndReason::Cancelled)
+                }
+                _ => None,
+            })
+            .await;
+        match ended {
+            // The script removed the index entry.
+            Ok(Some(_)) => {}
+            // Not ended: drop the entry only if that generation is gone.
+            Ok(None) => {
+                if calls.current_call_id(channel_id).await.ok().flatten() != Some(call_id) {
+                    let _: Result<i64, _> = calls.redis.srem(&index, member).await;
+                }
             }
-            _ => None,
-        })
-        .await
-        {
-            tracing::warn!(error = %e, %channel_id, "Failed to cancel call of offline caller");
-            continue;
+            Err(e) => {
+                tracing::warn!(error = %e, %channel_id, "Failed to cancel call of offline caller");
+            }
         }
-        let _: Result<i64, _> = redis.srem(&index, channel).await;
     }
     Ok(())
 }

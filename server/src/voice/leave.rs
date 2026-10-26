@@ -188,8 +188,10 @@ pub async fn leave_voice_internal(
     // The last peer of a DM room left: its call is over.
     if let (Some(connected_at), Some(redis)) = (removed_connected_at, sfu.call_redis()) {
         if room.is_empty().await {
+            let calls = super::call_service::CallService::new(redis.clone(), pool.clone());
             if let Err(e) =
-                super::call_service::last_voice_peer_left(redis, channel_id, connected_at).await
+                super::call_service::last_voice_peer_left(&calls, channel_id, user_id, connected_at)
+                    .await
             {
                 warn!(channel_id = %channel_id, error = %e, "Failed to end DM call after last peer left");
             }

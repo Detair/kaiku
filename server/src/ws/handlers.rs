@@ -800,15 +800,18 @@ async fn handle_socket(
     .await;
 
     // A caller whose last socket closed cannot be reached: cancel their
-    // ringing DM calls. Runs after the subscriber quit, so this socket no
-    // longer counts as open. Detached: it may re-check for a few seconds.
-    let call_redis = state.redis.clone();
-    tokio::spawn(async move {
-        if let Err(e) = crate::voice::call_service::caller_socket_closed(&call_redis, user_id).await
-        {
-            warn!("Failed to cancel ringing calls on disconnect: {}", e);
-        }
-    });
+    // ringing DM calls after a grace period (see `caller_socket_closed`).
+    // Runs after the subscriber quit, so this socket no longer counts as open.
+    if crate::voice::call_service::may_have_ringing_calls(&state.redis, user_id).await {
+        let calls =
+            crate::voice::call_service::CallService::new(state.redis.clone(), state.db.clone());
+        tokio::spawn(async move {
+            if let Err(e) = crate::voice::call_service::caller_socket_closed(&calls, user_id).await
+            {
+                warn!("Failed to cancel ringing calls on disconnect: {}", e);
+            }
+        });
+    }
 
     // Update user presence to offline
     if let Err(e) = update_presence(&state, user_id, "offline").await {
@@ -1803,6 +1806,19 @@ pub(crate) async fn forward_pubsub_messages(
                     continue;
                 }
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
+                    // DM call events about a blocked user are not shown.
+                    let from_blocked = match &event {
+                        ServerEvent::CallParticipantJoined { user_id: uid, .. }
+                        | ServerEvent::CallParticipantLeft { user_id: uid, .. }
+                        | ServerEvent::CallDeclined { user_id: uid, .. }
+                        | ServerEvent::IncomingCall { initiator: uid, .. } => {
+                            params.blocked_users.read().await.contains(uid)
+                        }
+                        _ => false,
+                    };
+                    if from_blocked {
+                        continue;
+                    }
                     // Handle block/unblock events to update in-memory set
                     match &event {
                         ServerEvent::UserBlocked {
