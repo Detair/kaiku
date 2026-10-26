@@ -4,7 +4,7 @@
  * Manages user authentication state and actions.
  */
 
-import { loadServerFeatures } from "@/stores/serverFeatures";
+import { loadServerFeatures, resetServerFeatures } from "@/stores/serverFeatures";
 import { createStore } from "solid-js/store";
 import type { User } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
@@ -244,6 +244,7 @@ let sessionExpiredListenerRegistered = false;
 async function endSession(reason: tauri.SessionEndReason): Promise<void> {
   // Claim the end first so a concurrent expiry report does not repeat it.
   setAuthState({ user: null });
+  resetServerFeatures();
   try {
     await requestStop();
   } catch (err) {
@@ -599,6 +600,7 @@ export async function login(
   password: string,
   mfaCode?: string,
 ): Promise<User> {
+  resetServerFeatures(); // a different server may be chosen
   setAuthState({ isLoading: true, error: null });
 
   try {
@@ -769,6 +771,7 @@ export async function loginWithOidc(
  * Logout and clear session.
  */
 export async function logout(): Promise<void> {
+  resetServerFeatures();
   pendingTemporaryPassword = null;
   passwordChangeSaved = false;
   setAuthState({ isLoading: true, error: null, passwordChangeRequired: false });

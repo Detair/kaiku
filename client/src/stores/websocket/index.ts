@@ -4,6 +4,7 @@
  * Manages WebSocket connection and routes events to appropriate stores.
  */
 
+import { loadServerFeatures } from "@/stores/serverFeatures";
 import { createStore } from "solid-js/store";
 import * as tauri from "@/lib/tauri";
 import type { Message, ServerEvent } from "@/lib/types";
@@ -211,6 +212,7 @@ function handleReady(serverTime: string | undefined): void {
     resyncWatermark = serverTime;
   }
   readyReceived = true;
+  void loadServerFeatures();
   const waiters = readyWaiters;
   readyWaiters = [];
   for (const resolve of waiters) resolve();

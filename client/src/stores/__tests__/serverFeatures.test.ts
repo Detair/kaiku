@@ -8,6 +8,7 @@ vi.mock("@/lib/tauri", () => ({
 import * as tauri from "@/lib/tauri";
 import {
   isFeatureEnabled,
+  isFeatureOff,
   isPermissionVisible,
   loadServerFeatures,
   resetServerFeatures,
@@ -75,5 +76,58 @@ describe("serverFeatures", () => {
     expect(isPermissionVisible("SEND_ANNOUNCEMENTS")).toBe(false);
     expect(isPermissionVisible("MANAGE_EVENTS")).toBe(false);
     expect(isPermissionVisible("SEND_MESSAGES")).toBe(true);
+  });
+
+  it("unknown is not off; explicit off once loaded is", async () => {
+    expect(isFeatureOff("forum_channels")).toBe(false);
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue(settings(allOff));
+    await loadServerFeatures();
+    expect(isFeatureOff("forum_channels")).toBe(true);
+    resetServerFeatures();
+    expect(isFeatureOff("forum_channels")).toBe(false);
+  });
+
+  it("retries a failed load with backoff, and a reload after reconnect succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(tauri.fetchServerSettings)
+        .mockRejectedValueOnce(new Error("down"))
+        .mockResolvedValue(settings(allOff));
+      await loadServerFeatures();
+      expect(isFeatureEnabled("forum_channels")).toBe(false);
+      expect(isFeatureOff("forum_channels")).toBe(false);
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(isFeatureOff("forum_channels")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a reload (WebSocket ready) after a failure loads the flags", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(tauri.fetchServerSettings)
+        .mockRejectedValueOnce(new Error("down"))
+        .mockResolvedValue(settings());
+      await loadServerFeatures();
+      await loadServerFeatures();
+      expect(isFeatureEnabled("scheduled_events")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reset drops a pending retry", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(tauri.fetchServerSettings).mockRejectedValue(new Error("down"));
+      await loadServerFeatures();
+      resetServerFeatures();
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValue(settings(allOff));
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(isFeatureOff("forum_channels")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

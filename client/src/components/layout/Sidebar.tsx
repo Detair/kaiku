@@ -22,7 +22,7 @@ import { t } from "@/i18n";
 import { useNavigate } from "@solidjs/router";
 import { Settings, Search, BookOpen } from "lucide-solid";
 import GuildEventsButton from "./GuildEventsButton";
-import { isFeatureEnabled } from "@/stores/serverFeatures";
+import FeatureGate from "@/components/ui/FeatureGate";
 import { getActiveGuild, isGuildOwner } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
 import { memberHasPermission } from "@/stores/permissions";
@@ -203,7 +203,8 @@ const Sidebar: Component<SidebarProps> = (props) => {
       <UserPanel />
 
       {/* Events Modal */}
-      <Show when={showEvents() && activeGuild() && isFeatureEnabled("scheduled_events")}>
+      <Show when={showEvents() && activeGuild()}>
+        <FeatureGate feature="scheduled_events">
         <LazyErrorBoundary name="EventsModal">
           <Suspense fallback={<ModalFallback />}>
             <EventsModal
@@ -213,6 +214,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
             />
           </Suspense>
         </LazyErrorBoundary>
+        </FeatureGate>
       </Show>
 
       {/* Guild Settings Modal */}

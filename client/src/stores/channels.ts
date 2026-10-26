@@ -6,7 +6,7 @@
 
 import { createStore } from "solid-js/store";
 import type { Channel, ChannelWithUnread } from "@/lib/types";
-import { isFeatureEnabled } from "@/stores/serverFeatures";
+import { isFeatureOff } from "@/stores/serverFeatures";
 import * as tauri from "@/lib/tauri";
 import { subscribeChannel, waitForConnection } from "@/stores/websocket";
 import { showToast } from "@/components/ui/Toast";
@@ -37,8 +37,8 @@ const [channelsState, setChannelsState] = createStore<ChannelsState>({
  */
 export function visibleChannels<T extends Channel>(channels: T[]): T[] {
   return channels.filter((c) => {
-    if (c.channel_type === "forum") return isFeatureEnabled("forum_channels");
-    if (c.channel_type === "announcement") return isFeatureEnabled("announcement_channels");
+    if (c.channel_type === "forum") return !isFeatureOff("forum_channels");
+    if (c.channel_type === "announcement") return !isFeatureOff("announcement_channels");
     return true;
   });
 }
