@@ -464,8 +464,9 @@ export async function getReauthMethods(): Promise<ReauthMethodsResponse> {
 /** Turn a native command error code into an `HttpError` for the shared mapping. */
 function nativeReauthError(err: unknown): HttpError {
   const raw = typeof err === "string" ? err : err instanceof Error ? err.message : "";
-  const status = /^HTTP_(\d{3})$/.exec(raw);
-  if (status) return new HttpError(Number(status[1]), raw);
+  // "HTTP_<status>" or "HTTP_<status>:<code>": the status always stays.
+  const status = /^HTTP_(\d{3})(?::(.+))?$/.exec(raw);
+  if (status) return new HttpError(Number(status[1]), raw, status[2]);
   return new HttpError(0, raw, raw || "REAUTH_FAILED");
 }
 

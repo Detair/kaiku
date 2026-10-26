@@ -231,6 +231,12 @@ describe("reauthErrorText", () => {
     expect(reauthErrorText(new HttpError(503, "down", "SERVICE_UNAVAILABLE"))).toContain(
       "cannot do this",
     );
+    expect(reauthErrorText(new HttpError(503, "x", "service_unavailable"))).toContain(
+      "cannot do this",
+    );
+    expect(reauthErrorText(new HttpError(0, "x", "invalid_credentials"))).toContain(
+      "not correct",
+    );
     expect(reauthErrorText(new HttpError(0, "x", "OIDC_PROVIDER_ERROR"))).toContain(
       "provider reported a problem",
     );

@@ -198,7 +198,8 @@ export function reauthErrorCode(err: unknown): string | undefined {
 /** User-facing text for a failed re-authentication call (never server text). */
 export function reauthErrorText(err: unknown): string {
   if (err instanceof HttpError) {
-    const key = err.code ? REAUTH_ERRORS[err.code] : undefined;
+    // Servers spell some codes in lowercase; the mapping is case-insensitive.
+    const key = err.code ? REAUTH_ERRORS[err.code.toUpperCase()] : undefined;
     if (key) return t(key);
     if (err.status === 429) return t("admin.reauth.error.rateLimited");
     if (err.status === 403) return t("admin.reauth.error.forbidden");

@@ -4,6 +4,10 @@ import * as tauri from "@/lib/tauri";
 import { formatRelativeTimeShort } from "@/lib/utils";
 import type { IdentityInfo, OidcProvider } from "@/lib/types";
 import ElevateDialog from "@/components/admin/ElevateDialog";
+import { t } from "@/i18n";
+
+/** Longest the browser link flow waits for the provider window. */
+const LINK_TIMEOUT_MS = 120_000;
 
 /**
  * Lists the external (OIDC) identities linked to the account, and lets the user
@@ -21,6 +25,9 @@ const LinkedAccountsSection: Component = () => {
   const [linking, setLinking] = createSignal<string | null>(null);
   // Provider to link once the admin has confirmed with the re-auth dialog.
   const [pendingLink, setPendingLink] = createSignal<OidcProvider | null>(null);
+  // Elevated, waiting for the user to start the link themselves (a popup must
+  // open from a click, not after a long re-auth).
+  const [readyLink, setReadyLink] = createSignal<OidcProvider | null>(null);
 
   const loadData = async () => {
     try {
@@ -69,18 +76,37 @@ const LinkedAccountsSection: Component = () => {
     }
   };
 
-  const handleLink = async (provider: OidcProvider) => {
+  // Text for a failed link, from a callback code or a native error string.
+  const linkErrorText = (code: string): string | null => {
+    if (code.includes("LINK_SESSION_INVALID")) return t("settings.linkedAccounts.error.sessionInvalid");
+    if (code.includes("ACCOUNT_BANNED")) return t("settings.linkedAccounts.error.banned");
+    if (code.toUpperCase().includes("SERVICE_UNAVAILABLE"))
+      return t("settings.linkedAccounts.error.serviceUnavailable");
+    return null;
+  };
+
+  // `afterElevation` is true for the one retry that follows a re-auth; a second
+  // "elevation required" then ends in an error instead of asking again.
+  const handleLink = async (provider: OidcProvider, afterElevation = false) => {
     setError(null);
     setLinking(provider.slug);
+
+    const needElevation = () => {
+      setLinking(null);
+      if (afterElevation) {
+        setError(t("settings.linkedAccounts.error.elevationStillRequired"));
+      } else {
+        setPendingLink(provider);
+      }
+    };
+
     try {
       let result: Awaited<ReturnType<typeof tauri.linkIdentity>>;
       try {
         result = await tauri.linkIdentity(provider.slug);
       } catch (err) {
-        // Admins confirm their identity first, then the link is retried.
         if (tauri.isElevationRequiredError(err)) {
-          setPendingLink(provider);
-          setLinking(null);
+          needElevation();
           return;
         }
         throw err;
@@ -95,34 +121,60 @@ const LinkedAccountsSection: Component = () => {
 
       // Browser: open a popup and wait for the callback's postMessage.
       const expectedOrigin = new URL(tauri.getServerUrl()).origin;
+      const popup = window.open(result.authUrl, "oidc-link", "width=600,height=700");
+      if (!popup) {
+        setError(t("settings.linkedAccounts.error.popupBlocked"));
+        setLinking(null);
+        return;
+      }
+      const timers: {
+        poll?: ReturnType<typeof setInterval>;
+        ceiling?: ReturnType<typeof setTimeout>;
+      } = {};
+      const stop = () => {
+        window.removeEventListener("message", messageHandler);
+        clearInterval(timers.poll);
+        clearTimeout(timers.ceiling);
+      };
       const messageHandler = (event: MessageEvent) => {
         if (event.origin !== expectedOrigin) return;
         if (event.data?.type !== "oidc-link-callback") return;
-        window.removeEventListener("message", messageHandler);
+        stop();
         if (event.data.success) {
           loadData().catch(() => {});
-        } else {
-          setError(
-            event.data.error_code === "IDENTITY_ALREADY_LINKED"
-              ? "That account is already linked to another Kaiku account."
-              : "Linking failed. Please try again.",
-          );
+          setLinking(null);
+          return;
         }
+        const code = String(event.data.error_code ?? "");
+        if (code === "elevation_required") {
+          needElevation();
+          return;
+        }
+        setError(
+          code === "IDENTITY_ALREADY_LINKED"
+            ? "That account is already linked to another Kaiku account."
+            : (linkErrorText(code) ?? "Linking failed. Please try again."),
+        );
         setLinking(null);
       };
       window.addEventListener("message", messageHandler);
-
-      const popup = window.open(result.authUrl, "oidc-link", "width=600,height=700");
       // Stop waiting if the popup is closed without completing.
-      const checkClosed = setInterval(() => {
-        if (popup?.closed) {
-          clearInterval(checkClosed);
-          window.removeEventListener("message", messageHandler);
+      timers.poll = setInterval(() => {
+        if (popup.closed) {
+          stop();
           setLinking(null);
         }
       }, 500);
+      // ...or if it never reports back.
+      timers.ceiling = setTimeout(() => {
+        stop();
+        popup.close();
+        setError(t("settings.linkedAccounts.error.timeout"));
+        setLinking(null);
+      }, LINK_TIMEOUT_MS);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const text = err instanceof Error ? err.message : String(err);
+      setError(linkErrorText(text) ?? text);
       setLinking(null);
     }
   };
@@ -134,7 +186,7 @@ const LinkedAccountsSection: Component = () => {
       </h4>
 
       <Show when={error()}>
-        <div class="text-sm text-status-danger p-3 rounded-xl bg-status-danger/10 border border-status-danger/20">
+        <div role="alert" class="text-sm text-status-danger p-3 rounded-xl bg-status-danger/10 border border-status-danger/20">
           {error()}
         </div>
       </Show>
@@ -209,12 +261,32 @@ const LinkedAccountsSection: Component = () => {
           </div>
         </Show>
       </Show>
+      <Show when={readyLink()}>
+        {(provider) => (
+          <div class="flex items-center gap-3 p-3 rounded-xl bg-surface-layer2 border border-white/5">
+            <p class="flex-1 text-sm text-text-primary">
+              {t("settings.linkedAccounts.confirmed", { provider: provider().display_name })}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                const target = provider();
+                setReadyLink(null);
+                void handleLink(target, true);
+              }}
+              class="px-3 py-1.5 rounded-lg text-sm bg-accent-primary text-on-accent hover:bg-accent-primary/90"
+            >
+              {t("settings.linkedAccounts.linkNow")}
+            </button>
+          </div>
+        )}
+      </Show>
       <Show when={pendingLink()}>
         <ElevateDialog
           onElevated={() => {
             const provider = pendingLink();
             setPendingLink(null);
-            if (provider) void handleLink(provider);
+            setReadyLink(provider);
           }}
           onClose={() => setPendingLink(null)}
         />

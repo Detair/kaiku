@@ -60,6 +60,12 @@ describe("re-auth requests", () => {
     await expect(startOidcReauth("kc", {})).rejects.toMatchObject({ code: "REAUTH_STALE" });
     invoke.mockRejectedValueOnce("HTTP_429");
     await expect(startOidcReauth("kc", {})).rejects.toMatchObject({ status: 429 });
+    // The status stays next to the code (lowercase server codes included).
+    invoke.mockRejectedValueOnce("HTTP_503:service_unavailable");
+    await expect(startOidcReauth("kc", {})).rejects.toMatchObject({
+      status: 503,
+      code: "service_unavailable",
+    });
   });
 
   it("elevate sends password and code", async () => {
