@@ -9,28 +9,36 @@
  */
 import { common } from "./en/common";
 import { connection } from "./en/connection";
+import { errors } from "./en/errors";
 import { auth } from "./en/auth";
 import { qr } from "./en/qr";
+import { channels } from "./en/channels";
 import { chat } from "./en/chat";
 import { dm } from "./en/dm";
+import { home } from "./en/home";
 import { time } from "./en/time";
 import { admin } from "./en/admin";
 import { settings } from "./en/settings";
-import { voice } from "./en/voice";
 import { onboarding } from "./en/onboarding";
+import { voice } from "./en/voice";
+import { notifications } from "./en/notifications";
 
 export const en = {
   ...common,
   ...connection,
+  ...errors,
   ...auth,
   ...qr,
+  ...channels,
   ...chat,
   ...dm,
+  ...home,
   ...time,
   ...admin,
   ...settings,
-  ...voice,
   ...onboarding,
+  ...voice,
+  ...notifications,
 } as const;
 
 export type MessageKey = keyof typeof en;

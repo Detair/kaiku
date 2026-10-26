@@ -62,6 +62,8 @@ import { PermissionBits } from "@/lib/permissionConstants";
 import { authState } from "@/stores/auth";
 import { removeMessage, updateMessage, editingMessageId, setEditingMessageId } from "@/stores/messages";
 import { showToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
+import { CHAT_SEND_ERRORS, errorText } from "@/i18n/errors";
 
 interface MessageItemProps {
   message: Message;
@@ -306,8 +308,13 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       console.error("Failed to edit message:", err);
       showToast({
         type: "error",
-        title: "Edit Failed",
-        message: err instanceof Error ? err.message : "Could not edit message.",
+        title: t("chat.message.editFailed.title"),
+        message: errorText(
+          err,
+          "chat.message.editFailed.message",
+          CHAT_SEND_ERRORS.byCode,
+          CHAT_SEND_ERRORS.byStatus,
+        ),
         duration: 5000,
       });
     } finally {
@@ -383,8 +390,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       console.error("Failed to add reaction:", err);
       showToast({
         type: "error",
-        title: "Reaction Failed",
-        message: "Could not add reaction.",
+        title: t("chat.message.reactionFailed.title"),
+        message: t("chat.message.addReactionFailed"),
         duration: 8000,
       });
     }
@@ -397,8 +404,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       console.error("Failed to remove reaction:", err);
       showToast({
         type: "error",
-        title: "Reaction Failed",
-        message: "Could not remove reaction.",
+        title: t("chat.message.reactionFailed.title"),
+        message: t("chat.message.removeReactionFailed"),
         duration: 8000,
       });
     }
@@ -481,12 +488,12 @@ const MessageItem: Component<MessageItemProps> = (props) => {
 
     const items: ContextMenuEntry[] = [
       {
-        label: "Copy Text",
+        label: t("chat.message.menu.copyText"),
         icon: Copy,
         action: () => navigator.clipboard.writeText(msg.content),
       },
       {
-        label: "Copy Message Link",
+        label: t("chat.message.menu.copyLink"),
         icon: Link,
         action: () =>
           navigator.clipboard.writeText(
@@ -494,7 +501,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
           ),
       },
       {
-        label: "Copy ID",
+        label: t("chat.message.menu.copyId"),
         icon: Hash,
         action: () => navigator.clipboard.writeText(msg.id),
       },
@@ -505,7 +512,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       items.push(
         { separator: true },
         {
-          label: msg.pinned ? "Unpin Message" : "Pin Message",
+          label: msg.pinned ? t("chat.message.menu.unpin") : t("chat.message.menu.pin"),
           icon: Pin,
           action: async () => {
             try {
@@ -515,7 +522,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                 await pinMessageAction(msg.channel_id, msg.id);
               }
             } catch (e) {
-              showToast({ type: "error", title: "Failed to pin/unpin message" });
+              showToast({ type: "error", title: t("chat.message.pinFailed") });
             }
           },
         },
@@ -531,7 +538,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       items.push(
         { separator: true },
         {
-          label: "Reply in Thread",
+          label: t("chat.message.replyInThread"),
           icon: MessageSquareMore,
           action: () => openThread(msg),
         },
@@ -542,7 +549,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       items.push(
         { separator: true },
         {
-          label: "Report Message",
+          label: t("chat.message.menu.report"),
           icon: Flag,
           danger: true,
           action: () => {
@@ -561,7 +568,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         items.push(
           { separator: true },
           {
-            label: "Edit Message",
+            label: t("chat.message.edit"),
             icon: Pencil,
             action: () => startEdit(),
           },
@@ -570,11 +577,11 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       items.push(
         ...(!msg.encrypted ? [] : [{ separator: true } as ContextMenuEntry]),
         {
-          label: "Delete Message",
+          label: t("chat.message.menu.delete"),
           icon: Trash2,
           danger: true,
           action: async () => {
-            if (confirm("Delete this message? This cannot be undone.")) {
+            if (confirm(t("chat.message.deleteConfirm"))) {
               try {
                 await deleteMessage(msg.id);
                 removeMessage(msg.channel_id, msg.id);
@@ -609,7 +616,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
           <Pin class="w-3 h-3 flex-shrink-0" />
           <span>
             <strong class="text-text-primary">{props.message.author.display_name}</strong>
-            {" "}{props.message.content}
+            {` ${props.message.content}`}
           </span>
         </div>
       }
@@ -706,9 +713,9 @@ const MessageItem: Component<MessageItemProps> = (props) => {
               <span
                 data-testid="webhook-app-badge"
                 class="px-1 py-px rounded text-[10px] font-bold uppercase bg-accent-primary/20 text-text-primary leading-4"
-                title="Posted by an incoming webhook"
+                title={t("chat.message.webhookTitle")}
               >
-                App
+                {t("chat.message.webhookApp")}
               </span>
             </Show>
             <span class="text-xs text-text-secondary">
@@ -744,7 +751,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                 rows={1}
               />
               <div class="text-xs text-text-secondary mt-1">
-                escape to cancel · enter to save
+                {t("chat.message.editHint")}
               </div>
             </div>
           }
@@ -773,9 +780,9 @@ const MessageItem: Component<MessageItemProps> = (props) => {
             <Show when={isEdited()}>
               <span
                 class="text-xs text-text-secondary/70 ml-1.5 align-super"
-                title={`Edited ${formatTimestamp(props.message.edited_at!)}`}
+                title={t("chat.message.editedAt", { time: formatTimestamp(props.message.edited_at!) })}
               >
-                (edited)
+                {t("chat.message.editedBadge")}
               </span>
             </Show>
           </div>
@@ -813,8 +820,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                           console.error("Failed to get signed URL:", err);
                           showToast({
                             type: "error",
-                            title: "Download Failed",
-                            message: "Could not get download link.",
+                            title: t("chat.message.downloadFailed.title"),
+                            message: t("chat.message.downloadFailed.message"),
                             duration: 8000,
                           });
                         }
@@ -876,7 +883,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                         {/* Error fallback when signed URL fetch fails */}
                         <Show when={imgSrc.error}>
                           <div class="absolute inset-0 flex items-center justify-center text-text-secondary text-sm">
-                            Failed to load image
+                            {t("chat.message.imageFailed")}
                           </div>
                         </Show>
 
@@ -905,7 +912,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                         <button
                           type="button"
                           class="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-black/70 rounded-lg text-white opacity-0 group-hover/attachment:opacity-100 transition-opacity backdrop-blur-sm cursor-pointer"
-                          title="Download original" aria-label="Download original"
+                          title={t("chat.message.downloadOriginal")} aria-label={t("chat.message.downloadOriginal")}
                           onClick={async () => {
                             try {
                               const url = await fetchSignedUrl(attachment.id);
@@ -914,8 +921,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                               console.error("Failed to get signed URL:", err);
                               showToast({
                                 type: "error",
-                                title: "Download Failed",
-                                message: "Could not get download link.",
+                                title: t("chat.message.downloadFailed.title"),
+                                message: t("chat.message.downloadFailed.message"),
                                 duration: 8000,
                               });
                             }

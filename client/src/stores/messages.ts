@@ -9,6 +9,7 @@ import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { Message, E2EEContent, MegolmE2EEContent } from "@/lib/types";
 import { t } from "@/i18n";
+import { CHAT_SEND_ERRORS, errorText } from "@/i18n/errors";
 import * as tauri from "@/lib/tauri";
 import { e2eeStore } from "@/stores/e2ee";
 import { showToast } from "@/components/ui/Toast";
@@ -66,7 +67,7 @@ export async function decryptMessageIfNeeded(message: Message): Promise<Message>
   const status = e2eeStore.status();
   if (!status.initialized) {
     console.warn("[E2EE] Message is encrypted but E2EE not initialized");
-    return { ...message, content: t("chat.encryptedPlaceholder") };
+    return { ...message, content: t("chat.message.encryptedPlaceholder") };
   }
 
   try {
@@ -93,7 +94,7 @@ export async function decryptMessageIfNeeded(message: Message): Promise<Message>
 
     if (!ourKey || !user) {
       console.warn("[E2EE] Cannot decrypt - missing our key or user info");
-      return { ...message, content: t("chat.encryptedPlaceholder") };
+      return { ...message, content: t("chat.message.encryptedPlaceholder") };
     }
 
     const ourUserId = user.id;
@@ -102,13 +103,13 @@ export async function decryptMessageIfNeeded(message: Message): Promise<Message>
     const userDevices = e2ee.recipients[ourUserId];
     if (!userDevices) {
       console.warn("[E2EE] No ciphertext for our user ID:", ourUserId);
-      return { ...message, content: t("chat.encryptedPlaceholder") };
+      return { ...message, content: t("chat.message.encryptedPlaceholder") };
     }
 
     const ourCiphertext = userDevices[ourKey];
     if (!ourCiphertext) {
       console.warn("[E2EE] No ciphertext for our device key");
-      return { ...message, content: t("chat.encryptedPlaceholder") };
+      return { ...message, content: t("chat.message.encryptedPlaceholder") };
     }
 
     // Decrypt
@@ -129,7 +130,7 @@ export async function decryptMessageIfNeeded(message: Message): Promise<Message>
     return { ...message, content: plaintext };
   } catch (err) {
     console.error("[E2EE] Decryption failed:", err);
-    return { ...message, content: t("chat.encryptedPlaceholder") };
+    return { ...message, content: t("chat.message.encryptedPlaceholder") };
   }
 }
 
@@ -182,8 +183,10 @@ interface MessagesState {
   loadingChannels: Record<string, boolean>;
   // Whether there are more messages to load per channel
   hasMore: Record<string, boolean>;
-  // Current error
-  error: string | null;
+  // Last load failure (shown by the message list)
+  loadError: string | null;
+  // Last send failure (shown by the composer)
+  sendError: string | null;
 }
 
 // Create the store
@@ -191,7 +194,8 @@ const [messagesState, setMessagesState] = createStore<MessagesState>({
   byChannel: {},
   loadingChannels: {},
   hasMore: {},
-  error: null,
+  loadError: null,
+  sendError: null,
 });
 
 // Default message limit per request
@@ -210,7 +214,7 @@ export async function loadMessages(channelId: string): Promise<void> {
   }
 
   setMessagesState("loadingChannels", channelId, true);
-  setMessagesState("error", null);
+  setMessagesState("loadError", null);
 
   try {
     // Get existing messages to find the oldest one for pagination
@@ -240,7 +244,7 @@ export async function loadMessages(channelId: string): Promise<void> {
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to load messages:", error);
     setMessagesState("loadingChannels", channelId, false);
-    setMessagesState("error", error);
+    setMessagesState("loadError", errorText(err, "chat.list.loadFailed"));
   }
 }
 
@@ -252,7 +256,7 @@ export async function loadMessagesAround(channelId: string, aroundMessageId: str
   if (messagesState.loadingChannels[channelId]) return;
 
   setMessagesState("loadingChannels", channelId, true);
-  setMessagesState("error", null);
+  setMessagesState("loadError", null);
 
   try {
     const response = await tauri.getMessages(channelId, undefined, MESSAGE_LIMIT, aroundMessageId);
@@ -265,7 +269,7 @@ export async function loadMessagesAround(channelId: string, aroundMessageId: str
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to load messages around:", error);
     setMessagesState("loadingChannels", channelId, false);
-    setMessagesState("error", error);
+    setMessagesState("loadError", errorText(err, "chat.list.loadFailed"));
   }
 }
 
@@ -432,7 +436,7 @@ export async function sendMessage(
     return null;
   }
 
-  setMessagesState({ error: null });
+  setMessagesState({ sendError: null });
 
   // Build an optimistic (pending) message so the UI updates instantly
   const user = currentUser();
@@ -505,8 +509,19 @@ export async function sendMessage(
 
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to send message:", error);
-    showToast({ type: "error", title: "Send Failed", message: "Could not send message. Please try again.", duration: 8000 });
-    setMessagesState({ error });
+    const text = errorText(
+      err,
+      "chat.send.failed.message",
+      CHAT_SEND_ERRORS.byCode,
+      CHAT_SEND_ERRORS.byStatus,
+    );
+    showToast({
+      type: "error",
+      title: t("chat.send.failed.title"),
+      message: text,
+      duration: 8000,
+    });
+    setMessagesState({ sendError: text });
     return null;
   }
 }

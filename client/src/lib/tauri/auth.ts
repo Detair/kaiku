@@ -48,6 +48,25 @@ async function invokeNativeAuth<T>(
   return result;
 }
 
+/**
+ * Native mode: Rust reports sign-in failures as plain strings
+ * (`SessionError` Display). Give the ones the UI maps a code, so
+ * `errorText()` treats them like the browser-mode `HttpError`s.
+ */
+export function nativeAuthError(error: unknown): unknown {
+  const text = typeof error === "string" ? error : null;
+  if (text === "Invalid username or password") {
+    return new HttpError(401, text, "INVALID_CREDENTIALS");
+  }
+  if (text?.startsWith("Connection failed:")) {
+    return new TypeError(text);
+  }
+  if (text === "Username or email already exists") {
+    return new HttpError(409, text);
+  }
+  return error;
+}
+
 /** Native mode: session-management request sent by Rust with the refresh token. */
 async function nativeSessionRequest<T>(
   method: string,
@@ -65,6 +84,11 @@ async function nativeSessionRequest<T>(
     // Rust ended the session (refresh token rejected during the request).
     if (String(error) === NATIVE_SESSION_EXPIRED) {
       expireNativeSession();
+      throw error;
+    }
+    // /auth/me/password: Rust passes on the server's INVALID_CREDENTIALS text.
+    if (error === "Invalid credentials") {
+      throw new HttpError(401, error, "INVALID_CREDENTIALS");
     }
     throw error;
   }
@@ -77,16 +101,20 @@ export async function login(
   mfaCode?: string,
 ): Promise<AuthResult> {
   if (isTauri()) {
-    return invokeNativeAuth((invoke) =>
-      invoke<AuthResult>("login", {
-        request: {
-          server_url: serverUrl,
-          username,
-          password,
-          mfa_code: mfaCode ?? null,
-        },
-      }),
-    );
+    try {
+      return await invokeNativeAuth((invoke) =>
+        invoke<AuthResult>("login", {
+          request: {
+            server_url: serverUrl,
+            username,
+            password,
+            mfa_code: mfaCode ?? null,
+          },
+        }),
+      );
+    } catch (error) {
+      throw nativeAuthError(error);
+    }
   }
 
   // Browser mode
@@ -152,17 +180,21 @@ export async function register(
   displayName?: string,
 ): Promise<AuthResult> {
   if (isTauri()) {
-    return invokeNativeAuth((invoke) =>
-      invoke<AuthResult>("register", {
-        request: {
-          server_url: serverUrl,
-          username,
-          email,
-          password,
-          display_name: displayName,
-        },
-      }),
-    );
+    try {
+      return await invokeNativeAuth((invoke) =>
+        invoke<AuthResult>("register", {
+          request: {
+            server_url: serverUrl,
+            username,
+            email,
+            password,
+            display_name: displayName,
+          },
+        }),
+      );
+    } catch (error) {
+      throw nativeAuthError(error);
+    }
   }
 
   // Browser mode

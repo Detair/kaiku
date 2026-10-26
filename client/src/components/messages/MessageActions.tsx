@@ -8,6 +8,7 @@
 import { Component, createSignal, Show, For } from "solid-js";
 import { SmilePlus, MoreHorizontal, MessageSquareMore, Pencil } from "lucide-solid";
 import PositionedEmojiPicker from "@/components/emoji/PositionedEmojiPicker";
+import { t } from "@/i18n";
 
 interface MessageActionsProps {
   /** Callback when a quick emoji is clicked */
@@ -51,8 +52,8 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
         <button
           class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 transition-colors"
           onClick={() => handleQuickReaction(emoji)}
-          title={`React with ${emoji}`}
-          aria-label={`React with ${emoji}`}
+          title={t("chat.message.react", { emoji })}
+          aria-label={t("chat.message.react", { emoji })}
         >
           <span class="text-base leading-none">{emoji}</span>
         </button>
@@ -64,8 +65,8 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
         class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
         data-testid="message-action-react"
         onClick={() => setShowEmojiPicker(!showEmojiPicker())}
-        title="More reactions"
-        aria-label="More reactions"
+        title={t("chat.message.moreReactions")}
+        aria-label={t("chat.message.moreReactions")}
         aria-expanded={showEmojiPicker()}
       >
         <SmilePlus class="w-4 h-4" />
@@ -92,8 +93,8 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
           class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
           data-testid="message-action-thread"
           onClick={() => props.onReplyInThread?.()}
-          title="Reply in Thread"
-          aria-label="Reply in Thread"
+          title={t("chat.message.replyInThread")}
+          aria-label={t("chat.message.replyInThread")}
         >
           <MessageSquareMore class="w-4 h-4" />
         </button>
@@ -105,8 +106,8 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
           class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
           data-testid="message-action-edit"
           onClick={() => props.onEdit?.()}
-          title="Edit Message"
-          aria-label="Edit Message"
+          title={t("chat.message.edit")}
+          aria-label={t("chat.message.edit")}
         >
           <Pencil class="w-4 h-4" />
         </button>
@@ -120,8 +121,8 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
         class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
         data-testid="message-action-more"
         onClick={props.onShowContextMenu}
-        title="More actions"
-        aria-label="More actions"
+        title={t("chat.message.moreActions")}
+        aria-label={t("chat.message.moreActions")}
       >
         <MoreHorizontal class="w-4 h-4" />
       </button>

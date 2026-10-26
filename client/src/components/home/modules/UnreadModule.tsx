@@ -14,6 +14,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { Hash, CheckCheck } from "lucide-solid";
+import { t, plural } from "@/i18n";
 import flokiParty from "@/assets/emotes/floki_emote_3.webp";
 import {
   getUnreadAggregate,
@@ -88,8 +89,11 @@ const UnreadModule: Component = () => {
           lastRateLimitToastAt = now;
           showToast({
             type: "warning",
-            title: "Unread Refresh Rate-Limited",
-            message: `Retrying in ${Math.ceil(retryAfterMs / 1000)} seconds.`,
+            title: t("home.unread.toast.rateLimitedTitle"),
+            message: plural(Math.ceil(retryAfterMs / 1000), {
+              one: "home.unread.toast.retrying.one",
+              other: "home.unread.toast.retrying.other",
+            }),
             duration: 5000,
           });
         }
@@ -100,9 +104,8 @@ const UnreadModule: Component = () => {
       console.error("Failed to fetch unread aggregate:", error);
       showToast({
         type: "error",
-        title: "Failed to Load Unreads",
-        message:
-          "Could not fetch unread messages. Will retry when window gains focus.",
+        title: t("home.unread.toast.loadFailedTitle"),
+        message: t("home.unread.toast.loadFailed"),
         duration: 8000,
       });
     } finally {
@@ -174,8 +177,8 @@ const UnreadModule: Component = () => {
       console.error("Failed to navigate to channel:", error);
       showToast({
         type: "error",
-        title: "Navigation Failed",
-        message: "Could not navigate to channel. Please try again.",
+        title: t("home.unread.toast.navigationFailedTitle"),
+        message: t("home.unread.toast.navigateChannelFailed"),
         duration: 8000,
       });
     }
@@ -189,8 +192,8 @@ const UnreadModule: Component = () => {
       console.error("Failed to mark all as read:", error);
       showToast({
         type: "error",
-        title: "Mark All Read Failed",
-        message: "Could not mark all as read.",
+        title: t("home.unread.toast.markReadFailedTitle"),
+        message: t("home.unread.toast.markAllFailed"),
         duration: 8000,
       });
     }
@@ -216,8 +219,8 @@ const UnreadModule: Component = () => {
       console.error("Failed to mark guild as read:", error);
       showToast({
         type: "error",
-        title: "Mark All Read Failed",
-        message: "Could not mark guild channels as read.",
+        title: t("home.unread.toast.markReadFailedTitle"),
+        message: t("home.unread.toast.markGuildFailed"),
         duration: 8000,
       });
     }
@@ -237,8 +240,8 @@ const UnreadModule: Component = () => {
       console.error("Failed to mark DMs as read:", error);
       showToast({
         type: "error",
-        title: "Mark All Read Failed",
-        message: "Could not mark DMs as read.",
+        title: t("home.unread.toast.markReadFailedTitle"),
+        message: t("home.unread.toast.markDmsFailed"),
         duration: 8000,
       });
     }
@@ -252,24 +255,24 @@ const UnreadModule: Component = () => {
       console.error("Failed to navigate to DM:", error);
       showToast({
         type: "error",
-        title: "Navigation Failed",
-        message: "Could not navigate to DM. Please try again.",
+        title: t("home.unread.toast.navigationFailedTitle"),
+        message: t("home.unread.toast.navigateDmFailed"),
         duration: 8000,
       });
     }
   };
 
   return (
-    <CollapsibleModule id="unread" title="Unread" badge={totalUnread()}>
+    <CollapsibleModule id="unread" title={t("home.unread.title")} badge={totalUnread()}>
       <Show when={hasUnreads()}>
         <div class="flex justify-end mb-2">
           <button
             onClick={handleMarkAllRead}
             class="flex items-center gap-1 text-xs text-text-secondary hover:text-accent-primary transition-colors"
-            title="Mark all as read"
+            title={t("home.unread.markAllRead")}
           >
             <CheckCheck class="w-3.5 h-3.5" />
-            Mark All as Read
+            {t("home.unread.markAllReadButton")}
           </button>
         </div>
       </Show>
@@ -312,9 +315,9 @@ const UnreadModule: Component = () => {
             }
           >
             <div class="flex flex-col items-center justify-center py-4 text-center">
-              <img src={flokiParty} alt="" class="w-12 h-12 mb-2 object-contain" loading="lazy" />
-              <p class="text-sm text-text-secondary">All caught up!</p>
-              <p class="text-xs text-text-muted mt-1">No unread messages</p>
+              <img src={flokiParty} alt={""} class="w-12 h-12 mb-2 object-contain" loading="lazy" />
+              <p class="text-sm text-text-secondary">{t("home.unread.caughtUp")}</p>
+              <p class="text-xs text-text-muted mt-1">{t("home.unread.none")}</p>
             </div>
           </Show>
         }
@@ -333,7 +336,7 @@ const UnreadModule: Component = () => {
                       <button
                         onClick={() => handleMarkGuildRead(guild.guild_id)}
                         class="text-text-muted hover:text-accent-primary transition-colors"
-                        title={`Mark all in ${guild.guild_name} as read`}
+                        title={t("home.unread.markGuildRead", { guild: guild.guild_name })}
                       >
                         <CheckCheck class="w-3.5 h-3.5" />
                       </button>
@@ -374,12 +377,12 @@ const UnreadModule: Component = () => {
             <div class="space-y-1">
               <div class="flex items-center justify-between">
                 <div class="text-xs font-semibold text-text-secondary uppercase tracking-wide">
-                  Direct Messages
+                  {t("home.sidebar.directMessages")}
                 </div>
                 <button
                   onClick={handleMarkDMsRead}
                   class="text-text-muted hover:text-accent-primary transition-colors"
-                  title="Mark all DMs as read"
+                  title={t("home.unread.markDmsRead")}
                 >
                   <CheckCheck class="w-3.5 h-3.5" />
                 </button>

@@ -1,4 +1,5 @@
 import { Component, For, Show, createMemo } from "solid-js";
+import { t, type MessageKey } from "@/i18n";
 import { Crosshair } from "lucide-solid";
 import { UserStatus } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
@@ -16,15 +17,18 @@ interface StatusPickerProps {
   onCustomStatusClick?: () => void;
 }
 
-const STATUS_OPTIONS: { value: UserStatus; label: string }[] = [
-  { value: "online", label: "Online" },
-  { value: "idle", label: "Idle" },
-  { value: "dnd", label: "Do Not Disturb" },
-  { value: "invisible", label: "Invisible" },
+const STATUS_OPTIONS: { value: UserStatus; label: MessageKey }[] = [
+  { value: "online", label: "home.status.online" },
+  { value: "idle", label: "home.status.idle" },
+  { value: "dnd", label: "home.status.dnd" },
+  { value: "invisible", label: "home.status.invisible" },
 ];
 
 const StatusPicker: Component<StatusPickerProps> = (props) => {
   const activeMode = createMemo(() => getActiveFocusMode());
+
+  const focusLabel = (name: string) =>
+    focusState().auto_activated ? t("home.status.focusAuto", { name }) : name;
 
   const handleSelect = async (status: UserStatus) => {
     try {
@@ -54,7 +58,7 @@ const StatusPicker: Component<StatusPickerProps> = (props) => {
                 <StatusIndicator status={option.value} size="sm" />
               </div>
               <span class="text-sm font-medium text-text-primary">
-                {option.label}
+                {t(option.label)}
               </span>
               <Show when={props.currentStatus === option.value}>
                 <div class="ml-auto w-1.5 h-1.5 bg-white rounded-full" />
@@ -72,7 +76,7 @@ const StatusPicker: Component<StatusPickerProps> = (props) => {
               }}
             >
               <span>💬</span>
-              <span>Set Custom Status...</span>
+              <span>{t("home.status.setCustom")}</span>
             </button>
           </div>
         </Show>
@@ -83,8 +87,7 @@ const StatusPicker: Component<StatusPickerProps> = (props) => {
                 <div class="flex items-center gap-2">
                   <Crosshair class="w-3.5 h-3.5 text-accent-primary" />
                   <span class="text-xs text-accent-primary font-medium">
-                    {mode().name}
-                    {focusState().auto_activated ? " (auto)" : ""}
+                    {focusLabel(mode().name)}
                   </span>
                 </div>
                 <button
@@ -94,7 +97,7 @@ const StatusPicker: Component<StatusPickerProps> = (props) => {
                   }}
                   class="text-xs px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-text-secondary transition-colors"
                 >
-                  End
+                  {t("home.status.endFocus")}
                 </button>
               </div>
             </div>

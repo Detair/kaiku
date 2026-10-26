@@ -142,6 +142,17 @@ export function formatRelativeTimeShort(iso: string, now: Date = new Date()): st
   return relative(days, "day", "narrow");
 }
 
+/** Compact "now" / "5m" / "3h" / "2d" for narrow lists; no "ago", no 7-day cap. */
+export function formatCompactRelative(iso: string, now: Date = new Date()): string {
+  const parts = relativeParts(iso, now);
+  if (!parts) return "";
+  const { mins, hours, days } = parts;
+  if (mins < 1) return t("time.compact.now");
+  if (mins < 60) return t("time.compact.minutes", { count: mins });
+  if (hours < 24) return t("time.compact.hours", { count: hours });
+  return t("time.compact.days", { count: days });
+}
+
 /** "A, B, and C" / "A, B und C" in the UI language. */
 export function formatList(
   items: string[],

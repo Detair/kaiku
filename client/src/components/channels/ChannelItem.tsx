@@ -33,6 +33,7 @@ import {
   type ContextMenuEntry,
 } from "@/components/ui/ContextMenu";
 import { createLongPress } from "@/lib/createLongPress";
+import { plural, t } from "@/i18n";
 
 interface ChannelItemProps {
   channel: ChannelWithUnread;
@@ -94,7 +95,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
     // Mark as Read (only for text channels with unreads)
     if (ch.channel_type === "text" && isChannelUnread(ch.id)) {
       items.push({
-        label: "Mark as Read",
+        label: t("channels.item.menu.markRead"),
         icon: CheckCheck,
         action: () => {
           if (ch.last_message_id) {
@@ -106,7 +107,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
 
     // Mute/Unmute
     items.push({
-      label: muted ? "Unmute Channel" : "Mute Channel",
+      label: muted ? t("channels.item.menu.unmute") : t("channels.item.menu.mute"),
       icon: muted ? Bell : BellOff,
       action: () => {
         setChannelNotificationLevel(ch.id, muted ? "all" : "none");
@@ -116,7 +117,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
     // Favorites
     if (props.guildId && props.guildName) {
       items.push({
-        label: favorited ? "Remove from Favorites" : "Add to Favorites",
+        label: favorited ? t("channels.item.menu.removeFavorite") : t("channels.item.menu.addFavorite"),
         icon: favorited ? StarOff : Star,
         action: () => {
           toggleFavorite(
@@ -136,7 +137,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
     // Edit Channel (if settings callback exists = user has permission)
     if (props.onSettings) {
       items.push({
-        label: "Edit Channel",
+        label: t("channels.item.menu.edit"),
         icon: Settings,
         action: () => props.onSettings!(),
       });
@@ -144,7 +145,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
 
     // Copy ID
     items.push({
-      label: "Copy Channel ID",
+      label: t("channels.item.menu.copyId"),
       icon: Copy,
       action: () => navigator.clipboard.writeText(ch.id),
     });
@@ -197,9 +198,9 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
         onMouseLeave={() => setShowTooltip(false)}
         title={
           isConnected()
-            ? "Click to disconnect"
+            ? t("channels.item.disconnectHint")
             : isVoice()
-              ? "Click to join voice"
+              ? t("channels.item.joinVoiceHint")
               : undefined
         }
       >
@@ -238,7 +239,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
 
         {/* Muted indicator */}
         <Show when={isChannelMuted(props.channel.id)}>
-          <span title="Notifications muted" class="shrink-0">
+          <span title={t("channels.item.muted")} class="shrink-0">
             <BellOff class="w-3.5 h-3.5 text-text-muted" />
           </span>
         </Show>
@@ -286,8 +287,8 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
             }}
             title={
               isFavorited(props.channel.id)
-                ? "Remove from favorites"
-                : "Add to favorites"
+                ? t("channels.item.removeFavorite")
+                : t("channels.item.addFavorite")
             }
           >
             <Star
@@ -305,7 +306,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
               e.stopPropagation();
               props.onSettings?.();
             }}
-            title="Channel Settings"
+            title={t("channels.item.settings")}
           >
             <Settings class="w-3.5 h-3.5" />
           </button>
@@ -316,8 +317,10 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
       <Show when={isVoice() && showTooltip() && participantCount() > 0}>
         <div class="absolute left-full ml-2 top-0 z-50 px-3 py-2 bg-surface-base border border-white/10 rounded-lg shadow-xl min-w-[150px]">
           <p class="text-xs text-text-secondary mb-1">
-            {participantCount()}{" "}
-            {participantCount() === 1 ? "member" : "members"}
+            {plural(participantCount(), {
+              one: "channels.item.members.one",
+              other: "channels.item.members.other",
+            })}
           </p>
           <div class="space-y-0.5">
             <For each={participants()
@@ -328,7 +331,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
               )}</For>
             <Show when={participantCount() > 5}>
               <p class="text-xs text-text-secondary italic">
-                +{participantCount() - 5} more
+                {t("channels.item.moreParticipants", { count: participantCount() - 5 })}
               </p>
             </Show>
           </div>

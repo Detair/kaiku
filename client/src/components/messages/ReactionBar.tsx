@@ -1,6 +1,7 @@
 import { Component, For, Show, createSignal } from "solid-js";
 import PositionedEmojiPicker from "@/components/emoji/PositionedEmojiPicker";
 import type { Reaction } from "@/lib/types";
+import { t } from "@/i18n";
 
 interface ReactionBarProps {
   reactions: Reaction[];
@@ -55,7 +56,7 @@ const ReactionBar: Component<ReactionBarProps> = (props) => {
           ref={addReactionButtonRef}
           class="w-6 h-6 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
           onClick={() => setShowPicker(!showPicker())}
-          title="Add reaction"
+          title={t("chat.message.addReaction")}
         >
           <svg
             class="w-4 h-4"

@@ -9,6 +9,7 @@ import { authState } from "@/stores/auth";
 import { QualityIndicator } from "./QualityIndicator";
 import { QualityTooltip } from "./QualityTooltip";
 import type { ConnectionMetrics } from "@/lib/webrtc/types";
+import { t } from "@/i18n";
 
 interface Props {
   channelId: string;
@@ -41,7 +42,7 @@ const VoiceParticipants: Component<Props> = (props) => {
     username?: string;
   }) => {
     if (isCurrentUser(participant.user_id)) {
-      return authState.user?.display_name || authState.user?.username || "You";
+      return authState.user?.display_name || authState.user?.username || t("voice.participants.you");
     }
     return (
       participant.display_name ||
@@ -60,7 +61,7 @@ const VoiceParticipants: Component<Props> = (props) => {
         <div class="flex items-center gap-2 px-2 py-1 text-xs">
           <User class="w-3 h-3 text-accent-primary" />
           <span class="flex-1 truncate text-accent-primary font-medium">
-            {authState.user?.display_name || authState.user?.username || "You"}
+            {authState.user?.display_name || authState.user?.username || t("voice.participants.you")}
           </span>
 
           <div
@@ -81,22 +82,22 @@ const VoiceParticipants: Component<Props> = (props) => {
           </div>
 
           <Show when={voiceState.webcamActive}>
-            <div title="Camera On">
+            <div title={t("voice.participants.cameraOn")}>
               <Camera class="w-3 h-3 text-accent-primary" />
             </div>
           </Show>
           <Show when={voiceState.screenSharing}>
-            <div title="Screen Sharing">
+            <div title={t("voice.participants.screenSharing")}>
               <Monitor class="w-3 h-3 text-accent-primary" />
             </div>
           </Show>
           <Show when={voiceState.muted}>
-            <div title="Muted">
+            <div title={t("voice.participants.muted")}>
               <MicOff class="w-3 h-3 text-accent-danger" />
             </div>
           </Show>
           <Show when={voiceState.speaking}>
-            <div title="Speaking">
+            <div title={t("voice.participants.speaking")}>
               <Volume2 class="w-3 h-3 text-accent-primary animate-pulse" />
             </div>
           </Show>
@@ -145,22 +146,22 @@ const VoiceParticipants: Component<Props> = (props) => {
                 </div>
 
                 <Show when={participant.webcam_active}>
-                  <div title="Camera On">
+                  <div title={t("voice.participants.cameraOn")}>
                     <Camera class="w-3 h-3 text-accent-primary" />
                   </div>
                 </Show>
                 <Show when={participant.screen_sharing}>
-                  <div title="Screen Sharing">
+                  <div title={t("voice.participants.screenSharing")}>
                     <Monitor class="w-3 h-3 text-accent-primary" />
                   </div>
                 </Show>
                 <Show when={participant.muted}>
-                  <div title="Muted">
+                  <div title={t("voice.participants.muted")}>
                     <MicOff class="w-3 h-3 text-accent-danger" />
                   </div>
                 </Show>
                 <Show when={participant.speaking}>
-                  <div title="Speaking">
+                  <div title={t("voice.participants.speaking")}>
                     <Volume2 class="w-3 h-3 text-accent-primary animate-pulse" />
                   </div>
                 </Show>

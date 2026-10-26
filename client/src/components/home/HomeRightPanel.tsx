@@ -6,6 +6,7 @@
  */
 
 import { Component, Show, For } from "solid-js";
+import { t } from "@/i18n";
 import { dmsState, getSelectedDM } from "@/stores/dms";
 import { getUserActivity } from "@/stores/presence";
 import { currentUser } from "@/stores/auth";
@@ -82,7 +83,7 @@ const HomeRightPanel: Component = () => {
           {/* Group DM - show participants */}
           <div class="p-4">
             <h3 class="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-3">
-              Members — {dm()?.participants.length}
+              {t("home.panel.members", { count: dm()?.participants.length ?? 0 })}
             </h3>
             <div class="space-y-2">
               <For each={dm()?.participants}>

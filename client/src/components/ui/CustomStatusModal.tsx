@@ -6,7 +6,11 @@
  */
 
 import { Component, createSignal, For, onMount, onCleanup } from "solid-js";
+import { t, type MessageKey } from "@/i18n";
 import type { CustomStatus } from "@/lib/types";
+
+// A pictograph, not text: nothing to translate, so it stays out of the catalog.
+const EMOJI_PLACEHOLDER = "😀";
 
 interface CustomStatusModalProps {
   currentStatus?: CustomStatus | null;
@@ -14,12 +18,12 @@ interface CustomStatusModalProps {
   onClose: () => void;
 }
 
-const expiryOptions = [
-  { value: null, label: "Don't clear" },
-  { value: 30, label: "30 minutes" },
-  { value: 60, label: "1 hour" },
-  { value: 240, label: "4 hours" },
-  { value: 1440, label: "1 day" },
+const expiryOptions: { value: number | null; label: MessageKey }[] = [
+  { value: null, label: "home.customStatus.dontClear" },
+  { value: 30, label: "home.customStatus.thirtyMinutes" },
+  { value: 60, label: "home.customStatus.oneHour" },
+  { value: 240, label: "home.customStatus.fourHours" },
+  { value: 1440, label: "home.customStatus.oneDay" },
 ];
 
 const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
@@ -66,13 +70,13 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
         onClick={(e) => e.stopPropagation()}
       >
         <h3 class="text-lg font-semibold text-text-primary mb-4">
-          Set Custom Status
+          {t("home.customStatus.title")}
         </h3>
 
         <div class="flex gap-2 mb-4">
           <input
             type="text"
-            placeholder="😀"
+            placeholder={EMOJI_PLACEHOLDER}
             value={emoji()}
             onInput={(e) => setEmoji(e.currentTarget.value)}
             class="w-12 px-2 py-2 bg-surface-base rounded-lg text-center text-xl border border-white/10 focus:border-accent-primary focus:outline-none transition-colors"
@@ -80,7 +84,7 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
           />
           <input
             type="text"
-            placeholder="What's happening?"
+            placeholder={t("home.customStatus.placeholder")}
             value={text()}
             onInput={(e) => setText(e.currentTarget.value)}
             class="flex-1 px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors"
@@ -90,7 +94,7 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
 
         <div class="mb-4">
           <label class="text-sm text-text-secondary mb-1 block">
-            Clear after
+            {t("home.customStatus.clearAfter")}
           </label>
           <select
             value={expiryMinutes() ?? ""}
@@ -103,7 +107,7 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
           >
             <For each={expiryOptions}>
               {({ value, label }) => (
-                <option value={value ?? ""}>{label}</option>
+                <option value={value ?? ""}>{t(label)}</option>
               )}
             </For>
           </select>
@@ -114,20 +118,20 @@ const CustomStatusModal: Component<CustomStatusModalProps> = (props) => {
             onClick={handleClear}
             class="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
           >
-            Clear Status
+            {t("home.customStatus.clear")}
           </button>
           <div class="flex gap-2">
             <button
               onClick={props.onClose}
               class="px-4 py-2 bg-surface-base rounded-lg hover:bg-white/10 transition-colors text-text-primary"
             >
-              Cancel
+              {t("common.cancel")}
             </button>
             <button
               onClick={handleSave}
               class="px-4 py-2 bg-accent-primary rounded-lg text-on-accent hover:bg-accent-primary/90 transition-colors"
             >
-              Save
+              {t("common.save")}
             </button>
           </div>
         </div>

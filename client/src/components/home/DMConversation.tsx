@@ -10,7 +10,7 @@ import {
   createSignal,
 } from "solid-js";
 import { Phone, Check, X } from "lucide-solid";
-import { t } from "@/i18n";
+import { t, plural } from "@/i18n";
 import { getSelectedDM, updateDMIconUrl } from "@/stores/dms";
 import { currentUser } from "@/stores/auth";
 import MessageList from "@/components/messages/MessageList";
@@ -270,7 +270,10 @@ const DMConversation: Component = () => {
 
           <Show when={isGroupDM()}>
             <span class="text-sm text-text-secondary">
-              {t("dm.header.members", { count: dm()?.participants.length ?? 0 })}
+              {plural(dm()?.participants.length ?? 0, {
+                one: "dm.header.members.one",
+                other: "dm.header.members.other",
+              })}
             </span>
           </Show>
 

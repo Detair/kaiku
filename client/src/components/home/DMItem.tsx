@@ -11,7 +11,8 @@ import { dmsState, selectDM } from "@/stores/dms";
 import { hasActiveCallInChannel, callState } from "@/stores/call";
 import { isUserOnline } from "@/stores/presence";
 import { currentUser } from "@/stores/auth";
-import { formatShortDate } from "@/i18n/format";
+import { t } from "@/i18n";
+import { formatCompactRelative, formatShortDate } from "@/i18n/format";
 
 interface DMItemProps {
   dm: DMListItem;
@@ -37,7 +38,7 @@ const DMItem: Component<DMItemProps> = (props) => {
     // For 1:1 DMs, show the other participant's display name
     const others = otherParticipants();
     if (others.length === 0) {
-      return props.dm.participants[0]?.display_name ?? "Unknown";
+      return props.dm.participants[0]?.display_name ?? t("dm.header.unknownUser");
     }
     return others[0].display_name;
   };
@@ -66,29 +67,26 @@ const DMItem: Component<DMItemProps> = (props) => {
   const formatTimestamp = (dateStr: string) => {
     const date = new Date(dateStr);
     const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
+    const diffDays = Math.floor((now.getTime() - date.getTime()) / 86400000);
 
-    if (diffMins < 1) return "now";
-    if (diffMins < 60) return `${diffMins}m`;
-    if (diffHours < 24) return `${diffHours}h`;
-    if (diffDays < 7) return `${diffDays}d`;
+    if (diffDays < 7) return formatCompactRelative(dateStr, now);
     return formatShortDate(date, now);
   };
 
   const lastMessagePreview = () => {
     const msg = props.dm.last_message;
-    if (!msg) return "No messages yet";
+    if (!msg) return t("dm.item.noMessages");
 
-    const prefix = isGroupDM() ? `${msg.username}: ` : "";
     const content =
       msg.content.length > 30
         ? msg.content.substring(0, 30) + "..."
         : msg.content;
-    return prefix + content;
+    if (!isGroupDM()) return content;
+    return t("dm.item.groupPreview", { username: msg.username, content });
   };
+
+  const callTitle = () =>
+    isIncomingCall() ? t("dm.item.incomingCall") : t("dm.item.activeCall");
 
   return (
     <div class="relative group">
@@ -138,7 +136,7 @@ const DMItem: Component<DMItemProps> = (props) => {
             <div class="w-10 h-10 rounded-full overflow-hidden">
               <img
                 src={props.dm.icon_url!}
-                alt="DM avatar"
+                alt={t("dm.item.avatarAlt")}
                 class="w-full h-full object-cover"
               />
             </div>
@@ -157,7 +155,7 @@ const DMItem: Component<DMItemProps> = (props) => {
                 "bg-green-500 animate-pulse": isIncomingCall(),
                 "bg-green-500": !isIncomingCall(),
               }}
-              title={isIncomingCall() ? "Incoming call" : "Active call"}
+              title={callTitle()}
             >
               <Phone class="w-2.5 h-2.5 text-white" />
             </div>

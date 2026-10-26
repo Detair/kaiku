@@ -4,7 +4,10 @@ import { authState, updateUser } from "@/stores/auth";
 import Avatar from "@/components/ui/Avatar";
 import * as tauri from "@/lib/tauri";
 import { validateFileSize, getUploadLimitText } from "@/lib/tauri";
+import { formatFileSize } from "@/lib/tauri/common";
 import { showToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
 import ChangePasswordModal from "./ChangePasswordModal";
 import LinkedAccountsSection from "./LinkedAccountsSection";
 import SessionsSection from "./SessionsSection";
@@ -26,13 +29,18 @@ const AccountSettings: Component = () => {
     // Frontend validation before attempting upload
     const validationError = validateFileSize(file, "avatar");
     if (validationError) {
-      setError(validationError);
+      setError(
+        t("settings.account.avatarTooLarge", {
+          size: formatFileSize(file.size),
+          max: getUploadLimitText("avatar"),
+        }),
+      );
       return;
     }
 
     // Validate file type
     if (!file.type.startsWith("image/")) {
-      setError("File must be an image");
+      setError(t("settings.account.avatarNotImage"));
       return;
     }
 
@@ -43,18 +51,17 @@ const AccountSettings: Component = () => {
       updateUser(updatedUser);
       showToast({
         type: "success",
-        title: "Avatar Updated",
-        message: "Your profile picture has been updated successfully.",
+        title: t("settings.account.avatarUpdatedTitle"),
+        message: t("settings.account.avatarUpdatedMessage"),
         duration: 3000,
       });
     } catch (err) {
       console.error("Failed to upload avatar:", err);
-      const errorMsg =
-        err instanceof Error ? err.message : "Failed to upload avatar";
+      const errorMsg = errorText(err, "settings.account.uploadFailed");
       setError(errorMsg);
       showToast({
         type: "error",
-        title: "Upload Failed",
+        title: t("settings.account.uploadFailedTitle"),
         message: errorMsg,
         duration: 8000,
       });
@@ -68,9 +75,9 @@ const AccountSettings: Component = () => {
   return (
     <div class="space-y-6">
       <div>
-        <h3 class="text-lg font-semibold text-text-primary mb-1">My Account</h3>
+        <h3 class="text-lg font-semibold text-text-primary mb-1">{t("settings.account.title")}</h3>
         <p class="text-sm text-text-secondary">
-          Manage your account information and profile picture.
+          {t("settings.account.subtitle")}
         </p>
       </div>
 
@@ -112,27 +119,27 @@ const AccountSettings: Component = () => {
               disabled={isUploading()}
             >
               <Upload class="w-4 h-4" />
-              {isUploading() ? "Uploading..." : "Change Avatar"}
+              {isUploading() ? t("settings.account.uploading") : t("settings.account.changeAvatar")}
             </button>
           </div>
           <p class="text-xs text-text-secondary">
-            Maximum size: {getUploadLimitText("avatar")}
+            {t("settings.account.maxSize", { size: getUploadLimitText("avatar") })}
           </p>
           <div class="space-y-1">
             <div class="flex items-center gap-2 text-sm">
-              <span class="text-text-secondary w-20">Username:</span>
+              <span class="text-text-secondary w-20">{t("settings.account.username")}</span>
               <span class="text-text-primary font-mono">
                 @{user()?.username}
               </span>
             </div>
             <div class="flex items-center gap-2 text-sm">
-              <span class="text-text-secondary w-20">Email:</span>
+              <span class="text-text-secondary w-20">{t("settings.account.email")}</span>
               <span class="text-text-primary">
-                {user()?.email || "Not set"}
+                {user()?.email || t("settings.account.emailNotSet")}
               </span>
             </div>
             <div class="flex items-center gap-2 text-sm">
-              <span class="text-text-secondary w-20">User ID:</span>
+              <span class="text-text-secondary w-20">{t("settings.account.userId")}</span>
               <span class="text-text-secondary text-xs font-mono select-all">
                 {user()?.id}
               </span>
@@ -149,15 +156,15 @@ const AccountSettings: Component = () => {
 
       <div class="pt-4 border-t border-white/5">
         <h4 class="text-sm font-semibold text-text-secondary uppercase tracking-wide mb-4">
-          Password & Authentication
+          {t("settings.account.passwordSection")}
         </h4>
         <button
           class="w-full text-left px-4 py-3 rounded-xl bg-surface-layer2 hover:bg-surface-highlight border border-white/5 transition-colors"
           onClick={() => setIsPasswordModalOpen(true)}
         >
-          <div class="font-medium text-text-primary">Change Password</div>
+          <div class="font-medium text-text-primary">{t("common.changePassword")}</div>
           <div class="text-xs text-text-secondary mt-0.5">
-            Update your password to keep your account secure
+            {t("settings.account.changePasswordHint")}
           </div>
         </button>
       </div>

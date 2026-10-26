@@ -11,6 +11,7 @@
 
 import { Component, For, Show, createSignal } from "solid-js";
 import { Star, ChevronDown, ChevronRight, Hash, Volume2 } from "lucide-solid";
+import { t } from "@/i18n";
 import { favoritesByGuild, isLoading } from "@/stores/favorites";
 import { selectGuild } from "@/stores/guilds";
 import { selectChannel, channelsState } from "@/stores/channels";
@@ -37,7 +38,7 @@ const FavoritesSection: Component = () => {
           onClick={() => setIsExpanded((prev) => !prev)}
         >
           <Star class="w-3.5 h-3.5 text-yellow-400" />
-          <span>Favorites</span>
+          <span>{t("home.favorites.title")}</span>
           <span class="ml-auto">
             <Show
               when={isExpanded()}
@@ -52,7 +53,7 @@ const FavoritesSection: Component = () => {
         <Show when={isExpanded()}>
           <div class="px-2 pb-2 space-y-2">
             <Show when={isLoading()}>
-              <div class="px-2 py-1 text-xs text-text-muted">Loading...</div>
+              <div class="px-2 py-1 text-xs text-text-muted">{t("common.loading")}</div>
             </Show>
 
             <For each={favoritesByGuild()}>

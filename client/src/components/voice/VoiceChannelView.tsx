@@ -12,6 +12,7 @@ import { voiceState, getParticipants, joinVoice } from "@/stores/voice";
 import VoiceControls from "./VoiceControls";
 import VoiceTileGrid from "./VoiceTileGrid";
 import { showToast } from "@/components/ui/Toast";
+import { t, plural } from "@/i18n";
 
 interface VoiceChannelViewProps {
   channelId: string;
@@ -31,7 +32,7 @@ const VoiceChannelView: Component<VoiceChannelViewProps> = (props) => {
     } catch {
       showToast({
         type: "error",
-        title: "Could not join voice channel",
+        title: t("voice.channel.joinFailed"),
         duration: 8000,
       });
     }
@@ -52,10 +53,12 @@ const VoiceChannelView: Component<VoiceChannelViewProps> = (props) => {
             <p class="text-text-secondary text-sm">
               <Show
                 when={participants().length > 0}
-                fallback="No one is in this channel yet."
+                fallback={t("voice.channel.empty")}
               >
-                {participants().length}{" "}
-                {participants().length === 1 ? "person" : "people"} connected
+                {plural(participants().length, {
+                  one: "voice.channel.connected.one",
+                  other: "voice.channel.connected.other",
+                })}
               </Show>
             </p>
           </div>
@@ -64,7 +67,7 @@ const VoiceChannelView: Component<VoiceChannelViewProps> = (props) => {
             disabled={isConnecting()}
             class="px-8 py-3 bg-accent-primary text-on-accent rounded-xl font-semibold text-lg hover:opacity-90 transition-opacity disabled:opacity-50"
           >
-            {isConnecting() ? "Connecting..." : "Join Voice"}
+            {isConnecting() ? t("voice.status.connecting") : t("voice.channel.join")}
           </button>
         </div>
       </Show>

@@ -6,6 +6,7 @@ import {
   createSignal,
   onMount,
 } from "solid-js";
+import { t } from "@/i18n";
 import { Users, Plus, ChevronDown } from "lucide-solid";
 import { dmsState, loadDMs, selectFriendsTab } from "@/stores/dms";
 import DMItem from "./DMItem";
@@ -55,7 +56,7 @@ const HomeSidebar: Component = () => {
           class="w-full px-3 py-2 rounded-xl text-sm text-text-muted text-left outline-none border border-white/5"
           style={{"background-color":"var(--color-surface-base)"}}
         >
-          Find conversation...
+          {t("home.sidebar.findConversation")}
         </button>
       </div>
 
@@ -79,7 +80,7 @@ const HomeSidebar: Component = () => {
           }}
         >
           <Users class="w-5 h-5 transition-colors" />
-          <span class="font-medium">Friends</span>
+          <span class="font-medium">{t("home.sidebar.friends")}</span>
         </button>
 
         {/* Quick Add Friend Button */}
@@ -89,7 +90,7 @@ const HomeSidebar: Component = () => {
             setShowAddFriendModal(true);
           }}
           class="p-2 rounded-lg text-text-secondary hover:text-accent-success hover:bg-white/10 transition-colors"
-          title="Add Friend"
+          title={t("home.sidebar.addFriend")}
         >
           <Plus class="w-5 h-5" />
         </button>
@@ -109,7 +110,7 @@ const HomeSidebar: Component = () => {
             classList={{ "-rotate-90": !showDMs() }}
           />
           <span class="text-xs font-semibold text-text-secondary uppercase tracking-wide group-hover:text-text-primary transition-colors">
-            Direct Messages
+            {t("home.sidebar.directMessages")}
           </span>
         </button>
 
@@ -117,7 +118,7 @@ const HomeSidebar: Component = () => {
           data-testid="new-dm-button"
           onClick={() => setShowNewMessage(true)}
           class="p-1 rounded hover:bg-white/10 transition-colors text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100"
-          title="New Message"
+          title={t("dm.new.title")}
         >
           <Plus class="w-4 h-4" />
         </button>
@@ -130,7 +131,7 @@ const HomeSidebar: Component = () => {
             when={!dmsState.isLoading}
             fallback={
               <div class="flex items-center justify-center py-8">
-                <span class="text-text-secondary text-sm">Loading...</span>
+                <span class="text-text-secondary text-sm">{t("common.loading")}</span>
               </div>
             }
           >
@@ -138,15 +139,15 @@ const HomeSidebar: Component = () => {
               when={dmsState.dms.length > 0}
               fallback={
                 <div class="text-center py-8 px-4">
-                  <img src={flokiThinking} alt="" class="w-12 h-12 mx-auto mb-2 object-contain" loading="lazy" />
+                  <img src={flokiThinking} alt={""} class="w-12 h-12 mx-auto mb-2 object-contain" loading="lazy" />
                   <p class="text-text-secondary text-sm">
-                    No conversations yet
+                    {t("home.sidebar.empty")}
                   </p>
                   <button
                     onClick={() => setShowNewMessage(true)}
                     class="mt-2 text-accent-primary text-sm hover:underline"
                   >
-                    Start a conversation
+                    {t("home.sidebar.startConversation")}
                   </button>
                 </div>
               }

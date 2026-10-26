@@ -7,6 +7,7 @@
 import { Component, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X } from "lucide-solid";
+import { t } from "@/i18n";
 
 interface ImageLightboxProps {
   src: string;
@@ -38,7 +39,7 @@ const ImageLightbox: Component<ImageLightboxProps> = (props) => {
         <button
           class="absolute top-4 right-4 p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition-colors z-10"
           onClick={props.onClose}
-          title="Close"
+          title={t("common.close")}
         >
           <X class="w-6 h-6" />
         </button>

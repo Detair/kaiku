@@ -167,7 +167,7 @@ export type UploadType = "avatar" | "emoji" | "attachment";
  *
  * Matches server implementation in util.rs for consistency.
  */
-function formatFileSize(bytes: number): string {
+export function formatFileSize(bytes: number): string {
   if (bytes < 1024) {
     return `${bytes} bytes`;
   } else if (bytes < 1024 * 1024) {
@@ -643,6 +643,8 @@ export class HttpError extends Error {
   constructor(
     public readonly status: number,
     message: string,
+    /** Server error code from the body's `error` field (contract C16). */
+    public readonly code?: string,
   ) {
     super(message);
     this.name = "HttpError";
@@ -748,7 +750,7 @@ async function sendHttpRequest<T>(
     if (errorBody && typeof errorBody === "object") {
       // Detect MFA_REQUIRED from server
       if (response.status === 403 && errorBody.error === "MFA_REQUIRED") {
-        throw new HttpError(403, "MFA_REQUIRED");
+        throw new HttpError(403, "MFA_REQUIRED", "MFA_REQUIRED");
       }
       // Contract C4: the account still has to replace an admin-issued
       // temporary password. The auth store switches to the change screen.
@@ -759,12 +761,16 @@ async function sendHttpRequest<T>(
         if (typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_REQUIRED_EVENT));
         }
-        throw new HttpError(403, PASSWORD_CHANGE_REQUIRED);
+        throw new HttpError(403, PASSWORD_CHANGE_REQUIRED, PASSWORD_CHANGE_REQUIRED);
       }
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     }
 
-    throw new HttpError(response.status, errorMessage);
+    const code =
+      errorBody && typeof errorBody === "object" && typeof errorBody.error === "string"
+        ? errorBody.error
+        : undefined;
+    throw new HttpError(response.status, errorMessage, code);
   }
 
   // Handle empty responses

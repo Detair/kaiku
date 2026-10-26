@@ -15,6 +15,7 @@ import {
   lazy,
   Suspense,
 } from "solid-js";
+import { t } from "@/i18n";
 import { Settings, Shield, LogOut } from "lucide-solid";
 import { authState, logout } from "@/stores/auth";
 import { adminState, checkAdminStatus } from "@/stores/admin";
@@ -61,6 +62,11 @@ const UserPanel: Component = () => {
     return `${customStatus.emoji ? `${customStatus.emoji} ` : ""}${customStatus.text}`.trim();
   };
 
+  const adminLabel = () =>
+    adminState.isElevated
+      ? t("home.userPanel.adminPanelElevated")
+      : t("home.userPanel.adminPanel");
+
   const handleCustomStatusSave = async (status: CustomStatus | null) => {
     await setMyCustomStatus(status);
     setShowCustomStatusModal(false);
@@ -93,7 +99,7 @@ const UserPanel: Component = () => {
               data-testid="change-status-button"
               data-current-status={user()?.status || "online"}
               onClick={() => setShowStatusPicker(!showStatusPicker())}
-              title="Change Status"
+              title={t("home.userPanel.changeStatus")}
             >
               <Avatar
                 src={user()!.avatar_url}
@@ -127,12 +133,8 @@ const UserPanel: Component = () => {
                 "text-text-secondary hover:text-accent-primary":
                   !adminState.isElevated,
               }}
-              title={
-                adminState.isElevated ? "Admin Panel (Elevated)" : "Admin Panel"
-              }
-              aria-label={
-                adminState.isElevated ? "Admin Panel (Elevated)" : "Admin Panel"
-              }
+              title={adminLabel()}
+              aria-label={adminLabel()}
               onClick={() => setShowAdmin(true)}
             >
               <Shield class="w-4 h-4" />
@@ -141,7 +143,7 @@ const UserPanel: Component = () => {
           <button
             class="p-1.5 text-text-secondary hover:text-accent-primary hover:bg-white/10 rounded-lg transition-all duration-200"
             data-testid="user-settings-button"
-            title="User Settings" aria-label="User Settings"
+            title={t("home.userPanel.settings")} aria-label={t("home.userPanel.settings")}
             onClick={() => setShowSettings(true)}
           >
             <Settings class="w-4 h-4" />
@@ -149,7 +151,7 @@ const UserPanel: Component = () => {
           <button
             data-testid="logout-button"
             class="p-1.5 text-text-secondary hover:text-accent-danger hover:bg-white/10 rounded-lg transition-all duration-200"
-            title="Logout" aria-label="Logout"
+            title={t("home.userPanel.logout")} aria-label={t("home.userPanel.logout")}
             onClick={() => logout()}
           >
             <LogOut class="w-4 h-4" />

@@ -22,6 +22,7 @@ import { AVAILABLE_SOUNDS, type SoundInfo } from "@/lib/sound/types";
 import { testSound } from "@/lib/sound";
 import { preferences, updatePreference } from "@/stores/preferences";
 import { sendOsNotification } from "@/lib/notifications";
+import { t } from "@/i18n";
 
 const NotificationSettings: Component = () => {
   const [isTesting, setIsTesting] = createSignal(false);
@@ -33,11 +34,11 @@ const NotificationSettings: Component = () => {
       return null;
     }
     if (isWithinQuietHours()) {
-      return { active: true, text: "Quiet hours active" };
+      return { active: true, text: t("notifications.quietHours.active") };
     }
     return {
       active: false,
-      text: `Next quiet period: ${quietHours.start_time}`,
+      text: t("notifications.quietHours.next", { time: quietHours.start_time }),
     };
   });
 
@@ -69,7 +70,7 @@ const NotificationSettings: Component = () => {
       {/* Master enable toggle */}
       <div>
         <h3 class="text-lg font-semibold mb-4 text-text-primary">
-          Sound Notifications
+          {t("notifications.sound.title")}
         </h3>
 
         <label class="flex items-center gap-3 cursor-pointer">
@@ -79,7 +80,7 @@ const NotificationSettings: Component = () => {
             onChange={(e) => setSoundEnabled(e.currentTarget.checked)}
             class="w-5 h-5 rounded border-2 border-white/30 bg-transparent checked:bg-accent-primary checked:border-accent-primary transition-colors cursor-pointer accent-accent-primary"
           />
-          <span class="text-text-primary">Enable notification sounds</span>
+          <span class="text-text-primary">{t("notifications.sound.enable")}</span>
         </label>
       </div>
 
@@ -90,10 +91,10 @@ const NotificationSettings: Component = () => {
         }}
       >
         <h4 class="text-base font-medium mb-3 text-text-primary">
-          Notification Sound
+          {t("notifications.sound.selectTitle")}
         </h4>
         <p class="text-sm text-text-secondary mb-4">
-          Choose the sound that plays for new messages
+          {t("notifications.sound.selectHint")}
         </p>
 
         <div class="space-y-3">
@@ -147,7 +148,7 @@ const NotificationSettings: Component = () => {
           "opacity-50 pointer-events-none": !soundSettings().enabled,
         }}
       >
-        <h4 class="text-base font-medium mb-3 text-text-primary">Volume</h4>
+        <h4 class="text-base font-medium mb-3 text-text-primary">{t("notifications.sound.volume")}</h4>
 
         <div class="flex items-center gap-4">
           <Volume2 class="w-5 h-5 text-text-secondary flex-shrink-0" />
@@ -168,7 +169,7 @@ const NotificationSettings: Component = () => {
           />
 
           <span class="text-sm text-text-secondary w-12 text-right">
-            {soundSettings().volume}%
+            {t("common.unit.percent", { value: soundSettings().volume })}
           </span>
 
           <button
@@ -178,7 +179,7 @@ const NotificationSettings: Component = () => {
                    text-text-primary text-sm font-medium transition-colors disabled:opacity-50"
           >
             <Play class="w-4 h-4" />
-            Test
+            {t("notifications.sound.test")}
           </button>
         </div>
       </div>
@@ -187,11 +188,11 @@ const NotificationSettings: Component = () => {
       <div>
         <h3 class="text-lg font-semibold mb-4 text-text-primary flex items-center gap-2">
           <Moon class="w-5 h-5" />
-          Quiet Hours
+          {t("notifications.quietHours.title")}
         </h3>
 
         <p class="text-sm text-text-secondary mb-4">
-          Automatically suppress notification sounds during scheduled times
+          {t("notifications.quietHours.hint")}
         </p>
 
         <label class="flex items-center gap-3 cursor-pointer mb-4">
@@ -201,7 +202,7 @@ const NotificationSettings: Component = () => {
             onChange={(e) => setQuietHoursEnabled(e.currentTarget.checked)}
             class="w-5 h-5 rounded border-2 border-white/30 bg-transparent checked:bg-accent-primary checked:border-accent-primary transition-colors cursor-pointer accent-accent-primary"
           />
-          <span class="text-text-primary">Enable quiet hours</span>
+          <span class="text-text-primary">{t("notifications.quietHours.enable")}</span>
         </label>
 
         <div
@@ -212,7 +213,7 @@ const NotificationSettings: Component = () => {
           <div class="flex items-center gap-4 mb-4">
             <div class="flex items-center gap-2">
               <Clock class="w-4 h-4 text-text-secondary" />
-              <span class="text-sm text-text-secondary">From</span>
+              <span class="text-sm text-text-secondary">{t("notifications.quietHours.from")}</span>
               <input
                 type="time"
                 value={getQuietHours().start_time}
@@ -227,7 +228,7 @@ const NotificationSettings: Component = () => {
             </div>
 
             <div class="flex items-center gap-2">
-              <span class="text-sm text-text-secondary">To</span>
+              <span class="text-sm text-text-secondary">{t("notifications.quietHours.to")}</span>
               <input
                 type="time"
                 value={getQuietHours().end_time}
@@ -264,11 +265,11 @@ const NotificationSettings: Component = () => {
       <div>
         <h3 class="text-lg font-semibold mb-4 text-text-primary flex items-center gap-2">
           <Bell class="w-5 h-5" />
-          Desktop Notifications
+          {t("notifications.desktop.title")}
         </h3>
 
         <p class="text-sm text-text-secondary mb-4">
-          Show native OS notifications when the window is not focused
+          {t("notifications.desktop.hint")}
         </p>
 
         <div class="space-y-3">
@@ -284,7 +285,7 @@ const NotificationSettings: Component = () => {
               }
               class="w-5 h-5 rounded border-2 border-white/30 bg-transparent checked:bg-accent-primary checked:border-accent-primary transition-colors cursor-pointer accent-accent-primary"
             />
-            <span class="text-text-primary">Enable desktop notifications</span>
+            <span class="text-text-primary">{t("notifications.desktop.enable")}</span>
           </label>
 
           <label
@@ -304,7 +305,7 @@ const NotificationSettings: Component = () => {
               }
               class="w-5 h-5 rounded border-2 border-white/30 bg-transparent checked:bg-accent-primary checked:border-accent-primary transition-colors cursor-pointer accent-accent-primary"
             />
-            <span class="text-text-primary">Show message content in notifications</span>
+            <span class="text-text-primary">{t("notifications.desktop.showContent")}</span>
           </label>
 
           <label
@@ -324,7 +325,7 @@ const NotificationSettings: Component = () => {
               }
               class="w-5 h-5 rounded border-2 border-white/30 bg-transparent checked:bg-accent-primary checked:border-accent-primary transition-colors cursor-pointer accent-accent-primary"
             />
-            <span class="text-text-primary">Flash taskbar on notification</span>
+            <span class="text-text-primary">{t("notifications.desktop.flashTaskbar")}</span>
           </label>
         </div>
 
@@ -332,7 +333,7 @@ const NotificationSettings: Component = () => {
           onClick={() => {
             sendOsNotification(
               { type: "message_dm", channelId: "test", isDm: true },
-              { username: "Kaiku", content: "This is a test notification!", guildName: null, channelName: null },
+              { username: "Kaiku", content: t("notifications.desktop.testBody"), guildName: null, channelName: null },
               preferences().notifications?.show_content ?? true,
               true,
             );
@@ -342,15 +343,13 @@ const NotificationSettings: Component = () => {
                  text-text-primary text-sm font-medium transition-colors disabled:opacity-50"
         >
           <Bell class="w-4 h-4" />
-          Send test notification
+          {t("notifications.desktop.sendTest")}
         </button>
       </div>
 
       {/* Info text */}
       <p class="text-xs text-text-muted">
-        Sounds will only play for messages from others, and respect per-channel
-        notification settings. Setting your status to "Do Not Disturb" will also
-        suppress sounds.
+        {t("notifications.settings.info")}
       </p>
     </div>
   );

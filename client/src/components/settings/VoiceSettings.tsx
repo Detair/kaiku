@@ -14,26 +14,26 @@ const VoiceSettings: Component = () => {
     return (
         <div class="space-y-6">
             <div>
-                <h3 class="text-lg font-semibold text-text-primary mb-1">Voice Settings</h3>
+                <h3 class="text-lg font-semibold text-text-primary mb-1">{t("settings.voice.title")}</h3>
                 <p class="text-sm text-text-secondary">
-                    Configure how your voice is captured and processed.
+                    {t("settings.voice.subtitle")}
                 </p>
             </div>
 
-            <Show when={!isSettingsLoading() && appSettings()} fallback={<p class="text-text-secondary">Loading...</p>}>
+            <Show when={!isSettingsLoading() && appSettings()} fallback={<p class="text-text-secondary">{t("common.loading")}</p>}>
                 {(settings) => (
                     <>
                         {/* Audio Processing */}
                         <div class="space-y-4">
                             <ToggleCard
-                                label="Noise Suppression"
-                                description="Filters out background noise like keyboard typing and fans"
+                                label={t("settings.voice.noiseSuppression")}
+                                description={t("settings.voice.noiseSuppressionHint")}
                                 checked={settings().audio.noise_suppression}
                                 onChange={(v) => updateAudioSetting("noise_suppression", v)}
                             />
                             <ToggleCard
-                                label="Echo Cancellation"
-                                description="Prevents your microphone from picking up audio from your speakers"
+                                label={t("settings.voice.echoCancellation")}
+                                description={t("settings.voice.echoCancellationHint")}
                                 checked={settings().audio.echo_cancellation}
                                 onChange={(v) => updateAudioSetting("echo_cancellation", v)}
                             />
@@ -44,8 +44,8 @@ const VoiceSettings: Component = () => {
                             {/* VAD */}
                             <div class="p-4 rounded-xl border border-white/10 bg-surface-layer2">
                                 <ToggleRow
-                                    label="Voice Activity Detection"
-                                    description="Automatically activate your microphone when you speak"
+                                    label={t("settings.voice.vad")}
+                                    description={t("settings.voice.vadHint")}
                                     checked={settings().voice.voice_activity_detection}
                                     onChange={(v) => updateVoiceSetting("voice_activity_detection", v)}
                                 />
@@ -60,15 +60,15 @@ const VoiceSettings: Component = () => {
                             {/* PTT */}
                             <div class="p-4 rounded-xl border border-white/10 bg-surface-layer2">
                                 <ToggleRow
-                                    label="Push to Talk"
-                                    description="Only transmit voice when a specific key is held"
+                                    label={t("settings.voice.pushToTalk")}
+                                    description={t("settings.voice.pushToTalkHint")}
                                     checked={settings().voice.push_to_talk}
                                     onChange={(v) => updateVoiceSetting("push_to_talk", v)}
                                 />
                                 <Show when={settings().voice.push_to_talk}>
                                     <div class="mt-4 pt-4 border-t border-white/10 space-y-3">
                                         <KeyBindInput
-                                            label="PTT Key"
+                                            label={t("settings.voice.pttKey")}
                                             currentKey={settings().voice.push_to_talk_key}
                                             otherKey={settings().voice.push_to_mute_key}
                                             onBind={(code) => updateVoiceSetting("push_to_talk_key", code)}
@@ -79,7 +79,7 @@ const VoiceSettings: Component = () => {
                                             autoCapture={!settings().voice.push_to_talk_key}
                                         />
                                         <DelaySlider
-                                            label="Release Delay"
+                                            label={t("settings.voice.releaseDelay")}
                                             value={settings().voice.push_to_talk_release_delay}
                                             onChange={(v) => updateVoiceSetting("push_to_talk_release_delay", v)}
                                         />
@@ -90,15 +90,15 @@ const VoiceSettings: Component = () => {
                             {/* PTM */}
                             <div class="p-4 rounded-xl border border-white/10 bg-surface-layer2">
                                 <ToggleRow
-                                    label="Push to Mute"
-                                    description="Mute your microphone while a specific key is held"
+                                    label={t("settings.voice.pushToMute")}
+                                    description={t("settings.voice.pushToMuteHint")}
                                     checked={settings().voice.push_to_mute}
                                     onChange={(v) => updateVoiceSetting("push_to_mute", v)}
                                 />
                                 <Show when={settings().voice.push_to_mute}>
                                     <div class="mt-4 pt-4 border-t border-white/10 space-y-3">
                                         <KeyBindInput
-                                            label="PTM Key"
+                                            label={t("settings.voice.ptmKey")}
                                             currentKey={settings().voice.push_to_mute_key}
                                             otherKey={settings().voice.push_to_talk_key}
                                             onBind={(code) => updateVoiceSetting("push_to_mute_key", code)}
@@ -109,7 +109,7 @@ const VoiceSettings: Component = () => {
                                             autoCapture={!settings().voice.push_to_mute_key}
                                         />
                                         <DelaySlider
-                                            label="Release Delay"
+                                            label={t("settings.voice.releaseDelay")}
                                             value={settings().voice.push_to_mute_release_delay}
                                             onChange={(v) => updateVoiceSetting("push_to_mute_release_delay", v)}
                                         />
@@ -239,7 +239,7 @@ const KeyBindInput: Component<{
                     when={!capturing()}
                     fallback={
                         <div class="flex-1 px-3 py-2 rounded-lg border-2 border-accent-primary bg-accent-primary/20 text-text-primary text-sm animate-pulse">
-                            Press any key... (Esc to cancel)
+                            {t("settings.voice.pressAnyKey")}
                         </div>
                     }
                 >
@@ -249,7 +249,7 @@ const KeyBindInput: Component<{
                     >
                         <Show
                             when={props.currentKey}
-                            fallback={<span class="text-text-secondary">Click to set key...</span>}
+                            fallback={<span class="text-text-secondary">{t("settings.voice.clickToSetKey")}</span>}
                         >
                             <kbd class="px-2 py-0.5 bg-surface-highlight rounded border border-white/10 text-sm font-mono">
                                 {keyCodeToLabel(props.currentKey!)}
@@ -261,7 +261,7 @@ const KeyBindInput: Component<{
                     <button
                         onClick={() => props.onClear()}
                         class="p-2 rounded-lg text-text-secondary hover:text-accent-danger hover:bg-accent-danger/10 transition-colors text-lg leading-none"
-                        title="Clear key binding"
+                        title={t("settings.voice.clearKey")}
                     >
                         &times;
                     </button>
@@ -292,7 +292,7 @@ const DelaySlider: Component<{
     <div>
         <label class="text-sm font-medium text-text-primary flex items-center gap-2 mb-1">
             {props.label}
-            <span class="text-xs text-text-secondary font-normal">{props.value}ms</span>
+            <span class="text-xs text-text-secondary font-normal">{t("common.unit.ms", { value: props.value })}</span>
         </label>
         <input
             type="range"
@@ -318,7 +318,7 @@ const ThresholdSlider: Component<{
     return (
         <div class="mt-4 pt-4 border-t border-white/10">
             <label class="text-sm font-medium text-text-primary flex items-center gap-2 mb-2">
-                Sensitivity Threshold
+                {t("settings.voice.sensitivity")}
             </label>
             <input
                 type="range"

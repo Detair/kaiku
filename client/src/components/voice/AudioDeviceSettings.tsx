@@ -28,6 +28,7 @@ import type { AudioDeviceList, VoiceError, VoiceAdapter } from "@/lib/webrtc";
 import { setSpeaking } from "@/stores/voice";
 import { updateAudioSetting } from "@/stores/settings";
 import { showToast } from "@/components/ui/Toast";
+import { t, type MessageKey } from "@/i18n";
 
 interface AudioDeviceSettingsProps {
   onClose: () => void;
@@ -41,16 +42,26 @@ interface AudioDeviceSettingsProps {
 function getDeviceErrorMessage(error: VoiceError): string {
   switch (error.type) {
     case "permission_denied":
-      return "Microphone access denied. Please grant permission in your browser settings.";
+      return t("voice.audio.error.permissionDenied");
     case "device_not_found":
-      return "Audio device not found. Please check your device connections.";
+      return t("voice.audio.error.deviceNotFound");
     case "device_in_use":
-      return "Device is already in use by another application.";
+      return t("voice.audio.error.deviceInUse");
     case "unknown":
-      return `Audio device error: ${error.message}`;
+      return t("voice.audio.error.device", { message: error.message });
     default:
-      return `Failed to access audio device: ${error.type}`;
+      return t("voice.audio.error.access", { type: error.type });
   }
+}
+
+/** Device label with the fallback name and the "(Default)" marker applied. */
+function deviceOptionLabel(
+  device: { deviceId: string; label?: string; isDefault?: boolean },
+  fallbackKey: MessageKey,
+): string {
+  const label =
+    device.label || t(fallbackKey, { id: device.deviceId.slice(0, 8) });
+  return device.isDefault ? t("voice.audio.deviceDefault", { label }) : label;
 }
 
 const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
@@ -66,6 +77,14 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
   const [isLoading, setIsLoading] = createSignal(true);
   const [error, setError] = createSignal<string>("");
   const [noiseSuppression, setNoiseSuppression] = createSignal(true);
+
+  const levelHint = () => {
+    const level = testLevel();
+    if (level === 0) return t("voice.audio.hint.silent");
+    if (level < 20) return t("voice.audio.hint.quiet");
+    if (level > 70) return t("voice.audio.hint.loud");
+    return t("voice.audio.hint.good");
+  };
 
   // Cached voice adapter instance
   const [adapter, setAdapter] = createSignal<VoiceAdapter | null>(null);
@@ -122,7 +141,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       setIsLoading(false);
     } catch (err) {
       console.error("Failed to load devices:", err);
-      setError("Failed to load audio devices");
+      setError(t("voice.audio.error.loadFailed"));
       setIsLoading(false);
     }
   });
@@ -248,7 +267,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       console.error("Failed to set input device:", err);
       showToast({
         type: "error",
-        title: "Unexpected error while changing input device",
+        title: t("voice.audio.error.changeInput"),
         duration: 8000,
       });
     }
@@ -280,7 +299,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       console.error("Failed to set output device:", err);
       showToast({
         type: "error",
-        title: "Unexpected error while changing output device",
+        title: t("voice.audio.error.changeOutput"),
         duration: 8000,
       });
     }
@@ -319,7 +338,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       console.error("Failed to start mic test:", err);
       showToast({
         type: "error",
-        title: "Unexpected error while starting microphone test",
+        title: t("voice.audio.error.startMicTest"),
         duration: 8000,
       });
     }
@@ -392,7 +411,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       console.error("Failed to test speaker:", err);
       showToast({
         type: "error",
-        title: "Failed to play test sound. Check your browser permissions.",
+        title: t("voice.audio.error.speakerTest"),
         duration: 8000,
       });
       setIsTestingSpeaker(false);
@@ -497,12 +516,12 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
           onMouseDown={handleModalMouseDown}
         >
           <h2 class="text-lg font-semibold text-text-primary">
-            Audio Settings
+            {t("voice.audio.title")}
           </h2>
           <button
             onClick={props.onClose}
             class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-all duration-200"
-            title="Close"
+            title={t("common.close")}
           >
             <X class="w-5 h-5" />
           </button>
@@ -515,7 +534,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
             <div class="flex flex-col items-center justify-center py-8">
               <Loader2 class="w-8 h-8 text-accent-primary animate-spin mb-3" />
               <p class="text-sm text-text-secondary">
-                Loading audio devices...
+                {t("voice.audio.loading")}
               </p>
             </div>
           </Show>
@@ -540,7 +559,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 <div class="w-5 h-5 text-text-secondary">
                   <Mic />
                 </div>
-                Input Device
+                {t("voice.audio.inputDevice")}
               </label>
               <select
                 value={selectedInput()}
@@ -550,9 +569,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 <For each={devices().inputs}>
                   {(device) => (
                     <option value={device.deviceId}>
-                      {device.label ||
-                        `Microphone ${device.deviceId.slice(0, 8)}`}
-                      {device.isDefault ? " (Default)" : ""}
+                      {deviceOptionLabel(device, "voice.audio.microphoneFallback")}
                     </option>
                   )}
                 </For>
@@ -570,7 +587,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                       isTesting(),
                   }}
                 >
-                  {isTesting() ? "Stop Test" : "Test Microphone"}
+                  {isTesting() ? t("voice.micTest.stop") : t("voice.audio.testMicrophone")}
                 </button>
 
                 {/* Volume indicator */}
@@ -597,13 +614,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                       "text-text-secondary": testLevel() === 0,
                     }}
                   >
-                    {testLevel() === 0
-                      ? "Speak into your microphone to test"
-                      : testLevel() < 20
-                        ? "Too quiet - speak louder or move mic closer"
-                        : testLevel() > 70
-                          ? "Too loud - may distort, reduce volume or move mic away"
-                          : "Good level - keep speaking like this"}
+                    {levelHint()}
                   </p>
                 </Show>
               </div>
@@ -612,10 +623,10 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
               <div class="mt-4 flex items-center justify-between">
                 <div>
                   <div class="text-sm font-medium text-text-primary">
-                    Noise Suppression
+                    {t("voice.audio.noiseSuppression")}
                   </div>
                   <div class="text-xs text-text-secondary">
-                    Reduces background noise
+                    {t("voice.audio.noiseSuppressionHint")}
                   </div>
                 </div>
                 <button
@@ -641,7 +652,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 <div class="w-5 h-5 text-text-secondary">
                   <Headphones />
                 </div>
-                Output Device
+                {t("voice.audio.outputDevice")}
               </label>
               <select
                 value={selectedOutput()}
@@ -651,8 +662,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 <For each={devices().outputs}>
                   {(device) => (
                     <option value={device.deviceId}>
-                      {device.label || `Speaker ${device.deviceId.slice(0, 8)}`}
-                      {device.isDefault ? " (Default)" : ""}
+                      {deviceOptionLabel(device, "voice.audio.speakerFallback")}
                     </option>
                   )}
                 </For>
@@ -671,10 +681,10 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                       isTestingSpeaker(),
                   }}
                 >
-                  {isTestingSpeaker() ? "Playing..." : "Test Speaker"}
+                  {isTestingSpeaker() ? t("voice.audio.playing") : t("voice.audio.testSpeaker")}
                 </button>
                 <p class="text-xs text-text-secondary mt-2">
-                  Plays a short test tone through your selected output device
+                  {t("voice.audio.speakerHint")}
                 </p>
               </div>
             </div>
@@ -687,7 +697,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
             onClick={props.onClose}
             class="px-5 py-2.5 bg-accent-primary hover:bg-accent-primary/90 text-on-accent rounded-xl font-medium text-sm transition-all duration-200"
           >
-            Done
+            {t("voice.audio.done")}
           </button>
         </div>
       </div>

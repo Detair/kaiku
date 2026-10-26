@@ -21,6 +21,7 @@ import {
   joinVoice,
   leaveVoice,
 } from "@/lib/tauri";
+import { t } from "@/i18n";
 
 interface CallBannerProps {
   channelId: string;
@@ -134,15 +135,15 @@ const CallBanner: Component<CallBannerProps> = (props) => {
   const endReasonText = (reason: string): string => {
     switch (reason) {
       case "cancelled":
-        return "Call cancelled";
+        return t("voice.call.ended.cancelled");
       case "all_declined":
-        return "Call declined";
+        return t("voice.call.ended.declined");
       case "no_answer":
-        return "No answer";
+        return t("voice.call.ended.noAnswer");
       case "last_left":
-        return "Call ended";
+        return t("voice.call.ended.default");
       default:
-        return "Call ended";
+        return t("voice.call.ended.default");
     }
   };
 
@@ -163,10 +164,11 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                 </div>
                 <div>
                   <p class="text-text-primary font-medium">
-                    {(call() as { initiatorName: string }).initiatorName} is
-                    calling
+                    {t("voice.call.isCalling", {
+                      name: (call() as { initiatorName: string }).initiatorName,
+                    })}
                   </p>
-                  <p class="text-sm text-text-secondary">Incoming voice call</p>
+                  <p class="text-sm text-text-secondary">{t("voice.call.incoming")}</p>
                 </div>
               </div>
               <div class="flex items-center gap-2">
@@ -175,7 +177,7 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                   onClick={handleDecline}
                   disabled={isLoading()}
                   class="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors flex items-center justify-center w-10 h-10 disabled:opacity-50"
-                  title="Decline"
+                  title={t("voice.call.decline")}
                 >
                   <div style={{ "background-image": "var(--icon-leave)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-90" />
                 </button>
@@ -184,7 +186,7 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                   onClick={handleAccept}
                   disabled={isLoading()}
                   class="p-2 rounded-lg bg-green-500/20 hover:bg-green-500/30 transition-colors flex items-center justify-center w-10 h-10 disabled:opacity-50"
-                  title="Accept"
+                  title={t("voice.call.accept")}
                 >
                   <div style={{ "background-image": "var(--icon-pickup)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-90" />
                 </button>
@@ -200,8 +202,8 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                   <div style={{ "background-image": "var(--icon-pickup)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat animate-pulse" />
                 </div>
                 <div>
-                  <p class="text-text-primary font-medium">Calling...</p>
-                  <p class="text-sm text-text-secondary">Waiting for answer</p>
+                  <p class="text-text-primary font-medium">{t("voice.call.calling")}</p>
+                  <p class="text-sm text-text-secondary">{t("voice.call.waiting")}</p>
                 </div>
               </div>
               <button
@@ -209,7 +211,7 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                 onClick={handleCancel}
                 disabled={isLoading()}
                 class="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors flex items-center justify-center w-10 h-10 disabled:opacity-50"
-                title="Cancel"
+                title={t("common.cancel")}
               >
                 <div style={{ "background-image": "var(--icon-leave)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-90" />
               </button>
@@ -223,9 +225,9 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                 <div style={{ "background-image": "var(--icon-pickup)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat animate-pulse" />
               </div>
               <div>
-                <p class="text-text-primary font-medium">Connecting...</p>
+                <p class="text-text-primary font-medium">{t("voice.status.connecting")}</p>
                 <p class="text-sm text-text-secondary">
-                  Setting up voice connection
+                  {t("voice.call.settingUp")}
                 </p>
               </div>
             </div>
@@ -239,7 +241,7 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                   <div style={{ "background-image": "var(--icon-pickup)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat" />
                 </div>
                 <div>
-                  <p class="text-text-primary font-medium">In call</p>
+                  <p class="text-text-primary font-medium">{t("voice.call.inCall")}</p>
                   <div class="flex items-center gap-2 text-sm text-text-secondary">
                     <span>{formatDuration(callDuration())}</span>
                     <Show
@@ -264,7 +266,7 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                 onClick={handleLeave}
                 disabled={isLoading()}
                 class="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors flex items-center justify-center w-10 h-10 disabled:opacity-50"
-                title="Leave"
+                title={t("voice.call.leave")}
               >
                 <div style={{ "background-image": "var(--icon-leave)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-90" />
               </button>
@@ -278,10 +280,11 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                 <div style={{ "background-image": "var(--icon-pickup)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat animate-pulse" />
               </div>
               <div>
-                <p class="text-text-primary font-medium">Reconnecting...</p>
+                <p class="text-text-primary font-medium">{t("voice.call.reconnecting")}</p>
                 <p class="text-sm text-text-secondary">
-                  Connection lost, retrying (
-                  {(call() as { countdown: number }).countdown}s)
+                  {t("voice.call.reconnectingHint", {
+                    seconds: (call() as { countdown: number }).countdown,
+                  })}
                 </p>
               </div>
             </div>
@@ -299,8 +302,11 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                 </p>
                 <Show when={(call() as { duration?: number }).duration}>
                   <p class="text-sm text-text-secondary">
-                    Duration:{" "}
-                    {formatDuration((call() as { duration: number }).duration)}
+                    {t("voice.call.duration", {
+                      duration: formatDuration(
+                        (call() as { duration: number }).duration,
+                      ),
+                    })}
                   </p>
                 </Show>
               </div>

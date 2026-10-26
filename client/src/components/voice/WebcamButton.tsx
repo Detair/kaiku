@@ -38,7 +38,7 @@ const WebcamButton: Component = () => {
     <div class="relative">
       <button
         type="button"
-        aria-label={voiceState.webcamActive ? t("voice.webcamStop") : t("voice.webcamStart")}
+        aria-label={voiceState.webcamActive ? t("voice.webcam.stop") : t("voice.webcam.start")}
         onClick={handleClick}
         disabled={voiceState.state !== "connected" || loading()}
         class={`p-2 rounded-full transition-colors ${

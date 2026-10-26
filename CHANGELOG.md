@@ -57,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Onboarding now says "server" consistently.
+- Sign-in and sign-up errors now explain what went wrong (wrong password, username taken, sign-ups closed, server unreachable) instead of showing technical messages.
+- Error messages across the app (loading channels and messages, sending and editing messages, creating conversations, uploading an avatar, managing sessions, joining by invite, changing or resetting a password, voice devices) now say what went wrong in plain words instead of showing technical server messages. Messages that cannot be sent explain why (no permission, blocked, file too large, channel gone).
 - Dates in the direct-message list and the sessions list are shorter ("Oct 22" instead of "10/22/2026", year only when it differs) and follow your region's format.
 - Each phone now holds one push registration; signing in with another account on the same phone stops notifications for the previous account.
 - **End-to-end encryption paused for 1.0**: End-to-end encryption setup is no longer offered and the DM padlock is removed; direct messages are protected in transit (TLS) and on the server, and end-to-end encryption will return in a later release.
@@ -127,6 +130,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop notifications also appear when Kaiku is open on another screen, and push-to-talk no longer fires while typing or steals plain keys from games.
 - Closing a dialog with Escape no longer marks the channel as read, dismissing an upload error no longer sends your message, and the main dialogs work with the keyboard and screen readers.
 - Hard-to-read Solarized themes are no longer offered, and buttons, menu actions and Android warning buttons use readable colours.
+- '1 file ready to send' now reads correctly in the message box.
+- The new-message dialog counts one selected person correctly ("1 user selected").
 - Android: signing out ends the session, leaves voice and removes your data from the screen; going back from a call keeps it running with a bar to return to it.
 - Android: to sign in with another account, for example with a QR code, sign out first; Settings no longer offers QR sign-in while you are signed in.
 - Android: the app starts with the family server filled in, accepts a plain address, checks it before sign-in, lets you change the server, hides Register when it is closed, and opens your server automatically.
