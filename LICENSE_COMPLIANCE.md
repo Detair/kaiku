@@ -136,6 +136,7 @@ This document tracks all direct third-party dependencies and their licenses for 
 | keyring | 2.3 | MIT OR Apache-2.0 | OS keychain for secure credential storage |
 | sysinfo | 0.34 | MIT | System/process information for capture sources |
 | arboard | 3.6 | MIT OR Apache-2.0 | Clipboard access |
+| zbus | 5.x | MIT | Linux only: detect a system tray host over D-Bus |
 
 ### Logging & Observability
 

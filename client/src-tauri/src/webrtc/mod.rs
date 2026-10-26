@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use thiserror::Error;
-use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, info};
+use tokio::sync::{mpsc, Mutex, RwLock};
+use tracing::{debug, info, warn};
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::{APIBuilder, API};
@@ -105,6 +105,61 @@ impl Default for IceServerConfig {
     }
 }
 
+/// Remote ICE candidates that arrived before the remote description.
+///
+/// The server may send a candidate before (or while) its answer/offer is
+/// applied; `RTCPeerConnection::add_ice_candidate` rejects candidates until a
+/// remote description exists, which silently lost them. Candidates are held
+/// here and applied right after `set_remote_description`. The flag and the
+/// queue live under one lock so a candidate can never be queued after the
+/// flush already ran.
+#[derive(Default)]
+struct IceCandidateQueue {
+    remote_description_set: bool,
+    pending: Vec<RTCIceCandidateInit>,
+}
+
+impl IceCandidateQueue {
+    /// Queue `candidate` if no remote description is set yet; otherwise hand
+    /// it back for immediate use.
+    fn queue_or_pass(&mut self, candidate: RTCIceCandidateInit) -> Option<RTCIceCandidateInit> {
+        if self.remote_description_set {
+            Some(candidate)
+        } else {
+            self.pending.push(candidate);
+            None
+        }
+    }
+
+    /// Mark the remote description as set and take the queued candidates.
+    fn open(&mut self) -> Vec<RTCIceCandidateInit> {
+        self.remote_description_set = true;
+        std::mem::take(&mut self.pending)
+    }
+}
+
+/// Apply candidates released by [`IceCandidateQueue::open`]. A bad candidate
+/// is logged and skipped; it must not fail the description that was just set.
+async fn apply_queued_candidates(
+    pc: &RTCPeerConnection,
+    candidates: Vec<RTCIceCandidateInit>,
+    which: &str,
+) {
+    if candidates.is_empty() {
+        return;
+    }
+    debug!(
+        count = candidates.len(),
+        pc = which,
+        "Applying queued ICE candidates"
+    );
+    for candidate in candidates {
+        if let Err(e) = pc.add_ice_candidate(candidate).await {
+            warn!(pc = which, "Queued ICE candidate rejected: {e}");
+        }
+    }
+}
+
 /// WebRTC client for voice chat and screen sharing
 pub struct WebRtcClient {
     api: Arc<API>,
@@ -124,6 +179,10 @@ pub struct WebRtcClient {
 
     // Subscriber PeerConnection — receives remote tracks
     subscriber_pc: Arc<RwLock<Option<Arc<RTCPeerConnection>>>>,
+
+    // Remote ICE candidates received before each PC's remote description.
+    publisher_ice: Arc<Mutex<IceCandidateQueue>>,
+    subscriber_ice: Arc<Mutex<IceCandidateQueue>>,
 
     // Callbacks (publisher)
     on_ice_candidate: Arc<RwLock<Option<Box<dyn Fn(String) + Send + Sync>>>>,
@@ -228,6 +287,8 @@ impl WebRtcClient {
             webcam_sender: Arc::new(RwLock::new(None)),
             webcam_track: Arc::new(RwLock::new(None)),
             subscriber_pc: Arc::new(RwLock::new(None)),
+            publisher_ice: Arc::new(Mutex::new(IceCandidateQueue::default())),
+            subscriber_ice: Arc::new(Mutex::new(IceCandidateQueue::default())),
             on_ice_candidate: Arc::new(RwLock::new(None)),
             on_state_change: Arc::new(RwLock::new(None)),
             on_remote_track: Arc::new(RwLock::new(None)),
@@ -344,7 +405,6 @@ impl WebRtcClient {
                 urls: s.urls.clone(),
                 username: s.username.clone().unwrap_or_default(),
                 credential: s.credential.clone().unwrap_or_default(),
-                ..Default::default()
             })
             .collect();
 
@@ -368,6 +428,8 @@ impl WebRtcClient {
         // Update state
         *self.state.write().await = ConnectionState::Connecting;
         *self.channel_id.write().await = Some(channel_id.to_string());
+        *self.publisher_ice.lock().await = IceCandidateQueue::default();
+        *self.subscriber_ice.lock().await = IceCandidateQueue::default();
 
         // Create peer connection
         let config = Self::create_rtc_config(ice_servers);
@@ -682,6 +744,8 @@ impl WebRtcClient {
         pc.set_remote_description(answer)
             .await
             .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+        let queued = self.publisher_ice.lock().await.open();
+        apply_queued_candidates(&pc, queued, "publisher").await;
 
         debug!("Remote answer set on publisher PC");
         Ok(())
@@ -704,6 +768,8 @@ impl WebRtcClient {
         pc.set_remote_description(offer)
             .await
             .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+        let queued = self.publisher_ice.lock().await.open();
+        apply_queued_candidates(&pc, queued, "publisher").await;
 
         debug!("Remote description set");
 
@@ -736,6 +802,17 @@ impl WebRtcClient {
         let candidate_init: RTCIceCandidateInit = serde_json::from_str(candidate_json)
             .map_err(|e| WebRtcError::IceError(e.to_string()))?;
 
+        // Before the answer is applied the candidate waits in the queue.
+        let Some(candidate_init) = self
+            .publisher_ice
+            .lock()
+            .await
+            .queue_or_pass(candidate_init)
+        else {
+            debug!("ICE candidate queued until the remote description is set");
+            return Ok(());
+        };
+
         // Add candidate
         pc.add_ice_candidate(candidate_init)
             .await
@@ -743,6 +820,16 @@ impl WebRtcClient {
 
         debug!("ICE candidate added");
         Ok(())
+    }
+
+    /// Number of publisher candidates waiting for the remote description.
+    pub async fn pending_ice_candidates(&self) -> usize {
+        self.publisher_ice.lock().await.pending.len()
+    }
+
+    /// Number of subscriber candidates waiting for the server's offer.
+    pub async fn pending_subscriber_ice_candidates(&self) -> usize {
+        self.subscriber_ice.lock().await.pending.len()
     }
 
     /// Handle a subscriber offer from the server
@@ -756,6 +843,8 @@ impl WebRtcClient {
         pc.set_remote_description(offer)
             .await
             .map_err(|e| WebRtcError::SdpError(format!("subscriber set remote: {e}")))?;
+        let queued = self.subscriber_ice.lock().await.open();
+        apply_queued_candidates(pc, queued, "subscriber").await;
 
         let answer = pc
             .create_answer(None)
@@ -780,6 +869,16 @@ impl WebRtcClient {
 
         let candidate_init: RTCIceCandidateInit = serde_json::from_str(candidate_json)
             .map_err(|e| WebRtcError::IceError(format!("parse: {e}")))?;
+
+        let Some(candidate_init) = self
+            .subscriber_ice
+            .lock()
+            .await
+            .queue_or_pass(candidate_init)
+        else {
+            debug!("Subscriber ICE candidate queued until the offer is applied");
+            return Ok(());
+        };
 
         pc.add_ice_candidate(candidate_init)
             .await
@@ -829,6 +928,8 @@ impl WebRtcClient {
         *self.webcam_track.write().await = None;
         *self.state.write().await = ConnectionState::Disconnected;
         *self.channel_id.write().await = None;
+        *self.publisher_ice.lock().await = IceCandidateQueue::default();
+        *self.subscriber_ice.lock().await = IceCandidateQueue::default();
 
         info!("WebRTC disconnected");
         Ok(())
@@ -854,5 +955,102 @@ mod tests {
     fn test_webrtc_client_creation() {
         let client = WebRtcClient::new();
         assert!(client.is_ok());
+    }
+
+    /// Answer `offer` from a plain peer connection (stands in for the SFU).
+    async fn sfu_answer(offer: String) -> (Arc<RTCPeerConnection>, String) {
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs().unwrap();
+        let api = APIBuilder::new().with_media_engine(media_engine).build();
+        let pc = Arc::new(
+            api.new_peer_connection(RTCConfiguration::default())
+                .await
+                .unwrap(),
+        );
+        pc.set_remote_description(RTCSessionDescription::offer(offer).unwrap())
+            .await
+            .unwrap();
+        let answer = pc.create_answer(None).await.unwrap();
+        pc.set_local_description(answer.clone()).await.unwrap();
+        (pc, answer.sdp)
+    }
+
+    const HOST_CANDIDATE: &str = r#"{"candidate":"candidate:1 1 udp 2130706431 127.0.0.1 50000 typ host","sdpMid":"0","sdpMLineIndex":0}"#;
+
+    #[tokio::test]
+    async fn candidates_before_remote_description_are_applied_after() {
+        let client = WebRtcClient::new().unwrap();
+        client.connect("channel", &[]).await.unwrap();
+        let offer = client.create_offer().await.unwrap();
+
+        // The server's candidate overtakes its answer: it must be kept, not lost.
+        client
+            .add_ice_candidate(HOST_CANDIDATE)
+            .await
+            .expect("early candidate is queued, not rejected");
+        assert_eq!(client.pending_ice_candidates().await, 1);
+
+        let (sfu, answer) = sfu_answer(offer).await;
+        client.set_remote_answer(&answer).await.unwrap();
+        assert_eq!(client.pending_ice_candidates().await, 0, "queue flushed");
+
+        // The flushed candidate reached the ICE agent (it registers remote
+        // candidates asynchronously, so poll briefly).
+        let pc = client.publisher_pc().await.unwrap();
+        let mut has_remote = false;
+        for _ in 0..50 {
+            let report = pc.get_stats().await;
+            has_remote = report
+                .reports
+                .values()
+                .any(|r| matches!(r, StatsReportType::RemoteCandidate(c) if c.port == 50000));
+            if has_remote {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            has_remote,
+            "flushed candidate applied to the peer connection"
+        );
+
+        // Later candidates go straight through.
+        client.add_ice_candidate(HOST_CANDIDATE).await.unwrap();
+        assert_eq!(client.pending_ice_candidates().await, 0);
+
+        client.disconnect().await.unwrap();
+        sfu.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn subscriber_candidates_before_offer_are_applied_after() {
+        let client = WebRtcClient::new().unwrap();
+        client.connect("channel", &[]).await.unwrap();
+
+        client
+            .add_subscriber_ice_candidate(HOST_CANDIDATE)
+            .await
+            .expect("early subscriber candidate is queued");
+        assert_eq!(client.pending_subscriber_ice_candidates().await, 1);
+
+        // The SFU offers to the subscriber PC.
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs().unwrap();
+        let api = APIBuilder::new().with_media_engine(media_engine).build();
+        let sfu = api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .unwrap();
+        sfu.add_transceiver_from_kind(RTPCodecType::Audio, None)
+            .await
+            .unwrap();
+        let offer = sfu.create_offer(None).await.unwrap();
+        sfu.set_local_description(offer.clone()).await.unwrap();
+
+        client.handle_subscriber_offer(&offer.sdp).await.unwrap();
+        assert_eq!(client.pending_subscriber_ice_candidates().await, 0);
+
+        client.disconnect().await.unwrap();
+        sfu.close().await.unwrap();
     }
 }

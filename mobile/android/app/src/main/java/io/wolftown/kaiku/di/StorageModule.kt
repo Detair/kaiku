@@ -46,7 +46,7 @@ object StorageModule {
             // Flag for the UI to show a notification on next launch
             context.getSharedPreferences("kaiku_app_state", Context.MODE_PRIVATE)
                 .edit()
-                .putBoolean("storage_was_reset", true)
+                .putBoolean(TokenStorage.KEY_RESET_NOTICE, true)
                 .commit()
 
             EncryptedSharedPreferences.create(
@@ -61,7 +61,11 @@ object StorageModule {
 
     @Provides
     @Singleton
-    fun provideTokenStorage(prefs: SharedPreferences): TokenStorage {
-        return TokenStorage(prefs)
+    fun provideTokenStorage(
+        prefs: SharedPreferences,
+        @ApplicationContext context: Context
+    ): TokenStorage {
+        // The app-state flag is also set above when the store was recreated at open.
+        return TokenStorage(prefs, context.getSharedPreferences("kaiku_app_state", Context.MODE_PRIVATE))
     }
 }

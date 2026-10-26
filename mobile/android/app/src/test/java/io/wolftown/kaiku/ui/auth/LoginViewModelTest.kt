@@ -5,6 +5,9 @@ import io.ktor.http.HttpStatusCode
 import io.mockk.*
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.api.ApiException
+import io.wolftown.kaiku.data.api.ProbeResult
+import io.wolftown.kaiku.data.api.ServerProbe
+import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.model.User
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +23,8 @@ class LoginViewModelTest {
 
     private lateinit var authRepository: AuthRepository
     private lateinit var oidcHandler: OidcHandler
+    private lateinit var tokenStorage: TokenStorage
+    private lateinit var serverProbe: ServerProbe
     private lateinit var viewModel: LoginViewModel
 
     private val testDispatcher = StandardTestDispatcher()
@@ -29,7 +34,11 @@ class LoginViewModelTest {
         Dispatchers.setMain(testDispatcher)
         authRepository = mockk(relaxed = true)
         oidcHandler = mockk(relaxed = true)
-        viewModel = LoginViewModel(authRepository, oidcHandler)
+        tokenStorage = mockk(relaxed = true)
+        every { tokenStorage.getServerUrl() } returns "https://kaiku.example.com"
+        serverProbe = mockk()
+        coEvery { serverProbe.probe(any()) } returns ProbeResult.Ok(registrationOpen = false)
+        viewModel = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
     }
 
     @After
@@ -290,5 +299,107 @@ class LoginViewModelTest {
         viewModel.clearError()
 
         assertNull(viewModel.uiState.value.error)
+    }
+
+    // ========================================================================
+    // First run: Register only when open, change server
+    // ========================================================================
+
+    @Test
+    fun `register hidden when registration is closed`() = runTest {
+        coEvery { serverProbe.probe("https://kaiku.example.com") } returns
+            ProbeResult.Ok(registrationOpen = false)
+
+        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.registrationOpen)
+        assertEquals("kaiku.example.com", vm.uiState.value.serverHost)
+    }
+
+    @Test
+    fun `register shown when registration is open`() = runTest {
+        coEvery { serverProbe.probe("https://kaiku.example.com") } returns
+            ProbeResult.Ok(registrationOpen = true)
+
+        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        advanceUntilIdle()
+
+        assertTrue(vm.uiState.value.registrationOpen)
+    }
+
+    @Test
+    fun `register stays hidden when the server cannot be checked`() = runTest {
+        coEvery { serverProbe.probe(any()) } returns ProbeResult.Unreachable
+
+        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.registrationOpen)
+    }
+
+    @Test
+    fun `retry finds Register after an offline first check`() = runTest {
+        coEvery { serverProbe.probe(any()) } returnsMany listOf(
+            ProbeResult.Unreachable,
+            ProbeResult.Ok(registrationOpen = true)
+        )
+        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.registrationCheckFailed)
+        assertFalse(vm.uiState.value.registrationOpen)
+
+        vm.onRetryRegistrationCheck()
+        advanceUntilIdle()
+
+        assertFalse(vm.uiState.value.registrationCheckFailed)
+        assertTrue(vm.uiState.value.registrationOpen)
+    }
+
+    @Test
+    fun `change server cancels a login in flight`() = runTest {
+        coEvery { authRepository.login(any(), any(), any()) } coAnswers {
+            kotlinx.coroutines.delay(10_000)
+            Result.success(User(id = "u", username = "anna", displayName = "Anna"))
+        }
+        viewModel.onUsernameChanged("anna")
+        viewModel.onPasswordChanged("pw")
+        viewModel.onLoginClicked()
+        advanceTimeBy(100)
+
+        viewModel.onChangeServerClicked()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.loginSuccess)
+        assertFalse(viewModel.uiState.value.isLoading)
+    }
+
+    @Test
+    fun `change server returns to server screen keeping nothing stale`() = runTest {
+        coEvery { serverProbe.probe(any()) } returns ProbeResult.Ok(registrationOpen = true)
+        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        advanceUntilIdle()
+        vm.onUsernameChanged("anna")
+        vm.onPasswordChanged("secret")
+        vm.onMfaCodeChanged("123456")
+        assertTrue(vm.uiState.value.registrationOpen)
+
+        vm.onChangeServerClicked()
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertTrue(state.changeServerRequested)
+        assertEquals("", state.username)
+        assertEquals("", state.password)
+        assertEquals("", state.mfaCode)
+        assertFalse(state.mfaRequired)
+        assertFalse(state.registrationOpen)
+        assertEquals("", state.serverHost)
+        assertNull(state.error)
+        // The pending password change and any login in flight belong to the old server.
+        verify { authRepository.cancelPasswordChange() }
+
+        vm.onChangeServerNavigated()
+        assertFalse(vm.uiState.value.changeServerRequested)
     }
 }

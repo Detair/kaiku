@@ -3,6 +3,7 @@ import { appSettings, updateAudioSetting, isSettingsLoading } from "@/stores/set
 import { createVoiceAdapter, getVoiceAdapter } from "@/lib/webrtc";
 import type { AudioDevice } from "@/lib/webrtc";
 import { Mic, Volume2 } from "lucide-solid";
+import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 
 const AudioSettings: Component = () => {
@@ -45,6 +46,15 @@ const AudioSettings: Component = () => {
                     : await adapter.setOutputDevice(deviceId);
             if (!result.ok) {
                 console.warn(`Failed to apply ${kind} device:`, result.error);
+                showToast({
+                    type: "error",
+                    title: t(
+                        kind === "input"
+                            ? "voice.audio.inputSwitchFailed"
+                            : "voice.audio.outputSwitchFailed",
+                    ),
+                    duration: 8000,
+                });
             }
         }
     };

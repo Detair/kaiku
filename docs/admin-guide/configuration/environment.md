@@ -75,6 +75,7 @@ Rate limiting also uses Valkey; see [rate-limiting.md](rate-limiting.md).
 | `OIDC_ISSUER_URL` | unset (empty = unset) | OIDC provider issuer URL (seeds an OIDC provider) |
 | `OIDC_CLIENT_ID` | unset (empty = unset) | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | unset (empty = unset) | OIDC client secret |
+| `PUBLIC_URL` | unset (empty = unset); **required for OIDC** | Public URL of the server, e.g. `https://chat.example.com` (a trailing slash is ignored). Every OIDC sign-in and account link — web and desktop — returns from the provider to `$PUBLIC_URL/auth/oidc/callback`; register exactly that URL as the redirect URI at your identity provider |
 | `SMTP_HOST` | unset (empty = unset) | SMTP server for outgoing mail |
 | `SMTP_PORT` | `587` | SMTP port |
 | `SMTP_USERNAME` | unset (empty = unset) | SMTP username |
@@ -145,7 +146,6 @@ These are read outside `server/src/config.rs`:
 
 | Variable | Default | Read in | Purpose |
 |----------|---------|---------|---------|
-| `PUBLIC_URL` | unset | `auth/login.rs` | Public URL of the server; required for the OIDC browser login flow (callback is `$PUBLIC_URL/auth/oidc/callback`) |
 | `AWS_REGION` | `us-east-1` | `chat/s3.rs` | S3 region |
 | `DEPLOYMENT_ENVIRONMENT` | `local` | `observability/` | Environment label on telemetry |
 | `RATE_LIMIT_TRUSTED_PROXIES` | unset (trust none) | `ratelimit/config.rs` | Comma-separated CIDRs or bare IPs of reverse proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted for rate limiting, e.g. `10.42.0.0/16` (k3s pod network) or your compose network subnet. Requests from other peers use the peer address. Invalid entries are skipped with a startup warning |

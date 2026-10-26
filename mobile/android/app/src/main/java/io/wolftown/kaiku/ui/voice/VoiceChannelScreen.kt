@@ -32,6 +32,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.graphics.Color
@@ -493,9 +496,15 @@ private fun VoiceBottomBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Mute/unmute toggle
+            val muteDescription = stringResource(R.string.voice_microphone)
+            val muteState = stringResource(if (isMuted) R.string.voice_muted else R.string.voice_microphone_on)
             FilledIconToggleButton(
                 checked = isMuted,
-                onCheckedChange = { onToggleMute() }
+                onCheckedChange = { onToggleMute() },
+                modifier = Modifier.semantics {
+                    contentDescription = muteDescription
+                    stateDescription = muteState
+                }
             ) {
                 if (isMuted) {
                     Text("🔇", style = MaterialTheme.typography.titleLarge)
@@ -506,7 +515,11 @@ private fun VoiceBottomBar(
 
             // Audio route picker
             Box {
-                IconButton(onClick = { showRouteMenu = true }) {
+                val routeDescription = stringResource(R.string.voice_audio_output)
+                IconButton(
+                    onClick = { showRouteMenu = true },
+                    modifier = Modifier.semantics { contentDescription = routeDescription }
+                ) {
                     Text(
                         text = when (currentRoute) {
                             AudioRoute.Speaker -> "🔊"

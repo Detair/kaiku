@@ -28,6 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.jsonObject
@@ -82,6 +83,7 @@ class ChatRepositoryCatchUpTest {
         guildRepository = mockk(relaxed = true)
         tokenStorage = mockk(relaxed = true)
         authState = mockk(relaxed = true)
+        every { authState.currentUserId } returns MutableStateFlow<String?>(null)
         every { webSocket.events } returns eventsFlow
         every { tokenStorage.getServerUrl() } returns "https://kaiku.example.com"
         every { tokenStorage.getAccessToken() } returns "test-access-token"
@@ -134,7 +136,9 @@ class ChatRepositoryCatchUpTest {
             webSocket,
             KaikuJson,
             guildRepository,
+            authState,
             CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
+            mockk<AttachmentReader>(relaxed = true),
         )
     }
 
@@ -204,7 +208,22 @@ class ChatRepositoryCatchUpTest {
         assertNull(request.url.parameters["before"])
         assertEquals("100", request.url.parameters["limit"])
         assertEquals(listOf(OLDER_ID, NEWER_ID, missed(1).id, missed(2).id), repository.ids())
-        verify(exactly = 2) { guildRepository.onMessageReceived(CHANNEL_ID) }
+        verify(exactly = 2) { guildRepository.onMessageReceived(CHANNEL_ID, any(), any()) }
+    }
+
+    @Test
+    fun `catch up does not count the users own messages as unread`() = runTest {
+        every { authState.currentUserId } returns MutableStateFlow<String?>(author.id)
+        val repository = createRepository { _, _ ->
+            CursorPage(listOf(missed(1)), hasMore = false)
+        }
+        repository.loadMessages(CHANNEL_ID)
+
+        repository.catchUp(CHANNEL_ID)
+
+        verify(exactly = 1) {
+            guildRepository.onMessageReceived(CHANNEL_ID, missed(1).id, countUnread = false)
+        }
     }
 
     @Test
@@ -224,7 +243,7 @@ class ChatRepositoryCatchUpTest {
             listOf(OLDER_ID, NEWER_ID, missed(1).id, missed(2).id, missed(3).id),
             repository.ids()
         )
-        verify(exactly = 3) { guildRepository.onMessageReceived(CHANNEL_ID) }
+        verify(exactly = 3) { guildRepository.onMessageReceived(CHANNEL_ID, any(), any()) }
     }
 
     @Test
@@ -243,7 +262,7 @@ class ChatRepositoryCatchUpTest {
 
         assertEquals(listOf(NEWER_ID, "x"), afterRequests().map { it.url.parameters["after"] })
         assertEquals(listOf(OLDER_ID, NEWER_ID, missed(1).id), repository.ids())
-        verify(exactly = 1) { guildRepository.onMessageReceived(CHANNEL_ID) }
+        verify(exactly = 1) { guildRepository.onMessageReceived(CHANNEL_ID, any(), any()) }
     }
 
     @Test

@@ -4,7 +4,10 @@
  * Manages voice channel state including connection, participants, and audio settings.
  */
 
+import { createEffect, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   createVoiceAdapter,
   getVoiceAdapter,
@@ -27,6 +30,7 @@ import { showToast, dismissToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 import { voiceErrorText } from "@/lib/webrtc/voiceErrorText";
 import { PttController, createTauriPttListeners, type PttFullConfig } from "@/lib/pttManager";
+import { isTauri } from "@/lib/tauri/common";
 
 const getErrorMessage = voiceErrorText;
 
@@ -97,6 +101,10 @@ let isJoining = false;
 let currentIncidentStart: number | null = null;
 let goodQualityStartTime: number | null = null;
 const INCIDENT_RECOVERY_THRESHOLD = 10_000; // 10s of good quality to clear incident
+
+/** Toast ids for native audio stream failures (one each, replaced on repeat). */
+const AUDIO_CAPTURE_TOAST_ID = "voice-audio-capture-failed";
+const AUDIO_PLAYBACK_TOAST_ID = "voice-audio-playback-failed";
 
 /**
  * Convert QualityLevel to numeric value for server transmission.
@@ -404,6 +412,26 @@ export async function joinVoice(channelId: string): Promise<void> {
       onSpeakingChange: (speaking) => {
         setVoiceState({ speaking });
       },
+      onAudioError: (audioError) => {
+        // A stream stopping while leaving is not news.
+        if (voiceState.state === "disconnected") return;
+        // Native stream died (unplugged, stalled, could not open): never let
+        // the call look healthy with a dead mic. Stays until audio works
+        // again (onAudioRecovered), it is dismissed, or the call ends.
+        const capture = audioError.kind === "capture_failed";
+        showToast({
+          type: "error",
+          title: t(capture ? "voice.audio.captureFailed" : "voice.audio.playbackFailed"),
+          message: audioError.device,
+          duration: 0,
+          id: capture ? AUDIO_CAPTURE_TOAST_ID : AUDIO_PLAYBACK_TOAST_ID,
+        });
+      },
+      onAudioRecovered: (recovered) => {
+        dismissToast(
+          recovered.kind === "capture_failed" ? AUDIO_CAPTURE_TOAST_ID : AUDIO_PLAYBACK_TOAST_ID,
+        );
+      },
       onScreenShareTrack: (userId, streamId, track) => {
         console.log("[Voice] Screen share track received:", userId, streamId);
         // Import and call viewer store — register track (auto-views if nothing active)
@@ -499,6 +527,9 @@ export async function leaveVoice(): Promise<void> {
 
   const adapter = await createVoiceAdapter();
   const result = await adapter.leave();
+  // After the streams stopped, so an error raised while leaving is cleared too.
+  dismissToast(AUDIO_CAPTURE_TOAST_ID);
+  dismissToast(AUDIO_PLAYBACK_TOAST_ID);
 
   if (!result.ok) {
     console.error("Failed to leave voice:", result.error);
@@ -982,4 +1013,68 @@ export function handleVoiceUserStats(data: {
 }
 
 // Export the store for reading and writing
+// ============================================================================
+// System tray (desktop)
+// ============================================================================
+
+/** Event the native tray emits for its "Leave voice" / "Mute" items (`tray.rs`). */
+const TRAY_VOICE_ACTION_EVENT = "tray-voice-action";
+
+/**
+ * Voice state as the tray sees it. Connecting counts as in voice: the mic may
+ * already be open, so a close during the join must still warn.
+ */
+export function trayVoiceReport(
+  state: VoiceState,
+  muted: boolean,
+): { inVoice: boolean; muted: boolean } {
+  return { inVoice: state !== "disconnected", muted };
+}
+
+/** Run a tray menu voice action (payload of `tray-voice-action`). */
+export async function handleTrayVoiceAction(action: string): Promise<void> {
+  if (action === "leave") {
+    await leaveVoice();
+  } else if (action === "toggle_mute" && voiceState.state !== "disconnected") {
+    await toggleMute();
+  }
+}
+
+/** Tray event handler: an event callback, not a reactive scope. */
+function onTrayVoiceAction(event: { payload: string }): void {
+  void handleTrayVoiceAction(event.payload);
+}
+
+/**
+ * Keep the native tray in sync with the call: reports in-voice/muted via
+ * `set_tray_voice_state` and runs the tray's voice menu items. Must be called
+ * inside a component context (createEffect/onCleanup); a no-op in the browser.
+ */
+export function initTrayVoiceSync(): void {
+  if (!isTauri()) return;
+
+  createEffect(() => {
+    const report = trayVoiceReport(voiceState.state, voiceState.muted);
+    invoke("set_tray_voice_state", report).catch((err) => {
+      console.warn("[Tray] Failed to report voice state:", err);
+    });
+  });
+
+  let disposed = false;
+  let unlisten: (() => void) | null = null;
+  listen<string>(TRAY_VOICE_ACTION_EVENT, onTrayVoiceAction)
+    .then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    })
+    .catch((err) => {
+      console.warn("[Tray] Failed to listen for tray voice actions:", err);
+    });
+
+  onCleanup(() => {
+    disposed = true;
+    unlisten?.();
+  });
+}
+
 export { voiceState, setVoiceState };

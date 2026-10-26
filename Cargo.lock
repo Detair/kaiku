@@ -11960,6 +11960,7 @@ dependencies = [
  "vpx-encode",
  "webrtc",
  "wiremock",
+ "zbus",
  "zeroize",
 ]
 

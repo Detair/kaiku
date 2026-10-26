@@ -12,8 +12,10 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.mockk.every
 import io.mockk.mockk
+import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -100,6 +102,18 @@ class PushApiTest {
         val (method, path, _) = requests.single()
         assertEquals(HttpMethod.Delete, method)
         assertEquals("/api/me/push-subscriptions/device/$DEVICE_ID", path)
+    }
+
+    @Test
+    fun `logout unregister of an ended session is not sent`() = runTest {
+        // Another session is current: the DELETE bound to session 1 must not go out with its token.
+        every { authState.session } returns MutableStateFlow(AuthSession.LoggedIn("u2", sessionId = 2L))
+        val api = api { respond("", HttpStatusCode.NoContent) }
+
+        val failure = runCatching { api.unregisterDevice(DEVICE_ID, sessionId = 1L) }.exceptionOrNull()
+
+        assertTrue(failure is SessionChangedException)
+        assertTrue(requests.isEmpty())
     }
 
     @Test

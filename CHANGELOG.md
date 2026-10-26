@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Mobile push notifications (server side)**: the server can wake the Android app through Firebase Cloud Messaging (when an FCM service account is configured) or UnifiedPush. Phones are now also notified about @mentions, not only DMs (photo and file DMs already pushed before). Bursts of messages are coalesced into one notification, and reading a conversation on another device clears its notification. Wake signals carry only a type, channel and count, never message text, so end-to-end encryption is preserved. Blocked users never trigger a notification, and blocks are enforced for DMs even when cached data has expired. Endpoints are registered per device under `/api/me/push-subscriptions`, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
+- Android: you can send photos and videos from your phone.
 - Android: new messages show as notifications with the sender and text, grouped per conversation; tapping one opens the conversation, and reading it anywhere clears the notification.
 - Android: phones without Google services can get notifications through UnifiedPush (for example ntfy), and Settings shows whether notifications are working.
 - Android: after signing in, Kaiku asks once for permission to show notifications.
@@ -111,14 +112,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: update `dompurify` 3.4.2 → 3.4.11 (eight HTML-sanitizer XSS advisories — the markdown preview's runtime sanitizer), `vite` 8.0.0 → 8.0.16 (the `server.fs.deny` bypass and `__open-in-editor` NTLM dev-server CVEs), and add transitive overrides for `undici` → 7.28.0 (seven HTTP-client advisories via jsdom) and `@babel/core` → 7.29.6 (via vite-plugin-solid). The remaining flagged instance is the test-only vite 7.3.1 nested under vitest, whose fix is blocked by a JSX-transform incompatibility (documented as a justified, dev-server-only exception); the production bundle is built with the patched vite 8.0.16. This restores the weekly OSV scanner to green.
 
 ### Fixed
+- Desktop voice works with headsets that don't offer 48 kHz mono, tells you when the microphone stops working, and can switch microphones during a call.
+- Sharing a small window or a webcam with an unusual resolution no longer crashes the desktop app.
+- Closing the window during a voice call tells you Kaiku is still connected and lets you leave from the tray; the window can always be reopened.
+- Signing in (and linking an account) with an external identity provider in the desktop app now completes: the provider returns to the server, which finishes the sign-in and hands the result to the app. If the provider declines or the sign-in fails, the app or sign-in window now shows an error right away instead of waiting for a timeout.
 - In the browser, Kaiku now signs you out right away when your session is ended elsewhere and stops retrying with an expired login.
 - The server no longer hangs when its cache (Valkey) is unavailable; affected requests fail quickly instead.
 - E-mail addresses and code snippets are no longer treated as @mentions.
+- Android: message times now use your time zone, typing indicators show names and go away again, reactions are visible, buttons are labelled for screen readers, and a damaged sign-in store asks you to sign in again instead of crashing.
+- Android: unread badges now appear for channels you left and clear on the server when you read them, and new direct messages update the list live.
 - Desktop notifications also appear when Kaiku is open on another screen, and push-to-talk no longer fires while typing or steals plain keys from games.
 - Closing a dialog with Escape no longer marks the channel as read, dismissing an upload error no longer sends your message, and the main dialogs work with the keyboard and screen readers.
 - Hard-to-read Solarized themes are no longer offered, and buttons, menu actions and Android warning buttons use readable colours.
 - '1 file ready to send' now reads correctly in the message box.
 - The new-message dialog counts one selected person correctly ("1 user selected").
+- Android: signing out ends the session, leaves voice and removes your data from the screen; going back from a call keeps it running with a bar to return to it.
+- Android: to sign in with another account, for example with a QR code, sign out first; Settings no longer offers QR sign-in while you are signed in.
+- Android: the app starts with the family server filled in, accepts a plain address, checks it before sign-in, lets you change the server, hides Register when it is closed, and opens your server automatically.
 - Messages sent while you were disconnected now appear after reconnecting, and a new direct message shows up immediately for the recipient.
 - Desktop voice now uses the server's TURN relay, so voice also works on restrictive networks.
 - When the desktop app starts before the network or server is reachable, it now keeps your saved login and connects as soon as it can, instead of showing the login screen.

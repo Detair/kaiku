@@ -60,7 +60,7 @@ class DmApiTest {
         val api: DmApi = mockk(relaxed = true)
         val dm = DmConversation(id = "dm-1", unreadCount = 2, lastMessage = null)
         coEvery { api.getDms() } returns listOf(dm)
-        val repository = DmRepository(api, webSocket, KaikuJson, backgroundScope)
+        val repository = DmRepository(api, webSocket, KaikuJson, authState, backgroundScope)
         repository.loadDms()
 
         repository.markAsRead("dm-1")
@@ -78,7 +78,7 @@ class DmApiTest {
             lastMessage = LastMessagePreview(id = "m1", content = "hi"),
         )
         coEvery { api.getDms() } returns listOf(dm)
-        val repository = DmRepository(api, webSocket, KaikuJson, backgroundScope)
+        val repository = DmRepository(api, webSocket, KaikuJson, authState, backgroundScope)
         repository.loadDms()
 
         repository.markAsRead("dm-1")

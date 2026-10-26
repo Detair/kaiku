@@ -47,7 +47,11 @@ interface PushApi {
     suspend fun register(r: PushRegistration)
 
     /** `DELETE /api/me/push-subscriptions/device/{deviceId}`. */
-    suspend fun unregisterDevice(deviceId: String)
+    /**
+     * With [sessionId] the request is bound to that session and not sent once
+     * another one is current ([KaikuHttpClient.RequiredSessionId]).
+     */
+    suspend fun unregisterDevice(deviceId: String, sessionId: Long? = null)
 }
 
 /**
@@ -73,8 +77,10 @@ class PushApiImpl @Inject constructor(
         response.throwUnlessSuccess("Failed to register for push")
     }
 
-    override suspend fun unregisterDevice(deviceId: String) {
-        val response = httpClient.delete("$BASE/device/${deviceId.encodeURLPathPart()}")
+    override suspend fun unregisterDevice(deviceId: String, sessionId: Long?) {
+        val response = httpClient.delete("$BASE/device/${deviceId.encodeURLPathPart()}") {
+            if (sessionId != null) attributes.put(KaikuHttpClient.RequiredSessionId, sessionId)
+        }
         response.throwUnlessSuccess("Failed to unregister push device")
     }
 

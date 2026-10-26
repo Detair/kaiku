@@ -2,6 +2,8 @@ package io.wolftown.kaiku.ui.channel
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
@@ -10,6 +12,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -17,9 +21,13 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.MessageBody
+import io.wolftown.kaiku.domain.formatMessageTime
 import io.wolftown.kaiku.domain.messageDisplayContent
+import io.wolftown.kaiku.domain.reactionSummaries
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.ui.shared.resolveServerUrl
+import java.time.Instant
+import java.time.ZoneId
 
 /**
  * Displays a single chat message with author info, content, and metadata.
@@ -27,6 +35,8 @@ import io.wolftown.kaiku.ui.shared.resolveServerUrl
  * Features:
  * - Author avatar (circular, loaded via Coil) + display name + timestamp
  * - Message content (or a placeholder for end-to-end encrypted messages)
+ * - Message time in the local time zone
+ * - Reaction chips under the content (tap to toggle your own)
  * - "(edited)" indicator when editedAt is not null
  * - Reply-to indicator when replyTo is not null
  * - Long-press context menu for Edit/Delete/React actions
@@ -39,7 +49,10 @@ fun MessageItem(
     onEdit: (messageId: String) -> Unit,
     onDelete: (messageId: String) -> Unit,
     onReact: (messageId: String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    currentUserId: String? = null,
+    /** Called when a reaction chip is tapped; `mine` says you had reacted with it. Display-only when null. */
+    onToggleReaction: ((messageId: String, emoji: String, mine: Boolean) -> Unit)? = null
 ) {
     var showContextMenu by remember { mutableStateOf(false) }
 
@@ -95,7 +108,7 @@ fun MessageItem(
                     Spacer(modifier = Modifier.width(8.dp))
 
                     val formattedTime = remember(message.createdAt) {
-                        formatTimestamp(message.createdAt)
+                        formatMessageTime(message.createdAt, ZoneId.systemDefault(), Instant.now())
                     }
                     Text(
                         text = formattedTime,
@@ -126,6 +139,36 @@ fun MessageItem(
 
                 // Attachments (image thumbnails + file chips)
                 MessageAttachments(attachments = message.attachments)
+
+                // Reactions
+                val reactions = remember(message.reactions, currentUserId) {
+                    reactionSummaries(message, currentUserId)
+                }
+                if (reactions.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .horizontalScroll(rememberScrollState())
+                            .padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        reactions.forEach { reaction ->
+                            val description = stringResource(
+                                R.string.chat_reaction_chip_description,
+                                reaction.emoji,
+                                reaction.count
+                            )
+                            FilterChip(
+                                selected = reaction.mine,
+                                onClick = {
+                                    onToggleReaction?.invoke(message.id, reaction.emoji, reaction.mine)
+                                },
+                                enabled = onToggleReaction != null,
+                                label = { Text("${reaction.emoji} ${reaction.count}") },
+                                modifier = Modifier.semantics { contentDescription = description }
+                            )
+                        }
+                    }
+                }
 
                 // Edited indicator
                 if (message.editedAt != null) {
@@ -169,23 +212,5 @@ fun MessageItem(
                 )
             }
         }
-    }
-}
-
-/**
- * Formats an ISO 8601 timestamp into a short display format.
- * Shows time only (HH:mm) for simplicity.
- */
-private fun formatTimestamp(iso8601: String): String {
-    if (iso8601.isBlank()) return ""
-    return try {
-        // Extract time portion from ISO 8601: "2026-03-12T10:30:00Z" -> "10:30"
-        val timeIndex = iso8601.indexOf('T')
-        if (timeIndex == -1) return iso8601
-        val timePart = iso8601.substring(timeIndex + 1)
-        val colonIndex = timePart.indexOf(':', timePart.indexOf(':') + 1)
-        if (colonIndex == -1) timePart.take(5) else timePart.take(colonIndex)
-    } catch (_: Exception) {
-        iso8601
     }
 }

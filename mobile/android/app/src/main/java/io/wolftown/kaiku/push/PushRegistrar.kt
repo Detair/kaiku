@@ -292,9 +292,11 @@ class PushRegistrar @Inject constructor(
      * device's server row (bounded by [LOGOUT_LOCK_WAIT_MS] +
      * [LOGOUT_DELETE_TIMEOUT_MS]), forgets the local registration and gives
      * up the transport endpoint in the background. Best effort: never throws
-     * except for cancellation, and the local cleanup always runs.
+     * except for cancellation, and the local cleanup always runs. With
+     * [sessionId] the DELETE is bound to that session: it is not sent once
+     * another session is current ([io.wolftown.kaiku.data.api.KaikuHttpClient.RequiredSessionId]).
      */
-    suspend fun unregisterForLogout() {
+    suspend fun unregisterForLogout(sessionId: Long? = null) {
         epoch.incrementAndGet()
         triggered.cancelChildren()
         upFailures.set(0)
@@ -310,7 +312,7 @@ class PushRegistrar @Inject constructor(
             } ?: false
             if (currentAccount() != null) {
                 val done = withTimeoutOrNull(LOGOUT_DELETE_TIMEOUT_MS) {
-                    pushApi.unregisterDevice(deviceIdStore.id())
+                    pushApi.unregisterDevice(deviceIdStore.id(), sessionId)
                     true
                 }
                 logger.info(if (done == true) "push device unregistered" else "push device unregister timed out")

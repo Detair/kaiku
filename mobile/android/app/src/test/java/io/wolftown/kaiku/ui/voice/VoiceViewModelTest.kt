@@ -7,7 +7,6 @@ import io.wolftown.kaiku.data.repository.GuildRepository
 import io.wolftown.kaiku.data.repository.VoiceRepository
 import io.wolftown.kaiku.data.voice.AudioRoute
 import io.wolftown.kaiku.data.voice.AudioRouteManager
-import io.wolftown.kaiku.data.voice.MissingMicPermissionException
 import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.VoiceParticipant
@@ -90,18 +89,21 @@ class VoiceViewModelTest {
     }
 
     // ========================================================================
-    // 1. Joining channel calls voiceRepository.joinChannel
+    // 1. Joining runs on the repository's scope
     // ========================================================================
 
     @Test
-    fun `joining channel calls voiceRepository joinChannel`() = runTest {
+    fun `joining channel starts the join on the repository scope`() = runTest {
         viewModel = createViewModel()
         advanceUntilIdle()
 
         viewModel.onJoin()
+        // Back during setup clears the ViewModel; the join must not depend on it.
+        viewModel.onCleared()
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { voiceRepository.joinChannel("voice-ch-1") }
+        verify(exactly = 1) { voiceRepository.startJoin("voice-ch-1") }
+        coVerify(exactly = 0) { voiceRepository.leaveChannel() }
     }
 
     @Test
@@ -109,7 +111,7 @@ class VoiceViewModelTest {
         viewModel = createViewModel()
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { voiceRepository.joinChannel(any()) }
+        verify(exactly = 0) { voiceRepository.startJoin(any()) }
     }
 
     @Test
@@ -121,34 +123,35 @@ class VoiceViewModelTest {
         viewModel.onJoin()
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { voiceRepository.joinChannel(any()) }
+        verify(exactly = 0) { voiceRepository.startJoin(any()) }
     }
 
     @Test
-    fun `missing mic permission surfaces a string resource error`() = runTest {
-        coEvery { voiceRepository.joinChannel(any()) } throws MissingMicPermissionException()
+    fun `repository join error is shown as a string resource`() = runTest {
         viewModel = createViewModel()
         advanceUntilIdle()
 
-        viewModel.onJoin()
+        errorFlow.value = io.wolftown.kaiku.R.string.voice_mic_permission_required
         advanceUntilIdle()
 
         assertEquals(io.wolftown.kaiku.R.string.voice_mic_permission_required, viewModel.error.value)
     }
 
     // ========================================================================
-    // 2. Leaving channel calls voiceRepository.leaveChannel
+    // 2. Leave button leaves on the repository's scope
     // ========================================================================
 
     @Test
-    fun `leaving channel calls voiceRepository leaveChannel`() = runTest {
+    fun `leaving channel leaves on the repository scope`() = runTest {
         viewModel = createViewModel()
         advanceUntilIdle()
 
         viewModel.onLeave()
+        // The screen navigates back right after the tap.
+        viewModel.onCleared()
         advanceUntilIdle()
 
-        coVerify { voiceRepository.leaveChannel() }
+        verify(exactly = 1) { voiceRepository.leaveInBackground() }
     }
 
     // ========================================================================
@@ -199,18 +202,20 @@ class VoiceViewModelTest {
     }
 
     // ========================================================================
-    // 5. Disconnect on ViewModel cleared
+    // 5. The call survives leaving the voice screen
     // ========================================================================
 
     @Test
-    fun `disconnect on ViewModel cleared`() = runTest {
+    fun `clearing the voice view model keeps the call`() = runTest {
+        currentChannelIdFlow.value = "voice-ch-1"
         viewModel = createViewModel()
         advanceUntilIdle()
 
         viewModel.onCleared()
         advanceUntilIdle()
 
-        coVerify { voiceRepository.leaveChannel() }
+        coVerify(exactly = 0) { voiceRepository.leaveChannel() }
+        verify(exactly = 0) { voiceRepository.leaveInBackground() }
     }
 
     // ========================================================================

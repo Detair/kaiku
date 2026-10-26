@@ -282,14 +282,19 @@ pub struct QrCreateResponse {
 /// OIDC callback query parameters.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct OidcCallbackQuery {
-    pub code: String,
+    /// Authorization code; absent when the provider reports an error.
+    pub code: Option<String>,
     pub state: String,
+    /// Provider error (e.g. `access_denied`). Logged only, never echoed.
+    pub error: Option<String>,
 }
 
 /// OIDC authorize query parameters.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct OidcAuthorizeQuery {
-    /// Optional redirect URI override (for Tauri localhost callback).
+    /// Optional desktop (Tauri) loopback address. The server hands the flow
+    /// result back here after exchanging the code; it is never sent to the
+    /// provider, which always redirects to `/auth/oidc/callback`.
     pub redirect_uri: Option<String>,
     /// When `"json"`, return the provider authorization URL as a JSON body
     /// (`{"url": ...}`) instead of a 307 redirect. Used by the browser link

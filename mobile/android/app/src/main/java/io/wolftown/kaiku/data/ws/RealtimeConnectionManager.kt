@@ -7,6 +7,7 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.di.RealtimeCoroutineScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -105,6 +106,7 @@ class RealtimeConnectionManager internal constructor(
         data class ForegroundProbeDue(val generation: Int, val pongsAtSend: Long) : Input
         data class ConnectTimeoutDue(val generation: Int) : Input
         data class RefreshDue(val generation: Int) : Input
+        data class CloseForLogout(val sessionId: Long?, val done: CompletableDeferred<Unit>) : Input
     }
 
     private val _status = MutableStateFlow(RealtimeStatus.Idle)
@@ -136,6 +138,15 @@ class RealtimeConnectionManager internal constructor(
     private var refreshJob: Job? = null
     private var refreshGeneration = 0
 
+    /**
+     * Session id closed by [closeForLogout]. While it is still the current
+     * session, the manager treats it as logged out: no connect, retry or
+     * refresh. A new login has a new id and connects normally; LoggedOut
+     * resets it.
+     */
+    @Volatile
+    private var closedSessionId: Long? = null
+
     /** Starts observing; idempotent. */
     fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -158,6 +169,34 @@ class RealtimeConnectionManager internal constructor(
         scope.launch { socket.events.collect { inbox.send(Input.Server(it)) } }
         scope.launch { connectivity.isConnected.collect { inbox.send(Input.Online(it)) } }
         scope.launch { connectivity.networkId.collect { inbox.send(Input.NetworkChanged(it)) } }
+    }
+
+    /**
+     * Session teardown (order 20) for the ended session [sessionId]: closes
+     * the socket and keeps it closed for that session, so no more events of
+     * it reach the caches and the explicit logout can end it on the server
+     * without a reconnect or refresh in between. Does nothing if a newer
+     * login is current.
+     *
+     * The close happens right here, not only on the actor: an actor busy in
+     * a refresh must not keep the old socket delivering events past the
+     * step's timeout. [closedSessionId] is set first (volatile), so every
+     * actor path treats the session as logged out from now on, and
+     * [KaikuWebSocket] drops frames of a socket it no longer holds. If the
+     * actor was already past its session check and opens a socket after
+     * this close, it closes that socket itself right after connecting, and
+     * the actor input closes whatever is still open and stops timers and
+     * retries; this returns once that input ran.
+     */
+    suspend fun closeForLogout(sessionId: Long?) {
+        val current = authState.session.value
+        if (current is AuthSession.LoggedIn && current.sessionId != sessionId) return
+        if (sessionId != null) closedSessionId = sessionId
+        logger.info("closing for logout")
+        socket.disconnect()
+        val done = CompletableDeferred<Unit>()
+        inbox.send(Input.CloseForLogout(sessionId, done))
+        done.await()
     }
 
     /** Call when the app comes to the foreground: reconnects now if not already (re)connected. */
@@ -186,6 +225,11 @@ class RealtimeConnectionManager internal constructor(
             }
             is Input.ConnectTimeoutDue -> if (input.generation == connectTimeoutGeneration) onConnectTimeout()
             is Input.RefreshDue -> if (input.generation == refreshGeneration) onRefreshDue()
+            is Input.CloseForLogout -> try {
+                onCloseForLogout(input.sessionId)
+            } finally {
+                input.done.complete(Unit)
+            }
         }
     }
 
@@ -200,6 +244,7 @@ class RealtimeConnectionManager internal constructor(
             }
             AuthSession.LoggedOut -> {
                 logger.info("session LoggedOut")
+                closedSessionId = null
                 cancelRetry()
                 stopHeartbeat()
                 cancelTokenRefresh()
@@ -208,6 +253,20 @@ class RealtimeConnectionManager internal constructor(
                 setStatus(RealtimeStatus.Idle)
             }
         }
+    }
+
+    private fun onCloseForLogout(sessionId: Long?) {
+        val current = authState.session.value
+        // A newer login than the one being torn down: leave its connection alone.
+        if (current is AuthSession.LoggedIn && current.sessionId != sessionId) return
+        logger.info("closing for logout")
+        if (sessionId != null) closedSessionId = sessionId
+        // closeForLogout closed the socket directly, but the actor may have
+        // opened one since (it was past its session check). disconnect() is
+        // idempotent: close whatever is open now.
+        socketActive = false
+        socket.disconnect()
+        stopAfterSessionEnded()
     }
 
     /** Step 1: refresh if needed, then open the socket. */
@@ -266,6 +325,16 @@ class RealtimeConnectionManager internal constructor(
         // Only after connect() returned: if it threw, the actor's catch schedules a retry.
         socketActive = true
         socketSessionGeneration = generation
+        if (!isLoggedIn()) {
+            // closeForLogout ran on another thread after the checks above: its
+            // direct close found no socket yet, so close this one now.
+            logger.info("session closed while connecting, closing the new socket")
+            socketActive = false
+            socket.disconnect()
+            cancelTokenRefresh()
+            setStatus(RealtimeStatus.Idle)
+            return
+        }
         armConnectTimeout()
     }
 
@@ -603,7 +672,11 @@ class RealtimeConnectionManager internal constructor(
         setStatus(RealtimeStatus.Idle)
     }
 
-    private fun isLoggedIn(): Boolean = authState.session.value is AuthSession.LoggedIn
+    /** Logged in with a session that was not closed for logout. */
+    private fun isLoggedIn(): Boolean {
+        val session = authState.session.value
+        return session is AuthSession.LoggedIn && session.sessionId != closedSessionId
+    }
 
     private fun hasUnexpiredAccessToken(): Boolean =
         tokenStorage.getAccessToken() != null &&

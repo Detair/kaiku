@@ -24,6 +24,7 @@ fun LoginScreen(
     onNavigateToRegister: () -> Unit,
     onLoginSuccess: () -> Unit,
     onPasswordChangeRequired: () -> Unit = {},
+    onChangeServer: () -> Unit = {},
     oidcProviders: List<OidcProvider> = emptyList(),
     onOidcLogin: (OidcProvider) -> Unit = {},
     viewModel: LoginViewModel = hiltViewModel()
@@ -41,6 +42,13 @@ fun LoginScreen(
         if (uiState.passwordChangeRequired) {
             viewModel.onPasswordChangeNavigated()
             onPasswordChangeRequired()
+        }
+    }
+
+    LaunchedEffect(uiState.changeServerRequested) {
+        if (uiState.changeServerRequested) {
+            viewModel.onChangeServerNavigated()
+            onChangeServer()
         }
     }
 
@@ -65,6 +73,16 @@ fun LoginScreen(
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        if (uiState.serverHost.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = stringResource(R.string.auth_login_server, uiState.serverHost),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
         Spacer(modifier = Modifier.height(32.dp))
 
@@ -152,8 +170,23 @@ fun LoginScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        TextButton(onClick = onNavigateToRegister) {
-            Text(stringResource(R.string.auth_go_to_register))
+        if (uiState.registrationOpen) {
+            TextButton(onClick = onNavigateToRegister) {
+                Text(stringResource(R.string.auth_go_to_register))
+            }
+        }
+
+        if (uiState.registrationCheckFailed) {
+            TextButton(onClick = viewModel::onRetryRegistrationCheck) {
+                Text(stringResource(R.string.auth_register_check_retry))
+            }
+        }
+
+        TextButton(
+            onClick = viewModel::onChangeServerClicked,
+            enabled = !uiState.isLoading
+        ) {
+            Text(stringResource(R.string.auth_change_server))
         }
 
         if (oidcProviders.isNotEmpty()) {

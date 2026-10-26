@@ -65,6 +65,7 @@ class DmListViewModel @Inject constructor(
 
     /** Opening a DM clears its unread badge (best-effort; failures are logged). */
     fun onOpenConversation(channelId: String) {
+        dmRepository.setActiveChannel(channelId)
         viewModelScope.launch {
             try {
                 dmRepository.markAsRead(channelId)

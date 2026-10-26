@@ -1,10 +1,14 @@
 package io.wolftown.kaiku.data.repository
 
 import io.wolftown.kaiku.data.api.DmApi
+import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.di.ChatCoroutineScope
 import io.wolftown.kaiku.domain.model.DmConversation
+import io.wolftown.kaiku.domain.model.LastMessagePreview
+import io.wolftown.kaiku.domain.model.Message
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,6 +37,7 @@ class DmRepository @Inject constructor(
     private val dmApi: DmApi,
     private val webSocket: KaikuWebSocket,
     private val json: Json,
+    private val authState: AuthState,
     @ChatCoroutineScope private val scope: CoroutineScope,
 ) {
     private val _conversations = MutableStateFlow<List<DmConversation>>(emptyList())
@@ -42,8 +47,45 @@ class DmRepository @Inject constructor(
         // UNDISPATCHED: subscribe to the replay-0 SharedFlow before init returns.
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
             webSocket.events.collect { event ->
-                if (event is ServerEvent.DmCreated) onDmCreated(event)
+                when (event) {
+                    is ServerEvent.DmCreated -> onDmCreated(event)
+                    is ServerEvent.MessageNew -> onMessageNew(event)
+                    else -> Unit
+                }
             }
+        }
+    }
+
+    /** The DM the user has open; its new messages count as read. */
+    private val activeChannelId = MutableStateFlow<String?>(null)
+
+    fun setActiveChannel(channelId: String) {
+        activeChannelId.value = channelId
+    }
+
+    /** Resets the active DM only if it is still [channelId]. */
+    fun clearActiveChannel(channelId: String) {
+        activeChannelId.compareAndSet(channelId, null)
+    }
+
+    /**
+     * Session epoch: [clearSession] bumps it; [loadDms] publishes only if it
+     * is unchanged since the load started (under [epochLock]), so a load in
+     * flight at logout cannot bring the old list back.
+     */
+    private val epochLock = Any()
+    private var epoch = 0L
+
+    /**
+     * Session teardown: drops the conversation list, the open DM and live-DM
+     * bookkeeping. A load still in flight publishes nothing.
+     */
+    fun clearSession() {
+        synchronized(epochLock) {
+            epoch++
+            activeChannelId.value = null
+            liveCreatedAt.clear()
+            _conversations.value = emptyList()
         }
     }
 
@@ -58,14 +100,25 @@ class DmRepository @Inject constructor(
      * is missing from the server's list is dropped.
      */
     suspend fun loadDms() {
+        val startEpoch = synchronized(epochLock) { epoch }
         val startedAt = liveSeq.get()
         val fetched = dmApi.getDms()
         val fetchedIds = fetched.mapTo(HashSet()) { it.id }
+        synchronized(epochLock) {
+            if (epoch != startEpoch) return
+            publishFetched(fetched, fetchedIds, startedAt)
+        }
+        activeChannelId.value?.let { markReadQuietly(it) }
+    }
+
+    private fun publishFetched(fetched: List<DmConversation>, fetchedIds: Set<String>, startedAt: Long) {
         _conversations.update { current ->
             val liveOnly = current.filter {
                 it.id !in fetchedIds && (liveCreatedAt[it.id] ?: 0L) > startedAt
             }
-            liveOnly + fetched
+            val merged = liveOnly + fetched
+            // The open DM is being read: the server's count does not apply.
+            activeChannelId.value?.let { clearUnread(merged, it) } ?: merged
         }
         // The server knows these now; no need to remember them as live.
         fetchedIds.forEach { liveCreatedAt.remove(it) }
@@ -78,9 +131,66 @@ class DmRepository @Inject constructor(
      */
     suspend fun markAsRead(channelId: String) {
         val lastMessageId = _conversations.value.find { it.id == channelId }?.lastMessage?.id
-        _conversations.value = clearUnread(_conversations.value, channelId)
+        _conversations.update { clearUnread(it, channelId) }
         // The server marks read up to a message id; with no message there is nothing to send.
         if (lastMessageId != null) dmApi.markAsRead(channelId, lastMessageId)
+    }
+
+    /**
+     * A message in a known DM updates its preview and raises its unread badge,
+     * unless that DM is open: then it is marked read instead. Messages for
+     * channels that are not DMs in the list are ignored.
+     */
+    private fun onMessageNew(event: ServerEvent.MessageNew) {
+        if (_conversations.value.none { it.id == event.channelId }) return
+        val message = try {
+            json.decodeFromJsonElement<Message>(event.message)
+        } catch (e: Exception) {
+            logger.warning("Failed to decode message_new payload (${e::class.simpleName})")
+            return
+        }
+        val preview = LastMessagePreview(
+            id = message.id,
+            content = message.content,
+            userId = message.author.id,
+            username = message.author.username,
+            createdAt = message.createdAt,
+        )
+        val active = event.channelId == activeChannelId.value
+        val own = message.author.id == authState.currentUserId.value
+        var duplicate = false
+        _conversations.update { current ->
+            current.map {
+                when {
+                    it.id != event.channelId -> it
+                    it.lastMessage?.id == message.id -> {
+                        duplicate = true
+                        it
+                    }
+                    else -> it.copy(
+                        lastMessage = preview,
+                        unreadCount = when {
+                            active -> 0
+                            own -> it.unreadCount
+                            else -> it.unreadCount + 1
+                        },
+                    )
+                }
+            }
+        }
+        if (active && !duplicate) markReadQuietly(event.channelId)
+    }
+
+    private fun markReadQuietly(channelId: String) {
+        scope.launch {
+            try {
+                markAsRead(channelId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.warning("Failed to mark DM read (${e::class.simpleName})")
+            }
+        }
     }
 
     private fun onDmCreated(event: ServerEvent.DmCreated) {

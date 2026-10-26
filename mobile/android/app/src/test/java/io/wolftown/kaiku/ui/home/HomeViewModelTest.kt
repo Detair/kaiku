@@ -323,4 +323,54 @@ class HomeViewModelTest {
         statusFlow.value = RealtimeStatus.Offline
         assertEquals(RealtimeStatus.Offline, viewModel.connectionStatus.value)
     }
+
+    // ========================================================================
+    // Auto-select
+    // ========================================================================
+
+    @Test
+    fun `auto-selects the only server`() = runTest {
+        coEvery { guildRepository.loadGuilds() } coAnswers {
+            guildsFlow.value = listOf(sampleGuilds.first())
+        }
+
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        advanceUntilIdle()
+
+        verify { guildRepository.selectGuild("guild-1") }
+        coVerify { guildRepository.loadChannels("guild-1") }
+    }
+
+    @Test
+    fun `auto-select opens the first server when nothing is selected`() = runTest {
+        coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = sampleGuilds }
+
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        advanceUntilIdle()
+
+        verify { guildRepository.selectGuild("guild-1") }
+        verify(exactly = 0) { guildRepository.selectGuild("guild-2") }
+    }
+
+    @Test
+    fun `auto-select keeps an existing selection`() = runTest {
+        selectedGuildIdFlow.value = "guild-2"
+        coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = sampleGuilds }
+
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        advanceUntilIdle()
+
+        verify(exactly = 0) { guildRepository.selectGuild(any()) }
+    }
+
+    @Test
+    fun `no servers selects nothing`() = runTest {
+        coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = emptyList() }
+
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        advanceUntilIdle()
+
+        verify(exactly = 0) { guildRepository.selectGuild(any()) }
+        assertTrue(viewModel.guilds.value.isEmpty())
+    }
 }
