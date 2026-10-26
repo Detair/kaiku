@@ -18,8 +18,10 @@ import javax.inject.Singleton
  * to signed out or to another user, and at process start when no session is
  * stored at all. The departing account's remembered calls are forgotten
  * with them. Wakes carry no account, so a late call wake meant for a previous
- * account could still post under the account signed in now; accepted, since
- * logout deletes the FCM token / UnifiedPush registration. Runs without any Activity (started from
+ * account runs under the account signed in now: it is dropped when the DM is
+ * definitely not that user's ([CallerLookup.NotMember]); only when membership
+ * cannot be checked (offline) may a generic call notification still appear.
+ * Accepted, since logout deletes the FCM token / UnifiedPush registration. Runs without any Activity (started from
  * the Application). The fetch itself also clears notifications when it finds
  * its session ended ([WakeFetchProcessor]).
  */

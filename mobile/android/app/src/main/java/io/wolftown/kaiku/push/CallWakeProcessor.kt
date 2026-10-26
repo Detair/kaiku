@@ -21,6 +21,9 @@ enum class CallOutcome {
 
     /** The wake was queued for another account or server than the signed-in one. */
     WRONG_ACCOUNT,
+
+    /** The DM is not the signed-in user's (e.g. a late wake for a previous account). */
+    NOT_MEMBER,
 }
 
 /**
@@ -30,7 +33,8 @@ enum class CallOutcome {
  * Only the channel's current call ([CallNotificationStore], set by
  * [CallWakeIntake]) is acted on; an ended with no call stored still shows a
  * missed call ([CallRules]). Never fetches messages; the caller's name is looked up in the DM
- * participants, with a generic text when that fails.
+ * participants, with a generic text when that fails. A DM that is definitely
+ * not the user's ([CallerLookup.NotMember]) posts nothing.
  *
  * Bound to the account and session the wake was queued for, like
  * [WakeFetchProcessor]: without that session nothing is posted.
@@ -86,7 +90,11 @@ class CallWakeProcessor @Inject constructor(
         val stored = store.shown(account.userId, channelId)?.takeIf { isRinging(it, call) }
             ?: return CallOutcome.IGNORED
         if (now() - stored.atMs > RING_MAX_AGE_MS) return CallOutcome.IGNORED
-        val name = callerName(channelId, call.callerId)
+        val name = when (val lookup = lookupCaller(channelId, call.callerId)) {
+            is CallerLookup.Found -> lookup.name
+            CallerLookup.Unknown -> null
+            CallerLookup.NotMember -> return notMember(account, channelId, stored)
+        }
         return post(account, channelId, call, CallKind.INCOMING, name, stored.atMs, isStopped) {
             isRinging(store.shown(account.userId, channelId), call)
         }
@@ -98,10 +106,15 @@ class CallWakeProcessor @Inject constructor(
         call: CallInfo,
         isStopped: () -> Boolean,
     ): CallOutcome {
-        if (!CallRules.endedApplies(store.shown(account.userId, channelId), call, now())) return CallOutcome.IGNORED
+        val stored = store.shown(account.userId, channelId)
+        if (!CallRules.endedApplies(stored, call, now())) return CallOutcome.IGNORED
         return when (call.reason) {
             CallEndReason.NO_ANSWER, CallEndReason.CANCELLED -> {
-                val name = callerName(channelId, call.callerId)
+                val name = when (val lookup = lookupCaller(channelId, call.callerId)) {
+                    is CallerLookup.Found -> lookup.name
+                    CallerLookup.Unknown -> null
+                    CallerLookup.NotMember -> return notMember(account, channelId, stored)
+                }
                 post(account, channelId, call, CallKind.MISSED, name, ringingSinceMs = null, isStopped) {
                     // Atomic against the intake: record the missed call only over the entry checked here.
                     endIfStillApplies(account, channelId, call, CallPhase.MISSED)
@@ -117,6 +130,15 @@ class CallWakeProcessor @Inject constructor(
             }
             CallEndReason.UNKNOWN, null -> CallOutcome.IGNORED
         }
+    }
+
+    /**
+     * The DM is not the user's: nothing is posted, and what the intake
+     * recorded for this channel ([stored], if still unchanged) is removed.
+     */
+    private fun notMember(account: Account, channelId: String, stored: ShownCall?): CallOutcome {
+        if (stored != null && isCurrent(account)) store.clearIf(account.userId, channelId, stored)
+        return CallOutcome.NOT_MEMBER
     }
 
     /** Moves the channel's call to [phase] if the ended still applies, with a compare-and-set. */
@@ -161,10 +183,10 @@ class CallWakeProcessor @Inject constructor(
         }
     }
 
-    /** The caller's name, or null (generic text) when it cannot be looked up quickly. */
-    private suspend fun callerName(channelId: String, callerId: String): String? {
-        if (refresher.ensureFresh(MIN_TOKEN_VALIDITY_MS) != RefreshResult.SUCCESS) return null
-        return withTimeoutOrNull(NAME_TIMEOUT_MS) { names.callerName(channelId, callerId) }
+    /** Membership and caller name; [CallerLookup.Unknown] (generic text) when it cannot be looked up quickly. */
+    private suspend fun lookupCaller(channelId: String, callerId: String): CallerLookup {
+        if (refresher.ensureFresh(MIN_TOKEN_VALIDITY_MS) != RefreshResult.SUCCESS) return CallerLookup.Unknown
+        return withTimeoutOrNull(NAME_TIMEOUT_MS) { names.lookupCaller(channelId, callerId) } ?: CallerLookup.Unknown
     }
 
     private fun isCurrent(account: Account): Boolean =

@@ -44,6 +44,9 @@ interface CallNotificationStore {
 
     fun clear(userId: String, channelId: String)
 
+    /** Removes the entry only if [shown] still returns [expected]. Returns whether it removed it. */
+    fun clearIf(userId: String, channelId: String, expected: ShownCall): Boolean
+
     /** Forgets every call of [userId] (logout, account change). */
     fun clearUser(userId: String)
 
@@ -101,6 +104,13 @@ class PrefsCallNotificationStore(
             .remove(key(userId, channelId, PHASE))
             .remove(key(userId, channelId, AT))
             .apply()
+    }
+
+    @Synchronized
+    override fun clearIf(userId: String, channelId: String, expected: ShownCall): Boolean {
+        if (shown(userId, channelId) != expected) return false
+        clear(userId, channelId)
+        return true
     }
 
     @Synchronized

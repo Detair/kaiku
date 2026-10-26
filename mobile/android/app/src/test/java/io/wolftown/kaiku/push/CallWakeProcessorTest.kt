@@ -68,7 +68,7 @@ class CallWakeProcessorTest {
         every { tokenStorage.getServerUrl() } returns server
         every { tokenStorage.getSessionGeneration() } answers { generation }
         coEvery { refresher.ensureFresh(any()) } returns RefreshResult.SUCCESS
-        coEvery { names.callerName(ch, bob) } returns "Bob"
+        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.Found("Bob")
     }
 
     private fun ringing(callId: String = callA) =
@@ -91,7 +91,7 @@ class CallWakeProcessorTest {
         assertEquals(CallOutcome.INCOMING, ring())
 
         assertEquals(CallNotification("me", ch, callA, CallKind.INCOMING, "Bob", ringingSinceMs = clock), sink.shown[ch])
-        coVerify { names.callerName(ch, bob) }
+        coVerify { names.lookupCaller(ch, bob) }
     }
 
     @Test
@@ -235,7 +235,7 @@ class CallWakeProcessorTest {
 
         assertEquals(CallOutcome.IGNORED, processor.process(ringing(), owner))
         assertTrue(sink.posts.isEmpty())
-        coVerify(exactly = 0) { names.callerName(any(), any()) }
+        coVerify(exactly = 0) { names.lookupCaller(any(), any()) }
 
         // Its end still shows the missed call.
         assertEquals(CallOutcome.MISSED, processor.process(ended(CallEndReason.NO_ANSWER), owner))
@@ -250,8 +250,8 @@ class CallWakeProcessorTest {
     }
 
     @Test
-    fun `failed name lookup uses the generic text`() = runTest {
-        coEvery { names.callerName(ch, bob) } returns null
+    fun `unknown caller lookup uses the generic text`() = runTest {
+        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.Unknown
 
         assertEquals(CallOutcome.INCOMING, ring())
         assertNull(sink.shown[ch]?.callerName)
@@ -267,7 +267,7 @@ class CallWakeProcessorTest {
         assertEquals(CallOutcome.INCOMING, ring())
 
         assertNull(sink.shown[ch]?.callerName)
-        coVerify(exactly = 0) { names.callerName(any(), any()) }
+        coVerify(exactly = 0) { names.lookupCaller(any(), any()) }
     }
 
     @Test
@@ -306,9 +306,9 @@ class CallWakeProcessorTest {
     @Test
     fun `session ending during the name lookup posts nothing`() = runTest {
         intake.accept(ringing())
-        coEvery { names.callerName(ch, bob) } answers {
+        coEvery { names.lookupCaller(ch, bob) } answers {
             generation = 2L
-            "Bob"
+            CallerLookup.Found("Bob")
         }
 
         assertEquals(CallOutcome.NOT_LOGGED_IN, processor.process(ringing(), owner))
@@ -389,14 +389,14 @@ class CallWakeProcessorTest {
         intake.accept(ringing())
         var stopped = false
         var nested = false
-        coEvery { names.callerName(ch, bob) } coAnswers {
+        coEvery { names.lookupCaller(ch, bob) } coAnswers {
             if (!nested) {
                 nested = true
                 // The ended wake arrives and replaces the still running ringing work.
                 assertEquals(CallOutcome.MISSED, processor.process(ended(CallEndReason.NO_ANSWER), owner))
                 stopped = true
             }
-            "Bob"
+            CallerLookup.Found("Bob")
         }
 
         assertEquals(CallOutcome.IGNORED, processor.process(ringing(), owner) { stopped })
@@ -408,12 +408,12 @@ class CallWakeProcessorTest {
     fun `ringing still running after its missed call posts nothing even if not stopped`() = runTest {
         intake.accept(ringing())
         var nested = false
-        coEvery { names.callerName(ch, bob) } coAnswers {
+        coEvery { names.lookupCaller(ch, bob) } coAnswers {
             if (!nested) {
                 nested = true
                 processor.process(ended(CallEndReason.NO_ANSWER), owner)
             }
-            "Bob"
+            CallerLookup.Found("Bob")
         }
 
         assertEquals(CallOutcome.IGNORED, processor.process(ringing(), owner))
@@ -495,5 +495,54 @@ class CallWakeProcessorTest {
 
         assertEquals(ShownCall(callB, CallPhase.RINGING, clock), store.shown("me", ch))
         assertEquals(1, sink.posts.size)
+    }
+
+    @Test
+    fun `caller found without a name uses the generic text`() = runTest {
+        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.Found(null)
+
+        assertEquals(CallOutcome.INCOMING, ring())
+
+        assertNull(sink.shown[ch]?.callerName)
+    }
+
+    @Test
+    fun `ringing for a DM that is not the user's posts and records nothing`() = runTest {
+        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.NotMember
+
+        assertEquals(CallOutcome.NOT_MEMBER, ring())
+
+        assertTrue(sink.posts.isEmpty())
+        assertNull(store.shown("me", ch))
+    }
+
+    @Test
+    fun `missed call for a DM that is not the user's posts and records nothing`() = runTest {
+        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.NotMember
+        assertTrue(intake.accept(ended(CallEndReason.NO_ANSWER)))
+
+        assertEquals(CallOutcome.NOT_MEMBER, processor.process(ended(CallEndReason.NO_ANSWER), owner))
+
+        assertTrue(sink.posts.isEmpty())
+        assertNull(store.shown("me", ch))
+    }
+
+    @Test
+    fun `missed call with nothing stored for a DM that is not the user's posts nothing`() = runTest {
+        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.NotMember
+
+        assertEquals(CallOutcome.NOT_MEMBER, processor.process(ended(CallEndReason.CANCELLED), owner))
+
+        assertTrue(sink.posts.isEmpty())
+        assertNull(store.shown("me", ch))
+    }
+
+    @Test
+    fun `unknown caller lookup still posts the generic missed call`() = runTest {
+        coEvery { names.lookupCaller(ch, bob) } returns CallerLookup.Unknown
+
+        assertEquals(CallOutcome.MISSED, processor.process(ended(CallEndReason.NO_ANSWER), owner))
+
+        assertEquals(listOf(missed(name = null)), sink.posts)
     }
 }
