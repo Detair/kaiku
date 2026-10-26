@@ -325,18 +325,9 @@ pub async fn create(
 
                         let owner_key = format!("interaction:{interaction_id}:owner");
                         let owner_value = bot_user_id.to_string();
-                        let routing_redis = db::create_redis_client_with_timeout(
-                            &state.config.redis_url,
-                            state.config.valkey_command_timeout,
-                        )
-                        .await
-                        .map_err(|e| {
-                            warn!(
-                                error = %e,
-                                "Failed to create Redis client for slash command routing"
-                            );
-                            ChatError::Validation("Bot command routing unavailable".to_string())
-                        })?;
+                        // The shared client: a per-command client would hold its
+                        // connection open after the request.
+                        let routing_redis = &state.redis;
 
                         routing_redis
                             .set::<(), _, _>(

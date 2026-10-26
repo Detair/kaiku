@@ -396,6 +396,10 @@ pub struct ChannelUnread {
     pub channel_name: String,
     /// Number of unread messages.
     pub unread_count: i64,
+    /// The user's server-side read cursor: the last message they have read in
+    /// this channel, or `null` when the channel was never read. Clients notify
+    /// only for messages newer than this.
+    pub last_read_message_id: Option<Uuid>,
 }
 
 /// Guild unread summary for the unread aggregator.

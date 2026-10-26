@@ -251,7 +251,7 @@ PostgreSQL `tsvector` with GIN index. Guild-scoped, DM-scoped, and global search
 - **Client:** `SearchPanel.tsx` with Ctrl+Shift+F shortcut, `SearchSyntaxHelp.tsx`
 
 ### 4.17 Unread Tracking & Aggregator
-Per-channel, per-DM, and per-thread read state tracking with `last_read_at` and `last_read_message_id`. Centralized `GET /api/me/unread` returns aggregated unread counts across all guilds and DMs. UnreadModule in home sidebar with guild-grouped and DM unread counts, direct navigation, automatic refresh on window focus.
+Per-channel, per-DM, and per-thread read state tracking with `last_read_at` and `last_read_message_id`. Centralized `GET /api/me/unread` returns aggregated unread counts across all guilds and DMs; each channel entry also has `last_read_message_id` (the read cursor, `null` if the channel was never read). UnreadModule in home sidebar with guild-grouped and DM unread counts, direct navigation, automatic refresh on window focus.
 
 - **Server:** `server/src/api/unread.rs`
 - **Client:** UnreadModule in home sidebar
