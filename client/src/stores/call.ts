@@ -405,9 +405,27 @@ export function callEndedExternally(
   duration?: number,
   callId?: string,
 ): void {
-  // An end for a different call (e.g. the previous one in this DM) is stale.
-  if (isStaleCallEvent(channelId, callId)) return;
-  rememberEnded(channelId, knownCallId(callId));
+  const id = knownCallId(callId);
+  if (id && isEndedCallId(channelId, id)) {
+    // The server's end of a call we already left/ended/declined locally. Clear
+    // the DM's indicator unless a newer call (known id) owns it, and take the
+    // server's reason/duration for the "ended" display. Never touch a newer
+    // call that is now current.
+    if (callState.callIds[channelId]) return;
+    setCallState(
+      produce((state) => {
+        delete state.activeCallsByChannel[channelId];
+      }),
+    );
+    const cur = callState.currentCall;
+    if (cur.status === "ended" && cur.channelId === channelId) {
+      setCallState("currentCall", { reason, duration });
+    }
+    return;
+  }
+  // A different, unknown-to-us id than the DM's current call is stale.
+  if (isStaleCallEvent(channelId, id)) return;
+  rememberEnded(channelId, id);
   // Remove from active calls
   setCallState(
     produce((state) => {

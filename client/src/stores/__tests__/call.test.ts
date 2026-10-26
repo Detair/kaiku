@@ -216,3 +216,58 @@ describe("call ids per DM across calls", () => {
     expect(callState.callIds["dm-x"]).toBe("a");
   });
 });
+
+describe("call_ended after our own decline or end", () => {
+  beforeEach(reset);
+
+  it("incoming -> decline -> call_ended (same id) clears the indicator", () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "c1");
+    expect(callState.activeCallsByChannel["dm-x"]).toBeDefined();
+    declineCall("dm-x");
+    callEndedExternally("dm-x", "all_declined", undefined, "c1");
+    expect(callState.activeCallsByChannel["dm-x"]).toBeUndefined();
+    expect(callState.currentCall.status).toBe("idle");
+  });
+
+  it("outgoing -> end -> call_ended clears the indicator and records the server reason/duration", () => {
+    startCall("dm-x");
+    setChannelCallId("dm-x", "c1");
+    setCallState("activeCallsByChannel", "dm-x", { initiator: "me", initiatorName: "Me", participants: ["me"] });
+    endCall("dm-x", "cancelled");
+    setCallState("activeCallsByChannel", "dm-x", { initiator: "me", initiatorName: "Me", participants: ["me"] });
+    callEndedExternally("dm-x", "no_answer", 12, "c1");
+    expect(callState.activeCallsByChannel["dm-x"]).toBeUndefined();
+    const cur = callState.currentCall;
+    expect(cur.status).toBe("ended");
+    expect(cur.status === "ended" && cur.reason).toBe("no_answer");
+    expect(cur.status === "ended" && cur.duration).toBe(12);
+  });
+
+  it("a late call_ended of an older call does not end a new ringing call in the same DM", () => {
+    startCall("dm-x");
+    setChannelCallId("dm-x", "old");
+    endCall("dm-x", "cancelled");
+    startCall("dm-x");
+    setChannelCallId("dm-x", "new");
+    callEndedExternally("dm-x", "last_left", undefined, "old");
+    expect(callState.currentCall.status).toBe("outgoing_ringing");
+  });
+
+  it("same, while the new call's id is still unknown", () => {
+    startCall("dm-x");
+    setChannelCallId("dm-x", "old");
+    endCall("dm-x", "cancelled");
+    startCall("dm-x");
+    callEndedExternally("dm-x", "last_left", undefined, "old");
+    expect(callState.currentCall.status).toBe("outgoing_ringing");
+  });
+
+  it("a late call_ended of an older call keeps a newer incoming call's indicator", () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "old");
+    declineCall("dm-x");
+    receiveIncomingCall("dm-x", "u2", "Bob", "new");
+    callEndedExternally("dm-x", "all_declined", undefined, "old");
+    expect(callState.activeCallsByChannel["dm-x"]).toBeDefined();
+    expect(callState.currentCall.status).toBe("incoming_ringing");
+  });
+});
