@@ -13,8 +13,8 @@ use uuid::Uuid;
 use vc_server::permissions::GuildPermissions;
 
 use super::helpers::{
-    add_guild_member, body_to_json, create_channel, create_dm_channel,
-    create_guild_with_default_role, create_test_user, fresh_test_app_with_s3_and_pool,
+    add_guild_member, all_features_config, body_to_json, create_channel, create_dm_channel,
+    create_guild_with_default_role, create_test_user, fresh_test_app_with_s3_and_config,
     generate_access_token, rustfs_available, TestApp,
 };
 
@@ -367,7 +367,8 @@ async fn test_file_only_announcement_upload_is_not_crossposted(pool: PgPool) {
         eprintln!("SKIP: RustFS unavailable");
         return;
     }
-    let (app, _bucket) = fresh_test_app_with_s3_and_pool(pool.clone()).await;
+    let (app, _bucket) =
+        fresh_test_app_with_s3_and_config(pool.clone(), all_features_config()).await;
     let (owner, _) = create_test_user(&app.pool).await;
     let token = generate_access_token(&app.config, owner);
     let perms = GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES;
@@ -446,10 +447,9 @@ async fn test_dispatch_skips_crosspost_without_text(pool: PgPool) {
 
     use vc_server::api::{AppState, AppStateConfig};
     use vc_server::chat::send::{dispatch_new_message, NewMessageDispatch};
-    use vc_server::config::Config;
     use vc_server::voice::sfu::SfuServer;
 
-    let config = Config::default_for_test();
+    let config = all_features_config();
     let redis = vc_server::db::create_redis_client(&config.redis_url)
         .await
         .expect("connect test Redis");

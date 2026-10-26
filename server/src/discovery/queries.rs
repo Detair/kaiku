@@ -210,17 +210,20 @@ pub async fn insert_guild_member_ignore_conflict(
     conn: &mut PgConnection,
     guild_id: Uuid,
     user_id: Uuid,
+    screening: bool,
 ) -> Result<u64, DiscoveryError> {
     let result = sqlx::query(
         // Screening-enabled guilds place new joiners in 'pending' until they
-        // accept the rules; otherwise 'active'.
+        // accept the rules, but only while the server's screening feature is
+        // on (`screening`); otherwise 'active'.
         "INSERT INTO guild_members (guild_id, user_id, membership_state)
-         VALUES ($1, $2, CASE WHEN (SELECT screening_enabled FROM guilds WHERE id = $1)
+         VALUES ($1, $2, CASE WHEN $3 AND (SELECT screening_enabled FROM guilds WHERE id = $1)
                               THEN 'pending' ELSE 'active' END)
          ON CONFLICT DO NOTHING",
     )
     .bind(guild_id)
     .bind(user_id)
+    .bind(screening)
     .execute(conn)
     .await?;
     Ok(result.rows_affected())

@@ -18,7 +18,8 @@ use crate::helpers::{
 const WEBHOOK_TEST_KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
 async fn setup(pool: &PgPool) -> (TestApp, Uuid, Uuid, Uuid) {
-    let mut config = vc_server::config::Config::default_for_test();
+    // Forum/announcement webhook tests need those optional features on.
+    let mut config = crate::helpers::all_features_config();
     config.mfa_encryption_key = Some(WEBHOOK_TEST_KEY.to_string());
     let app = TestApp::with_pool_and_config(pool.clone(), config).await;
     let (owner, _) = create_test_user(pool).await;

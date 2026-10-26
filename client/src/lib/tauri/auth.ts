@@ -5,6 +5,7 @@
 
 import type {
   IdentityListResponse,
+  ReauthMethodsResponse,
   RevokeAllResponse,
   ServerSettings,
   SessionListResponse,
@@ -497,6 +498,90 @@ export async function linkIdentity(
   return { mode: "browser", authUrl: resp.url };
 }
 
+/**
+ * True when linking failed because a system admin needs an elevated session
+ * first (server code `elevation_required`, HTTP 403). The desktop command
+ * reports the response body inside its error string.
+ */
+export function isElevationRequiredError(err: unknown): boolean {
+  if (err instanceof HttpError) return err.code === "elevation_required";
+  const text = typeof err === "string" ? err : err instanceof Error ? err.message : "";
+  return text.includes("elevation_required");
+}
+
+// ============================================================================
+// Re-authentication (contract C24)
+// ============================================================================
+
+/** Which re-authentication methods this session can use. */
+export async function getReauthMethods(): Promise<ReauthMethodsResponse> {
+  return httpRequest<ReauthMethodsResponse>("GET", "/auth/reauth/methods");
+}
+
+/** Turn a native command error code into an `HttpError` for the shared mapping. */
+function nativeReauthError(err: unknown): HttpError {
+  const raw = typeof err === "string" ? err : err instanceof Error ? err.message : "";
+  // "HTTP_<status>" or "HTTP_<status>:<code>": the status always stays.
+  const status = /^HTTP_(\d{3})(?::(.+))?$/.exec(raw);
+  if (status) return new HttpError(Number(status[1]), raw, status[2]);
+  return new HttpError(0, raw, raw || "REAUTH_FAILED");
+}
+
+/**
+ * Start re-authenticating with a sign-in provider.
+ *
+ * Tauri: the native command runs the whole flow (system browser, loopback
+ * callback) and resolves once the server reports the confirmation. Browser:
+ * the server returns the provider URL for the caller to open in a popup; the
+ * result arrives as an `oidc-reauth-callback` message.
+ */
+export async function startOidcReauth(
+  providerId: string,
+  opts: { reason?: string | null; mfaCode?: string | null; signal?: AbortSignal },
+): Promise<{ mode: "tauri" } | { mode: "browser"; url: string }> {
+  const abortIfCancelled = () => {
+    if (opts.signal?.aborted) {
+      const e = new Error("aborted");
+      e.name = "AbortError";
+      throw e;
+    }
+  };
+  abortIfCancelled();
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    abortIfCancelled();
+    // Lets the native side stop the listener (and not open the browser) when
+    // the user closes the dialog mid-flow.
+    const attemptId = crypto.randomUUID();
+    const cancel = () => void invoke("oidc_reauth_cancel", { attemptId }).catch(() => {});
+    opts.signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      await invoke("oidc_reauth", {
+        serverUrl: getServerUrl().replace(/\/+$/, ""),
+        providerId,
+        reason: opts.reason ?? null,
+        mfaCode: opts.mfaCode ?? null,
+        attemptId,
+      });
+    } catch (err) {
+      throw nativeReauthError(err);
+    } finally {
+      opts.signal?.removeEventListener("abort", cancel);
+    }
+    return { mode: "tauri" };
+  }
+  const resp = await httpRequest<{ url: string }>(
+    "POST",
+    `/auth/reauth/oidc/authorize/${encodeURIComponent(providerId)}`,
+    {
+      redirect_uri: null,
+      reason: opts.reason ?? null,
+      mfa_code: opts.mfaCode ?? null,
+    },
+  );
+  return { mode: "browser", url: resp.url };
+}
+
 // ============================================================================
 // MFA Commands
 // ============================================================================
@@ -536,9 +621,19 @@ export async function mfaDisable(code: string): Promise<void> {
   await httpRequest<unknown>("POST", "/auth/mfa/disable", { code });
 }
 
-/** Generate (or regenerate) MFA backup codes. */
-export async function mfaGenerateBackupCodes(): Promise<MfaBackupCodesResponse> {
-  return httpRequest<MfaBackupCodesResponse>("POST", "/auth/mfa/backup-codes");
+/**
+ * Generate (or regenerate) MFA backup codes. Needs a current authenticator
+ * code; backup codes are not accepted here.
+ */
+export async function mfaGenerateBackupCodes(
+  mfaCode: string,
+): Promise<string[]> {
+  const res = await httpRequest<MfaBackupCodesResponse>(
+    "POST",
+    "/auth/mfa/backup-codes",
+    { mfa_code: mfaCode },
+  );
+  return res.codes;
 }
 
 /** Get remaining MFA backup code count. */

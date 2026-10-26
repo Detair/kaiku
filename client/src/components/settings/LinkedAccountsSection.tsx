@@ -1,10 +1,18 @@
-import { Component, createSignal, onMount, For, Show } from "solid-js";
+import { Component, createSignal, onCleanup, onMount, For, Show } from "solid-js";
 import { KeyRound, Unlink, Plus } from "lucide-solid";
 import * as tauri from "@/lib/tauri";
 import { HttpError } from "@/lib/tauri/common";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { formatRelativeTimeShort } from "@/lib/utils";
 import type { IdentityInfo, OidcProvider } from "@/lib/types";
+import ElevateDialog from "@/components/admin/ElevateDialog";
+import { t } from "@/i18n";
+
+/** Longest the browser link flow waits for the provider window. */
+const LINK_TIMEOUT_MS = 120_000;
+
+/** Counts browser link attempts, for a window name no earlier attempt used. */
+let linkAttempt = 0;
 
 /**
  * Lists the external (OIDC) identities linked to the account, and lets the user
@@ -20,6 +28,11 @@ const LinkedAccountsSection: Component = () => {
   const [error, setError] = createSignal<string | null>(null);
   // Slug currently being linked (disables its button / shows progress).
   const [linking, setLinking] = createSignal<string | null>(null);
+  // Provider to link once the admin has confirmed with the re-auth dialog.
+  const [pendingLink, setPendingLink] = createSignal<OidcProvider | null>(null);
+  // Elevated, waiting for the user to start the link themselves (a popup must
+  // open from a click, not after a long re-auth).
+  const [readyLink, setReadyLink] = createSignal<OidcProvider | null>(null);
 
   const loadData = async () => {
     try {
@@ -42,6 +55,17 @@ const LinkedAccountsSection: Component = () => {
   };
 
   onMount(loadData);
+
+  // Stops the running browser attempt (listener + timers); also on dispose, so a
+  // stale timer can never touch a popup opened later.
+  let stopActive: (() => void) | null = null;
+  // Abandons an attempt whose authorize request is still pending (closes the
+  // blank popup; the continuation then does nothing).
+  let abandonPending: (() => void) | null = null;
+  onCleanup(() => {
+    abandonPending?.();
+    stopActive?.();
+  });
 
   // Providers not already linked to this account.
   const availableProviders = (): OidcProvider[] => {
@@ -68,56 +92,138 @@ const LinkedAccountsSection: Component = () => {
     }
   };
 
-  const handleLink = async (provider: OidcProvider) => {
-    setError(null);
-    setLinking(provider.slug);
-    try {
-      const result = await tauri.linkIdentity(provider.slug);
+  // Text for a failed link, from a callback code or a native error string.
+  const linkErrorText = (code: string): string | null => {
+    if (code.includes("LINK_SESSION_INVALID")) return t("settings.linkedAccounts.error.sessionInvalid");
+    if (code.includes("ACCOUNT_BANNED")) return t("settings.linkedAccounts.error.banned");
+    if (code.toUpperCase().includes("SERVICE_UNAVAILABLE"))
+      return t("settings.linkedAccounts.error.serviceUnavailable");
+    return null;
+  };
 
-      if (result.mode === "tauri") {
+  // `afterElevation` is true for the one retry that follows a re-auth; a second
+  // "elevation required" then ends in an error instead of asking again.
+  const handleLink = async (provider: OidcProvider, afterElevation = false) => {
+    setError(null);
+    stopActive?.();
+
+    // Browser: the popup must open inside the click, before any request, or the
+    // browser may block it once the user activation has expired. It starts
+    // blank and is pointed at the provider once the server answers. A unique
+    // name per attempt keeps an older window from being reused.
+    const popup = tauri.isTauri()
+      ? null
+      : window.open("about:blank", `oidc-link-${Date.now()}-${++linkAttempt}`, "width=600,height=700");
+    if (!tauri.isTauri() && !popup) {
+      setError(t("settings.linkedAccounts.error.popupBlocked"));
+      return;
+    }
+    setLinking(provider.slug);
+    let disposed = false;
+    const abandon = () => {
+      disposed = true;
+      popup?.close();
+    };
+    abandonPending = abandon;
+    const settled = () => {
+      if (abandonPending === abandon) abandonPending = null;
+    };
+
+    const needElevation = () => {
+      setLinking(null);
+      if (afterElevation) {
+        setError(t("settings.linkedAccounts.error.elevationStillRequired"));
+      } else {
+        setPendingLink(provider);
+      }
+    };
+
+    try {
+      let result: Awaited<ReturnType<typeof tauri.linkIdentity>>;
+      try {
+        result = await tauri.linkIdentity(provider.slug);
+      } catch (err) {
+        if (disposed) return;
+        settled();
+        popup?.close();
+        if (tauri.isElevationRequiredError(err)) {
+          needElevation();
+          return;
+        }
+        throw err;
+      }
+      if (disposed) return;
+      settled();
+
+      if (result.mode === "tauri" || !popup) {
         // Native command resolved on success; refresh the list.
+        popup?.close();
         await loadData();
         setLinking(null);
         return;
       }
 
-      // Browser: open a popup and wait for the callback's postMessage.
+      // Browser: point the popup at the provider and wait for the callback's postMessage.
       const expectedOrigin = new URL(tauri.getServerUrl()).origin;
+      popup.location.href = result.authUrl;
+      const timers: {
+        poll?: ReturnType<typeof setInterval>;
+        ceiling?: ReturnType<typeof setTimeout>;
+      } = {};
+      const stop = () => {
+        window.removeEventListener("message", messageHandler);
+        clearInterval(timers.poll);
+        clearTimeout(timers.ceiling);
+        if (stopActive === stop) stopActive = null;
+      };
       const messageHandler = (event: MessageEvent) => {
         if (event.origin !== expectedOrigin) return;
+        if (event.source !== popup) return;
         if (event.data?.type !== "oidc-link-callback") return;
-        window.removeEventListener("message", messageHandler);
+        stop();
+        popup.close();
         if (event.data.success) {
           loadData().catch(() => {});
-        } else {
-          setError(
-            event.data.error_code === "IDENTITY_ALREADY_LINKED"
-              ? "That account is already linked to another Kaiku account."
-              : "Linking failed. Please try again.",
-          );
+          setLinking(null);
+          return;
         }
+        const code = String(event.data.error_code ?? "");
+        if (code === "elevation_required") {
+          needElevation();
+          return;
+        }
+        setError(
+          code === "IDENTITY_ALREADY_LINKED"
+            ? "That account is already linked to another Kaiku account."
+            : (linkErrorText(code) ?? "Linking failed. Please try again."),
+        );
         setLinking(null);
       };
+      stopActive = stop;
       window.addEventListener("message", messageHandler);
-
-      const popup = window.open(result.authUrl, "oidc-link", "width=600,height=700");
       // Stop waiting if the popup is closed without completing.
-      const checkClosed = setInterval(() => {
-        if (popup?.closed) {
-          clearInterval(checkClosed);
-          window.removeEventListener("message", messageHandler);
+      timers.poll = setInterval(() => {
+        if (popup.closed) {
+          stop();
           setLinking(null);
         }
       }, 500);
+      // ...or if it never reports back.
+      timers.ceiling = setTimeout(() => {
+        stop();
+        popup.close();
+        setError(t("settings.linkedAccounts.error.timeout"));
+        setLinking(null);
+      }, LINK_TIMEOUT_MS);
     } catch (err) {
-      // Desktop: a named SSO code gets its message; other errors as before.
-      setError(
-        err instanceof HttpError && err.code && err.code in SSO_ERRORS.byCode
-          ? errorText(err, "auth.sso.linkFailed", SSO_ERRORS.byCode)
-          : err instanceof Error
-            ? err.message
-            : String(err),
-      );
+      popup?.close();
+      if (err instanceof HttpError && err.code && err.code in SSO_ERRORS.byCode) {
+        // Desktop: a named SSO code (e.g. OIDC_CLIENT_OUTDATED) gets its message.
+        setError(errorText(err, "auth.sso.linkFailed", SSO_ERRORS.byCode));
+      } else {
+        const text = err instanceof Error ? err.message : String(err);
+        setError(linkErrorText(text) ?? text);
+      }
       setLinking(null);
     }
   };
@@ -129,7 +235,7 @@ const LinkedAccountsSection: Component = () => {
       </h4>
 
       <Show when={error()}>
-        <div class="text-sm text-status-danger p-3 rounded-xl bg-status-danger/10 border border-status-danger/20">
+        <div role="alert" class="text-sm text-status-danger p-3 rounded-xl bg-status-danger/10 border border-status-danger/20">
           {error()}
         </div>
       </Show>
@@ -203,6 +309,36 @@ const LinkedAccountsSection: Component = () => {
             </For>
           </div>
         </Show>
+      </Show>
+      <Show when={readyLink()}>
+        {(provider) => (
+          <div class="flex items-center gap-3 p-3 rounded-xl bg-surface-layer2 border border-white/5">
+            <p class="flex-1 text-sm text-text-primary">
+              {t("settings.linkedAccounts.confirmed", { provider: provider().display_name })}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                const target = provider();
+                setReadyLink(null);
+                void handleLink(target, true);
+              }}
+              class="px-3 py-1.5 rounded-lg text-sm bg-accent-primary text-on-accent hover:bg-accent-primary/90"
+            >
+              {t("settings.linkedAccounts.linkNow")}
+            </button>
+          </div>
+        )}
+      </Show>
+      <Show when={pendingLink()}>
+        <ElevateDialog
+          onElevated={() => {
+            const provider = pendingLink();
+            setPendingLink(null);
+            setReadyLink(provider);
+          }}
+          onClose={() => setPendingLink(null)}
+        />
       </Show>
     </div>
   );

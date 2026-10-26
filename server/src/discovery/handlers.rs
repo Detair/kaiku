@@ -158,8 +158,13 @@ pub async fn join_discoverable(
     }
 
     // Atomic insert with ON CONFLICT to avoid TOCTOU race
-    let rows_affected =
-        queries::insert_guild_member_ignore_conflict(&mut tx, guild_id, auth.id).await?;
+    let rows_affected = queries::insert_guild_member_ignore_conflict(
+        &mut tx,
+        guild_id,
+        auth.id,
+        state.config.optional_features.screening,
+    )
+    .await?;
 
     tx.commit().await?;
 

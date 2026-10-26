@@ -50,7 +50,7 @@ export const auth = {
   "auth.sso.exchangeFailed": "The server could not confirm the sign-in with the provider. Please try again.",
   "auth.sso.alreadyLinked": "That account is already linked to another Kaiku account.",
   "auth.sso.linkFailed": "Linking failed. Please try again.",
-  "auth.login.mfaInvalid": "That code didn't work. Try again.",
+  "auth.login.mfaInvalid": "That code didn't work. If you just used it, wait for the next code and try again.",
   "auth.register.pageTitle": "Create Account",
   "auth.register.heading": "Create an account",
   "auth.register.subtitle": "Join Kaiku to start chatting",

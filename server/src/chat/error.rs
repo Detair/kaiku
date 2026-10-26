@@ -32,6 +32,10 @@ pub enum ChatError {
     #[error("Limit exceeded: {0}")]
     LimitExceeded(String),
 
+    /// The channel type belongs to an optional feature that is turned off.
+    #[error("This feature is turned off on this server.")]
+    FeatureDisabled,
+
     // -- Message errors --
     #[error("Message not found")]
     MessageNotFound,
@@ -102,6 +106,11 @@ impl IntoResponse for ChatError {
             ),
             Self::Validation(msg) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone()),
             Self::LimitExceeded(msg) => (StatusCode::FORBIDDEN, "LIMIT_EXCEEDED", msg.clone()),
+            Self::FeatureDisabled => (
+                StatusCode::BAD_REQUEST,
+                crate::features::FEATURE_DISABLED,
+                self.to_string(),
+            ),
 
             // Message
             Self::MessageNotFound => (StatusCode::NOT_FOUND, "MESSAGE_NOT_FOUND", self.to_string()),

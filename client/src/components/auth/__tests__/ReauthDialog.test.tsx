@@ -1,0 +1,250 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
+
+vi.mock("@/lib/tauri", async () => {
+  // The real class, so the shared errorText() recognises it.
+  const { HttpError } = await vi.importActual<typeof import("@/lib/tauri/common")>(
+    "@/lib/tauri/common",
+  );
+  return { HttpError };
+});
+
+import { HttpError } from "@/lib/tauri";
+import ReauthDialog from "../ReauthDialog";
+import type { ReauthMethod } from "@/lib/reauth";
+
+const PW: ReauthMethod[] = [{ kind: "password" }];
+const OIDC: ReauthMethod = { kind: "oidc", providerId: "kc", label: "Keycloak" };
+
+function setup(over: Partial<Parameters<typeof ReauthDialog>[0]> = {}) {
+  const onSubmit = vi.fn().mockResolvedValue(undefined);
+  const onClose = vi.fn();
+  const { unmount } = render(() => (
+    <ReauthDialog
+      title="Unlock"
+      mode="password"
+      mfaEnabled={false}
+      methods={PW}
+      onSubmit={onSubmit}
+      onClose={onClose}
+      {...over}
+    />
+  ));
+  return { onSubmit, onClose, unmount };
+}
+
+const type = (label: RegExp, value: string) =>
+  fireEvent.input(screen.getByLabelText(label), { target: { value } });
+
+describe("ReauthDialog", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("requires a code when MFA is enabled", async () => {
+    const { onSubmit } = setup({ mfaEnabled: true });
+    type(/password/i, "pw");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("authenticator"),
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    type(/authenticator code/i, "123456");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({ password: "pw", mfa_code: "123456" }),
+    );
+  });
+
+  it("shows invalid password error", async () => {
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValue(new HttpError(401, "nope", "INVALID_CREDENTIALS"));
+    setup({ onSubmit });
+    type(/password/i, "bad");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toBe(
+        "That password or code is not correct.",
+      ),
+    );
+  });
+
+  const USED_HINT =
+    "That code didn't work. If you just used it, wait for the next code and try again.";
+
+  it.each(["INVALID_CREDENTIALS", "INVALID_MFA"])(
+    "a rejected submit with a code (%s) adds the already-used hint",
+    async (code) => {
+      const onSubmit = vi.fn().mockRejectedValue(new HttpError(401, "x", code));
+      setup({ onSubmit, mfaEnabled: true });
+      type(/password/i, "pw");
+      type(/authenticator code/i, "123456");
+      fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(USED_HINT));
+    },
+  );
+
+  it("a wrapped lowercase rejection with a code also adds the hint", async () => {
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValue(new Error("w", { cause: new HttpError(401, "x", "invalid_credentials") }));
+    setup({ onSubmit, mfaEnabled: true });
+    type(/password/i, "pw");
+    type(/authenticator code/i, "123456");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(USED_HINT));
+    expect(screen.getByRole("alert").textContent).toContain("not correct");
+  });
+
+  it("no already-used hint when no code was sent", async () => {
+    const onSubmit = vi.fn().mockRejectedValue(new HttpError(401, "x", "INVALID_CREDENTIALS"));
+    setup({ onSubmit });
+    type(/password/i, "bad");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(screen.getByRole("alert").textContent).not.toContain("wait for the next code");
+  });
+
+  it("the provider path with a rejected code adds the already-used hint", async () => {
+    const onOidc = vi.fn().mockRejectedValue(new HttpError(401, "x", "INVALID_CREDENTIALS"));
+    setup({ methods: [OIDC], onOidc, mfaEnabled: true });
+    type(/authenticator code/i, "111222");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(USED_HINT));
+  });
+
+  it("the hint is gone on the next attempt", async () => {
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValueOnce(new HttpError(401, "x", "INVALID_CREDENTIALS"))
+      .mockRejectedValueOnce(new HttpError(429, "slow"));
+    setup({ onSubmit, mfaEnabled: true });
+    type(/password/i, "pw");
+    type(/authenticator code/i, "123456");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(USED_HINT));
+    type(/authenticator code/i, "654321");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("Too many attempts"),
+    );
+    expect(screen.getByRole("alert").textContent).not.toContain(USED_HINT);
+  });
+
+  it("shows a rate limit message for 429", async () => {
+    const onSubmit = vi.fn().mockRejectedValue(new HttpError(429, "slow"));
+    setup({ onSubmit });
+    type(/password/i, "x");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("Too many attempts"),
+    );
+  });
+
+  it("mfaOnly mode asks only for the code and sends an empty password", async () => {
+    const { onSubmit } = setup({ mode: "mfaOnly", mfaEnabled: true, methods: [] });
+    expect(screen.queryByLabelText(/your password/i)).toBeNull();
+    type(/authenticator code/i, "654321");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({ password: "", mfa_code: "654321" }),
+    );
+  });
+
+  it("strips whitespace from the code", async () => {
+    const { onSubmit } = setup({ mode: "mfaOnly", mfaEnabled: true, methods: [] });
+    type(/authenticator code/i, " 123 456 ");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith({ password: "", mfa_code: "123456" }),
+    );
+  });
+
+  it("password-only: no OIDC button", () => {
+    setup();
+    expect(screen.getByLabelText(/your password/i)).toBeTruthy();
+    expect(screen.queryByText(/Confirm with/)).toBeNull();
+  });
+
+  it("OIDC-only with the path not switched on: unavailable text, no form", () => {
+    setup({ methods: [] });
+    expect(screen.getByText(/not available for this account/i)).toBeTruthy();
+    expect(screen.queryByLabelText(/your password/i)).toBeNull();
+  });
+
+  it("OIDC-only: provider button, no password field", async () => {
+    const onOidc = vi.fn().mockResolvedValue(undefined);
+    setup({ methods: [OIDC], onOidc });
+    expect(screen.queryByLabelText(/your password/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
+    await waitFor(() => expect(onOidc).toHaveBeenCalledWith(OIDC, null, expect.any(AbortSignal)));
+  });
+
+  it("OIDC path needs the authenticator code when MFA is on and passes it", async () => {
+    const onOidc = vi.fn().mockResolvedValue(undefined);
+    setup({ methods: [OIDC], onOidc, mfaEnabled: true });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(onOidc).not.toHaveBeenCalled();
+    type(/authenticator code/i, "111 222");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
+    await waitFor(() => expect(onOidc).toHaveBeenCalledWith(OIDC, "111222", expect.any(AbortSignal)));
+  });
+
+  it("clears the code after a provider attempt", async () => {
+    const onOidc = vi.fn().mockRejectedValue(new HttpError(401, "x", "INVALID_CREDENTIALS"));
+    setup({ methods: [OIDC], onOidc, mfaEnabled: true });
+    type(/authenticator code/i, "111222");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect((screen.getByLabelText(/authenticator code/i) as HTMLInputElement).value).toBe("");
+  });
+
+  it("closing the dialog aborts a running provider flow and shows nothing after", async () => {
+    let signal: AbortSignal | undefined;
+    let rejectFlow: (e: unknown) => void = () => {};
+    const onOidc = vi.fn((_m, _c, s: AbortSignal) => {
+      signal = s;
+      return new Promise<void>((_res, rej) => (rejectFlow = rej));
+    });
+    const { unmount } = setup({ methods: [OIDC], onOidc });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
+    await waitFor(() => expect(onOidc).toHaveBeenCalled());
+    unmount();
+    expect(signal?.aborted).toBe(true);
+    rejectFlow(new HttpError(0, "x", "REAUTH_FAILED"));
+    await Promise.resolve();
+    expect(document.querySelector("[role=alert]")).toBeNull();
+  });
+
+  it("REAUTH_OIDC_REQUIRED switches to the provider method", async () => {
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValue(new HttpError(400, "x", "REAUTH_OIDC_REQUIRED"));
+    setup({ methods: [...PW, OIDC], onSubmit, onOidc: vi.fn() });
+    type(/password/i, "pw");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.queryByLabelText(/your password/i)).toBeNull());
+    expect(screen.getByRole("button", { name: "Confirm with Keycloak" })).toBeTruthy();
+  });
+
+  it("REAUTH_UNAVAILABLE shows the unavailable text", async () => {
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValue(new HttpError(400, "x", "REAUTH_UNAVAILABLE"));
+    setup({ onSubmit });
+    type(/password/i, "pw");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(screen.getByText(/not available for this account/i)).toBeTruthy(),
+    );
+  });
+
+  it("both methods: password form and provider button", () => {
+    setup({ methods: [...PW, OIDC], onOidc: vi.fn() });
+    expect(screen.getByLabelText(/your password/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Confirm with Keycloak" })).toBeTruthy();
+  });
+});

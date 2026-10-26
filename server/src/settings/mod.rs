@@ -22,6 +22,31 @@ pub struct ServerSettingsResponse {
     pub auth_methods: AuthMethodsConfig,
     /// Registration policy: "open", "`invite_only`", or "closed".
     pub registration_policy: String,
+    /// Optional features turned on for this server (`KAIKU_OPTIONAL_FEATURES`).
+    /// Clients hide what is off; a response without this field (older server)
+    /// means every feature is on.
+    pub features: FeaturesResponse,
+}
+
+/// Optional features in [`ServerSettingsResponse`] (C22 wire form).
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct FeaturesResponse {
+    pub forum_channels: bool,
+    pub announcement_channels: bool,
+    pub scheduled_events: bool,
+    pub membership_screening: bool,
+}
+
+impl From<crate::features::OptionalFeatures> for FeaturesResponse {
+    fn from(f: crate::features::OptionalFeatures) -> Self {
+        Self {
+            forum_channels: f.forum,
+            announcement_channels: f.announcements,
+            scheduled_events: f.events,
+            membership_screening: f.screening,
+        }
+    }
 }
 
 /// Get server settings (public endpoint).
@@ -62,6 +87,7 @@ pub async fn get_server_settings(State(state): State<AppState>) -> Json<ServerSe
         oidc_providers,
         auth_methods,
         registration_policy,
+        features: state.config.optional_features.into(),
     })
 }
 
