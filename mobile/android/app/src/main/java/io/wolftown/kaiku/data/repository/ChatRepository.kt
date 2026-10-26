@@ -1,17 +1,30 @@
 package io.wolftown.kaiku.data.repository
 
+import android.net.Uri
 import io.ktor.http.HttpStatusCode
+import io.wolftown.kaiku.data.local.AuthSession
+import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.MessageApi
+import io.wolftown.kaiku.data.api.UploadLimits
 import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
+import io.wolftown.kaiku.data.ws.WallClock
 import io.wolftown.kaiku.di.ChatCoroutineScope
 import io.wolftown.kaiku.domain.MessageOrdering
+import io.wolftown.kaiku.domain.withReactionAdded
+import io.wolftown.kaiku.domain.withReactionRemoved
 import io.wolftown.kaiku.domain.model.Message
+import io.wolftown.kaiku.domain.model.Reaction
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,7 +47,7 @@ import javax.inject.Singleton
  * - Exposes per-channel message lists as [StateFlow]s
  * - Loads message history from the REST API
  * - Processes real-time WebSocket events (new/edit/delete, typing)
- * - Reactions are received but not yet reflected in the UI
+ * - Keeps each message's reactions up to date from reaction events
  * - Sends client events (subscribe, unsubscribe, typing) via WebSocket
  * - Typing indicator debouncing (max once per 3 seconds)
  * - Remembers which channels need a server-side subscription, so they can be
@@ -42,16 +55,48 @@ import javax.inject.Singleton
  *   missed while offline ([catchUp])
  */
 @Singleton
-class ChatRepository @Inject constructor(
+class ChatRepository internal constructor(
     private val messageApi: MessageApi,
     private val webSocket: KaikuWebSocket,
     private val json: Json,
     private val guildRepository: GuildRepository,
-    @ChatCoroutineScope private val scope: CoroutineScope,
+    private val authState: AuthState,
+    private val scope: CoroutineScope,
+    /** Time source for typing expiry; tests pass virtual time. */
+    private val clock: WallClock,
+    private val attachments: AttachmentReader? = null,
+    /** Dispatcher for blocking file access; tests pass a test dispatcher. */
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
+
+    @Inject
+    constructor(
+        messageApi: MessageApi,
+        webSocket: KaikuWebSocket,
+        json: Json,
+        guildRepository: GuildRepository,
+        authState: AuthState,
+        @ChatCoroutineScope scope: CoroutineScope,
+        attachments: AttachmentReader,
+    ) : this(
+        messageApi, webSocket, json, guildRepository, authState, scope,
+        // Monotonic: typing expiry only compares differences.
+        WallClock { System.nanoTime() / 1_000_000L },
+        attachments,
+        Dispatchers.IO,
+    )
+
     companion object {
         private val logger = Logger.getLogger("ChatRepository")
         private const val TYPING_DEBOUNCE_MS = 3_000L
+
+        /** Photo/video types the server accepts from the picker (its default allowlist). */
+        private val UPLOAD_MIME_TYPES = setOf(
+            "image/jpeg", "image/png", "image/gif", "image/webp", "video/mp4", "video/webm",
+        )
+
+        /** A typing indicator disappears this long after the user's last typing event. */
+        const val TYPING_EXPIRY_MS = 8_000L
 
         /** Page size for [catchUp] (`limit`). */
         const val CATCH_UP_PAGE_SIZE = 100
@@ -63,8 +108,8 @@ class ChatRepository @Inject constructor(
     /** Per-channel message lists. */
     private val channelMessages = ConcurrentHashMap<String, MutableStateFlow<List<Message>>>()
 
-    /** Per-channel typing user sets. */
-    private val channelTypingUsers = ConcurrentHashMap<String, MutableStateFlow<Set<String>>>()
+    /** Per-channel typing users: user id to the time ([WallClock]) their indicator expires. */
+    private val channelTypingUsers = ConcurrentHashMap<String, MutableStateFlow<Map<String, Long>>>()
 
     /** Track last typing indicator send time per channel for debouncing. */
     private val lastTypingSent = ConcurrentHashMap<String, Long>()
@@ -107,11 +152,57 @@ class ChatRepository @Inject constructor(
      */
     val lastServerTime: StateFlow<String?> = _lastServerTime.asStateFlow()
 
+    /**
+     * Session epoch: [clearSession] bumps it. A load ([loadMessages],
+     * [catchUp]) or send captures it at start and publishes its result only if
+     * it is unchanged, checked under [epochLock] together with the write.
+     */
+    private val epochLock = Any()
+    @Volatile
+    private var epoch = 0L
+
+    /** Jobs of uploads in flight; [clearSession] cancels them. */
+    private val uploadJobs: MutableSet<Job> = ConcurrentHashMap.newKeySet()
+
+    /** Runs [publish] only if [startEpoch] is still current; returns whether it ran. */
+    private inline fun publishIfCurrent(startEpoch: Long, publish: () -> Unit): Boolean =
+        synchronized(epochLock) {
+            if (epoch != startEpoch) return false
+            publish()
+            true
+        }
+
     init {
         startCollectingEvents()
     }
 
     // -- Public API ------------------------------------------------------------
+
+    /**
+     * Session teardown: empties every message and typing list (screens still
+     * holding a flow see it empty), forgets subscriptions, DM tracking,
+     * catch-up anchors, the server-time watermark and the upload limits. The
+     * WebSocket event collector keeps running for the next session. Loads
+     * still in flight publish nothing (session epoch).
+     */
+    fun clearSession() = synchronized(epochLock) {
+        epoch++
+        // An upload of the ended session must not go out later (with whatever
+        // token is stored then): cancel every one in flight.
+        uploadJobs.forEach { it.cancel() }
+        uploadJobs.clear()
+        channelMessages.values.forEach { it.value = emptyList() }
+        channelMessages.clear()
+        channelTypingUsers.values.forEach { it.value = emptyMap() }
+        channelTypingUsers.clear()
+        lastTypingSent.clear()
+        subscribedChannels.clear()
+        dmChannels.clear()
+        dmTrackedAt.clear()
+        catchUpAnchors.clear()
+        _lastServerTime.value = null
+        cachedLimits = null
+    }
 
     /** `created_at` of a message in the local cache, or null when it is not cached. Creates nothing. */
     fun cachedCreatedAt(channelId: String, messageId: String): String? =
@@ -133,22 +224,29 @@ class ChatRepository @Inject constructor(
      * Either way the list ends up oldest-to-newest (see [MessageOrdering]).
      */
     suspend fun loadMessages(channelId: String, before: String? = null): Boolean {
+        val startEpoch = epoch
         val flow = getOrCreateMessagesFlow(channelId)
         val idsBeforeRequest = flow.value.mapTo(HashSet()) { it.id }
         val page = messageApi.getMessages(channelId, before = before)
 
         if (before != null) {
-            flow.update { existing -> MessageOrdering.merge(existing, page.items) }
+            publishIfCurrent(startEpoch) {
+                flow.update { existing -> MessageOrdering.merge(existing, page.items) }
+            }
         } else {
             val pageIds = page.items.mapTo(HashSet()) { it.id }
-            flow.update { existing ->
-                // Arrived during the request; compared by id, not by time, so
-                // a live message with the same timestamp as the page's newest
-                // item is not lost.
-                val live = existing.filter { it.id !in idsBeforeRequest && it.id !in pageIds }
-                MessageOrdering.merge(page.items, live)
+            val published = publishIfCurrent(startEpoch) {
+                flow.update { existing ->
+                    // Arrived during the request; compared by id, not by time, so
+                    // a live message with the same timestamp as the page's newest
+                    // item is not lost.
+                    val live = existing.filter { it.id !in idsBeforeRequest && it.id !in pageIds }
+                    MessageOrdering.merge(page.items, live)
+                }
+                catchUpAnchors.remove(channelId)
             }
-            catchUpAnchors.remove(channelId)
+            // Opened channel: everything just loaded has been seen.
+            if (published) flow.value.lastOrNull()?.let { guildRepository.onActiveChannelMessage(channelId, it.id) }
         }
         return page.hasMore
     }
@@ -172,16 +270,23 @@ class ChatRepository @Inject constructor(
      * `server/src/ws/AGENTS.md`).
      */
     suspend fun catchUp(channelId: String) {
+        val startEpoch = epoch
         val flow = channelMessages[channelId] ?: return
         // The anchor is only removed once the catch-up completed: if it fails
         // or the socket drops first, the next reconnect starts from it again.
         val anchor = catchUpAnchors[channelId]
         val start = anchor ?: flow.value.lastOrNull()?.id ?: return
-        catchUpFrom(channelId, flow, start)
-        if (anchor != null) catchUpAnchors.remove(channelId, anchor)
+        if (!catchUpFrom(channelId, flow, start, startEpoch)) return
+        if (anchor != null) publishIfCurrent(startEpoch) { catchUpAnchors.remove(channelId, anchor) }
     }
 
-    private suspend fun catchUpFrom(channelId: String, flow: MutableStateFlow<List<Message>>, start: String) {
+    /** Returns false if the session ended (epoch changed) and the catch-up was dropped. */
+    private suspend fun catchUpFrom(
+        channelId: String,
+        flow: MutableStateFlow<List<Message>>,
+        start: String,
+        startEpoch: Long,
+    ): Boolean {
         var after = start
 
         repeat(CATCH_UP_MAX_PAGES) { pageIndex ->
@@ -193,25 +298,32 @@ class ChatRepository @Inject constructor(
                 if (pageIndex == 0 && e.status == HttpStatusCode.BadRequest) {
                     logger.info("catch-up cursor rejected, reloading latest page")
                     loadMessages(channelId)
-                    return
+                    return true
                 }
                 throw e
             }
-            val previous = flow.getAndUpdate { current -> MessageOrdering.merge(current, page.items) }
+            var previous: List<Message> = emptyList()
+            val published = publishIfCurrent(startEpoch) {
+                previous = flow.getAndUpdate { current -> MessageOrdering.merge(current, page.items) }
+            }
+            if (!published) return false
             val known = previous.mapTo(HashSet()) { it.id }
-            val added = page.items.mapTo(HashSet()) { it.id }.count { it !in known }
-            repeat(added) { guildRepository.onMessageReceived(channelId) }
+            val me = authState.currentUserId.value
+            page.items.filter { it.id !in known }.distinctBy { it.id }.forEach {
+                guildRepository.onMessageReceived(channelId, it.id, countUnread = it.author.id != me)
+            }
 
             // Follow the server's cursor, not the newest returned item: the
             // server computes `next_cursor` before filtering out messages of
             // blocked users, so a page can be empty while more messages follow.
             val next = page.nextCursor
-            if (!page.hasMore || next == null) return
+            if (!page.hasMore || next == null) return true
             after = next
         }
 
         logger.info("catch-up for a channel exceeded $CATCH_UP_MAX_PAGES pages, reloading latest page")
         loadMessages(channelId)
+        return true
     }
 
     /**
@@ -264,12 +376,166 @@ class ChatRepository @Inject constructor(
     fun isDmChannelTracked(channelId: String): Boolean = channelId in dmChannels
 
     suspend fun sendMessage(channelId: String, content: String) {
+        val startEpoch = epoch
         val sentMessage = messageApi.sendMessage(channelId, content)
 
         // Optimistic update: add the message immediately. A WebSocket echo
         // with the same id is deduplicated by MessageOrdering.merge.
-        getOrCreateMessagesFlow(channelId).update { current ->
-            MessageOrdering.merge(current, listOf(sentMessage))
+        publishIfCurrent(startEpoch) {
+            getOrCreateMessagesFlow(channelId).update { current ->
+                MessageOrdering.merge(current, listOf(sentMessage))
+            }
+        }
+    }
+
+    /** Why [sendAttachment] failed; the UI maps it to a string resource. */
+    sealed class AttachmentException(cause: Throwable? = null) : Exception(cause) {
+        class TooLarge : AttachmentException()
+        class UnsupportedType : AttachmentException()
+        class Failed(cause: Throwable? = null) : AttachmentException(cause)
+    }
+
+    /** Thrown by [LimitedInputStream] when an unsized file turns out to exceed the limit. */
+    private class StreamTooLargeException : java.io.IOException("attachment exceeds upload limit")
+
+    /** Passes bytes through and fails once more than [limit] were read. */
+    private class LimitedInputStream(
+        private val delegate: java.io.InputStream,
+        private val limit: Long,
+    ) : java.io.InputStream() {
+        private var total = 0L
+
+        override fun read(): Int {
+            val b = delegate.read()
+            if (b >= 0 && ++total > limit) throw StreamTooLargeException()
+            return b
+        }
+
+        override fun read(buffer: ByteArray, off: Int, len: Int): Int {
+            val n = delegate.read(buffer, off, len)
+            if (n > 0) {
+                total += n
+                if (total > limit) throw StreamTooLargeException()
+            }
+            return n
+        }
+
+        override fun close() = delegate.close()
+    }
+
+    /**
+     * Upload limits of the current session, keyed by the signed-in user id
+     * (logout and login as someone else miss the cache); also dropped after a 413.
+     */
+    @Volatile
+    private var cachedLimits: Pair<String?, UploadLimits>? = null
+
+    private suspend fun uploadLimits(): UploadLimits {
+        val startEpoch = epoch
+        val me = authState.currentUserId.value
+        cachedLimits?.takeIf { it.first == me }?.let { return it.second }
+        // A fetch that outlives a session clear is used once but not cached.
+        return messageApi.getUploadLimits().also { publishIfCurrent(startEpoch) { cachedLimits = me to it } }
+    }
+
+    /**
+     * Sends the picked photo/video [uri] to [channelId] with an optional
+     * [caption]. The file is streamed, never held in memory, and all file
+     * access runs on the IO dispatcher. Files above the server's attachment
+     * limit are rejected before the file is opened when the size is known,
+     * otherwise while streaming ([AttachmentException.TooLarge]); types the
+     * server would refuse are rejected early ([AttachmentException.UnsupportedType]);
+     * every other failure is [AttachmentException.Failed]. The created message
+     * is merged into the channel list; the WebSocket echo is deduplicated by id.
+     *
+     * The upload is bound to the session it starts in. When that session
+     * ends ([clearSession]), the coroutine calling this is cancelled (its
+     * [Job] is registered for the duration of the upload), so callers see a
+     * [kotlinx.coroutines.CancellationException], and nothing is sent or
+     * published in another session.
+     */
+    suspend fun sendAttachment(channelId: String, uri: Uri, caption: String?): Result<Message> {
+        val reader = attachments ?: return Result.failure(AttachmentException.Failed())
+        val startEpoch = epoch
+        // Bound to the session it starts in: never sent in another one.
+        val sessionId = (authState.session.value as? AuthSession.LoggedIn)?.sessionId
+        val uploadJob = currentCoroutineContext()[Job]
+        if (uploadJob != null) {
+            val registered = publishIfCurrent(startEpoch) { uploadJobs += uploadJob }
+            if (!registered) return Result.failure(AttachmentException.Failed())
+        }
+        return try {
+            val limit = uploadLimits().maxUploadSize
+            val message = withContext(ioDispatcher) {
+                val declared = reader.size(uri)
+                if (declared != null && declared > limit) {
+                    return@withContext Result.failure<Message>(AttachmentException.TooLarge())
+                }
+                val mime = reader.mimeType(uri)?.lowercase() ?: "application/octet-stream"
+                if (mime !in UPLOAD_MIME_TYPES) {
+                    return@withContext Result.failure<Message>(AttachmentException.UnsupportedType())
+                }
+                val name = reader.displayName(uri)?.takeIf { it.isNotBlank() } ?: "upload"
+                // Fail before the request if the file cannot be opened at all.
+                val probe = reader.open(uri)
+                    ?: return@withContext Result.failure<Message>(AttachmentException.Failed())
+                // Every stream opened here is closed on success, failure and cancellation.
+                val opened = mutableListOf(probe)
+                var probeUsed = false
+                try {
+                    // The session may have ended while the limits or the file were read.
+                    if (epoch != startEpoch) {
+                        return@withContext Result.failure<Message>(AttachmentException.Failed())
+                    }
+                    val sent = messageApi.uploadMessageWithFile(
+                        channelId = channelId,
+                        fileName = name,
+                        mimeType = mime,
+                        size = declared,
+                        sessionId = sessionId,
+                        open = {
+                            val stream = if (!probeUsed) probe.also { probeUsed = true }
+                            else (reader.open(uri) ?: throw java.io.IOException("cannot open attachment"))
+                                .also { opened += it }
+                            LimitedInputStream(stream, limit)
+                        },
+                        content = caption?.takeIf { it.isNotBlank() },
+                    )
+                    Result.success(sent)
+                } finally {
+                    opened.forEach { runCatching { it.close() } }
+                }
+            }
+            message.onSuccess { sent ->
+                // Not after a session clear: the old session's message stays off screen.
+                publishIfCurrent(startEpoch) {
+                    getOrCreateMessagesFlow(channelId).update { current ->
+                        MessageOrdering.merge(current, listOf(sent))
+                    }
+                }
+            }
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (e: OutOfMemoryError) {
+            logger.warning("attachment upload ran out of memory")
+            Result.failure(AttachmentException.Failed())
+        } catch (e: Exception) {
+            val status = (e as? ApiException)?.status
+            val tooLarge = status == HttpStatusCode.PayloadTooLarge ||
+                generateSequence<Throwable>(e) { it.cause }.any { it is StreamTooLargeException }
+            if (tooLarge) publishIfCurrent(startEpoch) { cachedLimits = null }
+            if (e is ApiException) logger.info("attachment upload rejected: status=${e.status.value}")
+            else logger.log(Level.WARNING, "attachment upload failed (${e::class.simpleName})")
+            Result.failure(
+                when {
+                    tooLarge -> AttachmentException.TooLarge()
+                    status == HttpStatusCode.UnsupportedMediaType || (e as? ApiException)?.code == "INVALID_MIME_TYPE" ->
+                        AttachmentException.UnsupportedType()
+                    else -> AttachmentException.Failed(e)
+                }
+            )
+        } finally {
+            if (uploadJob != null) uploadJobs -= uploadJob
         }
     }
 
@@ -287,10 +553,17 @@ class ChatRepository @Inject constructor(
 
     suspend fun addReaction(channelId: String, messageId: String, emoji: String) {
         messageApi.addReaction(channelId, messageId, emoji)
+        // The echo event is idempotent with this, so it works with or without one.
+        authState.currentUserId.value?.let { me ->
+            updateReactions(channelId, messageId) { it.withReactionAdded(emoji, me, isMe = true) }
+        }
     }
 
     suspend fun removeReaction(channelId: String, messageId: String, emoji: String) {
         messageApi.removeReaction(channelId, messageId, emoji)
+        authState.currentUserId.value?.let { me ->
+            updateReactions(channelId, messageId) { it.withReactionRemoved(emoji, me, isMe = true) }
+        }
     }
 
     /**
@@ -317,7 +590,8 @@ class ChatRepository @Inject constructor(
         webSocket.send(ClientEvent.Unsubscribe(channelId))
     }
 
-    fun getTypingUsers(channelId: String): StateFlow<Set<String>> {
+    /** Users typing in [channelId] (id to expiry time); entries disappear [TYPING_EXPIRY_MS] after the last event. */
+    fun getTypingUsers(channelId: String): StateFlow<Map<String, Long>> {
         return getOrCreateTypingUsersFlow(channelId).asStateFlow()
     }
 
@@ -337,8 +611,8 @@ class ChatRepository @Inject constructor(
         return channelMessages.getOrPut(channelId) { MutableStateFlow(emptyList()) }
     }
 
-    private fun getOrCreateTypingUsersFlow(channelId: String): MutableStateFlow<Set<String>> {
-        return channelTypingUsers.getOrPut(channelId) { MutableStateFlow(emptySet()) }
+    private fun getOrCreateTypingUsersFlow(channelId: String): MutableStateFlow<Map<String, Long>> {
+        return channelTypingUsers.getOrPut(channelId) { MutableStateFlow(emptyMap()) }
     }
 
     private fun startCollectingEvents() {
@@ -393,7 +667,11 @@ class ChatRepository @Inject constructor(
 
             if (isNew) {
                 // Raise the unread badge for non-active channels.
-                guildRepository.onMessageReceived(event.channelId)
+                guildRepository.onMessageReceived(
+                    event.channelId,
+                    message.id,
+                    countUnread = message.author.id != authState.currentUserId.value,
+                )
             }
         } catch (e: Exception) {
             logger.log(Level.WARNING, "Failed to deserialize MessageNew payload (${e::class.simpleName})")
@@ -417,23 +695,41 @@ class ChatRepository @Inject constructor(
     }
 
     private fun handleReactionAdd(event: ServerEvent.ReactionAdd) {
-        // Reaction handling is a no-op for now since the Message model
-        // does not include a reactions field. This will be extended when
-        // a Reaction data class is added to the domain model.
-        logger.fine("ReactionAdd: ${event.emoji} on ${event.messageId} by ${event.userId}")
+        val isMe = event.userId == authState.currentUserId.value
+        updateReactions(event.channelId, event.messageId) { it.withReactionAdded(event.emoji, event.userId, isMe) }
     }
 
     private fun handleReactionRemove(event: ServerEvent.ReactionRemove) {
-        logger.fine("ReactionRemove: ${event.emoji} on ${event.messageId} by ${event.userId}")
+        val isMe = event.userId == authState.currentUserId.value
+        updateReactions(event.channelId, event.messageId) { it.withReactionRemoved(event.emoji, event.userId, isMe) }
+    }
+
+    private fun updateReactions(
+        channelId: String,
+        messageId: String,
+        change: (List<Reaction>?) -> List<Reaction>,
+    ) {
+        val flow = channelMessages[channelId] ?: return
+        flow.update { current ->
+            current.map { msg -> if (msg.id == messageId) msg.copy(reactions = change(msg.reactions)) else msg }
+        }
     }
 
     private fun handleTypingStart(event: ServerEvent.TypingStart) {
         val flow = getOrCreateTypingUsersFlow(event.channelId)
-        flow.value = flow.value + event.userId
+        val expiresAt = clock.nowMillis() + TYPING_EXPIRY_MS
+        flow.update { it + (event.userId to expiresAt) }
+        scope.launch {
+            delay(TYPING_EXPIRY_MS)
+            // A newer typing event moved the expiry; its own timer removes the entry.
+            flow.update { current ->
+                if (current[event.userId] == expiresAt) current - event.userId else current
+            }
+        }
     }
 
     private fun handleTypingStop(event: ServerEvent.TypingStop) {
         val flow = getOrCreateTypingUsersFlow(event.channelId)
-        flow.value = flow.value - event.userId
+        flow.update { it - event.userId }
     }
 }

@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -101,8 +102,17 @@ class RealtimeConnectionManagerTest {
         var generation = 0L
         private var rotations = 0
 
+        /** One-shot hook run when the access token is read (e.g. by attemptConnect right before connecting). */
+        var onAccessTokenRead: (() -> Unit)? = null
+
         val storage: TokenStorage = mockk(relaxed = true) {
-            every { getAccessToken() } answers { accessToken }
+            every { getAccessToken() } answers {
+                onAccessTokenRead?.let { hook ->
+                    onAccessTokenRead = null
+                    hook()
+                }
+                accessToken
+            }
             every { getRefreshToken() } answers { refreshToken }
             every { getSessionGeneration() } answers { generation }
             // Like TokenStorage: clears only if the refresh token still matches.
@@ -135,6 +145,8 @@ class RealtimeConnectionManagerTest {
         private val log: MutableList<String>,
     ) : TokenRefresher {
         var ensureResult = RefreshResult.SUCCESS
+        /** When set, ensureFresh suspends until it completes (an actor busy in a refresh). */
+        var ensureGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         var forceResult = RefreshResult.SUCCESS
         var ensureCalls = 0
         var forceCalls = 0
@@ -142,6 +154,7 @@ class RealtimeConnectionManagerTest {
         override suspend fun ensureFresh(minValidityMs: Long): RefreshResult {
             ensureCalls++
             log += "ensureFresh"
+            ensureGate?.await()
             val result = ensureResult
             if (result == RefreshResult.SUCCESS && tokens.expiresAt - now() < minValidityMs) tokens.rotate()
             endSessionIfRejected(result)
@@ -564,5 +577,108 @@ class RealtimeConnectionManagerTest {
         assertTrue(h.authState.session.value is AuthSession.LoggedIn)
         assertEquals(RealtimeStatus.Connected, h.manager.status.value)
         verify(exactly = 0) { h.tokens.storage.clear() }
+    }
+
+    // -- Session teardown (Task 19) ------------------------------------------
+
+    @Test
+    fun `close for logout disconnects and stays closed while the session lasts`() = runManagerTest { h ->
+        connected(h)
+        val connectsBefore = h.socket.connects.size
+
+        val sessionId = (h.authState.session.value as AuthSession.LoggedIn).sessionId
+        val closing = backgroundScope.launch { h.manager.closeForLogout(sessionId) }
+        runCurrent()
+
+        assertTrue(closing.isCompleted)
+        assertTrue(h.socket.disconnects >= 1)
+        assertEquals(ConnectionState.Disconnected, h.socket.state.value)
+        assertEquals(RealtimeStatus.Idle, h.manager.status.value)
+
+        // Still LoggedIn until the logout finishes: nothing may reconnect or refresh.
+        h.manager.onAppForeground()
+        h.connectivity.isConnected.value = false
+        runCurrent()
+        h.connectivity.isConnected.value = true
+        runCurrent()
+        advanceTimeBy(fiveMinutes)
+        assertEquals(connectsBefore, h.socket.connects.size)
+
+        // A new login connects again.
+        h.authState.setLoggedOut()
+        runCurrent()
+        h.authState.setLoggedIn("user-1")
+        runCurrent()
+        assertEquals(connectsBefore + 1, h.socket.connects.size)
+    }
+
+    @Test
+    fun `close for logout leaves a newer session alone`() = runManagerTest { h ->
+        connected(h)
+        val ended = (h.authState.session.value as AuthSession.LoggedIn).sessionId
+        h.authState.setLoggedOut()
+        h.authState.setLoggedIn("user-2") // a newer login before the old session's teardown step
+        runCurrent()
+        h.socket.ready()
+        runCurrent()
+        val disconnectsBefore = h.socket.disconnects
+
+        val closing = backgroundScope.launch { h.manager.closeForLogout(ended) }
+        runCurrent()
+
+        assertTrue(closing.isCompleted)
+        assertEquals(disconnectsBefore, h.socket.disconnects)
+        assertEquals(RealtimeStatus.Connected, h.manager.status.value)
+    }
+
+    @Test
+    fun `close for logout closes the socket even while the actor is busy`() = runManagerTest { h ->
+        // Proactive refresh due 10 s after connecting (expiry 70 s, lead 60 s),
+        // well before the pong watchdog.
+        h.tokens.expiresAt = 70_000L
+        connected(h)
+        val sessionId = (h.authState.session.value as AuthSession.LoggedIn).sessionId
+        val connectsBefore = h.socket.connects.size
+        // The proactive refresh hangs: the actor is stuck in ensureFresh, socket still open.
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        h.refresher.ensureGate = gate
+        advanceTimeBy(RealtimeConnectionManager.MIN_REFRESH_DELAY_MS + 1)
+        assertTrue(h.log.count { it == "ensureFresh" } >= 2) // the refresh is in progress
+        assertEquals(RealtimeStatus.Connected, h.manager.status.value)
+
+        val closing = backgroundScope.launch { h.manager.closeForLogout(sessionId) }
+        runCurrent()
+
+        // Closed at once, although the actor has not handled the request yet.
+        assertEquals(1, h.socket.disconnects)
+        assertTrue(!closing.isCompleted)
+
+        gate.complete(Unit)
+        runCurrent()
+        assertTrue(closing.isCompleted)
+        advanceTimeBy(fiveMinutes)
+        assertEquals(connectsBefore, h.socket.connects.size) // no reconnect for the closed session
+    }
+
+    @Test
+    fun `socket opened while the close runs is closed too`() = runManagerTest { h ->
+        h.authState.setLoggedIn("user-1")
+        val sessionId = (h.authState.session.value as AuthSession.LoggedIn).sessionId
+        var closing: kotlinx.coroutines.Job? = null
+        // The actor is past its last session check and reads the token; the
+        // teardown's direct close runs now and finds no socket yet.
+        h.tokens.onAccessTokenRead = {
+            closing = backgroundScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                h.manager.closeForLogout(sessionId)
+            }
+        }
+        h.manager.start()
+        runCurrent()
+
+        assertEquals(1, h.socket.connects.size) // the actor did open a socket after the close
+        assertTrue(closing?.isCompleted == true)
+        assertEquals(ConnectionState.Disconnected, h.socket.state.value)
+        advanceTimeBy(fiveMinutes)
+        assertEquals(1, h.socket.connects.size)
     }
 }

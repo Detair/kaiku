@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.integration
 
+import io.wolftown.kaiku.testutil.noTeardown
 import io.mockk.*
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.local.AuthState
@@ -57,7 +58,7 @@ class AuthFlowTest {
         authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
         webSocket = mockk(relaxed = true)
 
-        authRepository = AuthRepository(authApi, tokenStorage, authState, mockk<PushRegistrar>(relaxed = true))
+        authRepository = AuthRepository(authApi, tokenStorage, authState, mockk<PushRegistrar>(relaxed = true), noTeardown(authState))
     }
 
     // ========================================================================
@@ -131,7 +132,7 @@ class AuthFlowTest {
         // First login
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
         coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
-        coEvery { authApi.logout() } just Runs
+        coEvery { authApi.logoutSession(any(), any(), any()) } just Runs
         authRepository.login("testuser", "pass")
 
         assertTrue(authState.isLoggedIn.value)
@@ -139,7 +140,7 @@ class AuthFlowTest {
         // Now logout
         authRepository.logout()
 
-        verify { tokenStorage.clear() }
+        verify { tokenStorage.clearIfGeneration(any()) }
         assertFalse(authState.isLoggedIn.value)
         assertNull(authState.currentUserId.value)
     }
@@ -149,13 +150,13 @@ class AuthFlowTest {
         // First login
         coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
         coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
-        coEvery { authApi.logout() } throws Exception("Network error")
+        coEvery { authApi.logoutSession(any(), any(), any()) } throws Exception("Network error")
         authRepository.login("testuser", "pass")
 
         // Logout should still clear local state
         authRepository.logout()
 
-        verify { tokenStorage.clear() }
+        verify { tokenStorage.clearIfGeneration(any()) }
         assertFalse(authState.isLoggedIn.value)
     }
 

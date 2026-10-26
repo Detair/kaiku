@@ -2,6 +2,10 @@ package io.wolftown.kaiku.ui
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
+import io.wolftown.kaiku.BuildConfig
+import io.wolftown.kaiku.R
+import io.wolftown.kaiku.domain.normalizeServerAddress
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -57,6 +61,10 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handleIntent(intent)
 
         val startDestination = resolveStartDestination()
+        // After the start destination: reading the stored session may have found a damaged store.
+        if (tokenStorage.consumeStorageResetNotice()) {
+            Toast.makeText(this, R.string.auth_storage_reset, Toast.LENGTH_LONG).show()
+        }
         val appVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
 
         setContent {
@@ -102,14 +110,17 @@ class MainActivity : ComponentActivity() {
      * Determines the initial navigation destination based on auth state:
      * - Logged in -> "home"
      * - Server URL saved but not logged in -> "login"
-     * - No server URL -> "server_url"
+     * - No server URL -> "login" with the built-in default server saved; only when
+     *   the build has no default does the person see "server_url"
      */
     private fun resolveStartDestination(): String {
-        return when {
-            authState.isLoggedIn.value -> "home"
-            tokenStorage.getServerUrl() != null -> "login"
-            else -> "server_url"
+        if (authState.isLoggedIn.value) return "home"
+        if (tokenStorage.getServerUrl() == null) {
+            val default = normalizeServerAddress(BuildConfig.DEFAULT_SERVER_URL).getOrNull()
+                ?: return "server_url"
+            tokenStorage.saveServerUrl(default)
         }
+        return "login"
     }
 }
 

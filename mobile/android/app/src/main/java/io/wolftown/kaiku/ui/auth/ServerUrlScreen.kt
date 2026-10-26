@@ -10,59 +10,93 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.BackHandler
+import androidx.annotation.StringRes
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.wolftown.kaiku.BuildConfig
+import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.api.ProbeResult
+import io.wolftown.kaiku.data.api.ServerProbe
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.data.repository.AuthRepository
+import io.wolftown.kaiku.domain.InvalidServerAddressException
+import io.wolftown.kaiku.domain.normalizeServerAddress
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class ServerUrlUiState(
     val url: String = "",
-    val error: String? = null,
+    /** `@StringRes` of the current error, or null. Never server text. */
+    @StringRes val error: Int? = null,
+    val isChecking: Boolean = false,
     val connectSuccess: Boolean = false
 )
 
+/** Maps a rejected address to copy. */
+@StringRes
+internal fun serverAddressErrorRes(error: Throwable): Int =
+    if (error is InvalidServerAddressException &&
+        error.reason == InvalidServerAddressException.Reason.NOT_SECURE
+    ) {
+        R.string.auth_server_not_secure
+    } else {
+        R.string.auth_server_invalid_address
+    }
+
 @HiltViewModel
 class ServerUrlViewModel @Inject constructor(
-    private val tokenStorage: TokenStorage
+    private val tokenStorage: TokenStorage,
+    private val authRepository: AuthRepository,
+    private val serverProbe: ServerProbe
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(ServerUrlUiState())
+    // Shows the current server (or the family default) so most people only tap Connect.
+    private val _uiState = MutableStateFlow(
+        ServerUrlUiState(url = tokenStorage.getServerUrl() ?: BuildConfig.DEFAULT_SERVER_URL)
+    )
     val uiState: StateFlow<ServerUrlUiState> = _uiState.asStateFlow()
+
+    /** True when a server is already saved (change-server flow), so Back can return to sign-in. */
+    val canGoBack: Boolean = tokenStorage.getServerUrl() != null
 
     fun onUrlChanged(url: String) {
         _uiState.update { it.copy(url = url, error = null) }
     }
 
     fun onConnectClicked() {
-        val url = _uiState.value.url.trim()
-
-        if (!isValidUrl(url)) {
-            _uiState.update {
-                it.copy(error = "URL must use HTTPS (HTTP allowed only for local development)")
-            }
+        if (_uiState.value.isChecking) return
+        val address = normalizeServerAddress(_uiState.value.url).getOrElse {
+            _uiState.update { state -> state.copy(error = serverAddressErrorRes(it)) }
             return
         }
 
-        // Remove trailing slash for consistency
-        val normalizedUrl = url.trimEnd('/')
-        tokenStorage.saveServerUrl(normalizedUrl)
-        _uiState.update { it.copy(connectSuccess = true) }
-    }
-
-    private fun isValidUrl(url: String): Boolean {
-        if (url.startsWith("https://")) return true
-        if (!url.startsWith("http://")) return false
-        // Allow HTTP only for local development addresses
-        val host = android.net.Uri.parse(url).host ?: return false
-        return host == "localhost" ||
-            host.startsWith("127.") ||
-            host.startsWith("10.") ||
-            host.startsWith("192.168.") ||
-            Regex("^172\\.(1[6-9]|2[0-9]|3[0-1])\\.").containsMatchIn(host)
+        _uiState.update { it.copy(isChecking = true, error = null) }
+        viewModelScope.launch {
+            when (serverProbe.probe(address)) {
+                is ProbeResult.Ok -> {
+                    // Nothing from the old server may carry over: drop its pending
+                    // password change, any stored session and PKCE state, then save.
+                    authRepository.cancelPasswordChange()
+                    tokenStorage.clear()
+                    tokenStorage.clearOidcPkceState()
+                    tokenStorage.saveServerUrl(address)
+                    _uiState.update { it.copy(isChecking = false, connectSuccess = true) }
+                }
+                ProbeResult.NotKaiku -> _uiState.update {
+                    it.copy(isChecking = false, error = R.string.auth_server_not_kaiku)
+                }
+                ProbeResult.Unreachable -> _uiState.update {
+                    it.copy(isChecking = false, error = R.string.auth_server_unreachable)
+                }
+            }
+        }
     }
 }
 
@@ -70,9 +104,13 @@ class ServerUrlViewModel @Inject constructor(
 fun ServerUrlScreen(
     onConnectSuccess: () -> Unit,
     onScanQrCode: () -> Unit = {},
+    onBack: () -> Unit = {},
     viewModel: ServerUrlViewModel = androidx.hilt.navigation.compose.hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+
+    // With a saved server, Back returns to sign-in instead of leaving the app.
+    BackHandler(enabled = viewModel.canGoBack) { onBack() }
 
     LaunchedEffect(uiState.connectSuccess) {
         if (uiState.connectSuccess) {
@@ -88,7 +126,7 @@ fun ServerUrlScreen(
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "Welcome to Kaiku",
+            text = stringResource(R.string.auth_server_title),
             style = MaterialTheme.typography.headlineLarge,
             color = MaterialTheme.colorScheme.primary
         )
@@ -96,7 +134,7 @@ fun ServerUrlScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "Enter your server address to get started",
+            text = stringResource(R.string.auth_server_subtitle),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -106,8 +144,8 @@ fun ServerUrlScreen(
         OutlinedTextField(
             value = uiState.url,
             onValueChange = viewModel::onUrlChanged,
-            label = { Text("Server URL") },
-            placeholder = { Text("https://chat.example.com") },
+            label = { Text(stringResource(R.string.auth_server_address_label)) },
+            placeholder = { Text(stringResource(R.string.auth_server_address_hint)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Uri,
@@ -117,11 +155,10 @@ fun ServerUrlScreen(
                 onDone = { viewModel.onConnectClicked() }
             ),
             isError = uiState.error != null,
-            supportingText = if (uiState.error != null) {
-                { Text(uiState.error!!) }
-            } else {
-                null
+            supportingText = uiState.error?.let { errorRes ->
+                { Text(stringResource(errorRes)) }
             },
+            enabled = !uiState.isChecking,
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -129,9 +166,18 @@ fun ServerUrlScreen(
 
         Button(
             onClick = viewModel::onConnectClicked,
+            enabled = !uiState.isChecking,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Connect")
+            if (uiState.isChecking) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            Text(stringResource(R.string.auth_server_connect))
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -140,9 +186,20 @@ fun ServerUrlScreen(
 
         OutlinedButton(
             onClick = onScanQrCode,
+            enabled = !uiState.isChecking,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Scan QR Code")
+            Text(stringResource(R.string.auth_server_scan_qr))
+        }
+
+        if (viewModel.canGoBack) {
+            Spacer(modifier = Modifier.height(8.dp))
+            TextButton(
+                onClick = onBack,
+                enabled = !uiState.isChecking
+            ) {
+                Text(stringResource(R.string.common_back))
+            }
         }
     }
 }

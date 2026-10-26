@@ -35,6 +35,11 @@ android {
         versionName = versionProps["versionName"].toString()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Server the app starts with; override with -Pkaiku.defaultServerUrl=https://...
+        val defaultServerUrl = providers.gradleProperty("kaiku.defaultServerUrl")
+            .getOrElse("https://kaiku.pmind.de")
+        buildConfigField("String", "DEFAULT_SERVER_URL", "\"$defaultServerUrl\"")
     }
 
     // Release signing sources, in priority order:
@@ -106,6 +111,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 

@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Mobile push notifications (server side)**: the server can wake the Android app through Firebase Cloud Messaging (when an FCM service account is configured) or UnifiedPush. Phones are now also notified about @mentions, not only DMs (photo and file DMs already pushed before). Bursts of messages are coalesced into one notification, and reading a conversation on another device clears its notification. Wake signals carry only a type, channel and count, never message text, so end-to-end encryption is preserved. Blocked users never trigger a notification, and blocks are enforced for DMs even when cached data has expired. Endpoints are registered per device under `/api/me/push-subscriptions`, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
+- Android: you can send photos and videos from your phone.
 - Android: new messages show as notifications with the sender and text, grouped per conversation; tapping one opens the conversation, and reading it anywhere clears the notification.
 - Android: phones without Google services can get notifications through UnifiedPush (for example ntfy), and Settings shows whether notifications are working.
 - Android: after signing in, Kaiku asks once for permission to show notifications.
@@ -115,9 +116,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In the browser, Kaiku now signs you out right away when your session is ended elsewhere and stops retrying with an expired login.
 - The server no longer hangs when its cache (Valkey) is unavailable; affected requests fail quickly instead.
 - E-mail addresses and code snippets are no longer treated as @mentions.
+- Android: message times now use your time zone, typing indicators show names and go away again, reactions are visible, buttons are labelled for screen readers, and a damaged sign-in store asks you to sign in again instead of crashing.
+- Android: unread badges now appear for channels you left and clear on the server when you read them, and new direct messages update the list live.
 - Desktop notifications also appear when Kaiku is open on another screen, and push-to-talk no longer fires while typing or steals plain keys from games.
 - Closing a dialog with Escape no longer marks the channel as read, dismissing an upload error no longer sends your message, and the main dialogs work with the keyboard and screen readers.
 - Hard-to-read Solarized themes are no longer offered, and buttons, menu actions and Android warning buttons use readable colours.
+- Android: signing out ends the session, leaves voice and removes your data from the screen; going back from a call keeps it running with a bar to return to it.
+- Android: to sign in with another account, for example with a QR code, sign out first; Settings no longer offers QR sign-in while you are signed in.
+- Android: the app starts with the family server filled in, accepts a plain address, checks it before sign-in, lets you change the server, hides Register when it is closed, and opens your server automatically.
 - Messages sent while you were disconnected now appear after reconnecting, and a new direct message shows up immediately for the recipient.
 - Desktop voice now uses the server's TURN relay, so voice also works on restrictive networks.
 - When the desktop app starts before the network or server is reachable, it now keeps your saved login and connects as soon as it can, instead of showing the login screen.
