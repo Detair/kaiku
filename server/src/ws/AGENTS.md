@@ -259,14 +259,15 @@ while let Some(msg) = ws_receiver.next().await {
   - `socket_offline`: reports 1 → 0 when the set is empty afterwards and the call removed its own socket, expired ones, or the user's `presence:due` entry. The due entry is the transition marker ("announced online, `offline` still owed"): it survives the set key's own TTL, so an `offline` is never lost to key expiry and never sent twice. The key TTL is the member TTL plus three sweep intervals.
 - Only transitions are broadcast. A second device connecting, or one of several closing, sends nothing.
 - **Sweeper** (`spawn_presence_sweep`, every 20 s, at most 200 users per tick; `sweep_users` sweeps given users, for tests): for users whose latest expiry has passed, an atomic expire script prunes the set. If the set is empty (also when the key itself already expired), the script removes the due entry and announces `offline` if the entry was still there; the sweeper then resets a stored `online` to `offline`. This covers crashed servers and failed disconnect commands. There is no graceful-shutdown hook for open sockets: their entries expire and the sweeper announces `offline` within about two minutes.
-- **Versions**: every published status change increments `presence:ver:{user_id}` in the same script and is published as an internal envelope `{"v":N,"event":{…}}`.
-  - The connect snapshot reads versions and live sockets in one atomic step before it reads the database.
-  - If that step fails (Valkey unreachable), the snapshot is version 0: it skips peers that already got a versioned update and records 0 for the others.
+- **Published state and versions**: every publish bumps the version and records the status in `presence:state:{user_id}` (hash `status`, `v`) in the same script, and goes out as an internal envelope `{"v":N,"event":{…}}`.
+  - Snapshots read status and version **only** from that published state (`published_states`), never from the database, so a snapshot is always a state observers were sent, with its own version. If Valkey is unreachable no snapshot status is sent.
+  - **Backstop**: about every 5 minutes (plus up to 1 minute of per-socket jitter), each socket reads the published state of its peers in one call and re-sends the status of those whose version is newer than what it sent (`advanced_states`).
   - Each socket remembers the last version it sent per peer (`PresenceState.versions`) and drops older data, whether snapshot or live. The lock is held while queueing, so snapshot and live updates never overwrite each other out of order.
   - Only status is versioned. Activity and custom status (`publish_rich`) are plain events, and a peer whose snapshot was superseded by a newer live status gets no snapshot activity.
-- **Reconcile** (`connections::reconcile`, one Lua script) records the status sequence (`users.presence_seq`, bumped by every `set_status`) in `presence:seq:{user_id}`, ignores anything older than what was applied, and shows `offline` without a live socket, otherwise the status. A `presence_update` goes out only if that differs from the last status shown (`presence:shown:{user_id}`).
+- **Reconcile** (`connections::reconcile`, one Lua script) records the status sequence (`users.presence_seq`, bumped by every `set_status`) in `presence:seq:{user_id}`, ignores anything older than what was applied, and shows `offline` without a live socket, otherwise the status. A `presence_update` goes out only if that differs from the last published status (`presence:state`).
   - `set_status` uses it directly, so two devices changing status at once end with the newest status in database order, each change published once.
-  - Recovery uses it from a fresh database read: a heartbeat that re-registers a socket as the only live device, a failed connect-time lookup, a registration whose read was older than the applied sequence (that registration publishes nothing itself), and a failed `set_status` (`ClientMessageState.presence_resync`). Failures stay owed and retry with the next heartbeat.
+  - `set_status` marks the change dirty (`users.presence_dirty_since`) in the same UPDATE; a successful reconcile clears it (only if no newer change happened). A change that could not be published stays dirty, and the sweeper on **any** server reconciles dirty users older than 5 s (`sweep_dirty`, via `reconcile_from_db`). The retry does not depend on the socket that made the change.
+  - Socket recovery uses it from a fresh database read: a heartbeat that re-registers a socket as the only live device, a failed connect-time lookup, and a registration whose read was older than the applied sequence (that registration publishes nothing itself). Those retry with the next heartbeat.
   - An applied sequence the database does not know (e.g. after a restore) is replaced compare-and-set on the exact value found (`replace_future_seq`), so a concurrent newer change is never undone.
 - Fails open: Valkey errors are logged at most once a minute and the socket carries on.
 
@@ -289,11 +290,17 @@ while let Some(msg) = ws_receiver.next().await {
   - Joins, leaves and kicks: on `guild:{id}` with the member's `user_id`. Other members re-check only that user with one cheap query (`recheck_presence_peers`). More than 16 coalesced targets fall back to one full reload, and the 500-peer cap counts peers already added in the same batch. The member itself reloads everything; it is also notified on its `user:{id}`.
   - Server deletion: on `guild:{id}` without `user_id`, so everyone reloads.
 - The forwarder consumes the notice (never forwarded), records what is pending (`AudiencePending`, so repeated notices coalesce) and wakes the socket loop.
-- A reload reads the audience and applies the difference (`apply_peer_changes`). Whenever that installed new subscriptions (peers or servers), it reads the audience again after their barrier, so a change published on a channel before it was subscribed (e.g. a member leaving a just-joined server) is never missed. It does this for up to four rounds.
-  - Dropped peers leave the filter under the versions lock and, on a live socket, get a final `presence_update` `offline` (no frozen status in the client); then they are unsubscribed.
-  - New peers get a snapshot if they are still peers at the end.
-- A reload or re-check that hits a database error is kept pending and retried with the next heartbeat; it is never dropped.
-- Test hooks (`ws::test_hooks`, `#[doc(hidden)]`): `pause_after_audience_read` pauses a user's next socket between the connect-time audience read and the subscriptions; `pause_in_audience_reload` pauses a live socket's next reload between reading and applying.
+- A reload reads the audience and applies the difference (`apply_peer_changes`). `PresenceState` keeps `peers` (validated, forwarded) apart from `subscribed` (channels followed, including peers not yet validated).
+  - Dropped peers leave both under the versions lock and, if they had been forwarded on a live socket, get a final `presence_update` `offline` (no frozen status in the client); then they are unsubscribed.
+  - New peers and servers are subscribed behind a barrier but stay **pending**: not forwarded.
+  - Whenever new subscriptions were installed, the audience is read again after their barrier, so a change published on a channel before it was subscribed (e.g. a member leaving a just-joined server) is never missed. Only a read that installs nothing new validates the pending peers it still lists. They then enter `peers` and get their snapshot.
+  - A targeted re-check validates a new peer the same way: subscribe, barrier, check again.
+- A reload or re-check that hits a database error **before** installing anything is kept pending and retried with the next heartbeat. An error **after** installing subscriptions, a failed subscription, or no quiet read within four rounds closes the socket with 1011: the client reconnects with a clean, full state.
+- Test hooks (`ws::test_hooks`, `#[doc(hidden)]`):
+  - `pause_after_audience_read`: pauses a user's next socket between the connect-time audience read and the subscriptions.
+  - `pause_in_audience_reload`: pauses a live socket's next reload between reading and applying.
+  - `pause_after_audience_barrier`: pauses after a reload round's subscription barrier.
+  - `fail_next_audience_read`: makes the next audience read fail.
 
 ### Voice Event Delegation
 

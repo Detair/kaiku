@@ -14,10 +14,12 @@
 //! presence event in that same step, so a disconnect of one device and a
 //! connect of another reach subscribers in the order they happened.
 //!
-//! Every published status change carries a per-user version
-//! (`presence:ver:{user_id}`, incremented in the publishing script): sockets
-//! drop updates older than what they already sent, so the connect snapshot
-//! and live updates cannot overwrite each other out of order.
+//! Every published status change carries a per-user version, and the last
+//! published state (`presence:state:{user_id}`: status and version) is
+//! written in the same script that publishes. Snapshots read only that
+//! state, so a snapshot is always a published state with its own version;
+//! sockets drop anything older than what they already sent, so snapshot and
+//! live updates cannot overwrite each other out of order.
 //!
 //! Sockets that end without a disconnect (crashed server, a failed disconnect
 //! command) are covered by the sweeper ([`sweep_expired`]): the global set
@@ -28,9 +30,11 @@
 //! ([`reconcile`]): it records the status sequence (`users.presence_seq`) in
 //! `presence:seq:{user_id}`, ignores anything older than what was applied,
 //! and publishes only what differs from the last status shown
-//! (`presence:shown:{user_id}`). Reordered, repeated or retried commands
+//! (`presence:state:{user_id}`). Reordered, repeated or retried commands
 //! from several devices therefore announce each change once, in database
-//! order.
+//! order. A status change that is not reconciled at once stays marked dirty
+//! in the database (`users.presence_dirty_since`) and the sweeper on any
+//! server reconciles it ([`sweep_dirty`]).
 //!
 //! **Stored vs. shown status.** `users.status` holds the status the user chose
 //! (`online`, `away`, `busy`; `offline` once the last socket closed). What
@@ -78,11 +82,16 @@ pub fn sockets_key(user_id: Uuid) -> String {
 /// users whose latest expiry has passed.
 pub const DUE_KEY: &str = "presence:due";
 
-/// Valkey key of a user's presence version (incremented on every published
-/// status change).
+/// Valkey hash with a user's last **published** presence.
+///
+/// Fields: `status` (`online`, `away`, `busy`, `offline`; missing =
+/// `offline`) and `v`, its version (incremented with every publish). Written
+/// only by the publishing scripts, in the same step as the publish, so a
+/// snapshot read from it is always a state observers were (or will be) sent,
+/// with its own version.
 #[must_use]
-pub fn version_key(user_id: Uuid) -> String {
-    format!("presence:ver:{user_id}")
+pub fn state_key(user_id: Uuid) -> String {
+    format!("presence:state:{user_id}")
 }
 
 /// Valkey key holding the newest status sequence (`users.presence_seq`) whose
@@ -93,26 +102,14 @@ pub fn seq_key(user_id: Uuid) -> String {
     format!("presence:seq:{user_id}")
 }
 
-/// Valkey key holding the last status published for a user.
-///
-/// One of `online`, `away`, `busy`, `offline` (missing = `offline`). Status
-/// changes and recovery publish only when what observers should see differs
-/// from it.
-#[must_use]
-pub fn shown_key(user_id: Uuid) -> String {
-    format!("presence:shown:{user_id}")
-}
-
 /// Keys every presence script gets, in this order: the user's socket set, the
-/// global due set, the user's presence version, the user's status sequence,
-/// the user's last shown status.
+/// global due set, the user's published state, the user's status sequence.
 fn lifecycle_keys(user_id: Uuid) -> Vec<String> {
     vec![
         sockets_key(user_id),
         DUE_KEY.to_string(),
-        version_key(user_id),
+        state_key(user_id),
         seq_key(user_id),
-        shown_key(user_id),
     ]
 }
 
@@ -120,9 +117,10 @@ fn lifecycle_keys(user_id: Uuid) -> Vec<String> {
 /// ARGV[1] and the current time (ms) as ARGV[2].
 ///
 /// - `applied_seq()`: the newest status sequence applied (KEYS[4]), -1 if none.
-/// - `shown()`: the last status published (KEYS[5]), `offline` if none.
-/// - `publish(status)`: publish a `presence_update` with `status` as a versioned envelope (`INCR`
-///   and `PUBLISH` in the same script, so version order is publish order) and remember it as shown.
+/// - `shown()`: the last status published (KEYS[3] `status`), `offline` if none.
+/// - `publish(status)`: bump the version (KEYS[3] `v`), record the status as published and publish
+///   a `presence_update` as a versioned envelope, all in the same script (version order is publish
+///   order).
 /// - `show(status)`: `publish` unless observers already see `status`.
 /// - `live()`: the user has a live socket.
 macro_rules! lua_presence {
@@ -133,13 +131,13 @@ local function applied_seq()
   return tonumber(redis.call('GET', KEYS[4]) or '-1')
 end
 local function shown()
-  return redis.call('GET', KEYS[5]) or 'offline'
+  return redis.call('HGET', KEYS[3], 'status') or 'offline'
 end
 local function publish(status)
-  local v = redis.call('INCR', KEYS[3])
+  local v = redis.call('HINCRBY', KEYS[3], 'v', 1)
+  redis.call('HSET', KEYS[3], 'status', status)
   local event = '{"type":"presence_update","user_id":"' .. ARGV[1] .. '","status":"' .. status .. '"}'
   redis.call('PUBLISH', channel, '{"v":' .. v .. ',"event":' .. event .. '}')
-  redis.call('SET', KEYS[5], status)
 end
 local function show(status)
   if status ~= '' and shown() ~= status then
@@ -290,13 +288,23 @@ end
 return 0
 ";
 
-/// Live socket count and presence version per user. KEYS = socket set,
-/// version key, repeating.
-const LIVE_SNAPSHOT_SCRIPT: &str = r"
+/// Live socket count per user. KEYS = socket sets.
+const LIVE_COUNTS_SCRIPT: &str = r"
 local out = {}
-for i = 1, #KEYS, 2 do
-  out[#out + 1] = redis.call('ZCOUNT', KEYS[i], '(' .. ARGV[1], '+inf')
-  out[#out + 1] = tonumber(redis.call('GET', KEYS[i + 1]) or '0')
+for i, key in ipairs(KEYS) do
+  out[i] = redis.call('ZCOUNT', key, '(' .. ARGV[1], '+inf')
+end
+return out
+";
+
+/// Published state per user. KEYS = state hashes. Returns status (empty if
+/// never published) and version, repeating.
+const PUBLISHED_STATES_SCRIPT: &str = r"
+local out = {}
+for _, key in ipairs(KEYS) do
+  local state = redis.call('HMGET', key, 'status', 'v')
+  out[#out + 1] = state[1] or ''
+  out[#out + 1] = state[2] or '0'
 end
 return out
 ";
@@ -525,57 +533,75 @@ pub async fn live_users(
     user_ids: &[Uuid],
     now_ms: i64,
 ) -> Result<HashSet<Uuid>, PresenceError> {
-    Ok(live_snapshot(redis, user_ids, now_ms).await?.live)
+    if user_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let keys: Vec<String> = user_ids.iter().map(|id| sockets_key(*id)).collect();
+    let counts: Vec<i64> = redis
+        .eval(LIVE_COUNTS_SCRIPT, keys, vec![now_ms.to_string()])
+        .await?;
+    Ok(user_ids
+        .iter()
+        .zip(counts)
+        .filter(|(_, count)| *count > 0)
+        .map(|(id, _)| *id)
+        .collect())
 }
 
-/// Live users and presence versions, read in one atomic Valkey step.
-#[derive(Debug, Default)]
-pub struct LiveSnapshot {
-    /// Users with at least one live socket.
-    pub live: HashSet<Uuid>,
-    /// Presence version per user (0 = never announced).
-    pub versions: HashMap<Uuid, u64>,
+/// A user's last published presence (see [`state_key`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Published {
+    /// Status observers were sent (`offline` if never published).
+    pub status: String,
+    /// Its version (0 if never published).
+    pub version: u64,
 }
 
-/// [`LiveSnapshot`] of `user_ids` (one round trip).
-pub async fn live_snapshot(
+/// The last published presence of `user_ids`, read in one atomic step.
+pub async fn published_states(
     redis: &Client,
     user_ids: &[Uuid],
-    now_ms: i64,
-) -> Result<LiveSnapshot, PresenceError> {
+) -> Result<HashMap<Uuid, Published>, PresenceError> {
     if user_ids.is_empty() {
-        return Ok(LiveSnapshot::default());
+        return Ok(HashMap::new());
     }
-    let keys: Vec<String> = user_ids
-        .iter()
-        .flat_map(|id| [sockets_key(*id), version_key(*id)])
-        .collect();
-    let values: Vec<i64> = redis
-        .eval(LIVE_SNAPSHOT_SCRIPT, keys, vec![now_ms.to_string()])
+    let keys: Vec<String> = user_ids.iter().map(|id| state_key(*id)).collect();
+    let values: Vec<String> = redis
+        .eval(PUBLISHED_STATES_SCRIPT, keys, Vec::<String>::new())
         .await?;
-    let mut snapshot = LiveSnapshot::default();
-    for (id, row) in user_ids.iter().zip(values.chunks(2)) {
-        if row.first().copied().unwrap_or(0) > 0 {
-            snapshot.live.insert(*id);
-        }
-        let version = row.get(1).copied().unwrap_or(0);
-        snapshot
-            .versions
-            .insert(*id, u64::try_from(version).unwrap_or(0));
-    }
-    Ok(snapshot)
+    Ok(user_ids
+        .iter()
+        .zip(values.chunks(2))
+        .map(|(id, pair)| {
+            let status = pair.first().map(String::as_str).unwrap_or_default();
+            let version = pair.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+            let status = if status.is_empty() { "offline" } else { status };
+            (
+                *id,
+                Published {
+                    status: status.to_string(),
+                    version,
+                },
+            )
+        })
+        .collect())
 }
 
-/// [`live_snapshot`], failing open: on a Valkey error it logs (throttled)
-/// and returns `None`.
-pub async fn live_snapshot_or_log(redis: &Client, user_ids: &[Uuid]) -> Option<LiveSnapshot> {
-    match live_snapshot(redis, user_ids, now_ms()).await {
-        Ok(snapshot) => Some(snapshot),
-        Err(e) => {
-            log_unavailable(&e);
-            None
-        }
-    }
+/// Peers whose published version is newer than what was sent to a socket
+/// (`sent`; a peer without an entry has been sent nothing). Used by the
+/// periodic backstop; sorted by user id.
+#[must_use]
+pub fn advanced_states<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
+    states: &HashMap<Uuid, Published, S1>,
+    sent: &HashMap<Uuid, u64, S2>,
+) -> Vec<(Uuid, Published)> {
+    let mut advanced: Vec<(Uuid, Published)> = states
+        .iter()
+        .filter(|(id, state)| sent.get(*id).is_none_or(|v| state.version > *v))
+        .map(|(id, state)| (*id, state.clone()))
+        .collect();
+    advanced.sort_by_key(|(id, _)| *id);
+    advanced
 }
 
 /// [`live_users`], failing open: on a Valkey error it logs (throttled) and
@@ -599,6 +625,107 @@ pub fn log_unavailable(e: &PresenceError) {
             "Presence store unavailable; continuing without it (logged at most once a minute)"
         );
     }
+}
+
+/// Reconcile a user's published presence from a fresh database read and,
+/// on success, clear the user's dirty mark (`users.presence_dirty_since`) up
+/// to the status sequence reconciled.
+///
+/// If a newer status sequence than the database's has been applied: when the
+/// database has caught up, a newer change applied it and reconciles itself;
+/// otherwise the sequence is unknown to the database (e.g. after a restore)
+/// and is replaced compare-and-set on the exact value found (a concurrent
+/// newer change is never undone), then the reconcile is repeated.
+///
+/// `Err(())` (database or Valkey unreachable) means "still owed": the user
+/// stays dirty (or the caller retries).
+pub async fn reconcile_from_db(db: &sqlx::PgPool, redis: &Client, user_id: Uuid) -> Result<(), ()> {
+    for _ in 0..3 {
+        let (stored, seq) = stored_status(db, user_id).await?;
+        let shown = effective_status(&stored, Some(true));
+        let reconciled = reconcile(redis, user_id, seq, shown, now_ms())
+            .await
+            .map_err(|e| log_unavailable(&e))?;
+        let applied = match reconciled {
+            Reconciled::Applied { .. } => {
+                clear_dirty(db, user_id, seq).await;
+                return Ok(());
+            }
+            Reconciled::Ahead { applied } => applied,
+        };
+        let (_, db_seq) = stored_status(db, user_id).await?;
+        if db_seq >= applied {
+            return Ok(());
+        }
+        replace_future_seq(redis, user_id, applied, db_seq)
+            .await
+            .map_err(|e| log_unavailable(&e))?;
+    }
+    Ok(())
+}
+
+/// The user's stored status and status sequence.
+async fn stored_status(db: &sqlx::PgPool, user_id: Uuid) -> Result<(String, i64), ()> {
+    sqlx::query_as("SELECT status::text, presence_seq FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, %user_id, "Failed to read presence");
+        })
+}
+
+/// Clear the dirty mark if no newer status change happened since `seq`.
+pub async fn clear_dirty(db: &sqlx::PgPool, user_id: Uuid, seq: i64) {
+    if let Err(e) = sqlx::query(
+        "UPDATE users SET presence_dirty_since = NULL WHERE id = $1 AND presence_seq <= $2",
+    )
+    .bind(user_id)
+    .bind(seq)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(error = %e, %user_id, "Failed to clear presence dirty mark");
+    }
+}
+
+/// How long a status change may stay unreconciled before the sweeper takes
+/// over (the changing socket normally reconciles at once).
+pub const DIRTY_GRACE: Duration = Duration::from_secs(5);
+
+/// Reconcile users whose status change was not (yet) published.
+///
+/// Covers users marked dirty by `set_status` and still dirty after
+/// [`DIRTY_GRACE`] (Valkey failed, the server died, the socket closed). Runs
+/// on every server, so the retry does not depend on the socket that made the
+/// change. Returns the users reconciled.
+pub async fn sweep_dirty(db: &sqlx::PgPool, redis: &Client, limit: i64) -> Vec<Uuid> {
+    let grace = i64::try_from(DIRTY_GRACE.as_millis()).unwrap_or(0);
+    let dirty: Vec<(Uuid,)> = match sqlx::query_as(
+        "SELECT id FROM users
+         WHERE presence_dirty_since IS NOT NULL
+           AND presence_dirty_since < NOW() - make_interval(secs => $1::double precision / 1000)
+         ORDER BY presence_dirty_since
+         LIMIT $2",
+    )
+    .bind(grace)
+    .bind(limit)
+    .fetch_all(db)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "Presence sweep: dirty query failed");
+            return Vec::new();
+        }
+    };
+    let mut done = Vec::new();
+    for (user_id,) in dirty {
+        if reconcile_from_db(db, redis, user_id).await.is_ok() {
+            done.push(user_id);
+        }
+    }
+    done
 }
 
 /// How many due users one sweep handles at most.
@@ -666,7 +793,8 @@ pub async fn sweep_users(
     Ok(offline)
 }
 
-/// Spawn the presence sweeper ([`sweep_expired`] every [`SWEEP_INTERVAL`]).
+/// Spawn the presence sweeper ([`sweep_expired`] and [`sweep_dirty`] every
+/// [`SWEEP_INTERVAL`]).
 pub fn spawn_presence_sweep(db: sqlx::PgPool, redis: Client) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(SWEEP_INTERVAL);
@@ -676,6 +804,7 @@ pub fn spawn_presence_sweep(db: sqlx::PgPool, redis: Client) -> tokio::task::Joi
             if let Err(e) = sweep_expired(&db, &redis, now_ms(), SWEEP_BATCH).await {
                 log_unavailable(&e);
             }
+            sweep_dirty(&db, &redis, SWEEP_BATCH).await;
         }
     })
 }
@@ -687,7 +816,7 @@ pub fn spawn_presence_sweep(db: sqlx::PgPool, redis: Client) -> tokio::task::Joi
 /// that user.
 #[derive(Debug, serde::Deserialize)]
 pub struct PresenceEnvelope {
-    /// Presence version (`presence:ver:{user_id}`).
+    /// Presence version (`v` in `presence:state:{user_id}`).
     pub v: u64,
     /// The event to forward.
     pub event: crate::ws::ServerEvent,
@@ -797,6 +926,36 @@ mod tests {
         assert_eq!(live_count(&[now - 90_000, now, now + 1], now), 1);
         assert_eq!(live_count(&[], now), 0);
         assert_eq!(live_count(&[now + 90_000, now + 30_000], now), 2);
+    }
+
+    #[test]
+    fn backstop_sends_only_advanced_versions() {
+        let (a, b, c, d) = (
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            Uuid::from_u128(3),
+            Uuid::from_u128(4),
+        );
+        let published = |status: &str, version| Published {
+            status: status.to_string(),
+            version,
+        };
+        let states: HashMap<Uuid, Published> = [
+            (a, published("busy", 5)),
+            (b, published("online", 3)),
+            (c, published("away", 9)),
+            (d, published("offline", 0)),
+        ]
+        .into_iter()
+        .collect();
+        // a: newer than sent; b: same; c: older than sent; d: never sent.
+        let sent: HashMap<Uuid, u64> = [(a, 4), (b, 3), (c, 10)].into_iter().collect();
+
+        let advanced = advanced_states(&states, &sent);
+        assert_eq!(
+            advanced,
+            vec![(a, published("busy", 5)), (d, published("offline", 0))]
+        );
     }
 
     #[test]

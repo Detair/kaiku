@@ -196,6 +196,48 @@ pub mod test_hooks {
         wait(reload_pauses(), user_id).await;
     }
 
+    fn barrier_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next audience reload round of `user_id` that installed new
+    /// subscriptions, right after their barrier (new peers subscribed, not
+    /// yet validated).
+    pub fn pause_after_audience_barrier(user_id: Uuid) -> Pause {
+        let pause = Pause::default();
+        barrier_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn after_audience_barrier(user_id: Uuid) {
+        wait(barrier_pauses(), user_id).await;
+    }
+
+    fn failing_reads() -> &'static Mutex<std::collections::HashSet<Uuid>> {
+        static FAILING: OnceLock<Mutex<std::collections::HashSet<Uuid>>> = OnceLock::new();
+        FAILING.get_or_init(Mutex::default)
+    }
+
+    /// Make the next presence-audience read of `user_id` fail like a database
+    /// error.
+    pub fn fail_next_audience_read(user_id: Uuid) {
+        failing_reads()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id);
+    }
+
+    pub(crate) fn audience_read_fails(user_id: Uuid) -> bool {
+        failing_reads()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&user_id)
+    }
+
     async fn wait(map: &Mutex<HashMap<Uuid, Pause>>, user_id: Uuid) {
         let pause = map
             .lock()

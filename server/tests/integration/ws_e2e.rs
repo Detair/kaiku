@@ -786,9 +786,9 @@ async fn test_sweeper_announces_offline_for_expired_socket(pool: PgPool) {
 /// transition when it closes, as long as it is the call that empties the set.
 #[sqlx::test]
 async fn test_close_after_own_entry_was_pruned_announces_offline(pool: PgPool) {
-    use fred::interfaces::{KeysInterface, SortedSetsInterface};
+    use fred::interfaces::SortedSetsInterface;
     use vc_server::presence::connections::{
-        socket_offline_announce, socket_online, socket_online_detailed, sockets_key, version_key,
+        socket_offline_announce, socket_online, socket_online_detailed, sockets_key,
     };
 
     let app = TestApp::with_pool(pool).await;
@@ -815,7 +815,7 @@ async fn test_close_after_own_entry_was_pruned_announces_offline(pool: PgPool) {
     assert!(socket_offline_announce(&redis, user, own, now)
         .await
         .unwrap());
-    let version: Option<i64> = redis.get(version_key(user)).await.expect("GET");
+    let version = Some(published_count(&redis, user).await);
     assert_eq!(version, Some(2), "online, then offline once");
     // Nothing left to report.
     assert!(!socket_offline_announce(&redis, user, own, now)
@@ -1032,11 +1032,11 @@ async fn test_sweeper_announces_offline_after_real_key_expiry(pool: PgPool) {
 
 /// Presence version of `user` (number of status updates published).
 async fn published_count(redis: &fred::clients::Client, user: Uuid) -> i64 {
-    use fred::interfaces::KeysInterface;
+    use fred::interfaces::HashesInterface;
     let version: Option<i64> = redis
-        .get(vc_server::presence::connections::version_key(user))
+        .hget(vc_server::presence::connections::state_key(user), "v")
         .await
-        .expect("GET version");
+        .expect("HGET version");
     version.unwrap_or(0)
 }
 
@@ -1346,31 +1346,36 @@ async fn test_block_during_connect_is_not_in_snapshot(pool: PgPool) {
     expect_no_presence(&mut ws_b, u).await;
 }
 
-/// A member who leaves a server while an observer is joining it (after the
-/// observer's reload read the members, before its server subscription is
-/// live) does not stay in the observer's audience: the observer reads its
-/// audience again after the new subscription's barrier.
-#[sqlx::test]
-async fn test_leave_while_joining_server_is_not_missed(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
-    let server = spawn_test_server(app.router.clone()).await;
-    let redis = db::create_redis_client(&app.config.redis_url)
+/// Wait until the socket closes; returns its close code.
+async fn close_code(ws: &mut super::helpers::WsClient) -> u16 {
+    let wait = async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Close(Some(frame)))) => break u16::from(frame.code),
+                Some(Ok(Message::Close(None))) | None => panic!("closed without a code"),
+                Some(Ok(_)) => {}
+                Some(Err(e)) => panic!("socket error: {e}"),
+            }
+        }
+    };
+    tokio::time::timeout(EVENT_TIMEOUT, wait)
         .await
-        .expect("connect test Valkey");
-    let (owner, _) = create_test_user(&pool).await;
-    let (u, _) = create_test_user(&pool).await;
-    let (b, _) = create_test_user(&pool).await;
-    let guild = super::helpers::create_guild(&pool, owner).await;
-    super::helpers::add_guild_member(&pool, guild, u).await;
+        .expect("socket closed in time")
+}
+
+/// Users `owner` (server owner), `u` (member), `b` (outsider), all connected
+/// except `owner`; returns the server and an invite code for it.
+async fn join_scenario(
+    pool: &PgPool,
+    app: &TestApp,
+    server: &TestServer,
+) -> (Uuid, Uuid, Uuid, String) {
+    let (owner, _) = create_test_user(pool).await;
+    let (u, _) = create_test_user(pool).await;
+    let (b, _) = create_test_user(pool).await;
+    let guild = super::helpers::create_guild(pool, owner).await;
+    super::helpers::add_guild_member(pool, guild, u).await;
     let token_owner = generate_access_token(&app.config, owner);
-    let token_u = generate_access_token(&app.config, u);
-    let token_b = generate_access_token(&app.config, b);
-
-    let mut ws_u = connect_ready(&server, &token_u).await;
-    let mut ws_b = connect_ready(&server, &token_b).await;
-
-    // `b` joins; its reload stops after reading the members (with `u`).
-    let pause = vc_server::ws::test_hooks::pause_in_audience_reload(b);
     let invite: serde_json::Value = reqwest::Client::new()
         .post(format!("{}/api/guilds/{guild}/invites", server.url))
         .bearer_auth(&token_owner)
@@ -1383,35 +1388,213 @@ async fn test_leave_while_joining_server_is_not_missed(pool: PgPool) {
         .expect("invite JSON");
     let code = invite["code"]
         .as_str()
-        .unwrap_or_else(|| panic!("{invite}"));
+        .unwrap_or_else(|| panic!("{invite}"))
+        .to_string();
+    (u, b, guild, code)
+}
+
+/// POST as `token`; asserts success.
+async fn post_ok(url: String, token: &str) {
     let resp = reqwest::Client::new()
-        .post(format!("{}/api/invites/{code}/join", server.url))
-        .bearer_auth(&token_b)
+        .post(url)
+        .bearer_auth(token)
         .send()
         .await
-        .expect("join");
-    assert!(resp.status().is_success(), "join: {}", resp.status());
-    tokio::time::timeout(EVENT_TIMEOUT, pause.reached.notified())
+        .expect("POST");
+    assert!(resp.status().is_success(), "POST: {}", resp.status());
+}
+
+/// A member who leaves a server while an observer is joining it never reaches
+/// the observer: peers subscribed by a reload are not forwarded until a read
+/// after their subscription barrier confirms them, and that read drops the
+/// member who left.
+#[sqlx::test]
+async fn test_new_peer_is_not_forwarded_before_validation(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
         .await
-        .expect("reload reached the pause");
+        .expect("connect test Valkey");
+    let (u, b, guild, code) = join_scenario(&pool, &app, &server).await;
+    let token_u = generate_access_token(&app.config, u);
+    let token_b = generate_access_token(&app.config, b);
+    let mut ws_u = connect_ready(&server, &token_u).await;
+    let mut ws_b = connect_ready(&server, &token_b).await;
+
+    // `b` joins; its reload stops after reading the members (with `u`).
+    let read = vc_server::ws::test_hooks::pause_in_audience_reload(b);
+    post_ok(format!("{}/api/invites/{code}/join", server.url), &token_b).await;
+    tokio::time::timeout(EVENT_TIMEOUT, read.reached.notified())
+        .await
+        .expect("reload read");
 
     // `u` leaves before `b` follows the server channel.
-    let resp = reqwest::Client::new()
-        .post(format!("{}/api/guilds/{guild}/leave", server.url))
-        .bearer_auth(&token_u)
-        .send()
-        .await
-        .expect("leave");
-    assert!(resp.status().is_success(), "leave: {}", resp.status());
-    pause.release.notify_one();
+    post_ok(format!("{}/api/guilds/{guild}/leave", server.url), &token_u).await;
 
-    // `b` drops `u` again once its new subscriptions are live (the final
-    // `offline` marks that).
-    next_presence(&mut ws_b, u, "offline").await;
-    wait_for_no_presence_subscribers(&redis, u).await;
+    // `b` subscribes `u` (and the server) and stops after the barrier: `u`
+    // is subscribed but not validated.
+    let barrier = vc_server::ws::test_hooks::pause_after_audience_barrier(b);
+    read.release.notify_one();
+    tokio::time::timeout(EVENT_TIMEOUT, barrier.reached.notified())
+        .await
+        .expect("barrier");
+    assert_eq!(
+        numsub(&redis, &vc_server::ws::channels::user_presence(u)).await,
+        1,
+        "u subscribed (pending)"
+    );
+
+    // `u` publishes while pending: not forwarded.
     let busy = serde_json::json!({ "type": "set_status", "status": "busy" }).to_string();
     ws_u.send(Message::Text(busy.into())).await.expect("u busy");
-    expect_no_ws_event_about(&mut ws_b, u).await;
+    let ping = serde_json::json!({ "type": "ping" }).to_string();
+    ws_u.send(Message::Text(ping.into())).await.expect("ping");
+    next_ws_event(&mut ws_u, "pong", EVENT_TIMEOUT).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    barrier.release.notify_one();
+
+    // The next read drops `u` again; `b` never heard of `u`.
+    wait_for_no_presence_subscribers(&redis, u).await;
+    expect_no_presence(&mut ws_b, u).await;
 
     redis.quit().await.expect("quit test Valkey client");
+}
+
+/// If a reload cannot complete after it already installed subscriptions (the
+/// follow-up read fails), the socket closes with 1011 so the client
+/// reconnects with a clean, full state.
+#[sqlx::test]
+async fn test_failed_reload_after_subscribing_closes_with_1011(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (_u, b, _guild, code) = join_scenario(&pool, &app, &server).await;
+    let token_b = generate_access_token(&app.config, b);
+    let mut ws_b = connect_ready(&server, &token_b).await;
+
+    let read = vc_server::ws::test_hooks::pause_in_audience_reload(b);
+    post_ok(format!("{}/api/invites/{code}/join", server.url), &token_b).await;
+    tokio::time::timeout(EVENT_TIMEOUT, read.reached.notified())
+        .await
+        .expect("reload read");
+    // The read after the new subscriptions fails.
+    vc_server::ws::test_hooks::fail_next_audience_read(b);
+    read.release.notify_one();
+
+    assert_eq!(close_code(&mut ws_b).await, 1011);
+}
+
+/// The snapshot is the peer's **published** state with its version, never the
+/// database: a status stored but not (yet) published is not shown to a new
+/// observer.
+#[sqlx::test]
+async fn test_snapshot_shows_published_state_not_database(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (a, b, _guild) = presence_pair(&pool, true).await;
+    let token_a = generate_access_token(&app.config, a);
+    let token_b = generate_access_token(&app.config, b);
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+
+    let _ws_a = connect_ready(&server, &token_a).await;
+    wait_for_sockets(&redis, a, 1).await;
+    // A device stored "busy" but has not reconciled yet.
+    sqlx::query("UPDATE users SET status = 'busy', presence_seq = presence_seq + 1 WHERE id = $1")
+        .bind(a)
+        .execute(&pool)
+        .await
+        .expect("store busy");
+
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let snap = next_ws_event(&mut ws_b, "presence_update", EVENT_TIMEOUT).await;
+    assert_eq!(snap["user_id"], a.to_string());
+    assert_eq!(
+        snap["status"], "online",
+        "published state, not the database"
+    );
+
+    redis.quit().await.expect("quit test Valkey client");
+}
+
+/// A status change whose publish never happened (Valkey failed, the device
+/// then closed) stays marked dirty in the database; the sweeper on any server
+/// reconciles it, so observers get the new status anyway.
+#[sqlx::test]
+async fn test_dirty_status_change_is_reconciled_by_sweeper(pool: PgPool) {
+    use vc_server::presence::connections::sweep_dirty;
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (a, b, _guild) = presence_pair(&pool, true).await;
+    let token_a = generate_access_token(&app.config, a);
+    let token_b = generate_access_token(&app.config, b);
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let _phone = connect_ready(&server, &token_a).await;
+    next_presence(&mut ws_b, a, "online").await;
+
+    // The desktop stored "busy" (dirty), its reconcile failed, and it closed.
+    sqlx::query(
+        "UPDATE users SET status = 'busy', presence_seq = presence_seq + 1,
+             presence_dirty_since = NOW() - INTERVAL '1 minute'
+         WHERE id = $1",
+    )
+    .bind(a)
+    .execute(&pool)
+    .await
+    .expect("store dirty busy");
+
+    // (Another test's sweep may get there first: the observer must get busy
+    // either way.)
+    sweep_dirty(&pool, &redis, 10_000).await;
+    next_presence(&mut ws_b, a, "busy").await;
+    let (dirty,): (Option<chrono::DateTime<chrono::Utc>>,) =
+        sqlx::query_as("SELECT presence_dirty_since FROM users WHERE id = $1")
+            .bind(a)
+            .fetch_one(&pool)
+            .await
+            .expect("read mark");
+    assert!(dirty.is_none(), "dirty mark cleared");
+
+    redis.quit().await.expect("quit test Valkey client");
+}
+
+/// A normal `set_status` publishes at once and leaves no dirty mark.
+#[sqlx::test]
+async fn test_set_status_clears_dirty_mark(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (a, b, _guild) = presence_pair(&pool, true).await;
+    let token_a = generate_access_token(&app.config, a);
+    let token_b = generate_access_token(&app.config, b);
+
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut ws_a = connect_ready(&server, &token_a).await;
+    next_presence(&mut ws_b, a, "online").await;
+    let away = serde_json::json!({ "type": "set_status", "status": "away" }).to_string();
+    ws_a.send(Message::Text(away.into())).await.expect("away");
+    next_presence(&mut ws_b, a, "away").await;
+
+    // Cleared right after the publish.
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    loop {
+        let (dirty,): (Option<chrono::DateTime<chrono::Utc>>,) =
+            sqlx::query_as("SELECT presence_dirty_since FROM users WHERE id = $1")
+                .bind(a)
+                .fetch_one(&pool)
+                .await
+                .expect("read mark");
+        if dirty.is_none() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "dirty mark not cleared"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
