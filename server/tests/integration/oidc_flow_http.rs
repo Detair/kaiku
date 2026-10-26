@@ -649,3 +649,95 @@ async fn test_callback_error_with_unknown_state_does_not_redirect(pool: PgPool) 
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert!(resp.headers().get("location").is_none());
 }
+
+// ============================================================================
+// Request secrets stay out of tracing spans
+// ============================================================================
+
+/// Collects formatted tracing output of the current thread.
+#[derive(Clone, Default)]
+struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl CapturedLogs {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+/// Run `f` with a thread-local subscriber that formats every span field.
+async fn capture<F: std::future::Future<Output = ()>>(f: F) -> String {
+    let logs = CapturedLogs::default();
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    f.await;
+    drop(guard);
+    logs.text()
+}
+
+const SECRET_COOKIE: &str = "refresh_token=cookie-secret-do-not-log";
+const SECRET_BEARER: &str = "Bearer bearer-secret-do-not-log";
+
+fn assert_no_secrets(logs: &str, span: &str) {
+    assert!(logs.contains(span), "captured nothing for {span}: {logs}");
+    assert!(!logs.contains("cookie-secret-do-not-log"), "{logs}");
+    assert!(!logs.contains("bearer-secret-do-not-log"), "{logs}");
+}
+
+#[sqlx::test]
+async fn test_authorize_span_has_no_request_secrets(pool: PgPool) {
+    let slug = create_manual_provider(&pool).await;
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    let logs = capture(async {
+        let resp = get_with(
+            &app,
+            &authorize_uri(&slug, &[]),
+            &[("cookie", SECRET_COOKIE), ("authorization", SECRET_BEARER)],
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+    })
+    .await;
+    assert_no_secrets(&logs, "oidc_authorize");
+}
+
+#[sqlx::test]
+async fn test_exchange_span_has_no_request_secrets(pool: PgPool) {
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    let user_id = create_test_user(&pool).await.0;
+    let code = store_grant(&app, user_id, chrono::Utc::now().timestamp()).await;
+    let logs = capture(async {
+        let resp = app
+            .router
+            .clone()
+            .oneshot(
+                Request::post("/auth/oidc/desktop/exchange")
+                    .header("content-type", "application/json")
+                    .header("cookie", SECRET_COOKIE)
+                    .header("authorization", SECRET_BEARER)
+                    .body(Body::from(
+                        serde_json::json!({ "code": code, "verifier": "A".repeat(43) }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    })
+    .await;
+    assert_no_secrets(&logs, "oidc_desktop_exchange");
+}

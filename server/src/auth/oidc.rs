@@ -294,6 +294,9 @@ pub fn client_challenge_matches(verifier: &str, challenge: &str) -> bool {
     }
     let computed = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(sha2::Sha256::digest(verifier.as_bytes()));
+    // Length-fixed XOR fold (both sides are 43 bytes), no early exit. Not a
+    // vetted primitive, but the code is consumed before this check, so a
+    // timing difference could not be retried against the same grant.
     computed
         .bytes()
         .zip(challenge.bytes())

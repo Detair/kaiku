@@ -55,7 +55,7 @@ use crate::ratelimit::NormalizedIp;
     ),
     security(()),
 )]
-#[tracing::instrument(skip(state, jar, body, normalized_ip), fields(username = %body.username))]
+#[tracing::instrument(skip(state, jar, headers, body, normalized_ip), fields(username = %body.username))]
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -234,7 +234,7 @@ pub async fn login(
     ),
     security(()),
 )]
-#[tracing::instrument(skip(state, jar, body))]
+#[tracing::instrument(skip(state, jar, headers, body))]
 pub async fn refresh_token(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -480,7 +480,10 @@ pub async fn oidc_providers(State(state): State<AppState>) -> AuthResult<Json<se
     ),
     security(()),
 )]
-#[tracing::instrument(skip(state, query), fields(provider = %provider))]
+#[tracing::instrument(
+    skip(state, headers, query),
+    fields(provider = %provider, has_client_header = is_desktop_client(&headers))
+)]
 pub async fn oidc_authorize(
     State(state): State<AppState>,
     Path(provider): Path<String>,
@@ -1130,7 +1133,7 @@ fn loopback_redirect(url: &openidconnect::url::Url) -> Response {
     ),
     security(()),
 )]
-#[tracing::instrument(skip(state, body))]
+#[tracing::instrument(skip(state, headers, body))]
 pub async fn oidc_desktop_exchange(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
