@@ -11,7 +11,7 @@
 - `LICENSE` added: the MPL-2.0 text (SPDX copy). The crate and its upstream
   repository ship no licence file; the licence is declared in `Cargo.toml`.
 - `Cargo.toml`: build-dependency `bindgen` 0.68.1 -> 0.72.1, `publish = false`,
-  comment header.
+  `description` marks the vendored copy, comment header.
 - `generated/` (pre-generated bindings for libvpx 1.3–1.13) is not vendored.
   Kaiku always builds with the `generate` feature (enabled by
   `client/src-tauri/vp8-decoder`), so the build script never reads it; without
