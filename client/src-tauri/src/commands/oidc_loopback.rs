@@ -28,6 +28,30 @@ pub const READ_DEADLINE: Duration = Duration::from_secs(2);
 const MAX_REQUEST_LINE: usize = 4096;
 /// Query key of the per-flow value in the return address.
 const FLOW_PARAM: &str = "flow";
+/// Pause after a failed `accept()` (e.g. out of file descriptors), so a
+/// persistent error does not spin until the overall timeout.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+
+/// Source of loopback connections (the bound listener; a stub in tests).
+pub trait Acceptor {
+    fn accept_stream(&self)
+        -> impl std::future::Future<Output = std::io::Result<TcpStream>> + Send;
+}
+
+impl Acceptor for TcpListener {
+    async fn accept_stream(&self) -> std::io::Result<TcpStream> {
+        self.accept().await.map(|(stream, _)| stream)
+    }
+}
+
+/// Length-checked comparison that does not stop at the first difference.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
+}
 
 /// A fresh random secret: 32 bytes, unpadded base64url (43 characters).
 /// Used for the per-flow value and the login verifier.
@@ -72,7 +96,7 @@ pub fn callback_params(target: &str, expected_flow: &str) -> Option<HashMap<Stri
     for (k, v) in parsed.query_pairs() {
         if k == FLOW_PARAM {
             flows += 1;
-            flow_ok = v == expected_flow;
+            flow_ok = constant_time_eq(&v, expected_flow);
         } else {
             params.insert(k.into_owned(), v.into_owned());
         }
@@ -160,7 +184,7 @@ pub struct CallbackTimeout;
 /// parameters into a result (or `None` to keep waiting); `page` is the HTML
 /// shown in the browser for that result.
 pub async fn wait_for_callback<T>(
-    listener: &TcpListener,
+    listener: &(impl Acceptor + Sync),
     expected_flow: &str,
     timeout: Duration,
     read_deadline: Duration,
@@ -169,7 +193,9 @@ pub async fn wait_for_callback<T>(
 ) -> Result<T, CallbackTimeout> {
     let accept = async {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
+            let Ok(mut stream) = listener.accept_stream().await else {
+                // Also yields, so the overall timeout can fire.
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
                 continue;
             };
             let line = read_request_line(&mut stream, read_deadline).await;
@@ -399,6 +425,44 @@ mod tests {
         let result = wait_login(&listener, LONG, SHORT).await;
         assert_eq!(result, Ok(LoginCallback::Code("c".into())));
         client.await.unwrap();
+    }
+
+    /// An acceptor whose `accept()` always fails, counting the calls.
+    #[derive(Default)]
+    struct FailingAcceptor {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Acceptor for FailingAcceptor {
+        async fn accept_stream(&self) -> std::io::Result<TcpStream> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(std::io::Error::other("EMFILE"))
+        }
+    }
+
+    #[tokio::test]
+    async fn persistent_accept_errors_back_off() {
+        let acceptor = FailingAcceptor::default();
+        let result = wait_for_callback(
+            &acceptor,
+            FLOW,
+            Duration::from_millis(300),
+            SHORT,
+            parse_login_callback,
+            |_| "",
+        )
+        .await;
+        assert_eq!(result, Err(CallbackTimeout));
+        let calls = acceptor.calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(calls <= 10, "accept() retried {calls} times in 300 ms");
+    }
+
+    #[test]
+    fn flow_compare_is_exact() {
+        assert!(constant_time_eq(FLOW, FLOW));
+        assert!(!constant_time_eq(FLOW, &FLOW[1..]));
+        assert!(!constant_time_eq("abc", "abd"));
+        assert!(constant_time_eq("", ""));
     }
 
     #[tokio::test]

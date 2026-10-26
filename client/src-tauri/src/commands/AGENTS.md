@@ -113,10 +113,11 @@ listen('voice:state_change', (event) => console.log(event.payload));
 
 **Flow (OIDC login, `oidc_authorize`):**
 1. Bind `127.0.0.1:0`; create a random per-flow value and a random verifier (`oidc_loopback::new_secret`)
-2. `GET /auth/oidc/authorize/{slug}?redirect_uri=http://127.0.0.1:PORT/callback?flow=<value>&client_challenge=<S256(verifier)>` (redirect not followed), open the provider URL in the system browser
+2. `GET /auth/oidc/authorize/{slug}?redirect_uri=http://127.0.0.1:PORT/callback?flow=<value>&client_challenge=<S256(verifier)>` with `X-Kaiku-Client: desktop`; the server answers `{"url"}` (a redirect is refused), open the provider URL in the system browser
 3. Wait (60 s overall, 2 s per connection) for `GET /callback` with exactly that `flow`; the server hands back only `?code=` (or `?error=CODE`). Anything else gets 204 and is ignored; the result page sends `Cache-Control: no-store` and `Referrer-Policy: no-referrer`
 4. `SessionManager::exchange_oidc_code` → `POST /auth/oidc/desktop/exchange {code, verifier}` → tokens stay in Rust/keyring
 The link flow (`oidc_link_identity`) uses the same listener and per-flow value (`?linked=` / `?link_error=`).
+Failures with a server code are returned as the bare code (`OIDC_CLIENT_OUTDATED`, `OIDC_HANDOFF_INVALID`, `OIDC_PROVIDER_ERROR`, `OIDC_EXCHANGE_FAILED`, `IDENTITY_ALREADY_LINKED`); the webview maps them with `nativeSsoError` + `SSO_ERRORS`. A failed `accept()` backs off 50 ms.
 
 **Security:**
 - Access token: In-memory only (15min expiry)

@@ -33,6 +33,20 @@ export const CHAT_SEND_ERRORS: { byCode: ByCode; byStatus: ByStatus } = {
 };
 
 /**
+ * Codes the SSO flows (desktop sign-in, identity linking) report; see
+ * `nativeSsoError` for the native side.
+ */
+export const SSO_ERRORS: { byCode: ByCode } = {
+  byCode: {
+    OIDC_CLIENT_OUTDATED: "auth.sso.clientOutdated",
+    OIDC_HANDOFF_INVALID: "auth.sso.handoffInvalid",
+    OIDC_PROVIDER_ERROR: "auth.sso.providerError",
+    OIDC_EXCHANGE_FAILED: "auth.sso.exchangeFailed",
+    IDENTITY_ALREADY_LINKED: "auth.sso.alreadyLinked",
+  },
+};
+
+/**
  * Turn any thrown value into a sentence for the user (contract C16).
  *
  * Lookup order: `byCode[code]`, `byStatus[status]`, common codes (rate limit,

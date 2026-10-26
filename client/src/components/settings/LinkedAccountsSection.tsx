@@ -1,6 +1,8 @@
 import { Component, createSignal, onMount, For, Show } from "solid-js";
 import { KeyRound, Unlink, Plus } from "lucide-solid";
 import * as tauri from "@/lib/tauri";
+import { HttpError } from "@/lib/tauri/common";
+import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { formatRelativeTimeShort } from "@/lib/utils";
 import type { IdentityInfo, OidcProvider } from "@/lib/types";
 
@@ -108,7 +110,14 @@ const LinkedAccountsSection: Component = () => {
         }
       }, 500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // Desktop: a named SSO code gets its message; other errors as before.
+      setError(
+        err instanceof HttpError && err.code && err.code in SSO_ERRORS.byCode
+          ? errorText(err, "auth.sso.linkFailed", SSO_ERRORS.byCode)
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      );
       setLinking(null);
     }
   };

@@ -14,7 +14,7 @@ import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
 import { t } from "@/i18n";
-import { errorText } from "@/i18n/errors";
+import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "@/lib/authErrors";
 
 /** Map icon_hint to a Lucide icon component. */
@@ -171,7 +171,7 @@ const Register: Component = () => {
         }
       }, 500);
     } catch (err) {
-      setLocalError(errorText(err, "auth.register.ssoFailed"));
+      setLocalError(errorText(err, "auth.register.ssoFailed", SSO_ERRORS.byCode));
       setOidcLoading(null);
     }
   };
