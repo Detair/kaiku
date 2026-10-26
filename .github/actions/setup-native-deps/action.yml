@@ -34,7 +34,17 @@ runs:
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        vcpkg install libvpx:x64-windows-static-md
+        # vcpkg downloads its build tools (meson, …) from GitHub; retry on
+        # transient 5xx and fail the step if libvpx is still missing, instead
+        # of failing later in bindgen with "vpx/vp8.h not found".
+        for ($i = 1; $i -le 3; $i++) {
+          vcpkg install libvpx:x64-windows-static-md
+          if ($LASTEXITCODE -eq 0) { break }
+          Write-Host "vcpkg install failed (attempt $i), retrying in $(30 * $i)s"
+          Start-Sleep -Seconds (30 * $i)
+        }
+        $header = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static-md\include\vpx\vp8.h"
+        if (-not (Test-Path $header)) { throw "libvpx not installed: $header missing" }
         # pkgconfiglite ships from SourceForge with no checksum; Chocolatey
         # now blocks empty checksums on non-secure sources by default.
         choco install -y pkgconfiglite --allow-empty-checksums

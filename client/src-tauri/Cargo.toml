@@ -67,12 +67,11 @@ rustls.workspace = true
 url = "2"
 
 # Secure Storage
-# keyring 4 split its public API: this crate handles credential-store
-# selection, while `keyring-core` exposes the `Entry`/`Error` types we use
-# directly. Both need to be deps. App startup must call one of keyring's
-# `use_*_store` functions (typically `use_native_store(false)`) before any
-# `Entry::new` — see lib.rs setup callback.
-keyring = "4"
+# We select the OS credential store ourselves (see src/keystore.rs) instead of
+# depending on the `keyring` meta-crate: keyring 4 unconditionally pulls
+# `db-keystore` -> turso -> tantivy/zstd (RUSTSEC-2026-0391/-0398/-0403/-0410)
+# for a sqlite store we never use. The per-OS store crates below are exactly
+# the ones `keyring::use_native_store(true)` selected, with the same features.
 keyring-core = "1"
 # rusqlite ≥ 0.33 requires sqlx ≥ 0.9 in the workspace: both link the native
 # sqlite3 (cargo `links` key) via libsqlite3-sys, and sqlx 0.8's sqlx-sqlite
@@ -138,8 +137,10 @@ sentry = { version = "0.48", features = ["tracing", "backtrace", "contexts", "pa
 sentry-tracing = "0.48"
 
 # Linux tray-host detection (src/tray.rs, MIT). Already in the tree via
-# keyring/notify-rust with these features, so no new crates are built.
+# notify-rust with these features, so no new crates are built.
 [target.'cfg(target_os = "linux")'.dependencies]
+# Secret Service (libsecret/D-Bus); kernel keyutils evicts on session end.
+dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", "vendored"] }
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
 
 [dev-dependencies]
@@ -149,9 +150,22 @@ wiremock = "0.6"
 # Paused clock for the WebSocket watchdog test
 tokio = { workspace = true, features = ["test-util"] }
 
+# Layout checks for the PipeWire FFI bindings scap uses (capture/
+# pipewire_ffi_tests.rs). Same crates scap already pulls in via pipewire 0.8
+# (vendored under third_party/, see workspace [patch.crates-io]).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libspa-sys = "0.8"
+pipewire-sys = "0.8"
+
 [lints]
 workspace = true
 
 [lib]
 name = "vc_client"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain", "protected"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"

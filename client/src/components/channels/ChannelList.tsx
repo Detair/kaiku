@@ -14,6 +14,7 @@
  * - Nesting categories (2-level max)
  */
 
+import { isTextLikeChannelType } from "@/lib/channelTypes";
 import {
   Component,
   For,
@@ -159,7 +160,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
   const categoryHasUnread = (categoryId: string): boolean => {
     const channels = getChannelsForCategory(categoryId);
     return channels.some(
-      (c) => c.channel_type === "text" && c.unread_count > 0,
+      (c) => isTextLikeChannelType(c.channel_type) && c.unread_count > 0,
     );
   };
 

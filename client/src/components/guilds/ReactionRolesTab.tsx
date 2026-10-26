@@ -14,6 +14,7 @@ import {
 } from "@/lib/tauri";
 import { loadGuildRoles, getGuildRoles } from "@/stores/permissions";
 import { textChannels } from "@/stores/channels";
+import { messageHasCode } from "@/lib/errorCode";
 import type { GuildRole } from "@/lib/types";
 
 interface ReactionRolesTabProps {
@@ -75,7 +76,7 @@ const ReactionRolesTab: Component<ReactionRolesTabProps> = (props) => {
   const parseError = (err: unknown): string => {
     const msg = err instanceof Error ? err.message : String(err);
     for (const [code, friendly] of Object.entries(ERROR_MESSAGES)) {
-      if (msg.includes(code)) return friendly;
+      if (messageHasCode(msg, code)) return friendly;
     }
     return msg || "Failed to create binding.";
   };

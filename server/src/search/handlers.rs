@@ -98,51 +98,19 @@ pub async fn search_all(
         .fetch_all(&state.db)
         .await?;
 
-        // 2b. Get permission context once per guild (N queries, not N*M)
-        let mut guild_perm_map: std::collections::HashMap<
-            Uuid,
-            Option<permissions::MemberPermissionContext>,
-        > = std::collections::HashMap::new();
-        for &guild_id in &guild_ids {
-            let ctx = permissions::get_member_permission_context(&state.db, guild_id, auth.id)
-                .await
-                .ok()
-                .flatten();
-            guild_perm_map.insert(guild_id, ctx);
-        }
-
-        // 2c. Filter channels by VIEW_CHANNEL permission
-        for channel in &guild_channels {
-            let guild_id = match channel.guild_id {
-                Some(gid) => gid,
-                None => continue,
-            };
-
-            let ctx = match guild_perm_map.get(&guild_id) {
-                Some(Some(ctx)) => ctx,
-                _ => continue,
-            };
-
-            // Guild owners have full access
-            if ctx.is_owner {
-                all_channel_ids.push(channel.id);
-                channel_guild_map.insert(channel.id, guild_id);
-                continue;
-            }
-
-            // Check VIEW_CHANNEL with channel overrides
-            let overrides = db::get_channel_overrides(&state.db, channel.id).await?;
-            let perms = permissions::compute_guild_permissions(
-                auth.id,
-                ctx.guild_owner_id,
-                ctx.everyone_permissions,
-                &ctx.member_roles,
-                Some(&overrides),
-            );
-
-            if perms.has(permissions::GuildPermissions::VIEW_CHANNEL) {
-                all_channel_ids.push(channel.id);
-                channel_guild_map.insert(channel.id, guild_id);
+        // 2b. Keep the channels the user may view: one batched resolution with
+        // the same rules as `require_channel_access`.
+        let candidates: Vec<(Uuid, Uuid)> = guild_channels
+            .iter()
+            .filter_map(|c| c.guild_id.map(|g| (g, c.id)))
+            .collect();
+        let viewable =
+            permissions::filter_viewable_channels_in_guilds(&state.db, auth.id, &candidates)
+                .await?;
+        for (guild_id, channel_id) in candidates {
+            if viewable.contains(&channel_id) {
+                all_channel_ids.push(channel_id);
+                channel_guild_map.insert(channel_id, guild_id);
             }
         }
     }

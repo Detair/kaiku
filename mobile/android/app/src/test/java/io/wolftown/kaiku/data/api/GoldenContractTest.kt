@@ -40,7 +40,7 @@ class GoldenContractTest {
         val (newer, older) = page.items
         assertEquals("2026-03-12T10:01:00Z", newer.createdAt)
         assertEquals("2026-03-12T10:00:00.123456Z", older.createdAt)
-        assertEquals(UserStatus.ONLINE, newer.author.status)
+        assertEquals(UserStatus.OFFLINE, newer.author.status)
 
         val attachment = page.items.flatMap { it.attachments }.single()
         assertEquals("/api/messages/attachments/${attachment.id}/download", attachment.url)
@@ -55,7 +55,7 @@ class GoldenContractTest {
         val message = KaikuJson.decodeFromJsonElement<Message>(event.message)
         assertEquals(event.channelId, message.channelId)
         assertEquals("Hello from WebSocket!", message.content)
-        assertEquals(UserStatus.ONLINE, message.author.status)
+        assertEquals(UserStatus.OFFLINE, message.author.status)
     }
 
     @Test

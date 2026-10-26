@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Admins can add a new account to servers while creating it.
 - API: `GET /api/me/unread` now includes `last_read_message_id` for every channel and DM entry (`null` if it was never read), so apps can notify only for messages newer than the read position.
 - **Mobile push notifications (server side)**: the server can wake the Android app through Firebase Cloud Messaging (when an FCM service account is configured) or UnifiedPush. Phones are now also notified about @mentions, not only DMs (photo and file DMs already pushed before). Bursts of messages are coalesced into one notification, and reading a conversation on another device clears its notification. Wake signals carry only a type, channel and count, never message text, so end-to-end encryption is preserved. Blocked users never trigger a notification, and blocks are enforced for DMs even when cached data has expired. Endpoints are registered per device under `/api/me/push-subscriptions`, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
+- Phones are notified about incoming and missed calls (server side).
 - Android: you can send photos and videos from your phone.
 - Android: new messages show as notifications with the sender and text, grouped per conversation; tapping one opens the conversation, and reading it anywhere clears the notification.
 - Android: phones without Google services can get notifications through UnifiedPush (for example ntfy), and Settings shows whether notifications are working.
@@ -60,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- The "invisible" status is no longer offered.
+- API error codes are now consistently written in upper case (for example `VALIDATION_ERROR`).
 - Clearer message when an authenticator code was already used: signing in and confirming admin actions now say to wait for the next code and try again.
 - Unlocking admin actions asks you to confirm with your password or your sign-in provider, and creating new backup codes asks for an authenticator code. New accounts can be added to servers right away, and people land in their server after signing in.
 - Android: sign-in shows a clear message when the server has turned a feature off.
@@ -86,6 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- In server member lists, someone you have blocked or who has blocked you now always appears offline, without a last-seen time.
+- Message lists no longer reveal whether the author is currently online.
+- The desktop app no longer bundles an unused embedded database and compression stack that came in with the credential-storage library and had newly published memory-safety advisories; stored sign-in data is unaffected and still lives in the system keychain.
 - An authenticator code can only be used once when signing in; entering the same code again is refused. If the check cannot be completed, sign-in is refused with a temporary error.
 - Updated the Markdown sanitizer, diagram renderer and UI runtime libraries to versions without known vulnerabilities; the frontend dependency audit now blocks CI on production advisories.
 - The default role can no longer be given webhook, post, event or announcement management rights, including through channel permission overrides.
@@ -127,7 +133,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Android: a notification no longer reappears for a message you already read on another device.
+- Channels no longer stay marked as unread after replies in a thread, and notifications skip messages you have already read.
+- Direct-message calls show why they ended, and calling someone you've blocked says so.
+- Unread badges no longer count your own messages, thread replies or deleted messages, and never include channels you can't open.
+- Channels visible only to certain roles now work as expected.
+- A channel no longer stays marked unread for good after "mark all as read" picked a thread reply as the last read message.
 - Running a bot slash command no longer leaves a connection to the server's cache open each time, which could exhaust connections on busy servers.
+- Calling someone again right after a missed or dropped call works, and calls ring even when the other person has the conversation closed.
 - Desktop voice works with headsets that don't offer 48 kHz mono, tells you when the microphone stops working, and can switch microphones during a call.
 - Sharing a small window or a webcam with an unusual resolution no longer crashes the desktop app.
 - Closing the window during a voice call tells you Kaiku is still connected and lets you leave from the tray; the window can always be reopened.

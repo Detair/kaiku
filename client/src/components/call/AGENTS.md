@@ -30,7 +30,7 @@ Call status banner shown at top of DM conversations.
 
 **Error Handling:**
 
-- Catches 404 (call not found) and 409 (conflict) gracefully
+- Catches 404 (call not found) gracefully; a 409 `CALL_CONFLICT` on start returns to idle so the other side's incoming call (glare) can ring
 - Resets local state on error
 - Logs errors to console for debugging
 

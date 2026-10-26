@@ -12,6 +12,9 @@
 //!   changes nothing else: the window and a pending trailing push stay, so a message arriving
 //!   around a read is still pushed and alternating message/read does not produce repeated immediate
 //!   wakes.
+//! - Call `ringing` wakes have their own budget ([`Coalescer::admit_ringing`],
+//!   [`CALL_RINGING_MAX_PER_MINUTE`] per callee): never coalesced and never counted against the
+//!   message cap. `ended` wakes are not limited (they follow a ring that went out).
 //! - A flush timer that has not run a full [`WINDOW`] after its deadline is treated as lost, so the
 //!   channel is not blocked forever.
 //!
@@ -42,6 +45,8 @@ use uuid::Uuid;
 pub const WINDOW: Duration = Duration::from_secs(10);
 /// Maximum pushes (leading + trailing) per user per minute.
 pub const USER_MAX_PER_MINUTE: usize = 30;
+/// Maximum call `ringing` wakes per callee per minute (separate budget).
+pub const CALL_RINGING_MAX_PER_MINUTE: usize = 10;
 /// A `read` signal follows only a wake sent within this period.
 pub const READ_GATE: Duration = Duration::from_hours(24);
 /// Entries without live state are dropped after this idle period.
@@ -97,6 +102,9 @@ struct State {
     /// Push instants per user within the last [`RATE_PERIOD`] (at most
     /// [`USER_MAX_PER_MINUTE`] each).
     rate: HashMap<Uuid, VecDeque<Instant>>,
+    /// Call `ringing` instants per callee within the last [`RATE_PERIOD`] (at
+    /// most [`CALL_RINGING_MAX_PER_MINUTE`] each).
+    ringing: HashMap<Uuid, VecDeque<Instant>>,
     admits: u64,
     /// Hard cap on `entries` ([`MAX_ENTRIES`]; smaller in tests).
     max_entries: usize,
@@ -110,6 +118,7 @@ impl State {
         Self {
             entries: HashMap::new(),
             rate: HashMap::new(),
+            ringing: HashMap::new(),
             admits: 0,
             max_entries,
             next_evict: None,
@@ -118,18 +127,7 @@ impl State {
 
     /// Record one push for `user` if the cap allows it.
     fn try_consume(&mut self, user: Uuid, now: Instant) -> bool {
-        let sent = self.rate.entry(user).or_default();
-        while sent
-            .front()
-            .is_some_and(|&t| now.saturating_duration_since(t) >= RATE_PERIOD)
-        {
-            sent.pop_front();
-        }
-        if sent.len() >= USER_MAX_PER_MINUTE {
-            return false;
-        }
-        sent.push_back(now);
-        true
+        consume(&mut self.rate, user, now, USER_MAX_PER_MINUTE)
     }
 
     /// Periodic sweep: drop idle entries without a live read gate.
@@ -140,10 +138,12 @@ impl State {
                 .is_some_and(|t| now.saturating_duration_since(t) < READ_GATE);
             !is_idle(e, now) || gate_live
         });
-        self.rate.retain(|_, sent| {
+        let recent = |sent: &mut VecDeque<Instant>| {
             sent.back()
                 .is_some_and(|&t| now.saturating_duration_since(t) < RATE_PERIOD)
-        });
+        };
+        self.rate.retain(|_, sent| recent(sent));
+        self.ringing.retain(|_, sent| recent(sent));
     }
 
     /// Make room for one new entry: at the hard cap, evict every idle entry,
@@ -160,6 +160,28 @@ impl State {
         self.next_evict = (!room).then(|| now + EVICT_RETRY);
         room
     }
+}
+
+/// Record one send for `user` in `budget` if fewer than `cap` happened within
+/// the last [`RATE_PERIOD`].
+fn consume(
+    budget: &mut HashMap<Uuid, VecDeque<Instant>>,
+    user: Uuid,
+    now: Instant,
+    cap: usize,
+) -> bool {
+    let sent = budget.entry(user).or_default();
+    while sent
+        .front()
+        .is_some_and(|&t| now.saturating_duration_since(t) >= RATE_PERIOD)
+    {
+        sent.pop_front();
+    }
+    if sent.len() >= cap {
+        return false;
+    }
+    sent.push_back(now);
+    true
 }
 
 /// Idle for [`IDLE_TTL`]. A flush timer fires within [`WINDOW`] of the last
@@ -261,6 +283,29 @@ impl Coalescer {
         }
         // Without room: push uncoalesced and keep no state (no read gate).
         Admit::SendNow
+    }
+
+    /// One call `ringing` wake for `user`: no window, no read gate, its own
+    /// budget of [`CALL_RINGING_MAX_PER_MINUTE`] (the message cap is not
+    /// touched). Returns whether it may be sent.
+    pub fn admit_ringing(&self, user: Uuid, now: Instant) -> bool {
+        let mut st = self.lock();
+        st.admits = st.admits.wrapping_add(1);
+        if st.admits.is_multiple_of(SWEEP_EVERY) {
+            st.sweep(now);
+        }
+        consume(&mut st.ringing, user, now, CALL_RINGING_MAX_PER_MINUTE)
+    }
+
+    /// Give back a ringing slot admitted at `at` that was not used (the ring
+    /// was suppressed). A slot that is not there is ignored.
+    pub fn refund_ringing(&self, user: Uuid, at: Instant) {
+        let mut st = self.lock();
+        if let Some(sent) = st.ringing.get_mut(&user) {
+            if let Some(pos) = sent.iter().rposition(|&t| t == at) {
+                sent.remove(pos);
+            }
+        }
     }
 
     /// The trailing flush for (`user`, `channel`): the pending count, if any and within the
@@ -458,6 +503,50 @@ mod tests {
             .filter(|&&o| c.admit(u, o, t0 + WINDOW) == Admit::SendNow)
             .count();
         assert_eq!(sent, USER_MAX_PER_MINUTE - 2);
+    }
+
+    #[test]
+    fn ringing_budget_is_separate_from_message_budget() {
+        let (c, u, ch, t0) = ids();
+        // A message wake opens the window for (u, ch) ...
+        assert_eq!(c.admit(u, ch, t0), Admit::SendNow);
+        // ... yet ringing wakes go out immediately, up to their own cap.
+        for i in 0..CALL_RINGING_MAX_PER_MINUTE {
+            assert!(c.admit_ringing(u, t0 + ms(1)), "ringing {i}");
+        }
+        assert!(!c.admit_ringing(u, t0 + ms(2)), "over the ringing cap");
+        // The message budget is untouched: 29 more leading pushes fit.
+        for i in 1..USER_MAX_PER_MINUTE {
+            assert_eq!(
+                c.admit(u, Uuid::now_v7(), t0 + ms(3)),
+                Admit::SendNow,
+                "msg {i}"
+            );
+        }
+        assert_eq!(c.admit(u, Uuid::now_v7(), t0 + ms(4)), Admit::Dropped);
+        // An exhausted message budget does not block ringing for another user,
+        // nor for this one after a minute.
+        assert!(c.admit_ringing(Uuid::now_v7(), t0 + ms(5)));
+        assert!(c.admit_ringing(u, t0 + Duration::from_secs(61)));
+        // Ringing creates no (user, channel) entry.
+        assert_eq!(c.entry_count(), USER_MAX_PER_MINUTE);
+    }
+
+    #[test]
+    fn refunded_ringing_frees_its_slot() {
+        let (c, u, _, t0) = ids();
+        for _ in 0..CALL_RINGING_MAX_PER_MINUTE {
+            assert!(c.admit_ringing(u, t0));
+        }
+        assert!(!c.admit_ringing(u, t0 + ms(1)));
+        c.refund_ringing(u, t0);
+        assert!(
+            c.admit_ringing(u, t0 + ms(2)),
+            "the refunded slot is free again"
+        );
+        assert!(!c.admit_ringing(u, t0 + ms(3)));
+        // Refunding something never admitted is a no-op.
+        c.refund_ringing(Uuid::now_v7(), t0);
     }
 
     #[test]

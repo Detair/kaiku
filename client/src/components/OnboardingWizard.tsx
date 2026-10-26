@@ -21,6 +21,7 @@ import {
   lazy,
   Suspense,
 } from "solid-js";
+import { messageHasCode } from "@/lib/errorCode";
 import {
   Check,
   ChevronRight,
@@ -203,7 +204,7 @@ const OnboardingDialog: Component = () => {
     } catch (err: unknown) {
       console.error("Failed to load discovery guilds:", err);
       const isDisabled =
-        err instanceof Error && err.message.includes("DISCOVERY_DISABLED");
+        err instanceof Error && messageHasCode(err.message, "DISCOVERY_DISABLED");
       setDiscoveryPermanent(isDisabled);
       setDiscoveryError(true);
     } finally {

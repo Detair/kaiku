@@ -20,6 +20,9 @@ COPY shared/vc-crypto/Cargo.toml shared/vc-crypto/Cargo.toml
 COPY server/Cargo.toml server/Cargo.toml
 COPY client/src-tauri/Cargo.toml client/src-tauri/Cargo.toml
 COPY client/src-tauri/vp8-decoder/Cargo.toml client/src-tauri/vp8-decoder/Cargo.toml
+# Vendored crates behind the workspace [patch.crates-io]: Cargo needs their
+# manifests for every workspace build (vc-server too). Small, so copied whole.
+COPY third_party/ third_party/
 
 # Create dummy source files for dependency caching
 RUN mkdir -p \
