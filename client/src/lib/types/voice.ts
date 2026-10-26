@@ -38,6 +38,8 @@ export type CallEndReason =
 
 export interface CallStateResponse {
   channel_id: string;
+  /** Server call id (top level); nil UUID from older servers means unknown. */
+  call_id?: string;
   status: "ringing" | "active" | "ended";
   started_by?: string;
   started_at?: string;

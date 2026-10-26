@@ -4,6 +4,7 @@
  * Manages WebSocket connection and routes events to appropriate stores.
  */
 
+import { isTextLikeChannelType } from "@/lib/channelTypes";
 import { createStore } from "solid-js/store";
 import { codeIs } from "@/lib/errorCode";
 import * as tauri from "@/lib/tauri";
@@ -25,11 +26,11 @@ import {
 import { handlePreferencesUpdated } from "../preferences";
 import {
   receiveIncomingCall,
-  callConnected,
+  connectOnFirstJoin,
   callEndedExternally,
+  setChannelCallId,
   participantJoined,
   participantLeft,
-  callState,
   type EndReason,
 } from "../call";
 import {
@@ -370,9 +371,11 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
         const isActiveDM =
           event.channel_id === dmsState.selectedDMId && !dmsState.isShowingFriends;
 
-        if (!isActiveGuildChannel && !isActiveDM) {
+        // Thread replies never count toward channel unread (server rule).
+        const isThreadReply = event.message.parent_id != null;
+        if (!isThreadReply && !isActiveGuildChannel && !isActiveDM) {
           const channel = getChannel(event.channel_id);
-          if (channel && channel.guild_id && channel.channel_type === "text") {
+          if (channel && channel.guild_id && isTextLikeChannelType(channel.channel_type)) {
             incrementUnreadCount(event.channel_id);
           }
         // Increment guild-level unread for non-active guilds
@@ -384,7 +387,9 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
         window.dispatchEvent(new CustomEvent("unread-update"));
         }
         // Always update last_message_id for the channel, even if it's the active channel
-        updateChannelLastMessageId(event.channel_id, event.message.id);
+        if (!isThreadReply) {
+          updateChannelLastMessageId(event.channel_id, event.message.id);
+        }
       }
       break;
 
@@ -546,12 +551,15 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
         event.channel_id,
         event.initiator,
         event.initiator_name,
+        event.call_id,
       );
       break;
     }
 
     case "call_started":
       console.log("[WebSocket] Call started in channel:", event.channel_id);
+      // Initiator's own sessions (other devices) learn the call_id here.
+      setChannelCallId(event.channel_id, event.call_id);
       // Call started means the initiator is now connected
       // Other participants will receive incoming_call
       break;
@@ -562,24 +570,21 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
         event.channel_id,
         event.reason as EndReason,
         event.duration_secs ?? undefined,
+        event.call_id,
       );
       break;
 
     case "call_participant_joined":
       console.log("[WebSocket] Participant joined call:", event.username);
-      participantJoined(event.channel_id, event.user_id);
-      // Only transition to connected on the first join (not on subsequent participants)
-      {
-        const status = callState.currentCall.status;
-        if (status === "outgoing_ringing" || status === "connecting") {
-          callConnected(event.channel_id, [event.user_id]);
-        }
-      }
+      participantJoined(event.channel_id, event.user_id, event.call_id);
+      // Only transition to connected on the first join (not on subsequent
+      // participants) and only for the call we are actually in.
+      connectOnFirstJoin(event.channel_id, event.user_id, event.call_id);
       break;
 
     case "call_participant_left":
       console.log("[WebSocket] Participant left call:", event.user_id);
-      participantLeft(event.channel_id, event.user_id);
+      participantLeft(event.channel_id, event.user_id, event.call_id);
       break;
 
     case "call_declined":

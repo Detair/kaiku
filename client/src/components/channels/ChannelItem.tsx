@@ -9,6 +9,7 @@
  * - Smooth hover transitions
  */
 
+import { isTextLikeChannelType } from "@/lib/channelTypes";
 import { Component, Show, createSignal, createMemo, For } from "solid-js";
 import {
   Hash,
@@ -93,7 +94,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
     const items: ContextMenuEntry[] = [];
 
     // Mark as Read (only for text channels with unreads)
-    if (ch.channel_type === "text" && isChannelUnread(ch.id)) {
+    if (isTextLikeChannelType(ch.channel_type) && isChannelUnread(ch.id)) {
       items.push({
         label: t("channels.item.menu.markRead"),
         icon: CheckCheck,
@@ -233,7 +234,7 @@ const ChannelItem: Component<ChannelItemProps> = (props) => {
         </span>
 
         {/* Unread indicator for text channels */}
-        <Show when={props.channel.channel_type === "text" && isChannelUnread(props.channel.id)}>
+        <Show when={isTextLikeChannelType(props.channel.channel_type) && isChannelUnread(props.channel.id)}>
           <span class="ml-auto w-2 h-2 rounded-full bg-accent-primary flex-shrink-0" />
         </Show>
 

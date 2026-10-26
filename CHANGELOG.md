@@ -85,6 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- In server member lists, someone you have blocked or who has blocked you now always appears offline, without a last-seen time.
 - Message lists no longer reveal whether the author is currently online.
 - The desktop app no longer bundles an unused embedded database and compression stack that came in with the credential-storage library and had newly published memory-safety advisories; stored sign-in data is unaffected and still lives in the system keychain.
 - An authenticator code can only be used once when signing in; entering the same code again is refused. If the check cannot be completed, sign-in is refused with a temporary error.
@@ -130,6 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- Channels no longer stay marked as unread after replies in a thread, and notifications skip messages you have already read.
+- Direct-message calls show why they ended, and calling someone you've blocked says so.
 - Unread badges no longer count your own messages, thread replies or deleted messages, and never include channels you can't open.
 - A channel no longer stays marked unread for good after "mark all as read" picked a thread reply as the last read message.
 - Running a bot slash command no longer leaves a connection to the server's cache open each time, which could exhaust connections on busy servers.

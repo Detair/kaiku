@@ -109,7 +109,8 @@ pub async fn list_members(
     let mut members = core_q::list_guild_members(&state.db, guild_id).await?;
 
     // Online means "has a live socket" (per device, see presence::connections).
-    // Users blocked in either direction show `offline`.
+    // Users blocked in either direction see each other as offline, with no
+    // last-seen time.
     let ids: Vec<Uuid> = members.iter().map(|m| m.user_id).collect();
     let live = crate::presence::connections::live_users_or_log(&state.redis, &ids).await;
     let blocked: Vec<(Uuid,)> = sqlx::query_as(
@@ -122,12 +123,14 @@ pub async fn list_members(
     .await?;
     let blocked: std::collections::HashSet<Uuid> = blocked.into_iter().map(|(id,)| id).collect();
     for member in &mut members {
-        let is_live = live.as_ref().map(|l| l.contains(&member.user_id));
-        member.status = if blocked.contains(&member.user_id) {
-            "offline".to_string()
+        if blocked.contains(&member.user_id) {
+            member.status = "offline".to_string();
+            member.last_seen_at = None;
         } else {
-            crate::presence::connections::effective_status(&member.status, is_live).to_string()
-        };
+            let is_live = live.as_ref().map(|l| l.contains(&member.user_id));
+            member.status =
+                crate::presence::connections::effective_status(&member.status, is_live).to_string();
+        }
     }
 
     Ok(Json(members))
