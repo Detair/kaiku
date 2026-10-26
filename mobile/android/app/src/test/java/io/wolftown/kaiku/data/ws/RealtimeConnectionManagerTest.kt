@@ -552,6 +552,17 @@ class RealtimeConnectionManagerTest {
     }
 
     @Test
+    fun `lowercase password change required error logs out`() = runManagerTest { h ->
+        connected(h)
+
+        h.socket.emit(ServerEvent.Error("password_change_required", "server text"))
+        runCurrent()
+
+        assertEquals(AuthSession.LoggedOut, h.authState.session.value)
+        assertEquals(RealtimeStatus.Idle, h.manager.status.value)
+    }
+
+    @Test
     fun `stale password change refusal keeps a newer login`() = runManagerTest { h ->
         connected(h)
         // A newer login landed (new generation and tokens) before the refusal is handled.

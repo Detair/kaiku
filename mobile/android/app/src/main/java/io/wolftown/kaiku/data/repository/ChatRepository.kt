@@ -529,7 +529,7 @@ class ChatRepository internal constructor(
             Result.failure(
                 when {
                     tooLarge -> AttachmentException.TooLarge()
-                    status == HttpStatusCode.UnsupportedMediaType || (e as? ApiException)?.code == "INVALID_MIME_TYPE" ->
+                    status == HttpStatusCode.UnsupportedMediaType || (e as? ApiException)?.normalizedCode == "INVALID_MIME_TYPE" ->
                         AttachmentException.UnsupportedType()
                     else -> AttachmentException.Failed(e)
                 }

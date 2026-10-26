@@ -17,6 +17,16 @@ class AuthErrorMapperTest {
     }
 
     @Test
+    fun `lowercase codes map like uppercase ones`() {
+        val credentials = ApiException(HttpStatusCode.Unauthorized, "server text", "invalid_credentials")
+        val mfa = ApiException(HttpStatusCode.Unauthorized, "server text", "invalid_mfa")
+        val closed = ApiException(HttpStatusCode.Forbidden, "server text", "registration_disabled")
+        assertEquals(R.string.auth_login_invalid_credentials, AuthErrorMapper.login(credentials))
+        assertEquals(R.string.auth_login_mfa_invalid, AuthErrorMapper.login(mfa))
+        assertEquals(R.string.auth_register_closed, AuthErrorMapper.register(closed))
+    }
+
+    @Test
     fun `401 without code maps to invalid credentials`() {
         val e = ApiException(HttpStatusCode.Unauthorized, "server text")
         assertEquals(R.string.auth_login_invalid_credentials, AuthErrorMapper.login(e))

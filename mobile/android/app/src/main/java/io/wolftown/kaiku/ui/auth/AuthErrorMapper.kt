@@ -17,8 +17,8 @@ object AuthErrorMapper {
     fun login(e: Throwable): Int {
         if (e is ApiException) {
             when {
-                e.code == "INVALID_MFA" -> return R.string.auth_login_mfa_invalid
-                e.code == "INVALID_CREDENTIALS" || e.status == HttpStatusCode.Unauthorized ->
+                e.normalizedCode == "INVALID_MFA" -> return R.string.auth_login_mfa_invalid
+                e.normalizedCode == "INVALID_CREDENTIALS" || e.status == HttpStatusCode.Unauthorized ->
                     return R.string.auth_login_invalid_credentials
             }
         }
@@ -28,7 +28,7 @@ object AuthErrorMapper {
     @StringRes
     fun register(e: Throwable): Int {
         if (e is ApiException) {
-            when (e.code) {
+            when (e.normalizedCode) {
                 "USER_EXISTS" -> return R.string.auth_register_username_taken
                 "EMAIL_TAKEN" -> return R.string.auth_register_email_taken
                 "REGISTRATION_DISABLED" -> return R.string.auth_register_closed
