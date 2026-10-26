@@ -38,7 +38,7 @@
     <string name="auth_register_login_link">Already have an account? Log in</string>
     <string name="auth_register_username_taken">That username is already taken.</string>
     <string name="auth_register_email_taken">That email address is already in use.</string>
-    <string name="auth_register_closed">This server doesn\'t allow sign-ups. Ask the server admin for an account.</string>
+    <string name="auth_register_closed">Ask the person who runs this server to create an account for you.</string>
     <string name="auth_register_failed">Registration failed. Please try again.</string>
 
     <!-- QR sign-in -->
@@ -213,6 +213,10 @@
     <string name="notif_sent_photo">Sent a photo</string>
     <string name="notif_sent_file">Sent a file</string>
     <string name="notif_checking_messages">Checking for new messages</string>
+    <string name="notifications_call_incoming">%1$s is calling you – open Kaiku on the PC</string>
+    <string name="notifications_call_incoming_unknown">Someone is calling you – open Kaiku on the PC</string>
+    <string name="notifications_call_missed">Missed call from %1$s</string>
+    <string name="notifications_call_missed_unknown">Missed call</string>
     <string name="voice_participants_you">You</string>
     <string name="push_permission_rationale">So you don\'t miss messages from family, Kaiku needs permission to show notifications.</string>
     <string name="push_permission_continue">Continue</string>
