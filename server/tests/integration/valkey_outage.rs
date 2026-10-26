@@ -34,9 +34,10 @@ use super::helpers::{
     TestServer,
 };
 
-/// Upper bound for any request while Valkey hangs. Well above the 3 s default
-/// command timeout, well below "the server hangs".
-const HANG_GUARD: Duration = Duration::from_secs(10);
+/// Upper bound for any request while Valkey or the database hangs. Well above
+/// the 3 s default command timeout and the 5 s auth budget, well below "the
+/// server hangs", with headroom for loaded CI runners.
+const HANG_GUARD: Duration = Duration::from_secs(15);
 
 /// TCP proxy in front of the dev Valkey that can be frozen.
 struct ValkeyProxy {
@@ -357,14 +358,18 @@ async fn spawn_with_closed_db(pool: &PgPool) -> (TestServer, Config) {
         .await
         .expect("second pool");
     closed.close().await;
+    spawn_with_db(closed).await
+}
 
+/// A server on `db` with a working Valkey.
+async fn spawn_with_db(db: PgPool) -> (TestServer, Config) {
     let config = Config::default_for_test();
     let redis = db::create_redis_client(&config.redis_url)
         .await
         .expect("Valkey");
     let sfu = SfuServer::new(Arc::new(config.clone()), None).expect("SfuServer");
     let state = AppState::new(AppStateConfig {
-        db: closed,
+        db,
         redis,
         config: config.clone(),
         s3: None,
@@ -431,5 +436,110 @@ async fn websocket_header_auth_answers_503_when_db_fails(pool: PgPool) {
     assert_eq!(response.status(), 503);
     let body: serde_json::Value =
         serde_json::from_slice(response.body().as_deref().unwrap_or_default()).expect("JSON body");
+    assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
+}
+
+/// A database that accepts no further connection (every one is held, so the
+/// account lookup waits) must not hold the header-auth upgrade open: it
+/// answers the shared JSON 503 body after the lookup budget.
+#[sqlx::test]
+async fn websocket_header_auth_answers_503_when_db_stalls(pool: PgPool) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Error as WsError;
+
+    let stalled = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(60))
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .expect("single-connection pool");
+    let (server, config) = spawn_with_db(stalled.clone()).await;
+    let (user_id, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&config, user_id);
+    // Hold the only connection for the rest of the test.
+    let _held = stalled.acquire().await.expect("hold the connection");
+
+    let mut request = format!("ws://{}/ws", server.addr)
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!("access_token.{token}").parse().unwrap(),
+    );
+    let result = tokio::time::timeout(HANG_GUARD, tokio_tungstenite::connect_async(request))
+        .await
+        .expect("WebSocket header auth waited on a stalled database");
+
+    let Err(WsError::Http(response)) = result else {
+        panic!("expected an HTTP error response, got {result:?}");
+    };
+    assert_eq!(response.status(), 503);
+    let body: serde_json::Value =
+        serde_json::from_slice(response.body().as_deref().unwrap_or_default()).expect("JSON body");
+    assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
+}
+
+/// The sign-in code check records the accepted step in Valkey; when that
+/// fails the login answers 503 (fail closed) instead of letting the code in.
+#[sqlx::test]
+async fn login_with_mfa_fails_closed_with_503_when_valkey_hangs(pool: PgPool) {
+    use totp_rs::{Algorithm, Secret, TOTP};
+
+    let proxy = ValkeyProxy::spawn().await;
+    // No rate limiter: only the code replay store can fail here.
+    let (server, config) = spawn_via_proxy(pool.clone(), &proxy, None).await;
+
+    let username = format!(
+        "mfaout_{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..10]
+    );
+    let hash = vc_server::auth::hash_password("Correct-Horse-42").expect("hash");
+    let user = db::create_user(&pool, &username, "Mfa Outage", None, &hash)
+        .await
+        .expect("create user");
+    let secret_str = Secret::default().to_encoded().to_string();
+    let key = hex::decode(config.mfa_encryption_key.as_ref().expect("mfa key")).expect("hex");
+    let encrypted =
+        vc_server::auth::mfa_crypto::encrypt_mfa_secret(&secret_str, &key).expect("encrypt");
+    sqlx::query("UPDATE users SET mfa_secret = $1 WHERE id = $2")
+        .bind(&encrypted)
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("enable mfa");
+    let code = TOTP::new(
+        Algorithm::SHA1,
+        6,
+        1,
+        30,
+        Secret::Encoded(secret_str).to_bytes().expect("secret"),
+        Some("Kaiku".to_string()),
+        username.clone(),
+    )
+    .expect("totp")
+    .generate_current()
+    .expect("code");
+
+    proxy.freeze();
+
+    let started = Instant::now();
+    let response = tokio::time::timeout(
+        HANG_GUARD,
+        reqwest::Client::new()
+            .post(format!("{}/auth/login", server.url))
+            .json(&serde_json::json!({
+                "username": username,
+                "password": "Correct-Horse-42",
+                "mfa_code": code,
+            }))
+            .send(),
+    )
+    .await
+    .expect("login hung while Valkey was unavailable")
+    .expect("request failed");
+
+    assert!(started.elapsed() < HANG_GUARD);
+    assert_eq!(response.status(), 503);
+    let body: serde_json::Value = response.json().await.expect("JSON body");
     assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
 }

@@ -89,7 +89,7 @@ fun LoginScreen(
         OutlinedTextField(
             value = uiState.username,
             onValueChange = viewModel::onUsernameChanged,
-            label = { Text(stringResource(R.string.auth_username)) },
+            label = { Text(stringResource(R.string.common_username)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Text,
@@ -104,7 +104,7 @@ fun LoginScreen(
         OutlinedTextField(
             value = uiState.password,
             onValueChange = viewModel::onPasswordChanged,
-            label = { Text(stringResource(R.string.auth_password)) },
+            label = { Text(stringResource(R.string.auth_login_password)) },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(
@@ -126,7 +126,7 @@ fun LoginScreen(
             OutlinedTextField(
                 value = uiState.mfaCode,
                 onValueChange = viewModel::onMfaCodeChanged,
-                label = { Text(stringResource(R.string.auth_mfa_code)) },
+                label = { Text(stringResource(R.string.auth_login_mfa_code)) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Number,
@@ -140,7 +140,7 @@ fun LoginScreen(
             )
         }
 
-        uiState.error?.let { errorRes ->
+        uiState.errorRes?.let { errorRes ->
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(

@@ -14,7 +14,10 @@ use crate::ws::{broadcast_to_user, ServerEvent};
 
 /// Get aggregate unread counts for the authenticated user.
 ///
-/// Returns unread counts grouped by guild, plus DM unreads.
+/// Returns unread counts grouped by guild, plus DM unreads. Every channel entry
+/// also carries `last_read_message_id`, the user's server-side read cursor for
+/// that channel (`null` when it was never read), so a client can notify only for
+/// messages newer than the cursor.
 /// This is the primary endpoint for the Home unread dashboard.
 ///
 /// # Route
@@ -31,7 +34,7 @@ use crate::ws::{broadcast_to_user, ServerEvent};
     path = "/api/me/unread",
     tag = "unread",
     responses(
-        (status = 200, description = "Unread message aggregate"),
+        (status = 200, description = "Unread message aggregate; each channel entry has `unread_count` and `last_read_message_id` (the read cursor, `null` if never read)", body = db::UnreadAggregate),
     ),
     security(("bearer_auth" = [])),
 )]

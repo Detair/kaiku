@@ -6,9 +6,6 @@ import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
-import io.ktor.http.HttpStatusCode
-import io.wolftown.kaiku.R
-import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.ProbeResult
 import io.wolftown.kaiku.data.api.ServerProbe
 import io.wolftown.kaiku.data.local.TokenStorage
@@ -29,7 +26,7 @@ data class LoginUiState(
     val mfaCode: String = "",
     val isLoading: Boolean = false,
     /** `@StringRes` of the current error, or null. Server message text is never shown. */
-    @StringRes val error: Int? = null,
+    @StringRes val errorRes: Int? = null,
     val mfaRequired: Boolean = false,
     val loginSuccess: Boolean = false,
     /** C4: the account must choose its own password; the screen navigates to `change_password`. */
@@ -45,19 +42,10 @@ data class LoginUiState(
 ) {
     // Never print the password or MFA code (logs, crash reports).
     override fun toString(): String =
-        "LoginUiState(username=$username, isLoading=$isLoading, error=$error, " +
+        "LoginUiState(username=$username, isLoading=$isLoading, errorRes=$errorRes, " +
             "mfaRequired=$mfaRequired, loginSuccess=$loginSuccess, " +
             "passwordChangeRequired=$passwordChangeRequired, serverHost=$serverHost, " +
             "registrationOpen=$registrationOpen)"
-}
-
-/** Maps a login failure to user-facing copy by status / error code (never the server message). */
-@StringRes
-internal fun loginErrorRes(error: Throwable): Int = when {
-    error is ApiException && error.code == "INVALID_MFA" -> R.string.auth_mfa_invalid
-    error is ApiException && error.status == HttpStatusCode.Unauthorized ->
-        R.string.auth_invalid_credentials
-    else -> R.string.auth_login_failed
 }
 
 @HiltViewModel
@@ -101,7 +89,7 @@ class LoginViewModel @Inject constructor(
      * Handles the OIDC callback by extracting tokens and completing login.
      */
     private fun handleOidcCallback(uri: Uri) {
-        _uiState.update { it.copy(isLoading = true, error = null) }
+        _uiState.update { it.copy(isLoading = true, errorRes = null) }
 
         viewModelScope.launch {
             val result = oidcHandler.handleCallback(uri, authRepository)
@@ -112,9 +100,9 @@ class LoginViewModel @Inject constructor(
                         it.copy(isLoading = false, loginSuccess = true)
                     }
                 },
-                onFailure = { _ ->
+                onFailure = { exception ->
                     _uiState.update {
-                        it.copy(isLoading = false, error = R.string.auth_oidc_failed)
+                        it.copy(isLoading = false, errorRes = AuthErrorMapper.oidc(exception))
                     }
                 }
             )
@@ -176,7 +164,7 @@ class LoginViewModel @Inject constructor(
 
     fun onLoginClicked() {
         val state = _uiState.value
-        _uiState.update { it.copy(isLoading = true, error = null) }
+        _uiState.update { it.copy(isLoading = true, errorRes = null) }
 
         loginJob?.cancel()
         loginJob = viewModelScope.launch {
@@ -199,7 +187,7 @@ class LoginViewModel @Inject constructor(
                             it.copy(isLoading = false, password = "", passwordChangeRequired = true)
                         }
                         else -> _uiState.update {
-                            it.copy(isLoading = false, error = loginErrorRes(exception))
+                            it.copy(isLoading = false, errorRes = AuthErrorMapper.login(exception))
                         }
                     }
                 }
@@ -213,8 +201,8 @@ class LoginViewModel @Inject constructor(
     fun launchOidcLogin(context: Context, providerSlug: String) {
         try {
             oidcHandler.launchOidcLogin(context, providerSlug)
-        } catch (_: Exception) {
-            _uiState.update { it.copy(error = R.string.auth_oidc_failed) }
+        } catch (e: Exception) {
+            _uiState.update { it.copy(errorRes = AuthErrorMapper.oidc(e)) }
         }
     }
 
@@ -224,6 +212,6 @@ class LoginViewModel @Inject constructor(
     }
 
     fun clearError() {
-        _uiState.update { it.copy(error = null) }
+        _uiState.update { it.copy(errorRes = null) }
     }
 }

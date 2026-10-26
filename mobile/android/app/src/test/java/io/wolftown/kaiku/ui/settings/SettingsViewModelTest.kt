@@ -1,6 +1,9 @@
 package io.wolftown.kaiku.ui.settings
 
 import io.mockk.Runs
+import io.mockk.coEvery
+import io.wolftown.kaiku.R
+import io.wolftown.kaiku.domain.model.UserStatus
 import io.mockk.just
 import io.mockk.verify
 import io.mockk.every
@@ -141,5 +144,35 @@ class SettingsViewModelTest {
         assertEquals("org.example.other", picked)
         assertEquals("org.example.other", vm.notificationState.value.selectedDistributor)
         verify(exactly = 1) { registrar.refreshAsync() }
+    }
+
+    @Test
+    fun `load failure exposes a string resource`() {
+        val repo: AuthRepository = mockk()
+        coEvery { repo.getCurrentUser() } returns Result.failure(IllegalStateException("raw server text"))
+        val vm = SettingsViewModel(
+            authRepository = repo,
+            tokenStorage = mockk<TokenStorage>(relaxed = true),
+            pushRegistrar = registrar,
+            pushPlatform = platform,
+            pushPreferences = preferences,
+        )
+        assertEquals(R.string.settings_profile_load_failed, vm.error.value)
+    }
+
+    @Test
+    fun `an unexpected exception while loading also exposes the string resource`() {
+        val vm = viewModel() // unstubbed repository throws
+        assertEquals(R.string.settings_profile_load_failed, vm.error.value)
+    }
+
+    @Test
+    fun `status maps to a label resource for every enum value`() {
+        assertEquals(R.string.home_status_online, statusLabelRes(UserStatus.ONLINE))
+        assertEquals(R.string.home_status_idle, statusLabelRes(UserStatus.IDLE))
+        assertEquals(R.string.home_status_dnd, statusLabelRes(UserStatus.DND))
+        assertEquals(R.string.settings_status_offline, statusLabelRes(UserStatus.OFFLINE))
+        assertEquals(R.string.settings_status_unknown, statusLabelRes(UserStatus.UNKNOWN))
+        assertEquals(5, UserStatus.entries.size) // a new value needs a mapping above
     }
 }

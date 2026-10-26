@@ -458,6 +458,7 @@ fn android_golden_unread_aggregate() {
                 channel_id: CHANNEL_ID,
                 channel_name: "general".to_string(),
                 unread_count: 3,
+                last_read_message_id: Some(OLDER_MESSAGE_ID),
             }],
             total_unread: 3,
         }],
@@ -465,6 +466,7 @@ fn android_golden_unread_aggregate() {
             channel_id: DM_CHANNEL_ID,
             channel_name: String::new(),
             unread_count: 2,
+            last_read_message_id: None,
         }],
         total: 5,
     };

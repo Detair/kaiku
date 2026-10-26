@@ -57,7 +57,7 @@ class ChangePasswordViewModelTest {
         viewModel.onSubmit()
         advanceUntilIdle()
 
-        assertEquals(R.string.auth_password_too_short, viewModel.uiState.value.error)
+        assertEquals(R.string.auth_forced_change_length, viewModel.uiState.value.error)
         assertFalse(viewModel.uiState.value.done)
         coVerify(exactly = 0) { authRepository.completePasswordChange(any()) }
     }
@@ -69,7 +69,7 @@ class ChangePasswordViewModelTest {
         viewModel.onSubmit()
         advanceUntilIdle()
 
-        assertEquals(R.string.auth_password_too_short, viewModel.uiState.value.error)
+        assertEquals(R.string.auth_forced_change_length, viewModel.uiState.value.error)
         coVerify(exactly = 0) { authRepository.completePasswordChange(any()) }
     }
 
@@ -80,7 +80,7 @@ class ChangePasswordViewModelTest {
         viewModel.onSubmit()
         advanceUntilIdle()
 
-        assertEquals(R.string.auth_password_too_long, viewModel.uiState.value.error)
+        assertEquals(R.string.auth_forced_change_length, viewModel.uiState.value.error)
         coVerify(exactly = 0) { authRepository.completePasswordChange(any()) }
     }
 
@@ -91,7 +91,7 @@ class ChangePasswordViewModelTest {
         viewModel.onSubmit()
         advanceUntilIdle()
 
-        assertEquals(R.string.auth_password_mismatch, viewModel.uiState.value.error)
+        assertEquals(R.string.auth_forced_change_mismatch, viewModel.uiState.value.error)
         coVerify(exactly = 0) { authRepository.completePasswordChange(any()) }
     }
 
@@ -121,7 +121,7 @@ class ChangePasswordViewModelTest {
         viewModel.onSubmit()
         advanceUntilIdle()
 
-        assertEquals(R.string.auth_password_must_differ, viewModel.uiState.value.error)
+        assertEquals(R.string.auth_forced_change_same_as_temporary, viewModel.uiState.value.error)
         assertFalse(viewModel.uiState.value.done)
     }
 

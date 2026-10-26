@@ -1060,9 +1060,155 @@ mod postgres_tests {
         assert_eq!(result.guilds[0].channels.len(), 1);
         assert_eq!(result.guilds[0].channels[0].channel_id, channel.id);
         assert_eq!(result.guilds[0].channels[0].unread_count, 3);
+        assert_eq!(result.guilds[0].channels[0].last_read_message_id, None);
         assert_eq!(result.guilds[0].total_unread, 3);
         assert_eq!(result.total, 3);
         assert!(result.dms.is_empty());
+    }
+
+    /// The unread summary reports each channel's read cursor (`null` when the
+    /// channel was never read), for guild channels and DMs, without changing
+    /// the counts.
+    #[sqlx::test]
+    async fn test_get_unread_aggregate_reports_read_cursor(pool: PgPool) {
+        let reader = create_user(&pool, "cursorreader", "Cursor Reader", None, "hash")
+            .await
+            .expect("create reader");
+        let sender = create_user(&pool, "cursorsender", "Cursor Sender", None, "hash")
+            .await
+            .expect("create sender");
+
+        let guild_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, 'Cursor Guild', $2)")
+            .bind(guild_id)
+            .bind(reader.id)
+            .execute(&pool)
+            .await
+            .expect("create guild");
+        sqlx::query("INSERT INTO guild_members (guild_id, user_id) VALUES ($1, $2)")
+            .bind(guild_id)
+            .bind(reader.id)
+            .execute(&pool)
+            .await
+            .expect("join guild");
+
+        let mut channels = Vec::new();
+        for name in ["read-channel", "unread-channel"] {
+            let channel = create_channel(
+                &pool,
+                CreateChannelParams {
+                    name,
+                    channel_type: &ChannelType::Text,
+                    category_id: None,
+                    guild_id: Some(guild_id),
+                    topic: None,
+                    icon_url: None,
+                    user_limit: None,
+                },
+            )
+            .await
+            .expect("create channel");
+            channels.push(channel);
+        }
+
+        let dm_channel = create_channel(
+            &pool,
+            CreateChannelParams {
+                name: "cursor-dm",
+                channel_type: &ChannelType::Dm,
+                category_id: None,
+                guild_id: None,
+                topic: None,
+                icon_url: None,
+                user_limit: None,
+            },
+        )
+        .await
+        .expect("create dm channel");
+        for user in [reader.id, sender.id] {
+            sqlx::query("INSERT INTO dm_participants (channel_id, user_id) VALUES ($1, $2)")
+                .bind(dm_channel.id)
+                .bind(user)
+                .execute(&pool)
+                .await
+                .expect("add participant");
+        }
+
+        // Three messages per conversation; the reader has read only the first
+        // one in the first channel and in the DM.
+        let mut first_ids = std::collections::HashMap::new();
+        for channel_id in [channels[0].id, channels[1].id, dm_channel.id] {
+            for i in 1..=3 {
+                let msg = create_message(
+                    &pool,
+                    channel_id,
+                    sender.id,
+                    &format!("Message {i}"),
+                    false,
+                    None,
+                    None,
+                )
+                .await
+                .expect("create message");
+                if i == 1 {
+                    first_ids.insert(channel_id, msg.id);
+                }
+            }
+        }
+        sqlx::query(
+            "INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
+             VALUES ($1, $2, NOW(), $3)",
+        )
+        .bind(reader.id)
+        .bind(channels[0].id)
+        .bind(first_ids[&channels[0].id])
+        .execute(&pool)
+        .await
+        .expect("set guild read cursor");
+        sqlx::query(
+            "INSERT INTO dm_read_state (user_id, channel_id, last_read_at, last_read_message_id)
+             VALUES ($1, $2, NOW(), $3)",
+        )
+        .bind(reader.id)
+        .bind(dm_channel.id)
+        .bind(first_ids[&dm_channel.id])
+        .execute(&pool)
+        .await
+        .expect("set dm read cursor");
+
+        let result = get_unread_aggregate(&pool, reader.id)
+            .await
+            .expect("get_unread_aggregate");
+
+        assert_eq!(result.guilds.len(), 1);
+        let entry = |id| {
+            result.guilds[0]
+                .channels
+                .iter()
+                .find(|c| c.channel_id == id)
+                .expect("channel entry")
+        };
+        let read = entry(channels[0].id);
+        assert_eq!(read.last_read_message_id, Some(first_ids[&channels[0].id]));
+        assert_eq!(read.unread_count, 2, "counts are unchanged");
+        let never_read = entry(channels[1].id);
+        assert_eq!(never_read.last_read_message_id, None);
+        assert_eq!(never_read.unread_count, 3);
+
+        assert_eq!(result.dms.len(), 1);
+        assert_eq!(
+            result.dms[0].last_read_message_id,
+            Some(first_ids[&dm_channel.id])
+        );
+        assert_eq!(result.dms[0].unread_count, 2);
+
+        // On the wire the field is always present, null without a cursor.
+        let json = serde_json::to_value(never_read).expect("serialize");
+        assert!(json["last_read_message_id"].is_null());
+        assert!(json
+            .as_object()
+            .expect("object")
+            .contains_key("last_read_message_id"));
     }
 
     #[sqlx::test]

@@ -117,7 +117,7 @@ fun TextChannelScreen(
         else -> if (t.isDm) {
             stringResource(R.string.chat_message_placeholder_dm, t.text)
         } else {
-            stringResource(R.string.chat_message_placeholder_channel, t.text)
+            stringResource(R.string.chat_composer_placeholder, t.text)
         }
     }
 

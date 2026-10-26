@@ -2046,6 +2046,7 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
             g.name as guild_name,
             c.id as channel_id,
             c.name as channel_name,
+            crs.last_read_message_id as last_read_message_id,
             COUNT(m.id)::bigint as unread_count
         FROM guild_members gm
         INNER JOIN guilds g ON g.id = gm.guild_id
@@ -2058,7 +2059,7 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
                 OR m.created_at > crs.cursor_at
             )
         WHERE gm.user_id = $1
-        GROUP BY g.id, g.name, c.id, c.name
+        GROUP BY g.id, g.name, c.id, c.name, crs.last_read_message_id
         HAVING COUNT(m.id) > 0
         ORDER BY g.name, c.position
         ",
@@ -2080,6 +2081,7 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
         SELECT
             c.id as channel_id,
             c.name as channel_name,
+            crs.last_read_message_id as last_read_message_id,
             COUNT(m.id)::bigint as unread_count
         FROM dm_participants dp
         INNER JOIN channels c ON c.id = dp.channel_id
@@ -2092,7 +2094,7 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
                 OR m.created_at > crs.cursor_at
             )
         WHERE dp.user_id = $1 AND c.channel_type = 'dm'
-        GROUP BY c.id, c.name
+        GROUP BY c.id, c.name, crs.last_read_message_id
         HAVING COUNT(m.id) > 0
         ORDER BY c.name
         ",
@@ -2112,6 +2114,7 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
         let channel_id: Uuid = row.get("channel_id");
         let channel_name: String = row.get("channel_name");
         let unread_count: i64 = row.get("unread_count");
+        let last_read_message_id: Option<Uuid> = row.get("last_read_message_id");
 
         let guild_summary = guilds_map
             .entry(guild_id)
@@ -2126,6 +2129,7 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
             channel_id,
             channel_name,
             unread_count,
+            last_read_message_id,
         });
         guild_summary.total_unread += unread_count;
     }
@@ -2140,6 +2144,7 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
             channel_id: row.get("channel_id"),
             channel_name: row.get("channel_name"),
             unread_count: row.get("unread_count"),
+            last_read_message_id: row.get("last_read_message_id"),
         })
         .collect();
 
