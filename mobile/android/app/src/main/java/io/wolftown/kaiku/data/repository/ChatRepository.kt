@@ -113,6 +113,10 @@ class ChatRepository @Inject constructor(
 
     // -- Public API ------------------------------------------------------------
 
+    /** `created_at` of a message in the local cache, or null when it is not cached. Creates nothing. */
+    fun cachedCreatedAt(channelId: String, messageId: String): String? =
+        channelMessages[channelId]?.value?.firstOrNull { it.id == messageId }?.createdAt?.ifEmpty { null }
+
     fun getMessages(channelId: String): StateFlow<List<Message>> {
         return getOrCreateMessagesFlow(channelId).asStateFlow()
     }

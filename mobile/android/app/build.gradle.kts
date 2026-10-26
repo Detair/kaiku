@@ -9,6 +9,12 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// FCM is compiled in but stays off unless the build has a Firebase config:
+// without app/google-services.json no FirebaseApp exists and the app never picks FCM.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 val versionPropsFile = rootProject.file("version.properties")
 val versionProps = Properties().apply {
     if (versionPropsFile.exists()) versionPropsFile.inputStream().use { load(it) }
@@ -102,9 +108,21 @@ android {
     buildFeatures {
         compose = true
     }
+
+    lint {
+        lintConfig = file("lint.xml")
+        abortOnError = true
+        checkDependencies = false
+        // Print every issue to the CI log (the HTML report is not uploaded).
+        textReport = true
+        textOutput = file("stdout")
+    }
 }
 
 dependencies {
+    // Custom lint checks (build-time only, see mobile/android/lint-rules)
+    lintChecks(project(":lint-rules"))
+
     // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2025.01.01")
     implementation(composeBom)
@@ -134,6 +152,26 @@ dependencies {
     implementation("com.google.dagger:hilt-android:2.54")
     ksp("com.google.dagger:hilt-android-compiler:2.54")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
+
+    // WorkManager (push wake fetch) with Hilt workers
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("androidx.hilt:hilt-work:1.2.0")
+    ksp("androidx.hilt:hilt-compiler:1.2.0")
+
+    // Firebase Cloud Messaging (push transport; inactive without google-services.json)
+    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("com.google.firebase:firebase-messaging")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
+    // UnifiedPush connector (push transport for phones without Google services).
+    // 3.0.10 (Maven Central, 2025-06-12) is the newest 3.x built with Kotlin 2.0.x; 3.2+ need Kotlin 2.2/2.3
+    // metadata, newer than this project's Kotlin 2.1.0. Pulls in Tink (Apache-2.0) for Web Push decryption.
+    implementation("org.unifiedpush.android:connector:3.0.10") {
+        // Tink ships as `tink` (JVM) and `tink-android` with the same classes; security-crypto already
+        // brings tink-android, so the connector's `tink` is swapped for it (duplicate classes otherwise).
+        exclude(group = "com.google.crypto.tink", module = "tink")
+    }
+    // Single Tink for security-crypto (wants 1.8.0) and the connector (built against 1.17.0); released 2025-03-13.
+    implementation("com.google.crypto.tink:tink-android:1.17.0")
 
     // Ktor
     implementation("io.ktor:ktor-client-okhttp:3.1.0")

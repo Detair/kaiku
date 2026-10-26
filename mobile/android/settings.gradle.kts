@@ -22,3 +22,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "kaiku-android"
 include(":app")
+include(":lint-rules")

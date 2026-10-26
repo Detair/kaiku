@@ -462,6 +462,35 @@ jobs:
           umask 077
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
 
+      # Publish: a missing Firebase config fails the run. Dry run: build without FCM.
+      - name: Check Android FCM config secret
+        id: fcm
+        env:
+          ANDROID_GOOGLE_SERVICES_JSON_BASE64: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.ANDROID_GOOGLE_SERVICES_JSON_BASE64 || '' }}
+        run: |
+          python3 scripts/require_secrets.py --mode "$MODE" --output fcm --step "Android FCM config" \
+            ANDROID_GOOGLE_SERVICES_JSON_BASE64
+
+      - name: Write google-services.json
+        if: steps.fcm.outputs.fcm == 'true'
+        env:
+          ANDROID_GOOGLE_SERVICES_JSON_BASE64: ${{ needs.prepare-release.outputs.publish == 'true' && secrets.ANDROID_GOOGLE_SERVICES_JSON_BASE64 || '' }}
+        run: |
+          umask 077
+          printf '%s' "$ANDROID_GOOGLE_SERVICES_JSON_BASE64" | base64 -d > mobile/android/app/google-services.json
+          # Fail early on a malformed secret. Only the fixed line below is printed:
+          # a JSON error message could quote part of the secret.
+          python3 - mobile/android/app/google-services.json 2>/dev/null <<'PY' \
+            || { echo "::error::ANDROID_GOOGLE_SERVICES_JSON_BASE64 is not a valid google-services.json"; exit 1; }
+          import json, sys
+          try:
+              with open(sys.argv[1], encoding="utf-8") as fh:
+                  if not json.load(fh)["project_info"]["project_id"]:
+                      sys.exit(1)
+          except Exception:
+              sys.exit(1)
+          PY
+
       - name: Build release APK
         working-directory: mobile/android
         env:
@@ -479,9 +508,9 @@ jobs:
           fi
           ./gradlew assembleRelease --no-daemon "${flags[@]}"
 
-      - name: Remove release keystore
+      - name: Remove release keystore and Firebase config
         if: always()
-        run: rm -f "$RUNNER_TEMP/release.jks"
+        run: rm -f "$RUNNER_TEMP/release.jks" mobile/android/app/google-services.json
 
       - name: Verify and stage APK
         working-directory: mobile/android
