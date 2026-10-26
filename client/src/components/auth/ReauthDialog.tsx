@@ -5,7 +5,7 @@
  * `mfaOnly` asks for the authenticator code alone.
  */
 
-import { Component, createSignal, For, Show } from "solid-js";
+import { Component, createSignal, For, onCleanup, Show } from "solid-js";
 import { X } from "lucide-solid";
 import type { ReauthRequest } from "@/lib/types";
 import { reauthErrorCode, reauthErrorText, type ReauthMethod } from "@/lib/reauth";
@@ -22,6 +22,7 @@ export interface ReauthDialogProps {
   onOidc?: (
     method: Extract<ReauthMethod, { kind: "oidc" }>,
     mfaCode: string | null,
+    signal: AbortSignal,
   ) => Promise<void>;
   onClose: () => void;
 }
@@ -30,6 +31,13 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
   const dialog = createDialog({ onClose: () => props.onClose() });
   const [password, setPassword] = createSignal("");
   const [code, setCode] = createSignal("");
+  // Closing the dialog stops a running provider flow and drops the secrets.
+  const abort = new AbortController();
+  onCleanup(() => {
+    abort.abort();
+    setPassword("");
+    setCode("");
+  });
   const [error, setError] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   // The server can tell us mid-way that the password path is not for this
@@ -59,6 +67,7 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
     try {
       await action();
     } catch (err) {
+      if (abort.signal.aborted) return;
       const code = reauthErrorCode(err);
       if (code === "REAUTH_OIDC_REQUIRED" && oidcMethods().length > 0) {
         setPasswordHidden(true);
@@ -67,7 +76,7 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
       }
       setError(reauthErrorText(err));
     } finally {
-      setBusy(false);
+      if (!abort.signal.aborted) setBusy(false);
     }
   };
 
@@ -208,7 +217,12 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
                           setError(t("admin.reauth.error.mfaRequired"));
                           return;
                         }
-                        void run(() => onOidc(m, showCode() ? mfa : null));
+                        // The server uses the code up; never offer it for a retry.
+                        void run(() =>
+                          onOidc(m, showCode() ? mfa : null, abort.signal).finally(() =>
+                            setCode(""),
+                          ),
+                        );
                       }}
                     >
                       {t("admin.reauth.oidc", { provider: m.label })}

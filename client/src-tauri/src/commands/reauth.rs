@@ -19,6 +19,9 @@ use crate::AppState;
 
 const CALLBACK_PATH: &str = "/callback";
 const CALLBACK_TIMEOUT: Duration = Duration::from_mins(1);
+/// A connection that sends nothing for this long is dropped.
+const READ_DEADLINE: Duration = Duration::from_secs(2);
+const MAX_REQUEST_LINE: usize = 4096;
 
 /// Result of the loopback callback.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,8 +30,6 @@ pub enum ReauthCallback {
     Elevated { expires_at: Option<String> },
     /// `?reauth_error=CODE`
     Error(String),
-    /// Callback without a recognisable result.
-    Unknown,
 }
 
 /// What the webview gets back on success.
@@ -43,12 +44,14 @@ struct AuthorizeResponse {
 }
 
 /// Parse the request target of a loopback request. Returns `None` unless the
-/// path is exactly `/callback` (anything else is ignored by the listener).
+/// raw path is exactly `/callback` (checked before any normalisation) and the
+/// query carries a recognised result.
 pub fn parse_callback_target(target: &str) -> Option<ReauthCallback> {
-    let parsed = Url::parse(&format!("http://127.0.0.1{target}")).ok()?;
-    if parsed.path() != CALLBACK_PATH {
+    let (raw_path, query) = target.split_once('?')?;
+    if raw_path != CALLBACK_PATH {
         return None;
     }
+    let parsed = Url::parse(&format!("http://127.0.0.1/?{query}")).ok()?;
     let mut elevated = false;
     let mut expires_at = None;
     let mut error = None;
@@ -60,13 +63,47 @@ pub fn parse_callback_target(target: &str) -> Option<ReauthCallback> {
             _ => {}
         }
     }
-    Some(if let Some(code) = error {
-        ReauthCallback::Error(code)
+    if let Some(code) = error {
+        Some(ReauthCallback::Error(code))
     } else if elevated {
-        ReauthCallback::Elevated { expires_at }
+        Some(ReauthCallback::Elevated { expires_at })
     } else {
-        ReauthCallback::Unknown
-    })
+        None
+    }
+}
+
+/// Extract the target of a complete `GET <target> HTTP/1.x` request line.
+fn request_target(line: &str) -> Option<&str> {
+    let mut parts = line.split(' ');
+    let (method, target, version) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || method != "GET" || !version.starts_with("HTTP/1.") {
+        return None;
+    }
+    target.starts_with('/').then_some(target)
+}
+
+/// Read the request line of one connection within `deadline`; `None` when it
+/// is incomplete, too long, or the peer is idle.
+async fn read_request_line(
+    stream: &mut tokio::net::TcpStream,
+    deadline: Duration,
+) -> Option<String> {
+    let read = async {
+        let mut buf = Vec::with_capacity(512);
+        let mut chunk = [0u8; 512];
+        while buf.len() < MAX_REQUEST_LINE {
+            let n = stream.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(end) = buf.windows(2).position(|w| w == b"\r\n") {
+                return String::from_utf8(buf[..end].to_vec()).ok();
+            }
+        }
+        None
+    };
+    tokio::time::timeout(deadline, read).await.ok().flatten()
 }
 
 const PAGE_HEADERS: &str = "Content-Type: text/html\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n";
@@ -85,26 +122,28 @@ async fn respond(stream: &mut tokio::net::TcpStream, ok: bool) {
     let _ = stream.flush().await;
 }
 
-/// Wait for the callback on `listener`; requests to other paths get 204.
+/// Wait for the callback on `listener`. Everything that is not a complete
+/// `GET /callback?...` with a recognised result is answered and ignored, so a
+/// stray or idle connection cannot end or stall the flow.
 pub async fn wait_for_callback(
     listener: &TcpListener,
     timeout: Duration,
+    read_deadline: Duration,
 ) -> Result<ReauthCallback, String> {
     let accept = async {
         loop {
-            let (mut stream, _) = listener.accept().await?;
-            let mut buf = vec![0u8; 8192];
-            let n = stream.read(&mut buf).await?;
-            let request = String::from_utf8_lossy(&buf[..n]);
-            let target = request
-                .lines()
-                .next()
-                .and_then(|l| l.split_whitespace().nth(1))
-                .unwrap_or("/");
-            if let Some(result) = parse_callback_target(target) {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                continue;
+            };
+            let line = read_request_line(&mut stream, read_deadline).await;
+            let result = line
+                .as_deref()
+                .and_then(request_target)
+                .and_then(parse_callback_target);
+            if let Some(result) = result {
                 let ok = matches!(result, ReauthCallback::Elevated { .. });
                 respond(&mut stream, ok).await;
-                return Ok::<_, std::io::Error>(result);
+                return result;
             }
             let _ = stream
                 .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
@@ -114,8 +153,7 @@ pub async fn wait_for_callback(
     };
     tokio::time::timeout(timeout, accept)
         .await
-        .map_err(|_| "REAUTH_TIMEOUT".to_string())?
-        .map_err(|e| format!("Failed to receive callback: {e}"))
+        .map_err(|_| "REAUTH_TIMEOUT".to_string())
 }
 
 /// Re-authenticate with an OIDC provider (desktop).
@@ -194,10 +232,9 @@ pub async fn oidc_reauth(
     }
     info!("Opened browser for re-authentication, waiting for callback");
 
-    match wait_for_callback(&listener, CALLBACK_TIMEOUT).await? {
+    match wait_for_callback(&listener, CALLBACK_TIMEOUT, READ_DEADLINE).await? {
         ReauthCallback::Elevated { expires_at } => Ok(ReauthOutcome { expires_at }),
         ReauthCallback::Error(code) => Err(code),
-        ReauthCallback::Unknown => Err("REAUTH_FAILED".to_string()),
     }
 }
 
@@ -239,28 +276,49 @@ mod tests {
             None
         );
         assert_eq!(parse_callback_target("/callbackx?reauth=elevated"), None);
+        assert_eq!(
+            parse_callback_target("/x/../callback?reauth=elevated"),
+            None
+        );
+        assert_eq!(parse_callback_target("//callback?reauth=elevated"), None);
         assert_eq!(parse_callback_target("/"), None);
     }
 
     #[test]
-    fn bare_callback_is_unknown() {
-        assert_eq!(
-            parse_callback_target("/callback"),
-            Some(ReauthCallback::Unknown)
-        );
+    fn no_recognised_result_is_ignored() {
+        assert_eq!(parse_callback_target("/callback"), None);
+        assert_eq!(parse_callback_target("/callback?reauth=nope"), None);
     }
 
-    async fn get(port: u16, target: &str) -> String {
+    #[test]
+    fn request_line_must_be_a_complete_get() {
+        assert_eq!(
+            request_target("GET /callback?a=1 HTTP/1.1"),
+            Some("/callback?a=1")
+        );
+        assert_eq!(request_target("POST /callback HTTP/1.1"), None);
+        assert_eq!(request_target("GET /callback"), None);
+        assert_eq!(request_target("GET /callback HTTP/2"), None);
+        assert_eq!(request_target("GET callback HTTP/1.1"), None);
+        assert_eq!(request_target("GET /a b HTTP/1.1"), None);
+    }
+
+    async fn send(port: u16, raw: &str) -> String {
         let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap();
-        s.write_all(format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes())
-            .await
-            .unwrap();
+        s.write_all(raw.as_bytes()).await.unwrap();
         let mut out = String::new();
         s.read_to_string(&mut out).await.unwrap();
         out
     }
+
+    async fn get(port: u16, target: &str) -> String {
+        send(port, &format!("GET {target} HTTP/1.1\r\nHost: x\r\n\r\n")).await
+    }
+
+    const LONG: Duration = Duration::from_secs(5);
+    const SHORT: Duration = Duration::from_millis(150);
 
     #[tokio::test]
     async fn listener_ignores_other_paths_and_sets_headers() {
@@ -271,7 +329,7 @@ mod tests {
             let ok = get(port, "/callback?reauth=elevated").await;
             (other, ok)
         });
-        let result = wait_for_callback(&listener, Duration::from_secs(5)).await;
+        let result = wait_for_callback(&listener, LONG, LONG).await;
         assert_eq!(result, Ok(ReauthCallback::Elevated { expires_at: None }));
         let (other, ok) = client.await.unwrap();
         assert!(other.starts_with("HTTP/1.1 204"));
@@ -280,9 +338,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn garbage_and_empty_callbacks_do_not_end_the_flow() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = tokio::spawn(async move {
+            send(port, "garbage\r\n\r\n").await;
+            get(port, "/callback").await;
+            send(port, "POST /callback?reauth=elevated HTTP/1.1\r\n\r\n").await;
+            get(port, "/callback?reauth_error=REAUTH_STALE").await;
+        });
+        let result = wait_for_callback(&listener, LONG, LONG).await;
+        assert_eq!(result, Ok(ReauthCallback::Error("REAUTH_STALE".into())));
+        client.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_connection_does_not_stall_the_flow() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = tokio::spawn(async move {
+            // Connects and sends nothing; keep it open past the read deadline.
+            let idle = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let ok = get(port, "/callback?reauth=elevated").await;
+            drop(idle);
+            ok
+        });
+        let result = wait_for_callback(&listener, LONG, SHORT).await;
+        assert_eq!(result, Ok(ReauthCallback::Elevated { expires_at: None }));
+        client.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn listener_times_out() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let result = wait_for_callback(&listener, Duration::from_millis(50)).await;
+        let result = wait_for_callback(&listener, Duration::from_millis(50), SHORT).await;
         assert_eq!(result, Err("REAUTH_TIMEOUT".to_string()));
     }
 }

@@ -7,7 +7,8 @@
 
 import { Component, createResource, Show } from "solid-js";
 import ReauthDialog from "@/components/auth/ReauthDialog";
-import { adminState, checkAdminStatus, elevateSession } from "@/stores/admin";
+import { confirmElevation, elevateSession } from "@/stores/admin";
+import { HttpError } from "@/lib/tauri";
 import { defaultReauthStrategy, reauthErrorText } from "@/lib/reauth";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
@@ -29,7 +30,16 @@ const ElevateDialog: Component<{ onClose: () => void }> = (props) => {
   });
 
   return (
-    <Show when={info()}>
+    <Show
+      when={info()}
+      fallback={
+        <div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
+          <p role="status" class="px-4 py-3 rounded-lg bg-background-secondary text-sm text-text-primary">
+            {t("admin.reauth.loading")}
+          </p>
+        </div>
+      }
+    >
       {(i) => (
         <ReauthDialog
           title={t("admin.reauth.elevateTitle")}
@@ -40,12 +50,15 @@ const ElevateDialog: Component<{ onClose: () => void }> = (props) => {
             await elevateSession(req);
             props.onClose();
           }}
-          onOidc={async (m, mfaCode) => {
-            await defaultReauthStrategy.reauthWithOidc(m.providerId, { mfaCode });
-            // The provider's answer is only a hint: ask the server.
-            await checkAdminStatus();
-            if (!adminState.isElevated) {
-              throw new Error(t("admin.reauth.notConfirmed"));
+          onOidc={async (m, mfaCode, signal) => {
+            await defaultReauthStrategy.reauthWithOidc(m.providerId, { mfaCode, signal });
+            if (signal.aborted) return;
+            // The provider's answer is only a hint: a fresh, successful
+            // status answer from the server must say the session is elevated.
+            const elevated = await confirmElevation();
+            if (signal.aborted) return;
+            if (!elevated) {
+              throw new HttpError(0, "REAUTH_NOT_CONFIRMED", "REAUTH_NOT_CONFIRMED");
             }
             props.onClose();
           }}

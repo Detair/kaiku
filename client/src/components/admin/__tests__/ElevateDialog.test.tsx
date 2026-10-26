@@ -1,16 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@solidjs/testing-library";
 
-const state = vi.hoisted(() => ({ adminState: { isElevated: false } }));
-const checkAdminStatus = vi.hoisted(() => vi.fn());
+const confirmElevation = vi.hoisted(() => vi.fn());
 const reauthWithOidc = vi.hoisted(() => vi.fn());
 const loadInfo = vi.hoisted(() => vi.fn());
 
-vi.mock("@/lib/tauri", () => ({ HttpError: class extends Error {} }));
+vi.mock("@/lib/tauri", () => ({
+  HttpError: class extends Error {
+    constructor(
+      public status: number,
+      m: string,
+      public code?: string,
+    ) {
+      super(m);
+    }
+  },
+}));
 vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 vi.mock("@/stores/admin", () => ({
-  adminState: state.adminState,
-  checkAdminStatus: (...a: unknown[]) => checkAdminStatus(...a),
+  confirmElevation: (...a: unknown[]) => confirmElevation(...a),
   elevateSession: vi.fn(),
 }));
 vi.mock("@/lib/reauth", async (orig) => ({
@@ -23,8 +31,7 @@ import ElevateDialog from "../ElevateDialog";
 describe("ElevateDialog provider path", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
-    state.adminState.isElevated = false;
-    checkAdminStatus.mockReset();
+    confirmElevation.mockReset();
     reauthWithOidc.mockReset().mockResolvedValue(undefined);
     loadInfo.mockReset().mockResolvedValue({
       methods: [{ kind: "oidc", providerId: "kc", label: "Keycloak" }],
@@ -32,22 +39,54 @@ describe("ElevateDialog provider path", () => {
     });
   });
 
-  it("does not close until the server confirms elevation", async () => {
-    const onClose = vi.fn();
-    render(() => <ElevateDialog onClose={onClose} />);
+  const click = async () =>
     fireEvent.click(await screen.findByRole("button", { name: "Confirm with Keycloak" }));
-    await waitFor(() => expect(checkAdminStatus).toHaveBeenCalled());
-    expect(onClose).not.toHaveBeenCalled();
-    expect(screen.getByRole("alert")).toBeTruthy();
+
+  it("shows a loading state while the methods load", () => {
+    loadInfo.mockReturnValue(new Promise(() => {}));
+    render(() => <ElevateDialog onClose={() => {}} />);
+    expect(screen.getByRole("status").textContent).toContain("Checking");
   });
 
-  it("closes once the status call reports elevation", async () => {
-    checkAdminStatus.mockImplementation(async () => {
-      state.adminState.isElevated = true;
-    });
+  it("does not close until the server confirms elevation, and says so", async () => {
+    confirmElevation.mockResolvedValue(false);
     const onClose = vi.fn();
     render(() => <ElevateDialog onClose={onClose} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Confirm with Keycloak" }));
+    await click();
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain("did not confirm"),
+    );
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the status call fails", async () => {
+    confirmElevation.mockRejectedValue(new Error("network"));
+    const onClose = vi.fn();
+    render(() => <ElevateDialog onClose={onClose} />);
+    await click();
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("closes once the server confirms elevation", async () => {
+    confirmElevation.mockResolvedValue(true);
+    const onClose = vi.fn();
+    render(() => <ElevateDialog onClose={onClose} />);
+    await click();
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it("runs no status check after the dialog was closed mid-flow", async () => {
+    let finish: () => void = () => {};
+    reauthWithOidc.mockReturnValue(new Promise<void>((r) => (finish = r)));
+    const onClose = vi.fn();
+    const { unmount } = render(() => <ElevateDialog onClose={onClose} />);
+    await click();
+    await waitFor(() => expect(reauthWithOidc).toHaveBeenCalled());
+    unmount();
+    finish();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(confirmElevation).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

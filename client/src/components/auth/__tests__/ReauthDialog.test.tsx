@@ -24,7 +24,7 @@ const OIDC: ReauthMethod = { kind: "oidc", providerId: "kc", label: "Keycloak" }
 function setup(over: Partial<Parameters<typeof ReauthDialog>[0]> = {}) {
   const onSubmit = vi.fn().mockResolvedValue(undefined);
   const onClose = vi.fn();
-  render(() => (
+  const { unmount } = render(() => (
     <ReauthDialog
       title="Unlock"
       mode="password"
@@ -35,7 +35,7 @@ function setup(over: Partial<Parameters<typeof ReauthDialog>[0]> = {}) {
       {...over}
     />
   ));
-  return { onSubmit, onClose };
+  return { onSubmit, onClose, unmount };
 }
 
 const type = (label: RegExp, value: string) =>
@@ -122,7 +122,7 @@ describe("ReauthDialog", () => {
     setup({ methods: [OIDC], onOidc });
     expect(screen.queryByLabelText(/your password/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
-    await waitFor(() => expect(onOidc).toHaveBeenCalledWith(OIDC, null));
+    await waitFor(() => expect(onOidc).toHaveBeenCalledWith(OIDC, null, expect.any(AbortSignal)));
   });
 
   it("OIDC path needs the authenticator code when MFA is on and passes it", async () => {
@@ -133,7 +133,33 @@ describe("ReauthDialog", () => {
     expect(onOidc).not.toHaveBeenCalled();
     type(/authenticator code/i, "111 222");
     fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
-    await waitFor(() => expect(onOidc).toHaveBeenCalledWith(OIDC, "111222"));
+    await waitFor(() => expect(onOidc).toHaveBeenCalledWith(OIDC, "111222", expect.any(AbortSignal)));
+  });
+
+  it("clears the code after a provider attempt", async () => {
+    const onOidc = vi.fn().mockRejectedValue(new HttpError(401, "x", "INVALID_CREDENTIALS"));
+    setup({ methods: [OIDC], onOidc, mfaEnabled: true });
+    type(/authenticator code/i, "111222");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect((screen.getByLabelText(/authenticator code/i) as HTMLInputElement).value).toBe("");
+  });
+
+  it("closing the dialog aborts a running provider flow and shows nothing after", async () => {
+    let signal: AbortSignal | undefined;
+    let rejectFlow: (e: unknown) => void = () => {};
+    const onOidc = vi.fn((_m, _c, s: AbortSignal) => {
+      signal = s;
+      return new Promise<void>((_res, rej) => (rejectFlow = rej));
+    });
+    const { unmount } = setup({ methods: [OIDC], onOidc });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with Keycloak" }));
+    await waitFor(() => expect(onOidc).toHaveBeenCalled());
+    unmount();
+    expect(signal?.aborted).toBe(true);
+    rejectFlow(new HttpError(0, "x", "REAUTH_FAILED"));
+    await Promise.resolve();
+    expect(document.querySelector("[role=alert]")).toBeNull();
   });
 
   it("REAUTH_OIDC_REQUIRED switches to the provider method", async () => {
