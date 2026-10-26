@@ -6,6 +6,7 @@ mod audio;
 mod capture;
 mod commands;
 mod crypto;
+mod keystore;
 mod network;
 mod presence;
 mod session;
@@ -84,7 +85,7 @@ pub fn run() {
             // `not_keyutils=true` picks Secret Service over the kernel keyutils
             // store — keyutils evicts on session end which breaks refresh-token
             // persistence across reboot.
-            if let Err(err) = keyring::use_native_store(true) {
+            if let Err(err) = keystore::use_native_store() {
                 tracing::error!(error = %err, "keyring native-store init failed; auth refresh-token persistence will not work this session");
             }
 
