@@ -15,6 +15,7 @@ import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
 import { t } from "@/i18n";
+import { safeReturnUrl } from "@/lib/returnUrl";
 import { errorText } from "@/i18n/errors";
 import { LOGIN_ERRORS } from "@/lib/authErrors";
 
@@ -92,13 +93,7 @@ const Login: Component = () => {
         authState.mfaRequired ? mfaCode() : undefined,
       );
       // Navigate to returnUrl if valid (relative path only), otherwise home
-      const raw = searchParams.returnUrl;
-      const returnUrl = Array.isArray(raw) ? raw[0] : raw;
-      const decoded = returnUrl ? decodeURIComponent(returnUrl) : null;
-      const target = decoded && decoded.startsWith("/") && !decoded.startsWith("//")
-        ? decoded
-        : "/";
-      navigate(target, { replace: true });
+      navigate(safeReturnUrl(searchParams.returnUrl) ?? "/", { replace: true });
     } catch (err) {
       // MFA_REQUIRED is handled by the store — just reset MFA code input
       const msg = err instanceof Error ? err.message : String(err);
@@ -194,11 +189,11 @@ const Login: Component = () => {
 
   // Offer registration only when the server says it is open.
   // Invite-only servers need an invite, so offer it only when we came from one.
-  const cameWithInvite = () => {
-    const raw = searchParams.returnUrl;
-    const value = Array.isArray(raw) ? raw[0] : raw;
-    return !!value && /^\/invite\/[A-Za-z0-9]+/.test(decodeURIComponent(value));
+  const inviteReturnUrl = () => {
+    const url = safeReturnUrl(searchParams.returnUrl);
+    return url && /^\/invite\/[A-Za-z0-9]+/.test(url) ? url : null;
   };
+  const cameWithInvite = () => inviteReturnUrl() !== null;
   const showRegisterLink = () => {
     const policy = settings()?.registration_policy;
     return policy === "open" || (policy === "invite_only" && cameWithInvite());
@@ -436,7 +431,14 @@ const Login: Component = () => {
           <Show when={showRegisterLink()}>
             <p class="flex justify-center gap-1 text-sm text-text-secondary mt-4">
               <span>{t("auth.login.noAccount")}</span>
-              <A href="/register" class="text-primary auth-link">
+              <A
+                href={
+                  inviteReturnUrl()
+                    ? `/register?returnUrl=${encodeURIComponent(inviteReturnUrl()!)}`
+                    : "/register"
+                }
+                class="text-primary auth-link"
+              >
                 {t("auth.login.registerLink")}
               </A>
             </p>

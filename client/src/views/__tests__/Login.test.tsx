@@ -20,6 +20,7 @@ import { setAuthState } from "@/stores/auth";
 
 afterEach(() => {
   cleanup();
+  window.history.pushState({}, "", "/");
   setAuthState({ error: null, mfaRequired: false, isLoading: false });
   loginMock.mockReset();
   settingsMock.mockReset();
@@ -83,14 +84,14 @@ describe("Login", () => {
     await waitFor(() => expect(settingsMock).toHaveBeenCalled());
     await waitFor(() => expect(settingsMock).toHaveResolved());
     expect(screen.queryByText("Register")).toBeNull();
-    expect(document.querySelector('a[href="/register"]')).toBeNull();
+    expect(document.querySelector('a[href^="/register"]')).toBeNull();
   });
 
   it("register link shown for invite-only server when arriving with an invite", async () => {
     settingsMock.mockResolvedValue(serverSettings("invite_only"));
     window.history.pushState({}, "", "/?returnUrl=" + encodeURIComponent("/invite/AbCd1234"));
     await renderLogin();
-    await waitFor(() => expect(document.querySelector('a[href="/register"]')).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('a[href^="/register"]')).not.toBeNull());
     window.history.pushState({}, "", "/");
   });
 
@@ -98,12 +99,32 @@ describe("Login", () => {
     settingsMock.mockResolvedValue(serverSettings("invite_only"));
     await renderLogin();
     await waitFor(() => expect(settingsMock).toHaveResolved());
-    expect(document.querySelector('a[href="/register"]')).toBeNull();
+    expect(document.querySelector('a[href^="/register"]')).toBeNull();
   });
 
   it("register link shown when open", async () => {
     settingsMock.mockResolvedValue(serverSettings("open"));
     await renderLogin();
-    await waitFor(() => expect(document.querySelector('a[href="/register"]')).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('a[href^="/register"]')).not.toBeNull());
+  });
+
+  it("register link carries the invite returnUrl", async () => {
+    settingsMock.mockResolvedValue(serverSettings("invite_only"));
+    window.history.pushState({}, "", "/?returnUrl=" + encodeURIComponent("/invite/AbCd1234"));
+    await renderLogin();
+    await waitFor(() => {
+      const href = document.querySelector('a[href^="/register"]')?.getAttribute("href");
+      expect(href).toBe("/register?returnUrl=" + encodeURIComponent("/invite/AbCd1234"));
+    });
+    window.history.pushState({}, "", "/");
+  });
+
+  it("malformed percent in returnUrl does not throw and hides the invite link", async () => {
+    settingsMock.mockResolvedValue(serverSettings("invite_only"));
+    window.history.pushState({}, "", "/?returnUrl=%25ZZ%E0%A4%A");
+    await renderLogin();
+    await waitFor(() => expect(settingsMock).toHaveResolved());
+    expect(document.querySelector('a[href^="/register"]')).toBeNull();
+    window.history.pushState({}, "", "/");
   });
 });
