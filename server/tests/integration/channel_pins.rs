@@ -381,3 +381,123 @@ async fn test_cascade_on_message_delete(pool: PgPool) {
         "Pins list should be empty after message deletion"
     );
 }
+
+// ============================================================================
+// Author presence in history payloads
+// ============================================================================
+
+/// Assert that no author object in the message list or pin list carries a
+/// live presence value.
+fn assert_no_live_author_status(messages: &serde_json::Value, pins: &serde_json::Value) {
+    let msgs = messages
+        .get("items")
+        .and_then(|v| v.as_array())
+        .or_else(|| messages.as_array())
+        .expect("message list should contain items");
+    assert!(!msgs.is_empty(), "message list should not be empty");
+    for m in msgs {
+        assert_eq!(m["author"]["status"], "offline", "message author status");
+    }
+    let pins_arr = pins.as_array().expect("pins should be an array");
+    assert!(!pins_arr.is_empty(), "pin list should not be empty");
+    for p in pins_arr {
+        assert_eq!(
+            p["message"]["author"]["status"], "offline",
+            "pinned message author status"
+        );
+    }
+}
+
+#[sqlx::test]
+async fn test_history_does_not_expose_author_presence(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (viewer_id, _) = create_test_user(&app.pool).await;
+    let (author_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, viewer_id);
+    let guild_id = create_guild_with_default_role(&app.pool, viewer_id, pin_perms()).await;
+    let channel_id = create_channel(&app.pool, guild_id, "presence-shared").await;
+    add_guild_member(&app.pool, guild_id, author_id).await;
+
+    sqlx::query("UPDATE users SET status = 'online' WHERE id = $1")
+        .bind(author_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    let msg_id = insert_message(&app.pool, channel_id, author_id, "hello").await;
+    assert_eq!(
+        pin_message(&app, channel_id, msg_id, &token).await.status(),
+        200
+    );
+
+    let messages = list_messages(&app, channel_id, &token).await;
+    let pins = list_pins(&app, channel_id, &token).await;
+    assert_no_live_author_status(&messages, &pins);
+}
+
+#[sqlx::test]
+async fn test_history_hides_author_presence_after_leaving_guild(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (viewer_id, _) = create_test_user(&app.pool).await;
+    let (author_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, viewer_id);
+    let guild_id = create_guild_with_default_role(&app.pool, viewer_id, pin_perms()).await;
+    let channel_id = create_channel(&app.pool, guild_id, "presence-left").await;
+    add_guild_member(&app.pool, guild_id, author_id).await;
+    let msg_id = insert_message(&app.pool, channel_id, author_id, "before leaving").await;
+    assert_eq!(
+        pin_message(&app, channel_id, msg_id, &token).await.status(),
+        200
+    );
+
+    sqlx::query("UPDATE users SET status = 'online' WHERE id = $1")
+        .bind(author_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM guild_members WHERE guild_id = $1 AND user_id = $2")
+        .bind(guild_id)
+        .bind(author_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    let messages = list_messages(&app, channel_id, &token).await;
+    let pins = list_pins(&app, channel_id, &token).await;
+    assert_no_live_author_status(&messages, &pins);
+}
+
+#[sqlx::test]
+async fn test_history_hides_author_presence_after_block(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (viewer_id, _) = create_test_user(&app.pool).await;
+    let (author_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, viewer_id);
+    let guild_id = create_guild_with_default_role(&app.pool, viewer_id, pin_perms()).await;
+    let channel_id = create_channel(&app.pool, guild_id, "presence-blocked").await;
+    add_guild_member(&app.pool, guild_id, author_id).await;
+    let msg_id = insert_message(&app.pool, channel_id, author_id, "before block").await;
+    assert_eq!(
+        pin_message(&app, channel_id, msg_id, &token).await.status(),
+        200
+    );
+
+    sqlx::query("UPDATE users SET status = 'online' WHERE id = $1")
+        .bind(author_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO friendships (id, requester_id, addressee_id, status) VALUES ($1, $2, $3, 'blocked')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(author_id)
+    .bind(viewer_id)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    let messages = list_messages(&app, channel_id, &token).await;
+    let pins = list_pins(&app, channel_id, &token).await;
+    assert_no_live_author_status(&messages, &pins);
+}

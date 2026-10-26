@@ -91,7 +91,7 @@ fn author() -> AuthorProfile {
         username: "alice".to_string(),
         display_name: "Alice".to_string(),
         avatar_url: None,
-        status: "online".to_string(),
+        status: "offline".to_string(),
     }
 }
 
