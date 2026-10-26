@@ -296,6 +296,42 @@ async fn test_elevation_is_bound_to_session(pool: PgPool) {
     assert!(!vc_server::admin::is_elevated_admin(&state.redis, &pool, admin, session_a).await);
 }
 
+/// `DELETE /api/admin/elevate` ends only the caller's elevation; another
+/// elevated session of the same admin stays elevated.
+#[sqlx::test]
+async fn test_de_elevation_is_bound_to_session(pool: PgPool) {
+    let (server, config, state) = plain_server(&pool).await;
+    let (admin, _) = create_user_with_password(&pool).await;
+    make_admin(&pool, admin).await;
+    let (session_a, token_a) = create_session_with_token(&pool, &config, admin).await;
+    let (session_b, token_b) = create_session_with_token(&pool, &config, admin).await;
+    for token in [&token_a, &token_b] {
+        let (status, body) = post_json(
+            &server,
+            "/api/admin/elevate",
+            token,
+            Some(json!({ "password": PASSWORD })),
+        )
+        .await;
+        assert_eq!(status, 200, "elevate: {body}");
+    }
+
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/api/admin/elevate", server.url))
+        .bearer_auth(&token_a)
+        .send()
+        .await
+        .expect("de-elevate");
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let (status, _) = get_json(&server, "/api/admin/reports", &token_a).await;
+    assert_eq!(status, 403, "session A is no longer elevated");
+    let (status, body) = get_json(&server, "/api/admin/reports", &token_b).await;
+    assert_eq!(status, 200, "session B stays elevated: {body}");
+    assert!(!vc_server::admin::is_elevated_admin(&state.redis, &pool, admin, session_a).await);
+    assert!(vc_server::admin::is_elevated_admin(&state.redis, &pool, admin, session_b).await);
+}
+
 #[sqlx::test]
 async fn test_backup_code_regeneration_requires_totp(pool: PgPool) {
     let (server, config, _) = plain_server(&pool).await;

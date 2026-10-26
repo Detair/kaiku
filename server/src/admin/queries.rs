@@ -209,17 +209,21 @@ pub(crate) async fn is_active_session(
     Ok(exists)
 }
 
-/// Delete all elevated sessions for a user. Returns the session ids whose
-/// elevation was removed.
-pub(super) async fn delete_elevated_sessions(
+/// Delete the elevation of one session of a user. Returns the session ids
+/// whose elevation was removed (empty or `[session_id]`).
+pub(super) async fn delete_elevated_session(
     pool: &PgPool,
     user_id: Uuid,
+    session_id: Uuid,
 ) -> Result<Vec<Uuid>, AdminError> {
-    let ids =
-        sqlx::query_scalar("DELETE FROM elevated_sessions WHERE user_id = $1 RETURNING session_id")
-            .bind(user_id)
-            .fetch_all(pool)
-            .await?;
+    let ids = sqlx::query_scalar(
+        "DELETE FROM elevated_sessions WHERE user_id = $1 AND session_id = $2 \
+         RETURNING session_id",
+    )
+    .bind(user_id)
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
     Ok(ids)
 }
 

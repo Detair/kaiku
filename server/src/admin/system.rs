@@ -327,7 +327,8 @@ pub(crate) async fn record_elevation(
     Ok(elevated)
 }
 
-/// De-elevate admin session.
+/// De-elevate the caller's session (the access token's `sid`); other
+/// sessions of the same admin stay elevated.
 ///
 /// `DELETE /api/admin/elevate`
 #[utoipa::path(
@@ -341,13 +342,20 @@ pub(crate) async fn record_elevation(
 pub async fn de_elevate_session(
     State(state): State<AppState>,
     Extension(admin): Extension<SystemAdminUser>,
+    Extension(auth): Extension<AuthUser>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Json<DeElevateResponse>, AdminError> {
     let ip_address = crate::auth::reauth::client_ip(&state, &headers, addr).to_string();
 
-    // Delete all elevated sessions for this user
-    let removed_sessions = queries::delete_elevated_sessions(&state.db, admin.user_id).await?;
+    // De-elevate only the caller's session (C24: an elevation belongs to one
+    // session); other sessions of the same admin keep theirs.
+    let removed_sessions = match auth.session_id {
+        Some(session_id) => {
+            queries::delete_elevated_session(&state.db, admin.user_id, session_id).await?
+        }
+        None => Vec::new(),
+    };
 
     // Clear the cached elevated status of every de-elevated session
     for session_id in &removed_sessions {
@@ -365,6 +373,7 @@ pub async fn de_elevate_session(
             Some(admin.user_id),
             Some(serde_json::json!({
                 "sessions_removed": removed,
+                "session_id": auth.session_id,
             })),
             Some(&ip_address),
         )
