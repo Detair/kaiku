@@ -89,6 +89,9 @@ class WakeFetchProcessor @Inject constructor(
     /** The session a wake is processed for. */
     private data class Account(val userId: String, val generation: Long)
 
+    /** Fetched messages; [truncated] when the page limit stopped the fetch with more to come. */
+    private class Fetched(val messages: List<Message>, val truncated: Boolean = false)
+
     /** The server's unread state of one channel. */
     private data class ServerUnread(
         val count: Int,
@@ -155,7 +158,8 @@ class WakeFetchProcessor @Inject constructor(
         val lastSeen = ledger.lastSeen(account.userId, channelId)
         val lastSeenAt = ledger.lastSeenCreatedAt(account.userId, channelId)
 
-        val unseen = fetchUnseen(channelId, lastSeen, lastSeenAt, signal.count)
+        val fetched = fetchUnseen(channelId, lastSeen, lastSeenAt, signal.count)
+        val unseen = fetched.messages
         if (!isCurrent(account)) return sessionLost(account)
         resolveReadCursor(account, channelId, unseen)
         // Newest message actually considered; own messages count as seen.
@@ -176,7 +180,7 @@ class WakeFetchProcessor @Inject constructor(
             null
         }
         if (!isCurrent(account)) return sessionLost(account)
-        if (nothingUnread(account, channelId, unseen, unread)) {
+        if (nothingUnread(account, channelId, unseen, unread, fetched.truncated)) {
             // Read elsewhere (maybe its `read` push was dropped): clear what is shown.
             sink.cancel(channelId)
         }
@@ -281,11 +285,13 @@ class WakeFetchProcessor @Inject constructor(
         channelId: String,
         unseen: List<Message>,
         unread: ServerUnread?,
+        truncated: Boolean,
     ): Boolean {
         if (unread?.count == 0) return true
-        // The server's cursor covers every fetched message from others.
+        // The server's cursor covers every fetched message from others. Not
+        // decidable when the fetch stopped early: newer messages may follow.
         val cursor = unread?.lastReadMessageId
-        if (cursor != null && unseen.any { it.id == cursor } &&
+        if (!truncated && cursor != null && unseen.any { it.id == cursor } &&
             afterReadCursor(unseen, cursor).none { it.author.id != account.userId }
         ) {
             return true
@@ -362,10 +368,10 @@ class WakeFetchProcessor @Inject constructor(
         lastSeen: String?,
         lastSeenAt: String?,
         count: Int,
-    ): List<Message> {
+    ): Fetched {
         val latestLimit = count.coerceIn(1, LATEST_PAGE_MAX)
         if (lastSeen == null) {
-            return MessageOrdering.merge(emptyList(), messages.getMessages(channelId, limit = latestLimit).items)
+            return Fetched(MessageOrdering.merge(emptyList(), messages.getMessages(channelId, limit = latestLimit).items))
         }
 
         var page: CursorPage<Message> = try {
@@ -374,7 +380,7 @@ class WakeFetchProcessor @Inject constructor(
             if (e.status != HttpStatusCode.BadRequest) throw e
             logger.info("wake fetch: anchor rejected (400), using latest page")
             val latest = messages.getMessages(channelId, limit = latestLimit).items
-            return afterLastSeen(MessageOrdering.merge(emptyList(), latest), lastSeen, lastSeenAt)
+            return Fetched(afterLastSeen(MessageOrdering.merge(emptyList(), latest), lastSeen, lastSeenAt))
         }
         val collected = page.items.toMutableList()
         var pages = 1
@@ -384,7 +390,10 @@ class WakeFetchProcessor @Inject constructor(
             collected += page.items
             pages++
         }
-        return afterLastSeen(MessageOrdering.merge(emptyList(), collected), lastSeen, lastSeenAt)
+        return Fetched(
+            afterLastSeen(MessageOrdering.merge(emptyList(), collected), lastSeen, lastSeenAt),
+            truncated = page.hasMore,
+        )
     }
 
     /** Drops messages at or before the last-seen position ([sorted] is oldest first). */

@@ -123,13 +123,14 @@ class WakeFetchProcessorTest {
 
     @Test
     fun `cursor drops messages up to and including the read one`() = runTest {
-        serverDmUnread(3, cursor = "m1")
+        serverDmUnread(2, cursor = "m1")
         coEvery { messages.getMessages(ch, null, null, any()) } returns
             page(msg("m3", bob, 3), msg("m2", bob, 2), msg("m1", bob, 1))
 
         assertEquals(WakeOutcome.NOTIFIED, processor.process(dm(count = 3), owner))
 
         assertEquals(listOf("m2", "m3"), shown.single().lines.map { it.messageId })
+        verify(exactly = 0) { sink.cancel(ch) }
     }
 
     @Test
@@ -141,6 +142,7 @@ class WakeFetchProcessorTest {
         assertEquals(WakeOutcome.NOTIFIED, processor.process(dm(count = 3), owner))
 
         assertEquals(listOf("m1", "m2", "m3"), shown.single().lines.map { it.messageId })
+        verify(exactly = 0) { sink.cancel(ch) }
     }
 
     @Test
@@ -152,6 +154,7 @@ class WakeFetchProcessorTest {
         assertEquals(WakeOutcome.NOTIFIED, processor.process(dm(count = 3), owner))
 
         assertEquals(listOf("m2", "m3"), shown.single().lines.map { it.messageId })
+        verify(exactly = 0) { sink.cancel(ch) }
     }
 
     @Test
@@ -164,6 +167,68 @@ class WakeFetchProcessorTest {
 
         assertTrue(shown.isEmpty())
         verify { sink.cancel(ch) }
+    }
+
+    private fun serverGuildUnread(count: Long, cursor: String?) {
+        coEvery { unreadApi.getUnread() } returns UnreadAggregate(
+            guilds = listOf(
+                GuildUnreadSummary(
+                    guildId = "g",
+                    channels = listOf(ChannelUnread(ch, unreadCount = count, lastReadMessageId = cursor)),
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `guild cursor followed only by own messages cancels the notification`() = runTest {
+        serverGuildUnread(1, cursor = "m1")
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m2", me, 2), msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(WakeSignal(WakeKind.MENTION, ch, 2), owner))
+
+        assertTrue(shown.isEmpty())
+        verify { sink.cancel(ch) }
+    }
+
+    @Test
+    fun `cursor on an own message notifies the others messages after it`() = runTest {
+        serverGuildUnread(2, cursor = "m2")
+        coEvery { messages.getMessages(ch, null, null, any()) } returns
+            page(msg("m3", bob, 3), msg("m2", me, 2), msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTIFIED, processor.process(WakeSignal(WakeKind.MENTION, ch, 3), owner))
+
+        assertEquals(listOf("m3"), shown.single().lines.map { it.messageId })
+        verify(exactly = 0) { sink.cancel(ch) }
+    }
+
+    @Test
+    fun `local read newer than the server cursor still suppresses`() = runTest {
+        serverDmUnread(2, cursor = "m1")
+        ledger.markRead("me", ch, "m2", "2026-10-24T10:02:00Z")
+        coEvery { messages.getMessages(ch, null, null, any()) } returns
+            page(msg("m3", bob, 3), msg("m2", bob, 2), msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTIFIED, processor.process(dm(count = 3), owner))
+
+        assertEquals(listOf("m3"), shown.single().lines.map { it.messageId })
+    }
+
+    @Test
+    fun `truncated fetch does not treat the cursor as covering everything`() = runTest {
+        // Five full after-pages, more to come: messages past the fetched ones may be unread.
+        serverDmUnread(1, cursor = "m5")
+        ledger.markSeen("me", ch, "m0", "2026-10-24T10:00:00Z")
+        var call = 0
+        coEvery { messages.getMessages(ch, null, any(), 50) } answers {
+            call++
+            page(msg("m$call", bob, call), hasMore = true, next = "n$call")
+        }
+
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(), owner))
+
+        verify(exactly = 0) { sink.cancel(ch) }
     }
 
     @Test
