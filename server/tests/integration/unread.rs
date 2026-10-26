@@ -14,9 +14,9 @@ use vc_server::permissions::GuildPermissions;
 
 use super::helpers::{
     add_guild_member, body_to_json, create_channel, create_dm_channel, create_guild,
-    create_guild_with_default_role, create_test_user, create_voice_channel, generate_access_token,
-    insert_deleted_message, insert_message, insert_message_at, next_ws_event, spawn_test_server,
-    ws_connect, TestApp, WsClient,
+    create_guild_with_default_role, create_test_user, create_voice_channel, expect_no_ws_event,
+    generate_access_token, insert_deleted_message, insert_message, insert_message_at,
+    next_ws_event, spawn_test_server, ws_connect, TestApp, WsClient,
 };
 
 /// Upper bound for awaited WebSocket events (the full suite runs many servers).
@@ -776,4 +776,83 @@ async fn test_mark_as_read_requires_top_level_message_of_channel(pool: PgPool) {
     };
     assert_eq!(dm_status(dm_reply).await, StatusCode::BAD_REQUEST);
     assert_eq!(dm_status(dm_top).await, StatusCode::OK);
+}
+
+/// A stale (older) read cursor is not stored, so it is not announced to the
+/// user's other sessions; a cursor that does advance is.
+#[sqlx::test]
+async fn test_stale_read_cursor_sends_no_read_event(pool: PgPool) {
+    let (app, owner, member, guild, text, token) = guild_setup(&pool).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let older = insert_message_at(&app.pool, text, owner, "old", "2026-01-01T10:00:00Z").await;
+    let newer = insert_message_at(&app.pool, text, owner, "new", "2026-01-01T11:00:00Z").await;
+    let _ = (member, guild);
+
+    let mut ws = ws_connect(&server, &token).await;
+    next_ws_event(&mut ws, "ready", EVENT_TIMEOUT).await;
+
+    let uri = format!("/api/channels/{text}/read");
+    let advance = post_json(
+        &app,
+        &token,
+        &uri,
+        &json!({ "last_read_message_id": newer }),
+    )
+    .await;
+    assert_eq!(advance, StatusCode::OK);
+    let ev = next_ws_event(&mut ws, "channel_read", EVENT_TIMEOUT).await;
+    assert_eq!(ev["last_read_message_id"], newer.to_string());
+
+    let stale = post_json(
+        &app,
+        &token,
+        &uri,
+        &json!({ "last_read_message_id": older }),
+    )
+    .await;
+    assert_eq!(stale, StatusCode::OK);
+    expect_no_ws_event(
+        &mut ws,
+        "channel_read",
+        std::time::Duration::from_millis(800),
+    )
+    .await;
+}
+
+/// Same for DMs: a cursor that does not move forward sends no `dm_read`.
+#[sqlx::test]
+async fn test_stale_dm_read_cursor_sends_no_read_event(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let dm = create_dm_channel(&pool, a, b).await;
+    let token = generate_access_token(&app.config, a);
+    let older = insert_message_at(&pool, dm, b, "old", "2026-01-01T10:00:00Z").await;
+    let newer = insert_message_at(&pool, dm, b, "new", "2026-01-01T11:00:00Z").await;
+
+    let mut ws = ws_connect(&server, &token).await;
+    next_ws_event(&mut ws, "ready", EVENT_TIMEOUT).await;
+
+    let uri = format!("/api/dm/{dm}/read");
+    let advance = post_json(
+        &app,
+        &token,
+        &uri,
+        &json!({ "last_read_message_id": newer }),
+    )
+    .await;
+    assert_eq!(advance, StatusCode::OK);
+    let ev = next_ws_event(&mut ws, "dm_read", EVENT_TIMEOUT).await;
+    assert_eq!(ev["last_read_message_id"], newer.to_string());
+
+    let stale = post_json(
+        &app,
+        &token,
+        &uri,
+        &json!({ "last_read_message_id": older }),
+    )
+    .await;
+    assert_eq!(stale, StatusCode::OK);
+    expect_no_ws_event(&mut ws, "dm_read", std::time::Duration::from_millis(800)).await;
 }

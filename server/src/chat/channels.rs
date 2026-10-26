@@ -454,25 +454,25 @@ pub async fn mark_as_read(
     if marked {
         // Clear the phone notification, if one was pushed (C20 `read`).
         state.push.notify_read(&state, auth.id, channel_id);
-    }
 
-    // 6. Broadcast ChannelRead event to all user's other sessions
-    if let Err(e) = broadcast_to_user(
-        &state.redis,
-        auth.id,
-        &ServerEvent::ChannelRead {
-            channel_id,
-            last_read_message_id: Some(body.last_read_message_id),
-        },
-    )
-    .await
-    {
-        tracing::warn!(
-            user_id = %auth.id,
-            channel_id = %channel_id,
-            error = %e,
-            "Failed to broadcast ChannelRead event"
-        );
+        // 6. Broadcast ChannelRead event to all user's other sessions
+        if let Err(e) = broadcast_to_user(
+            &state.redis,
+            auth.id,
+            &ServerEvent::ChannelRead {
+                channel_id,
+                last_read_message_id: Some(body.last_read_message_id),
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                user_id = %auth.id,
+                channel_id = %channel_id,
+                error = %e,
+                "Failed to broadcast ChannelRead event"
+            );
+        }
     }
 
     Ok(Json(()))

@@ -701,26 +701,26 @@ pub async fn mark_as_read(
     if marked {
         // Clear the phone notification, if one was pushed (C20 `read`).
         state.push.notify_read(&state, auth.id, channel_id);
-    }
 
-    // Broadcast dm_read event to all user's other WebSocket sessions
-    // Note: Broadcast failure shouldn't fail the request since the DB state is already updated
-    if let Err(e) = broadcast_to_user(
-        &state.redis,
-        auth.id,
-        &ServerEvent::DmRead {
-            channel_id,
-            last_read_message_id: Some(body.last_read_message_id),
-        },
-    )
-    .await
-    {
-        tracing::warn!(
-            user_id = %auth.id,
-            channel_id = %channel_id,
-            error = %e,
-            "Failed to broadcast DmRead event"
-        );
+        // Broadcast dm_read event to all user's other WebSocket sessions
+        // Note: Broadcast failure shouldn't fail the request since the DB state is already updated
+        if let Err(e) = broadcast_to_user(
+            &state.redis,
+            auth.id,
+            &ServerEvent::DmRead {
+                channel_id,
+                last_read_message_id: Some(body.last_read_message_id),
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                user_id = %auth.id,
+                channel_id = %channel_id,
+                error = %e,
+                "Failed to broadcast DmRead event"
+            );
+        }
     }
 
     Ok(Json(MarkAsReadResponse {
