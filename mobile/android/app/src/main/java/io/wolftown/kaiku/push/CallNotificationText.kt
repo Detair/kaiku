@@ -45,6 +45,13 @@ interface CallNotificationSink {
 
 /** The localized text of a call notification. */
 object CallNotificationText {
+    /** A ringing notification goes away after this, a bit above the 45 s ring timeout, if its `ended` push is lost. */
+    const val RINGING_TIMEOUT_MS = 60_000L
+
+    /** `setTimeoutAfter` for [n]: only a ringing call times out; a missed call stays. */
+    fun timeoutAfterMs(n: CallNotification): Long? =
+        if (n.kind == CallKind.INCOMING) RINGING_TIMEOUT_MS else null
+
     /** String resource and, when it has a `%1$s` placeholder, the caller name. */
     data class Text(@StringRes val res: Int, val name: String?)
 

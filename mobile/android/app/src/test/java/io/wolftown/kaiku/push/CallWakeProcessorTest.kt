@@ -32,6 +32,7 @@ class CallWakeProcessorTest {
     private val store = PrefsCallNotificationStore(InMemorySharedPreferences())
     private val sink = FakeCallSink()
     private val processor = CallWakeProcessor(tokenStorage, refresher, names, store, sink)
+    private val intake = CallWakeIntake(tokenStorage, store)
 
     private var generation = 1L
     private var refreshToken: String? = "refresh"
@@ -294,7 +295,7 @@ class CallWakeProcessorTest {
         processor.process(ringing(), owner)
         processor.process(ended(CallEndReason.NO_ANSWER), owner)
         val messageSink: NotificationSink = mockk(relaxed = true)
-        val scheduler = WakeScheduler(FakeWakeWorkEnqueuer(), messageSink)
+        val scheduler = WakeScheduler(FakeWakeWorkEnqueuer(), messageSink, CallWakeIntake(tokenStorage, store))
 
         scheduler.onWake(WakeSignal(WakeKind.READ, ch, 0))
 
@@ -308,5 +309,76 @@ class CallWakeProcessorTest {
     fun `call notifications use an id apart from message notifications`() {
         assertNotEquals(AndroidNotificationPresenter.MESSAGE_ID, AndroidNotificationPresenter.CALL_ID)
         assertNotEquals(AndroidNotificationPresenter.SUMMARY_ID, AndroidNotificationPresenter.CALL_ID)
+    }
+
+    @Test
+    fun `ended for an accepted ringing whose work was replaced shows the missed call`() = runTest {
+        // The ringing work never ran: the ended wake replaced it.
+        intake.accept(ringing())
+
+        assertEquals(CallOutcome.MISSED, processor.process(ended(CallEndReason.NO_ANSWER), owner))
+
+        assertEquals(listOf(CallNotification("me", ch, callA, CallKind.MISSED, "Bob")), sink.posts)
+    }
+
+    @Test
+    fun `ended cancelled for an accepted ringing shows the missed call`() = runTest {
+        intake.accept(ringing())
+
+        assertEquals(CallOutcome.MISSED, processor.process(ended(CallEndReason.CANCELLED), owner))
+
+        assertEquals(CallKind.MISSED, sink.shown[ch]?.kind)
+    }
+
+    @Test
+    fun `ended while the ringing work resolves the name leaves no ringing behind`() = runTest {
+        intake.accept(ringing())
+        var stopped = false
+        var nested = false
+        coEvery { names.callerName(ch, bob) } coAnswers {
+            if (!nested) {
+                nested = true
+                // The ended wake arrives and replaces the still running ringing work.
+                assertEquals(CallOutcome.MISSED, processor.process(ended(CallEndReason.NO_ANSWER), owner))
+                stopped = true
+            }
+            "Bob"
+        }
+
+        assertEquals(CallOutcome.IGNORED, processor.process(ringing(), owner) { stopped })
+
+        assertEquals(listOf(CallNotification("me", ch, callA, CallKind.MISSED, "Bob")), sink.posts)
+        assertEquals(CallKind.MISSED, sink.shown[ch]?.kind)
+    }
+
+    @Test
+    fun `late ringing after its missed call posts nothing even if not stopped`() = runTest {
+        intake.accept(ringing())
+        processor.process(ended(CallEndReason.NO_ANSWER), owner)
+        intake.accept(ringing())
+
+        assertEquals(CallOutcome.IGNORED, processor.process(ringing(), owner))
+
+        assertEquals(CallKind.MISSED, sink.shown[ch]?.kind)
+        assertEquals(1, sink.posts.size)
+    }
+
+    @Test
+    fun `ended all_declined for an accepted ringing cancels and forgets it`() = runTest {
+        intake.accept(ringing())
+
+        assertEquals(CallOutcome.CANCELLED, processor.process(ended(CallEndReason.ALL_DECLINED), owner))
+
+        assertEquals(listOf(ch), sink.cancelled)
+        assertNull(store.shown("me", ch))
+    }
+
+    @Test
+    fun `accepting a newer ringing makes the older call's end ignored`() = runTest {
+        intake.accept(ringing(callA))
+        intake.accept(ringing(callB))
+
+        assertEquals(CallOutcome.IGNORED, processor.process(ended(CallEndReason.NO_ANSWER, callA), owner))
+        assertTrue(sink.posts.isEmpty())
     }
 }

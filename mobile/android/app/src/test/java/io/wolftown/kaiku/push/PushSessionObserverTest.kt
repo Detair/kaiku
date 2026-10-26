@@ -5,10 +5,13 @@ import io.mockk.mockk
 import io.mockk.verify
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.testutil.InMemorySharedPreferences
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -16,6 +19,7 @@ class PushSessionObserverTest {
 
     private val sink: NotificationSink = mockk(relaxed = true)
     private val enqueuer = FakeWakeWorkEnqueuer()
+    private val callStore = PrefsCallNotificationStore(InMemorySharedPreferences())
     private var storedRefreshToken: String? = "refresh"
     private val tokenStorage: TokenStorage = mockk {
         every { getRefreshToken() } answers { storedRefreshToken }
@@ -24,7 +28,7 @@ class PushSessionObserverTest {
     @Test
     fun `logout clears notifications and wake work`() = runTest {
         val authState = AuthState(backgroundScope)
-        PushSessionObserver(authState, tokenStorage, sink, enqueuer, backgroundScope).start()
+        PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
 
         authState.setLoggedIn("alice")
         runCurrent()
@@ -39,7 +43,7 @@ class PushSessionObserverTest {
     @Test
     fun `account change clears notifications and wake work`() = runTest {
         val authState = AuthState(backgroundScope)
-        PushSessionObserver(authState, tokenStorage, sink, enqueuer, backgroundScope).start()
+        PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
 
         authState.setLoggedIn("alice")
         runCurrent()
@@ -54,7 +58,7 @@ class PushSessionObserverTest {
     fun `cold start without a stored session clears leftovers`() = runTest {
         storedRefreshToken = null
         val authState = AuthState(backgroundScope)
-        PushSessionObserver(authState, tokenStorage, sink, enqueuer, backgroundScope).start()
+        PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
         runCurrent()
 
         verify(exactly = 1) { sink.cancelAll() }
@@ -64,12 +68,71 @@ class PushSessionObserverTest {
     @Test
     fun `starting signed out with a stored session clears nothing`() = runTest {
         val authState = AuthState(backgroundScope)
-        PushSessionObserver(authState, tokenStorage, sink, enqueuer, backgroundScope).start()
+        PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
 
         authState.setLoggedOut()
         runCurrent()
 
         verify(exactly = 0) { sink.cancelAll() }
         assertEquals(0, enqueuer.cancelAllCount)
+    }
+
+    @Test
+    fun `logout forgets the departing user's calls only`() = runTest {
+        callStore.setShown("alice", "c1", ShownCall("call-1", missed = false))
+        callStore.setShown("alice", "c2", ShownCall("call-2", missed = true))
+        callStore.setShown("bob", "c1", ShownCall("call-3", missed = false))
+        val authState = AuthState(backgroundScope)
+        PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
+
+        authState.setLoggedIn("alice")
+        runCurrent()
+        assertNotNull(callStore.shown("alice", "c1"))
+
+        authState.setLoggedOut()
+        runCurrent()
+
+        assertNull(callStore.shown("alice", "c1"))
+        assertNull(callStore.shown("alice", "c2"))
+        assertEquals(ShownCall("call-3", missed = false), callStore.shown("bob", "c1"))
+    }
+
+    @Test
+    fun `account change forgets the previous user's calls`() = runTest {
+        callStore.setShown("alice", "c1", ShownCall("call-1", missed = false))
+        val authState = AuthState(backgroundScope)
+        PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
+
+        authState.setLoggedIn("alice")
+        runCurrent()
+        authState.setLoggedIn("bob")
+        runCurrent()
+
+        assertNull(callStore.shown("alice", "c1"))
+    }
+
+    @Test
+    fun `cold start without a stored session forgets every call`() = runTest {
+        storedRefreshToken = null
+        callStore.setShown("alice", "c1", ShownCall("call-1", missed = false))
+        callStore.setShown("bob", "c1", ShownCall("call-3", missed = true))
+        val authState = AuthState(backgroundScope)
+        PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
+        runCurrent()
+
+        assertNull(callStore.shown("alice", "c1"))
+        assertNull(callStore.shown("bob", "c1"))
+    }
+
+    @Test
+    fun `starting signed out with a stored session keeps calls`() = runTest {
+        callStore.setShown("alice", "c1", ShownCall("call-1", missed = false))
+        val authState = AuthState(backgroundScope)
+        PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
+
+        authState.setLoggedOut()
+        runCurrent()
+
+        assertNotNull(callStore.shown("alice", "c1"))
     }
 }

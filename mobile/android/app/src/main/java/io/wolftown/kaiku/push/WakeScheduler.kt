@@ -97,6 +97,7 @@ class WorkManagerWakeEnqueuer @Inject constructor(
 class WakeScheduler @Inject constructor(
     private val enqueuer: WakeWorkEnqueuer,
     private val sink: NotificationSink,
+    private val callIntake: CallWakeIntake,
 ) {
     companion object {
         private val logger = Logger.getLogger("WakeScheduler")
@@ -116,7 +117,10 @@ class WakeScheduler @Inject constructor(
             // DM call: the quick call path (name lookup + notification), never a fetch.
             WakeKind.CALL -> {
                 val state = signal.call?.state
-                if (state == CallState.RINGING || state == CallState.ENDED) enqueuer.enqueueCall(signal)
+                if (state == CallState.RINGING || state == CallState.ENDED) {
+                    callIntake.accept(signal)
+                    enqueuer.enqueueCall(signal)
+                }
             }
             WakeKind.UNKNOWN -> Unit
         }

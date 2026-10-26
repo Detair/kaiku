@@ -1,8 +1,12 @@
 package io.wolftown.kaiku.push
 
+import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.testutil.InMemorySharedPreferences
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -10,7 +14,12 @@ class WakeSchedulerTest {
 
     private val enqueuer = FakeWakeWorkEnqueuer()
     private val sink: NotificationSink = mockk(relaxed = true)
-    private val scheduler = WakeScheduler(enqueuer, sink)
+    private var signedIn: String? = "me"
+    private val tokenStorage: TokenStorage = mockk {
+        every { getUserId() } answers { signedIn }
+    }
+    private val callStore = PrefsCallNotificationStore(InMemorySharedPreferences())
+    private val scheduler = WakeScheduler(enqueuer, sink, CallWakeIntake(tokenStorage, callStore))
 
     @Test
     fun `dm wake enqueues work`() {
@@ -85,5 +94,31 @@ class WakeSchedulerTest {
         scheduler.onWake(WakeSignal(WakeKind.READ, "c1", 0))
         assertTrue(enqueuer.calls.isEmpty())
         assertEquals(listOf("c1"), enqueuer.cancelled)
+    }
+
+    @Test
+    fun `accepted ringing call is recorded before its work runs`() {
+        scheduler.onWake(call(CallState.RINGING))
+        assertEquals(ShownCall(callId, missed = false), callStore.shown("me", "c1"))
+    }
+
+    @Test
+    fun `ringing does not downgrade a call already shown as missed`() {
+        callStore.setShown("me", "c1", ShownCall(callId, missed = true))
+        scheduler.onWake(call(CallState.RINGING))
+        assertEquals(ShownCall(callId, missed = true), callStore.shown("me", "c1"))
+    }
+
+    @Test
+    fun `ended call records nothing`() {
+        scheduler.onWake(call(CallState.ENDED, CallEndReason.NO_ANSWER))
+        assertNull(callStore.shown("me", "c1"))
+    }
+
+    @Test
+    fun `ringing while signed out records nothing`() {
+        signedIn = null
+        scheduler.onWake(call(CallState.RINGING))
+        assertNull(callStore.shown("me", "c1"))
     }
 }

@@ -16,7 +16,8 @@ import javax.inject.Singleton
  * Removes the posted message notifications and the queued wake fetches when
  * the signed-in account goes away: on every transition from a signed-in user
  * to signed out or to another user, and at process start when no session is
- * stored at all. Runs without any Activity (started from
+ * stored at all. The departing account's remembered calls are forgotten
+ * with them. Runs without any Activity (started from
  * the Application). The fetch itself also clears notifications when it finds
  * its session ended ([WakeFetchProcessor]).
  */
@@ -26,6 +27,7 @@ class PushSessionObserver @Inject constructor(
     private val tokenStorage: TokenStorage,
     private val sink: NotificationSink,
     private val enqueuer: WakeWorkEnqueuer,
+    private val callStore: CallNotificationStore,
     @ChatCoroutineScope private val scope: CoroutineScope,
 ) {
     companion object {
@@ -49,6 +51,10 @@ class PushSessionObserver @Inject constructor(
                     logger.info("session ended: clearing message notifications and wake work")
                     enqueuer.cancelAll()
                     sink.cancelAll()
+                    // The calls behind those notifications go too, so a later
+                    // `ended` cannot bring back a stale missed call.
+                    val departed = previous
+                    if (departed != null) callStore.clearUser(departed) else callStore.clearAll()
                 }
                 previous = current
                 first = false

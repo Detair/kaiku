@@ -6,8 +6,9 @@ import android.content.SharedPreferences
 data class ShownCall(val callId: String, val missed: Boolean)
 
 /**
- * Per account and DM channel, the call id of the call notification last
- * posted there (ids only). An `ended` wake acts only on that call.
+ * Per account and DM channel, the current call (ids only): recorded when its
+ * ringing wake is accepted ([CallWakeIntake]), before any notification is
+ * posted, so a fast `ended` still finds it. An `ended` wake acts only on that call.
  */
 interface CallNotificationStore {
     fun shown(userId: String, channelId: String): ShownCall?
@@ -15,6 +16,12 @@ interface CallNotificationStore {
     fun setShown(userId: String, channelId: String, call: ShownCall)
 
     fun clear(userId: String, channelId: String)
+
+    /** Forgets every call of [userId] (logout, account change). */
+    fun clearUser(userId: String)
+
+    /** Forgets every call of every account (no session stored at all). */
+    fun clearAll()
 }
 
 /** [CallNotificationStore] in plain SharedPreferences (`notif_calls`), keyed like [PrefsNotificationLedger]. */
@@ -45,6 +52,19 @@ class PrefsCallNotificationStore(
             .remove(key(userId, channelId, CALL_ID))
             .remove(key(userId, channelId, PHASE))
             .apply()
+    }
+
+    @Synchronized
+    override fun clearUser(userId: String) {
+        val prefix = "$userId|"
+        val editor = prefs.edit()
+        prefs.all.keys.filter { it.startsWith(prefix) }.forEach { editor.remove(it) }
+        editor.apply()
+    }
+
+    @Synchronized
+    override fun clearAll() {
+        prefs.edit().clear().apply()
     }
 
     private companion object {

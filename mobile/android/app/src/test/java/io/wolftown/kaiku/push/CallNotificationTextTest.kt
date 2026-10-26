@@ -4,6 +4,8 @@ import io.wolftown.kaiku.R
 import io.wolftown.kaiku.navigation.DeepLinks
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CallNotificationTextTest {
@@ -69,5 +71,17 @@ class CallNotificationTextTest {
 
         assertEquals(call.uri, message.uri)
         assertNotEquals(message.requestCode, call.requestCode)
+    }
+
+    @Test
+    fun `ringing notification times out a bit after the ring timeout`() {
+        val timeout = CallNotificationText.timeoutAfterMs(n(CallKind.INCOMING, "Bob"))
+        assertEquals(CallNotificationText.RINGING_TIMEOUT_MS, timeout)
+        assertTrue(timeout!! > 45_000L)
+    }
+
+    @Test
+    fun `missed call notification never times out`() {
+        assertNull(CallNotificationText.timeoutAfterMs(n(CallKind.MISSED, "Bob")))
     }
 }

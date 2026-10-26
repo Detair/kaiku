@@ -54,7 +54,9 @@ class WakeFetchProcessorTest {
     private val processor = WakeFetchProcessor(
         refresher, tokenStorage, messages, unreadApi, titles, ledger, sink, enqueuer, active, chat, dms,
     )
-    private val scheduler = WakeScheduler(enqueuer, sink)
+    private val scheduler = WakeScheduler(
+        enqueuer, sink, CallWakeIntake(tokenStorage, PrefsCallNotificationStore(InMemorySharedPreferences())),
+    )
 
     private val shown = mutableListOf<ChannelNotification>()
 

@@ -155,7 +155,7 @@ class AndroidNotificationPresenter @Inject constructor(
             .setContentTitle(context.getString(CallNotificationText.of(n.copy(callerName = null)).res))
             .setCategory(category)
             .build()
-        return NotificationCompat.Builder(context, NotificationChannels.DM)
+        val builder = NotificationCompat.Builder(context, NotificationChannels.DM)
             .setSmallIcon(icon)
             .setContentTitle(content)
             .setCategory(category)
@@ -168,7 +168,9 @@ class AndroidNotificationPresenter @Inject constructor(
             .setWhen(System.currentTimeMillis())
             .setShowWhen(true)
             .addExtras(Bundle().apply { putString(EXTRA_USER_ID, n.userId) })
-            .build()
+        // Only a ringing call times out (its `ended` push may be lost); a missed call stays.
+        CallNotificationText.timeoutAfterMs(n)?.let { builder.setTimeoutAfter(it) }
+        return builder.build()
     }
 
     private fun messageNotifications(manager: NotificationManager): List<StatusBarNotification> =
