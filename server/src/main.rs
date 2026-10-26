@@ -29,6 +29,14 @@ async fn main() -> Result<()> {
     let (otel_guard, meter_provider, ingestion_channels) =
         vc_server::observability::init(&config.observability);
     info!(version = env!("CARGO_PKG_VERSION"), "Starting Kaiku Server");
+    for name in &config.unknown_optional_features {
+        tracing::warn!(
+            feature = %name,
+            "Unknown name in KAIKU_OPTIONAL_FEATURES ignored \
+             (known: forum, announcements, events, screening)"
+        );
+    }
+    info!(features = ?config.optional_features, "Optional features");
 
     // Initialize database
     let db_pool = db::create_pool(&config.database_url).await?;
@@ -265,8 +273,11 @@ async fn main() -> Result<()> {
     let custom_status_sweep_handle =
         vc_server::ws::spawn_custom_status_sweep(db_pool.clone(), redis.clone());
 
-    // Start the scheduled-event reminder/status task (every 60 seconds)
-    vc_server::guild::events::scheduler::spawn(db_pool.clone(), redis.clone());
+    // Start the scheduled-event reminder/status task (every 60 seconds) — only
+    // while the scheduled-events feature is on.
+    if config.optional_features.events {
+        vc_server::guild::events::scheduler::spawn(db_pool.clone(), redis.clone());
+    }
 
     info!("Voice SFU server initialized");
 

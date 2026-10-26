@@ -15,6 +15,7 @@ pub mod db;
 pub mod discovery;
 pub mod email;
 pub mod favorites;
+pub mod features;
 pub mod governance;
 pub mod guild;
 pub mod incoming_webhooks;

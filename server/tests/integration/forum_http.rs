@@ -56,7 +56,7 @@ fn req(
 }
 
 async fn setup(pool: &PgPool, perms: GuildPermissions) -> (TestApp, Uuid, Uuid, String) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(pool).await;
     let guild =
         create_guild_with_default_role(pool, owner, perms | GuildPermissions::VIEW_CHANNEL).await;
@@ -96,7 +96,7 @@ async fn create_and_list_forum_post(pool: PgPool) {
 
 #[sqlx::test]
 async fn post_rejected_on_non_forum_channel(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     let guild = create_guild_with_default_role(
         &pool,

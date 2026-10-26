@@ -201,10 +201,10 @@ pub fn create_router(state: AppState) -> Router {
 
     // Other API routes with Write rate limit category (30 req/60s)
     let api_routes = Router::new()
-        .nest("/api/channels", chat::channels_router())
+        .nest("/api/channels", chat::channels_router(&state))
         .nest("/api/messages", chat::messages_router())
-        .nest("/api/forum", chat::forum_router())
-        .nest("/api/guilds", guild::router())
+        .nest("/api/forum", chat::forum_router(&state))
+        .nest("/api/guilds", guild::router(&state))
         .nest(
             "/api/guilds/{id}/filters",
             moderation::filter_handlers::router(),

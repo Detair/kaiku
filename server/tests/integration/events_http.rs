@@ -36,7 +36,7 @@ fn in_hours(h: i64) -> String {
 
 #[sqlx::test]
 async fn owner_creates_event_member_cannot(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::VIEW_CHANNEL).await;
     let owner_token = generate_access_token(&app.config, owner);
@@ -72,7 +72,7 @@ async fn owner_creates_event_member_cannot(pool: PgPool) {
 
 #[sqlx::test]
 async fn rejects_past_start_and_bad_end(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::VIEW_CHANNEL).await;
     let token = generate_access_token(&app.config, owner);
@@ -100,7 +100,7 @@ async fn rejects_past_start_and_bad_end(pool: PgPool) {
 
 #[sqlx::test]
 async fn rsvp_updates_counts_and_clears(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::VIEW_CHANNEL).await;
     let token = generate_access_token(&app.config, owner);
@@ -161,7 +161,7 @@ async fn rsvp_updates_counts_and_clears(pool: PgPool) {
 
 #[sqlx::test]
 async fn invalid_rsvp_rejected(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::VIEW_CHANNEL).await;
     let token = generate_access_token(&app.config, owner);

@@ -298,6 +298,14 @@ pub struct Config {
     /// FCM API base URL. Not an env var: always the Google endpoint outside
     /// tests, which point it at a local mock.
     pub fcm_api_base: String,
+
+    /// Optional features turned on (env: `KAIKU_OPTIONAL_FEATURES`, comma
+    /// list of `forum`, `announcements`, `events`, `screening`). Default: all off.
+    pub optional_features: crate::features::OptionalFeatures,
+
+    /// Unknown names found in `KAIKU_OPTIONAL_FEATURES`; logged as warnings at
+    /// startup (config loads before logging is initialised).
+    pub unknown_optional_features: Vec<String>,
 }
 
 /// Origins presented by the Tauri desktop webview (per platform/webview
@@ -358,6 +366,10 @@ impl Config {
             env_opt("FCM_SERVICE_ACCOUNT_JSON"),
         )?;
         let fcm_api_base = crate::push::fcm::FCM_API_BASE.to_string();
+        let (optional_features, unknown_optional_features) =
+            crate::features::OptionalFeatures::parse(
+                &env::var("KAIKU_OPTIONAL_FEATURES").unwrap_or_default(),
+            );
         let valkey_command_timeout =
             parse_valkey_command_timeout(env_opt("VALKEY_COMMAND_TIMEOUT_MS").as_deref())?;
         if let Some(key) = &fcm_service_account {
@@ -547,6 +559,8 @@ impl Config {
                 .or_else(|| Some("http://ip-api.com/json/{ip}?fields=city,country".to_string())),
             fcm_service_account,
             fcm_api_base,
+            optional_features,
+            unknown_optional_features,
         };
 
         // SameSite=None requires the Secure flag — browsers reject the cookie otherwise
@@ -686,6 +700,8 @@ impl Config {
             geoip_api_url: None,
             fcm_service_account: None,
             fcm_api_base: crate::push::fcm::FCM_API_BASE.into(),
+            optional_features: crate::features::OptionalFeatures::default(),
+            unknown_optional_features: Vec::new(),
         }
     }
 }

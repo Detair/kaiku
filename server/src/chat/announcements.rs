@@ -220,7 +220,13 @@ pub async fn list_followers(
 ///
 /// Spawned after a publish so slow/many followers can't block the publisher.
 /// Each crosspost is flagged `is_crosspost = true` so it is never re-crossposted.
+///
+/// Does nothing while the announcements feature is off: the source channel
+/// keeps working and its follow rows are kept, but nothing is forwarded.
 pub fn spawn_crosspost(state: AppState, source_channel_id: Uuid, content: String) {
+    if !state.config.optional_features.announcements {
+        return;
+    }
     tokio::spawn(async move {
         let follows: Vec<(Uuid,)> = match sqlx::query_as(
             "SELECT target_channel_id FROM announcement_follows WHERE source_channel_id = $1",
