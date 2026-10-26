@@ -134,3 +134,52 @@ mod tests {
         assert!(json.contains("\"pc_type\":\"subscriber\""));
     }
 }
+
+#[doc(hidden)]
+pub mod test_hooks {
+    //! Pause points for integration tests that need a deterministic
+    //! interleaving. Without a registered pause each hook is one uncontended
+    //! lock and an empty map lookup.
+
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    use tokio::sync::Notify;
+    use uuid::Uuid;
+
+    /// A pause registered for one user's next socket.
+    #[derive(Clone, Default)]
+    pub struct Pause {
+        /// Notified when the socket reaches the pause point.
+        pub reached: Arc<Notify>,
+        /// Notify to let the socket continue.
+        pub release: Arc<Notify>,
+    }
+
+    fn pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next socket of `user_id` after it has read its presence
+    /// audience (peers, servers, blocks) and before it subscribes.
+    pub fn pause_after_audience_read(user_id: Uuid) -> Pause {
+        let pause = Pause::default();
+        pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn after_audience_read(user_id: Uuid) {
+        let pause = pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&user_id);
+        if let Some(pause) = pause {
+            pause.reached.notify_one();
+            pause.release.notified().await;
+        }
+    }
+}

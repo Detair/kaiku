@@ -27,9 +27,13 @@
 //! While a user is invisible (`presence:hidden:{user_id}`, mirroring
 //! `users.invisible` together with the `users.presence_seq` it reflects),
 //! connect, disconnect and expiry announce nothing. Writes of the flag carry
-//! the sequence and an older write never replaces a newer one, so reordered
-//! or failed writes cannot leave it stale; every connect re-applies it from
-//! the database.
+//! the sequence and an older write never replaces a newer one. Status changes
+//! and recovery go through one atomic reconcile step ([`reconcile`]) that
+//! sets the flag and publishes only what differs from the last status shown
+//! (`presence:shown:{user_id}`), so reordered, repeated or retried commands
+//! announce each visible change once and never expose an invisible session.
+//! Rich presence (activity, custom status) is published only if the flag is
+//! not hidden at publish time ([`publish_rich`]).
 //!
 //! **Stored vs. shown status.** `users.status` holds the status the user chose
 //! (`online`, `away`, `busy`; `offline` once the last socket closed) and
@@ -94,52 +98,81 @@ pub fn hidden_key(user_id: Uuid) -> String {
     format!("presence:hidden:{user_id}")
 }
 
-/// Keys every lifecycle script gets, in this order: the user's socket set,
-/// the global due set, the user's presence version, the user's hidden flag.
+/// Valkey key holding the last status published for a user (`online`,
+/// `away`, `busy`, `offline`; missing = `offline`). Reconciliation publishes
+/// only when what observers should see differs from it.
+#[must_use]
+pub fn shown_key(user_id: Uuid) -> String {
+    format!("presence:shown:{user_id}")
+}
+
+/// Keys every presence script gets, in this order: the user's socket set, the
+/// global due set, the user's presence version, the user's hidden flag, the
+/// user's last shown status.
 fn lifecycle_keys(user_id: Uuid) -> Vec<String> {
     vec![
         sockets_key(user_id),
         DUE_KEY.to_string(),
         version_key(user_id),
         hidden_key(user_id),
+        shown_key(user_id),
     ]
 }
 
-/// Lua helpers shared by the scripts.
+/// Lua helpers shared by the scripts. Every script gets the user id as
+/// ARGV[1] and the current time (ms) as ARGV[2].
 ///
-/// - `hidden()`: the hidden flag (KEYS[4], value `"{seq}:{0|1}"`) says invisible.
-/// - `set_hidden(seq, bit)`: store the flag unless it already reflects a newer status sequence;
-///   returns whether it was stored.
-/// - `publish(payload, channel)`: publish as a versioned envelope (`INCR` and `PUBLISH` in the same
-///   script, so version order is publish order).
-/// - `announce(payload, channel)`: `publish` unless the payload is empty or the user is hidden.
+/// - `flag()`: the hidden flag (KEYS[4], `"{seq}:{0|1}"`) as `seq, bit` (`nil` if missing).
+/// - `hidden()`: the flag says invisible.
+/// - `publish(status)`: publish a `presence_update` with `status` as a versioned envelope (`INCR`
+///   and `PUBLISH` in the same script, so version order is publish order) and remember it as the
+///   shown status.
+/// - `announce(status)`: `publish` unless the status is empty or the user is hidden.
+/// - `publish_raw(payload)`: publish an unversioned event (rich presence).
+/// - `clear_rich()`: publish "no activity" and "no custom status".
+/// - `live()`: the user has a live socket.
 macro_rules! lua_announce {
     () => {
         r#"
-local function hidden()
-  local flag = redis.call('GET', KEYS[4])
-  return flag ~= false and string.sub(flag, -1) == '1'
-end
-local function set_hidden(seq, bit)
-  local flag = redis.call('GET', KEYS[4])
-  if flag then
-    local stored = tonumber(string.match(flag, '^(%d+):'))
-    if stored and stored > tonumber(seq) then
-      return false
-    end
+local channel = 'presence:' .. ARGV[1]
+local function flag()
+  local value = redis.call('GET', KEYS[4])
+  if not value then
+    return nil, nil
   end
-  redis.call('SET', KEYS[4], seq .. ':' .. bit)
-  return true
+  local seq, bit = string.match(value, '^(%d+):([01])$')
+  return tonumber(seq), bit
 end
-local function publish(payload, channel)
+local function hidden()
+  local _, bit = flag()
+  return bit == '1'
+end
+local function shown()
+  return redis.call('GET', KEYS[5]) or 'offline'
+end
+local function publish(status)
   local v = redis.call('INCR', KEYS[3])
-  redis.call('PUBLISH', channel, '{"v":' .. v .. ',"event":' .. payload .. '}')
+  local event = '{"type":"presence_update","user_id":"' .. ARGV[1] .. '","status":"' .. status .. '"}'
+  redis.call('PUBLISH', channel, '{"v":' .. v .. ',"event":' .. event .. '}')
+  redis.call('SET', KEYS[5], status)
 end
-local function announce(payload, channel)
-  if payload == '' or hidden() then
+local function announce(status)
+  if status == '' or hidden() then
     return
   end
-  publish(payload, channel)
+  publish(status)
+end
+local function publish_raw(payload)
+  if payload ~= '' then
+    redis.call('PUBLISH', channel, payload)
+  end
+end
+local function clear_rich()
+  publish_raw('{"type":"rich_presence_update","user_id":"' .. ARGV[1] .. '","activity":null}')
+  publish_raw('{"type":"custom_status_update","user_id":"' .. ARGV[1] .. '","custom_status":null}')
+end
+local function live()
+  return redis.call('ZCOUNT', KEYS[1], '(' .. ARGV[2], '+inf') > 0
 end
 "#
     };
@@ -149,68 +182,65 @@ end
 /// whose own entry had expired counts as new again, and raises the user's
 /// entry in the due set.
 ///
-/// ARGV = now ms, expiry ms, socket id, key TTL ms, event payload (empty:
-/// publish nothing), publish channel, user id, status sequence and hidden bit
-/// read from the database (empty: unknown, keep the flag). Returns 1 on 0 → 1,
-/// plus 2 if the stored flag claims a newer status sequence than the one
-/// given (see `replace_future_flag`).
+/// ARGV = user id, now ms, expiry ms, socket id, key TTL ms, status to
+/// announce on 0 → 1 (empty: announce nothing), status sequence and hidden
+/// bit read from the database (empty: unknown).
+///
+/// The status is announced only if the flag is not newer than that sequence:
+/// a stale read never publishes (the caller reconciles instead). Returns 1 on
+/// 0 → 1, plus 2 if the flag was newer than the sequence given.
 const SOCKET_ONLINE_SCRIPT: &str = concat!(
     lua_announce!(),
     r"
-local ahead = 0
-if ARGV[8] ~= '' and not set_hidden(ARGV[8], ARGV[9]) then
-  ahead = 2
+local stale = false
+if ARGV[7] ~= '' then
+  local seq = flag()
+  if seq and seq > tonumber(ARGV[7]) then
+    stale = true
+  else
+    redis.call('SET', KEYS[4], ARGV[7] .. ':' .. ARGV[8])
+  end
 end
-redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[2])
 local before = redis.call('ZCARD', KEYS[1])
-redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
-redis.call('PEXPIRE', KEYS[1], ARGV[4])
-redis.call('ZADD', KEYS[2], 'GT', ARGV[2], ARGV[7])
-if before == 0 then
-  announce(ARGV[5], ARGV[6])
-  return 1 + ahead
+redis.call('ZADD', KEYS[1], ARGV[3], ARGV[4])
+redis.call('PEXPIRE', KEYS[1], ARGV[5])
+redis.call('ZADD', KEYS[2], 'GT', ARGV[3], ARGV[1])
+local result = 0
+if stale then
+  result = 2
 end
-return ahead
+if before == 0 then
+  if not stale then
+    announce(ARGV[6])
+  end
+  return result + 1
+end
+return result
 "
 );
-
-/// Replace a hidden flag whose status sequence is ahead of the database's
-/// current one (a flag the database does not know, e.g. after a restore).
-/// Compare-and-set: nothing happens if the flag is no longer ahead.
-///
-/// ARGV = current status sequence, hidden bit. Returns 1 if replaced.
-const REPLACE_FUTURE_FLAG_SCRIPT: &str = r"
-local flag = redis.call('GET', KEYS[4])
-if not flag then
-  return 0
-end
-local stored = tonumber(string.match(flag, '^(%d+):'))
-if stored and stored > tonumber(ARGV[1]) then
-  redis.call('SET', KEYS[4], ARGV[1] .. ':' .. ARGV[2])
-  return 1
-end
-return 0
-";
 
 /// Remove a socket, then prune expired members. Reports 1 → 0 when the set is
 /// empty afterwards and this call removed anything (its own socket, expired
 /// ones) or the user's due entry: the due entry marks "online, `offline` not
 /// announced yet" and survives the key's own TTL. So an `offline` is never
-/// lost and never sent twice.
+/// lost and never sent twice. Nothing is announced while hidden.
 ///
-/// ARGV = now ms, socket id, event payload, publish channel, user id.
+/// ARGV = user id, now ms, socket id, "1" to announce.
 const SOCKET_OFFLINE_SCRIPT: &str = concat!(
     lua_announce!(),
     r"
-local removed = redis.call('ZREM', KEYS[1], ARGV[2])
-local pruned = redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+local removed = redis.call('ZREM', KEYS[1], ARGV[3])
+local pruned = redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[2])
 local after = redis.call('ZCARD', KEYS[1])
 if after > 0 then
   return 0
 end
-local was_due = redis.call('ZREM', KEYS[2], ARGV[5])
+local was_due = redis.call('ZREM', KEYS[2], ARGV[1])
 if removed + pruned + was_due > 0 then
-  announce(ARGV[3], ARGV[4])
+  if ARGV[4] == '1' then
+    announce('offline')
+  end
   return 1
 end
 return 0
@@ -222,69 +252,92 @@ return 0
 /// the user was still due, and drop the due entry; otherwise set the due score
 /// to the latest remaining expiry.
 ///
-/// ARGV = now ms, event payload, publish channel, user id.
+/// ARGV = user id, now ms.
 const EXPIRE_SCRIPT: &str = concat!(
     lua_announce!(),
     r"
-local pruned = redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+local pruned = redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[2])
 local after = redis.call('ZCARD', KEYS[1])
 if after == 0 then
-  local was_due = redis.call('ZREM', KEYS[2], ARGV[4])
+  local was_due = redis.call('ZREM', KEYS[2], ARGV[1])
   if pruned + was_due > 0 then
-    announce(ARGV[2], ARGV[3])
+    announce('offline')
     return 1
   end
   return 0
 end
 local top = redis.call('ZRANGE', KEYS[1], -1, -1, 'WITHSCORES')
-redis.call('ZADD', KEYS[2], top[2], ARGV[4])
+redis.call('ZADD', KEYS[2], top[2], ARGV[1])
 return 0
 "
 );
 
-/// Status change chosen by the user: store the hidden flag for this status
-/// sequence, then publish (versioned) unless the payload is empty. A write
-/// older than the stored flag changes and publishes nothing (a newer status
-/// change already did). The hidden flag does not suppress this publish:
-/// entering invisible announces `offline` once.
+/// Bring what observers see in line with the user's state as of a status
+/// sequence read from (or just written to) the database.
 ///
-/// ARGV = status sequence, hidden bit, event payload, publish channel.
-/// Returns 1 if applied.
-const SET_STATUS_SCRIPT: &str = concat!(
+/// If the flag is newer than that sequence, nothing changes and the flag
+/// value is returned: a newer status change is (or was) reconciling itself.
+/// Otherwise the flag is set and the target view is computed: `offline` while
+/// hidden or without a live socket, else the status. A `presence_update` is
+/// published only if it differs from the last one shown. Becoming hidden also
+/// clears activity and custom status; becoming visible again (the flag said
+/// hidden) re-sends them.
+///
+/// ARGV = user id, now ms, status sequence, hidden bit, status, activity
+/// event JSON, custom status event JSON (both may be empty).
+/// Returns `{1, 1 if published}` or `{0, flag value}`.
+const RECONCILE_SCRIPT: &str = concat!(
     lua_announce!(),
     r"
-if not set_hidden(ARGV[1], ARGV[2]) then
-  return 0
+local seq, bit = flag()
+if seq and seq > tonumber(ARGV[3]) then
+  return {0, redis.call('GET', KEYS[4])}
 end
-if ARGV[3] ~= '' then
-  publish(ARGV[3], ARGV[4])
+redis.call('SET', KEYS[4], ARGV[3] .. ':' .. ARGV[4])
+local was_hidden = bit == '1'
+local target = ARGV[5]
+if ARGV[4] == '1' or not live() then
+  target = 'offline'
 end
-return 1
+local published = 0
+if shown() ~= target then
+  publish(target)
+  published = 1
+end
+if ARGV[4] == '1' and not was_hidden then
+  clear_rich()
+elseif ARGV[4] == '0' and was_hidden and target ~= 'offline' then
+  publish_raw(ARGV[6])
+  publish_raw(ARGV[7])
+end
+return {1, published}
 "
 );
 
-/// Late announcement (a socket that could not announce at registration, or a
-/// status change whose publish failed): store the hidden flag for the status
-/// sequence read from the database, then publish. Invisible: the `offline`
-/// payload is published regardless (the one intentional announcement).
-/// Visible: only while the user has a live socket. Nothing if a newer status
-/// change already wrote the flag.
+/// Replace the hidden flag with `ARGV[3]` only if it still holds exactly
+/// `ARGV[2]` (the value a reconcile found ahead of the database).
+/// Compare-and-set on the value, so a concurrent newer write is never undone.
 ///
-/// ARGV = now ms, status sequence, hidden bit, event payload, publish channel.
-const SYNC_ANNOUNCE_SCRIPT: &str = concat!(
-    lua_announce!(),
-    r"
-if not set_hidden(ARGV[2], ARGV[3]) then
-  return 0
-end
-if ARGV[3] == '1' then
-  publish(ARGV[4], ARGV[5])
+/// ARGV = user id, now ms, expected flag value, new flag value.
+const REPLACE_FUTURE_FLAG_SCRIPT: &str = r"
+if redis.call('GET', KEYS[4]) == ARGV[3] then
+  redis.call('SET', KEYS[4], ARGV[4])
   return 1
 end
-if redis.call('ZCOUNT', KEYS[1], '(' .. ARGV[1], '+inf') == 0 then
+return 0
+";
+
+/// Publish an unversioned rich-presence event (activity, custom status)
+/// unless the user is hidden at publish time.
+///
+/// ARGV = user id, now ms, event JSON. Returns 1 if published.
+const PUBLISH_RICH_SCRIPT: &str = concat!(
+    lua_announce!(),
+    r"
+if hidden() then
   return 0
 end
-announce(ARGV[4], ARGV[5])
+publish_raw(ARGV[3])
 return 1
 "
 );
@@ -338,6 +391,10 @@ impl Visibility {
             "0"
         }
     }
+
+    fn flag_value(self) -> String {
+        format!("{}:{}", self.seq, self.bit())
+    }
 }
 
 /// Register or refresh `socket_id`; `true` when it is the user's first live
@@ -348,24 +405,7 @@ pub async fn socket_online(
     socket_id: Uuid,
     now_ms: i64,
 ) -> Result<bool, PresenceError> {
-    socket_online_announce(redis, user_id, socket_id, now_ms, None, None).await
-}
-
-/// [`socket_online`] that also announces the 0 → 1 transition.
-///
-/// On the transition it publishes `announce` (versioned) on
-/// `presence:{user_id}` in the same atomic step, unless the user is hidden.
-/// `visibility` (read from the database) updates the hidden flag first,
-/// unless the flag reflects a newer status change.
-pub async fn socket_online_announce(
-    redis: &Client,
-    user_id: Uuid,
-    socket_id: Uuid,
-    now_ms: i64,
-    announce: Option<&str>,
-    visibility: Option<Visibility>,
-) -> Result<bool, PresenceError> {
-    socket_online_detailed(redis, user_id, socket_id, now_ms, announce, visibility)
+    socket_online_detailed(redis, user_id, socket_id, now_ms, None, None)
         .await
         .map(|outcome| outcome.first)
 }
@@ -375,18 +415,23 @@ pub async fn socket_online_announce(
 pub struct OnlineOutcome {
     /// First live socket (0 → 1).
     pub first: bool,
-    /// The hidden flag claims a newer status sequence than `visibility`; the
-    /// caller re-checks the database ([`replace_future_flag`]).
-    pub flag_ahead: bool,
+    /// The hidden flag is newer than the sequence given: nothing was
+    /// announced, and the caller reconciles from a fresh database read.
+    pub stale: bool,
 }
 
-/// [`socket_online_announce`] with the full [`OnlineOutcome`].
+/// Register or refresh `socket_id`.
+///
+/// On the 0 → 1 transition it announces `status` (versioned) in the same
+/// atomic step, unless the user is hidden or `visibility` (read from the
+/// database together with `status`) is older than the hidden flag. A known
+/// `visibility` is stored as the flag.
 pub async fn socket_online_detailed(
     redis: &Client,
     user_id: Uuid,
     socket_id: Uuid,
     now_ms: i64,
-    announce: Option<&str>,
+    status: Option<&str>,
     visibility: Option<Visibility>,
 ) -> Result<OnlineOutcome, PresenceError> {
     let ttl = ttl_ms();
@@ -395,13 +440,12 @@ pub async fn socket_online_detailed(
             SOCKET_ONLINE_SCRIPT,
             lifecycle_keys(user_id),
             vec![
+                user_id.to_string(),
                 now_ms.to_string(),
                 now_ms.saturating_add(ttl).to_string(),
                 socket_id.to_string(),
                 key_ttl_ms().to_string(),
-                announce.unwrap_or_default().to_string(),
-                presence_channel(user_id),
-                user_id.to_string(),
+                status.unwrap_or_default().to_string(),
                 visibility.map(|v| v.seq.to_string()).unwrap_or_default(),
                 visibility
                     .map(Visibility::bit)
@@ -412,25 +456,8 @@ pub async fn socket_online_detailed(
         .await?;
     Ok(OnlineOutcome {
         first: result & 1 == 1,
-        flag_ahead: result & 2 == 2,
+        stale: result & 2 == 2,
     })
-}
-
-/// Replace the hidden flag with `visibility` (the database's current state)
-/// if the flag claims a newer status sequence; `true` if replaced.
-pub async fn replace_future_flag(
-    redis: &Client,
-    user_id: Uuid,
-    visibility: Visibility,
-) -> Result<bool, PresenceError> {
-    let replaced: i64 = redis
-        .eval(
-            REPLACE_FUTURE_FLAG_SCRIPT,
-            lifecycle_keys(user_id),
-            vec![visibility.seq.to_string(), visibility.bit().to_string()],
-        )
-        .await?;
-    Ok(replaced == 1)
 }
 
 /// Remove `socket_id`; `true` when no live socket remains (1 → 0).
@@ -463,28 +490,22 @@ async fn socket_offline_inner(
     now_ms: i64,
     announce: bool,
 ) -> Result<bool, PresenceError> {
-    let payload = if announce {
-        status_event_json(user_id, "offline")
-    } else {
-        String::new()
-    };
     let last: i64 = redis
         .eval(
             SOCKET_OFFLINE_SCRIPT,
             lifecycle_keys(user_id),
             vec![
+                user_id.to_string(),
                 now_ms.to_string(),
                 socket_id.to_string(),
-                payload,
-                presence_channel(user_id),
-                user_id.to_string(),
+                if announce { "1" } else { "0" }.to_string(),
             ],
         )
         .await?;
     Ok(last == 1)
 }
 
-/// Sweeper step for one user (see [`sweep_expired`]); `true` when the user's
+/// Sweeper step for one user (see [`sweep_users`]); `true` when the user's
 /// last socket expired (1 → 0, `offline` announced unless hidden).
 pub async fn expire_user(
     redis: &Client,
@@ -495,71 +516,119 @@ pub async fn expire_user(
         .eval(
             EXPIRE_SCRIPT,
             lifecycle_keys(user_id),
-            vec![
-                now_ms.to_string(),
-                status_event_json(user_id, "offline"),
-                presence_channel(user_id),
-                user_id.to_string(),
-            ],
+            vec![user_id.to_string(), now_ms.to_string()],
         )
         .await?;
     Ok(last == 1)
 }
 
-/// Publish a status the user chose (versioned) and store the hidden flag.
-///
-/// The flag is stored for `visibility`; `status = None` publishes nothing.
-/// Returns `false` if a newer status change already wrote the flag (nothing
-/// changed or published).
-pub async fn publish_chosen_status(
-    redis: &Client,
-    user_id: Uuid,
-    status: Option<&str>,
-    visibility: Visibility,
-) -> Result<bool, PresenceError> {
-    let payload = status.map(|s| status_event_json(user_id, s));
-    let applied: i64 = redis
-        .eval(
-            SET_STATUS_SCRIPT,
-            lifecycle_keys(user_id),
-            vec![
-                visibility.seq.to_string(),
-                visibility.bit().to_string(),
-                payload.unwrap_or_default(),
-                presence_channel(user_id),
-            ],
-        )
-        .await?;
-    Ok(applied == 1)
+/// A user's presence state as stored in the database, for [`reconcile`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresenceTruth {
+    /// Visibility and the status sequence it was read or written at.
+    pub visibility: Visibility,
+    /// Status to show while visible and live (`online`, `away`, `busy`).
+    pub status: String,
+    /// `rich_presence_update` JSON to re-send when becoming visible (empty:
+    /// none).
+    pub activity_event: String,
+    /// `custom_status_update` JSON to re-send when becoming visible (empty:
+    /// none).
+    pub custom_status_event: String,
 }
 
-/// Late announcement: repair the hidden flag, then publish `status`.
-///
-/// The flag is stored for `visibility` unless a newer status change wrote it.
-/// An invisible user's `offline` is published regardless of live sockets; a
-/// visible status only while the user has a live socket. Returns whether
-/// something was published.
-pub async fn sync_and_announce(
+/// What [`reconcile`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reconciled {
+    /// The flag was updated; `published` tells whether a status was published.
+    Applied {
+        /// A `presence_update` was published.
+        published: bool,
+    },
+    /// The hidden flag is newer than the truth given; nothing changed.
+    FlagAhead {
+        /// The flag value found (`"{seq}:{bit}"`).
+        flag: String,
+    },
+}
+
+/// Make observers see `truth`, atomically with the hidden flag (see
+/// [`RECONCILE_SCRIPT`]): status changes, late announcements and stale
+/// registrations all go through here.
+pub async fn reconcile(
     redis: &Client,
     user_id: Uuid,
-    visibility: Visibility,
-    status: &str,
+    truth: &PresenceTruth,
     now_ms: i64,
-) -> Result<bool, PresenceError> {
-    let done: i64 = redis
+) -> Result<Reconciled, PresenceError> {
+    let (applied, detail): (i64, fred::types::Value) = redis
         .eval(
-            SYNC_ANNOUNCE_SCRIPT,
+            RECONCILE_SCRIPT,
             lifecycle_keys(user_id),
             vec![
+                user_id.to_string(),
                 now_ms.to_string(),
-                visibility.seq.to_string(),
-                visibility.bit().to_string(),
-                status_event_json(user_id, status),
-                presence_channel(user_id),
+                truth.visibility.seq.to_string(),
+                truth.visibility.bit().to_string(),
+                truth.status.clone(),
+                truth.activity_event.clone(),
+                truth.custom_status_event.clone(),
             ],
         )
         .await?;
-    Ok(done == 1)
+    if applied == 1 {
+        Ok(Reconciled::Applied {
+            published: detail.as_i64() == Some(1),
+        })
+    } else {
+        Ok(Reconciled::FlagAhead {
+            flag: detail.as_string().unwrap_or_default(),
+        })
+    }
+}
+
+/// Replace a hidden flag that is ahead of the database (unknown to it, e.g.
+/// after a restore) with `visibility`, but only if it still holds exactly
+/// `expected`; `true` if replaced.
+pub async fn replace_future_flag(
+    redis: &Client,
+    user_id: Uuid,
+    expected: &str,
+    visibility: Visibility,
+) -> Result<bool, PresenceError> {
+    let replaced: i64 = redis
+        .eval(
+            REPLACE_FUTURE_FLAG_SCRIPT,
+            lifecycle_keys(user_id),
+            vec![
+                user_id.to_string(),
+                String::new(),
+                expected.to_string(),
+                visibility.flag_value(),
+            ],
+        )
+        .await?;
+    Ok(replaced == 1)
+}
+
+/// Publish a rich-presence event (activity or custom status) unless the user
+/// is hidden at publish time; `true` if published.
+pub async fn publish_rich(
+    redis: &Client,
+    user_id: Uuid,
+    event: &crate::ws::ServerEvent,
+) -> Result<bool, PresenceError> {
+    let Ok(payload) = serde_json::to_string(event) else {
+        return Ok(false);
+    };
+    let published: i64 = redis
+        .eval(
+            PUBLISH_RICH_SCRIPT,
+            lifecycle_keys(user_id),
+            vec![user_id.to_string(), String::new(), payload],
+        )
+        .await?;
+    Ok(published == 1)
 }
 
 /// The users among `user_ids` that have at least one live socket. One Valkey
@@ -681,14 +750,33 @@ pub async fn sweep_expired(
         // Expiries are positive Unix milliseconds.
         .zrangebyscore(DUE_KEY, 0_i64, now_ms, false, Some((0, limit)))
         .await?;
-    let mut offline = Vec::new();
+    let mut users = Vec::with_capacity(due.len());
     for id in due {
-        let Ok(user_id) = Uuid::parse_str(&id) else {
-            let _: i64 = redis.zrem(DUE_KEY, id).await?;
-            continue;
-        };
-        if expire_user(redis, user_id, now_ms).await? {
-            offline.push(user_id);
+        match Uuid::parse_str(&id) {
+            Ok(user_id) => users.push(user_id),
+            Err(_) => {
+                let _: i64 = redis.zrem(DUE_KEY, id).await?;
+            }
+        }
+    }
+    sweep_users(db, redis, &users, now_ms).await
+}
+
+/// The sweep for given users only (see [`sweep_expired`]).
+///
+/// Each runs the atomic expire step; a user whose last socket expired gets
+/// `offline` (unless hidden) and a stored `online` reset to `offline`.
+/// Returns those users.
+pub async fn sweep_users(
+    db: &sqlx::PgPool,
+    redis: &Client,
+    users: &[Uuid],
+    now_ms: i64,
+) -> Result<Vec<Uuid>, PresenceError> {
+    let mut offline = Vec::new();
+    for user_id in users {
+        if expire_user(redis, *user_id, now_ms).await? {
+            offline.push(*user_id);
         }
     }
     if !offline.is_empty() {
@@ -839,10 +927,6 @@ pub fn author_status(stored: &str, live: Option<bool>, hidden_flag: Option<bool>
 #[must_use]
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
-}
-
-fn presence_channel(user_id: Uuid) -> String {
-    crate::ws::channels::user_presence(user_id)
 }
 
 #[cfg(test)]

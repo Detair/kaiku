@@ -19,8 +19,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::events::{
-    broadcast_presence_update, broadcast_to_channel, channels, ClientEvent, ClientMessageState,
-    OutboundMsg, ServerEvent,
+    broadcast_to_channel, channels, ClientEvent, ClientMessageState, OutboundMsg, ServerEvent,
 };
 use crate::api::AppState;
 use crate::auth::jwt;
@@ -585,6 +584,8 @@ async fn handle_socket(
         tokio::sync::RwLock::new(blocked_ids.union(&blocked_by_ids).copied().collect()),
     );
 
+    crate::ws::test_hooks::after_audience_read(user_id).await;
+
     // Presence audience: whose presence this socket forwards (updated when an
     // audience notice arrives), the server channels it follows, and the last
     // presence version sent per peer.
@@ -598,6 +599,7 @@ async fn handle_socket(
         versions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     };
     let (audience_tx, mut audience_rx) = mpsc::channel::<()>(1);
+    let audience_wake = audience_tx.clone();
     let audience_pending: Arc<std::sync::Mutex<AudiencePending>> = Arc::default();
 
     // Spawn task to handle Redis pub/sub. The socket owns the subscriber client
@@ -713,6 +715,16 @@ async fn handle_socket(
     } else {
         false
     };
+    if presence_registered {
+        // Peers, servers and block sets were read before the subscriptions
+        // went live; a change in between published a notice this socket never
+        // saw. Reload them once now that every notice reaches it.
+        audience_pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .full = true;
+        let _ = audience_wake.try_send(());
+    }
 
     if exit.is_none() {
         // Per-connection mutable state for rate limiting and deduplication
@@ -794,6 +806,15 @@ async fn handle_socket(
                 }
 
                 _ = ping_interval.tick() => {
+                    // Audience work that failed (database error) is retried
+                    // with the heartbeat.
+                    if audience_pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .has_work()
+                    {
+                        let _ = audience_wake.try_send(());
+                    }
                     if awaiting_pong || sender_handle.is_finished() {
                         info!("WebSocket ping timeout: user={}", user_id);
                         break;
@@ -815,6 +836,7 @@ async fn handle_socket(
                         presence: &presence,
                         blocked_users: &blocked_users,
                         tx: &tx,
+                        retry: &audience_pending,
                     };
                     let refreshed = if pending.full {
                         refresh_presence_audience(&state, audience).await
@@ -1052,6 +1074,16 @@ async fn send_presence_snapshot(
                 continue;
             }
             versions.insert(snap.user_id, version);
+        } else if let std::collections::hash_map::Entry::Vacant(entry) =
+            versions.entry(snap.user_id)
+        {
+            // No versions (Valkey unreachable): version 0, so every published
+            // update is newer.
+            entry.insert(0);
+        } else {
+            // A peer that already got a versioned update keeps it; the
+            // versionless snapshot could be older.
+            continue;
         }
         let status = connections::effective_status(
             &snap.status,
@@ -1121,6 +1153,20 @@ struct AudienceRefresh<'a> {
     presence: &'a PresenceState,
     blocked_users: &'a tokio::sync::RwLock<HashSet<Uuid>>,
     tx: &'a mpsc::Sender<OutboundMsg>,
+    /// Work that failed (database error) goes back here and is retried with
+    /// the next heartbeat; it is never dropped.
+    retry: &'a std::sync::Mutex<AudiencePending>,
+}
+
+impl AudienceRefresh<'_> {
+    fn requeue(&self, full: bool, targets: impl IntoIterator<Item = Uuid>) {
+        let mut pending = self
+            .retry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pending.full |= full;
+        pending.targets.extend(targets);
+    }
 }
 
 /// An audience notice arrived for this user (friendship, block or own server
@@ -1148,7 +1194,11 @@ async fn refresh_presence_audience(
     let (peers, guilds, blocked, blocked_by) = match loaded.await {
         Ok(loaded) => loaded,
         Err(e) => {
-            warn!("Failed to refresh presence audience for {}: {}", user_id, e);
+            warn!(
+                "Failed to refresh presence audience for {} (retried with the next heartbeat): {}",
+                user_id, e
+            );
+            audience.requeue(true, []);
             return Ok(());
         }
     };
@@ -1187,7 +1237,11 @@ async fn recheck_presence_peers(
         let allowed = match is_presence_peer(&state.db, audience.user_id, target).await {
             Ok(allowed) => allowed,
             Err(e) => {
-                warn!("Failed to re-check presence peer {}: {}", target, e);
+                warn!(
+                    "Failed to re-check presence peer {} (retried with the next heartbeat): {}",
+                    target, e
+                );
+                audience.requeue(false, [target]);
                 continue;
             }
         };
@@ -1559,11 +1613,13 @@ pub async fn handle_client_message(
             msg_state.activity.last_update = Some(now);
             activity.clone_into(&mut msg_state.activity.last_activity);
 
-            // Broadcast to user's presence subscribers (stored only while
-            // invisible, whichever device set it)
-            if !is_hidden(&state.db, user_id).await {
-                let event = ServerEvent::RichPresenceUpdate { user_id, activity };
-                broadcast_presence_update(state, user_id, &event).await;
+            // Broadcast to user's presence subscribers, unless the user is
+            // invisible at publish time (whichever device set it).
+            let event = ServerEvent::RichPresenceUpdate { user_id, activity };
+            if let Err(e) =
+                crate::presence::connections::publish_rich(&state.redis, user_id, &event).await
+            {
+                crate::presence::connections::log_unavailable(&e);
             }
         }
 
@@ -1625,13 +1681,16 @@ pub async fn handle_client_message(
             msg_state.custom_status.last_update = Some(now);
             msg_state.custom_status.last_custom_status = Some(custom_status.clone());
 
-            // Broadcast to presence subscribers (stored only while invisible)
-            if !is_hidden(&state.db, user_id).await {
-                let event = ServerEvent::CustomStatusUpdate {
-                    user_id,
-                    custom_status,
-                };
-                broadcast_presence_update(state, user_id, &event).await;
+            // Broadcast to presence subscribers, unless the user is invisible
+            // at publish time.
+            let event = ServerEvent::CustomStatusUpdate {
+                user_id,
+                custom_status,
+            };
+            if let Err(e) =
+                crate::presence::connections::publish_rich(&state.redis, user_id, &event).await
+            {
+                crate::presence::connections::log_unavailable(&e);
             }
             debug!("User {} updated custom status", user_id);
         }
@@ -2312,6 +2371,12 @@ pub(crate) struct AudiencePending {
     targets: HashSet<Uuid>,
 }
 
+impl AudiencePending {
+    fn has_work(&self) -> bool {
+        self.full || !self.targets.is_empty()
+    }
+}
+
 /// Record an audience notice and wake the socket loop. `changed` (another
 /// user's server membership changed) asks for a cheap re-check of that user;
 /// `None`, or the socket's own user, for a full reload. Repeated notices
@@ -2402,20 +2467,21 @@ pub fn spawn_custom_status_sweep(
 
 /// Store the status the user chose. `offline` from a client means "appear
 /// offline" (invisible): it is kept across reconnects like `away`/`busy`.
-/// Bumps `presence_seq`; returns whether the user was invisible before and
-/// the new sequence.
+/// Bumps `presence_seq`; returns the new sequence and the stored activity and
+/// custom status (to re-send when the user becomes visible).
 async fn set_chosen_status(
     state: &AppState,
     user_id: Uuid,
     status: &str,
-) -> Result<(bool, i64), sqlx::Error> {
+) -> Result<TruthRow, sqlx::Error> {
     sqlx::query_as(
         r"
         UPDATE users u
         SET status = $1::user_status, invisible = $2, presence_seq = u.presence_seq + 1
-        FROM (SELECT invisible FROM users WHERE id = $3) prev
         WHERE u.id = $3
-        RETURNING prev.invisible, u.presence_seq
+        RETURNING
+            CASE WHEN u.invisible THEN 'invisible' ELSE u.status::text END,
+            u.presence_seq, u.activity, u.custom_status
         ",
     )
     .bind(status)
@@ -2425,15 +2491,58 @@ async fn set_chosen_status(
     .await
 }
 
-/// `set_status`: store the chosen status and tell presence subscribers.
+/// Stored presence (see `stored_presence_sql!`), status sequence, activity and
+/// custom status of a user.
+type TruthRow = (
+    String,
+    i64,
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
+);
+
+/// The user's presence state as of its status sequence, for
+/// [`connections::reconcile`](crate::presence::connections::reconcile).
+fn truth_from_row(
+    user_id: Uuid,
+    (stored, seq, activity, custom_status): TruthRow,
+) -> crate::presence::connections::PresenceTruth {
+    let activity_event = activity
+        .and_then(|a| serde_json::from_value::<crate::presence::Activity>(a).ok())
+        .and_then(|activity| {
+            serde_json::to_string(&ServerEvent::RichPresenceUpdate {
+                user_id,
+                activity: Some(activity),
+            })
+            .ok()
+        })
+        .unwrap_or_default();
+    let custom_status_event = custom_status
+        .and_then(|c| serde_json::from_value::<crate::presence::CustomStatus>(c).ok())
+        .and_then(|cs| {
+            serde_json::to_string(&ServerEvent::CustomStatusUpdate {
+                user_id,
+                custom_status: Some(cs),
+            })
+            .ok()
+        })
+        .unwrap_or_default();
+    crate::presence::connections::PresenceTruth {
+        visibility: visibility_of(&stored, seq),
+        status: crate::presence::connections::effective_status(&stored, Some(true)).to_string(),
+        activity_event,
+        custom_status_event,
+    }
+}
+
+/// `set_status`: store the chosen status and reconcile what observers see in
+/// the same atomic Valkey step as the hidden flag
+/// ([`connections::reconcile`](crate::presence::connections::reconcile)).
+/// Entering invisible announces `offline` once (and clears activity and
+/// custom status); leaving it announces the status and re-sends them. A
+/// change that a newer one already overtook publishes nothing.
 ///
-/// - Entering invisible (`offline`) announces `offline` once and hides the custom status; while
-///   invisible nothing else is announced.
-/// - Leaving invisible announces the status and re-sends activity and custom status.
-///
-/// Returns `false` if the announcement could not be published (Valkey); the
-/// socket then retries on its next heartbeat ([`presence_socket_refresh`]),
-/// which also repairs the hidden flag.
+/// Returns `false` if Valkey could not be reached; the socket then retries on
+/// its next heartbeat ([`presence_socket_refresh`]).
 async fn set_presence_status(
     state: &AppState,
     user_id: Uuid,
@@ -2441,74 +2550,66 @@ async fn set_presence_status(
 ) -> Result<bool, sqlx::Error> {
     use crate::presence::connections;
 
-    let (was_invisible, seq) = set_chosen_status(state, user_id, status).await?;
-    let invisible = status == "offline";
-    let announce = (!(invisible && was_invisible)).then_some(status);
-    let visibility = connections::Visibility {
-        seq,
-        hidden: invisible,
-    };
-    // `false`: a newer status change already wrote the flag and announced.
-    let applied =
-        match connections::publish_chosen_status(&state.redis, user_id, announce, visibility).await
-        {
-            Ok(applied) => applied,
-            Err(e) => {
-                connections::log_unavailable(&e);
-                return Ok(false);
-            }
-        };
-
-    if applied && invisible && !was_invisible {
-        let hide_event = ServerEvent::CustomStatusUpdate {
-            user_id,
-            custom_status: None,
-        };
-        broadcast_presence_update(state, user_id, &hide_event).await;
-    }
-    if applied && was_invisible && !invisible {
-        resend_rich_presence(state, user_id).await;
-    }
-    Ok(true)
-}
-
-/// Re-send a user's stored activity and custom status to presence
-/// subscribers (after leaving invisible).
-async fn resend_rich_presence(state: &AppState, user_id: Uuid) {
-    let row: Result<(Option<serde_json::Value>, Option<serde_json::Value>), _> =
-        sqlx::query_as("SELECT activity, custom_status FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&state.db)
-            .await;
-    let Ok((activity, custom_status)) = row else {
-        return;
-    };
-    if let Some(activity) =
-        activity.and_then(|a| serde_json::from_value::<crate::presence::Activity>(a).ok())
-    {
-        let event = ServerEvent::RichPresenceUpdate {
-            user_id,
-            activity: Some(activity),
-        };
-        broadcast_presence_update(state, user_id, &event).await;
-    }
-    if let Some(cs) =
-        custom_status.and_then(|c| serde_json::from_value::<crate::presence::CustomStatus>(c).ok())
-    {
-        let event = ServerEvent::CustomStatusUpdate {
-            user_id,
-            custom_status: Some(cs),
-        };
-        broadcast_presence_update(state, user_id, &event).await;
+    let row = set_chosen_status(state, user_id, status).await?;
+    let truth = truth_from_row(user_id, row);
+    match connections::reconcile(&state.redis, user_id, &truth, connections::now_ms()).await {
+        // `FlagAhead`: a newer status change reconciles itself.
+        Ok(_) => Ok(true),
+        Err(e) => {
+            connections::log_unavailable(&e);
+            Ok(false)
+        }
     }
 }
 
-/// Whether the user is invisible. A failed lookup counts as invisible, so
-/// nothing is broadcast that might leak.
-async fn is_hidden(db: &sqlx::PgPool, user_id: Uuid) -> bool {
-    stored_presence(db, user_id)
+/// Bring what observers see in line with the database (late announcement,
+/// recovery, stale registration). Reads the user's state, reconciles it, and
+/// handles a hidden flag that is ahead of the database:
+///
+/// - If the database has caught up with the flag's sequence, a newer status change wrote it and
+///   reconciles itself: done.
+/// - Otherwise the flag is unknown to the database (e.g. after a restore): it is replaced
+///   compare-and-set on the exact value found (a concurrent newer write is never undone) and the
+///   reconcile is repeated.
+///
+/// `Err(())` (database or Valkey unreachable) means "still owed": the caller
+/// retries on the next heartbeat.
+async fn reconcile_presence(state: &AppState, user_id: Uuid) -> Result<(), ()> {
+    use crate::presence::connections::{self, Reconciled};
+
+    for _ in 0..3 {
+        let row = stored_presence_row(&state.db, user_id).await.map_err(|e| {
+            warn!("Failed to read presence for {}: {}", user_id, e);
+        })?;
+        let truth = truth_from_row(user_id, row);
+        let reconciled =
+            connections::reconcile(&state.redis, user_id, &truth, connections::now_ms())
+                .await
+                .map_err(|e| connections::log_unavailable(&e))?;
+        let Reconciled::FlagAhead { flag } = reconciled else {
+            return Ok(());
+        };
+        let flag_seq = flag
+            .split(':')
+            .next()
+            .and_then(|seq| seq.parse::<i64>().ok())
+            .unwrap_or(i64::MAX);
+        let (stored, db_seq) = stored_presence(&state.db, user_id).await.map_err(|e| {
+            warn!("Failed to read presence for {}: {}", user_id, e);
+        })?;
+        if db_seq >= flag_seq {
+            return Ok(());
+        }
+        connections::replace_future_flag(
+            &state.redis,
+            user_id,
+            &flag,
+            visibility_of(&stored, db_seq),
+        )
         .await
-        .map_or(true, |(stored, _)| stored == "invisible")
+        .map_err(|e| connections::log_unavailable(&e))?;
+    }
+    Ok(())
 }
 
 /// Visibility as stored with its status sequence.
@@ -2524,13 +2625,14 @@ const fn visibility_of(stored: &str, seq: i64) -> crate::presence::connections::
 /// Sets the stored status to `online` only when it is `offline` and the user
 /// is not invisible (a chosen `away`/`busy`/invisible survives a reconnect),
 /// then registers the socket. The first live device announces the user's
-/// status in the same atomic Valkey step (nothing for an invisible user).
+/// status in the same atomic Valkey step (nothing for an invisible user, and
+/// nothing if the read is older than the hidden flag).
 ///
-/// Returns `true` when an announcement is still owed: this socket was the
-/// first live device but the stored status could not be read. The socket then
-/// stays registered and announces on a later heartbeat
-/// ([`presence_socket_refresh`]). Valkey errors are logged and the socket
-/// carries on; the next heartbeat registers it.
+/// If this socket was the first live device but could not announce (status
+/// lookup failed, or the read was stale), it reconciles from a fresh read.
+/// Returns `true` when that is still owed; the socket retries on its next
+/// heartbeat ([`presence_socket_refresh`]). Valkey errors are logged and the
+/// socket carries on; the next heartbeat registers it.
 async fn presence_socket_up(state: &AppState, user_id: Uuid, socket_id: Uuid) -> bool {
     use crate::presence::connections;
 
@@ -2542,18 +2644,16 @@ async fn presence_socket_up(state: &AppState, user_id: Uuid, socket_id: Uuid) ->
         }
     };
     let visibility = stored.as_ref().map(|(s, seq)| visibility_of(s, *seq));
-    let announce = stored
+    let status = stored
         .as_ref()
         .filter(|(s, _)| s != "invisible")
-        .map(|(s, _)| {
-            connections::status_event_json(user_id, connections::effective_status(s, Some(true)))
-        });
+        .map(|(s, _)| connections::effective_status(s, Some(true)));
     let outcome = match connections::socket_online_detailed(
         &state.redis,
         user_id,
         socket_id,
         connections::now_ms(),
-        announce.as_deref(),
+        status,
         visibility,
     )
     .await
@@ -2564,50 +2664,23 @@ async fn presence_socket_up(state: &AppState, user_id: Uuid, socket_id: Uuid) ->
             return false;
         }
     };
-    if outcome.flag_ahead {
-        repair_future_hidden_flag(state, user_id).await;
+    if outcome.first && (outcome.stale || stored.is_none()) {
+        return reconcile_presence(state, user_id).await.is_err();
     }
-    outcome.first && stored.is_none()
-}
-
-/// The hidden flag claims a newer status sequence than the database had when
-/// this socket connected. Either a status change raced the connect (then the
-/// database has caught up) or the flag is from a future the database no
-/// longer knows (restore): re-read the sequence and, if the flag is still
-/// ahead, replace it and announce what the database says.
-async fn repair_future_hidden_flag(state: &AppState, user_id: Uuid) {
-    use crate::presence::connections;
-
-    let Ok((stored, seq)) = stored_presence(&state.db, user_id).await else {
-        return;
-    };
-    let visibility = visibility_of(&stored, seq);
-    match connections::replace_future_flag(&state.redis, user_id, visibility).await {
-        Ok(true) => {
-            let status = connections::effective_status(&stored, Some(true));
-            if let Err(e) = connections::sync_and_announce(
-                &state.redis,
-                user_id,
-                visibility,
-                status,
-                connections::now_ms(),
-            )
-            .await
-            {
-                connections::log_unavailable(&e);
-            }
-        }
-        Ok(false) => {}
-        Err(e) => connections::log_unavailable(&e),
+    if outcome.stale {
+        // Not the first device: the flag may still be from a future the
+        // database does not know; repair it if so.
+        return reconcile_presence(state, user_id).await.is_err();
     }
+    false
 }
 
 /// Heartbeat: extend this socket's expiry. If the socket had dropped out of
 /// the set (e.g. Valkey was unreachable for longer than the TTL) and it is the
-/// user's only live device again, or an announcement is still owed
+/// user's only live device again, or a reconcile is still owed
 /// (`announce_pending`: failed status lookup at connect, failed `set_status`
-/// publish), re-sync the hidden flag from the database and announce the
-/// user's status (visible: only while live; invisible: `offline`).
+/// publish), reconcile from the database. Publishes only what differs from
+/// what observers last saw, so an invisible session stays silent.
 async fn presence_socket_refresh(
     state: &AppState,
     user_id: Uuid,
@@ -2621,27 +2694,8 @@ async fn presence_socket_refresh(
         Ok(first) => *announce_pending |= first,
         Err(e) => connections::log_unavailable(&e),
     }
-    if !*announce_pending {
-        return;
-    }
-    // Lookup failed: keep it owed and try again on the next heartbeat.
-    let Ok((stored, seq)) = stored_presence(&state.db, user_id).await else {
-        return;
-    };
-    let visibility = visibility_of(&stored, seq);
-    let status = connections::effective_status(&stored, Some(true));
-    match connections::sync_and_announce(
-        &state.redis,
-        user_id,
-        visibility,
-        status,
-        connections::now_ms(),
-    )
-    .await
-    {
-        Ok(_) => *announce_pending = false,
-        // Keep it owed.
-        Err(e) => connections::log_unavailable(&e),
+    if *announce_pending && reconcile_presence(state, user_id).await.is_ok() {
+        *announce_pending = false;
     }
 }
 
@@ -2700,7 +2754,19 @@ async fn mark_connected(db: &sqlx::PgPool, user_id: Uuid) -> Result<(String, i64
     .await
 }
 
-/// The user's stored presence (see `stored_presence_sql!`).
+/// The user's stored presence, status sequence, activity and custom status.
+async fn stored_presence_row(db: &sqlx::PgPool, user_id: Uuid) -> Result<TruthRow, sqlx::Error> {
+    sqlx::query_as(concat!(
+        "SELECT ",
+        stored_presence_sql!(),
+        ", u.presence_seq, u.activity, u.custom_status FROM users u WHERE u.id = $1"
+    ))
+    .bind(user_id)
+    .fetch_one(db)
+    .await
+}
+
+/// The user's stored presence (see `stored_presence_sql!`) and status sequence.
 async fn stored_presence(db: &sqlx::PgPool, user_id: Uuid) -> Result<(String, i64), sqlx::Error> {
     sqlx::query_as(concat!(
         "SELECT ",
