@@ -21,8 +21,7 @@ pub struct MemberPermissionContext {
     /// Permissions from the @everyone role.
     pub everyone_permissions: GuildPermissions,
 
-    /// ID of the guild's @everyone role (its channel override is applied
-    /// before role overrides).
+    /// ID of the guild's @everyone role.
     pub everyone_role_id: Option<Uuid>,
 
     /// All roles assigned to this member (excluding @everyone).
@@ -192,7 +191,6 @@ fn assemble_context(
         user_id,
         guild_info.guild_owner_id,
         everyone_permissions,
-        everyone_role_id,
         &member_roles,
         None, // No channel overrides for guild-level context
     );
@@ -221,7 +219,6 @@ fn channel_permissions(
         user_id,
         ctx.guild_owner_id,
         ctx.everyone_permissions,
-        ctx.everyone_role_id,
         &ctx.member_roles,
         overrides,
     )
