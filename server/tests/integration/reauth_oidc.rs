@@ -1212,3 +1212,275 @@ async fn test_admin_link_refused_when_elevation_ended_before_callback(pool: PgPo
     );
     assert_eq!(identity_count(&ctx, admin).await, 0, "no identity inserted");
 }
+
+// ---------------------------------------------------------------------------
+// Client contract: the exact request bodies the desktop/web client builds
+// (client/src/lib/tauri/{admin,auth}.ts, src-tauri commands/reauth.rs) and the
+// response fields and error codes it reads.
+// ---------------------------------------------------------------------------
+
+async fn post_json(ctx: &Ctx, path: &str, token: &str, body: &Value) -> (u16, Value) {
+    let resp = client()
+        .post(format!("{}{path}", ctx.server.url))
+        .bearer_auth(token)
+        .json(body)
+        .send()
+        .await
+        .expect("post");
+    let status = resp.status().as_u16();
+    (status, resp.json().await.unwrap_or(Value::Null))
+}
+
+fn totp_at(totp: &TOTP, offset: i64) -> String {
+    totp.generate(u64::try_from(now() + offset).expect("time"))
+}
+
+/// Password path and backup codes, with the client's bodies (explicit nulls).
+#[sqlx::test]
+async fn test_client_contract_password_and_backup_codes(pool: PgPool) {
+    let ctx = setup(&pool).await;
+    let admin = create_user(&ctx.pool, true).await;
+    make_admin(&ctx.pool, admin).await;
+    link(&ctx, admin, "sub-contract").await;
+    let totp = enable_mfa(&ctx, admin).await;
+    let (_, token) = create_session_with_token(&ctx.pool, &ctx.config, admin).await;
+
+    // getReauthMethods(): exactly these fields (infoFromServer reads them).
+    let m = methods(&ctx, &token).await;
+    let mut keys: Vec<_> = m.as_object().expect("object").keys().cloned().collect();
+    keys.sort();
+    assert_eq!(keys, ["mfa_required", "oidc", "password"]);
+    assert_eq!(m["password"], true);
+    assert_eq!(m["mfa_required"], true);
+    let provider = &m["oidc"][0];
+    assert!(provider["provider_id"].is_string() && provider["display_name"].is_string());
+
+    // adminElevate(): {password, mfa_code, reason} with mfa_code/reason null.
+    let (status, body) = post_json(
+        &ctx,
+        "/api/admin/elevate",
+        &token,
+        &json!({ "password": PASSWORD, "mfa_code": null, "reason": null }),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (400, json!("MFA_CODE_REQUIRED")),
+        "{body}"
+    );
+
+    let (status, body) = post_json(
+        &ctx,
+        "/api/admin/elevate",
+        &token,
+        &json!({ "password": "wrong", "mfa_code": totp_at(&totp, 0), "reason": null }),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (401, json!("INVALID_CREDENTIALS")),
+        "{body}"
+    );
+
+    let (status, body) = post_json(
+        &ctx,
+        "/api/admin/elevate",
+        &token,
+        &json!({ "password": PASSWORD, "mfa_code": wrong_code(&totp), "reason": null }),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (401, json!("INVALID_CREDENTIALS")),
+        "{body}"
+    );
+
+    let (status, body) = post_json(
+        &ctx,
+        "/api/admin/elevate",
+        &token,
+        &json!({ "password": PASSWORD, "mfa_code": totp_at(&totp, 0), "reason": "contract" }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    // ElevateResponse
+    assert_eq!(body["elevated"], true);
+    assert!(
+        body["expires_at"].is_string() && body["session_id"].is_string(),
+        "{body}"
+    );
+
+    // confirmElevation() reads GET /api/admin/status.
+    let resp = client()
+        .get(format!("{}/api/admin/status", ctx.server.url))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("status");
+    let st: Value = resp.json().await.expect("json");
+    assert_eq!(st["is_elevated"], true, "{st}");
+    assert!(
+        st["is_admin"].is_boolean() && st["elevation_expires_at"].is_string(),
+        "{st}"
+    );
+
+    // mfaGenerateBackupCodes(): {mfa_code}; reads `codes` as string[].
+    let (status, body) = post_json(&ctx, "/auth/mfa/backup-codes", &token, &json!({})).await;
+    assert_eq!(status, 400, "missing code: {body}");
+    let (status, body) = post_json(
+        &ctx,
+        "/auth/mfa/backup-codes",
+        &token,
+        &json!({ "mfa_code": wrong_code(&totp) }),
+    )
+    .await;
+    assert_eq!(status, 401, "wrong code: {body}");
+    // A code of another step than the one used above.
+    let (status, body) = post_json(
+        &ctx,
+        "/auth/mfa/backup-codes",
+        &token,
+        &json!({ "mfa_code": totp_at(&totp, 30) }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let codes = body["codes"].as_array().expect("codes array");
+    assert!(
+        !codes.is_empty() && codes.iter().all(Value::is_string),
+        "{body}"
+    );
+}
+
+/// Browser provider path: the web client's start body (`redirect_uri: null`)
+/// and the `oidc-reauth-callback` message waitForBrowserReauth accepts.
+#[sqlx::test]
+async fn test_client_contract_browser_oidc_reauth(pool: PgPool) {
+    let ctx = setup(&pool).await;
+    let (_, (_, token), _) = admin_with_two_sessions(&ctx, "sub-browser").await;
+
+    let (status, body) = post_reauth_start(
+        &ctx,
+        &token,
+        Some(json!({ "redirect_uri": null, "reason": "contract", "mfa_code": null })),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let provider_url = body["url"].as_str().expect("url").to_string();
+
+    issue(&ctx, fresh("sub-browser"));
+    // Provider -> Kaiku callback.
+    let resp = client().get(&provider_url).send().await.expect("provider");
+    assert!(resp.status().is_redirection());
+    let callback = resp
+        .headers()
+        .get("location")
+        .and_then(|l| l.to_str().ok())
+        .expect("location")
+        .to_string();
+    assert!(callback.contains("/auth/oidc/callback"), "{callback}");
+    let resp = client().get(&callback).send().await.expect("callback");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "browser gets the hand-back page"
+    );
+    let html = resp.text().await.expect("html");
+    assert!(html.contains("\"type\":\"oidc-reauth-callback\""), "{html}");
+    assert!(html.contains("\"success\":true"), "{html}");
+    assert!(html.contains("\"error_code\":null"), "{html}");
+    assert!(
+        html.contains("\"expires_at\":\""),
+        "expires_at is a string: {html}"
+    );
+    assert!(is_elevated(&ctx, &token).await);
+}
+
+/// Desktop provider path: the native command's body (loopback `redirect_uri`,
+/// a TOTP code) and the `reauth=elevated&expires_at` hand-back it parses; a
+/// rejected code comes back as 401 `INVALID_CREDENTIALS` before any redirect.
+#[sqlx::test]
+async fn test_client_contract_desktop_oidc_reauth(pool: PgPool) {
+    let ctx = setup(&pool).await;
+    let (admin, (_, token), _) = admin_with_two_sessions(&ctx, "sub-desktop").await;
+    let totp = enable_mfa(&ctx, admin).await;
+
+    let (status, body) = post_reauth_start(
+        &ctx,
+        &token,
+        Some(json!({ "redirect_uri": DESKTOP_RETURN, "reason": null, "mfa_code": null })),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (400, json!("MFA_CODE_REQUIRED")),
+        "{body}"
+    );
+    let (status, body) = post_reauth_start(
+        &ctx,
+        &token,
+        Some(json!({ "redirect_uri": DESKTOP_RETURN, "reason": null, "mfa_code": wrong_code(&totp) })),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (401, json!("INVALID_CREDENTIALS")),
+        "{body}"
+    );
+
+    let url = start_reauth(&ctx, &token, Some(&totp_at(&totp, 0))).await;
+    issue(&ctx, fresh("sub-desktop"));
+    let chain = follow(&url).await;
+    assert_eq!(
+        chain.result.get("reauth").map(String::as_str),
+        Some("elevated")
+    );
+    let expires = chain.result.get("expires_at").expect("expires_at");
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(expires).is_ok(),
+        "{expires}"
+    );
+    assert!(is_elevated(&ctx, &token).await);
+}
+
+/// Browser identity link: the web client's GET (no `redirect_uri`, JSON
+/// answer) gives the `elevation_required` code isElevationRequiredError
+/// matches, and `{url}` once elevated.
+#[sqlx::test]
+async fn test_client_contract_browser_link_elevation(pool: PgPool) {
+    let ctx = setup(&pool).await;
+    let admin = create_user(&ctx.pool, true).await;
+    make_admin(&ctx.pool, admin).await;
+    let (_, token) = create_session_with_token(&ctx.pool, &ctx.config, admin).await;
+    let path = format!(
+        "{}/auth/me/identities/authorize/{}?response=json",
+        ctx.server.url, ctx.slug
+    );
+
+    let resp = client()
+        .get(&path)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("link");
+    assert_eq!(resp.status().as_u16(), 403);
+    let body: Value = resp.json().await.expect("json");
+    assert_eq!(body["error"], "elevation_required", "{body}");
+
+    let (status, body) = post_json(
+        &ctx,
+        "/api/admin/elevate",
+        &token,
+        &json!({ "password": PASSWORD, "mfa_code": null, "reason": null }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let resp = client()
+        .get(&path)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("link");
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: Value = resp.json().await.expect("json");
+    assert!(body["url"].is_string(), "{body}");
+}
