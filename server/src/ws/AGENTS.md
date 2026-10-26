@@ -317,6 +317,9 @@ while let Some(msg) = ws_receiver.next().await {
   - REST readers (member list, friends, message authors) derive status from the database plus live sockets, not from the published state.
 - **Reconcile cursor:** above the bound of 1000 connected users the periodic reconcile walks the due set by rank. Ranks shift as users connect and disconnect, so coverage within ceil(n/bound) runs holds for a stable population; with churn a user can occasionally wait one extra run.
 - **Notice churn:** if a reload or re-check cannot settle within four rounds (the audience keeps changing, or the same user is invalidated again and again), the socket closes with 1011 and the client reconnects with a fresh state.
+- **Pending block at connect (accepted):** a block that is still pending while a socket connects is applied to presence immediately (the durable key). Hiding that user's channel messages starts only with the block's completion notice, or, in a rare case of a concurrent leave and block, only after a reconnect.
+- **Revoking write longer than the key TTL (accepted):** if a revoking database write waits longer than the 5 min TTL of its pending-revocation key, the key expires first and the user's status can be disclosed briefly until the write commits and its completion notice arrives.
+- **Channel-message hiding on block is a UX feature, not a confidentiality boundary.** Blocking filters the blocked user's events from the socket's live stream. Their messages in shared server channels remain reachable through pins and search.
 
 ### Voice Event Delegation
 

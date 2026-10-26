@@ -226,6 +226,10 @@ Revoking changes (block, unfriend, leaving or being removed from a server, serve
 **Known limits (v1.0):**
 - **Infrastructure failure:** the records and notices depend on Valkey. If Valkey is unreachable when a revocation starts, or a server crashes mid-operation, an observer can keep receiving that user's presence until its socket's periodic revalidation (about 60 seconds) or until it reconnects. A record left behind by a crash expires after 5 minutes.
 - **Concurrency residual:** what remains only occurs with concurrent operations, connects or lock waits in the millisecond-to-second range. It affects only status and activity, never message content.
+- **Pending block at connect:** a block that is still pending while a socket connects is applied to presence immediately. Hiding that user's channel messages starts only with the block's completion notice, or, in a rare case of a concurrent leave and block, only after a reconnect.
+- **Very slow revoking write:** if a revoking database write waits longer than the 5-minute lifetime of its pending-revocation record, the user's status can be disclosed briefly until the write completes.
+
+**Blocking and channel messages:** hiding a blocked user's channel messages is a user-experience feature, not a confidentiality boundary. Their messages in shared server channels remain reachable through pins and search.
 
 ## Rate Limiting
 
