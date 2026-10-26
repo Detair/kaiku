@@ -115,13 +115,8 @@ class WakeScheduler @Inject constructor(
                 sink.cancel(signal.channelId)
             }
             // DM call: the quick call path (name lookup + notification), never a fetch.
-            WakeKind.CALL -> {
-                val state = signal.call?.state
-                if (state == CallState.RINGING || state == CallState.ENDED) {
-                    callIntake.accept(signal)
-                    enqueuer.enqueueCall(signal)
-                }
-            }
+            // Only wakes that still apply are queued: each one replaces the channel's pending call work.
+            WakeKind.CALL -> if (callIntake.accept(signal)) enqueuer.enqueueCall(signal)
             WakeKind.UNKNOWN -> Unit
         }
     }

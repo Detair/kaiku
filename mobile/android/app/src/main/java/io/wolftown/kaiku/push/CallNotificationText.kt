@@ -43,14 +43,41 @@ interface CallNotificationSink {
     fun cancelCall(channelId: String)
 }
 
+/** A call notification as last posted in its channel (presenter bookkeeping). */
+data class PostedCall(val userId: String, val callId: String, val kind: CallKind)
+
+/** How the presenter posts one call notification. */
+data class CallPostPlan(
+    /** Remove the channel's call notification first, so the new one is a fresh post. */
+    val cancelFirst: Boolean,
+    val onlyAlertOnce: Boolean,
+    val silent: Boolean,
+    /** `setTimeoutAfter`, or null for none. */
+    val timeoutMs: Long?,
+)
+
 /** The localized text of a call notification. */
 object CallNotificationText {
     /** A ringing notification goes away after this, a bit above the 45 s ring timeout, if its `ended` push is lost. */
     const val RINGING_TIMEOUT_MS = 60_000L
 
-    /** `setTimeoutAfter` for [n]: only a ringing call times out; a missed call stays. */
-    fun timeoutAfterMs(n: CallNotification): Long? =
-        if (n.kind == CallKind.INCOMING) RINGING_TIMEOUT_MS else null
+    /**
+     * How to post [n] given the call notification last posted in its channel
+     * ([previous], null when unknown):
+     *
+     * - a missed call is posted fresh (cancel first, which also drops the
+     *   ringing post's timeout) and silently, without a timeout;
+     * - a new ringing call is posted fresh, so it alerts even over an old
+     *   missed call; only a repeat of the same ringing call updates quietly.
+     *   A ringing call times out in case its `ended` push is lost.
+     */
+    fun plan(n: CallNotification, previous: PostedCall?): CallPostPlan = when (n.kind) {
+        CallKind.MISSED -> CallPostPlan(cancelFirst = true, onlyAlertOnce = true, silent = true, timeoutMs = null)
+        CallKind.INCOMING -> {
+            val repeat = previous == PostedCall(n.userId, n.callId, CallKind.INCOMING)
+            CallPostPlan(cancelFirst = !repeat, onlyAlertOnce = repeat, silent = false, timeoutMs = RINGING_TIMEOUT_MS)
+        }
+    }
 
     /** String resource and, when it has a `%1$s` placeholder, the caller name. */
     data class Text(@StringRes val res: Int, val name: String?)

@@ -27,8 +27,9 @@ enum class CallOutcome {
  * Handles a DM call wake (C20 addendum): `ringing` posts a heads-up "is
  * calling you" notification, `ended` turns it into a missed call
  * (`no_answer`, `cancelled`) or removes it (`all_declined`, `last_left`).
- * Only the call last shown in the channel ([CallNotificationStore]) is acted
- * on. Never fetches messages; the caller's name is looked up in the DM
+ * Only the channel's current call ([CallNotificationStore], set by
+ * [CallWakeIntake]) is acted on; an ended with no call stored still shows a
+ * missed call ([CallRules]). Never fetches messages; the caller's name is looked up in the DM
  * participants, with a generic text when that fails.
  *
  * Bound to the account and session the wake was queued for, like
@@ -47,7 +48,12 @@ class CallWakeProcessor @Inject constructor(
 
         /** A ringing call does not wait longer than this for the caller's name. */
         const val NAME_TIMEOUT_MS = 5_000L
+
+        /** A ringing wake received longer ago than the ring timeout no longer posts. */
+        const val RING_MAX_AGE_MS = 45_000L
     }
+
+    internal var now: () -> Long = System::currentTimeMillis
 
     private data class Account(val userId: String, val generation: Long)
 
@@ -75,13 +81,14 @@ class CallWakeProcessor @Inject constructor(
         call: CallInfo,
         isStopped: () -> Boolean,
     ): CallOutcome {
-        // A late duplicate of a call that already ended as missed.
-        if (store.shown(account.userId, channelId) == ShownCall(call.callId, missed = true)) {
-            return CallOutcome.IGNORED
-        }
+        // Only the call the intake accepted, while it still rings, and not after its ring timeout
+        // (deferred work running late must not ring for a call that is long over).
+        val stored = store.shown(account.userId, channelId)?.takeIf { isRinging(it, call) }
+            ?: return CallOutcome.IGNORED
+        if (now() - stored.atMs > RING_MAX_AGE_MS) return CallOutcome.IGNORED
         val name = callerName(channelId, call.callerId)
         return post(account, channelId, call, CallKind.INCOMING, name, isStopped) {
-            store.shown(account.userId, channelId) != ShownCall(call.callId, missed = true)
+            isRinging(store.shown(account.userId, channelId), call)
         }
     }
 
@@ -91,30 +98,31 @@ class CallWakeProcessor @Inject constructor(
         call: CallInfo,
         isStopped: () -> Boolean,
     ): CallOutcome {
-        // Only the call shown in this channel; an older or unknown call is ignored.
-        val shown = store.shown(account.userId, channelId)?.takeIf { it.callId == call.callId }
-            ?: return CallOutcome.IGNORED
+        if (!CallRules.endedApplies(store.shown(account.userId, channelId), call)) return CallOutcome.IGNORED
         return when (call.reason) {
             CallEndReason.NO_ANSWER, CallEndReason.CANCELLED -> {
-                if (shown.missed) return CallOutcome.IGNORED
                 val name = callerName(channelId, call.callerId)
                 post(account, channelId, call, CallKind.MISSED, name, isStopped) {
-                    store.shown(account.userId, channelId) == ShownCall(call.callId, missed = false)
+                    CallRules.endedApplies(store.shown(account.userId, channelId), call)
                 }
             }
             CallEndReason.ALL_DECLINED, CallEndReason.LAST_LEFT -> {
                 if (!isCurrent(account)) return CallOutcome.NOT_LOGGED_IN
                 sink.cancelCall(channelId)
-                store.clear(account.userId, channelId)
+                // Tombstone: a duplicate or reordered ringing of this call is not accepted again.
+                store.setShown(account.userId, channelId, ShownCall(call.callId, CallPhase.ENDED, now()))
                 CallOutcome.CANCELLED
             }
             CallEndReason.UNKNOWN, null -> CallOutcome.IGNORED
         }
     }
 
+    private fun isRinging(stored: ShownCall?, call: CallInfo): Boolean =
+        stored != null && stored.callId == call.callId && stored.phase == CallPhase.RINGING
+
     /**
      * Posts [kind] for [call] after the final checks in the presenter's
-     * critical section ([stillApplies] re-reads the store), and records it.
+     * critical section ([stillApplies] re-reads the store); a missed call is recorded.
      */
     private fun post(
         account: Account,
@@ -133,7 +141,9 @@ class CallWakeProcessor @Inject constructor(
                 !isCurrent(account) -> null.also { refused = CallOutcome.NOT_LOGGED_IN }
                 !stillApplies() -> null
                 else -> {
-                    store.setShown(account.userId, channelId, ShownCall(call.callId, missed = kind == CallKind.MISSED))
+                    if (kind == CallKind.MISSED) {
+                        store.setShown(account.userId, channelId, ShownCall(call.callId, CallPhase.MISSED, now()))
+                    }
                     CallNotification(account.userId, channelId, call.callId, kind, name)
                 }
             }

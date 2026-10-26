@@ -3,6 +3,7 @@ package io.wolftown.kaiku.push
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.navigation.DeepLinks
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -73,15 +74,43 @@ class CallNotificationTextTest {
         assertNotEquals(message.requestCode, call.requestCode)
     }
 
+    private val callB = "1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d"
+
     @Test
-    fun `ringing notification times out a bit after the ring timeout`() {
-        val timeout = CallNotificationText.timeoutAfterMs(n(CallKind.INCOMING, "Bob"))
-        assertEquals(CallNotificationText.RINGING_TIMEOUT_MS, timeout)
-        assertTrue(timeout!! > 45_000L)
+    fun `new ringing call alerts and times out a bit after the ring timeout`() {
+        val plan = CallNotificationText.plan(n(CallKind.INCOMING, "Bob"), previous = null)
+        assertEquals(CallPostPlan(cancelFirst = true, onlyAlertOnce = false, silent = false,
+            timeoutMs = CallNotificationText.RINGING_TIMEOUT_MS), plan)
+        assertTrue(CallNotificationText.RINGING_TIMEOUT_MS > 45_000L)
     }
 
     @Test
-    fun `missed call notification never times out`() {
-        assertNull(CallNotificationText.timeoutAfterMs(n(CallKind.MISSED, "Bob")))
+    fun `ringing replacing a missed call alerts again`() {
+        val plan = CallNotificationText.plan(
+            n(CallKind.INCOMING, "Bob").copy(callId = callB),
+            previous = PostedCall("me", callId, CallKind.MISSED),
+        )
+        assertTrue(plan.cancelFirst)
+        assertFalse(plan.onlyAlertOnce)
+    }
+
+    @Test
+    fun `repeat of the same ringing call updates quietly`() {
+        val plan = CallNotificationText.plan(
+            n(CallKind.INCOMING, "Bob"),
+            previous = PostedCall("me", callId, CallKind.INCOMING),
+        )
+        assertFalse(plan.cancelFirst)
+        assertTrue(plan.onlyAlertOnce)
+    }
+
+    @Test
+    fun `missed call replaces the ringing one fresh, silently and without timeout`() {
+        val plan = CallNotificationText.plan(
+            n(CallKind.MISSED, "Bob"),
+            previous = PostedCall("me", callId, CallKind.INCOMING),
+        )
+        assertEquals(CallPostPlan(cancelFirst = true, onlyAlertOnce = true, silent = true, timeoutMs = null), plan)
+        assertNull(CallNotificationText.plan(n(CallKind.MISSED, null), previous = null).timeoutMs)
     }
 }

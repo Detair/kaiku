@@ -32,9 +32,14 @@ import javax.inject.Singleton
  * cancels [MESSAGE_ID] only) leaves them alone; [cancelAll] removes them too.
  */
 @Singleton
-class AndroidNotificationPresenter @Inject constructor(
-    @ApplicationContext private val context: Context,
+class AndroidNotificationPresenter internal constructor(
+    private val context: Context,
+    /** Builds a call notification; replaced in JVM tests, where framework notifications cannot be built. */
+    private val callBuilder: ((CallNotification, CallPostPlan) -> Notification)?,
 ) : NotificationSink, CallNotificationSink {
+
+    @Inject
+    constructor(@ApplicationContext context: Context) : this(context, null)
 
     companion object {
         private val logger = Logger.getLogger("NotificationPresenter")
@@ -51,6 +56,9 @@ class AndroidNotificationPresenter @Inject constructor(
 
     private val manager: NotificationManager?
         get() = context.getSystemService(NotificationManager::class.java)
+
+    /** Call notifications posted in this process, by channel (guarded by this). */
+    private val postedCalls = HashMap<String, PostedCall>()
 
     @Synchronized
     override fun show(prepare: () -> ChannelNotification?): ShowResult {
@@ -119,6 +127,7 @@ class AndroidNotificationPresenter @Inject constructor(
 
     @Synchronized
     override fun cancelAll() {
+        postedCalls.clear()
         val manager = manager ?: return
         messageNotifications(manager).forEach { manager.cancel(it.tag, MESSAGE_ID) }
         manager.cancel(SUMMARY_ID)
@@ -135,17 +144,23 @@ class AndroidNotificationPresenter @Inject constructor(
             logger.info("call notification skipped: notifications disabled")
             return ShowResult.DISABLED
         }
-        manager.notify(n.channelId, CALL_ID, buildCall(n))
+        val plan = CallNotificationText.plan(n, postedCalls[n.channelId])
+        // A fresh post: drops the old one's timeout and lets a new call alert again.
+        if (plan.cancelFirst) manager.cancel(n.channelId, CALL_ID)
+        val notification = callBuilder?.invoke(n, plan) ?: buildCall(n, plan)
+        manager.notify(n.channelId, CALL_ID, notification)
+        postedCalls[n.channelId] = PostedCall(n.userId, n.callId, n.kind)
         return ShowResult.POSTED
     }
 
     @Synchronized
     override fun cancelCall(channelId: String) {
+        postedCalls.remove(channelId)
         manager?.cancel(channelId, CALL_ID)
     }
 
     /** A plain heads-up on the DM channel: no full-screen intent, no actions, no ringtone loop. */
-    private fun buildCall(n: CallNotification): Notification {
+    private fun buildCall(n: CallNotification, plan: CallPostPlan): Notification {
         val text = CallNotificationText.of(n)
         val content = if (text.name != null) context.getString(text.res, text.name) else context.getString(text.res)
         val category = if (n.kind == CallKind.INCOMING) NotificationCompat.CATEGORY_CALL else NotificationCompat.CATEGORY_MISSED_CALL
@@ -161,7 +176,8 @@ class AndroidNotificationPresenter @Inject constructor(
             .setCategory(category)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
+            .setOnlyAlertOnce(plan.onlyAlertOnce)
+            .setSilent(plan.silent)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion)
             .setContentIntent(tapIntent(NotificationTaps.call(n)))
@@ -169,7 +185,7 @@ class AndroidNotificationPresenter @Inject constructor(
             .setShowWhen(true)
             .addExtras(Bundle().apply { putString(EXTRA_USER_ID, n.userId) })
         // Only a ringing call times out (its `ended` push may be lost); a missed call stays.
-        CallNotificationText.timeoutAfterMs(n)?.let { builder.setTimeoutAfter(it) }
+        plan.timeoutMs?.let { builder.setTimeoutAfter(it) }
         return builder.build()
     }
 

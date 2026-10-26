@@ -79,9 +79,9 @@ class PushSessionObserverTest {
 
     @Test
     fun `logout forgets the departing user's calls only`() = runTest {
-        callStore.setShown("alice", "c1", ShownCall("call-1", missed = false))
-        callStore.setShown("alice", "c2", ShownCall("call-2", missed = true))
-        callStore.setShown("bob", "c1", ShownCall("call-3", missed = false))
+        callStore.setShown("alice", "c1", ShownCall("call-1", CallPhase.RINGING))
+        callStore.setShown("alice", "c2", ShownCall("call-2", CallPhase.MISSED))
+        callStore.setShown("bob", "c1", ShownCall("call-3", CallPhase.RINGING))
         val authState = AuthState(backgroundScope)
         PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
 
@@ -94,12 +94,12 @@ class PushSessionObserverTest {
 
         assertNull(callStore.shown("alice", "c1"))
         assertNull(callStore.shown("alice", "c2"))
-        assertEquals(ShownCall("call-3", missed = false), callStore.shown("bob", "c1"))
+        assertEquals(ShownCall("call-3", CallPhase.RINGING), callStore.shown("bob", "c1"))
     }
 
     @Test
     fun `account change forgets the previous user's calls`() = runTest {
-        callStore.setShown("alice", "c1", ShownCall("call-1", missed = false))
+        callStore.setShown("alice", "c1", ShownCall("call-1", CallPhase.RINGING))
         val authState = AuthState(backgroundScope)
         PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
 
@@ -114,8 +114,8 @@ class PushSessionObserverTest {
     @Test
     fun `cold start without a stored session forgets every call`() = runTest {
         storedRefreshToken = null
-        callStore.setShown("alice", "c1", ShownCall("call-1", missed = false))
-        callStore.setShown("bob", "c1", ShownCall("call-3", missed = true))
+        callStore.setShown("alice", "c1", ShownCall("call-1", CallPhase.RINGING))
+        callStore.setShown("bob", "c1", ShownCall("call-3", CallPhase.MISSED))
         val authState = AuthState(backgroundScope)
         PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
         runCurrent()
@@ -126,7 +126,7 @@ class PushSessionObserverTest {
 
     @Test
     fun `starting signed out with a stored session keeps calls`() = runTest {
-        callStore.setShown("alice", "c1", ShownCall("call-1", missed = false))
+        callStore.setShown("alice", "c1", ShownCall("call-1", CallPhase.RINGING))
         val authState = AuthState(backgroundScope)
         PushSessionObserver(authState, tokenStorage, sink, enqueuer, callStore, backgroundScope).start()
 

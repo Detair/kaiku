@@ -18,8 +18,10 @@ class WakeSchedulerTest {
     private val tokenStorage: TokenStorage = mockk {
         every { getUserId() } answers { signedIn }
     }
-    private val callStore = PrefsCallNotificationStore(InMemorySharedPreferences())
-    private val scheduler = WakeScheduler(enqueuer, sink, CallWakeIntake(tokenStorage, callStore))
+    private var clock = 1_000_000L
+    private val callStore = PrefsCallNotificationStore(InMemorySharedPreferences()) { clock }
+    private val intake = CallWakeIntake(tokenStorage, callStore).also { it.now = { clock } }
+    private val scheduler = WakeScheduler(enqueuer, sink, intake)
 
     @Test
     fun `dm wake enqueues work`() {
@@ -59,10 +61,11 @@ class WakeSchedulerTest {
     }
 
     private val callId = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
+    private val otherCallId = "1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d"
     private val callerId = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
 
-    private fun call(state: CallState, reason: CallEndReason? = null) =
-        WakeSignal(WakeKind.CALL, "c1", 1, CallInfo(callId, callerId, state, reason))
+    private fun call(state: CallState, reason: CallEndReason? = null, id: String = callId) =
+        WakeSignal(WakeKind.CALL, "c1", 1, CallInfo(id, callerId, state, reason))
 
     @Test
     fun `ringing call goes to the call path, never to a message fetch`() {
@@ -75,11 +78,41 @@ class WakeSchedulerTest {
     }
 
     @Test
-    fun `ended call goes to the call path`() {
-        val signal = call(CallState.ENDED, CallEndReason.NO_ANSWER)
-        scheduler.onWake(signal)
-        assertEquals(listOf(signal), enqueuer.calls)
+    fun `ended for the ringing call goes to the call path`() {
+        scheduler.onWake(call(CallState.RINGING))
+        val ended = call(CallState.ENDED, CallEndReason.NO_ANSWER)
+        scheduler.onWake(ended)
+        assertEquals(ended, enqueuer.calls.last())
         assertTrue(enqueuer.enqueued.isEmpty())
+    }
+
+    @Test
+    fun `ended with nothing stored goes to the call path`() {
+        // The phone missed the ringing (offline, collapsed): the ended still shows a missed call.
+        val ended = call(CallState.ENDED, CallEndReason.CANCELLED)
+        scheduler.onWake(ended)
+        assertEquals(listOf(ended), enqueuer.calls)
+    }
+
+    @Test
+    fun `ended with unknown reason is not queued`() {
+        scheduler.onWake(call(CallState.RINGING))
+        scheduler.onWake(call(CallState.ENDED, CallEndReason.UNKNOWN))
+        assertEquals(1, enqueuer.calls.size)
+    }
+
+    @Test
+    fun `ended without reason is not queued`() {
+        scheduler.onWake(call(CallState.RINGING))
+        scheduler.onWake(call(CallState.ENDED, reason = null))
+        assertEquals(1, enqueuer.calls.size)
+    }
+
+    @Test
+    fun `ended for another call is not queued and cannot replace the ringing work`() {
+        scheduler.onWake(call(CallState.RINGING, id = otherCallId))
+        scheduler.onWake(call(CallState.ENDED, CallEndReason.NO_ANSWER, id = callId))
+        assertEquals(listOf(otherCallId), enqueuer.calls.map { it.call?.callId })
     }
 
     @Test
@@ -97,28 +130,55 @@ class WakeSchedulerTest {
     }
 
     @Test
-    fun `accepted ringing call is recorded before its work runs`() {
+    fun `accepted ringing call is recorded with its receive time before its work runs`() {
         scheduler.onWake(call(CallState.RINGING))
-        assertEquals(ShownCall(callId, missed = false), callStore.shown("me", "c1"))
+        assertEquals(ShownCall(callId, CallPhase.RINGING, clock), callStore.shown("me", "c1"))
     }
 
     @Test
-    fun `ringing does not downgrade a call already shown as missed`() {
-        callStore.setShown("me", "c1", ShownCall(callId, missed = true))
+    fun `repeated ringing keeps the first receive time`() {
         scheduler.onWake(call(CallState.RINGING))
-        assertEquals(ShownCall(callId, missed = true), callStore.shown("me", "c1"))
+        val first = clock
+        clock += 5_000
+        scheduler.onWake(call(CallState.RINGING))
+        assertEquals(ShownCall(callId, CallPhase.RINGING, first), callStore.shown("me", "c1"))
+        assertEquals(2, enqueuer.calls.size)
     }
 
     @Test
-    fun `ended call records nothing`() {
+    fun `ringing for a call already missed is not queued`() {
+        callStore.setShown("me", "c1", ShownCall(callId, CallPhase.MISSED, clock))
+        scheduler.onWake(call(CallState.RINGING))
+        assertEquals(CallPhase.MISSED, callStore.shown("me", "c1")?.phase)
+        assertTrue(enqueuer.calls.isEmpty())
+    }
+
+    @Test
+    fun `ringing for an ended call is not queued`() {
+        callStore.setShown("me", "c1", ShownCall(callId, CallPhase.ENDED, clock))
+        scheduler.onWake(call(CallState.RINGING))
+        assertEquals(CallPhase.ENDED, callStore.shown("me", "c1")?.phase)
+        assertTrue(enqueuer.calls.isEmpty())
+    }
+
+    @Test
+    fun `duplicate ended after a missed call is not queued`() {
+        callStore.setShown("me", "c1", ShownCall(callId, CallPhase.MISSED, clock))
+        scheduler.onWake(call(CallState.ENDED, CallEndReason.NO_ANSWER))
+        assertTrue(enqueuer.calls.isEmpty())
+    }
+
+    @Test
+    fun `ended call records nothing at intake`() {
         scheduler.onWake(call(CallState.ENDED, CallEndReason.NO_ANSWER))
         assertNull(callStore.shown("me", "c1"))
     }
 
     @Test
-    fun `ringing while signed out records nothing`() {
+    fun `ringing while signed out records and queues nothing`() {
         signedIn = null
         scheduler.onWake(call(CallState.RINGING))
         assertNull(callStore.shown("me", "c1"))
+        assertTrue(enqueuer.calls.isEmpty())
     }
 }
