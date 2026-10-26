@@ -38,7 +38,7 @@
     <string name="auth_register_login_link">Already have an account? Log in</string>
     <string name="auth_register_username_taken">That username is already taken.</string>
     <string name="auth_register_email_taken">That email address is already in use.</string>
-    <string name="auth_register_closed">This server doesn\'t allow sign-ups. Ask the server admin for an account.</string>
+    <string name="auth_register_closed">Ask the person who runs this server to create an account for you.</string>
     <string name="auth_register_failed">Registration failed. Please try again.</string>
 
     <!-- QR sign-in -->
