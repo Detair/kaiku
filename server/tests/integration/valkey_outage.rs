@@ -477,3 +477,68 @@ async fn websocket_header_auth_answers_503_when_db_stalls(pool: PgPool) {
         serde_json::from_slice(response.body().as_deref().unwrap_or_default()).expect("JSON body");
     assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
 }
+
+/// The sign-in code check records the accepted step in Valkey; when that
+/// fails the login answers 503 (fail closed) instead of letting the code in.
+#[sqlx::test]
+async fn login_with_mfa_fails_closed_with_503_when_valkey_hangs(pool: PgPool) {
+    use totp_rs::{Algorithm, Secret, TOTP};
+
+    let proxy = ValkeyProxy::spawn().await;
+    // No rate limiter: only the code replay store can fail here.
+    let (server, config) = spawn_via_proxy(pool.clone(), &proxy, None).await;
+
+    let username = format!(
+        "mfaout_{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..10]
+    );
+    let hash = vc_server::auth::hash_password("Correct-Horse-42").expect("hash");
+    let user = db::create_user(&pool, &username, "Mfa Outage", None, &hash)
+        .await
+        .expect("create user");
+    let secret_str = Secret::default().to_encoded().to_string();
+    let key = hex::decode(config.mfa_encryption_key.as_ref().expect("mfa key")).expect("hex");
+    let encrypted =
+        vc_server::auth::mfa_crypto::encrypt_mfa_secret(&secret_str, &key).expect("encrypt");
+    sqlx::query("UPDATE users SET mfa_secret = $1 WHERE id = $2")
+        .bind(&encrypted)
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("enable mfa");
+    let code = TOTP::new(
+        Algorithm::SHA1,
+        6,
+        1,
+        30,
+        Secret::Encoded(secret_str).to_bytes().expect("secret"),
+        Some("Kaiku".to_string()),
+        username.clone(),
+    )
+    .expect("totp")
+    .generate_current()
+    .expect("code");
+
+    proxy.freeze();
+
+    let started = Instant::now();
+    let response = tokio::time::timeout(
+        HANG_GUARD,
+        reqwest::Client::new()
+            .post(format!("{}/auth/login", server.url))
+            .json(&serde_json::json!({
+                "username": username,
+                "password": "Correct-Horse-42",
+                "mfa_code": code,
+            }))
+            .send(),
+    )
+    .await
+    .expect("login hung while Valkey was unavailable")
+    .expect("request failed");
+
+    assert!(started.elapsed() < HANG_GUARD);
+    assert_eq!(response.status(), 503);
+    let body: serde_json::Value = response.json().await.expect("JSON body");
+    assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
+}

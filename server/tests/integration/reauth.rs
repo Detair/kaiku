@@ -529,3 +529,46 @@ async fn test_elevation_audit_records_verified_factors(pool: PgPool) {
         Some("password+totp")
     );
 }
+
+/// A TOTP code works once at sign-in: the same code again is refused with the
+/// wrong-code error, and the next step's code still works.
+#[sqlx::test]
+async fn test_login_totp_code_is_accepted_once(pool: PgPool) {
+    let (server, config, _) = plain_server(&pool).await;
+    let (user, username) = create_user_with_password(&pool).await;
+    let totp = enable_mfa(&pool, &config, user, &username).await;
+    let code = totp.generate_current().expect("code");
+
+    let login = |code: String| {
+        let url = format!("{}/auth/login", server.url);
+        let body = json!({ "username": username, "password": PASSWORD, "mfa_code": code });
+        async move {
+            let resp = reqwest::Client::new()
+                .post(url)
+                .json(&body)
+                .send()
+                .await
+                .expect("login request");
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+
+    let (status, body) = login(code.clone()).await;
+    assert_eq!(status, 200, "first use: {body}");
+    let (status, body) = login(code).await;
+    assert_eq!(status, 401, "replayed code: {body}");
+    assert_eq!(body["error"], "INVALID_MFA");
+
+    // A wrong password with a fresh code must not consume that code.
+    let next = next_step_code(&totp);
+    let resp = reqwest::Client::new()
+        .post(format!("{}/auth/login", server.url))
+        .json(&json!({ "username": username, "password": "Wrong-Pass-1", "mfa_code": next }))
+        .send()
+        .await
+        .expect("login request");
+    assert_eq!(resp.status().as_u16(), 401);
+    let (status, body) = login(next).await;
+    assert_eq!(status, 200, "code unused after a wrong password: {body}");
+}

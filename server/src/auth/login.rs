@@ -10,7 +10,6 @@ use axum_extra::extract::CookieJar;
 use chrono::{Duration, Utc};
 use fred::prelude::*;
 use sha2::{Digest, Sha256};
-use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 
 use super::backup_codes::find_matching_backup_code;
@@ -118,40 +117,13 @@ pub async fn login(
         // MFA is enabled - code is required
         let mfa_code = body.mfa_code.as_ref().ok_or(AuthError::MfaRequired)?;
 
-        // Get encryption key from config
-        let encryption_key = state
-            .config
-            .mfa_encryption_key
-            .as_ref()
-            .ok_or_else(|| AuthError::Internal("MFA encryption not configured".to_string()))?;
-
-        // Decode encryption key from hex
-        let key_bytes = hex::decode(encryption_key)
-            .map_err(|_| AuthError::Internal("Invalid MFA encryption key".to_string()))?;
-
-        // Decrypt the secret
-        let secret_str = decrypt_mfa_secret(encrypted_secret, &key_bytes)
-            .map_err(|e| AuthError::Internal(format!("Failed to decrypt MFA secret: {e}")))?;
-
-        // Parse the secret and create TOTP instance
-        let secret = Secret::Encoded(secret_str);
-        let totp = TOTP::new(
-            Algorithm::SHA1,
-            6,
-            1,
-            30,
-            secret
-                .to_bytes()
-                .map_err(|_| AuthError::Internal("Invalid TOTP secret encoding".into()))?,
-            Some("Kaiku".to_string()),
-            user.username.clone(),
-        )
-        .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {e}")))?;
-
-        // Try TOTP code first
-        let totp_valid = totp
-            .check_current(mfa_code)
-            .map_err(|e| AuthError::Internal(format!("Failed to verify TOTP code: {e}")))?;
+        // Try the TOTP code first. It is accepted once per 30-second step
+        // (the same per-user replay protection as the re-authentication
+        // paths) and only after the password matched; a Valkey error fails
+        // closed with 503.
+        let totp_valid =
+            super::reauth::accept_totp(&state, user.id, encrypted_secret, &user.username, mfa_code)
+                .await?;
 
         if !totp_valid {
             // TOTP failed — try backup code

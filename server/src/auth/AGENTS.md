@@ -84,7 +84,7 @@ Config::default()  // Uses OWASP-recommended defaults
 1. Username/password validates user
 2. If `mfa_enabled`, return `AuthError::MfaRequired` (HTTP 428)
 3. Client sends second request with `totp_code` in login body
-4. `mfa_crypto::verify_totp()` checks code (30s window, ±1 step tolerance)
+4. `reauth::accept_totp()` checks the code (30s window, ±1 step tolerance) and accepts each code once per user (Valkey replay store, shared with the re-auth paths); a replayed code falls through to the backup-code check and then answers `INVALID_MFA` (401); a replay-store failure answers 503 `SERVICE_UNAVAILABLE`
 
 **Backup Codes**: Implemented (`backup_codes.rs`, `mfa::mfa_generate_backup_codes`) — single-use hashed codes accepted by the login MFA path.
 
