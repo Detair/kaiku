@@ -18,10 +18,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import io.wolftown.kaiku.R
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
@@ -46,7 +48,7 @@ fun QrScannerScreen(
     }
     val hasScanned = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     val logger = remember { java.util.logging.Logger.getLogger("QrScannerScreen") }
-    var cameraError by remember { mutableStateOf<String?>(null) }
+    var cameraErrorRes by remember { mutableStateOf<Int?>(null) }
 
     // Create scanner and executor outside AndroidView for proper lifecycle cleanup
     val barcodeScanner = remember { BarcodeScanning.getClient() }
@@ -74,10 +76,10 @@ fun QrScannerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Scan QR Code") },
+                title = { Text(stringResource(R.string.qr_scanner_title)) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.common_back))
                     }
                 }
             )
@@ -88,19 +90,19 @@ fun QrScannerScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            if (cameraError != null) {
+            if (cameraErrorRes != null) {
                 Column(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = cameraError!!,
+                        text = stringResource(cameraErrorRes!!),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.error
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Button(onClick = onNavigateBack) {
-                        Text("Go back")
+                        Text(stringResource(R.string.common_back))
                     }
                 }
             } else if (hasCameraPermission) {
@@ -161,7 +163,7 @@ fun QrScannerScreen(
                                     imageAnalysis
                                 )
                             } catch (e: Exception) {
-                                cameraError = "Could not start camera"
+                                cameraErrorRes = R.string.qr_scanner_camera_failed
                             }
                         }, ContextCompat.getMainExecutor(ctx))
 
@@ -172,7 +174,7 @@ fun QrScannerScreen(
 
                 // Overlay hint
                 Text(
-                    text = "Point your camera at the QR code",
+                    text = stringResource(R.string.qr_scanner_hint),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(32.dp),
@@ -185,13 +187,13 @@ fun QrScannerScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "Camera permission is required to scan QR codes",
+                        text = stringResource(R.string.qr_scanner_permission_required),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
-                        Text("Grant permission")
+                        Text(stringResource(R.string.qr_scanner_grant_permission))
                     }
                 }
             }

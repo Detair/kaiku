@@ -5,26 +5,54 @@
     <!-- Common -->
     <string name="common_back">Back</string>
     <string name="common_retry">Retry</string>
+    <string name="common_username">Username</string>
     <string name="common_error_generic">Something went wrong.</string>
     <string name="common_avatar_description">%1$s\'s avatar</string>
 
     <!-- Sign in -->
     <string name="auth_login_title">Welcome to Kaiku</string>
     <string name="auth_login_subtitle">Sign in to your account</string>
-    <string name="auth_username">Username</string>
-    <string name="auth_password">Password</string>
-    <string name="auth_mfa_code">MFA code</string>
+    <string name="auth_login_password">Password</string>
+    <string name="auth_login_mfa_code">MFA Code</string>
     <string name="auth_sign_in">Sign in</string>
     <string name="auth_go_to_register">Don\'t have an account? Register</string>
     <string name="auth_or_sign_in_with">Or sign in with</string>
-    <string name="auth_invalid_credentials">Wrong username or password.</string>
-    <string name="auth_mfa_invalid">That code didn\'t work. Try again.</string>
-    <string name="auth_login_failed">Couldn\'t sign in. Check your connection and try again.</string>
-    <string name="auth_oidc_failed">Couldn\'t sign in with that provider.</string>
+    <string name="auth_login_invalid_credentials">Invalid username or password.</string>
+    <string name="auth_login_mfa_invalid">That code didn\'t work. Try again.</string>
+    <string name="auth_login_failed">Login failed. Please try again.</string>
+    <string name="auth_login_already_signed_in">You\'re already signed in. Sign out first to use another account.</string>
+    <string name="auth_login_sso_failed">SSO login failed.</string>
     <string name="auth_login_server">Signing in to %1$s</string>
     <string name="auth_register_check_retry">Couldn\'t check if you can register. Try again</string>
     <string name="auth_storage_reset">Please sign in again.</string>
     <string name="auth_change_server">Change server</string>
+
+    <!-- Account creation -->
+    <string name="auth_register_heading">Create an account</string>
+    <string name="auth_register_subtitle">Join Kaiku to start chatting</string>
+    <string name="auth_register_email_optional">Email (optional)</string>
+    <string name="auth_register_display_name_optional">Display name (optional)</string>
+    <string name="auth_register_password">Password</string>
+    <string name="auth_register_submit">Create Account</string>
+    <string name="auth_register_login_link">Already have an account? Log in</string>
+    <string name="auth_register_username_taken">That username is already taken.</string>
+    <string name="auth_register_email_taken">That email address is already in use.</string>
+    <string name="auth_register_closed">This server doesn\'t allow sign-ups. Ask the server admin for an account.</string>
+    <string name="auth_register_failed">Registration failed. Please try again.</string>
+
+    <!-- QR sign-in -->
+    <string name="qr_scanner_title">Scan QR code</string>
+    <string name="qr_scanner_hint">Point your camera at the QR code</string>
+    <string name="qr_scanner_permission_required">Camera permission is required to scan QR codes</string>
+    <string name="qr_scanner_grant_permission">Grant permission</string>
+    <string name="qr_scanner_camera_failed">Couldn\'t start the camera.</string>
+    <string name="qr_redeem_signing_in">Signing in…</string>
+    <string name="qr_redeem_failed">That QR code has expired or was already used.</string>
+
+    <!-- Request errors -->
+    <string name="errors_rate_limited">Too many attempts. Please wait a moment and try again.</string>
+    <string name="errors_server">Something went wrong on the server. Please try again in a moment.</string>
+    <string name="errors_network">Can\'t reach the server. Check your connection.</string>
 
     <!-- Server address -->
     <string name="auth_server_title">Welcome to Kaiku</string>

@@ -13,10 +13,6 @@
         exactly the files that still contain hardcoded text; each i18n batch shrinks it.
     -->
     <issue id="ComposeHardcodedText" severity="error">
-        <ignore path="src/main/java/io/wolftown/kaiku/ui/auth/RegisterScreen.kt" />
-        <ignore path="src/main/java/io/wolftown/kaiku/ui/auth/ServerUrlScreen.kt" />
-        <ignore path="src/main/java/io/wolftown/kaiku/ui/auth/QrScannerScreen.kt" />
-        <ignore path="src/main/java/io/wolftown/kaiku/ui/auth/QrRedeemScreen.kt" />
         <ignore path="src/main/java/io/wolftown/kaiku/ui/settings/SettingsScreen.kt" />
         <ignore path="src/main/java/io/wolftown/kaiku/ui/voice/VoiceOverlay.kt" />
         <ignore path="src/main/java/io/wolftown/kaiku/ui/voice/ScreenShareView.kt" />

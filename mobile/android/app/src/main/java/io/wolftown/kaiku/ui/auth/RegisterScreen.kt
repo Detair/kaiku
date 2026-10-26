@@ -9,13 +9,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.repository.AuthRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,7 +33,8 @@ data class RegisterUiState(
     val password: String = "",
     val displayName: String = "",
     val isLoading: Boolean = false,
-    val error: String? = null,
+    /** `@StringRes` of the current error, or null. Server message text is never shown. */
+    @StringRes val errorRes: Int? = null,
     val registerSuccess: Boolean = false
 )
 
@@ -60,7 +64,7 @@ class RegisterViewModel @Inject constructor(
 
     fun onRegisterClicked() {
         val state = _uiState.value
-        _uiState.update { it.copy(isLoading = true, error = null) }
+        _uiState.update { it.copy(isLoading = true, errorRes = null) }
 
         viewModelScope.launch {
             val email = state.email.ifBlank { null }
@@ -82,7 +86,7 @@ class RegisterViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            error = exception.message ?: "Registration failed"
+                            errorRes = AuthErrorMapper.register(exception)
                         )
                     }
                 }
@@ -91,7 +95,7 @@ class RegisterViewModel @Inject constructor(
     }
 
     fun clearError() {
-        _uiState.update { it.copy(error = null) }
+        _uiState.update { it.copy(errorRes = null) }
     }
 }
 
@@ -118,7 +122,7 @@ fun RegisterScreen(
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = "Create Account",
+            text = stringResource(R.string.auth_register_heading),
             style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.primary
         )
@@ -126,7 +130,7 @@ fun RegisterScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = "Join the conversation",
+            text = stringResource(R.string.auth_register_subtitle),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -136,7 +140,7 @@ fun RegisterScreen(
         OutlinedTextField(
             value = uiState.username,
             onValueChange = viewModel::onUsernameChanged,
-            label = { Text("Username") },
+            label = { Text(stringResource(R.string.common_username)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Text,
@@ -151,7 +155,7 @@ fun RegisterScreen(
         OutlinedTextField(
             value = uiState.email,
             onValueChange = viewModel::onEmailChanged,
-            label = { Text("Email (optional)") },
+            label = { Text(stringResource(R.string.auth_register_email_optional)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Email,
@@ -166,7 +170,7 @@ fun RegisterScreen(
         OutlinedTextField(
             value = uiState.displayName,
             onValueChange = viewModel::onDisplayNameChanged,
-            label = { Text("Display Name (optional)") },
+            label = { Text(stringResource(R.string.auth_register_display_name_optional)) },
             singleLine = true,
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Text,
@@ -181,7 +185,7 @@ fun RegisterScreen(
         OutlinedTextField(
             value = uiState.password,
             onValueChange = viewModel::onPasswordChanged,
-            label = { Text("Password") },
+            label = { Text(stringResource(R.string.auth_register_password)) },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(
@@ -195,11 +199,11 @@ fun RegisterScreen(
             enabled = !uiState.isLoading
         )
 
-        if (uiState.error != null) {
+        uiState.errorRes?.let { errorRes ->
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = uiState.error!!,
+                text = stringResource(errorRes),
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall
             )
@@ -220,13 +224,13 @@ fun RegisterScreen(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
             }
-            Text("Create Account")
+            Text(stringResource(R.string.auth_register_submit))
         }
 
         Spacer(modifier = Modifier.height(12.dp))
 
         TextButton(onClick = onNavigateToLogin) {
-            Text("Already have an account? Login")
+            Text(stringResource(R.string.auth_register_login_link))
         }
     }
 }
