@@ -82,6 +82,24 @@ class QrRedeemViewModelTest {
     }
 
     @Test
+    fun `onNavigated is remembered so a recreated screen does not navigate again`() = runTest {
+        coEvery { authRepository.redeemQrToken("https://s", "t") } returns
+            Result.success(User(id = "u", username = "anna", displayName = "Anna"))
+
+        viewModel.start("https://s", "t")
+        advanceUntilIdle()
+        assertFalse(viewModel.uiState.value.navigated)
+
+        viewModel.onNavigated()
+        viewModel.start("https://s", "t") // screen re-entered after rotation
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.succeeded)
+        assertTrue(state.navigated)
+    }
+
+    @Test
     fun `starting again after a configuration change does not redeem twice`() = runTest {
         coEvery { authRepository.redeemQrToken("https://s", "t") } returns
             Result.failure(ApiException(HttpStatusCode.Unauthorized, "used", "INVALID_TOKEN"))

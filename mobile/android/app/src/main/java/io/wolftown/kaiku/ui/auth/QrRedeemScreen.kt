@@ -21,7 +21,12 @@ fun QrRedeemScreen(
     val state by viewModel.uiState.collectAsState()
 
     LaunchedEffect(Unit) { viewModel.start(serverUrl, token) }
-    LaunchedEffect(state.succeeded) { if (state.succeeded) onSuccess() }
+    LaunchedEffect(state.succeeded, state.navigated) {
+        if (state.succeeded && !state.navigated) {
+            viewModel.onNavigated()
+            onSuccess()
+        }
+    }
 
     Box(
         modifier = Modifier.fillMaxSize(),

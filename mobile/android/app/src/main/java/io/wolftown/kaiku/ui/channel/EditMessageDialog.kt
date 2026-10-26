@@ -40,7 +40,7 @@ fun EditMessageDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.chat_edit_cancel))
+                Text(stringResource(R.string.common_cancel))
             }
         }
     )

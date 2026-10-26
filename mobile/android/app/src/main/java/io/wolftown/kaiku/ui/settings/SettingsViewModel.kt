@@ -46,7 +46,10 @@ data class NotificationSettingsState(
                 (status as? PushStatus.Active)?.kind == TransportKind.UNIFIED_PUSH)
 }
 
-/** Label for a presence status in the profile (C5 `UNKNOWN` included). */
+/**
+ * Label for a presence status in the profile (C5 `UNKNOWN` included). Online/idle/dnd mirror web
+ * `home.status.*`; offline/unknown have no web key, so they are Android-only `settings_status_*`.
+ */
 @StringRes
 internal fun statusLabelRes(status: UserStatus): Int = when (status) {
     UserStatus.ONLINE -> R.string.home_status_online

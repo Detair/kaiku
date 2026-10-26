@@ -14,6 +14,8 @@ import javax.inject.Inject
 data class QrRedeemUiState(
     val isLoading: Boolean = true,
     val succeeded: Boolean = false,
+    /** The screen already navigated on success; stays true across configuration changes. */
+    val navigated: Boolean = false,
     /** String resource id of the failure to show, or null. Server message text is never shown. */
     val errorRes: Int? = null
 )
@@ -27,6 +29,11 @@ class QrRedeemViewModel @Inject constructor(
     val uiState: StateFlow<QrRedeemUiState> = _uiState.asStateFlow()
 
     private var started = false
+
+    /** The screen calls this right after it navigates on success, so a recreated screen doesn't. */
+    fun onNavigated() {
+        _uiState.update { it.copy(navigated = true) }
+    }
 
     /**
      * Redeems the QR token once per ViewModel instance. A configuration change re-enters the
