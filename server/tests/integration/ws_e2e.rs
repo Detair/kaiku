@@ -1598,3 +1598,41 @@ async fn test_set_status_clears_dirty_mark(pool: PgPool) {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// Self-healing: an observer whose view went stale for any reason (here the
+/// database changed without a publish and without a dirty mark) gets the
+/// correct status from the next periodic reconcile.
+#[sqlx::test]
+async fn test_stale_observer_status_heals_within_one_reconcile(pool: PgPool) {
+    use vc_server::presence::connections::reconcile_users;
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (a, b, _guild) = presence_pair(&pool, true).await;
+    let token_a = generate_access_token(&app.config, a);
+    let token_b = generate_access_token(&app.config, b);
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let _ws_a = connect_ready(&server, &token_a).await;
+    next_presence(&mut ws_b, a, "online").await;
+
+    // Stale: the database says busy, nothing was published, nothing is dirty.
+    sqlx::query("UPDATE users SET status = 'busy', presence_seq = presence_seq + 1 WHERE id = $1")
+        .bind(a)
+        .execute(&pool)
+        .await
+        .expect("store busy");
+    expect_no_presence(&mut ws_b, a).await;
+
+    // One reconcile period (driven directly; only this test's user).
+    assert_eq!(reconcile_users(&pool, &redis, &[a]).await, 1);
+    next_presence(&mut ws_b, a, "busy").await;
+    // Already correct: the next period publishes nothing.
+    assert_eq!(reconcile_users(&pool, &redis, &[a]).await, 1);
+    expect_no_presence(&mut ws_b, a).await;
+
+    redis.quit().await.expect("quit test Valkey client");
+}

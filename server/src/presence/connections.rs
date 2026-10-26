@@ -793,21 +793,80 @@ pub async fn sweep_users(
     Ok(offline)
 }
 
-/// Spawn the presence sweeper ([`sweep_expired`] and [`sweep_dirty`] every
-/// [`SWEEP_INTERVAL`]).
+/// How often every connected user's published presence is reconciled
+/// against the database and their live sockets ([`reconcile_connected`]).
+pub const RECONCILE_INTERVAL: Duration = Duration::from_mins(1);
+
+/// Self-healing: reconcile the published presence of every connected user.
+///
+/// Covers every user with registered sockets (the due set, at most `limit`),
+/// from a fresh database read and their live sockets. Publishes (versioned)
+/// only where the published status differs, so any status that went stale for
+/// whatever reason (lost publish, missed dirty mark, a race) is corrected
+/// within one [`RECONCILE_INTERVAL`]. Returns how many users were reconciled.
+pub async fn reconcile_connected(
+    db: &sqlx::PgPool,
+    redis: &Client,
+    limit: i64,
+) -> Result<usize, PresenceError> {
+    let users: Vec<String> = redis
+        .zrange(DUE_KEY, 0, limit - 1, None, false, None, false)
+        .await?;
+    let users: Vec<Uuid> = users
+        .iter()
+        .filter_map(|id| Uuid::parse_str(id).ok())
+        .collect();
+    Ok(reconcile_users(db, redis, &users).await)
+}
+
+/// Reconcile the given users from a fresh database read (see
+/// [`reconcile_from_db`]); returns how many succeeded.
+pub async fn reconcile_users(db: &sqlx::PgPool, redis: &Client, users: &[Uuid]) -> usize {
+    let mut done = 0;
+    for user_id in users {
+        if reconcile_from_db(db, redis, *user_id).await.is_ok() {
+            done += 1;
+        }
+    }
+    done
+}
+
+/// Spawn the presence sweeper.
+///
+/// Runs [`sweep_expired`] and [`sweep_dirty`] every [`SWEEP_INTERVAL`] and
+/// [`reconcile_connected`] every [`RECONCILE_INTERVAL`] (first run after a
+/// random offset, so servers do not run it in step).
 pub fn spawn_presence_sweep(db: sqlx::PgPool, redis: Client) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(SWEEP_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut sweep = tokio::time::interval(SWEEP_INTERVAL);
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let offset =
+            Duration::from_millis(u64::try_from(Uuid::new_v4().as_u128() % 10_000).unwrap_or(0));
+        let mut reconcile = tokio::time::interval_at(
+            tokio::time::Instant::now() + RECONCILE_INTERVAL + offset,
+            RECONCILE_INTERVAL,
+        );
+        reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            interval.tick().await;
-            if let Err(e) = sweep_expired(&db, &redis, now_ms(), SWEEP_BATCH).await {
-                log_unavailable(&e);
+            tokio::select! {
+                _ = sweep.tick() => {
+                    if let Err(e) = sweep_expired(&db, &redis, now_ms(), SWEEP_BATCH).await {
+                        log_unavailable(&e);
+                    }
+                    sweep_dirty(&db, &redis, SWEEP_BATCH).await;
+                }
+                _ = reconcile.tick() => {
+                    if let Err(e) = reconcile_connected(&db, &redis, RECONCILE_BATCH).await {
+                        log_unavailable(&e);
+                    }
+                }
             }
-            sweep_dirty(&db, &redis, SWEEP_BATCH).await;
         }
     })
 }
+
+/// How many connected users one periodic reconcile handles at most.
+pub const RECONCILE_BATCH: i64 = 1000;
 
 /// A presence update as published on `presence:{user_id}`.
 ///

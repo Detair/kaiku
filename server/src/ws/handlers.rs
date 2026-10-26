@@ -755,7 +755,7 @@ async fn handle_socket(
 
         // Presence backstop, with per-socket jitter.
         let jitter =
-            Duration::from_millis(u64::try_from(Uuid::new_v4().as_u128() % 60_000).unwrap_or(0));
+            Duration::from_millis(u64::try_from(Uuid::new_v4().as_u128() % 10_000).unwrap_or(0));
         let mut presence_backstop = tokio::time::interval_at(
             tokio::time::Instant::now() + PRESENCE_BACKSTOP_INTERVAL + jitter,
             PRESENCE_BACKSTOP_INTERVAL,
@@ -1196,8 +1196,11 @@ async fn resend_advanced_presence(
 }
 
 /// How often a socket runs [`resend_advanced_presence`] (plus jitter up to
-/// one minute, so sockets do not run it all at once).
-const PRESENCE_BACKSTOP_INTERVAL: Duration = Duration::from_mins(5);
+/// ten seconds, so sockets do not run it all at once). Together with the
+/// server's periodic reconcile
+/// ([`connections::reconcile_connected`](crate::presence::connections::reconcile_connected))
+/// any stale status heals within about a minute.
+const PRESENCE_BACKSTOP_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Shared presence audience of one socket.
 #[derive(Clone)]
