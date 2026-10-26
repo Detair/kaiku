@@ -68,6 +68,86 @@ pub struct OidcFlowState {
     /// account. `None` (the default) is an ordinary login flow.
     #[serde(default)]
     pub link_user_id: Option<Uuid>,
+    /// Desktop (Tauri) loopback address the server hands the flow result to
+    /// after it has exchanged the code at its own callback. `None` is the
+    /// browser popup flow (result via `postMessage`). Never sent to the provider.
+    ///
+    /// Flow states stored before this field existed deserialize as `None`
+    /// (browser). Such in-flight *desktop* flows cannot complete and must be
+    /// restarted; the states expire after 10 minutes, so no migration is needed.
+    #[serde(default)]
+    pub client_redirect_uri: Option<String>,
+}
+
+/// Where an OIDC flow sends the provider and, afterwards, the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowRedirects {
+    /// `redirect_uri` sent to the provider (and repeated in the code exchange).
+    pub provider_redirect_uri: String,
+    /// Desktop loopback return address; `None` for the browser flow.
+    pub client_redirect_uri: Option<String>,
+}
+
+/// Why [`resolve_flow_redirects`] refused a flow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlowRedirectError {
+    /// The client-supplied return address is not an `http` loopback URL.
+    InvalidClientRedirect,
+    /// `PUBLIC_URL` is not configured, so the server callback is unknown.
+    MissingPublicUrl,
+}
+
+/// Whether `url` matches the desktop return-address contract:
+/// `http://{localhost|127.0.0.1}[:port]/callback` — no userinfo, no query,
+/// no fragment, path exactly `/callback`, any port.
+pub fn is_loopback_client_redirect(url: &openidconnect::url::Url) -> bool {
+    matches!(
+        (url.scheme(), url.host_str()),
+        ("http", Some("localhost" | "127.0.0.1"))
+    ) && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/callback"
+        && url.query().is_none()
+        && url.fragment().is_none()
+}
+
+/// Resolve the provider and client redirect targets for a new flow.
+///
+/// `client_redirect_uri` is the optional desktop loopback address from the
+/// authorize request; `public_url` is the server's `PUBLIC_URL`.
+///
+/// The provider always redirects to the server's own `/auth/oidc/callback`:
+/// only the server holds the PKCE verifier and client secret, so only it can
+/// exchange the code. A desktop loopback address is kept separately and used
+/// solely to hand the result back once the server has finished the flow.
+pub fn resolve_flow_redirects(
+    client_redirect_uri: Option<&str>,
+    public_url: Option<&str>,
+) -> Result<FlowRedirects, FlowRedirectError> {
+    let client_redirect_uri = client_redirect_uri
+        .map(|uri| {
+            openidconnect::url::Url::parse(uri)
+                .ok()
+                .filter(is_loopback_client_redirect)
+                .map(|_| uri.to_string())
+                .ok_or(FlowRedirectError::InvalidClientRedirect)
+        })
+        .transpose()?;
+    let public_url = public_url.ok_or(FlowRedirectError::MissingPublicUrl)?;
+    Ok(FlowRedirects {
+        provider_redirect_uri: format!("{}/auth/oidc/callback", public_url.trim_end_matches('/')),
+        client_redirect_uri,
+    })
+}
+
+/// The desktop loopback URL to hand a finished flow's result to, or `None` for
+/// the browser popup flow. Re-validates the stored address (defence in depth).
+pub fn client_return_url(flow_state: &OidcFlowState) -> Option<openidconnect::url::Url> {
+    flow_state
+        .client_redirect_uri
+        .as_deref()
+        .and_then(|uri| openidconnect::url::Url::parse(uri).ok())
+        .filter(is_loopback_client_redirect)
 }
 
 /// Cached provider configuration with pre-built client.

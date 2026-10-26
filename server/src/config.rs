@@ -167,6 +167,10 @@ pub struct Config {
     /// webhook execute URLs). Falls back to request Host headers when unset.
     pub public_base_url: Option<String>,
 
+    /// Public URL of this server (`PUBLIC_URL`). OIDC providers always
+    /// redirect to `{public_url}/auth/oidc/callback`; required for OIDC.
+    pub public_url: Option<String>,
+
     /// MFA secret encryption key (32-byte hex string)
     pub mfa_encryption_key: Option<String>,
 
@@ -426,6 +430,7 @@ impl Config {
             voice_ice_interfaces,
             voice_ice_ip_family,
             public_base_url: env_opt("PUBLIC_BASE_URL"),
+            public_url: env_opt("PUBLIC_URL"),
             mfa_encryption_key: env_opt("MFA_ENCRYPTION_KEY"),
             require_e2ee_setup: env::var("REQUIRE_E2EE_SETUP")
                 .ok()
@@ -639,6 +644,7 @@ impl Config {
             voice_ice_interfaces: None,
             voice_ice_ip_family: IceIpFamily::Both,
             public_base_url: None,
+            public_url: None,
             mfa_encryption_key: Some(TEST_MFA_ENCRYPTION_KEY.into()),
             require_e2ee_setup: false,
             block_check_fail_open: false,
