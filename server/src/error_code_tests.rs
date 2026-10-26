@@ -658,36 +658,84 @@ async fn rate_limit_voice_and_call_codes_are_upper_snake() {
     .await;
 }
 
-/// WebSocket `error` events carry their code in handler code rather than in an
-/// enum, so scan the sources for literal codes: `code: "..."` fields and the
-/// `send_err("...", ...)` helper must be `UPPER_SNAKE`.
+/// Literals that match the scan but are human-readable text, not codes: the
+/// call API's `error` field is free text (its code is in `code`).
+const NON_CODE_ALLOWLIST: &[&str] = &[
+    "DM channel not found",
+    "Not a participant of this DM",
+    "Cannot call this user",
+];
+
+fn rust_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("read src dir") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            rust_sources(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs")
+            && !path.ends_with("error_code_tests.rs")
+        {
+            out.push(path);
+        }
+    }
+}
+
+/// Lower-case code literals found in `src`, as `file: literal` strings.
+fn lowercase_code_literals(src: &str) -> Vec<String> {
+    use regex::Regex;
+    // JSON-ish bodies (also multi-line): any lower-case letter is a violation.
+    let json_key = Regex::new(r#""(?:error|code)"\s*:\s*"([^"]*[a-z][^"]*)""#).unwrap();
+    // Struct/event fields and helper calls: `code: "x"`, `error: "x"`, `send_err("x"`.
+    let field = Regex::new(r#"(?:\b(?:code|error):\s*|send_err\(\s*)"([^"]*[a-z][^"]*)""#).unwrap();
+    // Plain-text tuple responses: only code-looking tokens (`snake_case`) count,
+    // human messages ("File not found") are fine.
+    let tuple = Regex::new(r#"StatusCode::[A-Z_]+,\s*"([a-z][a-z0-9_]*)""#).unwrap();
+    let mut found = Vec::new();
+    for re in [&json_key, &field, &tuple] {
+        for c in re.captures_iter(src) {
+            found.push(c[1].to_string());
+        }
+    }
+    found
+}
+
+/// No source file may hand out a lower-case machine code: JSON `error`/`code`
+/// bodies, `code:`/`error:` fields (WS `error` and `voice_error` events, call
+/// API), `send_err(..)` and `(StatusCode, "code")` tuples, across all of `src`.
 #[test]
-fn ws_event_and_close_codes_are_upper_snake() {
-    let sources = [
-        ("ws/handlers.rs", include_str!("ws/handlers.rs")),
-        ("ws/bot_gateway.rs", include_str!("ws/bot_gateway.rs")),
-    ];
-    let mut checked = 0;
-    for (name, src) in sources {
-        for line in src.lines() {
-            let line = line.trim();
-            if line.starts_with("//") {
-                continue;
-            }
-            let literal = ["code: \"", "send_err(\"", "CLOSE_REASON_RESYNC: &str = \""]
-                .iter()
-                .find_map(|p| line.split_once(p).map(|(_, rest)| rest));
-            if let Some(rest) = literal {
-                let code = rest.split('"').next().unwrap_or_default();
-                // `code: u16` close codes and `code: "..."` HTTP-less test
-                // fixtures never reach this branch (they have no string literal).
-                assert!(
-                    is_upper_snake(code),
-                    "{name}: non-UPPER_SNAKE WS code {code:?} in `{line}`"
-                );
-                checked += 1;
+fn source_has_no_lowercase_error_codes() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_sources(&root, &mut files);
+    assert!(files.len() > 100, "expected to scan the server sources");
+    let mut violations = Vec::new();
+    for f in &files {
+        let src = std::fs::read_to_string(f).expect("read source");
+        for lit in lowercase_code_literals(&src) {
+            if !NON_CODE_ALLOWLIST.contains(&lit.as_str()) {
+                violations.push(format!("{}: {lit:?}", f.display()));
             }
         }
     }
-    assert!(checked >= 10, "expected to scan WS codes, saw {checked}");
+    assert!(
+        violations.is_empty(),
+        "lower-case codes:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn source_scan_detects_lowercase_codes() {
+    let planted = r#"
+        json!({"error": "not_admin", "message": "x"})
+        json!({
+            "error":
+                "mixed_Case",
+        })
+        ServerEvent::Error { code: "voice_error".to_string(), message: m }
+        send_err("rate_limited", "m")
+        (StatusCode::NOT_FOUND, "call_not_found")
+    "#;
+    assert_eq!(lowercase_code_literals(planted).len(), 5);
+    let ok = r#"json!({"error": "NOT_ADMIN"}) (StatusCode::NOT_FOUND, "File not found") code: 4"#;
+    assert!(lowercase_code_literals(ok).is_empty());
 }

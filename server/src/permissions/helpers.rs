@@ -149,9 +149,7 @@ pub async fn get_member_permission_context(
 /// Screening: a `pending` member (hasn't accepted the rules) has NO
 /// permissions regardless of roles — no `VIEW_CHANNEL`, no send, no voice, and
 /// (since WS subscribe resolves through here) no channel subscribe. The owner
-/// is never pending, but guard anyway.
-/// A `pending` member (hasn't accepted the rules) has NO permissions regardless
-/// of roles. The owner is never pending. While the server's screening feature
+/// is never pending, but guard anyway. While the server's screening feature
 /// is off, `pending` counts as active (rows unchanged).
 fn is_pending_non_owner(guild_info: &GuildInfo, user_id: Uuid) -> bool {
     guild_info.membership_state == "pending"
