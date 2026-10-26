@@ -165,7 +165,11 @@ export interface ScreenShareInfo {
 export interface ScreenShareCheckResult {
   allowed: boolean;
   granted_quality: ScreenShareQuality;
-  error?: "no_permission" | "limit_reached" | "not_in_channel";
+  /**
+   * Server code (`NO_PERMISSION`, `LIMIT_REACHED`, `NOT_IN_CHANNEL`; lowercase
+   * on older servers). Compare via `normalizeCode`, show `screenShareCheckErrorText`.
+   */
+  error?: string;
 }
 
 /**

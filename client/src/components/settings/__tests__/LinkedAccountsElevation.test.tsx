@@ -13,7 +13,7 @@ vi.mock("@/lib/tauri", () => ({
   isTauri: () => native.on,
   linkIdentity: (...a: unknown[]) => linkIdentity(...a),
   isElevationRequiredError: (e: unknown) =>
-    (e instanceof Error ? e.message : String(e)).includes("elevation_required"),
+    (e instanceof Error ? e.message : String(e)).toLowerCase().includes("elevation_required"),
   unlinkIdentity: vi.fn(),
 }));
 vi.mock("@/components/admin/ElevateDialog", () => ({
@@ -237,6 +237,9 @@ describe("LinkedAccountsSection admin elevation", () => {
     ["LINK_SESSION_INVALID", "no longer valid"],
     ["ACCOUNT_BANNED", "suspended"],
     ["SERVICE_UNAVAILABLE", "try again later"],
+    ["link_session_invalid", "no longer valid"],
+    ["account_banned", "suspended"],
+    ["service_unavailable", "try again later"],
   ])("maps the link callback error %s to text", async (code, text) => {
     vi.spyOn(window, "open").mockReturnValue(popupStub());
     linkIdentity.mockResolvedValue({ mode: "browser", authUrl: "https://idp/x" });
@@ -247,13 +250,13 @@ describe("LinkedAccountsSection admin elevation", () => {
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(text));
   });
 
-  it("elevation_required from the callback starts the elevate, Link now flow", async () => {
+  it.each(["elevation_required", "ELEVATION_REQUIRED"])("%s from the callback starts the elevate, Link now flow", async (code) => {
     vi.spyOn(window, "open").mockReturnValue(popupStub());
     linkIdentity.mockResolvedValue({ mode: "browser", authUrl: "https://idp/x" });
     render(() => <LinkedAccountsSection />);
     await clickLink();
     await waitFor(() => expect(window.open).toHaveBeenCalled());
-    callback("elevation_required");
+    callback(code);
     expect(lastPopup()?.close).toHaveBeenCalled();
     fireEvent.click(await screen.findByRole("button", { name: "elevate-now" }));
     expect(await screen.findByRole("button", { name: "Link now" })).toBeTruthy();
