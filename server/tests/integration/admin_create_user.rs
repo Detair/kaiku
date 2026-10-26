@@ -29,7 +29,14 @@ const NEW_PASSWORD: &str = "my-own-secret-456";
 
 /// Spin up a server and an elevated system admin; returns the admin's token.
 async fn setup_admin(pool: &PgPool) -> (TestApp, TestServer, String) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    setup_admin_with(pool, vc_server::config::Config::default_for_test()).await
+}
+
+async fn setup_admin_with(
+    pool: &PgPool,
+    config: vc_server::config::Config,
+) -> (TestApp, TestServer, String) {
+    let app = TestApp::with_pool_and_config(pool.clone(), config).await;
     let server = spawn_test_server(app.router.clone()).await;
     let (admin_id, _) = create_test_user(pool).await;
     make_admin(pool, admin_id).await;
@@ -779,11 +786,53 @@ async fn test_create_user_guild_ids_duplicates_empty_and_limit(pool: PgPool) {
     let many: Vec<Uuid> = (0..11).map(|_| guild).collect();
     let resp = create_user_in_guilds(&server, &token, "tante", serde_json::json!(many)).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "VALIDATION_ERROR");
     let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = 'tante'")
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(users, 0);
+}
+
+#[sqlx::test]
+async fn test_create_user_full_guild_creates_nothing(pool: PgPool) {
+    let mut config = vc_server::config::Config::default_for_test();
+    config.max_members_per_guild = 2;
+    let (_app, server, token) = setup_admin_with(&pool, config).await;
+    let (owner_id, _) = create_test_user(&pool).await;
+    let (other_id, _) = create_test_user(&pool).await;
+    // Guild A has room (1/2), guild B is full (2/2).
+    let guild_a = super::helpers::create_guild(&pool, owner_id).await;
+    let guild_b = super::helpers::create_guild(&pool, owner_id).await;
+    super::helpers::add_guild_member(&pool, guild_b, other_id).await;
+
+    let resp = create_user_in_guilds(
+        &server,
+        &token,
+        "oma",
+        serde_json::json!([guild_a, guild_b]),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "VALIDATION_ERROR");
+
+    let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = 'oma'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(users, 0, "no account is created");
+    let members_a: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM guild_members WHERE guild_id = $1")
+            .bind(guild_a)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        members_a, 1,
+        "no membership is added in the guild with room"
+    );
 }
 
 #[sqlx::test]

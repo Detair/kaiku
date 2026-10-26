@@ -124,6 +124,9 @@ pub async fn list_users(
     }))
 }
 
+/// Most servers an admin-created account can join at once (C23).
+const MAX_GUILD_IDS: usize = 10;
+
 /// Create a local account with a temporary password.
 ///
 /// `POST /api/admin/users`
@@ -151,6 +154,12 @@ pub async fn create_user(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(body): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<UserSummary>), AdminError> {
+    // C23: the servers list answers VALIDATION_ERROR like an unknown server.
+    if body.guild_ids.len() > MAX_GUILD_IDS {
+        return Err(AdminError::InvalidRequest(format!(
+            "guild_ids: at most {MAX_GUILD_IDS} servers"
+        )));
+    }
     body.validate()
         .map_err(|e| AdminError::Validation(crate::validation::format_validation_errors(&e)))?;
 
@@ -185,6 +194,9 @@ pub async fn create_user(
             .ok_or_else(|| AdminError::Conflict("Username already taken".to_string()))?;
 
     // An admin-added member is active right away, never pending screening.
+    // A guild deleted after the existence check above makes the insert fail
+    // on its foreign key, which surfaces as a 500 and rolls everything back;
+    // that race is accepted.
     for guild_id in &guild_ids {
         join_guild(&state, &mut tx, *guild_id, id).await?;
     }
@@ -260,7 +272,7 @@ async fn join_guild(
         .await
         .map_err(guild_err)?;
     if members >= state.config.max_members_per_guild {
-        return Err(AdminError::Validation(format!(
+        return Err(AdminError::InvalidRequest(format!(
             "server has reached the maximum number of members ({})",
             state.config.max_members_per_guild
         )));

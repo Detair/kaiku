@@ -45,7 +45,9 @@ Content-Type: application/json
   admin-added account back). **Add the family server here**, so the new user
   finds it as soon as they sign in. Repeated ids are ignored. If any id does
   not exist, the request fails with `400` (`VALIDATION_ERROR`, "unknown
-  server") and nothing is created. Omit the field to create the account without
+  server") and nothing is created. More than 10 ids, or a server that has
+  reached its member limit, also fail with `400` (`VALIDATION_ERROR`) and
+  create nothing. Omit the field to create the account without
   any server.
 
 The response is `201 Created` with the same user object that
