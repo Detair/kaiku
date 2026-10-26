@@ -20,6 +20,8 @@ import dagger.hilt.android.AndroidEntryPoint
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
+import io.wolftown.kaiku.navigation.DeepLinks
+import io.wolftown.kaiku.navigation.PendingNavigation
 import io.wolftown.kaiku.ui.auth.LoginViewModel
 import io.wolftown.kaiku.ui.auth.OidcHandler
 import io.wolftown.kaiku.ui.shared.KaikuTheme
@@ -41,13 +43,18 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var realtimeConnectionManager: RealtimeConnectionManager
 
+    @Inject
+    lateinit var pendingNavigation: PendingNavigation
+
     private val loginViewModel: LoginViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         authState.initialize(tokenStorage)
-        handleIntent(intent)
+        // On recreation (rotation, theme change, process restore) getIntent() is the
+        // original launch intent; handling it again would replay a consumed link.
+        if (savedInstanceState == null) handleIntent(intent)
 
         val startDestination = resolveStartDestination()
         val appVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
@@ -70,6 +77,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         handleIntent(intent)
     }
 
@@ -81,6 +89,12 @@ class MainActivity : ComponentActivity() {
         val uri = intent?.data ?: return
         if (oidcHandler.isOidcCallback(uri)) {
             loginViewModel.onOidcDeepLink(uri)
+            return
+        }
+        DeepLinks.parseChannelId(uri.toString())?.let {
+            pendingNavigation.post(it, authState.currentUserId.value)
+            // Strip the consumed link so it cannot be handled twice.
+            intent.data = null
         }
     }
 

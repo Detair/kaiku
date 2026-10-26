@@ -11,7 +11,7 @@ use crate::ratelimit::RateLimitResult;
 /// Errors that can occur during rate limit checks.
 #[derive(Debug, thiserror::Error)]
 pub enum RateLimitError {
-    /// Redis is unavailable (fail-open, but should be logged).
+    /// Valkey is unavailable (see `RateLimiter::allow_during_outage`).
     #[error("Redis service unavailable")]
     RedisUnavailable,
     /// Request exceeded the rate limit.
@@ -42,7 +42,10 @@ impl IntoResponse for RateLimitError {
         match self {
             Self::RedisUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "service_unavailable"})),
+                Json(serde_json::json!({
+                    "error": "SERVICE_UNAVAILABLE",
+                    "message": "Service temporarily unavailable",
+                })),
             )
                 .into_response(),
             Self::LimitExceeded(result) => {

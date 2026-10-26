@@ -257,8 +257,10 @@ pub async fn mark_all_channels_read(
     // Uses a subquery to get the latest message ID per channel
     let rows = core_q::mark_all_guild_channels_read(&state.db, auth.id, guild_id, now).await?;
 
-    // Broadcast ChannelRead events for each updated channel
+    // Broadcast ChannelRead events (and clear phone notifications) for each
+    // updated channel
     for (channel_id, last_read_message_id) in &rows {
+        state.push.notify_read(&state, auth.id, *channel_id);
         if let Err(e) = broadcast_to_user(
             &state.redis,
             auth.id,

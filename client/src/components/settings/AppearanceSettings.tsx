@@ -4,11 +4,13 @@
  * Theme selector with visual radio cards.
  */
 
-import { Component, For } from "solid-js";
+import { Component, For, Show } from "solid-js";
 import { Check, RotateCcw } from "lucide-solid";
 import { pickerThemes, theme as currentTheme, setTheme, type ThemeDefinition } from "@/stores/theme";
 import { updatePreference } from "@/stores/preferences";
 import { showToast } from "@/components/ui/Toast";
+import { isLocaleSwitchEnabled } from "@/lib/featureFlags";
+import LanguageSelect from "./LanguageSelect";
 
 const AppearanceSettings: Component = () => {
   return (
@@ -79,6 +81,8 @@ const AppearanceSettings: Component = () => {
           )}
         </For>
       </div>
+
+      <Show when={isLocaleSwitchEnabled()}><LanguageSelect /></Show>
 
       {/* Re-run Onboarding */}
       <div class="mt-8 pt-6 border-t border-white/5">

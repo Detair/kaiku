@@ -15,6 +15,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import io.wolftown.kaiku.push.PushRegistrar
 
 /**
  * Integration test verifying the QR code login flow:
@@ -55,7 +56,7 @@ class QrLoginFlowTest {
         // setLoggedOut immediately. See app/src/test/AGENTS.md.
         authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
 
-        authRepository = AuthRepository(authApi, tokenStorage, authState)
+        authRepository = AuthRepository(authApi, tokenStorage, authState, mockk<PushRegistrar>(relaxed = true))
     }
 
     // ========================================================================

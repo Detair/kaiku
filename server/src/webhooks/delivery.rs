@@ -111,6 +111,9 @@ async fn promote_due_retries(redis: &Client) {
     }
 }
 
+/// Server-side BRPOP wait of the delivery worker.
+const BRPOP_WAIT: Duration = Duration::from_secs(2);
+
 /// Spawn the background delivery worker.
 pub async fn spawn_delivery_worker(
     db: PgPool,
@@ -127,9 +130,17 @@ pub async fn spawn_delivery_worker(
         // Promote any due retries into the immediate queue
         promote_due_retries(&redis).await;
 
-        // BRPOP with 2-second timeout (short so we check retries frequently)
-        let result: Result<Option<(String, String)>, _> =
-            redis.brpop(DELIVERY_QUEUE_KEY, 2.0).await;
+        // BRPOP with 2-second timeout (short so we check retries frequently).
+        // The client-side timeout covers the server-side wait plus the normal
+        // command timeout, so an idle queue is not reported as an outage.
+        let brpop_options = Options {
+            timeout: Some(BRPOP_WAIT + redis.perf_config().default_command_timeout),
+            ..Options::default()
+        };
+        let result: Result<Option<(String, String)>, _> = redis
+            .with_options(&brpop_options)
+            .brpop(DELIVERY_QUEUE_KEY, BRPOP_WAIT.as_secs_f64())
+            .await;
 
         let payload_str = match result {
             Ok(Some((_key, value))) => {
