@@ -6,6 +6,7 @@ mod audio;
 mod capture;
 mod commands;
 mod crypto;
+mod keystore;
 mod network;
 mod presence;
 mod session;
@@ -76,15 +77,13 @@ pub fn run() {
             // Pick the TLS crypto provider once, before any `wss://` handshake.
             network::websocket::install_crypto_provider();
 
-            // Initialize keyring's default credential store. keyring 4 split into
-            // `keyring` (store selection) and `keyring-core` (Entry/Error), and
-            // requires explicit store selection before any Entry::new. Choosing
+            // Set keyring-core's default credential store before any Entry::new:
             // the platform-native store (Keychain on macOS, Credential Manager on
-            // Windows, Secret Service on Linux, Keystore on Android). On Linux,
-            // `not_keyutils=true` picks Secret Service over the kernel keyutils
-            // store — keyutils evicts on session end which breaks refresh-token
-            // persistence across reboot.
-            if let Err(err) = keyring::use_native_store(true) {
+            // Windows, Secret Service on Linux), built in keystore.rs the same way
+            // the `keyring` crate did, so existing entries stay readable. Linux
+            // uses Secret Service, not the kernel keyutils store — keyutils
+            // evicts on session end, which would lose the refresh token on reboot.
+            if let Err(err) = keystore::use_native_store() {
                 tracing::error!(error = %err, "keyring native-store init failed; auth refresh-token persistence will not work this session");
             }
 
