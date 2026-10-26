@@ -323,6 +323,7 @@
   "dm.new.selected.one": "",
   "dm.new.selected.other": "",
   "dm.new.title": "",
+  "errors.featureDisabled": "",
   "errors.network": "",
   "errors.rateLimited": "",
   "errors.server": "",

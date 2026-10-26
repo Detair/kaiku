@@ -4,6 +4,7 @@
  * Manages user authentication state and actions.
  */
 
+import { loadServerFeatures } from "@/stores/serverFeatures";
 import { createStore } from "solid-js/store";
 import type { User } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
@@ -377,6 +378,7 @@ async function runStart(
   const current = () => myId === ownerId && servicesEligible();
   if (!current()) return;
   activeStartId = myId;
+  void loadServerFeatures();
 
   const started: StartedServices = { websocket: false, presence: false, idle: false };
   // Superseded while a step ran: undo what this job started and stop. The

@@ -7,6 +7,8 @@ vi.mock("@/lib/tauri", () => ({
   markAllGuildChannelsRead: vi.fn(),
   reorderGuildChannels: vi.fn(),
   wsStatus: vi.fn(),
+  fetchServerSettings: vi.fn(),
+  getServerUrl: vi.fn(() => "https://chat.example"),
 }));
 
 vi.mock("@/stores/websocket", () => ({
@@ -490,5 +492,29 @@ describe("channels store", () => {
       expect(vc).toHaveLength(1);
       expect(vc[0].id).toBe("v1");
     });
+  });
+});
+
+describe("visibleChannels", () => {
+  it("visibleChannels drops disabled types", async () => {
+    const { visibleChannels } = await import("../channels");
+    const { loadServerFeatures, resetServerFeatures } = await import("../serverFeatures");
+    const mk = (id: string, channel_type: string) => ({ id, channel_type }) as unknown as Channel;
+    const all = [mk("t", "text"), mk("v", "voice"), mk("f", "forum"), mk("a", "announcement")];
+
+    resetServerFeatures();
+    expect(visibleChannels(all).map((c) => c.id)).toEqual(["t", "v"]);
+
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue({
+      features: {
+        forum_channels: true,
+        announcement_channels: false,
+        scheduled_events: false,
+        membership_screening: false,
+      },
+    } as never);
+    await loadServerFeatures();
+    expect(visibleChannels(all).map((c) => c.id)).toEqual(["t", "v", "f"]);
+    resetServerFeatures();
   });
 });
