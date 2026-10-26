@@ -31,6 +31,7 @@ variables marked "empty = unset".
 | `ENABLE_API_DOCS` | `false` in release builds | Serve the OpenAPI docs |
 | `ENABLE_GUILD_DISCOVERY` | `true` | Enable public guild discovery |
 | `GEOIP_API_URL` | `http://ip-api.com/json/{ip}?fields=city,country` | GeoIP lookup endpoint for session locations; `{ip}` is replaced |
+| `KAIKU_OPTIONAL_FEATURES` | unset (all off) | Comma-separated list of optional features to turn on: `forum` (forum channels), `announcements` (announcement channels and crossposting), `events` (scheduled events and their reminders), `screening` (membership screening). While a feature is off, its routes answer 404 `FEATURE_DISABLED`, new channels of that type are refused, crossposts and event reminders do not run, and members are never held for screening (members already waiting are treated as accepted until screening is turned on again). Existing data is kept and comes back when the feature is turned on again. Unknown names are logged as a warning at startup and ignored |
 | `MAX_GUILDS_PER_USER` | `100` | Guilds a user can join (minimum 1) |
 | `MAX_MEMBERS_PER_GUILD` | `1000` | Members per guild (minimum 1) |
 | `MAX_CHANNELS_PER_GUILD` | `200` | Channels per guild (minimum 1) |

@@ -46,7 +46,7 @@ fn post_msg(token: &str, channel: Uuid) -> axum::http::Request<Body> {
 
 #[sqlx::test]
 async fn pending_member_is_blocked_then_unlocked_on_accept(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     let guild = create_guild_with_default_role(
         &pool,
@@ -100,7 +100,7 @@ async fn pending_member_is_blocked_then_unlocked_on_accept(pool: PgPool) {
 #[sqlx::test]
 async fn active_member_never_gated(pool: PgPool) {
     // Regression guard: an active member in a screening guild keeps full access.
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     let guild = create_guild_with_default_role(
         &pool,
@@ -121,7 +121,7 @@ async fn active_member_never_gated(pool: PgPool) {
 
 #[sqlx::test]
 async fn disabling_screening_promotes_pending(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     let guild = create_guild_with_default_role(
         &pool,
@@ -160,7 +160,7 @@ async fn disabling_screening_promotes_pending(pool: PgPool) {
 
 #[sqlx::test]
 async fn accept_when_not_pending_is_rejected(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     // Owner (active) — not pending.
     let guild = create_guild_with_default_role(&pool, owner, GuildPermissions::VIEW_CHANNEL).await;

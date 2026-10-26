@@ -185,6 +185,10 @@ pub(super) async fn send_webhook_message(
     let channel = db::find_channel_by_id(&state.db, webhook.channel_id)
         .await?
         .ok_or(IncomingWebhookError::UnknownChannel)?;
+    // No new forum posts or replies while the forum feature is off.
+    if channel.channel_type == ChannelType::Forum && !state.config.optional_features.forum {
+        return Err(IncomingWebhookError::FeatureDisabled);
+    }
 
     let params = WebhookMessageParams {
         channel_id: webhook.channel_id,

@@ -51,6 +51,11 @@ pub async fn create(
         _ => return Err(ChatError::Validation("Invalid channel type".to_string())),
     };
 
+    // Forum and announcement channels are optional features (C22).
+    if !crate::features::channel_type_enabled(&state.config.optional_features, &channel_type) {
+        return Err(ChatError::FeatureDisabled);
+    }
+
     // Validate voice channel user limit
     if channel_type == ChannelType::Voice {
         if let Some(limit) = body.user_limit {

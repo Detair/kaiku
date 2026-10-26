@@ -61,6 +61,12 @@ pub async fn authorize_send(
         }
     }
 
+    // Forum channels are an optional feature: while it is off, nothing new is
+    // posted into an existing forum channel (posts or replies).
+    if !crate::features::channel_writable(&state.config.optional_features, &channel.channel_type) {
+        return Err(ChatError::FeatureDisabled);
+    }
+
     // Announcement channels require SEND_ANNOUNCEMENTS to publish (a distinct,
     // more restricted right than SEND_MESSAGES).
     if channel.channel_type == db::ChannelType::Announcement

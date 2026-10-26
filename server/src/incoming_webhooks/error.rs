@@ -48,6 +48,9 @@ pub enum IncomingWebhookError {
     MaxWebhooksReached,
     #[error("{0}")]
     Permission(#[from] PermissionError),
+    /// The channel type belongs to an optional feature that is turned off.
+    #[error("This feature is turned off on this server.")]
+    FeatureDisabled,
     /// Per-webhook execute rate limit exceeded.
     #[error("You are being rate limited.")]
     RateLimited { retry_after: f64 },
@@ -69,6 +72,11 @@ impl IncomingWebhookError {
             Self::ContentFiltered => (StatusCode::BAD_REQUEST, "CONTENT_FILTERED", 50035),
             Self::MaxWebhooksReached => (StatusCode::BAD_REQUEST, "MAX_WEBHOOKS", 30007),
             Self::Permission(_) => (StatusCode::FORBIDDEN, "PERMISSION_DENIED", 50013),
+            Self::FeatureDisabled => (
+                StatusCode::BAD_REQUEST,
+                crate::features::FEATURE_DISABLED,
+                50035,
+            ),
             Self::RateLimited { .. } => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", 0),
         }
     }

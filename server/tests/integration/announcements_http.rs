@@ -40,7 +40,7 @@ fn post_msg(token: &str, channel: Uuid, content: &str) -> axum::http::Request<Bo
 
 #[sqlx::test]
 async fn member_without_send_announcements_is_blocked(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     // @everyone can view + send normal messages, but NOT announce.
     let guild = create_guild_with_default_role(
@@ -60,7 +60,7 @@ async fn member_without_send_announcements_is_blocked(pool: PgPool) {
 
 #[sqlx::test]
 async fn member_with_send_announcements_can_publish(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     let guild = create_guild_with_default_role(
         &pool,
@@ -83,7 +83,7 @@ async fn member_with_send_announcements_can_publish(pool: PgPool) {
 
 #[sqlx::test]
 async fn follow_requires_announcement_source(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     let guild = create_guild_with_default_role(
         &pool,
@@ -109,7 +109,7 @@ async fn follow_requires_announcement_source(pool: PgPool) {
 
 #[sqlx::test]
 async fn follow_then_crosspost_delivers_to_target(pool: PgPool) {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_all_features(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;
     let guild = create_guild_with_default_role(
         &pool,

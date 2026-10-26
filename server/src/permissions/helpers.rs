@@ -107,8 +107,12 @@ pub async fn get_member_permission_context(
     // Screening short-circuit: a `pending` member (hasn't accepted the rules)
     // has NO permissions regardless of roles — no VIEW_CHANNEL, no send, no
     // voice, and (since WS subscribe resolves through here) no channel subscribe.
-    // The owner is never pending, but guard anyway.
-    if guild_info.membership_state == "pending" && !is_owner {
+    // The owner is never pending, but guard anyway. While the server's
+    // screening feature is off, `pending` counts as active (rows unchanged).
+    if guild_info.membership_state == "pending"
+        && !is_owner
+        && crate::features::screening_enforced()
+    {
         return Ok(Some(MemberPermissionContext {
             guild_owner_id: guild_info.guild_owner_id,
             everyone_permissions: GuildPermissions::empty(),
