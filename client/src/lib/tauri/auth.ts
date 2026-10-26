@@ -158,12 +158,12 @@ export async function login(
 export async function updateStatus(
   status: UserStatus,
 ): Promise<void> {
-  // Map client status names to server enum values
+  // Map client status names to server enum values. The server accepts only
+  // online, away and busy; anything else (offline, a stale invisible) is online.
   const statusMap: Record<string, string> = {
     online: "online",
     idle: "away",
     dnd: "busy",
-    offline: "offline",
   };
   const message = { type: "set_status", status: statusMap[status] ?? "online" };
   if (isTauri()) {

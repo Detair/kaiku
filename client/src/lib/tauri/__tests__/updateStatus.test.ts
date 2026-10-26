@@ -23,6 +23,14 @@ describe("updateStatus", () => {
     });
   });
 
+  it("never sends offline either (the server only accepts online, away, busy)", async () => {
+    await updateStatus("offline");
+    expect(JSON.parse(send.mock.calls[0][0])).toEqual({
+      type: "set_status",
+      status: "online",
+    });
+  });
+
   it("still maps idle and dnd", async () => {
     await updateStatus("dnd");
     expect(JSON.parse(send.mock.calls[0][0]).status).toBe("busy");

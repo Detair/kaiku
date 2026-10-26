@@ -456,7 +456,7 @@ export async function setMyCustomStatus(
     setPresenceState(
       produce((state) => {
         if (!state.users[user.id]) {
-          state.users[user.id] = { status: user.status };
+          state.users[user.id] = { status: normalizeStatus(user.id, user.status) };
         }
         state.users[user.id].customStatus = status;
       }),
