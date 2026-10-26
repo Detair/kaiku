@@ -13,8 +13,8 @@ pub mod system;
 
 pub use guild::GuildPermissions;
 pub use helpers::{
-    filter_accessible_channels, get_member_permission_context, require_channel_access,
-    require_guild_permission, MemberPermissionContext,
+    filter_accessible_channels, filter_viewable_channels_in_guilds, get_member_permission_context,
+    require_channel_access, require_guild_permission, MemberPermissionContext,
 };
 pub use models::*;
 pub use queries::*;
