@@ -7,8 +7,9 @@ password; the new user sets their own password the first time they sign in.
 ## 1. Keep registration closed
 
 Leave the registration policy at `closed` or `invite_only` (server settings /
-setup). Admin-created accounts work with every policy; `POST /auth/register`
-stays rejected unless the policy is `open`.
+setup), so strangers and bots cannot create accounts on their own.
+Admin-created accounts work with every policy; `POST /auth/register` stays
+rejected unless the policy is `open`.
 
 ## 2. Create the account in the app (primary way)
 
@@ -35,10 +36,13 @@ Use the desktop app (or the web client) signed in as a system admin.
      normal active member. All of your servers are ticked by default, at most
      10 at once. Untick what the person should not see.
 4. After creating, **Copy all** copies username, temporary password and server
-   address for the handover.
+   address for the handover. The password is then in your clipboard as plain
+   text, and some systems sync the clipboard to the cloud or to other devices:
+   copy something else afterwards.
 
-Give these to the person in person or over a channel you trust. Use the
-temporary password for this one handover only.
+Hand these over in person or through an end-to-end encrypted messenger, not by
+ordinary e-mail, SMS or a group chat. Use the temporary password for this one
+handover only.
 
 ### First sign-in: forced password change
 
@@ -69,6 +73,13 @@ The code is single use and valid for 120 seconds (the window counts down;
 **Generate new code** makes another). It contains the server address, so the
 phone must be able to reach the server at that address (public URL or VPN).
 An expired or used code shows "That QR code has expired or was already used."
+
+The code is a live one-time login, not just the server address: anyone who
+sees or photographs it can sign in as that person within the 120 seconds.
+Don't show it while screen sharing or to onlookers. The person always creates
+the code on **their own** account. An admin never shows their own code to
+someone else's phone; that phone would then be signed in with the admin's
+account.
 
 ## 4. HTTP API (scripting)
 
