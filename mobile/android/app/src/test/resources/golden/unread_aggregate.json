@@ -3,6 +3,7 @@
     {
       "channel_id": "00000000-0000-4000-8000-00000000d101",
       "channel_name": "",
+      "last_read_message_id": null,
       "unread_count": 2
     }
   ],
@@ -12,6 +13,7 @@
         {
           "channel_id": "00000000-0000-4000-8000-00000000c001",
           "channel_name": "general",
+          "last_read_message_id": "00000000-0000-4000-8000-00000000e001",
           "unread_count": 3
         }
       ],
