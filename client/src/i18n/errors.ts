@@ -77,7 +77,7 @@ export function errorText(
   }
   if (err instanceof TypeError) return t("errors.network");
   // An empty server message makes HttpError.message fall back to the code.
-  if (code === "VALIDATION_ERROR" && http?.message && http.message !== http.code) {
+  if (code === "VALIDATION_ERROR" && http?.message && normalizeCode(http.message) !== code) {
     return http.message;
   }
   return t(fallback);
