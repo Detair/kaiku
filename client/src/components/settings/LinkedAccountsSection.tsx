@@ -3,6 +3,7 @@ import { KeyRound, Unlink, Plus } from "lucide-solid";
 import * as tauri from "@/lib/tauri";
 import { formatRelativeTimeShort } from "@/lib/utils";
 import type { IdentityInfo, OidcProvider } from "@/lib/types";
+import ElevateDialog from "@/components/admin/ElevateDialog";
 
 /**
  * Lists the external (OIDC) identities linked to the account, and lets the user
@@ -18,6 +19,8 @@ const LinkedAccountsSection: Component = () => {
   const [error, setError] = createSignal<string | null>(null);
   // Slug currently being linked (disables its button / shows progress).
   const [linking, setLinking] = createSignal<string | null>(null);
+  // Provider to link once the admin has confirmed with the re-auth dialog.
+  const [pendingLink, setPendingLink] = createSignal<OidcProvider | null>(null);
 
   const loadData = async () => {
     try {
@@ -70,7 +73,18 @@ const LinkedAccountsSection: Component = () => {
     setError(null);
     setLinking(provider.slug);
     try {
-      const result = await tauri.linkIdentity(provider.slug);
+      let result: Awaited<ReturnType<typeof tauri.linkIdentity>>;
+      try {
+        result = await tauri.linkIdentity(provider.slug);
+      } catch (err) {
+        // Admins confirm their identity first, then the link is retried.
+        if (tauri.isElevationRequiredError(err)) {
+          setPendingLink(provider);
+          setLinking(null);
+          return;
+        }
+        throw err;
+      }
 
       if (result.mode === "tauri") {
         // Native command resolved on success; refresh the list.
@@ -194,6 +208,16 @@ const LinkedAccountsSection: Component = () => {
             </For>
           </div>
         </Show>
+      </Show>
+      <Show when={pendingLink()}>
+        <ElevateDialog
+          onElevated={() => {
+            const provider = pendingLink();
+            setPendingLink(null);
+            if (provider) void handleLink(provider);
+          }}
+          onClose={() => setPendingLink(null)}
+        />
       </Show>
     </div>
   );

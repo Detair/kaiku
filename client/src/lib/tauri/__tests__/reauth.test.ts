@@ -13,7 +13,13 @@ vi.mock("../common", async (orig) => ({
 }));
 
 import { adminElevate } from "../admin";
-import { mfaGenerateBackupCodes, getReauthMethods, startOidcReauth } from "../auth";
+import {
+  mfaGenerateBackupCodes,
+  getReauthMethods,
+  startOidcReauth,
+  isElevationRequiredError,
+} from "../auth";
+import { HttpError } from "../common";
 
 describe("re-auth requests", () => {
   beforeEach(() => {
@@ -48,6 +54,7 @@ describe("re-auth requests", () => {
       providerId: "kc",
       reason: null,
       mfaCode: "1",
+      attemptId: expect.any(String),
     });
     invoke.mockRejectedValueOnce("REAUTH_STALE");
     await expect(startOidcReauth("kc", {})).rejects.toMatchObject({ code: "REAUTH_STALE" });
@@ -82,5 +89,44 @@ describe("re-auth requests", () => {
       mfa_code: "654321",
     });
     expect(codes).toEqual(["a", "b"]);
+  });
+
+  it("does not call the native command or the server for an aborted attempt", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    await expect(startOidcReauth("kc", { signal: ac.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    tauriMode.on = true;
+    await expect(startOidcReauth("kc", { signal: ac.signal })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(invoke).not.toHaveBeenCalled();
+    expect(httpRequest).not.toHaveBeenCalled();
+  });
+
+  it("cancels the native attempt with the same id when aborted mid-flow", async () => {
+    tauriMode.on = true;
+    const ac = new AbortController();
+    let release: (v: unknown) => void = () => {};
+    invoke.mockImplementation((cmd: string) =>
+      cmd === "oidc_reauth" ? new Promise((r) => (release = r)) : Promise.resolve(),
+    );
+    const p = startOidcReauth("kc", { signal: ac.signal });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("oidc_reauth", expect.anything()));
+    const id = (invoke.mock.calls[0][1] as { attemptId: string }).attemptId;
+    ac.abort();
+    expect(invoke).toHaveBeenCalledWith("oidc_reauth_cancel", { attemptId: id });
+    release(undefined);
+    await p;
+  });
+
+  it("recognises the elevation-required error from both transports", () => {
+    expect(isElevationRequiredError(new HttpError(403, "x", "elevation_required"))).toBe(true);
+    expect(
+      isElevationRequiredError('Link authorize failed (403 Forbidden): {"error":"elevation_required"}'),
+    ).toBe(true);
+    expect(isElevationRequiredError(new HttpError(403, "x", "not_admin"))).toBe(false);
+    expect(isElevationRequiredError("other")).toBe(false);
   });
 });

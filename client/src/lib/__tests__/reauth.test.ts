@@ -107,6 +107,39 @@ describe("waitForBrowserReauth", () => {
     await p;
   });
 
+  it("ignores messages missing the nullable fields", async () => {
+    const p = start();
+    post({ type: "oidc-reauth-callback", success: true });
+    post(ok);
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it("closes the popup when the result arrives", async () => {
+    const p = start();
+    post(ok);
+    await p;
+    expect(popup.close).toHaveBeenCalled();
+  });
+
+  it("cleans up when navigating the popup throws", async () => {
+    const throwing = {
+      closed: false,
+      close: vi.fn(),
+      location: {
+        set href(_v: string) {
+          throw new Error("blocked");
+        },
+      },
+    };
+    const remove = vi.spyOn(window, "removeEventListener");
+    await expect(
+      waitForBrowserReauth(throwing as unknown as Window, "u", new AbortController().signal),
+    ).rejects.toMatchObject({ code: "REAUTH_POPUP_BLOCKED" });
+    expect(remove).toHaveBeenCalledWith("message", expect.any(Function));
+    expect(throwing.close).toHaveBeenCalled();
+    remove.mockRestore();
+  });
+
   it("ignores malformed messages", async () => {
     const p = start();
     post({ ...ok, success: "yes" });
@@ -147,6 +180,19 @@ describe("waitForBrowserReauth", () => {
 describe("defaultReauthStrategy.reauthWithOidc", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("starts nothing for an already cancelled attempt", async () => {
+    const open = vi.spyOn(window, "open");
+    const { startOidcReauth } = await import("@/lib/tauri");
+    (startOidcReauth as ReturnType<typeof vi.fn>).mockClear();
+    const ac = new AbortController();
+    ac.abort();
+    await expect(
+      defaultReauthStrategy.reauthWithOidc("kc", { mfaCode: "123456", signal: ac.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(startOidcReauth).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+  });
+
   it("fails before any request when the popup is blocked", async () => {
     vi.spyOn(window, "open").mockReturnValue(null);
     const { startOidcReauth } = await import("@/lib/tauri");
@@ -182,6 +228,12 @@ describe("reauthErrorText", () => {
     expect(reauthErrorText(new HttpError(429, "slow"))).toContain("Too many attempts");
     expect(reauthErrorText(new HttpError(403, "no"))).toContain("not allowed");
     expect(reauthErrorText(new HttpError(503, "down"))).toContain("cannot do this");
+    expect(reauthErrorText(new HttpError(503, "down", "SERVICE_UNAVAILABLE"))).toContain(
+      "cannot do this",
+    );
+    expect(reauthErrorText(new HttpError(0, "x", "OIDC_PROVIDER_ERROR"))).toContain(
+      "provider reported a problem",
+    );
     expect(reauthErrorText(new Error("boom"))).toBe("Could not confirm. Please try again.");
   });
 });

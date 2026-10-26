@@ -70,7 +70,7 @@ interface CallbackMessage {
 function isCallbackMessage(d: unknown): d is CallbackMessage {
   if (typeof d !== "object" || d === null) return false;
   const m = d as Record<string, unknown>;
-  const strOrNull = (v: unknown) => v === null || v === undefined || typeof v === "string";
+  const strOrNull = (v: unknown) => v === null || typeof v === "string";
   return (
     m.type === "oidc-reauth-callback" &&
     typeof m.success === "boolean" &&
@@ -117,8 +117,8 @@ export function waitForBrowserReauth(
       if (event.origin !== expectedOrigin || event.source !== popup) return;
       if (!isCallbackMessage(event.data)) return;
       const d = event.data;
-      if (d.success) finish(resolve, false);
-      else finish(() => reject(fail(d.error_code ?? "REAUTH_FAILED")), false);
+      if (d.success) finish(resolve, true);
+      else finish(() => reject(fail(d.error_code ?? "REAUTH_FAILED")), true);
     };
     window.addEventListener("message", onMessage);
     signal.addEventListener("abort", onAbort);
@@ -126,7 +126,11 @@ export function waitForBrowserReauth(
       if (popup.closed) finish(() => reject(fail(CANCELLED)), false);
     }, 500);
     timers.ceiling = setTimeout(() => finish(() => reject(fail(TIMEOUT)), true), timeoutMs);
-    popup.location.href = url;
+    try {
+      popup.location.href = url;
+    } catch {
+      finish(() => reject(fail(POPUP_BLOCKED)), true);
+    }
   });
 }
 
@@ -143,12 +147,15 @@ function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
 export const defaultReauthStrategy: ReauthStrategy = {
   loadInfo: async () => infoFromServer(await getReauthMethods()),
   reauthWithOidc: async (providerId, opts) => {
+    // Nothing starts for an attempt that was already cancelled.
+    if (opts.signal.aborted) throw abortError();
     // The popup must open inside the user's click, before any request, or the
     // browser may block it after the server already used the code.
     const popup = isTauri() ? null : window.open("about:blank", `oidc-reauth-${Date.now()}`, "width=600,height=700");
     if (!isTauri() && !popup) throw new HttpError(0, POPUP_BLOCKED, POPUP_BLOCKED);
     try {
       const started = await untilAborted(startOidcReauth(providerId, opts), opts.signal);
+      if (opts.signal.aborted) throw abortError();
       if (started.mode === "browser" && popup) {
         await waitForBrowserReauth(popup, started.url, opts.signal);
       }
@@ -175,6 +182,7 @@ const REAUTH_ERRORS: Record<string, MessageKey> = {
   OIDC_EXCHANGE_FAILED: "admin.reauth.error.generic",
   OIDC_STATE_MISMATCH: "admin.reauth.error.generic",
   REAUTH_FAILED: "admin.reauth.error.generic",
+  OIDC_PROVIDER_ERROR: "admin.reauth.error.providerError",
   REAUTH_TIMEOUT: "admin.reauth.error.timeout",
   REAUTH_POPUP_BLOCKED: "admin.reauth.error.popupBlocked",
   REAUTH_NOT_CONFIRMED: "admin.reauth.notConfirmed",

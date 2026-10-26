@@ -13,7 +13,7 @@ import { defaultReauthStrategy, reauthErrorText } from "@/lib/reauth";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 
-const ElevateDialog: Component<{ onClose: () => void }> = (props) => {
+const ElevateDialog: Component<{ onClose: () => void; onElevated?: () => void }> = (props) => {
   const [info] = createResource(async () => {
     try {
       return await defaultReauthStrategy.loadInfo();
@@ -48,6 +48,7 @@ const ElevateDialog: Component<{ onClose: () => void }> = (props) => {
           methods={i().methods}
           onSubmit={async (req) => {
             await elevateSession(req);
+            props.onElevated?.();
             props.onClose();
           }}
           onOidc={async (m, mfaCode, signal) => {
@@ -55,11 +56,12 @@ const ElevateDialog: Component<{ onClose: () => void }> = (props) => {
             if (signal.aborted) return;
             // The provider's answer is only a hint: a fresh, successful
             // status answer from the server must say the session is elevated.
-            const elevated = await confirmElevation();
+            const elevated = await confirmElevation(signal);
             if (signal.aborted) return;
             if (!elevated) {
               throw new HttpError(0, "REAUTH_NOT_CONFIRMED", "REAUTH_NOT_CONFIRMED");
             }
+            props.onElevated?.();
             props.onClose();
           }}
           onClose={props.onClose}

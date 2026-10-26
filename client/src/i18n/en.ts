@@ -132,6 +132,7 @@ export const en = {
   "admin.reauth.error.serviceUnavailable": "The server cannot do this right now. Try again later.",
   "admin.reauth.loadFailed": "Could not check how you can confirm.",
   "admin.reauth.notConfirmed": "The server did not confirm. Please try again.",
+  "admin.reauth.error.providerError": "The sign-in provider reported a problem. Please try again.",
   "admin.reauth.loading": "Checking how you can confirm...",
   "admin.reauth.error.popupBlocked": "The sign-in window was blocked. Allow pop-ups for this page and try again.",
   "settings.security.backupCountFailed": "The remaining-codes count could not be refreshed.",

@@ -441,6 +441,17 @@ export async function linkIdentity(
   return { mode: "browser", authUrl: resp.url };
 }
 
+/**
+ * True when linking failed because a system admin needs an elevated session
+ * first (server code `elevation_required`, HTTP 403). The desktop command
+ * reports the response body inside its error string.
+ */
+export function isElevationRequiredError(err: unknown): boolean {
+  if (err instanceof HttpError) return err.code === "elevation_required";
+  const text = typeof err === "string" ? err : err instanceof Error ? err.message : "";
+  return text.includes("elevation_required");
+}
+
 // ============================================================================
 // Re-authentication (contract C24)
 // ============================================================================
@@ -468,19 +479,36 @@ function nativeReauthError(err: unknown): HttpError {
  */
 export async function startOidcReauth(
   providerId: string,
-  opts: { reason?: string | null; mfaCode?: string | null },
+  opts: { reason?: string | null; mfaCode?: string | null; signal?: AbortSignal },
 ): Promise<{ mode: "tauri" } | { mode: "browser"; url: string }> {
+  const abortIfCancelled = () => {
+    if (opts.signal?.aborted) {
+      const e = new Error("aborted");
+      e.name = "AbortError";
+      throw e;
+    }
+  };
+  abortIfCancelled();
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
+    abortIfCancelled();
+    // Lets the native side stop the listener (and not open the browser) when
+    // the user closes the dialog mid-flow.
+    const attemptId = crypto.randomUUID();
+    const cancel = () => void invoke("oidc_reauth_cancel", { attemptId }).catch(() => {});
+    opts.signal?.addEventListener("abort", cancel, { once: true });
     try {
       await invoke("oidc_reauth", {
         serverUrl: getServerUrl().replace(/\/+$/, ""),
         providerId,
         reason: opts.reason ?? null,
         mfaCode: opts.mfaCode ?? null,
+        attemptId,
       });
     } catch (err) {
       throw nativeReauthError(err);
+    } finally {
+      opts.signal?.removeEventListener("abort", cancel);
     }
     return { mode: "tauri" };
   }

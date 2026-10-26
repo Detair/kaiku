@@ -283,8 +283,10 @@ export async function checkAdminStatus(): Promise<void> {
  * `checkAdminStatus`, a failed call throws, so callers can fail closed.
  * Returns whether the session is elevated according to the server.
  */
-export async function confirmElevation(): Promise<boolean> {
+export async function confirmElevation(signal?: AbortSignal): Promise<boolean> {
   const status = await tauri.checkAdminStatus();
+  // A cancelled attempt must not touch state.
+  if (signal?.aborted) return false;
   setAdminState({
     isAdmin: status.is_admin,
     isElevated: status.is_elevated,

@@ -6,12 +6,15 @@
 //! callback carries no tokens; `reauth=elevated` is a hint only and the caller
 //! confirms elevation with the server afterwards.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{command, State};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::Notify;
 use tracing::info;
 use url::Url;
 
@@ -22,6 +25,45 @@ const CALLBACK_TIMEOUT: Duration = Duration::from_mins(1);
 /// A connection that sends nothing for this long is dropped.
 const READ_DEADLINE: Duration = Duration::from_secs(2);
 const MAX_REQUEST_LINE: usize = 4096;
+
+/// Running attempts by id, so the webview can cancel one. A cancel that
+/// arrives before the attempt registers is remembered (`Notify` keeps a permit).
+fn attempts() -> &'static Mutex<HashMap<String, Arc<Notify>>> {
+    static ATTEMPTS: OnceLock<Mutex<HashMap<String, Arc<Notify>>>> = OnceLock::new();
+    ATTEMPTS.get_or_init(Mutex::default)
+}
+
+fn attempt_signal(id: &str) -> Arc<Notify> {
+    let mut map = attempts()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(map.entry(id.to_string()).or_default())
+}
+
+fn forget_attempt(id: &str) {
+    attempts()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(id);
+}
+
+/// Run `flow` unless the attempt is cancelled first; a cancelled flow is
+/// dropped where it stands (no browser is opened, no listener kept).
+async fn run_cancellable<T>(
+    cancel: &Notify,
+    flow: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::select! {
+        result = flow => result,
+        () = cancel.notified() => Err("REAUTH_CANCELLED".to_string()),
+    }
+}
+
+/// Cancel a running (or about to start) re-authentication attempt.
+#[command]
+pub fn oidc_reauth_cancel(attempt_id: String) {
+    attempt_signal(&attempt_id).notify_one();
+}
 
 /// Result of the loopback callback.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +118,7 @@ pub fn parse_callback_target(target: &str) -> Option<ReauthCallback> {
 fn request_target(line: &str) -> Option<&str> {
     let mut parts = line.split(' ');
     let (method, target, version) = (parts.next()?, parts.next()?, parts.next()?);
-    if parts.next().is_some() || method != "GET" || !version.starts_with("HTTP/1.") {
+    if parts.next().is_some() || method != "GET" || !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
         return None;
     }
     target.starts_with('/').then_some(target)
@@ -163,6 +205,25 @@ pub async fn wait_for_callback(
 /// `REAUTH_FAILED`.
 #[command]
 pub async fn oidc_reauth(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    server_url: String,
+    provider_id: String,
+    reason: Option<String>,
+    mfa_code: Option<String>,
+    attempt_id: String,
+) -> Result<ReauthOutcome, String> {
+    let cancel = attempt_signal(&attempt_id);
+    let result = run_cancellable(
+        &cancel,
+        reauth_flow(state, app_handle, server_url, provider_id, reason, mfa_code),
+    )
+    .await;
+    forget_attempt(&attempt_id);
+    result
+}
+
+async fn reauth_flow(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
     server_url: String,
@@ -288,6 +349,45 @@ mod tests {
     fn no_recognised_result_is_ignored() {
         assert_eq!(parse_callback_target("/callback"), None);
         assert_eq!(parse_callback_target("/callback?reauth=nope"), None);
+    }
+
+    #[test]
+    fn only_http_1_0_and_1_1_are_accepted() {
+        assert!(request_target("GET /callback?a=1 HTTP/1.0").is_some());
+        assert_eq!(request_target("GET /callback HTTP/1."), None);
+        assert_eq!(request_target("GET /callback HTTP/1.garbage"), None);
+        assert_eq!(request_target("GET /callback HTTP/1.2"), None);
+    }
+
+    #[tokio::test]
+    async fn cancel_before_start_stops_the_flow() {
+        let id = "test-cancel-before";
+        oidc_reauth_cancel(id.to_string());
+        let cancel = attempt_signal(id);
+        let result: Result<(), String> = run_cancellable(&cancel, std::future::pending()).await;
+        assert_eq!(result, Err("REAUTH_CANCELLED".to_string()));
+        forget_attempt(id);
+    }
+
+    #[tokio::test]
+    async fn cancel_during_flow_drops_it() {
+        let id = "test-cancel-during";
+        let cancel = attempt_signal(id);
+        let canceller = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            oidc_reauth_cancel(id.to_string());
+        });
+        let result: Result<(), String> = run_cancellable(&cancel, std::future::pending()).await;
+        assert_eq!(result, Err("REAUTH_CANCELLED".to_string()));
+        canceller.await.unwrap();
+        forget_attempt(id);
+    }
+
+    #[tokio::test]
+    async fn finished_flow_wins_without_cancel() {
+        let cancel = Notify::new();
+        let result = run_cancellable(&cancel, async { Ok::<_, String>(7) }).await;
+        assert_eq!(result, Ok(7));
     }
 
     #[test]
