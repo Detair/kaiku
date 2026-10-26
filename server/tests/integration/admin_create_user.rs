@@ -837,7 +837,9 @@ async fn test_create_user_full_guild_creates_nothing(pool: PgPool) {
 
 #[sqlx::test]
 async fn test_create_user_member_is_active_even_with_screening_on(pool: PgPool) {
-    let (_app, server, token) = setup_admin(&pool).await;
+    // Screening is on for the server, so only the admin path keeps it active.
+    let (_app, server, token) =
+        setup_admin_with(&pool, super::helpers::all_features_config()).await;
     let (owner_id, _) = create_test_user(&pool).await;
     let guild = super::helpers::create_guild(&pool, owner_id).await;
     sqlx::query("UPDATE guilds SET screening_enabled = true WHERE id = $1")

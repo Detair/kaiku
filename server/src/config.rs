@@ -366,10 +366,7 @@ impl Config {
             env_opt("FCM_SERVICE_ACCOUNT_JSON"),
         )?;
         let fcm_api_base = crate::push::fcm::FCM_API_BASE.to_string();
-        let (optional_features, unknown_optional_features) =
-            crate::features::OptionalFeatures::parse(
-                &env::var("KAIKU_OPTIONAL_FEATURES").unwrap_or_default(),
-            );
+        let (optional_features, unknown_optional_features) = optional_features_from_env();
         let valkey_command_timeout =
             parse_valkey_command_timeout(env_opt("VALKEY_COMMAND_TIMEOUT_MS").as_deref())?;
         if let Some(key) = &fcm_service_account {
@@ -722,6 +719,13 @@ const TEST_JWT_PUBLIC_KEY: &str = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRW
 const TEST_MFA_ENCRYPTION_KEY: &str =
     "a4f8e2d1b7c9036f5e8d4a2b1c7f9e3d6a8b5c2d4e7f1a3b9c6d8e2f5a7b4c1d";
 
+/// `KAIKU_OPTIONAL_FEATURES` → (enabled set, unknown names). Unset = all off.
+fn optional_features_from_env() -> (crate::features::OptionalFeatures, Vec<String>) {
+    crate::features::OptionalFeatures::parse(
+        &env::var("KAIKU_OPTIONAL_FEATURES").unwrap_or_default(),
+    )
+}
+
 /// Read an optional env var, treating unset AND empty/whitespace as `None`.
 ///
 /// Compose `.env` templates declare optional vars as `NAME=` (empty string);
@@ -918,6 +922,36 @@ mod voice_udp_range_tests {
             parse_voice_udp_port_range(Some("50000"), Some("50000")).unwrap(),
             (Some(50000), Some(50000))
         );
+    }
+}
+
+#[cfg(test)]
+mod optional_features_env_tests {
+    use super::optional_features_from_env;
+    use crate::features::OptionalFeatures;
+
+    #[test]
+    fn kaiku_optional_features_is_read_from_env() {
+        // Only this test touches the variable; keep every case in one test.
+        let var = "KAIKU_OPTIONAL_FEATURES";
+        std::env::remove_var(var);
+        assert_eq!(
+            optional_features_from_env(),
+            (OptionalFeatures::default(), Vec::new())
+        );
+        std::env::set_var(var, "forum,screening,typo");
+        assert_eq!(
+            optional_features_from_env(),
+            (
+                OptionalFeatures {
+                    forum: true,
+                    screening: true,
+                    ..OptionalFeatures::default()
+                },
+                vec!["typo".to_string()]
+            )
+        );
+        std::env::remove_var(var);
     }
 }
 
