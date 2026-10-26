@@ -19,7 +19,7 @@
     <string name="auth_go_to_register">Don\'t have an account? Register</string>
     <string name="auth_or_sign_in_with">Or sign in with</string>
     <string name="auth_login_invalid_credentials">Invalid username or password.</string>
-    <string name="auth_login_mfa_invalid">That code didn\'t work. Try again.</string>
+    <string name="auth_login_mfa_invalid">That code didn\'t work. If you just used it, wait for the next code and try again.</string>
     <string name="auth_login_failed">Login failed. Please try again.</string>
     <string name="auth_login_already_signed_in">You\'re already signed in. Sign out first to use another account.</string>
     <string name="auth_login_sso_failed">SSO login failed.</string>
