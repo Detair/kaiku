@@ -257,11 +257,11 @@ async fn private_channel_is_visible_to_role_members_only(pool: PgPool) {
     );
     assert_eq!(
         ws_subscribe_result(&server, &plain_token, private).await,
-        "error:forbidden"
+        "error:FORBIDDEN"
     );
     assert_eq!(
         ws_subscribe_result(&server, &staff_token, locked).await,
-        "error:forbidden"
+        "error:FORBIDDEN"
     );
 }
 
@@ -381,7 +381,8 @@ async fn role_allow_wins_over_other_role_deny(pool: PgPool) {
 async fn pending_member_ignores_everyone_override_allow(pool: PgPool) {
     use vc_server::permissions::{filter_accessible_channels, filter_viewable_channels_in_guilds};
 
-    let app = TestApp::with_pool(pool.clone()).await;
+    // Screening must be enforced for the pending member to be held back.
+    let app = TestApp::with_all_features(pool.clone()).await;
     let pool = &app.pool;
     let (owner, _) = create_test_user(pool).await;
     let (pending, _) = create_test_user(pool).await;
