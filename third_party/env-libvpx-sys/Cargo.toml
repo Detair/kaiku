@@ -1,0 +1,31 @@
+# Vendored copy of env-libvpx-sys 5.1.3 (crates.io, MPL-2.0) with ONE change:
+# bindgen 0.68.1 -> 0.72. Upstream (github.com/astraw/env-libvpx-sys) is
+# archived; bindgen < 0.72 emits opaque `_address` stubs for
+# vpx_codec_enc_cfg / vpx_codec_dec_cfg with current libclang (seen with 23), which
+# breaks vpx-encode. Wired in via [patch.crates-io] in the workspace
+# Cargo.toml. See README.md before touching anything else here.
+
+[package]
+name = "env-libvpx-sys"
+authors = ["Richard Diamond <wichard@vitalitystudios.com>", "Kornel Lesiński <kornel@geekhood.net>", "Andrew Straw <strawman@astraw.com>"]
+description = "Rust bindings to libvpx (vendored, bindgen 0.72)"
+license = "MPL-2.0"
+links = "vpx"
+repository = "https://github.com/astraw/env-libvpx-sys"
+version = "5.1.3"
+edition = "2018"
+publish = false
+
+[build-dependencies]
+pkg-config = "0.3.5"
+
+[build-dependencies.bindgen]
+optional = true
+version = "0.72"
+
+[features]
+default = []
+generate = ["bindgen"]
+
+[lib]
+name = "vpx_sys"

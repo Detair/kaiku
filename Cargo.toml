@@ -7,6 +7,9 @@ members = [
     "shared/vc-common",
     "shared/vc-crypto",
 ]
+# Vendored third-party crates wired in via [patch.crates-io] below. Kept out of
+# the workspace so workspace lints/clippy/fmt do not apply to them.
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.1.0"
@@ -181,6 +184,28 @@ needless_collect = "allow"
 module_inception = "allow"
 unnecessary_wraps = "allow"
 explicit_iter_loop = "allow"
+
+# Build against current PipeWire / libvpx headers and libclang.
+#
+# bindgen < 0.72 mis-parses current headers with current libclang and emits
+# opaque `_address` stubs for some structs (e.g. spa_pod_builder,
+# vpx_codec_enc_cfg), so libspa 0.8 and vpx-encode 0.6 fail to compile
+# ("no field `data` on type `spa_pod_builder`"). Hit on Ubuntu 26.04
+# (ubuntu-latest) and Arch.
+#
+# - libspa-sys / pipewire-sys: upstream pipewire-rs commit 93138d01 is still
+#   version 0.8.0 but already on bindgen 0.72 (the bump shipped in 0.9). Only
+#   the -sys crates are replaced; libspa / pipewire 0.8 stay from crates.io.
+#   A clean fix needs scap on pipewire >= 0.9, which is blocked by
+#   cookie-factory: libspa >= 0.9 needs ^0.3.3 while redis-protocol 6.0 (fred)
+#   pins =0.3.2. Drop these two lines when scap moves to pipewire >= 0.9.
+# - env-libvpx-sys: upstream is archived, latest release still on bindgen
+#   0.68; vendored with only the bindgen bump, see
+#   third_party/env-libvpx-sys/README.md.
+[patch.crates-io]
+libspa-sys = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-rs.git", rev = "93138d01b23628521b29b5604bbebe991cba4c65" }
+pipewire-sys = { git = "https://gitlab.freedesktop.org/pipewire/pipewire-rs.git", rev = "93138d01b23628521b29b5604bbebe991cba4c65" }
+env-libvpx-sys = { path = "third_party/env-libvpx-sys" }
 
 [profile.release]
 lto = true
