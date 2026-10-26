@@ -666,15 +666,22 @@ async fn test_invisible_survives_reconnect(pool: PgPool) {
     next_presence(&mut ws_b, a, "offline").await;
     ws_a.close(None).await.expect("close");
     drop(ws_a);
-    // The last device still announces `offline` (redundant for an invisible
-    // user, never wrong).
-    next_presence(&mut ws_b, a, "offline").await;
+    // While invisible, disconnecting announces nothing.
     wait_for_sockets(&redis, a, 0).await;
+    expect_no_presence(&mut ws_b, a).await;
 
-    let _ws_a = connect_ready(&server, &token_a).await;
+    let mut ws_a = connect_ready(&server, &token_a).await;
     wait_for_sockets(&redis, a, 1).await;
     expect_no_presence(&mut ws_b, a).await;
     assert_eq!(member_status(&server, &token_b, guild, a).await, "offline");
+
+    // Leaving invisible announces the chosen status.
+    let online = serde_json::json!({ "type": "set_status", "status": "online" }).to_string();
+    ws_a.send(Message::Text(online.into()))
+        .await
+        .expect("go visible");
+    next_presence(&mut ws_b, a, "online").await;
+    assert_eq!(member_status(&server, &token_b, guild, a).await, "online");
 
     redis.quit().await.expect("quit test Valkey client");
 }
@@ -687,25 +694,36 @@ async fn test_concurrent_device_connects_and_disconnects_transition_once(pool: P
     use vc_server::presence::connections::{socket_offline, socket_online};
 
     let app = TestApp::with_pool(pool).await;
+    // Two connections, like two server instances: commands of the two
+    // "devices" do not share one pipeline.
     let redis = db::create_redis_client(&app.config.redis_url)
         .await
         .expect("connect test Valkey");
+    let other = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect second test Valkey client");
     let now = chrono::Utc::now().timestamp_millis();
 
     for _ in 0..50 {
         let user = Uuid::new_v4();
         let (s1, s2) = (Uuid::new_v4(), Uuid::new_v4());
+        // Randomize which connection is polled first in this round.
+        let (first, second) = if Uuid::new_v4().as_u128() % 2 == 0 {
+            (&redis, &other)
+        } else {
+            (&other, &redis)
+        };
 
         let (on1, on2) = tokio::join!(
-            socket_online(&redis, user, s1, now),
-            socket_online(&redis, user, s2, now)
+            socket_online(first, user, s1, now),
+            socket_online(second, user, s2, now)
         );
         let ups = [on1.unwrap(), on2.unwrap()];
         assert_eq!(ups.iter().filter(|t| **t).count(), 1, "0→1 once: {ups:?}");
 
         let (off1, off2) = tokio::join!(
-            socket_offline(&redis, user, s1, now),
-            socket_offline(&redis, user, s2, now)
+            socket_offline(second, user, s1, now),
+            socket_offline(first, user, s2, now)
         );
         let downs = [off1.unwrap(), off2.unwrap()];
         assert_eq!(
@@ -719,14 +737,15 @@ async fn test_concurrent_device_connects_and_disconnects_transition_once(pool: P
         let s3 = Uuid::new_v4();
         assert!(socket_online(&redis, user, s1, now).await.unwrap());
         let (off, on) = tokio::join!(
-            socket_offline(&redis, user, s1, now),
-            socket_online(&redis, user, s3, now)
+            socket_offline(first, user, s1, now),
+            socket_online(second, user, s3, now)
         );
         assert_eq!(off.unwrap(), on.unwrap(), "hand-over transitions pair up");
         assert!(socket_offline(&redis, user, s3, now).await.unwrap());
     }
 
     redis.quit().await.expect("quit test Valkey client");
+    other.quit().await.expect("quit second test Valkey client");
 }
 
 /// A socket left behind by a crashed server stops counting once its expiry
@@ -752,4 +771,305 @@ async fn test_stale_socket_of_crashed_server_is_not_live(pool: PgPool) {
         .unwrap());
 
     redis.quit().await.expect("quit test Valkey client");
+}
+
+/// A socket that disappears without a disconnect (crashed server) expires;
+/// the sweeper then tells already-connected observers that the user is
+/// offline.
+#[sqlx::test]
+async fn test_sweeper_announces_offline_for_expired_socket(pool: PgPool) {
+    use vc_server::presence::connections::{
+        socket_online_announce, status_event_json, sweep_expired,
+    };
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let (a, b, _guild) = presence_pair(&pool, true).await;
+    let token_b = generate_access_token(&app.config, b);
+    let mut ws_b = connect_ready(&server, &token_b).await;
+
+    // A device of `a` on a server that then crashed: registered 80 s ago,
+    // never refreshed, never removed.
+    let now = chrono::Utc::now().timestamp_millis();
+    let online = status_event_json(a, "online");
+    assert!(socket_online_announce(
+        &redis,
+        a,
+        Uuid::new_v4(),
+        now - 80_000,
+        Some(&online),
+        false
+    )
+    .await
+    .unwrap());
+    next_presence(&mut ws_b, a, "online").await;
+
+    // Not expired yet: nothing happens.
+    assert!(!sweep_expired(&pool, &redis, now, 10_000)
+        .await
+        .unwrap()
+        .contains(&a));
+    expect_no_presence(&mut ws_b, a).await;
+
+    // After the expiry the sweeper announces `offline` exactly once.
+    let later = now + 11_000;
+    assert!(sweep_expired(&pool, &redis, later, 10_000)
+        .await
+        .unwrap()
+        .contains(&a));
+    next_presence(&mut ws_b, a, "offline").await;
+    assert!(!sweep_expired(&pool, &redis, later, 10_000)
+        .await
+        .unwrap()
+        .contains(&a));
+    expect_no_presence(&mut ws_b, a).await;
+
+    redis.quit().await.expect("quit test Valkey client");
+}
+
+/// A socket whose own entry was already pruned still reports the last
+/// transition when it closes, as long as it is the call that empties the set.
+#[sqlx::test]
+async fn test_close_after_own_entry_was_pruned_announces_offline(pool: PgPool) {
+    use fred::interfaces::{KeysInterface, SortedSetsInterface};
+    use vc_server::presence::connections::{
+        socket_offline_announce, socket_online, sockets_key, version_key,
+    };
+
+    let app = TestApp::with_pool(pool).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let user = Uuid::new_v4();
+    let (own, stale) = (Uuid::new_v4(), Uuid::new_v4());
+    let now = chrono::Utc::now().timestamp_millis();
+
+    // Both entries expired; the own one is already gone (pruned elsewhere).
+    socket_online(&redis, user, own, now - 100_000)
+        .await
+        .unwrap();
+    socket_online(&redis, user, stale, now - 100_000)
+        .await
+        .unwrap();
+    let _: i64 = redis
+        .zrem(sockets_key(user), own.to_string())
+        .await
+        .expect("ZREM");
+
+    assert!(socket_offline_announce(&redis, user, own, now)
+        .await
+        .unwrap());
+    let version: Option<i64> = redis.get(version_key(user)).await.expect("GET");
+    assert_eq!(version, Some(1), "offline was published once");
+    // Nothing left to report.
+    assert!(!socket_offline_announce(&redis, user, own, now)
+        .await
+        .unwrap());
+
+    redis.quit().await.expect("quit test Valkey client");
+}
+
+/// Wait until nobody follows `user`'s presence channel any more.
+async fn wait_for_no_presence_subscribers(redis: &fred::clients::Client, user: Uuid) {
+    let channel = vc_server::ws::channels::user_presence(user);
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    while numsub(redis, &channel).await > 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{channel} still has subscribers"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Two connected non-friend co-members; `change` ends their shared audience.
+/// Afterwards neither sees the other's status changes.
+async fn assert_audience_ends(pool: PgPool, change: &str) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let (a, b, guild) = presence_pair(&pool, false).await;
+    let token_a = generate_access_token(&app.config, a);
+    let token_b = generate_access_token(&app.config, b);
+
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut ws_a = connect_ready(&server, &token_a).await;
+    next_presence(&mut ws_b, a, "online").await;
+    // `a`'s connect snapshot.
+    next_presence(&mut ws_a, b, "online").await;
+    assert_eq!(
+        numsub(&redis, &vc_server::ws::channels::user_presence(a)).await,
+        1
+    );
+
+    let http = reqwest::Client::new();
+    let resp = match change {
+        // `a` leaves the server owned by `b`.
+        "leave" => http
+            .post(format!("{}/api/guilds/{guild}/leave", server.url))
+            .bearer_auth(&token_a),
+        // `b` (owner) kicks `a`.
+        "kick" => http
+            .delete(format!("{}/api/guilds/{guild}/members/{a}", server.url))
+            .bearer_auth(&token_b),
+        // `b` blocks `a`.
+        "block" => http
+            .post(format!("{}/api/friends/{a}/block", server.url))
+            .bearer_auth(&token_b),
+        other => panic!("unknown change {other}"),
+    }
+    .send()
+    .await
+    .expect("audience change request");
+    assert!(resp.status().is_success(), "{change}: {}", resp.status());
+
+    // Both sockets dropped each other from their presence peers.
+    wait_for_no_presence_subscribers(&redis, a).await;
+    wait_for_no_presence_subscribers(&redis, b).await;
+
+    let busy = serde_json::json!({ "type": "set_status", "status": "busy" }).to_string();
+    ws_a.send(Message::Text(busy.clone().into()))
+        .await
+        .expect("a busy");
+    ws_b.send(Message::Text(busy.into())).await.expect("b busy");
+    expect_no_presence(&mut ws_b, a).await;
+    expect_no_presence(&mut ws_a, b).await;
+
+    if change == "block" {
+        // Still co-members, but each shows `offline` to the other.
+        assert_eq!(member_status(&server, &token_b, guild, a).await, "offline");
+        assert_eq!(member_status(&server, &token_a, guild, b).await, "offline");
+    }
+
+    redis.quit().await.expect("quit test Valkey client");
+}
+
+#[sqlx::test]
+async fn test_leaving_server_ends_presence_sharing(pool: PgPool) {
+    assert_audience_ends(pool, "leave").await;
+}
+
+#[sqlx::test]
+async fn test_kick_ends_presence_sharing(pool: PgPool) {
+    assert_audience_ends(pool, "kick").await;
+}
+
+#[sqlx::test]
+async fn test_block_ends_presence_sharing_both_ways(pool: PgPool) {
+    assert_audience_ends(pool, "block").await;
+}
+
+/// Joining a server adds its members to the presence audience of already
+/// connected sockets on both sides.
+#[sqlx::test]
+async fn test_joining_server_starts_presence_sharing(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let guild = super::helpers::create_guild(&pool, b).await;
+    let token_a = generate_access_token(&app.config, a);
+    let token_b = generate_access_token(&app.config, b);
+
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut ws_a = connect_ready(&server, &token_a).await;
+
+    let invite: serde_json::Value = reqwest::Client::new()
+        .post(format!("{}/api/guilds/{guild}/invites", server.url))
+        .bearer_auth(&token_b)
+        .json(&serde_json::json!({ "expires_in": "7d" }))
+        .send()
+        .await
+        .expect("create invite")
+        .json()
+        .await
+        .expect("invite JSON");
+    let code = invite["code"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{invite}"));
+    let resp = reqwest::Client::new()
+        .post(format!("{}/api/invites/{code}/join", server.url))
+        .bearer_auth(&token_a)
+        .send()
+        .await
+        .expect("join");
+    assert!(resp.status().is_success(), "join: {}", resp.status());
+
+    // The joiner gets the existing member in a snapshot.
+    next_presence(&mut ws_a, b, "online").await;
+    // The existing member follows the joiner's status from now on.
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let channel = vc_server::ws::channels::user_presence(a);
+    let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+    while numsub(&redis, &channel).await < 1 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{channel} never followed"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let busy = serde_json::json!({ "type": "set_status", "status": "busy" }).to_string();
+    ws_a.send(Message::Text(busy.into())).await.expect("a busy");
+    next_presence(&mut ws_b, a, "busy").await;
+
+    redis.quit().await.expect("quit test Valkey client");
+}
+
+/// An invisible user's activity and custom status reach nobody, from any of
+/// the user's devices.
+#[sqlx::test]
+async fn test_invisible_member_shares_no_activity_or_custom_status(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (a, b, _guild) = presence_pair(&pool, false).await;
+    let token_a = generate_access_token(&app.config, a);
+    let token_b = generate_access_token(&app.config, b);
+
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut phone = connect_ready(&server, &token_a).await;
+    let mut desktop = connect_ready(&server, &token_a).await;
+    next_presence(&mut ws_b, a, "online").await;
+    let hide = serde_json::json!({ "type": "set_status", "status": "offline" }).to_string();
+    phone
+        .send(Message::Text(hide.into()))
+        .await
+        .expect("go invisible");
+    next_presence(&mut ws_b, a, "offline").await;
+
+    // The other device sets an activity and a custom status.
+    let activity = serde_json::json!({
+        "type": "set_activity",
+        "activity": { "type": "game", "name": "Minecraft", "started_at": "2026-10-26T12:00:00Z" }
+    })
+    .to_string();
+    let custom = serde_json::json!({
+        "type": "set_custom_status",
+        "custom_status": { "text": "secret plans" }
+    })
+    .to_string();
+    desktop
+        .send(Message::Text(activity.into()))
+        .await
+        .expect("activity");
+    desktop
+        .send(Message::Text(custom.into()))
+        .await
+        .expect("custom status");
+    // Both were handled once the ping after them is answered.
+    let ping = serde_json::json!({ "type": "ping" }).to_string();
+    desktop
+        .send(Message::Text(ping.into()))
+        .await
+        .expect("ping");
+    next_ws_event(&mut desktop, "pong", EVENT_TIMEOUT).await;
+
+    expect_no_ws_event(&mut ws_b, "rich_presence_update", QUIET_WINDOW).await;
+    expect_no_ws_event(&mut ws_b, "custom_status_update", QUIET_WINDOW).await;
 }

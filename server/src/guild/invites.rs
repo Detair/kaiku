@@ -246,6 +246,14 @@ pub async fn join_via_invite(
 
     tx.commit().await?;
 
+    // The new member and the existing members see each other's presence.
+    crate::presence::connections::notify_audience_changed(
+        &state.redis,
+        &[auth.id],
+        Some(invite.guild_id),
+    )
+    .await;
+
     // Initialize read state for all text channels (best-effort, non-critical)
     if let Err(err) =
         super::members::initialize_channel_read_state(&state.db, invite.guild_id, auth.id).await

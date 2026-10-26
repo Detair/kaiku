@@ -281,6 +281,9 @@ pub async fn delete_guild(
     }
 
     core_q::delete_guild(&state.db, guild_id).await?;
+    // Former members stop seeing each other's presence (unless they share
+    // another server or are friends).
+    crate::presence::connections::notify_audience_changed(&state.redis, &[], Some(guild_id)).await;
 
     Ok(StatusCode::NO_CONTENT)
 }

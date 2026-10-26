@@ -208,6 +208,13 @@ pub async fn accept_friend_request(
     if let Err(e) = broadcast_to_user(&state.redis, friendship.requester_id, &event).await {
         tracing::warn!("Failed to send friend request accepted notification: {}", e);
     }
+    // Friends see each other's presence from now on.
+    crate::presence::connections::notify_audience_changed(
+        &state.redis,
+        &[friendship.requester_id, friendship.addressee_id],
+        None,
+    )
+    .await;
 
     Ok(Json(updated))
 }
@@ -320,6 +327,10 @@ pub async fn block_user(
     if let Err(e) = broadcast_to_user(&state.redis, auth.id, &event).await {
         tracing::warn!("Failed to broadcast UserBlocked event: {}", e);
     }
+    // Both sides reload their block sets and presence peers (the blocked
+    // user's sockets are not told who blocked them).
+    crate::presence::connections::notify_audience_changed(&state.redis, &[auth.id, user_id], None)
+        .await;
 
     Ok(Json(result))
 }
@@ -359,6 +370,8 @@ pub async fn unblock_user(
     if let Err(e) = broadcast_to_user(&state.redis, auth.id, &event).await {
         tracing::warn!("Failed to broadcast UserUnblocked event: {}", e);
     }
+    crate::presence::connections::notify_audience_changed(&state.redis, &[auth.id, user_id], None)
+        .await;
 
     Ok(Json(()))
 }
@@ -397,6 +410,14 @@ pub async fn remove_friend(
 
     // Delete the friendship
     queries::delete_friendship(&state.db, friendship_id).await?;
+
+    // Presence peers change on both sides.
+    crate::presence::connections::notify_audience_changed(
+        &state.redis,
+        &[friendship.requester_id, friendship.addressee_id],
+        None,
+    )
+    .await;
 
     Ok(Json(()))
 }

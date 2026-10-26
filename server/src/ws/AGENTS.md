@@ -250,16 +250,43 @@ while let Some(msg) = ws_receiver.next().await {
 
 ### Presence System
 
-**Per device** (`presence::connections`): Valkey sorted set `presence:sockets:{user_id}`, member = socket id, score = expiry (Unix ms). A socket registers once it is fully set up (after `Ready` + snapshot), refreshes its expiry (90 s TTL) on every heartbeat pong and removes itself on close. Members of a crashed server are never removed; they stop counting when their expiry passes and the next update prunes them.
+**Per device** (`presence::connections`): Valkey sorted set `presence:sockets:{user_id}`, member = socket id, score = expiry (Unix ms). A socket registers once it is fully set up (after `Ready` + snapshot), refreshes its expiry (90 s TTL) when it answers a server heartbeat ping (unsolicited pongs are ignored) and removes itself on close (before the voice cleanup).
 
-- `socket_online` / `socket_offline` are single Lua scripts: prune expired members, update the set, report 0 → 1 / 1 → 0, and `PUBLISH` the `presence_update` on `presence:{user_id}` in the same atomic step. Concurrent connects/disconnects of one user never announce a transition twice or miss one, and a hand-over (one device leaves while another connects) reaches subscribers in order.
-- Only transitions are broadcast. A second device connecting or one of several closing sends nothing.
-- A heartbeat refresh that finds the socket missing (Valkey was unreachable longer than the TTL) re-registers it and, if it is the only live device again, announces the status (separate publish; rare).
+- Lifecycle steps are single Lua scripts that prune expired members, update the set, decide the transition and `PUBLISH` in the same atomic step. Concurrent connects or disconnects of one user never announce a transition twice or miss one, and a hand-over (one device leaves while another connects) reaches subscribers in order.
+  - `socket_online`: reports 0 → 1 and keeps `presence:due` (user → latest expiry) up to date.
+  - `socket_offline`: reports 1 → 0 when the call empties the set, whether it removed its own socket or expired ones (`removed + pruned > 0`).
+- Only transitions are broadcast. A second device connecting, or one of several closing, sends nothing.
+- **Sweeper** (`spawn_presence_sweep`, every 20 s, at most 200 users per tick; testable through `sweep_expired`): for users whose latest expiry has passed, an atomic expire script prunes the set. If that empties it, the script announces `offline` and removes the user from `presence:due`; the sweeper then resets a stored `online` to `offline`. This covers crashed servers and failed disconnect commands. There is no graceful-shutdown hook for open sockets: their entries expire and the sweeper announces `offline` within about two minutes.
+- **Versions**: every published status change increments `presence:ver:{user_id}` in the same script and is published as an internal envelope `{"v":N,"event":{…}}`.
+  - The connect snapshot reads versions and live sockets in one atomic step before it reads the database.
+  - Each socket remembers the last version it sent per peer (`PresenceState.versions`) and drops older data, whether snapshot or live. The lock is held while queueing, so snapshot and live updates never overwrite each other out of order.
+  - Only status is versioned. Activity and custom status are not, and a peer whose snapshot was superseded by a newer live status gets no snapshot activity.
+- **Late announcement**: a heartbeat that finds its socket missing re-registers it. If that socket is the only live device, or the connect-time status lookup failed, the socket announces once the stored status can be read. This uses `announce_if_live`: only while live and not hidden.
 - Fails open: Valkey errors are logged at most once a minute and the socket carries on.
 
-**Stored vs. shown status**: `users.status` is the status the user chose (`online`, `away`, `busy`) and `users.invisible` marks "appear offline" (clients send `set_status` `offline` for invisible). Connecting sets `online` only when the stored status is `offline` and the user is not invisible, so `away`/`busy`/invisible survive a reconnect; the last device closing resets only a stored `online` to `offline`. What others see is `connections::effective_status(stored, live)`: `offline` without a live socket or when invisible. Every reader that shows presence uses it with `live_users` (one Valkey round trip): the connect snapshot, `GET /api/guilds/{id}/members` (`status`) and `GET /api/friends` (`is_online`). Message author `status` still shows the stored value.
+**Invisible**: clients send `set_status` `offline` for invisible. `users.invisible` is mirrored to `presence:hidden:{user_id}`, and while that key exists no lifecycle step announces anything: connect, disconnect, sweeper and re-registration all stay silent.
+- Entering invisible announces `offline` once and hides the custom status.
+- While invisible, `set_activity` and `set_custom_status` are stored but not broadcast, from any device. A failed visibility lookup counts as invisible.
+- Leaving invisible announces the chosen status and re-sends activity and custom status.
 
-**Subscriptions**: each socket subscribes to `presence:{id}` of its presence peers (friends ∪ members of the user's servers, capped at 500, friends first) in one `SUBSCRIBE`; presence events of blocked users are dropped. Peers are loaded at connect; a server joined later is picked up on the next connect.
+**Stored vs. shown status**: `users.status` is the chosen status (`online`, `away`, `busy`).
+- Connecting sets `online` only when the stored status is `offline` and the user is not invisible, so `away`, `busy` and invisible survive a reconnect.
+- The last device closing resets only a stored `online` to `offline`.
+- What others see is `connections::effective_status(stored, live)`: `offline` without a live socket or when invisible. Readers use it with `live_users` (one Valkey round trip):
+  - the connect snapshot
+  - `GET /api/guilds/{id}/members` (`status`; users blocked in either direction show `offline`)
+  - `GET /api/friends` (`is_online`)
+  - message authors, batched per message list (`AuthorProfile::apply_live_status`)
+  - the bot gateway author
+
+**Audience**: presence peers = friends ∪ members of the user's servers, without users blocked in either direction, capped at 500, friends first. They are loaded in one query and subscribed in one `SUBSCRIBE`.
+- The forwarder passes presence events only from current peers that are not blocked.
+- When friendship, blocking or server membership changes, the handlers publish the internal notice `{"type":"presence_audience_changed"}`. They publish it on `user:{id}` of the users involved, and on `guild:{id}` for joins, leaves, kicks and server deletion.
+- The forwarder consumes the notice (never forwarded) and wakes the socket loop (`refresh_presence_audience`), which:
+  - reloads peers, servers and both block sets
+  - updates the filters first, then unsubscribes peers and servers that were dropped
+  - subscribes new ones (PING barrier) and sends their snapshot.
+- A failed subscription closes the socket with 1011.
 
 ### Voice Event Delegation
 

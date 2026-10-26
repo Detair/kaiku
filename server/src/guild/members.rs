@@ -44,6 +44,9 @@ pub async fn leave_guild(
 
     // Remove membership
     core_q::delete_guild_member(&state.db, guild_id, auth.id).await?;
+    // The leaver and the remaining members stop seeing each other's presence.
+    crate::presence::connections::notify_audience_changed(&state.redis, &[auth.id], Some(guild_id))
+        .await;
 
     // Dispatch MemberLeft to bot ecosystem (non-blocking)
     {
@@ -91,12 +94,25 @@ pub async fn list_members(
     let mut members = core_q::list_guild_members(&state.db, guild_id).await?;
 
     // Online means "has a live socket" (per device, see presence::connections).
+    // Users blocked in either direction show `offline`.
     let ids: Vec<Uuid> = members.iter().map(|m| m.user_id).collect();
     let live = crate::presence::connections::live_users_or_log(&state.redis, &ids).await;
+    let blocked: Vec<(Uuid,)> = sqlx::query_as(
+        r"SELECT CASE WHEN requester_id = $1 THEN addressee_id ELSE requester_id END
+          FROM friendships
+          WHERE status = 'blocked' AND (requester_id = $1 OR addressee_id = $1)",
+    )
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
+    let blocked: std::collections::HashSet<Uuid> = blocked.into_iter().map(|(id,)| id).collect();
     for member in &mut members {
         let is_live = live.as_ref().map(|l| l.contains(&member.user_id));
-        member.status =
-            crate::presence::connections::effective_status(&member.status, is_live).to_string();
+        member.status = if blocked.contains(&member.user_id) {
+            "offline".to_string()
+        } else {
+            crate::presence::connections::effective_status(&member.status, is_live).to_string()
+        };
     }
 
     Ok(Json(members))
@@ -140,6 +156,8 @@ pub async fn kick_member(
     if rows_affected == 0 {
         return Err(GuildError::NotFound);
     }
+    crate::presence::connections::notify_audience_changed(&state.redis, &[user_id], Some(guild_id))
+        .await;
 
     // Dispatch MemberLeft to bot ecosystem (non-blocking)
     {

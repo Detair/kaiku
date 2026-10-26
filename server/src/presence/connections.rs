@@ -14,13 +14,26 @@
 //! presence event in that same step, so a disconnect of one device and a
 //! connect of another reach subscribers in the order they happened.
 //!
+//! Every published status change carries a per-user version
+//! (`presence:ver:{user_id}`, incremented in the publishing script): sockets
+//! drop updates older than what they already sent, so the connect snapshot
+//! and live updates cannot overwrite each other out of order.
+//!
+//! Sockets that end without a disconnect (crashed server, a failed disconnect
+//! command) are covered by the sweeper ([`sweep_expired`]): the global set
+//! `presence:due` holds each user's latest expiry, and an atomic expire step
+//! announces `offline` once the last socket has expired.
+//!
+//! While a user is invisible (`presence:hidden:{user_id}`, mirroring
+//! `users.invisible`), connect, disconnect and expiry announce nothing.
+//!
 //! **Stored vs. shown status.** `users.status` holds the status the user chose
 //! (`online`, `away`, `busy`; `offline` once the last socket closed) and
 //! `users.invisible` marks "appear offline". What other people see comes from
 //! [`effective_status`], which also needs to know whether the user has a live
 //! socket ([`live_users`]).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use fred::interfaces::LuaInterface;
@@ -58,53 +71,167 @@ pub fn sockets_key(user_id: Uuid) -> String {
     format!("presence:sockets:{user_id}")
 }
 
+/// Global sorted set: user id → latest socket expiry (ms). The sweeper reads
+/// users whose latest expiry has passed.
+pub const DUE_KEY: &str = "presence:due";
+
+/// Valkey key of a user's presence version (incremented on every published
+/// status change).
+#[must_use]
+pub fn version_key(user_id: Uuid) -> String {
+    format!("presence:ver:{user_id}")
+}
+
+/// Valkey key that mirrors `users.invisible`: while it exists, lifecycle
+/// changes (connect, disconnect, expiry) announce nothing.
+#[must_use]
+pub fn hidden_key(user_id: Uuid) -> String {
+    format!("presence:hidden:{user_id}")
+}
+
+/// Keys every lifecycle script gets, in this order: the user's socket set,
+/// the global due set, the user's presence version, the user's hidden flag.
+fn lifecycle_keys(user_id: Uuid) -> Vec<String> {
+    vec![
+        sockets_key(user_id),
+        DUE_KEY.to_string(),
+        version_key(user_id),
+        hidden_key(user_id),
+    ]
+}
+
+/// Lua helper shared by the scripts: publish ARGV-provided event JSON on a
+/// channel as a versioned envelope, unless the user is hidden (KEYS[4]).
+/// `INCR` and `PUBLISH` run in the same script, so version order is publish
+/// order.
+macro_rules! lua_announce {
+    () => {
+        r#"
+local function announce(payload, channel)
+  if payload == '' or redis.call('EXISTS', KEYS[4]) == 1 then
+    return
+  end
+  local v = redis.call('INCR', KEYS[3])
+  redis.call('PUBLISH', channel, '{"v":' .. v .. ',"event":' .. payload .. '}')
+end
+"#
+    };
+}
+
 /// Register (or refresh) a socket. Prunes expired members first, so a socket
-/// whose own entry had expired counts as new again.
+/// whose own entry had expired counts as new again, and raises the user's
+/// entry in the due set.
 ///
-/// KEYS[1] = set; ARGV = now ms, expiry ms, socket id, TTL ms, event payload
-/// (empty: publish nothing), publish channel. Returns 1 on 0 → 1.
-const SOCKET_ONLINE_SCRIPT: &str = r"
-local key = KEYS[1]
-redis.call('ZREMRANGEBYSCORE', key, '-inf', ARGV[1])
-local before = redis.call('ZCARD', key)
-redis.call('ZADD', key, ARGV[2], ARGV[3])
-redis.call('PEXPIRE', key, ARGV[4])
+/// ARGV = now ms, expiry ms, socket id, TTL ms, event payload (empty: publish
+/// nothing), publish channel, user id, "1" to mark the user hidden first.
+/// Returns 1 on 0 → 1.
+const SOCKET_ONLINE_SCRIPT: &str = concat!(
+    lua_announce!(),
+    r"
+if ARGV[8] == '1' then
+  redis.call('SET', KEYS[4], '1')
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+local before = redis.call('ZCARD', KEYS[1])
+redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
+redis.call('PEXPIRE', KEYS[1], ARGV[4])
+redis.call('ZADD', KEYS[2], 'GT', ARGV[2], ARGV[7])
 if before == 0 then
-  if ARGV[5] ~= '' then
-    redis.call('PUBLISH', ARGV[6], ARGV[5])
-  end
+  announce(ARGV[5], ARGV[6])
   return 1
 end
 return 0
-";
+"
+);
 
-/// Remove a socket, then prune expired members. Reports 1 → 0 only when this
-/// call removed the socket and no live socket remains (a socket removed twice
-/// never reports twice).
+/// Remove a socket, then prune expired members. Reports 1 → 0 when this call
+/// emptied the set by removing anything (its own socket or expired ones), so
+/// an `offline` is never lost and never sent twice.
 ///
-/// KEYS[1] = set; ARGV = now ms, socket id, event payload (empty: publish
-/// nothing), publish channel. Returns 1 on 1 → 0.
-const SOCKET_OFFLINE_SCRIPT: &str = r"
-local key = KEYS[1]
-local removed = redis.call('ZREM', key, ARGV[2])
-redis.call('ZREMRANGEBYSCORE', key, '-inf', ARGV[1])
-local after = redis.call('ZCARD', key)
-if removed == 1 and after == 0 then
-  if ARGV[3] ~= '' then
-    redis.call('PUBLISH', ARGV[4], ARGV[3])
-  end
+/// ARGV = now ms, socket id, event payload, publish channel, user id.
+const SOCKET_OFFLINE_SCRIPT: &str = concat!(
+    lua_announce!(),
+    r"
+local removed = redis.call('ZREM', KEYS[1], ARGV[2])
+local pruned = redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+local after = redis.call('ZCARD', KEYS[1])
+if after == 0 then
+  redis.call('ZREM', KEYS[2], ARGV[5])
+end
+if removed + pruned > 0 and after == 0 then
+  announce(ARGV[3], ARGV[4])
   return 1
 end
 return 0
-";
+"
+);
 
-/// Number of live sockets per key (members with an expiry after ARGV[1]).
-const LIVE_COUNTS_SCRIPT: &str = r"
-local counts = {}
-for i, key in ipairs(KEYS) do
-  counts[i] = redis.call('ZCOUNT', key, '(' .. ARGV[1], '+inf')
+/// Sweeper step for one user: prune expired sockets; if that empties the set,
+/// announce the 1 → 0 transition and drop the user from the due set,
+/// otherwise set the due score to the latest remaining expiry.
+///
+/// ARGV = now ms, event payload, publish channel, user id.
+const EXPIRE_SCRIPT: &str = concat!(
+    lua_announce!(),
+    r"
+local pruned = redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+local after = redis.call('ZCARD', KEYS[1])
+if after == 0 then
+  redis.call('ZREM', KEYS[2], ARGV[4])
+  if pruned > 0 then
+    announce(ARGV[2], ARGV[3])
+    return 1
+  end
+  return 0
 end
-return counts
+local top = redis.call('ZRANGE', KEYS[1], -1, -1, 'WITHSCORES')
+redis.call('ZADD', KEYS[2], top[2], ARGV[4])
+return 0
+"
+);
+
+/// Status change chosen by the user: set or clear the hidden flag, then
+/// publish (versioned) unless the payload is empty. The hidden flag does not
+/// suppress this publish: entering invisible announces `offline` once.
+///
+/// ARGV = "1" hidden / "0" visible, event payload, publish channel.
+const SET_STATUS_SCRIPT: &str = r#"
+if ARGV[1] == '1' then
+  redis.call('SET', KEYS[4], '1')
+else
+  redis.call('DEL', KEYS[4])
+end
+if ARGV[2] ~= '' then
+  local v = redis.call('INCR', KEYS[3])
+  redis.call('PUBLISH', ARGV[3], '{"v":' .. v .. ',"event":' .. ARGV[2] .. '}')
+end
+return 1
+"#;
+
+/// Late announcement (a socket that could not announce at registration): only
+/// while the user has a live socket and is not hidden.
+///
+/// ARGV = now ms, event payload, publish channel.
+const ANNOUNCE_IF_LIVE_SCRIPT: &str = concat!(
+    lua_announce!(),
+    r"
+if redis.call('ZCOUNT', KEYS[1], '(' .. ARGV[1], '+inf') == 0 then
+  return 0
+end
+announce(ARGV[2], ARGV[3])
+return 1
+"
+);
+
+/// Live socket count and presence version per user. KEYS = socket set,
+/// version key, alternating.
+const LIVE_SNAPSHOT_SCRIPT: &str = r"
+local out = {}
+for i = 1, #KEYS, 2 do
+  out[#out + 1] = redis.call('ZCOUNT', KEYS[i], '(' .. ARGV[1], '+inf')
+  out[#out + 1] = tonumber(redis.call('GET', KEYS[i + 1]) or '0')
+end
+return out
 ";
 
 fn ttl_ms() -> i64 {
@@ -119,23 +246,28 @@ pub async fn socket_online(
     socket_id: Uuid,
     now_ms: i64,
 ) -> Result<bool, PresenceError> {
-    socket_online_announce(redis, user_id, socket_id, now_ms, None).await
+    socket_online_announce(redis, user_id, socket_id, now_ms, None, false).await
 }
 
-/// [`socket_online`] that also publishes `announce` on `presence:{user_id}`
-/// in the same atomic step when the transition happens.
+/// [`socket_online`] that also announces the 0 → 1 transition.
+///
+/// On the transition it publishes `announce` (versioned) on
+/// `presence:{user_id}` in the same atomic step, unless the user is hidden.
+/// `mark_hidden` sets the hidden flag first (the database says the user is
+/// invisible).
 pub async fn socket_online_announce(
     redis: &Client,
     user_id: Uuid,
     socket_id: Uuid,
     now_ms: i64,
     announce: Option<&str>,
+    mark_hidden: bool,
 ) -> Result<bool, PresenceError> {
     let ttl = ttl_ms();
     let first: i64 = redis
         .eval(
             SOCKET_ONLINE_SCRIPT,
-            vec![sockets_key(user_id)],
+            lifecycle_keys(user_id),
             vec![
                 now_ms.to_string(),
                 now_ms.saturating_add(ttl).to_string(),
@@ -143,6 +275,8 @@ pub async fn socket_online_announce(
                 ttl.to_string(),
                 announce.unwrap_or_default().to_string(),
                 presence_channel(user_id),
+                user_id.to_string(),
+                if mark_hidden { "1" } else { "" }.to_string(),
             ],
         )
         .await?;
@@ -157,31 +291,114 @@ pub async fn socket_offline(
     socket_id: Uuid,
     now_ms: i64,
 ) -> Result<bool, PresenceError> {
-    socket_offline_announce(redis, user_id, socket_id, now_ms, None).await
+    socket_offline_inner(redis, user_id, socket_id, now_ms, false).await
 }
 
-/// [`socket_offline`] that also publishes `announce` on `presence:{user_id}`
-/// in the same atomic step when the transition happens.
+/// [`socket_offline`] that also publishes `offline` (versioned) on
+/// `presence:{user_id}` in the same atomic step when the transition happens,
+/// unless the user is hidden.
 pub async fn socket_offline_announce(
     redis: &Client,
     user_id: Uuid,
     socket_id: Uuid,
     now_ms: i64,
-    announce: Option<&str>,
 ) -> Result<bool, PresenceError> {
+    socket_offline_inner(redis, user_id, socket_id, now_ms, true).await
+}
+
+async fn socket_offline_inner(
+    redis: &Client,
+    user_id: Uuid,
+    socket_id: Uuid,
+    now_ms: i64,
+    announce: bool,
+) -> Result<bool, PresenceError> {
+    let payload = if announce {
+        status_event_json(user_id, "offline")
+    } else {
+        String::new()
+    };
     let last: i64 = redis
         .eval(
             SOCKET_OFFLINE_SCRIPT,
-            vec![sockets_key(user_id)],
+            lifecycle_keys(user_id),
             vec![
                 now_ms.to_string(),
                 socket_id.to_string(),
-                announce.unwrap_or_default().to_string(),
+                payload,
                 presence_channel(user_id),
+                user_id.to_string(),
             ],
         )
         .await?;
     Ok(last == 1)
+}
+
+/// Sweeper step for one user (see [`sweep_expired`]); `true` when the user's
+/// last socket expired (1 → 0, `offline` announced unless hidden).
+pub async fn expire_user(
+    redis: &Client,
+    user_id: Uuid,
+    now_ms: i64,
+) -> Result<bool, PresenceError> {
+    let last: i64 = redis
+        .eval(
+            EXPIRE_SCRIPT,
+            lifecycle_keys(user_id),
+            vec![
+                now_ms.to_string(),
+                status_event_json(user_id, "offline"),
+                presence_channel(user_id),
+                user_id.to_string(),
+            ],
+        )
+        .await?;
+    Ok(last == 1)
+}
+
+/// Publish a status the user chose (versioned) and set the hidden flag:
+/// `hidden = true` for invisible. `status = None` publishes nothing.
+pub async fn publish_chosen_status(
+    redis: &Client,
+    user_id: Uuid,
+    status: Option<&str>,
+    hidden: bool,
+) -> Result<(), PresenceError> {
+    let payload = status.map(|s| status_event_json(user_id, s));
+    let _: i64 = redis
+        .eval(
+            SET_STATUS_SCRIPT,
+            lifecycle_keys(user_id),
+            vec![
+                if hidden { "1" } else { "0" }.to_string(),
+                payload.unwrap_or_default(),
+                presence_channel(user_id),
+            ],
+        )
+        .await?;
+    Ok(())
+}
+
+/// Publish `status` (versioned) only if the user has a live socket and is not
+/// hidden; `true` if published.
+pub async fn announce_if_live(
+    redis: &Client,
+    user_id: Uuid,
+    status: &str,
+    now_ms: i64,
+) -> Result<bool, PresenceError> {
+    let done: i64 = redis
+        .eval(
+            ANNOUNCE_IF_LIVE_SCRIPT,
+            lifecycle_keys(user_id),
+            vec![
+                now_ms.to_string(),
+                status_event_json(user_id, status),
+                presence_channel(user_id),
+            ],
+        )
+        .await?;
+    Ok(done == 1)
 }
 
 /// The users among `user_ids` that have at least one live socket. One Valkey
@@ -191,19 +408,45 @@ pub async fn live_users(
     user_ids: &[Uuid],
     now_ms: i64,
 ) -> Result<HashSet<Uuid>, PresenceError> {
+    Ok(live_snapshot(redis, user_ids, now_ms).await?.live)
+}
+
+/// Live users and presence versions, read in one atomic Valkey step.
+#[derive(Debug, Default)]
+pub struct LiveSnapshot {
+    /// Users with at least one live socket.
+    pub live: HashSet<Uuid>,
+    /// Presence version per user (0 = never announced).
+    pub versions: HashMap<Uuid, u64>,
+}
+
+/// [`LiveSnapshot`] of `user_ids` (one round trip).
+pub async fn live_snapshot(
+    redis: &Client,
+    user_ids: &[Uuid],
+    now_ms: i64,
+) -> Result<LiveSnapshot, PresenceError> {
     if user_ids.is_empty() {
-        return Ok(HashSet::new());
+        return Ok(LiveSnapshot::default());
     }
-    let keys: Vec<String> = user_ids.iter().map(|id| sockets_key(*id)).collect();
-    let counts: Vec<i64> = redis
-        .eval(LIVE_COUNTS_SCRIPT, keys, vec![now_ms.to_string()])
-        .await?;
-    Ok(user_ids
+    let keys: Vec<String> = user_ids
         .iter()
-        .zip(counts)
-        .filter(|(_, count)| *count > 0)
-        .map(|(id, _)| *id)
-        .collect())
+        .flat_map(|id| [sockets_key(*id), version_key(*id)])
+        .collect();
+    let values: Vec<i64> = redis
+        .eval(LIVE_SNAPSHOT_SCRIPT, keys, vec![now_ms.to_string()])
+        .await?;
+    let mut snapshot = LiveSnapshot::default();
+    for (id, pair) in user_ids.iter().zip(values.chunks(2)) {
+        if pair.first().copied().unwrap_or(0) > 0 {
+            snapshot.live.insert(*id);
+        }
+        let version = pair.get(1).copied().unwrap_or(0);
+        snapshot
+            .versions
+            .insert(*id, u64::try_from(version).unwrap_or(0));
+    }
+    Ok(snapshot)
 }
 
 /// [`live_users`], failing open: on a Valkey error it logs (throttled) and
@@ -227,6 +470,118 @@ pub fn log_unavailable(e: &PresenceError) {
             "Presence store unavailable; continuing without it (logged at most once a minute)"
         );
     }
+}
+
+/// How many due users one sweep handles at most.
+pub const SWEEP_BATCH: i64 = 200;
+
+/// How often the sweeper runs.
+pub const SWEEP_INTERVAL: Duration = Duration::from_secs(20);
+
+/// Announce `offline` for users whose last socket expired without a disconnect.
+///
+/// Covers crashed servers and failed disconnect commands. Handles at most
+/// `limit` users whose latest expiry is before `now_ms`, each in one atomic
+/// step that cannot race a concurrent connect, then resets a stored `online`
+/// to `offline` for those that went offline. Returns those users.
+pub async fn sweep_expired(
+    db: &sqlx::PgPool,
+    redis: &Client,
+    now_ms: i64,
+    limit: i64,
+) -> Result<Vec<Uuid>, PresenceError> {
+    let due: Vec<String> = redis
+        // Expiries are positive Unix milliseconds.
+        .zrangebyscore(DUE_KEY, 0_i64, now_ms, false, Some((0, limit)))
+        .await?;
+    let mut offline = Vec::new();
+    for id in due {
+        let Ok(user_id) = Uuid::parse_str(&id) else {
+            let _: i64 = redis.zrem(DUE_KEY, id).await?;
+            continue;
+        };
+        if expire_user(redis, user_id, now_ms).await? {
+            offline.push(user_id);
+        }
+    }
+    if !offline.is_empty() {
+        if let Err(e) = sqlx::query(
+            "UPDATE users SET status = 'offline'::user_status WHERE id = ANY($1) AND status = 'online'",
+        )
+        .bind(&offline)
+        .execute(db)
+        .await
+        {
+            tracing::warn!(error = %e, "Presence sweep: status reset failed");
+        }
+    }
+    Ok(offline)
+}
+
+/// Spawn the presence sweeper ([`sweep_expired`] every [`SWEEP_INTERVAL`]).
+pub fn spawn_presence_sweep(db: sqlx::PgPool, redis: Client) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(SWEEP_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            if let Err(e) = sweep_expired(&db, &redis, now_ms(), SWEEP_BATCH).await {
+                log_unavailable(&e);
+            }
+        }
+    })
+}
+
+/// A presence update as published on `presence:{user_id}`.
+///
+/// The event plus the user's presence version. Internal: sockets unwrap it
+/// and forward `event` only if `v` is newer than what they already sent for
+/// that user.
+#[derive(Debug, serde::Deserialize)]
+pub struct PresenceEnvelope {
+    /// Presence version (`presence:ver:{user_id}`).
+    pub v: u64,
+    /// The event to forward.
+    pub event: crate::ws::ServerEvent,
+}
+
+/// Internal notice on `user:{id}` / `guild:{id}`: the presence audience changed.
+///
+/// Sent when friendship, blocking or server membership changes. Sockets
+/// recompute their presence peers; the notice is never forwarded.
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PresenceNotice {
+    /// Recompute presence peers, block sets and server subscriptions.
+    PresenceAudienceChanged,
+}
+
+/// Tell the sockets of `users` (and of every member of `guild`) to recompute
+/// their presence peers. Best effort: failures are logged (throttled).
+pub async fn notify_audience_changed(redis: &Client, users: &[Uuid], guild: Option<Uuid>) {
+    let Ok(payload) = serde_json::to_string(&PresenceNotice::PresenceAudienceChanged) else {
+        return;
+    };
+    let channels = users
+        .iter()
+        .map(|id| crate::ws::channels::user_events(*id))
+        .chain(guild.map(crate::ws::channels::guild_events));
+    for channel in channels {
+        let sent: Result<(), fred::error::Error> = redis.publish(&channel, payload.as_str()).await;
+        if let Err(e) = sent {
+            log_unavailable(&PresenceError(e));
+        }
+    }
+}
+
+/// JSON of a `presence_update` event.
+#[must_use]
+pub fn status_event_json(user_id: Uuid, status: &str) -> String {
+    serde_json::to_string(&crate::ws::ServerEvent::PresenceUpdate {
+        user_id,
+        status: status.to_string(),
+    })
+    .unwrap_or_default()
 }
 
 /// Number of live sockets among `scores` (expiry ms) at `now_ms`. A socket
