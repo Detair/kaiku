@@ -29,24 +29,24 @@ fn test_screen_share_check_response_denied_serialization() {
     let json = serde_json::to_string(&resp).unwrap();
 
     assert!(json.contains("\"allowed\":false"));
-    assert!(json.contains("\"error\":\"no_permission\""));
+    assert!(json.contains("\"error\":\"NO_PERMISSION\""));
 }
 
 #[test]
 fn test_screen_share_error_into_response_status_codes() {
     // Verify that each error variant maps to the expected status concept
     let test_cases = [
-        (ScreenShareError::NoPermission, "no_permission"),
-        (ScreenShareError::LimitReached, "limit_reached"),
-        (ScreenShareError::NotInChannel, "not_in_channel"),
-        (ScreenShareError::QualityNotAllowed, "quality_not_allowed"),
+        (ScreenShareError::NoPermission, "NO_PERMISSION"),
+        (ScreenShareError::LimitReached, "LIMIT_REACHED"),
+        (ScreenShareError::NotInChannel, "NOT_IN_CHANNEL"),
+        (ScreenShareError::QualityNotAllowed, "QUALITY_NOT_ALLOWED"),
         (
             ScreenShareError::RenegotiationFailed,
-            "renegotiation_failed",
+            "RENEGOTIATION_FAILED",
         ),
-        (ScreenShareError::InternalError, "internal_error"),
-        (ScreenShareError::InvalidSourceLabel, "invalid_source_label"),
-        (ScreenShareError::AlreadySharing, "already_sharing"),
+        (ScreenShareError::InternalError, "INTERNAL_ERROR"),
+        (ScreenShareError::InvalidSourceLabel, "INVALID_SOURCE_LABEL"),
+        (ScreenShareError::AlreadySharing, "ALREADY_SHARING"),
     ];
 
     for (error, expected_str) in test_cases {
@@ -481,7 +481,7 @@ async fn test_screen_share_check_requires_permission(pool: PgPool) {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["allowed"], false);
-    assert_eq!(json["error"], "no_permission");
+    assert_eq!(json["error"], "NO_PERMISSION");
 }
 
 /// Screen share check allows permitted users.

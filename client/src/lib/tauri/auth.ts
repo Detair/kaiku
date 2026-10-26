@@ -10,7 +10,9 @@ import type {
   ServerSettings,
   SessionListResponse,
   User,
+  UserStatus,
 } from "../types";
+import { codeIs, messageHasCode } from "@/lib/errorCode";
 import {
   browserState,
   clearBrowserTokens,
@@ -173,18 +175,17 @@ export async function login(
 }
 
 /**
- * Update the user's presence status (online, idle, dnd, invisible, offline).
+ * Update the user's presence status (online, idle, dnd, offline). The removed "invisible" status is never sent; it falls back to online.
  */
 export async function updateStatus(
-  status: "online" | "idle" | "dnd" | "invisible" | "offline",
+  status: UserStatus,
 ): Promise<void> {
-  // Map client status names to server enum values
+  // Map client status names to server enum values. The server accepts only
+  // online, away and busy; anything else (offline, a stale invisible) is online.
   const statusMap: Record<string, string> = {
     online: "online",
     idle: "away",
     dnd: "busy",
-    invisible: "offline",
-    offline: "offline",
   };
   const message = { type: "set_status", status: statusMap[status] ?? "online" };
   if (isTauri()) {
@@ -500,13 +501,13 @@ export async function linkIdentity(
 
 /**
  * True when linking failed because a system admin needs an elevated session
- * first (server code `elevation_required`, HTTP 403). The desktop command
+ * first (server code `ELEVATION_REQUIRED`, any casing, HTTP 403). The desktop command
  * reports the response body inside its error string.
  */
 export function isElevationRequiredError(err: unknown): boolean {
-  if (err instanceof HttpError) return err.code === "elevation_required";
+  if (err instanceof HttpError) return codeIs(err.code, "ELEVATION_REQUIRED");
   const text = typeof err === "string" ? err : err instanceof Error ? err.message : "";
-  return text.includes("elevation_required");
+  return messageHasCode(text, "ELEVATION_REQUIRED");
 }
 
 // ============================================================================

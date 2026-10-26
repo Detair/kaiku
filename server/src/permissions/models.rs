@@ -62,6 +62,10 @@ pub struct ChannelOverride {
     pub allow_permissions: GuildPermissions,
     #[sqlx(try_from = "i64")]
     pub deny_permissions: GuildPermissions,
+    /// Whether `role_id` is the guild's `@everyone` role. Loaded with the
+    /// override so the resolver never has to guess which override is the
+    /// `@everyone` one.
+    pub everyone: bool,
 }
 
 /// System audit log entry.

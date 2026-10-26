@@ -809,9 +809,11 @@ pub async fn get_channel_overrides(
 ) -> sqlx::Result<Vec<crate::permissions::models::ChannelOverride>> {
     sqlx::query_as::<_, crate::permissions::models::ChannelOverride>(
         r"
-        SELECT id, channel_id, role_id, allow_permissions, deny_permissions
-        FROM channel_overrides
-        WHERE channel_id = $1
+        SELECT o.id, o.channel_id, o.role_id, o.allow_permissions, o.deny_permissions,
+               r.is_default AS everyone
+        FROM channel_overrides o
+        INNER JOIN guild_roles r ON r.id = o.role_id
+        WHERE o.channel_id = $1
         ",
     )
     .bind(channel_id)
@@ -830,9 +832,11 @@ pub async fn get_channel_overrides_batch(
 
     sqlx::query_as::<_, crate::permissions::models::ChannelOverride>(
         r"
-        SELECT id, channel_id, role_id, allow_permissions, deny_permissions
-        FROM channel_overrides
-        WHERE channel_id = ANY($1)
+        SELECT o.id, o.channel_id, o.role_id, o.allow_permissions, o.deny_permissions,
+               r.is_default AS everyone
+        FROM channel_overrides o
+        INNER JOIN guild_roles r ON r.id = o.role_id
+        WHERE o.channel_id = ANY($1)
         ",
     )
     .bind(channel_ids)
@@ -2025,15 +2029,23 @@ pub async fn count_users(pool: &PgPool) -> sqlx::Result<i64> {
 /// Get aggregate unread counts across all guilds and DMs for a user.
 ///
 /// This query provides a centralized view of all unread activity:
-/// - Guilds: Channels with unreads, grouped by guild
+/// - Guilds: read-tracked channels with unreads that the user may view, grouped by guild
 /// - DMs: Direct message conversations with unreads
 ///
-/// Unread count is calculated by comparing message `created_at` with the timestamp
-/// of the user's `last_read_message_id` cursor from `channel_read_state` / `dm_read_state`.
+/// Only messages matching [`UNREAD_MESSAGE_PREDICATE`] count. They are counted
+/// after the `created_at` of the user's `last_read_message_id` cursor from
+/// `channel_read_state` / `dm_read_state`; without a cursor, after the user's
+/// join time (`guild_members.joined_at` / `dm_participants.joined_at`).
+///
+/// Channels the user may not view (same rules as
+/// [`crate::permissions::require_channel_access`]) are left out entirely, name
+/// and count; permissions are resolved for all guilds in one batch.
+///
+/// [`UNREAD_MESSAGE_PREDICATE`]: crate::chat::unread::UNREAD_MESSAGE_PREDICATE
 #[tracing::instrument(skip(pool))]
 pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<UnreadAggregate> {
-    // Get guild channel unreads (message-ID-based comparison via CTE)
-    let guild_rows = sqlx::query(
+    // Guild channel unreads (message-ID-based comparison via CTE)
+    let guild_sql = concat!(
         r"
         WITH cursors AS (
             SELECT channel_id, last_read_message_id,
@@ -2050,27 +2062,39 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
             COUNT(m.id)::bigint as unread_count
         FROM guild_members gm
         INNER JOIN guilds g ON g.id = gm.guild_id
-        INNER JOIN channels c ON c.guild_id = g.id
+        INNER JOIN channels c ON c.guild_id = g.id AND c.channel_type IN ",
+        crate::chat::unread::text_like_channel_types!(),
+        r"
         LEFT JOIN cursors crs ON crs.channel_id = c.id
-        LEFT JOIN messages m ON m.channel_id = c.id
-            AND m.deleted_at IS NULL
-            AND (
-                crs.cursor_at IS NULL
-                OR m.created_at > crs.cursor_at
-            )
+        INNER JOIN messages m ON m.channel_id = c.id
+            AND ",
+        crate::chat::unread::unread_message_predicate!(),
+        r"
+            AND m.created_at > COALESCE(crs.cursor_at, gm.joined_at)
         WHERE gm.user_id = $1
-        GROUP BY g.id, g.name, c.id, c.name, crs.last_read_message_id
-        HAVING COUNT(m.id) > 0
+        GROUP BY g.id, g.name, c.id, c.name, c.position, crs.last_read_message_id
         ORDER BY g.name, c.position
-        ",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await
-    .map_err(db_error!("get_unread_aggregate:guilds", user_id = %user_id))?;
+        "
+    );
+    let guild_rows = sqlx::query(guild_sql)
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .map_err(db_error!("get_unread_aggregate:guilds", user_id = %user_id))?;
 
-    // Get DM unreads (message-ID-based comparison via CTE, using dm_read_state)
-    let dm_rows = sqlx::query(
+    // Drop channels the user may not view: one batched permission resolution
+    // over the (few) channels that have unreads at all.
+    let candidates: Vec<(Uuid, Uuid)> = guild_rows
+        .iter()
+        .map(|row| (row.get("guild_id"), row.get("channel_id")))
+        .collect();
+    let viewable =
+        crate::permissions::filter_viewable_channels_in_guilds(pool, user_id, &candidates)
+            .await
+            .map_err(db_error!("get_unread_aggregate:permissions", user_id = %user_id))?;
+
+    // DM unreads (message-ID-based comparison via CTE, using dm_read_state)
+    let dm_sql = concat!(
         r"
         WITH cursors AS (
             SELECT channel_id, last_read_message_id,
@@ -2086,32 +2110,33 @@ pub async fn get_unread_aggregate(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
         FROM dm_participants dp
         INNER JOIN channels c ON c.id = dp.channel_id
         LEFT JOIN cursors crs ON crs.channel_id = c.id
-        LEFT JOIN messages m ON m.channel_id = c.id
-            AND m.deleted_at IS NULL
-            AND m.user_id != $1
-            AND (
-                crs.cursor_at IS NULL
-                OR m.created_at > crs.cursor_at
-            )
+        INNER JOIN messages m ON m.channel_id = c.id
+            AND ",
+        crate::chat::unread::unread_message_predicate!(),
+        r"
+            AND m.created_at > COALESCE(crs.cursor_at, dp.joined_at)
         WHERE dp.user_id = $1 AND c.channel_type = 'dm'
         GROUP BY c.id, c.name, crs.last_read_message_id
-        HAVING COUNT(m.id) > 0
         ORDER BY c.name
-        ",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await
-    .map_err(db_error!("get_unread_aggregate:dms", user_id = %user_id))?;
+        "
+    );
+    let dm_rows = sqlx::query(dm_sql)
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .map_err(db_error!("get_unread_aggregate:dms", user_id = %user_id))?;
 
     // Group guild channels by guild
     let mut guilds_map: std::collections::HashMap<Uuid, GuildUnreadSummary> =
         std::collections::HashMap::new();
 
     for row in guild_rows {
+        let channel_id: Uuid = row.get("channel_id");
+        if !viewable.contains(&channel_id) {
+            continue;
+        }
         let guild_id: Uuid = row.get("guild_id");
         let guild_name: String = row.get("guild_name");
-        let channel_id: Uuid = row.get("channel_id");
         let channel_name: String = row.get("channel_name");
         let unread_count: i64 = row.get("unread_count");
         let last_read_message_id: Option<Uuid> = row.get("last_read_message_id");

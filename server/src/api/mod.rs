@@ -95,10 +95,10 @@ impl AppState {
         Self {
             push,
             db: cfg.db,
-            redis: cfg.redis,
+            redis: cfg.redis.clone(),
             config: Arc::new(cfg.config),
             s3: cfg.s3,
-            sfu: Arc::new(cfg.sfu),
+            sfu: Arc::new(cfg.sfu.with_call_redis(cfg.redis.clone())),
             rate_limiter: cfg.rate_limiter,
             screen_share_limiter: cfg.screen_share_limiter,
             email: cfg.email.map(Arc::new),

@@ -340,7 +340,7 @@ async fn handle_bot_socket(
                         if let Err(e) = handle_bot_event(event, &state_clone, bot_user_id).await {
                             error!("Error handling bot event: {}", e);
                             let _ = error_tx.send(BotServerEvent::Error {
-                                code: "handler_error".to_string(),
+                                code: "HANDLER_ERROR".to_string(),
                                 message: e,
                             });
                         }
@@ -348,7 +348,7 @@ async fn handle_bot_socket(
                     Err(e) => {
                         warn!("Failed to parse bot message: {}", e);
                         let _ = error_tx.send(BotServerEvent::Error {
-                            code: "invalid_json".to_string(),
+                            code: "INVALID_JSON".to_string(),
                             message: format!("Failed to parse message: {e}"),
                         });
                     }
@@ -688,7 +688,7 @@ async fn handle_bot_event(
                         "username": u.username,
                         "display_name": u.display_name,
                         "avatar_url": u.avatar_url,
-                        "status": format!("{:?}", u.status).to_lowercase(),
+                        "status": crate::chat::types::AUTHOR_STATUS_PLACEHOLDER,
                     })
                 } else {
                     serde_json::json!({

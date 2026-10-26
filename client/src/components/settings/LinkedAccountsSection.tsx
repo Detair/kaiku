@@ -1,4 +1,5 @@
 import { Component, createSignal, onCleanup, onMount, For, Show } from "solid-js";
+import { codeIs, messageHasCode } from "@/lib/errorCode";
 import { KeyRound, Unlink, Plus } from "lucide-solid";
 import * as tauri from "@/lib/tauri";
 import { HttpError } from "@/lib/tauri/common";
@@ -94,9 +95,9 @@ const LinkedAccountsSection: Component = () => {
 
   // Text for a failed link, from a callback code or a native error string.
   const linkErrorText = (code: string): string | null => {
-    if (code.includes("LINK_SESSION_INVALID")) return t("settings.linkedAccounts.error.sessionInvalid");
-    if (code.includes("ACCOUNT_BANNED")) return t("settings.linkedAccounts.error.banned");
-    if (code.toUpperCase().includes("SERVICE_UNAVAILABLE"))
+    if (messageHasCode(code, "LINK_SESSION_INVALID")) return t("settings.linkedAccounts.error.sessionInvalid");
+    if (messageHasCode(code, "ACCOUNT_BANNED")) return t("settings.linkedAccounts.error.banned");
+    if (messageHasCode(code, "SERVICE_UNAVAILABLE"))
       return t("settings.linkedAccounts.error.serviceUnavailable");
     return null;
   };
@@ -188,12 +189,12 @@ const LinkedAccountsSection: Component = () => {
           return;
         }
         const code = String(event.data.error_code ?? "");
-        if (code === "elevation_required") {
+        if (codeIs(code, "ELEVATION_REQUIRED")) {
           needElevation();
           return;
         }
         setError(
-          code === "IDENTITY_ALREADY_LINKED"
+          codeIs(code, "IDENTITY_ALREADY_LINKED")
             ? "That account is already linked to another Kaiku account."
             : (linkErrorText(code) ?? "Linking failed. Please try again."),
         );

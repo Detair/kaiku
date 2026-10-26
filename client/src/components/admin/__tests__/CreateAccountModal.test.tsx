@@ -46,7 +46,7 @@ describe("CreateAccountModal", () => {
 
 describe("CreateAccountModal validation", () => {
   // #690: unknown server -> VALIDATION_ERROR; validator (e.g. >10 guild_ids) -> "validation".
-  it.each(["VALIDATION_ERROR", "validation"])("a server-side %s shows our text, never the server's", async (code) => {
+  it.each(["VALIDATION_ERROR", "validation_error", "VALIDATION", "validation"])("a server-side %s shows our text, never the server's", async (code) => {
     mocks.adminCreateUser.mockRejectedValue(
       new HttpError(400, "guild_ids: unknown guild 1234", code),
     );

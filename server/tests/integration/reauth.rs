@@ -269,7 +269,7 @@ async fn test_elevation_is_bound_to_session(pool: PgPool) {
     // is an elevated route.
     let (status, body) = get_json(&server, "/api/admin/reports", &token_b).await;
     assert_eq!(status, 403, "session B must not be elevated: {body}");
-    assert_eq!(body["error"], "elevation_required");
+    assert_eq!(body["error"], "ELEVATION_REQUIRED");
 
     let (status, body) = get_json(&server, "/api/admin/reports", &token_a).await;
     assert_eq!(status, 200, "session A is elevated: {body}");

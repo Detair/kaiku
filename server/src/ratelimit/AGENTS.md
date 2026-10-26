@@ -231,8 +231,11 @@ response.headers_mut().insert(
 **Rate Limited Response**:
 ```json
 {
-    "error": "Rate limit exceeded",
-    "retry_after": 42
+    "error": "RATE_LIMITED",
+    "message": "Too many requests. Wait 42 seconds.",
+    "retry_after": 42,
+    "limit": 100,
+    "remaining": 0
 }
 ```
 **HTTP Status**: `429 Too Many Requests`
@@ -240,8 +243,11 @@ response.headers_mut().insert(
 **Blocked IP Response**:
 ```json
 {
-    "error": "IP address blocked due to suspicious activity",
-    "unblock_at": "2024-01-20T15:30:00Z"
+    "error": "IP_BLOCKED",
+    "message": "IP blocked. Wait 300 seconds.",
+    "retry_after": 300,
+    "limit": 0,
+    "remaining": 0
 }
 ```
 **HTTP Status**: `403 Forbidden`

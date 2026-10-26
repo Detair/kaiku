@@ -85,7 +85,7 @@ pub async fn list_identities(
     responses(
         (status = 307, description = "Redirect to provider authorization URL"),
         (status = 400, description = "OIDC not configured or auth method disabled"),
-        (status = 403, description = "A system admin must use an elevated session (`elevation_required`)"),
+        (status = 403, description = "A system admin must use an elevated session (`ELEVATION_REQUIRED`)"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -119,7 +119,7 @@ pub async fn link_authorize(
 pub(super) const LINK_SESSION_INVALID: &str = "LINK_SESSION_INVALID";
 /// Hand-back code for a system admin linking from a non-elevated session
 /// (same code as the admin middleware's 403).
-pub(super) const ELEVATION_REQUIRED: &str = "elevation_required";
+pub(super) const ELEVATION_REQUIRED: &str = "ELEVATION_REQUIRED";
 /// Hand-back code when Valkey cannot confirm the session (fails closed).
 pub(super) const SERVICE_UNAVAILABLE: &str = "SERVICE_UNAVAILABLE";
 /// Hand-back code for a banned account.
