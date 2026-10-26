@@ -684,6 +684,9 @@ pub async fn mark_as_read(
         return Err(ChatError::Forbidden);
     }
 
+    // The cursor must be a top-level message of this conversation.
+    queries::validate_read_cursor(&state.db, channel_id, body.last_read_message_id).await?;
+
     let now = chrono::Utc::now();
 
     // Atomic forward-only upsert: only advances the cursor, never moves it backward
@@ -698,26 +701,26 @@ pub async fn mark_as_read(
     if marked {
         // Clear the phone notification, if one was pushed (C20 `read`).
         state.push.notify_read(&state, auth.id, channel_id);
-    }
 
-    // Broadcast dm_read event to all user's other WebSocket sessions
-    // Note: Broadcast failure shouldn't fail the request since the DB state is already updated
-    if let Err(e) = broadcast_to_user(
-        &state.redis,
-        auth.id,
-        &ServerEvent::DmRead {
-            channel_id,
-            last_read_message_id: Some(body.last_read_message_id),
-        },
-    )
-    .await
-    {
-        tracing::warn!(
-            user_id = %auth.id,
-            channel_id = %channel_id,
-            error = %e,
-            "Failed to broadcast DmRead event"
-        );
+        // Broadcast dm_read event to all user's other WebSocket sessions
+        // Note: Broadcast failure shouldn't fail the request since the DB state is already updated
+        if let Err(e) = broadcast_to_user(
+            &state.redis,
+            auth.id,
+            &ServerEvent::DmRead {
+                channel_id,
+                last_read_message_id: Some(body.last_read_message_id),
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                user_id = %auth.id,
+                channel_id = %channel_id,
+                error = %e,
+                "Failed to broadcast DmRead event"
+            );
+        }
     }
 
     Ok(Json(MarkAsReadResponse {

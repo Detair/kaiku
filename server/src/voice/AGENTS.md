@@ -231,17 +231,36 @@ pub enum CallState {
 ```
 
 **Call Flow**:
-1. `POST /api/dm/:id/call/start` — Initiator starts call
-2. Server broadcasts `IncomingCall { channel_id, initiator, initiator_name }` to all DM participants
-3. Recipients see ringing notification in client
-4. Recipient clicks "Accept": Client sends `VoiceJoin { channel_id }` (same as guild voice)
-5. Initiator and recipient both join SFU room (DM channel acts as voice room)
-6. Auto-end call if no one joins within 60 seconds
+1. `POST /api/dm/:id/call/start`: the initiator starts a call. It is refused with 403 `BLOCKED` if a DB or cached block exists in either direction (same rule as DM send).
+2. Atomically with creating the call, the server publishes `incoming_call` to each DM participant except the caller, and `call_started` to all of the initiator's sessions. Both go to user channels, so a callee without the DM open still rings.
+3. Recipient accepts: `POST .../call/join` (only a rung target may answer a ringing call; the initiator gets 409), then `VoiceJoin { channel_id }`.
+4. Initiator and recipient both join the SFU room (the DM channel acts as the voice room).
 
-**Endpoints**:
-- `POST /api/dm/:id/call/start` — Start call (initiator)
-- `POST /api/dm/:id/call/accept` — Accept call (recipient, future: may be implicit via VoiceJoin)
-- `POST /api/dm/:id/call/end` — End call (any participant)
+**Wire**:
+- Every call event carries `call_id`: `incoming_call`, `call_started`, `call_participant_joined`, `call_participant_left`, `call_declined` and `call_ended`.
+- Every REST call response carries a top-level `call_id`.
+- Clients ignore events whose `call_id` is not the call they show.
+- Events go to the DM's **current** participants' user channels (never the DM channel). The `user:` branch of the WS forwarder drops call events about blocked users.
+
+**Call end** (`call_service.rs`): a call ends, is deleted and publishes `call_ended` once in these cases:
+- last decline (`all_declined`)
+- ring timeout (`no_answer`; `Config::call_ring_timeout_secs`, 90 s; a tokio timer bound to the `call_id`, started inside `CallService::start_call`)
+- initiator cancel or last REST leave
+- last SFU peer leaves the DM room (hook in `leave::leave_voice_internal`): only if that peer connected at or after the call started. An active call ends as `last_left`. A ringing call ends as `cancelled`, and only if the leaving user started it.
+- caller's last socket closes while ringing (`cancelled`): socket close checks `EXISTS call_ringing_by:{user}`. If the key exists, a detached task waits 3 s and counts sockets once with `PUBSUB NUMSUB user:{id}`. With none left, it cancels exactly the generations in the index.
+- orphan: an active call whose voice room is empty and that has been idle for 30 s is ended (`last_left`) when someone starts a new call. This assumes a single node.
+
+`end_call(state, channel_id, reason)` ends whatever call is current.
+
+**Concurrency**:
+- **Generation:** the stream's first entry holds a random `call_id`.
+- **Start:** a Lua script, "create if absent". It also SADDs `{channel}:{call_id}` to `call_ringing_by:{initiator}` and publishes `incoming_call` and `call_started`.
+- **Every transition:** a Lua compare-and-set on `call_id` plus the last entry id. On success it appends the event (or DELs the stream and SREMs the index entry when the call ends) and publishes the transition's events in the same script. A call's `call_ended` therefore always precedes the next call's `incoming_call`.
+- **Pinning:** every operation pins the first `call_id` it observes (or the one it was given). A retry that finds another call stops as a no-op or 404. So ending is idempotent, and a stale timer, hook or cleanup never touches a newer call.
+- **TTLs:** backstops only. A ringing call gets timeout + 30 s. An active call gets 6 h, refreshed on join and leave.
+- **Leaked subscriber:** if a closing socket's subscriber QUIT never completes, the user still counts as online and the call falls back to the ring timeout.
+
+**Endpoints**: `GET /api/dm/{id}/call`, `POST /api/dm/{id}/call/{start,join,decline,leave}`. Each returns `{channel_id, call_id, status, ...state fields, capabilities}`.
 
 ### Latency Optimization
 

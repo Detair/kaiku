@@ -40,4 +40,6 @@ pub mod workspaces;
 pub mod ws;
 
 #[cfg(test)]
+mod error_code_tests;
+#[cfg(test)]
 mod redis_tests;

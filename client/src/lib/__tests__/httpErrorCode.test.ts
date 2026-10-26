@@ -56,4 +56,25 @@ describe("HttpError codes (C16)", () => {
     expect((err as InstanceType<typeof common.HttpError>).status).toBe(502);
     expect((err as InstanceType<typeof common.HttpError>).code).toBeUndefined();
   });
+
+  it.each(["MFA_REQUIRED", "mfa_required"])("httpRequest maps a 403 %s to the MFA error", async (body) => {
+    const common = await import("../tauri/common");
+    fetchMock.mockResolvedValue(respond(403, { error: body }));
+    const err = await common.httpRequest("POST", "/auth/login", {}).catch((e: unknown) => e);
+    expect((err as InstanceType<typeof common.HttpError>).code).toBe("MFA_REQUIRED");
+  });
+
+  it.each(["PASSWORD_CHANGE_REQUIRED", "password_change_required"])(
+    "httpRequest maps a 403 %s to the forced password change",
+    async (body) => {
+      const common = await import("../tauri/common");
+      const seen = vi.fn();
+      window.addEventListener(common.PASSWORD_CHANGE_REQUIRED_EVENT, seen);
+      fetchMock.mockResolvedValue(respond(403, { error: body }));
+      const err = await common.httpRequest("GET", "/api/x").catch((e: unknown) => e);
+      window.removeEventListener(common.PASSWORD_CHANGE_REQUIRED_EVENT, seen);
+      expect((err as InstanceType<typeof common.HttpError>).code).toBe("PASSWORD_CHANGE_REQUIRED");
+      expect(seen).toHaveBeenCalled();
+    },
+  );
 });

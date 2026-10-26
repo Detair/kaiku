@@ -469,7 +469,7 @@ This section is the canonical high-level roadmap view. Detailed implementation c
   - ✅ Command response delivery via WebSocket relay (ephemeral + non-ephemeral)
   - ✅ 30-second response timeout notification
   - ✅ Ambiguity error includes conflicting bot names
-  - ✅ Structured bot gateway error events (invalid_json, handler_error)
+  - ✅ Structured bot gateway error events (INVALID_JSON, HANDLER_ERROR)
   - ✅ Frontend autocomplete: hyphen support, ambiguity labels, fetch retry fix
   - ✅ Built-in `/ping` command (no bot required)
   - ✅ Example bot script (`docs/examples/ping-bot.py`)

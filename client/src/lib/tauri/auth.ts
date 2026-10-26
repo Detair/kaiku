@@ -12,6 +12,7 @@ import type {
   User,
   UserStatus,
 } from "../types";
+import { codeIs, messageHasCode } from "@/lib/errorCode";
 import {
   browserState,
   clearBrowserTokens,
@@ -475,13 +476,13 @@ export async function linkIdentity(
 
 /**
  * True when linking failed because a system admin needs an elevated session
- * first (server code `elevation_required`, HTTP 403). The desktop command
+ * first (server code `ELEVATION_REQUIRED`, any casing, HTTP 403). The desktop command
  * reports the response body inside its error string.
  */
 export function isElevationRequiredError(err: unknown): boolean {
-  if (err instanceof HttpError) return err.code === "elevation_required";
+  if (err instanceof HttpError) return codeIs(err.code, "ELEVATION_REQUIRED");
   const text = typeof err === "string" ? err : err instanceof Error ? err.message : "";
-  return text.includes("elevation_required");
+  return messageHasCode(text, "ELEVATION_REQUIRED");
 }
 
 // ============================================================================
