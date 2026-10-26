@@ -193,7 +193,16 @@ const Login: Component = () => {
   };
 
   // Offer registration only when the server says it is open.
-  const showRegisterLink = () => settings()?.registration_policy === "open";
+  // Invite-only servers need an invite, so offer it only when we came from one.
+  const cameWithInvite = () => {
+    const raw = searchParams.returnUrl;
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    return !!value && /^\/invite\/[A-Za-z0-9]+/.test(decodeURIComponent(value));
+  };
+  const showRegisterLink = () => {
+    const policy = settings()?.registration_policy;
+    return policy === "open" || (policy === "invite_only" && cameWithInvite());
+  };
 
   const error = () => localError() || authState.error;
 

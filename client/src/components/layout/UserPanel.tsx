@@ -12,6 +12,7 @@ import {
   Show,
   createSignal,
   createEffect,
+  untrack,
   onMount,
   lazy,
   Suspense,
@@ -47,7 +48,7 @@ const UserPanel: Component = () => {
     if (requested) {
       setSettingsTab(requested);
       setShowSettings(true);
-      clearSettingsRequest();
+      untrack(clearSettingsRequest);
     }
   });
   const [showAdmin, setShowAdmin] = createSignal(false);

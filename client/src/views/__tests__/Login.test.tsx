@@ -81,8 +81,23 @@ describe("Login", () => {
     settingsMock.mockResolvedValue(serverSettings("closed"));
     await renderLogin();
     await waitFor(() => expect(settingsMock).toHaveBeenCalled());
-    await new Promise((r) => setTimeout(r, 0));
+    await waitFor(() => expect(settingsMock).toHaveResolved());
     expect(screen.queryByText("Register")).toBeNull();
+    expect(document.querySelector('a[href="/register"]')).toBeNull();
+  });
+
+  it("register link shown for invite-only server when arriving with an invite", async () => {
+    settingsMock.mockResolvedValue(serverSettings("invite_only"));
+    window.history.pushState({}, "", "/?returnUrl=" + encodeURIComponent("/invite/AbCd1234"));
+    await renderLogin();
+    await waitFor(() => expect(document.querySelector('a[href="/register"]')).not.toBeNull());
+    window.history.pushState({}, "", "/");
+  });
+
+  it("register link hidden for invite-only server without invite context", async () => {
+    settingsMock.mockResolvedValue(serverSettings("invite_only"));
+    await renderLogin();
+    await waitFor(() => expect(settingsMock).toHaveResolved());
     expect(document.querySelector('a[href="/register"]')).toBeNull();
   });
 
