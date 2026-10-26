@@ -36,6 +36,7 @@ vi.mock("@/stores/channels", () => ({
 vi.mock("@/stores/categories", () => ({ getCategory: () => undefined }));
 vi.mock("@/stores/permissions", () => ({ memberHasPermission: () => false }));
 vi.mock("@/stores/guilds", () => ({
+  guildsState: { guilds: [] },
   isGuildOwner: () => false,
   joinViaInviteCode: vi.fn(),
 }));

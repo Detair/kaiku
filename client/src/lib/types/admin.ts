@@ -29,6 +29,8 @@ export interface AdminCreateUserRequest {
   username: string;
   display_name: string | null;
   temporary_password: string;
+  /** Servers the new account joins right away (contract C23, max 10). */
+  guild_ids?: string[];
 }
 
 export interface GuildSummary {

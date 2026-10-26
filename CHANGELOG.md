@@ -59,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Clearer message when an authenticator code was already used: signing in and confirming admin actions now say to wait for the next code and try again.
+- Unlocking admin actions asks you to confirm with your password or your sign-in provider, and creating new backup codes asks for an authenticator code. New accounts can be added to servers right away, and people land in their server after signing in.
 - Onboarding now says "server" consistently.
 - Sign-in and sign-up errors now explain what went wrong (wrong password, username taken, sign-ups closed, server unreachable) instead of showing technical messages.
 - Error messages across the app (loading channels and messages, sending and editing messages, creating conversations, uploading an avatar, managing sessions, joining by invite, changing or resetting a password, voice devices) now say what went wrong in plain words instead of showing technical server messages. Messages that cannot be sent explain why (no permission, blocked, file too large, channel gone).
