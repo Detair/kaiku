@@ -109,7 +109,14 @@ pub async fn list_friends(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<Vec<Friend>>, SocialError> {
-    let friends = queries::list_accepted_friends(&state.db, auth.id).await?;
+    let mut friends = queries::list_accepted_friends(&state.db, auth.id).await?;
+    // Online means "has a live socket and is not invisible"; unknown (Valkey
+    // down) shows offline.
+    let ids: Vec<Uuid> = friends.iter().map(|f| f.user_id).collect();
+    let live = crate::presence::connections::live_users_or_log(&state.redis, &ids).await;
+    for friend in &mut friends {
+        friend.is_online &= live.as_ref().is_some_and(|l| l.contains(&friend.user_id));
+    }
     Ok(Json(friends))
 }
 

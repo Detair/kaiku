@@ -88,7 +88,16 @@ pub async fn list_members(
         return Err(GuildError::Forbidden);
     }
 
-    let members = core_q::list_guild_members(&state.db, guild_id).await?;
+    let mut members = core_q::list_guild_members(&state.db, guild_id).await?;
+
+    // Online means "has a live socket" (per device, see presence::connections).
+    let ids: Vec<Uuid> = members.iter().map(|m| m.user_id).collect();
+    let live = crate::presence::connections::live_users_or_log(&state.redis, &ids).await;
+    for member in &mut members {
+        let is_live = live.as_ref().map(|l| l.contains(&member.user_id));
+        member.status =
+            crate::presence::connections::effective_status(&member.status, is_live).to_string();
+    }
 
     Ok(Json(members))
 }

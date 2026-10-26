@@ -252,11 +252,15 @@ pub async fn delete_guild_member(
 }
 
 /// List the members of a guild with their user profile fields.
+///
+/// `status` is the *stored* presence (`invisible` for users who appear
+/// offline); callers turn it into the shown status with
+/// [`crate::presence::connections::effective_status`].
 pub async fn list_guild_members(
     pool: &PgPool,
     guild_id: Uuid,
 ) -> Result<Vec<GuildMember>, GuildError> {
-    let members = sqlx::query_as::<_, GuildMember>(
+    let members = sqlx::query_as::<_, GuildMember>(concat!(
         r"SELECT
             u.id as user_id,
             u.username,
@@ -264,13 +268,15 @@ pub async fn list_guild_members(
             u.avatar_url,
             gm.nickname,
             gm.joined_at,
-            u.status::text as status,
+            ",
+        crate::presence::connections::stored_presence_sql!(),
+        r" as status,
             u.last_seen_at
            FROM guild_members gm
            INNER JOIN users u ON gm.user_id = u.id
            WHERE gm.guild_id = $1
-           ORDER BY gm.joined_at",
-    )
+           ORDER BY gm.joined_at"
+    ))
     .bind(guild_id)
     .fetch_all(pool)
     .await?;

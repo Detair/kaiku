@@ -1,4 +1,6 @@
-//! Rich presence activity types.
+//! Rich presence activity types and per-device presence.
+
+pub mod connections;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

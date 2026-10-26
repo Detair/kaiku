@@ -30,14 +30,15 @@
 1. Client connects to `GET /ws`, authenticating either with `Sec-WebSocket-Protocol: access_token.<jwt>` (validated *before* the upgrade) or by sending `{"type":"authenticate","token":…}` as the first frame (within 5 s after the upgrade)
 2. Auth refusals (see **Auth refusal signals** below): header auth answers with a plain HTTP status before the upgrade; frame auth answers on the socket
 3. Upgrade to WebSocket protocol
-4. Server updates user presence to `online` and spawns the message sender task (drains the outbound mpsc, writes to the WebSocket)
-5. Load friends, guild IDs and block sets
+4. Server spawns the message sender task (drains the outbound mpsc, writes to the WebSocket)
+5. Load presence peers (friends ∪ members of the user's servers, friends first, capped at 500, one query), guild IDs and block sets
 6. Spawn the Redis pub/sub task (`handle_pubsub`); it fires a `ready` oneshot once `psubscribe("channel:*")` and all per-user `subscribe` calls have returned **and a `PING` on the same subscriber connection has been answered** (fred 10 resolves `subscribe` when the command is queued, not when Valkey acks it; the PING reply is the barrier that proves Valkey executed every subscription) (every subscription is required: a failed `psubscribe` or any `subscribe` — user, admin, friend presence, guild — ends the pipeline with `SubscribeFailed`, so no `Ready` is sent and the socket closes with 1011)
 7. Wait for that `ready` signal (max 5 s; on timeout or early failure the socket is closed with **1011**)
 8. Queue `Ready { user_id, server_time }` (server_time = RFC 3339 UTC, taken when Ready is built; clients use it as the catch-up watermark) — so `Ready` always means "subscriptions are live" — then send the `start` oneshot; only then does the pub/sub task begin forwarding (events published in between wait in its broadcast receiver), so `Ready` is always the first frame. Then the friends' presence snapshot
+   - After `Ready` and the snapshot, the socket registers as one of the user's devices (see **Presence System**)
    - `Ready` guarantees that the socket's **Valkey** subscriptions are live. It does *not* mean the socket receives `channel:{id}` events yet: those are filtered by the socket's `subscribed_channels`, which is empty at `Ready`. A client only gets a channel's messages after its own `subscribe` for that channel was acknowledged with `subscribed`.
 9. Main loop (`select!`): client messages, server heartbeat, and the pub/sub task's exit
-10. On disconnect / any exit: abort background tasks, `QUIT` the socket's own subscriber client (bounded by 1 s; fred keeps the connection and its subscriptions alive if the client is merely dropped), set presence to `offline`
+10. On disconnect / any exit: abort background tasks, `QUIT` the socket's own subscriber client (bounded by 1 s; fred keeps the connection and its subscriptions alive if the client is merely dropped), remove the socket from the user's devices (the last one announces `offline`)
 
 **Pub/sub pipeline failure** (`PubsubExit`): the pub/sub task returns why it stopped. Every reason except `ClientGone` closes the socket with a Close frame (reason `"RESYNC"`), giving the sender task at most 1 s to flush it:
 - `ConnectFailed`, `SubscribeFailed`, `StreamEnded`, `Lagged` → **1011** (server-side event pipeline failed). A subscriber reconnect counts as `StreamEnded`, because a plain fred client does not restore its subscriptions.
@@ -249,25 +250,16 @@ while let Some(msg) = ws_receiver.next().await {
 
 ### Presence System
 
-**Status Values** (in `db::models::UserStatus`):
-- `online` — User connected to WebSocket
-- `away` — User idle (no activity for 10 minutes, future client-side detection)
-- `busy` — User manually set (future: API endpoint)
-- `offline` — User disconnected
+**Per device** (`presence::connections`): Valkey sorted set `presence:sockets:{user_id}`, member = socket id, score = expiry (Unix ms). A socket registers once it is fully set up (after `Ready` + snapshot), refreshes its expiry (90 s TTL) on every heartbeat pong and removes itself on close. Members of a crashed server are never removed; they stop counting when their expiry passes and the next update prunes them.
 
-**Status Updates**:
-```rust
-// On WebSocket connect
-update_presence(&state, user_id, "online").await?;
+- `socket_online` / `socket_offline` are single Lua scripts: prune expired members, update the set, report 0 → 1 / 1 → 0, and `PUBLISH` the `presence_update` on `presence:{user_id}` in the same atomic step. Concurrent connects/disconnects of one user never announce a transition twice or miss one, and a hand-over (one device leaves while another connects) reaches subscribers in order.
+- Only transitions are broadcast. A second device connecting or one of several closing sends nothing.
+- A heartbeat refresh that finds the socket missing (Valkey was unreachable longer than the TTL) re-registers it and, if it is the only live device again, announces the status (separate publish; rare).
+- Fails open: Valkey errors are logged at most once a minute and the socket carries on.
 
-// On disconnect
-update_presence(&state, user_id, "offline").await?;
-```
+**Stored vs. shown status**: `users.status` is the status the user chose (`online`, `away`, `busy`) and `users.invisible` marks "appear offline" (clients send `set_status` `offline` for invisible). Connecting sets `online` only when the stored status is `offline` and the user is not invisible, so `away`/`busy`/invisible survive a reconnect; the last device closing resets only a stored `online` to `offline`. What others see is `connections::effective_status(stored, live)`: `offline` without a live socket or when invisible. Every reader that shows presence uses it with `live_users` (one Valkey round trip): the connect snapshot, `GET /api/guilds/{id}/members` (`status`) and `GET /api/friends` (`is_online`). Message author `status` still shows the stored value.
 
-**Broadcasting** (future):
-- When user status changes, publish to `presence:{user_id}` Redis channel
-- Friends subscribe to each other's presence updates
-- Reduces DB queries for presence (cache in Redis with 5min TTL)
+**Subscriptions**: each socket subscribes to `presence:{id}` of its presence peers (friends ∪ members of the user's servers, capped at 500, friends first) in one `SUBSCRIBE`; presence events of blocked users are dropped. Peers are loaded at connect; a server joined later is picked up on the next connect.
 
 ### Voice Event Delegation
 

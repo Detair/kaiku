@@ -77,16 +77,23 @@ pub struct UserIdentity {
 }
 
 /// User online status.
+///
+/// Deserialization also accepts the lowercase names clients send in
+/// `set_status` (`online`, `away`, `busy`, `offline`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema)]
 #[sqlx(type_name = "user_status", rename_all = "lowercase")]
 pub enum UserStatus {
     /// User is actively using the app.
+    #[serde(alias = "online")]
     Online,
     /// User is idle.
+    #[serde(alias = "away")]
     Away,
     /// User is busy (do not disturb).
+    #[serde(alias = "busy")]
     Busy,
     /// User is offline.
+    #[serde(alias = "offline")]
     Offline,
 }
 

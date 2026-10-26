@@ -131,6 +131,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A channel no longer stays marked unread for good after "mark all as read" picked a thread reply as the last read message.
 - Running a bot slash command no longer leaves a connection to the server's cache open each time, which could exhaust connections on busy servers.
 - Calling someone again right after a missed or dropped call works, and calls ring even when the other person has the conversation closed.
+- You stay online while any of your devices is connected, and people on your servers see your status without being friends. Do not disturb, away and invisible now stay set when you reconnect.
 - Desktop voice works with headsets that don't offer 48 kHz mono, tells you when the microphone stops working, and can switch microphones during a call.
 - Sharing a small window or a webcam with an unusual resolution no longer crashes the desktop app.
 - Closing the window during a voice call tells you Kaiku is still connected and lets you leave from the tray; the window can always be reopened.
