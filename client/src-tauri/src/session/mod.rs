@@ -125,6 +125,10 @@ pub enum SessionError {
     /// The TypeScript side matches this exact string.
     #[error("MFA_REQUIRED")]
     MfaRequired,
+    /// The account is suspended (403 `ACCOUNT_BANNED`). The TypeScript side
+    /// matches this exact string.
+    #[error("ACCOUNT_BANNED")]
+    AccountBanned,
     /// The refresh token was rejected or there is no session: sign in again.
     #[error("Session expired")]
     Expired,
@@ -564,6 +568,9 @@ impl SessionManager {
                 401 => SessionError::InvalidCredentials,
                 403 if error_code(&text).as_deref() == Some("MFA_REQUIRED") => {
                     SessionError::MfaRequired
+                }
+                403 if error_code(&text).as_deref() == Some("ACCOUNT_BANNED") => {
+                    SessionError::AccountBanned
                 }
                 _ => server_error(status, &text),
             });
@@ -1161,6 +1168,28 @@ mod tests {
 
         assert!(matches!(err, SessionError::MfaRequired));
         assert_eq!(err.to_string(), "MFA_REQUIRED");
+        assert!(store.get().is_none());
+    }
+
+    #[tokio::test]
+    async fn login_maps_account_banned() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/login"))
+            .respond_with(
+                ResponseTemplate::new(403).set_body_json(json!({"error": "account_banned"})),
+            )
+            .mount(&server)
+            .await;
+        let store = Arc::new(MemoryTokenStore::new());
+
+        let err = manager(&store)
+            .login(&server.uri(), "alice", "pw", None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SessionError::AccountBanned));
+        assert_eq!(err.to_string(), "ACCOUNT_BANNED");
         assert!(store.get().is_none());
     }
 

@@ -60,6 +60,9 @@ export function nativeAuthError(error: unknown): unknown {
   if (text === "Invalid username or password") {
     return new HttpError(401, text, "INVALID_CREDENTIALS");
   }
+  if (text === "ACCOUNT_BANNED") {
+    return new HttpError(403, text, "ACCOUNT_BANNED");
+  }
   if (text?.startsWith("Connection failed:")) {
     return new TypeError(text);
   }

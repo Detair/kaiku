@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Milestone: v1.0 Family Release (Goal 8)
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
+### Fixed
+- Signing in with a suspended account says so, and the Create account dialog can unlock admin actions directly.
+
 ### Added
 - Admins can add a new account to servers while creating it.
 - API: `GET /api/me/unread` now includes `last_read_message_id` for every channel and DM entry (`null` if it was never read), so apps can notify only for messages newer than the read position.

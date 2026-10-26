@@ -16,6 +16,7 @@ import { copyHandoverText, canDismissCreateAccount } from "@/lib/adminHandover";
 import { t } from "@/i18n";
 import { createDialog } from "@/lib/a11y/dialog";
 import { errorText } from "@/i18n/errors";
+import ElevateDialog from "./ElevateDialog";
 
 /** Most servers one admin-created account can join at creation (contract C23). */
 const MAX_GUILDS = 10;
@@ -32,6 +33,7 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
   const [password, setPassword] = createSignal(generateTemporaryPassword());
   const [error, setError] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
+  const [unlocking, setUnlocking] = createSignal(false);
   // Every server the admin belongs to is ticked by default (up to the limit).
   const [checkedGuilds, setCheckedGuilds] = createSignal<Set<string>>(new Set());
   // Seed once the list is known (it may arrive after the dialog opens); after
@@ -166,7 +168,14 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
             <form onSubmit={handleSubmit} class="p-4 space-y-4">
               <Show when={!adminState.isElevated}>
                 <div class="p-3 rounded-lg bg-status-warning/10 border border-status-warning/30 text-text-primary text-sm">
-                  {t("admin.createAccount.needsElevation")}
+                  <p>{t("admin.createAccount.needsElevation")}</p>
+                  <button
+                    type="button"
+                    class={`${secondaryBtn} mt-2`}
+                    onClick={() => setUnlocking(true)}
+                  >
+                    {t("admin.reauth.elevateTitle")}
+                  </button>
                 </div>
               </Show>
 
@@ -337,6 +346,11 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
           )}
         </Show>
       </div>
+      <Show when={unlocking()}>
+        <div onClick={(e) => e.stopPropagation()}>
+          <ElevateDialog onClose={() => setUnlocking(false)} />
+        </div>
+      </Show>
     </div>
   );
 };

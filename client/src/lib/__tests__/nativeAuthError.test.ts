@@ -10,6 +10,13 @@ describe("nativeAuthError", () => {
     expect((err as HttpError).code).toBe("INVALID_CREDENTIALS");
   });
 
+  it("maps the Rust suspended-account string to ACCOUNT_BANNED", () => {
+    const err = nativeAuthError("ACCOUNT_BANNED") as HttpError;
+    expect(err).toBeInstanceOf(HttpError);
+    expect(err.status).toBe(403);
+    expect(err.code).toBe("ACCOUNT_BANNED");
+  });
+
   it("maps a connection failure to a TypeError (network)", () => {
     expect(nativeAuthError("Connection failed: refused")).toBeInstanceOf(TypeError);
   });

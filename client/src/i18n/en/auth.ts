@@ -42,6 +42,7 @@ export const auth = {
   "auth.login.passwordRequired": "Password is required",
   "auth.login.mfaRequired": "MFA code is required",
   "auth.login.invalidCredentials": "Invalid username or password.",
+  "auth.login.banned": "This account has been suspended. Ask the server admin.",
   "auth.login.failed": "Login failed. Please try again.",
   "auth.login.ssoFailed": "SSO login failed.",
   "auth.login.mfaInvalid": "That code didn't work. If you just used it, wait for the next code and try again.",
