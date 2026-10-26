@@ -1,4 +1,5 @@
-//! Behaviour while Valkey stops answering.
+//! Behaviour while Valkey stops answering (and, at the end, while the
+//! database is unavailable during WebSocket auth).
 //!
 //! The server's Valkey client talks to the dev Valkey through a local TCP
 //! proxy. `freeze` makes the proxy stop forwarding while keeping every socket
@@ -341,4 +342,94 @@ async fn websocket_auth_closes_with_try_again_later_when_valkey_hangs(pool: PgPo
 
     let code: u16 = close.expect("close frame carries a code").code.into();
     assert_eq!(code, 1013);
+}
+
+// ============================================================================
+// Database unavailable during WebSocket auth
+// ============================================================================
+
+/// A server whose database pool is closed (every query fails at once) while
+/// Valkey works; `pool` stays open for test setup.
+async fn spawn_with_closed_db(pool: &PgPool) -> (TestServer, Config) {
+    let closed = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .expect("second pool");
+    closed.close().await;
+
+    let config = Config::default_for_test();
+    let redis = db::create_redis_client(&config.redis_url)
+        .await
+        .expect("Valkey");
+    let sfu = SfuServer::new(Arc::new(config.clone()), None).expect("SfuServer");
+    let state = AppState::new(AppStateConfig {
+        db: closed,
+        redis,
+        config: config.clone(),
+        s3: None,
+        sfu,
+        rate_limiter: None,
+        screen_share_limiter: None,
+        email: None,
+        oidc_manager: None,
+        http_client: reqwest::Client::new(),
+    });
+    (spawn_test_server(create_router(state)).await, config)
+}
+
+/// A database error while validating the post-connect `Authenticate` frame
+/// closes with 1013 (try again later), not 1008 (sign in again).
+#[sqlx::test]
+async fn websocket_auth_closes_with_try_again_later_when_db_fails(pool: PgPool) {
+    let (server, config) = spawn_with_closed_db(&pool).await;
+    let (user_id, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&config, user_id);
+
+    let mut ws = ws_connect(&server, &token).await;
+    let close = tokio::time::timeout(HANG_GUARD, async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Close(frame))) => return frame,
+                Some(Ok(_)) => {}
+                other => panic!("socket ended without a close frame: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("WebSocket auth hung while the database was unavailable");
+
+    let code: u16 = close.expect("close frame carries a code").code.into();
+    assert_eq!(code, 1013);
+}
+
+/// A database error during header-based WebSocket auth answers the shared
+/// JSON 503 `SERVICE_UNAVAILABLE` body.
+#[sqlx::test]
+async fn websocket_header_auth_answers_503_when_db_fails(pool: PgPool) {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::Error as WsError;
+
+    let (server, config) = spawn_with_closed_db(&pool).await;
+    let (user_id, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&config, user_id);
+
+    let mut request = format!("ws://{}/ws", server.addr)
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!("access_token.{token}").parse().unwrap(),
+    );
+    let result = tokio::time::timeout(HANG_GUARD, tokio_tungstenite::connect_async(request))
+        .await
+        .expect("WebSocket header auth hung while the database was unavailable");
+
+    let Err(WsError::Http(response)) = result else {
+        panic!("expected an HTTP error response, got {result:?}");
+    };
+    assert_eq!(response.status(), 503);
+    let body: serde_json::Value =
+        serde_json::from_slice(response.body().as_deref().unwrap_or_default()).expect("JSON body");
+    assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
 }

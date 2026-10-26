@@ -181,7 +181,10 @@ pub async fn handler(
             }
             Err(e) => {
                 warn!("Database error during WS auth: {}", e);
-                return error_response(503, "Service temporarily unavailable");
+                // The shared JSON 503 body, like a denylist outage.
+                return axum::response::IntoResponse::into_response(
+                    crate::auth::AuthError::ServiceUnavailable,
+                );
             }
         }
         let session_id = claims.sid.as_deref().and_then(|sid| sid.parse().ok());
@@ -229,7 +232,7 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
             return;
         }
         Ok(Err(AuthFrameError::Unavailable)) => {
-            debug!("Post-connect auth refused: session check unavailable");
+            debug!("Post-connect auth refused: session or account check unavailable");
             close_pre_auth(ws_sender, CLOSE_TRY_AGAIN_LATER, "service unavailable").await;
             return;
         }
@@ -420,7 +423,12 @@ async fn validate_auth_token(
             Err(AuthFrameError::Refused(REFUSE_PASSWORD_CHANGE))
         }
         Ok(AccountStatus::Missing) => Err("User not found".to_string().into()),
-        Err(e) => Err(format!("Database error: {e}").into()),
+        // A database outage is not an auth problem: close 1013 so the client
+        // reconnects later instead of signing out.
+        Err(e) => {
+            warn!("Database error during WS frame auth: {}", e);
+            Err(AuthFrameError::Unavailable)
+        }
     }
 }
 
