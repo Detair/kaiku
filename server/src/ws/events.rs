@@ -107,6 +107,9 @@ pub struct ClientMessageState {
     /// Session of the socket's token (`sid`); admin event subscription needs
     /// this session to be elevated.
     pub session_id: Option<Uuid>,
+    /// A `set_status` announcement could not be published; the socket retries
+    /// on its next heartbeat.
+    pub presence_resync: bool,
 }
 
 /// Default `pc_type` for backward compatibility with old clients.

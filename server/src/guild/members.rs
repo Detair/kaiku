@@ -45,8 +45,12 @@ pub async fn leave_guild(
     // Remove membership
     core_q::delete_guild_member(&state.db, guild_id, auth.id).await?;
     // The leaver and the remaining members stop seeing each other's presence.
-    crate::presence::connections::notify_audience_changed(&state.redis, &[auth.id], Some(guild_id))
-        .await;
+    crate::presence::connections::notify_guild_audience_changed(
+        &state.redis,
+        guild_id,
+        Some(auth.id),
+    )
+    .await;
 
     // Dispatch MemberLeft to bot ecosystem (non-blocking)
     {
@@ -156,8 +160,12 @@ pub async fn kick_member(
     if rows_affected == 0 {
         return Err(GuildError::NotFound);
     }
-    crate::presence::connections::notify_audience_changed(&state.redis, &[user_id], Some(guild_id))
-        .await;
+    crate::presence::connections::notify_guild_audience_changed(
+        &state.redis,
+        guild_id,
+        Some(user_id),
+    )
+    .await;
 
     // Dispatch MemberLeft to bot ecosystem (non-blocking)
     {

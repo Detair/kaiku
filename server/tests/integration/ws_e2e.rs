@@ -791,20 +791,15 @@ async fn test_sweeper_announces_offline_for_expired_socket(pool: PgPool) {
     let token_b = generate_access_token(&app.config, b);
     let mut ws_b = connect_ready(&server, &token_b).await;
 
-    // A device of `a` on a server that then crashed: registered 80 s ago,
-    // never refreshed, never removed.
+    // A device of `a` on a server that then crashed: registered 30 s ago,
+    // never refreshed, never removed (expires in 60 s).
     let now = chrono::Utc::now().timestamp_millis();
     let online = status_event_json(a, "online");
-    assert!(socket_online_announce(
-        &redis,
-        a,
-        Uuid::new_v4(),
-        now - 80_000,
-        Some(&online),
-        false
-    )
-    .await
-    .unwrap());
+    assert!(
+        socket_online_announce(&redis, a, Uuid::new_v4(), now - 30_000, Some(&online), None)
+            .await
+            .unwrap()
+    );
     next_presence(&mut ws_b, a, "online").await;
 
     // Not expired yet: nothing happens.
@@ -814,12 +809,10 @@ async fn test_sweeper_announces_offline_for_expired_socket(pool: PgPool) {
         .contains(&a));
     expect_no_presence(&mut ws_b, a).await;
 
-    // After the expiry the sweeper announces `offline` exactly once.
-    let later = now + 11_000;
-    assert!(sweep_expired(&pool, &redis, later, 10_000)
-        .await
-        .unwrap()
-        .contains(&a));
+    // After the expiry the sweeper announces `offline` exactly once (another
+    // test's sweep may get to `a` first: the due set is global).
+    let later = now + 61_000;
+    sweep_expired(&pool, &redis, later, 10_000).await.unwrap();
     next_presence(&mut ws_b, a, "offline").await;
     assert!(!sweep_expired(&pool, &redis, later, 10_000)
         .await
@@ -928,7 +921,10 @@ async fn assert_audience_ends(pool: PgPool, change: &str) {
     .expect("audience change request");
     assert!(resp.status().is_success(), "{change}: {}", resp.status());
 
-    // Both sockets dropped each other from their presence peers.
+    // Both sockets dropped each other from their presence peers, each with a
+    // final `offline` so no status stays frozen in the client.
+    next_presence(&mut ws_b, a, "offline").await;
+    next_presence(&mut ws_a, b, "offline").await;
     wait_for_no_presence_subscribers(&redis, a).await;
     wait_for_no_presence_subscribers(&redis, b).await;
 
@@ -1072,4 +1068,213 @@ async fn test_invisible_member_shares_no_activity_or_custom_status(pool: PgPool)
 
     expect_no_ws_event(&mut ws_b, "rich_presence_update", QUIET_WINDOW).await;
     expect_no_ws_event(&mut ws_b, "custom_status_update", QUIET_WINDOW).await;
+}
+
+/// Real expiry: the socket set's own key TTL runs out (as it does in
+/// production when a server dies) before the sweeper looks. The sweeper must
+/// still announce `offline` to an already-connected observer.
+#[sqlx::test]
+async fn test_sweeper_announces_offline_after_real_key_expiry(pool: PgPool) {
+    use fred::interfaces::{KeysInterface, SortedSetsInterface};
+    use vc_server::presence::connections::{
+        socket_online_announce, sockets_key, status_event_json, sweep_expired,
+    };
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let (a, b, _guild) = presence_pair(&pool, true).await;
+    let token_b = generate_access_token(&app.config, b);
+    let mut ws_b = connect_ready(&server, &token_b).await;
+
+    // A device whose expiry is 50 ms from now (registered ~90 s ago), on a
+    // server that then died.
+    let now = chrono::Utc::now().timestamp_millis();
+    let online = status_event_json(a, "online");
+    assert!(
+        socket_online_announce(&redis, a, Uuid::new_v4(), now - 89_950, Some(&online), None)
+            .await
+            .unwrap()
+    );
+    next_presence(&mut ws_b, a, "online").await;
+
+    // Valkey drops the whole key once its TTL runs out.
+    let _: bool = redis
+        .pexpire(sockets_key(a), 20, None)
+        .await
+        .expect("PEXPIRE");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let exists: i64 = redis.exists(sockets_key(a)).await.expect("EXISTS");
+    assert_eq!(exists, 0, "key expired");
+
+    // (Another test's sweep may handle `a` first: the due set is global. The
+    // observer must get `offline` either way, exactly once.)
+    sweep_expired(&pool, &redis, chrono::Utc::now().timestamp_millis(), 10_000)
+        .await
+        .unwrap();
+    next_presence(&mut ws_b, a, "offline").await;
+    let due: Option<f64> = redis
+        .zscore(vc_server::presence::connections::DUE_KEY, a.to_string())
+        .await
+        .expect("ZSCORE");
+    assert_eq!(due, None, "due entry cleared");
+    expect_no_presence(&mut ws_b, a).await;
+
+    redis.quit().await.expect("quit test Valkey client");
+}
+
+/// A user who is visible in the database but has a stale hidden flag in
+/// Valkey (lost write, reordered writes) is announced normally again once a
+/// device connects.
+#[sqlx::test]
+async fn test_stale_hidden_flag_is_corrected_on_connect(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+    use vc_server::presence::connections::hidden_key;
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let (a, b, _guild) = presence_pair(&pool, true).await;
+    let token_a = generate_access_token(&app.config, a);
+    let token_b = generate_access_token(&app.config, b);
+
+    // Stale "hidden" left over from an earlier invisible period.
+    let _: () = redis
+        .set(hidden_key(a), "0:1", None, None, false)
+        .await
+        .expect("SET stale flag");
+
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut ws_a = connect_ready(&server, &token_a).await;
+    next_presence(&mut ws_b, a, "online").await;
+
+    ws_a.close(None).await.expect("close");
+    drop(ws_a);
+    next_presence(&mut ws_b, a, "offline").await;
+
+    redis.quit().await.expect("quit test Valkey client");
+}
+
+/// Hidden-flag writes carry the status sequence: an older write (applied late,
+/// e.g. two devices changing status at once) never replaces a newer one, and
+/// the late-announcement path repairs a flag whose write was lost.
+#[sqlx::test]
+async fn test_hidden_flag_writes_are_ordered_by_status_sequence(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+    use vc_server::presence::connections::{
+        hidden_key, publish_chosen_status, sync_and_announce, version_key, Visibility,
+    };
+
+    let app = TestApp::with_pool(pool).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let user = Uuid::new_v4();
+    let now = chrono::Utc::now().timestamp_millis();
+    let flag = |redis: fred::clients::Client| async move {
+        let value: Option<String> = redis.get(hidden_key(user)).await.expect("GET flag");
+        value
+    };
+
+    // seq 6 (visible) lands first, the older seq 5 (invisible) afterwards.
+    let visible = Visibility {
+        seq: 6,
+        hidden: false,
+    };
+    let invisible_older = Visibility {
+        seq: 5,
+        hidden: true,
+    };
+    assert!(publish_chosen_status(&redis, user, Some("online"), visible)
+        .await
+        .unwrap());
+    assert!(
+        !publish_chosen_status(&redis, user, Some("offline"), invisible_older)
+            .await
+            .unwrap()
+    );
+    assert_eq!(flag(redis.clone()).await.as_deref(), Some("6:0"));
+    let version: Option<i64> = redis.get(version_key(user)).await.expect("GET version");
+    assert_eq!(version, Some(1), "the stale write published nothing");
+
+    // seq 7 (invisible) was stored in the database, but its Valkey write was
+    // lost: the late announcement repairs the flag and announces `offline`.
+    let invisible = Visibility {
+        seq: 7,
+        hidden: true,
+    };
+    assert!(sync_and_announce(&redis, user, invisible, "offline", now)
+        .await
+        .unwrap());
+    assert_eq!(flag(redis.clone()).await.as_deref(), Some("7:1"));
+    // A stale sync (older sequence) changes nothing.
+    assert!(!sync_and_announce(&redis, user, visible, "online", now)
+        .await
+        .unwrap());
+    assert_eq!(flag(redis.clone()).await.as_deref(), Some("7:1"));
+
+    redis.quit().await.expect("quit test Valkey client");
+}
+
+/// Message authors show what others see: a connected but invisible author is
+/// `offline`, a connected busy author `busy`.
+#[sqlx::test]
+async fn test_message_author_status_respects_invisible(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let dm = create_dm_channel(&pool, a, b).await;
+    let token_a = generate_access_token(&app.config, a);
+
+    let mut ws_a = connect_ready(&server, &token_a).await;
+    wait_for_sockets(&redis, a, 1).await;
+
+    let post = |content: &'static str| {
+        let url = format!("{}/api/messages/channel/{dm}", server.url);
+        let token = token_a.clone();
+        async move {
+            let body: serde_json::Value = reqwest::Client::new()
+                .post(url)
+                .bearer_auth(token)
+                .json(&serde_json::json!({ "content": content }))
+                .send()
+                .await
+                .expect("POST message")
+                .json()
+                .await
+                .expect("message JSON");
+            body["author"]["status"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        }
+    };
+    let set_status = |status: &str| {
+        Message::Text(
+            serde_json::json!({ "type": "set_status", "status": status })
+                .to_string()
+                .into(),
+        )
+    };
+    let ping = || Message::Text(serde_json::json!({ "type": "ping" }).to_string().into());
+
+    ws_a.send(set_status("busy")).await.expect("busy");
+    ws_a.send(ping()).await.expect("ping");
+    next_ws_event(&mut ws_a, "pong", EVENT_TIMEOUT).await;
+    assert_eq!(post("hello").await, "busy");
+
+    ws_a.send(set_status("offline")).await.expect("invisible");
+    ws_a.send(ping()).await.expect("ping");
+    next_ws_event(&mut ws_a, "pong", EVENT_TIMEOUT).await;
+    assert_eq!(post("still here").await, "offline");
+
+    redis.quit().await.expect("quit test Valkey client");
 }

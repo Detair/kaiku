@@ -247,10 +247,10 @@ pub async fn join_via_invite(
     tx.commit().await?;
 
     // The new member and the existing members see each other's presence.
-    crate::presence::connections::notify_audience_changed(
+    crate::presence::connections::notify_guild_audience_changed(
         &state.redis,
-        &[auth.id],
-        Some(invite.guild_id),
+        invite.guild_id,
+        Some(auth.id),
     )
     .await;
 

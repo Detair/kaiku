@@ -440,7 +440,7 @@ pub async fn delete_guild(
     // Delete guild (cascades to channels, messages, roles, members, invites, etc.)
     let deleted = queries::delete_guild(&state.db, guild_id).await?;
     if deleted > 0 {
-        crate::presence::connections::notify_audience_changed(&state.redis, &[], Some(guild_id))
+        crate::presence::connections::notify_guild_audience_changed(&state.redis, guild_id, None)
             .await;
     }
 
