@@ -113,4 +113,26 @@ class CallNotificationTextTest {
         assertEquals(CallPostPlan(cancelFirst = true, onlyAlertOnce = true, silent = true, timeoutMs = null), plan)
         assertNull(CallNotificationText.plan(n(CallKind.MISSED, null), previous = null).timeoutMs)
     }
+
+    @Test
+    fun `ringing timeout counts from when the ringing was received`() {
+        val now = 1_000_000L
+        val plan = CallNotificationText.plan(
+            n(CallKind.INCOMING, "Bob").copy(ringingSinceMs = now - 20_000L),
+            previous = null,
+            nowMs = now,
+        )
+        assertEquals(CallNotificationText.RINGING_TIMEOUT_MS - 20_000L, plan.timeoutMs)
+    }
+
+    @Test
+    fun `ringing timeout never drops below the minimum`() {
+        val now = 1_000_000L
+        val plan = CallNotificationText.plan(
+            n(CallKind.INCOMING, "Bob").copy(ringingSinceMs = now - 58_000L),
+            previous = null,
+            nowMs = now,
+        )
+        assertEquals(CallNotificationText.MIN_RINGING_TIMEOUT_MS, plan.timeoutMs)
+    }
 }

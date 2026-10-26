@@ -90,7 +90,7 @@ class CallWakeProcessorTest {
     fun `ringing posts the incoming call with the caller name`() = runTest {
         assertEquals(CallOutcome.INCOMING, ring())
 
-        assertEquals(CallNotification("me", ch, callA, CallKind.INCOMING, "Bob"), sink.shown[ch])
+        assertEquals(CallNotification("me", ch, callA, CallKind.INCOMING, "Bob", ringingSinceMs = clock), sink.shown[ch])
         coVerify { names.callerName(ch, bob) }
     }
 
@@ -428,5 +428,72 @@ class CallWakeProcessorTest {
 
         assertEquals(CallOutcome.IGNORED, processor.process(ended(CallEndReason.NO_ANSWER, callA), owner))
         assertTrue(sink.posts.isEmpty())
+    }
+
+    @Test
+    fun `ended still shows the missed call after a duplicate ringing was rejected`() = runTest {
+        assertTrue(intake.accept(ringing()))
+        assertTrue(intake.accept(ended(CallEndReason.NO_ANSWER)))
+        assertFalse(intake.accept(ringing()))
+
+        assertEquals(CallOutcome.IGNORED, processor.process(ringing(), owner))
+        assertEquals(CallOutcome.MISSED, processor.process(ended(CallEndReason.NO_ANSWER), owner))
+
+        assertEquals(listOf(missed()), sink.posts)
+    }
+
+    @Test
+    fun `accepted ended with nothing stored before shows the missed call`() = runTest {
+        assertTrue(intake.accept(ended(CallEndReason.CANCELLED)))
+
+        assertEquals(CallOutcome.MISSED, processor.process(ended(CallEndReason.CANCELLED), owner))
+
+        assertEquals(listOf(missed()), sink.posts)
+    }
+
+    @Test
+    fun `all_declined after intake marked the call ending cancels it`() = runTest {
+        ring()
+        intake.accept(ended(CallEndReason.ALL_DECLINED))
+
+        assertEquals(CallOutcome.CANCELLED, processor.process(ended(CallEndReason.ALL_DECLINED), owner))
+
+        assertEquals(listOf(ch), sink.cancelled)
+        assertEquals(CallPhase.ENDED, store.shown("me", ch)?.phase)
+    }
+
+    @Test
+    fun `stopped all_declined work changes nothing`() = runTest {
+        ring()
+
+        assertEquals(
+            CallOutcome.IGNORED,
+            processor.process(ended(CallEndReason.ALL_DECLINED), owner) { true },
+        )
+
+        assertTrue(sink.cancelled.isEmpty())
+        assertEquals(CallPhase.RINGING, store.shown("me", ch)?.phase)
+    }
+
+    @Test
+    fun `stale ringing of another call does not block its successor's missed call`() = runTest {
+        intake.accept(ringing(callB))
+        clock += CallRules.TRANSIENT_MAX_AGE_MS + 1
+
+        assertEquals(CallOutcome.MISSED, processor.process(ended(CallEndReason.NO_ANSWER, callA), owner))
+
+        assertEquals(listOf(missed(callA)), sink.posts)
+    }
+
+    @Test
+    fun `missed call is not recorded over a call the intake replaced meanwhile`() = runTest {
+        ring(callA)
+        // A new call rings while the missed call of the old one is about to be posted.
+        sink.beforePost = { intake.accept(ringing(callB)) }
+
+        assertEquals(CallOutcome.IGNORED, processor.process(ended(CallEndReason.NO_ANSWER, callA), owner))
+
+        assertEquals(ShownCall(callB, CallPhase.RINGING, clock), store.shown("me", ch))
+        assertEquals(1, sink.posts.size)
     }
 }

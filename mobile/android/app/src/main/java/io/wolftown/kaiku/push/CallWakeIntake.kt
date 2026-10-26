@@ -12,12 +12,19 @@ import javax.inject.Inject
  *   channel's pending call work;
  * - makes an accepted new `ringing` the channel's current call for the
  *   signed-in account, with its receive time. Recorded here, it survives its
- *   work being replaced by a fast `ended`, which then still shows the missed call.
+ *   work being replaced by a fast `ended`, which then still shows the missed call;
+ * - marks an accepted `ended` as [CallPhase.ENDING], so a duplicate ringing
+ *   of that call cannot replace the pending ended work.
  */
 class CallWakeIntake @Inject constructor(
     private val tokenStorage: TokenStorage,
     private val store: CallNotificationStore,
 ) {
+    private companion object {
+        /** Compare-and-set attempts against a concurrent writer (the call work). */
+        const val MAX_TRIES = 3
+    }
+
     internal var now: () -> Long = System::currentTimeMillis
 
     /** Returns whether the call work should be queued for [signal]. */
@@ -25,18 +32,27 @@ class CallWakeIntake @Inject constructor(
         val call = signal.call ?: return false
         if (signal.kind != WakeKind.CALL) return false
         val userId = tokenStorage.getUserId() ?: return false
-        val stored = store.shown(userId, signal.channelId)
-        return when (call.state) {
-            CallState.RINGING -> {
-                if (!CallRules.ringingApplies(stored, call)) return false
-                // A repeat keeps the first receive time.
-                if (stored?.callId != call.callId) {
-                    store.setShown(userId, signal.channelId, ShownCall(call.callId, CallPhase.RINGING, now()))
+        repeat(MAX_TRIES) {
+            val stored = store.shown(userId, signal.channelId)
+            val nowMs = now()
+            val current = CallRules.live(stored, nowMs)
+            val sameCall = current != null && current.callId == call.callId
+            val next = when (call.state) {
+                CallState.RINGING -> {
+                    if (!CallRules.ringingApplies(stored, call, nowMs)) return false
+                    // A repeat keeps the first receive time.
+                    if (sameCall) return true
+                    ShownCall(call.callId, CallPhase.RINGING, nowMs)
                 }
-                true
+                CallState.ENDED -> {
+                    if (!CallRules.endedApplies(stored, call, nowMs)) return false
+                    if (sameCall && current?.phase == CallPhase.ENDING) return true
+                    ShownCall(call.callId, CallPhase.ENDING, nowMs)
+                }
+                CallState.UNKNOWN -> return false
             }
-            CallState.ENDED -> CallRules.endedApplies(stored, call)
-            CallState.UNKNOWN -> false
+            if (store.setShownIf(userId, signal.channelId, stored, next)) return true
         }
+        return false
     }
 }

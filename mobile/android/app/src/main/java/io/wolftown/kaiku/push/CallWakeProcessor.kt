@@ -87,7 +87,7 @@ class CallWakeProcessor @Inject constructor(
             ?: return CallOutcome.IGNORED
         if (now() - stored.atMs > RING_MAX_AGE_MS) return CallOutcome.IGNORED
         val name = callerName(channelId, call.callerId)
-        return post(account, channelId, call, CallKind.INCOMING, name, isStopped) {
+        return post(account, channelId, call, CallKind.INCOMING, name, stored.atMs, isStopped) {
             isRinging(store.shown(account.userId, channelId), call)
         }
     }
@@ -98,23 +98,33 @@ class CallWakeProcessor @Inject constructor(
         call: CallInfo,
         isStopped: () -> Boolean,
     ): CallOutcome {
-        if (!CallRules.endedApplies(store.shown(account.userId, channelId), call)) return CallOutcome.IGNORED
+        if (!CallRules.endedApplies(store.shown(account.userId, channelId), call, now())) return CallOutcome.IGNORED
         return when (call.reason) {
             CallEndReason.NO_ANSWER, CallEndReason.CANCELLED -> {
                 val name = callerName(channelId, call.callerId)
-                post(account, channelId, call, CallKind.MISSED, name, isStopped) {
-                    CallRules.endedApplies(store.shown(account.userId, channelId), call)
+                post(account, channelId, call, CallKind.MISSED, name, ringingSinceMs = null, isStopped) {
+                    // Atomic against the intake: record the missed call only over the entry checked here.
+                    endIfStillApplies(account, channelId, call, CallPhase.MISSED)
                 }
             }
             CallEndReason.ALL_DECLINED, CallEndReason.LAST_LEFT -> {
                 if (!isCurrent(account)) return CallOutcome.NOT_LOGGED_IN
-                sink.cancelCall(channelId)
+                if (isStopped()) return CallOutcome.IGNORED
                 // Tombstone: a duplicate or reordered ringing of this call is not accepted again.
-                store.setShown(account.userId, channelId, ShownCall(call.callId, CallPhase.ENDED, now()))
+                if (!endIfStillApplies(account, channelId, call, CallPhase.ENDED)) return CallOutcome.IGNORED
+                sink.cancelCall(channelId)
                 CallOutcome.CANCELLED
             }
             CallEndReason.UNKNOWN, null -> CallOutcome.IGNORED
         }
+    }
+
+    /** Moves the channel's call to [phase] if the ended still applies, with a compare-and-set. */
+    private fun endIfStillApplies(account: Account, channelId: String, call: CallInfo, phase: CallPhase): Boolean {
+        val stored = store.shown(account.userId, channelId)
+        val nowMs = now()
+        if (!CallRules.endedApplies(stored, call, nowMs)) return false
+        return store.setShownIf(account.userId, channelId, stored, ShownCall(call.callId, phase, nowMs))
     }
 
     private fun isRinging(stored: ShownCall?, call: CallInfo): Boolean =
@@ -122,7 +132,7 @@ class CallWakeProcessor @Inject constructor(
 
     /**
      * Posts [kind] for [call] after the final checks in the presenter's
-     * critical section ([stillApplies] re-reads the store); a missed call is recorded.
+     * critical section ([commit] re-reads the store and records a missed call).
      */
     private fun post(
         account: Account,
@@ -130,8 +140,9 @@ class CallWakeProcessor @Inject constructor(
         call: CallInfo,
         kind: CallKind,
         name: String?,
+        ringingSinceMs: Long?,
         isStopped: () -> Boolean,
-        stillApplies: () -> Boolean,
+        commit: () -> Boolean,
     ): CallOutcome {
         if (!isCurrent(account)) return CallOutcome.NOT_LOGGED_IN
         var refused = CallOutcome.IGNORED
@@ -139,13 +150,8 @@ class CallWakeProcessor @Inject constructor(
             when {
                 isStopped() -> null
                 !isCurrent(account) -> null.also { refused = CallOutcome.NOT_LOGGED_IN }
-                !stillApplies() -> null
-                else -> {
-                    if (kind == CallKind.MISSED) {
-                        store.setShown(account.userId, channelId, ShownCall(call.callId, CallPhase.MISSED, now()))
-                    }
-                    CallNotification(account.userId, channelId, call.callId, kind, name)
-                }
+                !commit() -> null
+                else -> CallNotification(account.userId, channelId, call.callId, kind, name, ringingSinceMs)
             }
         }
         return when (result) {

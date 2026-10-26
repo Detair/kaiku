@@ -7,6 +7,9 @@ enum class CallPhase {
     /** Accepted ringing wake (its notification may or may not be posted yet). */
     RINGING,
 
+    /** Accepted ended wake whose work has not finished yet; no ringing of this call is accepted any more. */
+    ENDING,
+
     /** Shown as a missed call. */
     MISSED,
 
@@ -16,7 +19,8 @@ enum class CallPhase {
 
 /**
  * The current call of a channel: [atMs] is the receive time of the ringing
- * wake ([CallPhase.RINGING]) or the time it was missed or ended (wall clock).
+ * ([CallPhase.RINGING]) or ended ([CallPhase.ENDING]) wake, or the time it was
+ * missed or ended (wall clock).
  */
 data class ShownCall(val callId: String, val phase: CallPhase, val atMs: Long = 0L)
 
@@ -31,6 +35,12 @@ interface CallNotificationStore {
     fun shown(userId: String, channelId: String): ShownCall?
 
     fun setShown(userId: String, channelId: String, call: ShownCall)
+
+    /**
+     * Compare-and-set: writes [call] only if [shown] still returns [expected]
+     * (null: nothing stored), atomically with the other writes. Returns whether it wrote.
+     */
+    fun setShownIf(userId: String, channelId: String, expected: ShownCall?, call: ShownCall): Boolean
 
     fun clear(userId: String, channelId: String)
 
@@ -78,6 +88,13 @@ class PrefsCallNotificationStore(
     }
 
     @Synchronized
+    override fun setShownIf(userId: String, channelId: String, expected: ShownCall?, call: ShownCall): Boolean {
+        if (shown(userId, channelId) != expected) return false
+        setShown(userId, channelId, call)
+        return true
+    }
+
+    @Synchronized
     override fun clear(userId: String, channelId: String) {
         prefs.edit()
             .remove(key(userId, channelId, CALL_ID))
@@ -103,19 +120,34 @@ class PrefsCallNotificationStore(
 /** Which call wakes still apply to the stored call of a channel (shared by intake and work). */
 internal object CallRules {
     /**
-     * A ringing applies to a new call, or repeats the current one while it is
-     * still ringing; a call already missed or ended never rings again.
+     * A stored [CallPhase.RINGING] or [CallPhase.ENDING] older than this counts
+     * as absent: a call whose `ended` never came must not block the next one.
      */
-    fun ringingApplies(stored: ShownCall?, call: CallInfo): Boolean =
-        stored == null || stored.callId != call.callId || stored.phase == CallPhase.RINGING
+    const val TRANSIENT_MAX_AGE_MS = 2 * 60 * 1000L
+
+    /** [stored], or null when it is a stale ringing or ending entry. */
+    fun live(stored: ShownCall?, nowMs: Long): ShownCall? = stored?.takeUnless {
+        (it.phase == CallPhase.RINGING || it.phase == CallPhase.ENDING) && nowMs - it.atMs > TRANSIENT_MAX_AGE_MS
+    }
 
     /**
-     * An ended with a known reason applies to the ringing call it names, or
-     * when no call is stored at all (the phone missed the ringing). Another
-     * stored call, a missed call or a tombstone make it ignored.
+     * A ringing applies to a new call, or repeats the current one while it is
+     * still ringing; a call that is ending, missed or ended never rings again.
      */
-    fun endedApplies(stored: ShownCall?, call: CallInfo): Boolean {
+    fun ringingApplies(stored: ShownCall?, call: CallInfo, nowMs: Long): Boolean {
+        val current = live(stored, nowMs)
+        return current == null || current.callId != call.callId || current.phase == CallPhase.RINGING
+    }
+
+    /**
+     * An ended with a known reason applies to the ringing (or already ending)
+     * call it names, or when no call is stored at all (the phone missed the
+     * ringing). Another stored call, a missed call or a tombstone make it ignored.
+     */
+    fun endedApplies(stored: ShownCall?, call: CallInfo, nowMs: Long): Boolean {
         if (call.reason == null || call.reason == CallEndReason.UNKNOWN) return false
-        return stored == null || (stored.callId == call.callId && stored.phase == CallPhase.RINGING)
+        val current = live(stored, nowMs) ?: return true
+        return current.callId == call.callId &&
+            (current.phase == CallPhase.RINGING || current.phase == CallPhase.ENDING)
     }
 }

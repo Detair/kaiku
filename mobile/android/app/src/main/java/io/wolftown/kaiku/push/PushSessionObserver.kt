@@ -17,7 +17,9 @@ import javax.inject.Singleton
  * the signed-in account goes away: on every transition from a signed-in user
  * to signed out or to another user, and at process start when no session is
  * stored at all. The departing account's remembered calls are forgotten
- * with them. Runs without any Activity (started from
+ * with them. Wakes carry no account, so a late call wake meant for a previous
+ * account could still post under the account signed in now; accepted, since
+ * logout deletes the FCM token / UnifiedPush registration. Runs without any Activity (started from
  * the Application). The fetch itself also clears notifications when it finds
  * its session ended ([WakeFetchProcessor]).
  */
@@ -51,8 +53,9 @@ class PushSessionObserver @Inject constructor(
                     logger.info("session ended: clearing message notifications and wake work")
                     enqueuer.cancelAll()
                     sink.cancelAll()
-                    // The calls behind those notifications go too, so a later
-                    // `ended` cannot bring back a stale missed call.
+                    // The departed account's remembered calls go too (ids only,
+                    // nothing of it stays). A late `ended` with nothing stored
+                    // still shows a missed call (C20 addendum), see the KDoc.
                     val departed = previous
                     if (departed != null) callStore.clearUser(departed) else callStore.clearAll()
                 }

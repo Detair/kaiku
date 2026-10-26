@@ -169,9 +169,57 @@ class WakeSchedulerTest {
     }
 
     @Test
-    fun `ended call records nothing at intake`() {
+    fun `accepted ended marks the call as ending at intake`() {
+        scheduler.onWake(call(CallState.RINGING))
         scheduler.onWake(call(CallState.ENDED, CallEndReason.NO_ANSWER))
-        assertNull(callStore.shown("me", "c1"))
+        assertEquals(ShownCall(callId, CallPhase.ENDING, clock), callStore.shown("me", "c1"))
+    }
+
+    @Test
+    fun `duplicate ringing after an accepted ended is not queued`() {
+        val ringing = call(CallState.RINGING)
+        val ended = call(CallState.ENDED, CallEndReason.NO_ANSWER)
+        scheduler.onWake(ringing)
+        scheduler.onWake(ended)
+        scheduler.onWake(ringing)
+
+        // The pending ended work is not replaced: it still shows the missed call.
+        assertEquals(listOf(ringing, ended), enqueuer.calls)
+        assertEquals(CallPhase.ENDING, callStore.shown("me", "c1")?.phase)
+    }
+
+    @Test
+    fun `reordered ringing after an ended with nothing stored is not queued`() {
+        val ended = call(CallState.ENDED, CallEndReason.CANCELLED)
+        scheduler.onWake(ended)
+        scheduler.onWake(call(CallState.RINGING))
+        assertEquals(listOf(ended), enqueuer.calls)
+    }
+
+    @Test
+    fun `repeated ended while ending is queued again`() {
+        scheduler.onWake(call(CallState.RINGING))
+        val ended = call(CallState.ENDED, CallEndReason.NO_ANSWER)
+        scheduler.onWake(ended)
+        scheduler.onWake(ended)
+        assertEquals(3, enqueuer.calls.size)
+    }
+
+    @Test
+    fun `stale ringing of another call does not block a later ended`() {
+        callStore.setShown("me", "c1", ShownCall(otherCallId, CallPhase.RINGING, clock))
+        clock += CallRules.TRANSIENT_MAX_AGE_MS + 1
+        val ended = call(CallState.ENDED, CallEndReason.NO_ANSWER)
+        scheduler.onWake(ended)
+        assertEquals(listOf(ended), enqueuer.calls)
+    }
+
+    @Test
+    fun `recent ringing of another call still blocks its ended`() {
+        callStore.setShown("me", "c1", ShownCall(otherCallId, CallPhase.RINGING, clock))
+        clock += CallRules.TRANSIENT_MAX_AGE_MS
+        scheduler.onWake(call(CallState.ENDED, CallEndReason.NO_ANSWER))
+        assertTrue(enqueuer.calls.isEmpty())
     }
 
     @Test

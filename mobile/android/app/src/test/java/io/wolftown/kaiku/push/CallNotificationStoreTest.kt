@@ -2,7 +2,9 @@ package io.wolftown.kaiku.push
 
 import io.wolftown.kaiku.testutil.InMemorySharedPreferences
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CallNotificationStoreTest {
@@ -50,5 +52,19 @@ class CallNotificationStoreTest {
 
         assertNull(store.shown("me", "c1"))
         assertEquals("call-2", store.shown("other", "c1")?.callId)
+    }
+
+    @Test
+    fun `setShownIf writes only over the expected entry`() {
+        val ringing = ShownCall("call-1", CallPhase.RINGING, 1L)
+        val ending = ShownCall("call-1", CallPhase.ENDING, 2L)
+
+        assertTrue(store.setShownIf("me", "c1", null, ringing))
+        assertFalse(store.setShownIf("me", "c1", null, ending))
+        assertEquals(ringing, store.shown("me", "c1"))
+
+        assertTrue(store.setShownIf("me", "c1", ringing, ending))
+        assertFalse(store.setShownIf("me", "c1", ringing, ShownCall("call-1", CallPhase.MISSED, 3L)))
+        assertEquals(ending, store.shown("me", "c1"))
     }
 }

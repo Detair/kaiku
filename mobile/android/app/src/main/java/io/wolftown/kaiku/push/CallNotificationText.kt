@@ -23,6 +23,8 @@ data class CallNotification(
     val callId: String,
     val kind: CallKind,
     val callerName: String?,
+    /** When the ringing wake was received ([CallKind.INCOMING]); the timeout counts from there. */
+    val ringingSinceMs: Long? = null,
 )
 
 /**
@@ -61,6 +63,9 @@ object CallNotificationText {
     /** A ringing notification goes away after this, a bit above the 45 s ring timeout, if its `ended` push is lost. */
     const val RINGING_TIMEOUT_MS = 60_000L
 
+    /** A ringing notification posted late still stays at least this long. */
+    const val MIN_RINGING_TIMEOUT_MS = 5_000L
+
     /**
      * How to post [n] given the call notification last posted in its channel
      * ([previous], null when unknown):
@@ -69,13 +74,20 @@ object CallNotificationText {
      *   ringing post's timeout) and silently, without a timeout;
      * - a new ringing call is posted fresh, so it alerts even over an old
      *   missed call; only a repeat of the same ringing call updates quietly.
-     *   A ringing call times out in case its `ended` push is lost.
+     *   A ringing call times out in case its `ended` push is lost, counted
+     *   from when its wake was received ([CallNotification.ringingSinceMs]).
      */
-    fun plan(n: CallNotification, previous: PostedCall?): CallPostPlan = when (n.kind) {
+    fun plan(
+        n: CallNotification,
+        previous: PostedCall?,
+        nowMs: Long = System.currentTimeMillis(),
+    ): CallPostPlan = when (n.kind) {
         CallKind.MISSED -> CallPostPlan(cancelFirst = true, onlyAlertOnce = true, silent = true, timeoutMs = null)
         CallKind.INCOMING -> {
             val repeat = previous == PostedCall(n.userId, n.callId, CallKind.INCOMING)
-            CallPostPlan(cancelFirst = !repeat, onlyAlertOnce = repeat, silent = false, timeoutMs = RINGING_TIMEOUT_MS)
+            val age = n.ringingSinceMs?.let { (nowMs - it).coerceAtLeast(0L) } ?: 0L
+            val timeout = (RINGING_TIMEOUT_MS - age).coerceAtLeast(MIN_RINGING_TIMEOUT_MS)
+            CallPostPlan(cancelFirst = !repeat, onlyAlertOnce = repeat, silent = false, timeoutMs = timeout)
         }
     }
 
