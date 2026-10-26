@@ -10,7 +10,7 @@
 - Define guild-level permission flags for RBAC
 - Compute effective permissions for users in guilds
 - Role hierarchy and moderation checks
-- Permission overrides at channel level (future)
+- Permission overrides at channel level (`channel_overrides`, per role)
 
 ## Key Files
 
@@ -54,28 +54,7 @@ if !current_user.has_system_permission(SystemPermission::Admin) {
 
 **Purpose**: Per-guild role-based access control.
 
-**Defined in `guild.rs`** (bitflags pattern):
-```rust
-bitflags! {
-    pub struct GuildPermissions: u64 {
-        const ADMINISTRATOR      = 1 << 0;   // 0x1 — Bypass all checks
-        const MANAGE_GUILD       = 1 << 1;   // 0x2 — Edit guild settings
-        const KICK_MEMBERS       = 1 << 2;   // 0x4 — Remove members
-        const BAN_MEMBERS        = 1 << 3;   // 0x8 — Ban members
-        const CREATE_INVITE      = 1 << 4;   // 0x10 — Create invite codes
-        const MANAGE_CHANNELS    = 1 << 5;   // 0x20 — Create/edit/delete channels
-        const MANAGE_ROLES       = 1 << 6;   // 0x40 — Edit roles below own highest role
-        const VIEW_CHANNELS      = 1 << 7;   // 0x80 — See channels (base permission)
-        const SEND_MESSAGES      = 1 << 8;   // 0x100 — Send messages in text channels
-        const MANAGE_MESSAGES    = 1 << 9;   // 0x200 — Delete others' messages, pin
-        const CONNECT            = 1 << 10;  // 0x400 — Join voice channels
-        const SPEAK              = 1 << 11;  // 0x800 — Transmit audio in voice
-        const MUTE_MEMBERS       = 1 << 12;  // 0x1000 — Server-mute others in voice
-        const DEAFEN_MEMBERS     = 1 << 13;  // 0x2000 — Server-deafen others
-        const MOVE_MEMBERS       = 1 << 14;  // 0x4000 — Move users between voice channels
-    }
-}
-```
+**Defined in `guild.rs`** (bitflags `GuildPermissions: u64`, stored as `i64` via `to_db`/`from_db`). The bit list lives there (e.g. `VIEW_CHANNEL = 1 << 24`); do not duplicate it here. There is no ADMINISTRATOR flag: the guild owner is the only bypass. `EVERYONE_FORBIDDEN` / `EVERYONE_ALLOWED` partition the bits the @everyone role (and its channel overrides) may hold.
 
 **Storage**: `roles.permissions_bitfield` (PostgreSQL `BIGINT` for u64 bitfield).
 
@@ -107,27 +86,25 @@ pub struct Role {
 
 ### Permission Resolution
 
-**Computing Effective Permissions**:
+**Computing Effective Permissions** (`resolver.rs`, pure function, no DB access):
 ```rust
-pub async fn compute_guild_permissions(
-    pool: &PgPool,
-    guild_id: Uuid,
+pub fn compute_guild_permissions(
     user_id: Uuid,
-) -> Result<GuildPermissions, PermissionError> {
-    // 1. Check if user is guild owner → return ADMINISTRATOR
-    // 2. Query all roles assigned to user in this guild
-    // 3. Bitwise OR all `permissions_bitfield` values
-    // 4. If ADMINISTRATOR flag set, return all permissions
-    // 5. Return computed bitfield
-}
+    guild_owner_id: Uuid,
+    pending: bool, // screening not accepted: no permissions, overrides ignored
+    everyone_permissions: GuildPermissions,
+    user_roles: &[GuildRole],
+    channel_overrides: Option<&[ChannelOverride]>,
+) -> GuildPermissions
 ```
+Handlers normally do not call it directly; they use `get_member_permission_context` / `require_guild_permission` (guild level) or `require_channel_access` / `filter_accessible_channels` / `filter_viewable_channels_in_guilds` (channel level), which load the rows and call it.
 
-**ADMINISTRATOR Bypass**: Users with `ADMINISTRATOR` permission skip all other checks (god mode).
+**Owner bypass**: the guild owner gets `GuildPermissions::all()`. There is no other bypass.
 
-**Channel Overrides** (future):
-- `channel_permission_overwrites` table (channel_id, role_id OR user_id, allow_bitfield, deny_bitfield)
-- Resolution order: Base → Role Permissions → Role Overwrites → User Overwrites
-- Deny takes precedence over allow
+**Channel Overrides** (`channel_overrides`: channel_id, role_id, allow/deny bits; no per-user overrides; the loaders set `ChannelOverride::everyone` from the role's `is_default`):
+- Resolved only in `compute_guild_permissions` (resolver.rs); all channel checks reach it via `require_channel_access`, `filter_accessible_channels` or `filter_viewable_channels_in_guilds`.
+- Order: owner → pending member (empty, before any override) → base (@everyone | assigned roles) → @everyone override (allow masked with `EVERYONE_ALLOWED`, then deny) → role overrides aggregated (OR of denies applied, then OR of allows).
+- A role allow beats an @everyone deny and another role's deny of the same bit; a role deny beats an @everyone allow.
 
 ### Moderation Checks
 
@@ -170,13 +147,10 @@ pub async fn can_manage_role(
 
 **In Handlers**:
 ```rust
-use crate::permissions::{compute_guild_permissions, GuildPermissions, PermissionError};
+use crate::permissions::{require_guild_permission, GuildPermissions};
 
-let perms = compute_guild_permissions(&state.db, guild_id, current_user.id).await?;
-
-if !perms.contains(GuildPermissions::KICK_MEMBERS) {
-    return Err(PermissionError::InsufficientPermissions);
-}
+let ctx = require_guild_permission(&state.db, guild_id, current_user.id, GuildPermissions::KICK_MEMBERS)
+    .await?;
 
 if !can_moderate_member(&state.db, guild_id, current_user.id, target_user_id).await? {
     return Err(PermissionError::CannotModerateTarget);
@@ -235,7 +209,7 @@ pub async fn get_user_roles(
 **Owner Role** (future):
 - Separate from guild owner flag
 - `position: 100` (highest)
-- `permissions_bitfield: ADMINISTRATOR`
+- `permissions_bitfield: GuildPermissions::all()`
 - Auto-assigned to guild creator
 
 ### Testing
@@ -243,12 +217,12 @@ pub async fn get_user_roles(
 **Required Tests**:
 - [ ] Compute permissions for user with single role
 - [ ] Compute permissions for user with multiple roles (bitwise OR)
-- [ ] ADMINISTRATOR bypasses all checks
+- [x] Guild owner bypasses all checks
 - [ ] Role hierarchy: higher position can moderate lower position
 - [ ] Role hierarchy: equal positions cannot moderate each other
 - [ ] Cannot moderate guild owner (unless you are owner)
 - [ ] Permission check fails for user without required permission
-- [ ] Channel overrides (future): deny overrides allow
+- [x] Channel overrides: @everyone override, then aggregated role overrides (role allow wins)
 
 ### Common Security Mistakes
 
@@ -268,23 +242,7 @@ pub async fn get_user_roles(
 
 ### Future Enhancements
 
-**Channel Permission Overrides**:
-```sql
-CREATE TABLE channel_permission_overwrites (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    channel_id UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-    target_type TEXT NOT NULL CHECK (target_type IN ('role', 'user')),
-    target_id UUID NOT NULL,  -- role_id or user_id
-    allow_bitfield BIGINT NOT NULL DEFAULT 0,
-    deny_bitfield BIGINT NOT NULL DEFAULT 0
-);
-```
-
-**Permission Resolution with Overrides**:
-1. Start with base guild permissions (OR of all roles)
-2. Apply role-level overwrites (OR all allow, OR all deny)
-3. Apply user-level overwrites
-4. Final: `(base | role_allow | user_allow) & ~(role_deny | user_deny)`
+**Per-user channel overrides**: not implemented; if added, apply them after the role overrides (deny, then allow) inside `compute_guild_permissions`.
 
 **Audit Logs**:
 - Track permission changes (role created, permissions modified, role assigned/removed)

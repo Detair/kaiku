@@ -383,7 +383,7 @@ pub async fn remove_member(
 // Mark as Read (Guild Channels)
 // ============================================================================
 
-/// Mark a guild channel as read.
+/// Mark a guild text, forum or announcement channel as read.
 /// POST /api/channels/:id/read
 #[utoipa::path(
     post,
@@ -393,6 +393,9 @@ pub async fn remove_member(
     request_body = MarkChannelAsReadRequest,
     responses(
         (status = 200, description = "Marked as read"),
+        (status = 400, description = "Channel type has no read state (voice), or the message is not a top-level message of this channel"),
+        (status = 403, description = "Not allowed to view the channel"),
+        (status = 404, description = "Channel not found"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -408,16 +411,35 @@ pub async fn mark_as_read(
         .await?
         .ok_or(ChatError::ChannelNotFound)?;
 
-    let guild_id = channel.guild_id.ok_or(ChatError::ChannelNotFound)?;
-
-    // 2. Verify user is a guild member
-    if !queries::is_guild_member(&state.db, guild_id, auth.id).await? {
-        return Err(ChatError::Forbidden);
+    if channel.guild_id.is_none() {
+        return Err(ChatError::ChannelNotFound);
     }
+
+    // 2. Only read-tracked channels (text, forum, announcement) have a cursor.
+    if !channel.channel_type.is_text_like() {
+        return Err(ChatError::Validation(
+            "This channel has no messages to mark as read".to_string(),
+        ));
+    }
+
+    // 3. Verify the user may view the channel (membership + VIEW_CHANNEL), the same rule that hides
+    //    it from the unread summary.
+    crate::permissions::require_channel_access(&state.db, auth.id, channel_id)
+        .await
+        .map_err(|e| match e {
+            crate::permissions::PermissionError::DatabaseError(msg) => {
+                ChatError::Database(sqlx::Error::Protocol(msg))
+            }
+            crate::permissions::PermissionError::NotFound => ChatError::ChannelNotFound,
+            _ => ChatError::Forbidden,
+        })?;
+
+    // 4. The cursor must be a top-level message of this channel.
+    queries::validate_read_cursor(&state.db, channel_id, body.last_read_message_id).await?;
 
     let now = chrono::Utc::now();
 
-    // 3. Atomic forward-only UPSERT into channel_read_state.
+    // 5. Atomic forward-only UPSERT into channel_read_state.
     // The WHERE clause inside the query ensures the read cursor only moves
     // forward by comparing message timestamps, preventing stale requests
     // from moving it backward.
@@ -432,25 +454,25 @@ pub async fn mark_as_read(
     if marked {
         // Clear the phone notification, if one was pushed (C20 `read`).
         state.push.notify_read(&state, auth.id, channel_id);
-    }
 
-    // 4. Broadcast ChannelRead event to all user's other sessions
-    if let Err(e) = broadcast_to_user(
-        &state.redis,
-        auth.id,
-        &ServerEvent::ChannelRead {
-            channel_id,
-            last_read_message_id: Some(body.last_read_message_id),
-        },
-    )
-    .await
-    {
-        tracing::warn!(
-            user_id = %auth.id,
-            channel_id = %channel_id,
-            error = %e,
-            "Failed to broadcast ChannelRead event"
-        );
+        // 6. Broadcast ChannelRead event to all user's other sessions
+        if let Err(e) = broadcast_to_user(
+            &state.redis,
+            auth.id,
+            &ServerEvent::ChannelRead {
+                channel_id,
+                last_read_message_id: Some(body.last_read_message_id),
+            },
+        )
+        .await
+        {
+            tracing::warn!(
+                user_id = %auth.id,
+                channel_id = %channel_id,
+                error = %e,
+                "Failed to broadcast ChannelRead event"
+            );
+        }
     }
 
     Ok(Json(()))

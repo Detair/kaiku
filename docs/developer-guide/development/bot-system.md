@@ -393,7 +393,7 @@ Server-side error related to a bot action.
 ```json
 {
   "type": "error",
-  "code": "rate_limited",
+  "code": "RATE_LIMITED",
   "message": "Rate limit exceeded; retry after 5 seconds"
 }
 ```

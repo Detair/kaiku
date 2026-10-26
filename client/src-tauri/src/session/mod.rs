@@ -188,13 +188,15 @@ fn network(e: &reqwest::Error) -> SessionError {
     SessionError::Network(e.to_string())
 }
 
-/// The `error` code of a JSON error body, e.g. `MFA_REQUIRED`.
+/// The `error` code of a JSON error body, e.g. `MFA_REQUIRED`. Trimmed and
+/// upper-cased: the server is moving all codes to `UPPER_SNAKE`, so comparisons
+/// must hold for either casing.
 fn error_code(body: &str) -> Option<String> {
     serde_json::from_str::<Value>(body)
         .ok()?
         .get("error")?
         .as_str()
-        .map(str::to_string)
+        .map(|code| code.trim().to_uppercase())
 }
 
 fn server_error(status: u16, body: &str) -> SessionError {
@@ -1105,6 +1107,39 @@ mod tests {
         let auth = m.legacy_auth().read().await;
         assert_eq!(auth.access_token.as_deref(), Some("at-1"));
         assert_eq!(auth.user.as_ref().unwrap().username, "alice");
+    }
+
+    #[test]
+    fn error_code_ignores_case() {
+        assert_eq!(
+            error_code(r#"{"error":"mfa_required"}"#).as_deref(),
+            Some("MFA_REQUIRED")
+        );
+        assert_eq!(
+            error_code(r#"{"error":" MFA_REQUIRED "}"#).as_deref(),
+            Some("MFA_REQUIRED")
+        );
+        assert_eq!(error_code(r#"{"message":"x"}"#), None);
+    }
+
+    #[tokio::test]
+    async fn login_maps_lowercase_mfa_required() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/login"))
+            .respond_with(
+                ResponseTemplate::new(403).set_body_json(json!({"error": "mfa_required"})),
+            )
+            .mount(&server)
+            .await;
+        let store = Arc::new(MemoryTokenStore::new());
+
+        let err = manager(&store)
+            .login(&server.uri(), "alice", "pw", None)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SessionError::MfaRequired));
     }
 
     #[tokio::test]

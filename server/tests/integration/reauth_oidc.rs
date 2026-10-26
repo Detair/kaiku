@@ -789,7 +789,7 @@ async fn test_non_elevated_admin_cannot_link_and_late_identity_cannot_elevate(po
     .await;
     assert_eq!(
         (status, body["error"].clone()),
-        (403, json!("elevation_required")),
+        (403, json!("ELEVATION_REQUIRED")),
         "{body}"
     );
 
@@ -1206,7 +1206,7 @@ async fn test_admin_link_refused_when_elevation_ended_before_callback(pool: PgPo
     let chain = follow(&url).await;
     assert_eq!(
         chain.result.get("link_error").map(String::as_str),
-        Some("elevation_required"),
+        Some("ELEVATION_REQUIRED"),
         "{:?}",
         chain.result
     );
@@ -1443,7 +1443,7 @@ async fn test_client_contract_desktop_oidc_reauth(pool: PgPool) {
 }
 
 /// Browser identity link: the web client's GET (no `redirect_uri`, JSON
-/// answer) gives the `elevation_required` code isElevationRequiredError
+/// answer) gives the `ELEVATION_REQUIRED` code isElevationRequiredError
 /// matches, and `{url}` once elevated.
 #[sqlx::test]
 async fn test_client_contract_browser_link_elevation(pool: PgPool) {
@@ -1464,7 +1464,7 @@ async fn test_client_contract_browser_link_elevation(pool: PgPool) {
         .expect("link");
     assert_eq!(resp.status().as_u16(), 403);
     let body: Value = resp.json().await.expect("json");
-    assert_eq!(body["error"], "elevation_required", "{body}");
+    assert_eq!(body["error"], "ELEVATION_REQUIRED", "{body}");
 
     let (status, body) = post_json(
         &ctx,

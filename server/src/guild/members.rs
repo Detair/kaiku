@@ -88,7 +88,23 @@ pub async fn list_members(
         return Err(GuildError::Forbidden);
     }
 
-    let members = core_q::list_guild_members(&state.db, guild_id).await?;
+    let mut members = core_q::list_guild_members(&state.db, guild_id).await?;
+
+    // Users blocked in either direction see each other as offline, with no
+    // last-seen time.
+    let blocked: Vec<(Uuid,)> = sqlx::query_as(
+        r"SELECT CASE WHEN requester_id = $1 THEN addressee_id ELSE requester_id END
+          FROM friendships
+          WHERE status = 'blocked' AND (requester_id = $1 OR addressee_id = $1)",
+    )
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
+    let blocked: std::collections::HashSet<Uuid> = blocked.into_iter().map(|(id,)| id).collect();
+    for member in members.iter_mut().filter(|m| blocked.contains(&m.user_id)) {
+        member.status = "offline".to_string();
+        member.last_seen_at = None;
+    }
 
     Ok(Json(members))
 }
@@ -154,8 +170,8 @@ pub async fn kick_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Initialize `channel_read_state` for all text channels in a guild.
-/// Sets `last_read_at` to `NOW()` so pre-existing messages don't appear as unread.
+/// Initialize `channel_read_state` for the guild's read-tracked channels the
+/// user may view, so pre-existing messages don't appear as unread.
 ///
 /// Called by the invite-join and discovery-join handlers after a user joins a guild.
 pub(crate) async fn initialize_channel_read_state(

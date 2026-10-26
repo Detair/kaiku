@@ -9,6 +9,7 @@
  */
 
 import { isTauri as coreIsTauri } from "@tauri-apps/api/core";
+import { codeIs } from "../errorCode";
 import type { User } from "../types";
 
 // ============================================================================
@@ -457,7 +458,7 @@ export function refreshAccessToken(): Promise<boolean> {
 async function isAccountBanned(response: Response): Promise<boolean> {
   try {
     const body = (await response.json()) as { error?: unknown };
-    return body?.error === "ACCOUNT_BANNED";
+    return codeIs(body?.error, "ACCOUNT_BANNED");
   } catch {
     return false;
   }
@@ -749,14 +750,14 @@ async function sendHttpRequest<T>(
 
     if (errorBody && typeof errorBody === "object") {
       // Detect MFA_REQUIRED from server
-      if (response.status === 403 && errorBody.error === "MFA_REQUIRED") {
+      if (response.status === 403 && codeIs(errorBody.error, "MFA_REQUIRED")) {
         throw new HttpError(403, "MFA_REQUIRED", "MFA_REQUIRED");
       }
       // Contract C4: the account still has to replace an admin-issued
       // temporary password. The auth store switches to the change screen.
       if (
         response.status === 403 &&
-        errorBody.error === PASSWORD_CHANGE_REQUIRED
+        codeIs(errorBody.error, PASSWORD_CHANGE_REQUIRED)
       ) {
         if (typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_REQUIRED_EVENT));

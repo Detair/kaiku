@@ -7,6 +7,7 @@
  */
 
 import { Component, Show, createSignal, onCleanup } from "solid-js";
+import { codeIs } from "@/lib/errorCode";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { t, type MessageKey } from "@/i18n";
 import { errorText } from "@/i18n/errors";
@@ -41,7 +42,7 @@ function errorMessage(err: unknown): string {
   }
   // This screen words its own sentences, so server validation text is not
   // shown verbatim here.
-  if (err instanceof HttpError && err.code === "VALIDATION_ERROR") {
+  if (err instanceof HttpError && codeIs(err.code, "VALIDATION_ERROR")) {
     return t("auth.forcedChange.failed");
   }
   return errorText(err, "auth.forcedChange.failed", CHANGE_ERRORS, {

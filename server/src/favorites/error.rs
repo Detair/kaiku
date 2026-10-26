@@ -30,44 +30,44 @@ impl IntoResponse for FavoritesError {
         let (status, code, message) = match &self {
             Self::ChannelNotFound => (
                 StatusCode::NOT_FOUND,
-                "channel_not_found",
+                "CHANNEL_NOT_FOUND",
                 "Channel not found",
             ),
             Self::InvalidChannel => (
                 StatusCode::BAD_REQUEST,
-                "invalid_channel",
+                "INVALID_CHANNEL",
                 "DM channels cannot be favorited",
             ),
             Self::LimitExceeded => (
                 StatusCode::BAD_REQUEST,
-                "limit_exceeded",
+                "LIMIT_EXCEEDED",
                 "Maximum 25 favorites allowed",
             ),
             Self::AlreadyFavorited => (
                 StatusCode::CONFLICT,
-                "already_favorited",
+                "ALREADY_FAVORITED",
                 "Channel already in favorites",
             ),
             Self::NotFavorited => (
                 StatusCode::NOT_FOUND,
-                "favorite_not_found",
+                "FAVORITE_NOT_FOUND",
                 "Channel is not favorited",
             ),
             Self::InvalidChannels => (
                 StatusCode::BAD_REQUEST,
-                "invalid_channels",
+                "INVALID_CHANNELS",
                 "Reorder contains invalid channel IDs",
             ),
             Self::InvalidGuilds => (
                 StatusCode::BAD_REQUEST,
-                "invalid_guilds",
+                "INVALID_GUILDS",
                 "Reorder contains invalid guild IDs",
             ),
             Self::Database(err) => {
                 tracing::error!("Database error in favorites: {}", err);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "database_error",
+                    "DATABASE_ERROR",
                     "Database error",
                 )
             }

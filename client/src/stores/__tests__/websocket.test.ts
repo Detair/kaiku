@@ -92,6 +92,9 @@ vi.mock("@/stores/call", () => ({
   receiveIncomingCall: vi.fn(),
   callConnected: vi.fn(),
   callEndedExternally: vi.fn(),
+  callEventMatches: vi.fn(() => true),
+  connectOnFirstJoin: vi.fn(),
+  setChannelCallId: vi.fn(),
   participantJoined: vi.fn(),
   participantLeft: vi.fn(),
 }));
@@ -434,7 +437,7 @@ describe("websocket store", () => {
       vi.useRealTimers();
     });
 
-    it("SESSION_REVOKED signs out at once: no refresh, no reconnect", async () => {
+    it.each(["SESSION_REVOKED", "session_revoked"])("%s signs out at once: no refresh, no reconnect", async (code) => {
       vi.useFakeTimers();
       vi.mocked(tauri.wsConnect).mockResolvedValue(undefined);
       await connect();
@@ -444,7 +447,7 @@ describe("websocket store", () => {
 
       await handleServerEvent({
         type: "error",
-        code: "SESSION_REVOKED",
+        code,
         message: "Session revoked",
       });
       // The server closes with 1008 right after the event.
@@ -610,6 +613,118 @@ describe("websocket store", () => {
       });
 
       expect(addMessage).toHaveBeenCalledWith(message);
+    });
+
+    it("a thread reply does not touch the channel's unread state or last_message_id", async () => {
+      const { getChannel, incrementUnreadCount, updateChannelLastMessageId } =
+        await import("@/stores/channels");
+      vi.mocked(getChannel).mockReturnValue({
+        id: "c1",
+        guild_id: "g1",
+        channel_type: "text",
+      } as never);
+      const reply = {
+        id: "r1",
+        channel_id: "c1",
+        parent_id: "m1",
+        author: { id: "other" },
+        content: "reply",
+      };
+
+      await fire("ws:server_event", {
+        type: "message_new",
+        channel_id: "c1",
+        message: reply,
+      });
+
+      expect(incrementUnreadCount).not.toHaveBeenCalled();
+      expect(updateChannelLastMessageId).not.toHaveBeenCalled();
+    });
+
+    it("a top-level message in a forum channel counts as unread", async () => {
+      const { getChannel, incrementUnreadCount, updateChannelLastMessageId } =
+        await import("@/stores/channels");
+      vi.mocked(getChannel).mockReturnValue({
+        id: "c2",
+        guild_id: "g1",
+        channel_type: "forum",
+      } as never);
+      const post = {
+        id: "p1",
+        channel_id: "c2",
+        parent_id: null,
+        author: { id: "other" },
+        content: "post",
+      };
+
+      await fire("ws:server_event", {
+        type: "message_new",
+        channel_id: "c2",
+        message: post,
+      });
+
+      expect(incrementUnreadCount).toHaveBeenCalledWith("c2");
+      expect(updateChannelLastMessageId).toHaveBeenCalledWith("c2", "p1");
+    });
+
+    it("call events are handled without any DM channel subscription", async () => {
+      const { receiveIncomingCall, callEndedExternally } = await import(
+        "@/stores/call"
+      );
+      expect(ws.wsState.subscribedChannels.size).toBe(0);
+
+      await fire("ws:server_event", {
+        type: "incoming_call",
+        channel_id: "dm-1",
+        initiator: "other",
+        initiator_name: "Other",
+      });
+      await fire("ws:server_event", {
+        type: "call_ended",
+        channel_id: "dm-1",
+        reason: "no_answer",
+        duration_secs: null,
+      });
+
+      expect(receiveIncomingCall).toHaveBeenCalledWith("dm-1", "other", "Other", undefined);
+      expect(callEndedExternally).toHaveBeenCalledWith(
+        "dm-1",
+        "no_answer",
+        undefined,
+        undefined,
+      );
+    });
+
+    it("call_participant_joined is routed through the channel/call_id check", async () => {
+      const call = await import("@/stores/call");
+      await fire("ws:server_event", {
+        type: "call_participant_joined",
+        channel_id: "dm-y",
+        call_id: "c1",
+        user_id: "u2",
+        username: "bob",
+      });
+      expect(call.connectOnFirstJoin).toHaveBeenCalledWith("dm-y", "u2", "c1");
+    });
+
+    it("call_ended passes the call_id to the store", async () => {
+      const call = await import("@/stores/call");
+      await fire("ws:server_event", {
+        type: "call_ended",
+        channel_id: "dm-1",
+        call_id: "c1",
+        reason: "last_left",
+        duration_secs: 5,
+      });
+      expect(call.callEndedExternally).toHaveBeenCalledWith("dm-1", "last_left", 5, "c1");
+    });
+
+    it("call_started stores the call_id and participant events pass theirs on", async () => {
+      const call = await import("@/stores/call");
+      await fire("ws:server_event", { type: "call_started", channel_id: "dm-1", call_id: "c1", initiator: "me", initiator_name: "Me" });
+      expect(call.setChannelCallId).toHaveBeenCalledWith("dm-1", "c1");
+      await fire("ws:server_event", { type: "call_participant_left", channel_id: "dm-1", call_id: "c1", user_id: "u2" });
+      expect(call.participantLeft).toHaveBeenCalledWith("dm-1", "u2", "c1");
     });
 
     it("native ws:connected after ws:reconnecting runs handleReconnect", async () => {
