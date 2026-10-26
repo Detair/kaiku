@@ -12,7 +12,7 @@
 
     <!-- Sign in -->
     <string name="auth_login_title">Welcome to Kaiku</string>
-    <string name="auth_login_subtitle">Sign in to your account</string>
+    <string name="auth_login_subtitle">Login to continue to Kaiku</string>
     <string name="auth_login_password">Password</string>
     <string name="auth_login_mfa_code">MFA Code</string>
     <string name="auth_sign_in">Sign in</string>
@@ -68,35 +68,34 @@
     <string name="auth_server_unreachable">Couldn\'t reach that server. Check the address and your connection.</string>
 
     <!-- Forced password change (first sign-in) -->
-    <string name="auth_change_password_title">Choose your own password</string>
-    <string name="auth_change_password_explanation">You signed in with a temporary password from your server admin. Choose a new one that only you know.</string>
-    <string name="auth_new_password">New password</string>
-    <string name="auth_confirm_password">Repeat new password</string>
+    <string name="auth_forced_change_title">Choose your own password</string>
+    <string name="auth_forced_change_intro">You signed in with a temporary password. Choose your own password to continue.</string>
+    <string name="auth_forced_change_new_password">New password</string>
+    <string name="auth_forced_change_confirm_password">Confirm new password</string>
     <string name="auth_password_requirements">At least 8 characters</string>
-    <string name="auth_change_password_submit">Save password</string>
+    <string name="auth_forced_change_submit">Save password</string>
     <string name="auth_back_to_sign_in">Back to sign in</string>
-    <string name="auth_password_too_short">Use at least 8 characters.</string>
-    <string name="auth_password_too_long">Use at most 128 characters.</string>
-    <string name="auth_password_mismatch">The passwords don\'t match.</string>
-    <string name="auth_password_must_differ">Choose a password that is different from the temporary one.</string>
+    <string name="auth_forced_change_length">The password must be 8 to 128 characters.</string>
+    <string name="auth_forced_change_mismatch">The passwords do not match.</string>
+    <string name="auth_forced_change_same_as_temporary">Choose a password that differs from the temporary one.</string>
     <string name="auth_password_change_expired">Your sign-in has expired. Go back and sign in again.</string>
-    <string name="auth_password_change_failed">Couldn\'t save your password. Try again.</string>
+    <string name="auth_forced_change_failed">Could not save the password. Please try again.</string>
 
     <!-- Chat -->
     <string name="chat_load_earlier">Load earlier messages</string>
     <string name="chat_empty">No messages yet. Start the conversation!</string>
-    <string name="chat_message_encrypted_placeholder">This message is end-to-end encrypted and can\'t be shown on this device yet.</string>
+    <string name="chat_message_encrypted_placeholder">Encrypted message — it can\'t be shown on this device.</string>
     <string name="chat_replying_to">Replying to a message</string>
-    <string name="chat_edited">(edited)</string>
+    <string name="chat_message_edited_badge">(edited)</string>
     <string name="chat_react">React</string>
     <string name="chat_edit">Edit</string>
     <string name="chat_delete">Delete</string>
     <string name="chat_title_loading">Conversation</string>
     <string name="chat_title_channel">#%1$s</string>
-    <string name="chat_message_placeholder_channel">Message #%1$s</string>
+    <string name="chat_composer_placeholder">Message #%1$s</string>
     <string name="chat_message_placeholder_dm">Message %1$s</string>
     <string name="chat_message_placeholder_loading">Message</string>
-    <string name="chat_send">Send message</string>
+    <string name="chat_composer_send">Send message</string>
     <string name="chat_typing_one">%1$s is typing…</string>
     <string name="chat_typing_two">%1$s and %2$s are typing…</string>
     <string name="chat_typing_many">Several people are typing…</string>
@@ -113,7 +112,7 @@
     <string name="chat_load_failed">Couldn\'t load messages.</string>
     <string name="chat_reaction_failed">Couldn\'t update your reaction.</string>
     <string name="chat_edit_title">Edit message</string>
-    <string name="chat_edit_save">Save</string>
+    <string name="common_save">Save</string>
     <string name="chat_message_add_reaction">Add reaction</string>
     <string name="chat_reaction_chip_label">%1$s %2$d</string>
     <string name="chat_edit_label">Message</string>
@@ -139,7 +138,7 @@
 
     <!-- Connection banner -->
     <string name="connection_reconnecting">Reconnecting…</string>
-    <string name="connection_offline">You\'re offline</string>
+    <string name="connection_offline">You\'re offline. New messages will appear when you\'re back online.</string>
 
     <!-- Channel list -->
     <string name="channel_prefix_text">#</string>
@@ -158,7 +157,6 @@
     <string name="home_open_servers">Open servers</string>
     <string name="home_direct_messages">Direct messages</string>
     <string name="home_refresh">Refresh</string>
-    <string name="home_settings">Settings</string>
     <string name="home_select_server">Select a server to get started</string>
     <string name="home_select_server_named">Select server %1$s</string>
     <string name="home_open_server_list">Open server list</string>
@@ -170,10 +168,10 @@
     <string name="voice_leave_and_go_back">Leave and go back</string>
     <string name="voice_no_one_here">No one else is here yet</string>
     <string name="voice_join">Join voice</string>
-    <string name="voice_muted">Muted</string>
+    <string name="voice_participants_muted">Muted</string>
     <string name="voice_unknown_user">Unknown</string>
-    <string name="voice_disconnect">Disconnect</string>
-    <string name="voice_mute">Mute</string>
+    <string name="voice_panel_disconnect">Disconnect</string>
+    <string name="voice_controls_mute_label">Mute</string>
     <string name="voice_microphone">Microphone</string>
     <string name="voice_microphone_on">On</string>
     <string name="voice_audio_output">Audio output</string>
@@ -198,7 +196,7 @@
     <string name="voice_permission_continue">Continue</string>
     <string name="voice_permission_needed">Microphone access is turned off. Allow it in the app settings to join voice channels.</string>
     <string name="voice_permission_open_settings">Open settings</string>
-    <string name="voice_permission_try_again">Try again</string>
+    <string name="common_try_again">Try again</string>
     <string name="voice_mic_permission_required">Microphone access is required to join voice.</string>
     <string name="voice_join_failed">Couldn\'t join the voice channel.</string>
     <string name="voice_start_failed">Couldn\'t start the voice call. Check that Kaiku may use the microphone and run in the background.</string>
@@ -214,11 +212,11 @@
     <string name="notif_sent_photo">Sent a photo</string>
     <string name="notif_sent_file">Sent a file</string>
     <string name="notif_checking_messages">Checking for new messages</string>
-    <string name="notif_self_name">You</string>
+    <string name="voice_participants_you">You</string>
     <string name="push_permission_rationale">So you don\'t miss messages from family, Kaiku needs permission to show notifications.</string>
     <string name="push_permission_continue">Continue</string>
     <string name="push_permission_not_now">Not now</string>
-    <string name="notif_settings_title">Notifications</string>
+    <string name="common_notifications">Notifications</string>
     <string name="notif_settings_status_label">Status</string>
     <string name="notif_settings_use_unifiedpush">Use UnifiedPush instead of Google</string>
     <string name="notif_settings_use_unifiedpush_hint">Delivers notifications through an app such as ntfy.</string>

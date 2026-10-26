@@ -87,7 +87,7 @@ fun HomeScreen(
                             Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.home_refresh))
                         }
                         IconButton(onClick = onNavigateToSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.home_settings))
+                            Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.settings_modal_title))
                         }
                     }
                 )

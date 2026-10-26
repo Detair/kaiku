@@ -75,7 +75,7 @@ class AndroidNotificationPresenter @Inject constructor(
         }
         val kept = (existingMessages(manager, n) + newMessages).takeLast(MAX_LINES)
         val style = NotificationCompat.MessagingStyle(
-            Person.Builder().setName(context.getString(R.string.notif_self_name)).build()
+            Person.Builder().setName(context.getString(R.string.voice_participants_you)).build()
         )
             .setConversationTitle(title)
             // A 1:1 DM shows the sender as the title; everything else shows the conversation title.

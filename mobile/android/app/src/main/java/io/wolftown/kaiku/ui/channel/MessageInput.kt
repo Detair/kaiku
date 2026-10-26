@@ -120,7 +120,7 @@ fun MessageInput(
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = stringResource(R.string.chat_send),
+                        contentDescription = stringResource(R.string.chat_composer_send),
                         tint = if (input.isNotBlank()) {
                             MaterialTheme.colorScheme.primary
                         } else {

@@ -181,7 +181,7 @@ fun MessageItem(
                 // Edited indicator
                 if (message.editedAt != null) {
                     Text(
-                        text = stringResource(R.string.chat_edited),
+                        text = stringResource(R.string.chat_message_edited_badge),
                         style = MaterialTheme.typography.labelSmall,
                         fontStyle = FontStyle.Italic,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

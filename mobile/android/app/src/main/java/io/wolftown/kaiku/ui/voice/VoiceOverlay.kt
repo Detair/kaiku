@@ -63,7 +63,7 @@ fun VoiceOverlay(
 
             // Mute toggle
             val muteDescription = stringResource(R.string.voice_microphone)
-            val muteState = stringResource(if (isMuted) R.string.voice_muted else R.string.voice_microphone_on)
+            val muteState = stringResource(if (isMuted) R.string.voice_participants_muted else R.string.voice_microphone_on)
             IconButton(
                 onClick = onMuteToggle,
                 modifier = Modifier.semantics {
@@ -81,7 +81,7 @@ fun VoiceOverlay(
             IconButton(onClick = onDisconnect) {
                 Icon(
                     imageVector = Icons.Default.Call,
-                    contentDescription = stringResource(R.string.voice_disconnect),
+                    contentDescription = stringResource(R.string.voice_panel_disconnect),
                     tint = MaterialTheme.colorScheme.error
                 )
             }
