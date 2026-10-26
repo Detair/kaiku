@@ -78,6 +78,18 @@ const MessageList: Component<MessageListProps> = (props) => {
     return messagesState.byChannel[props.channelId] || [];
   });
 
+  // Read cursor target: newest top-level, server-confirmed message. Thread
+  // replies and optimistic "pending:" ids are rejected by mark_as_read.
+  const lastMarkableMessage = () => {
+    const msgs = messages();
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].parent_id == null && !msgs[i].id.startsWith("pending:")) {
+        return msgs[i];
+      }
+    }
+    return undefined;
+  };
+
   // Compute messages with compact flag and first-unread marker
   const messagesWithCompact = createMemo(() => {
     const msgs = messages();
@@ -168,8 +180,7 @@ const MessageList: Component<MessageListProps> = (props) => {
   const scheduleMarkAsRead = () => {
     if (markAsReadTimer) clearTimeout(markAsReadTimer);
     markAsReadTimer = setTimeout(() => {
-      const msgs = messages();
-      const lastMsg = msgs[msgs.length - 1];
+      const lastMsg = lastMarkableMessage();
       if (lastMsg && isAtBottom()) {
         markChannelAsRead(props.channelId, lastMsg.id);
       }
@@ -362,8 +373,7 @@ const MessageList: Component<MessageListProps> = (props) => {
       // Don't trigger if a modal, context menu, or search overlay is open
       if (isEscapeForOverlay(e)) return;
 
-      const msgs = messages();
-      const lastMsg = msgs[msgs.length - 1];
+      const lastMsg = lastMarkableMessage();
       if (lastMsg && isChannelUnread(props.channelId)) {
         markChannelAsRead(props.channelId, lastMsg.id);
         scrollToBottom(true);

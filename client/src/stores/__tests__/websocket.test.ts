@@ -612,6 +612,58 @@ describe("websocket store", () => {
       expect(addMessage).toHaveBeenCalledWith(message);
     });
 
+    it("a thread reply does not touch the channel's unread state or last_message_id", async () => {
+      const { getChannel, incrementUnreadCount, updateChannelLastMessageId } =
+        await import("@/stores/channels");
+      vi.mocked(getChannel).mockReturnValue({
+        id: "c1",
+        guild_id: "g1",
+        channel_type: "text",
+      } as never);
+      const reply = {
+        id: "r1",
+        channel_id: "c1",
+        parent_id: "m1",
+        author: { id: "other" },
+        content: "reply",
+      };
+
+      await fire("ws:server_event", {
+        type: "message_new",
+        channel_id: "c1",
+        message: reply,
+      });
+
+      expect(incrementUnreadCount).not.toHaveBeenCalled();
+      expect(updateChannelLastMessageId).not.toHaveBeenCalled();
+    });
+
+    it("a top-level message in a forum channel counts as unread", async () => {
+      const { getChannel, incrementUnreadCount, updateChannelLastMessageId } =
+        await import("@/stores/channels");
+      vi.mocked(getChannel).mockReturnValue({
+        id: "c2",
+        guild_id: "g1",
+        channel_type: "forum",
+      } as never);
+      const post = {
+        id: "p1",
+        channel_id: "c2",
+        parent_id: null,
+        author: { id: "other" },
+        content: "post",
+      };
+
+      await fire("ws:server_event", {
+        type: "message_new",
+        channel_id: "c2",
+        message: post,
+      });
+
+      expect(incrementUnreadCount).toHaveBeenCalledWith("c2");
+      expect(updateChannelLastMessageId).toHaveBeenCalledWith("c2", "p1");
+    });
+
     it("native ws:connected after ws:reconnecting runs handleReconnect", async () => {
       const { loadDMs } = await import("@/stores/dms");
       await ws.connect();

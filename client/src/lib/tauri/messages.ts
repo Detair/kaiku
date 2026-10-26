@@ -27,6 +27,8 @@ export interface ChannelUnread {
   channel_id: string;
   channel_name: string;
   unread_count: number;
+  /** Read cursor (a top-level message id); null if never read. */
+  last_read_message_id: string | null;
 }
 
 export interface GuildUnreadSummary {

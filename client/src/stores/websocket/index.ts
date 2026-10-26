@@ -4,6 +4,7 @@
  * Manages WebSocket connection and routes events to appropriate stores.
  */
 
+import { isTextLikeChannelType } from "@/lib/channelTypes";
 import { createStore } from "solid-js/store";
 import * as tauri from "@/lib/tauri";
 import type { Message, ServerEvent } from "@/lib/types";
@@ -369,9 +370,11 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
         const isActiveDM =
           event.channel_id === dmsState.selectedDMId && !dmsState.isShowingFriends;
 
-        if (!isActiveGuildChannel && !isActiveDM) {
+        // Thread replies never count toward channel unread (server rule).
+        const isThreadReply = event.message.parent_id != null;
+        if (!isThreadReply && !isActiveGuildChannel && !isActiveDM) {
           const channel = getChannel(event.channel_id);
-          if (channel && channel.guild_id && channel.channel_type === "text") {
+          if (channel && channel.guild_id && isTextLikeChannelType(channel.channel_type)) {
             incrementUnreadCount(event.channel_id);
           }
         // Increment guild-level unread for non-active guilds
@@ -383,7 +386,9 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
         window.dispatchEvent(new CustomEvent("unread-update"));
         }
         // Always update last_message_id for the channel, even if it's the active channel
-        updateChannelLastMessageId(event.channel_id, event.message.id);
+        if (!isThreadReply) {
+          updateChannelLastMessageId(event.channel_id, event.message.id);
+        }
       }
       break;
 
