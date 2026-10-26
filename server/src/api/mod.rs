@@ -91,6 +91,7 @@ impl AppState {
     #[must_use]
     pub fn new(cfg: AppStateConfig) -> Self {
         let push = Arc::new(crate::push::PushService::from_config(&cfg.config));
+        crate::features::set_screening_enforced(cfg.config.optional_features.screening);
         Self {
             push,
             db: cfg.db,

@@ -9,6 +9,8 @@
 //!
 //! Existing rows are never deleted; turning a feature back on restores it.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{from_fn_with_state, Next};
@@ -75,6 +77,25 @@ impl OptionalFeatures {
             OptionalFeature::Screening => self.screening,
         }
     }
+}
+
+/// Process-wide copy of the screening flag for the permission resolver, which
+/// only receives a database pool (dozens of call sites). Set from the config
+/// by [`crate::api::AppState::new`]; a server process has one config. Starts
+/// `true` (screening enforced) until the state is built.
+static SCREENING_ENFORCED: AtomicBool = AtomicBool::new(true);
+
+/// Record whether membership screening is on for this process.
+pub fn set_screening_enforced(on: bool) {
+    SCREENING_ENFORCED.store(on, Ordering::Relaxed);
+}
+
+/// Whether `pending` members are held back. While screening is off they are
+/// treated as active (rows are not changed, so turning screening back on
+/// holds them again).
+#[must_use]
+pub fn screening_enforced() -> bool {
+    SCREENING_ENFORCED.load(Ordering::Relaxed)
 }
 
 /// Whether new channels (or content in channels) of `channel_type` are

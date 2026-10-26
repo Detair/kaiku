@@ -586,3 +586,55 @@ async fn test_pin_in_forum_rejected_when_disabled(pool: PgPool) {
         .unwrap();
     assert_eq!(count, 1, "no system message added");
 }
+
+#[sqlx::test]
+async fn test_pending_member_acts_as_active_while_screening_disabled(pool: PgPool) {
+    let (owner, _) = create_test_user(&pool).await;
+    let guild = create_guild_with_default_role(
+        &pool,
+        owner,
+        GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES,
+    )
+    .await;
+    sqlx::query("UPDATE guilds SET screening_enabled = true WHERE id = $1")
+        .bind(guild)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let channel = create_channel(&pool, guild, "general").await;
+    let (member, _) = create_test_user(&pool).await;
+    sqlx::query(
+        "INSERT INTO guild_members (guild_id, user_id, membership_state) VALUES ($1, $2, 'pending')",
+    )
+    .bind(guild)
+    .bind(member)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let send = |app: &TestApp| {
+        let token = generate_access_token(&app.config, member);
+        authed(
+            Method::POST,
+            &format!("/api/messages/channel/{channel}"),
+            &token,
+        )
+        .body(Body::from(
+            json!({ "content": "hi", "encrypted": false }).to_string(),
+        ))
+        .unwrap()
+    };
+
+    // Screening off: the pending member is not stuck.
+    let off = TestApp::with_pool(pool.clone()).await;
+    let res = off.oneshot(send(&off)).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    // The row is not migrated ...
+    assert_eq!(membership_state(&pool, guild, member).await, "pending");
+
+    // ... so turning screening back on holds the member again.
+    let on = TestApp::with_pool_and_config(pool.clone(), config_with(ALL_ON)).await;
+    let res = on.oneshot(send(&on)).await;
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
