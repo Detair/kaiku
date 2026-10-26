@@ -4,6 +4,7 @@
  * Manages guild (server) state for multi-server support.
  */
 
+import { isHiddenChannel } from "@/stores/serverFeatures";
 import { isTextLikeChannelType } from "@/lib/channelTypes";
 import { createStore } from "solid-js/store";
 import type { Guild, GuildMember, GuildInvite, Channel } from "@/lib/types";
@@ -480,7 +481,7 @@ async function loadAllGuildUnreadCounts(guilds: Guild[]): Promise<void> {
         }
         // Sum unread counts from text channels
         const total = channels
-          .filter((c) => isTextLikeChannelType(c.channel_type))
+          .filter((c) => isTextLikeChannelType(c.channel_type) && !isHiddenChannel(c))
           .reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
         setGuildsState("guildUnreadCounts", guild.id, total);
       } catch (err) {

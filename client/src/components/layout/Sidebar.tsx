@@ -20,7 +20,9 @@ import {
 } from "solid-js";
 import { t } from "@/i18n";
 import { useNavigate } from "@solidjs/router";
-import { Settings, Search, BookOpen, Calendar } from "lucide-solid";
+import { Settings, Search, BookOpen } from "lucide-solid";
+import GuildEventsButton from "./GuildEventsButton";
+import FeatureGate from "@/components/ui/FeatureGate";
 import { getActiveGuild, isGuildOwner } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
 import { memberHasPermission } from "@/stores/permissions";
@@ -125,13 +127,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
         {/* Events + Settings - only show when in a guild */}
         <Show when={activeGuild()}>
           <div class="flex items-center gap-0.5">
-            <button
-              onClick={() => setShowEvents(true)}
-              class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
-              title={t("home.guildSidebar.events")}
-            >
-              <Calendar class="w-4 h-4" />
-            </button>
+            <GuildEventsButton onClick={() => setShowEvents(true)} />
             <button
               data-testid="guild-settings-button"
               onClick={() => setShowGuildSettings(true)}
@@ -208,6 +204,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
 
       {/* Events Modal */}
       <Show when={showEvents() && activeGuild()}>
+        <FeatureGate feature="scheduled_events">
         <LazyErrorBoundary name="EventsModal">
           <Suspense fallback={<ModalFallback />}>
             <EventsModal
@@ -217,6 +214,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
             />
           </Suspense>
         </LazyErrorBoundary>
+        </FeatureGate>
       </Show>
 
       {/* Guild Settings Modal */}

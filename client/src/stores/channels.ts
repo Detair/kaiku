@@ -5,7 +5,10 @@
  */
 
 import { createStore } from "solid-js/store";
-import type { ChannelWithUnread } from "@/lib/types";
+import type { Channel, ChannelWithUnread } from "@/lib/types";
+import { isHiddenChannel } from "@/stores/serverFeatures";
+
+export { isHiddenChannel };
 import * as tauri from "@/lib/tauri";
 import { HttpError } from "@/lib/tauri/common";
 import { isTextLikeChannelType } from "@/lib/channelTypes";
@@ -32,8 +35,18 @@ const [channelsState, setChannelsState] = createStore<ChannelsState>({
 
 // Derived state
 
+/**
+ * Drop channels of a type the server has turned off (forum, announcement).
+ * The server still lists them; the app hides them (contract C22).
+ */
+export function visibleChannels<T extends Channel>(channels: T[]): T[] {
+  return channels.filter((c) => !isHiddenChannel(c));
+}
+
 export const selectedChannel = () =>
-  channelsState.channels.find((c) => c.id === channelsState.selectedChannelId);
+  visibleChannels(channelsState.channels).find(
+    (c) => c.id === channelsState.selectedChannelId,
+  );
 
 export const textChannels = () =>
   channelsState.channels
@@ -210,7 +223,7 @@ export function getUnreadCount(channelId: string): number {
  */
 export function getTotalUnreadCount(): number {
   return channelsState.channels
-    .filter((c) => isTextLikeChannelType(c.channel_type))
+    .filter((c) => isTextLikeChannelType(c.channel_type) && !isHiddenChannel(c))
     .reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
 }
 

@@ -12,6 +12,7 @@ import { Portal } from "solid-js/web";
 import { showToast } from "@/components/ui/Toast";
 import { createDialog } from "@/lib/a11y/dialog";
 import { t } from "@/i18n";
+import { isFeatureEnabled } from "@/stores/serverFeatures";
 
 interface CreateChannelModalProps {
   guildId: string;
@@ -172,7 +173,7 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                       </div>
                     </div>
                   </button>
-                  <Show when={!isTypeLocked()}>
+                  <Show when={!isTypeLocked() && isFeatureEnabled("forum_channels")}>
                     <button
                       type="button"
                       onClick={() => setChannelType("forum")}
@@ -198,7 +199,7 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                       </div>
                     </button>
                   </Show>
-                  <Show when={!isTypeLocked()}>
+                  <Show when={!isTypeLocked() && isFeatureEnabled("announcement_channels")}>
                     <button
                       type="button"
                       onClick={() => setChannelType("announcement")}

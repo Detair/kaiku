@@ -2,6 +2,7 @@
  * RoleEditor - Slide-out panel for editing role permissions
  */
 
+import { isPermissionVisible } from "@/stores/serverFeatures";
 import { Component, createSignal, createEffect, For, Show } from "solid-js";
 import { ArrowLeft, Plus, X } from "lucide-solid";
 import {
@@ -160,6 +161,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
       pages: [],
     };
     for (const perm of PERMISSIONS) {
+      if (!isPermissionVisible(perm.key)) continue;
       // For @everyone, skip forbidden permissions entirely
       if (isEveryoneRole() && perm.forbiddenForEveryone) continue;
       categories[perm.category].push(perm);

@@ -60,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- The desktop app hides forum, announcement, event and screening features when the server has them turned off.
 - The "invisible" status is no longer offered.
 - API error codes are now consistently written in upper case (for example `VALIDATION_ERROR`).
 - Clearer message when an authenticator code was already used: signing in and confirming admin actions now say to wait for the next code and try again.

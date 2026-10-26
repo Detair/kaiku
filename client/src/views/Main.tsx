@@ -41,6 +41,7 @@ import SearchPanel from "@/components/search/SearchPanel";
 import KeyboardShortcutsDialog from "@/components/ui/KeyboardShortcutsDialog";
 import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import { selectedChannel } from "@/stores/channels";
+import FeatureGate from "@/components/ui/FeatureGate";
 import { loadGuilds, landOnFirstServerIfIdle, guildsState, isDiscoveryActive, isGuildOwner } from "@/stores/guilds";
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
@@ -210,7 +211,9 @@ const Main: Component = () => {
         <Show when={!isDiscoveryActive()}>
           {/* Screening gate overlays the content (not the rail) when pending */}
           <Show when={guildsState.activeGuildId}>
-            <ScreeningGate guildId={guildsState.activeGuildId!} />
+            <FeatureGate feature="membership_screening" whileUnknown>
+              <ScreeningGate guildId={guildsState.activeGuildId!} />
+            </FeatureGate>
           </Show>
           <Switch>
             {/* Home View - No guild selected */}
