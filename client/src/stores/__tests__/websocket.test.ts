@@ -92,6 +92,9 @@ vi.mock("@/stores/call", () => ({
   receiveIncomingCall: vi.fn(),
   callConnected: vi.fn(),
   callEndedExternally: vi.fn(),
+  callEventMatches: vi.fn(() => true),
+  connectOnFirstJoin: vi.fn(),
+  setCurrentCallId: vi.fn(),
   participantJoined: vi.fn(),
   participantLeft: vi.fn(),
 }));
@@ -683,12 +686,37 @@ describe("websocket store", () => {
         duration_secs: null,
       });
 
-      expect(receiveIncomingCall).toHaveBeenCalledWith("dm-1", "other", "Other");
+      expect(receiveIncomingCall).toHaveBeenCalledWith("dm-1", "other", "Other", undefined);
       expect(callEndedExternally).toHaveBeenCalledWith(
         "dm-1",
         "no_answer",
         undefined,
+        undefined,
       );
+    });
+
+    it("call_participant_joined is routed through the channel/call_id check", async () => {
+      const call = await import("@/stores/call");
+      await fire("ws:server_event", {
+        type: "call_participant_joined",
+        channel_id: "dm-y",
+        call_id: "c1",
+        user_id: "u2",
+        username: "bob",
+      });
+      expect(call.connectOnFirstJoin).toHaveBeenCalledWith("dm-y", "u2", "c1");
+    });
+
+    it("call_ended passes the call_id to the store", async () => {
+      const call = await import("@/stores/call");
+      await fire("ws:server_event", {
+        type: "call_ended",
+        channel_id: "dm-1",
+        call_id: "c1",
+        reason: "last_left",
+        duration_secs: 5,
+      });
+      expect(call.callEndedExternally).toHaveBeenCalledWith("dm-1", "last_left", 5, "c1");
     });
 
     it("native ws:connected after ws:reconnecting runs handleReconnect", async () => {

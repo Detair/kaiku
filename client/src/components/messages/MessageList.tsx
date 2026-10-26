@@ -1,3 +1,4 @@
+import { lastMarkableMessage as lastMarkableMessageOf } from "@/lib/readCursor";
 import {
   Component,
   Index,
@@ -78,17 +79,7 @@ const MessageList: Component<MessageListProps> = (props) => {
     return messagesState.byChannel[props.channelId] || [];
   });
 
-  // Read cursor target: newest top-level, server-confirmed message. Thread
-  // replies and optimistic "pending:" ids are rejected by mark_as_read.
-  const lastMarkableMessage = () => {
-    const msgs = messages();
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].parent_id == null && !msgs[i].id.startsWith("pending:")) {
-        return msgs[i];
-      }
-    }
-    return undefined;
-  };
+  const lastMarkableMessage = () => lastMarkableMessageOf(messages());
 
   // Compute messages with compact flag and first-unread marker
   const messagesWithCompact = createMemo(() => {

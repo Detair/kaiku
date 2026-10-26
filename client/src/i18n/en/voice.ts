@@ -130,6 +130,7 @@ export const voice = {
   "voice.call.ended.allDeclined": "Everyone declined the call",
   "voice.call.ended.noAnswer": "No answer",
   "voice.call.ended.lastLeft": "Everyone left the call",
+  "voice.call.error.conflict": "A call is already running in this conversation.",
   "voice.call.blocked": "You can't call this person.",
   "voice.call.startFailed": "Couldn't start the call. Please try again.",
   "voice.call.ended.default": "Call ended",

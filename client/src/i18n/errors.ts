@@ -34,7 +34,10 @@ export const CHAT_SEND_ERRORS: { byCode: ByCode; byStatus: ByStatus } = {
 
 /** Reasons starting a DM call can fail (server answers 403 BLOCKED). */
 export const CALL_START_ERRORS: { byCode: ByCode } = {
-  byCode: { BLOCKED: "voice.call.blocked" },
+  byCode: {
+    BLOCKED: "voice.call.blocked",
+    CALL_CONFLICT: "voice.call.error.conflict",
+  },
 };
 
 /**

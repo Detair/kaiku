@@ -95,4 +95,10 @@ describe("errorText", () => {
       errorText(new HttpError(500, "x"), "voice.call.startFailed", CALL_START_ERRORS.byCode),
     ).toBe(t("errors.server"));
   });
+
+  it("maps CALL_CONFLICT on call start", () => {
+    expect(
+      errorText(new HttpError(409, "x", "CALL_CONFLICT"), "voice.call.startFailed", CALL_START_ERRORS.byCode),
+    ).toBe(t("voice.call.error.conflict"));
+  });
 });

@@ -51,12 +51,54 @@ interface CallStoreState {
     string,
     { initiator: string; initiatorName: string; participants: string[] }
   >;
+  /** Server call_id of the current call once known (from incoming_call/call_started). */
+  callId: string | null;
 }
 
 const [callState, setCallState] = createStore<CallStoreState>({
   currentCall: { status: "idle" },
   activeCallsByChannel: {},
+  callId: null,
 });
+
+/** Remember the server's call_id for the current call. */
+export function setCurrentCallId(callId: string | undefined): void {
+  if (callId) setCallState("callId", callId);
+}
+
+/**
+ * Does a call event belong to the call this client is in? Same channel, and
+ * the same call_id where both sides know one.
+ */
+export function callEventMatches(channelId: string, callId?: string): boolean {
+  const current = callState.currentCall;
+  if (current.status === "idle" || !("channelId" in current)) return false;
+  if (current.channelId !== channelId) return false;
+  if (callId && callState.callId && callId !== callState.callId) return false;
+  return true;
+}
+
+/**
+ * Starting an outgoing call failed. Return to idle (not "ended") so the other
+ * side's incoming call can still be shown (glare); leave an incoming call that
+ * already replaced our outgoing state untouched.
+ */
+export function abortOutgoingCall(
+  channelId: string,
+  why: "conflict" | "failed",
+): void {
+  const current = callState.currentCall;
+  const stillOurs =
+    (current.status === "outgoing_ringing" || current.status === "connecting") &&
+    current.channelId === channelId;
+  if (!stillOurs) return;
+  if (why === "conflict") {
+    stopRinging();
+    setCallState({ currentCall: { status: "idle" }, callId: null });
+  } else {
+    endCall(channelId, "cancelled");
+  }
+}
 
 // Actions
 
@@ -65,6 +107,7 @@ const [callState, setCallState] = createStore<CallStoreState>({
  */
 export function startCall(channelId: string): void {
   stopRinging();
+  setCallState("callId", null);
   setCallState("currentCall", {
     status: "outgoing_ringing",
     channelId,
@@ -79,9 +122,16 @@ export function receiveIncomingCall(
   channelId: string,
   initiator: string,
   initiatorName: string,
+  callId?: string,
 ): void {
+  // Glare: the other side called this DM while ours was still ringing, so
+  // theirs wins (the server rejected or will reject our start).
+  const cur = callState.currentCall;
+  const glare =
+    cur.status === "outgoing_ringing" && cur.channelId === channelId;
   // Only update if we're idle (don't interrupt an existing call)
-  if (callState.currentCall.status === "idle") {
+  if (cur.status === "idle" || glare) {
+    setCallState("callId", callId ?? null);
     setCallState("currentCall", {
       status: "incoming_ringing",
       channelId,
@@ -121,6 +171,22 @@ export function callConnected(channelId: string, participants: string[]): void {
     participants,
     startedAt: Date.now(),
   });
+}
+
+/**
+ * First participant joined: move our ringing/connecting call to connected.
+ * Ignored for any other channel or call_id, and once already connected.
+ */
+export function connectOnFirstJoin(
+  channelId: string,
+  userId: string,
+  callId?: string,
+): void {
+  if (!callEventMatches(channelId, callId)) return;
+  const status = callState.currentCall.status;
+  if (status === "outgoing_ringing" || status === "connecting") {
+    callConnected(channelId, [userId]);
+  }
 }
 
 /**
@@ -246,6 +312,7 @@ export function endCall(
   callEndedTimeoutId = setTimeout(() => {
     if (callState.currentCall.status === "ended") {
       setCallState("currentCall", { status: "idle" });
+      setCallState("callId", null);
     }
     callEndedTimeoutId = null;
   }, CALL_ENDED_DISPLAY_MS);
@@ -258,7 +325,10 @@ export function callEndedExternally(
   channelId: string,
   reason: EndReason,
   duration?: number,
+  callId?: string,
 ): void {
+  // An end for a different call (e.g. the previous one in this DM) is stale.
+  if (callId && callState.callId && callId !== callState.callId) return;
   // Remove from active calls
   setCallState(
     produce((state) => {

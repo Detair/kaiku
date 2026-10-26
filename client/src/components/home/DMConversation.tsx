@@ -11,6 +11,7 @@ import {
 } from "solid-js";
 import { Phone, Check, X } from "lucide-solid";
 import { t, plural } from "@/i18n";
+import { HttpError } from "@/lib/tauri/common";
 import { errorText, CALL_START_ERRORS } from "@/i18n/errors";
 import { getSelectedDM, updateDMIconUrl } from "@/stores/dms";
 import { currentUser } from "@/stores/auth";
@@ -19,7 +20,7 @@ import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
 import { showToast } from "@/components/ui/Toast";
 import { CallBanner } from "@/components/call";
-import { callState, startCall, endCall, isInCallForChannel } from "@/stores/call";
+import { callState, startCall, abortOutgoingCall, isInCallForChannel } from "@/stores/call";
 import {
   startDMCall,
   joinVoice,
@@ -55,8 +56,12 @@ const DMConversation: Component = () => {
         title: errorText(err, "voice.call.startFailed", CALL_START_ERRORS.byCode),
         duration: 5000,
       });
-      // Roll back optimistic call state on failure
-      endCall(currentDM.id, "cancelled");
+      // Roll back optimistic call state on failure. A conflict (glare) goes
+      // back to idle so the other side's incoming call can still ring.
+      abortOutgoingCall(
+        currentDM.id,
+        err instanceof HttpError && err.code === "CALL_CONFLICT" ? "conflict" : "failed",
+      );
     } finally {
       setIsStartingCall(false);
     }

@@ -25,11 +25,12 @@ import {
 import { handlePreferencesUpdated } from "../preferences";
 import {
   receiveIncomingCall,
-  callConnected,
+  connectOnFirstJoin,
   callEndedExternally,
+  callEventMatches,
+  setCurrentCallId,
   participantJoined,
   participantLeft,
-  callState,
   type EndReason,
 } from "../call";
 import {
@@ -550,12 +551,14 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
         event.channel_id,
         event.initiator,
         event.initiator_name,
+        event.call_id,
       );
       break;
     }
 
     case "call_started":
       console.log("[WebSocket] Call started in channel:", event.channel_id);
+      if (callEventMatches(event.channel_id)) setCurrentCallId(event.call_id);
       // Call started means the initiator is now connected
       // Other participants will receive incoming_call
       break;
@@ -566,19 +569,16 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
         event.channel_id,
         event.reason as EndReason,
         event.duration_secs ?? undefined,
+        event.call_id,
       );
       break;
 
     case "call_participant_joined":
       console.log("[WebSocket] Participant joined call:", event.username);
       participantJoined(event.channel_id, event.user_id);
-      // Only transition to connected on the first join (not on subsequent participants)
-      {
-        const status = callState.currentCall.status;
-        if (status === "outgoing_ringing" || status === "connecting") {
-          callConnected(event.channel_id, [event.user_id]);
-        }
-      }
+      // Only transition to connected on the first join (not on subsequent
+      // participants) and only for the call we are actually in.
+      connectOnFirstJoin(event.channel_id, event.user_id, event.call_id);
       break;
 
     case "call_participant_left":
