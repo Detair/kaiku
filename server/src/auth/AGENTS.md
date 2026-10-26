@@ -200,7 +200,7 @@ Admin elevation and backup-code regeneration ask the caller to prove the account
   - 400 `REAUTH_PROVIDER_UNAVAILABLE` (OIDC start for a provider that is not linked, not usable or not eligible)
   - 403 (OIDC start by a non-admin; `GET` on the start path is 405)
   - 429 (rate limited or locked)
-  - 503 `SERVICE_UNAVAILABLE` (replay store unavailable)
+  - 503 `SERVICE_UNAVAILABLE` (replay store, re-auth limiter or session denylist unavailable)
 - **Callback codes:**
   - `REAUTH_AUTH_TIME_MISSING`
   - `REAUTH_STALE`
@@ -209,7 +209,8 @@ Admin elevation and backup-code regeneration ask the caller to prove the account
   - `REAUTH_IDENTITY_NOT_ELIGIBLE`
   - `REAUTH_NOT_ALLOWED`
   - `MFA_CODE_REQUIRED`
-  - `OIDC_EXCHANGE_FAILED` (bad signature, wrong nonce, provider error)
+  - `OIDC_EXCHANGE_FAILED` (bad signature, wrong nonce, failed exchange)
+  - `OIDC_PROVIDER_ERROR` (the provider returned an error instead of a code)
   - `REAUTH_FAILED` (server fault, logged)
   - A missing or reused state is HTTP 400 `OIDC_STATE_MISMATCH`.
 - **Session binding:** an elevation belongs to the access token's `sid`. It comes from the flow state, never from cookies.
@@ -219,7 +220,7 @@ Admin elevation and backup-code regeneration ask the caller to prove the account
   - These routes have `check_ip_not_blocked`, `AuthOther` and `rate_limit_by_user` (`with_reauth_limits`): `/auth/me/password`, `/auth/mfa/verify`, `/auth/mfa/disable`, `/auth/mfa/backup-codes`, `/auth/qr/create`, `/auth/reauth/oidc/authorize/*` and `POST /api/admin/elevate`.
   - The login MFA step is part of `/auth/login` (`AuthLogin`, with IP blocking).
   - Each wrong password or code is recorded per IP and per account (`reauth:{user_id}`). Ten failures lock both, including the OIDC start.
-  - Limiter errors fail closed. The 503 mapping for limiter errors comes with the Valkey hardening change.
+  - Limiter errors fail closed with 503 `SERVICE_UNAVAILABLE` (`RateLimiter::allow_during_outage(FailedAuth)`, so `RATE_LIMIT_FAIL_OPEN=true` opens them like the other auth limits).
 
 ### Error Handling
 

@@ -37,16 +37,12 @@ use super::password::verify_password;
 use super::types::{OidcReauthRequest, ReauthMethodsResponse, ReauthOidcProvider};
 use crate::api::AppState;
 use crate::db::{find_user_by_id, find_user_id_by_identity, get_auth_methods_allowed};
-use crate::ratelimit::{extract_client_ip, normalize_ip};
+use crate::ratelimit::{extract_client_ip, normalize_ip, RateLimitCategory};
 
 /// Maximum age of the provider's `auth_time` for an OIDC re-authentication.
 const OIDC_MAX_AUTH_AGE_SECS: i64 = 300;
 /// Clock skew tolerated between this server and the provider.
 const OIDC_CLOCK_SKEW_SECS: i64 = 30;
-
-/// Message for a fail-closed rate limiter outage.
-const LIMITER_UNAVAILABLE: &str =
-    "Authentication service temporarily unavailable. Please try again later.";
 
 /// Failed-attempt key of an account's re-authentication.
 fn account_key(user_id: Uuid) -> String {
@@ -80,30 +76,34 @@ pub async fn ensure_not_locked(state: &AppState, user_id: Uuid) -> AuthResult<()
                 .unwrap_or_else(|| limiter.config().limits.failed_auth.block_duration_secs);
             Err(AuthError::TooManyAttempts { retry_after })
         }
-        // Fails closed, like recording a failure.
+        // Fails closed (503), like recording a failure and the other auth
+        // limits (unless the operator set `RATE_LIMIT_FAIL_OPEN=true`).
         Err(e) => {
-            tracing::error!(error = %e, %user_id, "Cannot check re-authentication lock");
-            Err(AuthError::Internal(LIMITER_UNAVAILABLE.to_string()))
+            tracing::debug!(error = %e, %user_id, "Cannot check re-authentication lock");
+            if limiter.allow_during_outage(RateLimitCategory::FailedAuth) {
+                Ok(())
+            } else {
+                Err(AuthError::ServiceUnavailable)
+            }
         }
     }
 }
 
 /// Record a failed re-authentication for the client IP and the account.
 ///
-/// Fails closed: if the failure cannot be recorded the request is refused,
-/// so a limiter outage cannot be used to guess without limit.
+/// Fails closed: if the failure cannot be recorded the request is refused
+/// with 503 `SERVICE_UNAVAILABLE`, so a limiter outage cannot be used to
+/// guess without limit (unless the operator set `RATE_LIMIT_FAIL_OPEN=true`).
 pub async fn record_failure(state: &AppState, user_id: Uuid, client_ip: IpAddr) -> AuthResult<()> {
     let Some(ref limiter) = state.rate_limiter else {
         return Ok(());
     };
     for key in [normalize_ip(client_ip), account_key(user_id)] {
         if let Err(e) = limiter.record_failed_auth(&key).await {
-            tracing::error!(
-                error = %e,
-                %user_id,
-                "Cannot record failed re-authentication; refusing the request"
-            );
-            return Err(AuthError::Internal(LIMITER_UNAVAILABLE.to_string()));
+            tracing::debug!(error = %e, %user_id, "Cannot record failed re-authentication");
+            if !limiter.allow_during_outage(RateLimitCategory::FailedAuth) {
+                return Err(AuthError::ServiceUnavailable);
+            }
         }
     }
     Ok(())
@@ -709,4 +709,106 @@ async fn identity_eligible(
     .fetch_one(&state.db)
     .await?;
     Ok(eligible)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::time::Duration;
+
+    use axum::response::IntoResponse;
+    use fred::prelude::{ClientLike, Config as ValkeyConfig, PerformanceConfig};
+    use sqlx::PgPool;
+
+    use super::*;
+    use crate::api::AppStateConfig;
+    use crate::config::Config;
+    use crate::ratelimit::{RateLimitConfig, RateLimiter, RateLimits, TrustedProxies};
+
+    /// App state whose rate limiter talks to a Valkey client that fails every
+    /// command (connected, then closed; a short command timeout turns the wait
+    /// into an error).
+    async fn state_with_failing_limiter(pool: PgPool, fail_open: bool) -> AppState {
+        let config = Config::default_for_test();
+        let redis = crate::db::create_redis_client(&config.redis_url)
+            .await
+            .expect("Valkey");
+        let failing = fred::clients::Client::new(
+            ValkeyConfig::from_url(&config.redis_url).expect("Valkey URL"),
+            Some(PerformanceConfig {
+                default_command_timeout: Duration::from_millis(300),
+                ..PerformanceConfig::default()
+            }),
+            None,
+            None,
+        );
+        failing.connect();
+        failing.wait_for_connect().await.expect("connect Valkey");
+        failing.quit().await.expect("quit Valkey");
+        let limiter = RateLimiter::new(
+            failing,
+            RateLimitConfig {
+                enabled: true,
+                redis_key_prefix: format!("test:rl:{}", Uuid::new_v4()),
+                fail_open,
+                trusted_proxies: TrustedProxies::default(),
+                allowlist: HashSet::new(),
+                limits: RateLimits::default(),
+            },
+        );
+        AppState::new(AppStateConfig {
+            db: pool,
+            redis,
+            config: config.clone(),
+            s3: None,
+            sfu: crate::voice::SfuServer::new(std::sync::Arc::new(config), None)
+                .expect("SfuServer"),
+            rate_limiter: Some(limiter),
+            screen_share_limiter: None,
+            email: None,
+            oidc_manager: None,
+            http_client: reqwest::Client::new(),
+        })
+    }
+
+    fn status_of(err: AuthError) -> u16 {
+        err.into_response().status().as_u16()
+    }
+
+    /// Re-auth lock checks and failure recording fail closed with 503
+    /// `SERVICE_UNAVAILABLE` (not 500) when the limiter cannot reach Valkey.
+    #[sqlx::test]
+    async fn reauth_limiter_outage_answers_503(pool: PgPool) {
+        let state = state_with_failing_limiter(pool, false).await;
+        let user_id = Uuid::new_v4();
+        let ip: IpAddr = "203.0.113.7".parse().expect("ip");
+
+        let err = ensure_not_locked(&state, user_id)
+            .await
+            .expect_err("lock check fails closed");
+        assert!(matches!(err, AuthError::ServiceUnavailable), "{err:?}");
+        assert_eq!(status_of(err), 503);
+
+        let err = record_failure(&state, user_id, ip)
+            .await
+            .expect_err("failure recording fails closed");
+        assert!(matches!(err, AuthError::ServiceUnavailable), "{err:?}");
+        assert_eq!(status_of(err), 503);
+    }
+
+    /// `RATE_LIMIT_FAIL_OPEN=true` (explicit operator opt-in) also opens the
+    /// re-auth limiter during an outage, like the other auth limits.
+    #[sqlx::test]
+    async fn reauth_limiter_outage_respects_fail_open(pool: PgPool) {
+        let state = state_with_failing_limiter(pool, true).await;
+        let user_id = Uuid::new_v4();
+        let ip: IpAddr = "203.0.113.7".parse().expect("ip");
+
+        ensure_not_locked(&state, user_id)
+            .await
+            .expect("fail-open lets the check pass");
+        record_failure(&state, user_id, ip)
+            .await
+            .expect("fail-open lets the request continue");
+    }
 }
