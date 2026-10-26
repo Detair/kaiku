@@ -200,7 +200,7 @@ pub async fn find_blocked_friendship(
 
 /// List all accepted friends for `user_id`, joined with the friend's user row.
 ///
-/// `is_online` is only "not invisible" here; the handler masks it with the
+/// `is_online` is always `true` here; the handler masks it with the
 /// friend's live sockets (see `presence::connections`).
 pub async fn list_accepted_friends(
     pool: &PgPool,
@@ -216,7 +216,7 @@ pub async fn list_accepted_friends(
             u.display_name,
             u.avatar_url,
             u.status_message,
-            NOT u.invisible as is_online,
+            true as is_online,
             f.id as friendship_id,
             f.status as "friendship_status",
             f.created_at,

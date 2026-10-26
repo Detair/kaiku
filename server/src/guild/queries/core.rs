@@ -253,8 +253,7 @@ pub async fn delete_guild_member(
 
 /// List the members of a guild with their user profile fields.
 ///
-/// `status` is the *stored* presence (`invisible` for users who appear
-/// offline); callers turn it into the shown status with
+/// `status` is the *stored* status; callers turn it into the shown status with
 /// [`crate::presence::connections::effective_status`].
 pub async fn list_guild_members(
     pool: &PgPool,

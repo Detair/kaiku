@@ -173,7 +173,31 @@ pub mod test_hooks {
     }
 
     pub(crate) async fn after_audience_read(user_id: Uuid) {
-        let pause = pauses()
+        wait(pauses(), user_id).await;
+    }
+
+    fn reload_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next audience reload of a live socket of `user_id` after it
+    /// has read the audience and before it applies it (subscribes).
+    pub fn pause_in_audience_reload(user_id: Uuid) -> Pause {
+        let pause = Pause::default();
+        reload_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn in_audience_reload(user_id: Uuid) {
+        wait(reload_pauses(), user_id).await;
+    }
+
+    async fn wait(map: &Mutex<HashMap<Uuid, Pause>>, user_id: Uuid) {
+        let pause = map
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&user_id);
