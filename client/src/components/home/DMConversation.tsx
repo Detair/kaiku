@@ -11,6 +11,7 @@ import {
 } from "solid-js";
 import { Phone, Check, X } from "lucide-solid";
 import { t, plural } from "@/i18n";
+import { errorText, CALL_START_ERRORS } from "@/i18n/errors";
 import { getSelectedDM, updateDMIconUrl } from "@/stores/dms";
 import { currentUser } from "@/stores/auth";
 import MessageList from "@/components/messages/MessageList";
@@ -49,6 +50,11 @@ const DMConversation: Component = () => {
       await joinVoice(currentDM.id);
     } catch (err) {
       console.error("Failed to start call:", err);
+      showToast({
+        type: "error",
+        title: errorText(err, "voice.call.startFailed", CALL_START_ERRORS.byCode),
+        duration: 5000,
+      });
       // Roll back optimistic call state on failure
       endCall(currentDM.id, "cancelled");
     } finally {

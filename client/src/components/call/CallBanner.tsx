@@ -23,6 +23,8 @@ import {
 } from "@/lib/tauri";
 import { t } from "@/i18n";
 
+import { endReasonText } from "@/lib/callEnd";
+
 interface CallBannerProps {
   channelId: string;
 }
@@ -130,21 +132,6 @@ const CallBanner: Component<CallBannerProps> = (props) => {
       return call;
     }
     return null;
-  };
-
-  const endReasonText = (reason: string): string => {
-    switch (reason) {
-      case "cancelled":
-        return t("voice.call.ended.cancelled");
-      case "all_declined":
-        return t("voice.call.ended.declined");
-      case "no_answer":
-        return t("voice.call.ended.noAnswer");
-      case "last_left":
-        return t("voice.call.ended.default");
-      default:
-        return t("voice.call.ended.default");
-    }
   };
 
   return (

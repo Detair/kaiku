@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { t } from "../index";
-import { errorText } from "../errors";
+import { errorText, CALL_START_ERRORS } from "../errors";
 import { HttpError } from "@/lib/tauri/common";
 
 describe("errorText", () => {
@@ -84,5 +84,15 @@ describe("errorText", () => {
     expect(
       errorText(wrapped, "auth.login.failed", { INVALID_CREDENTIALS: "auth.login.invalidCredentials" }),
     ).toBe("Invalid username or password.");
+  });
+
+  it("maps a call to a blocked user to its own sentence", () => {
+    const err = new HttpError(403, "blocked", "BLOCKED");
+    expect(
+      errorText(err, "voice.call.startFailed", CALL_START_ERRORS.byCode),
+    ).toBe(t("voice.call.blocked"));
+    expect(
+      errorText(new HttpError(500, "x"), "voice.call.startFailed", CALL_START_ERRORS.byCode),
+    ).toBe(t("errors.server"));
   });
 });

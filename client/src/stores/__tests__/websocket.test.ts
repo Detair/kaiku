@@ -664,6 +664,33 @@ describe("websocket store", () => {
       expect(updateChannelLastMessageId).toHaveBeenCalledWith("c2", "p1");
     });
 
+    it("call events are handled without any DM channel subscription", async () => {
+      const { receiveIncomingCall, callEndedExternally } = await import(
+        "@/stores/call"
+      );
+      expect(ws.wsState.subscribedChannels.size).toBe(0);
+
+      await fire("ws:server_event", {
+        type: "incoming_call",
+        channel_id: "dm-1",
+        initiator: "other",
+        initiator_name: "Other",
+      });
+      await fire("ws:server_event", {
+        type: "call_ended",
+        channel_id: "dm-1",
+        reason: "no_answer",
+        duration_secs: null,
+      });
+
+      expect(receiveIncomingCall).toHaveBeenCalledWith("dm-1", "other", "Other");
+      expect(callEndedExternally).toHaveBeenCalledWith(
+        "dm-1",
+        "no_answer",
+        undefined,
+      );
+    });
+
     it("native ws:connected after ws:reconnecting runs handleReconnect", async () => {
       const { loadDMs } = await import("@/stores/dms");
       await ws.connect();

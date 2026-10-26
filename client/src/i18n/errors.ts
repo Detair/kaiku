@@ -32,6 +32,11 @@ export const CHAT_SEND_ERRORS: { byCode: ByCode; byStatus: ByStatus } = {
   byStatus: { 413: "chat.send.fileTooLarge" },
 };
 
+/** Reasons starting a DM call can fail (server answers 403 BLOCKED). */
+export const CALL_START_ERRORS: { byCode: ByCode } = {
+  byCode: { BLOCKED: "voice.call.blocked" },
+};
+
 /**
  * Turn any thrown value into a sentence for the user (contract C16).
  *

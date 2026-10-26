@@ -127,7 +127,11 @@ export const voice = {
   "voice.call.duration": "Duration: {{duration}}",
   "voice.call.ended.cancelled": "Call cancelled",
   "voice.call.ended.declined": "Call declined",
+  "voice.call.ended.allDeclined": "Everyone declined the call",
   "voice.call.ended.noAnswer": "No answer",
+  "voice.call.ended.lastLeft": "Everyone left the call",
+  "voice.call.blocked": "You can't call this person.",
+  "voice.call.startFailed": "Couldn't start the call. Please try again.",
   "voice.call.ended.default": "Call ended",
 
   "voice.toast.degraded": "Connection severely degraded",
