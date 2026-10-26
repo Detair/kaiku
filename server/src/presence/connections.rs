@@ -151,12 +151,15 @@ end
 ///
 /// ARGV = now ms, expiry ms, socket id, key TTL ms, event payload (empty:
 /// publish nothing), publish channel, user id, status sequence and hidden bit
-/// read from the database (empty: unknown, keep the flag). Returns 1 on 0 → 1.
+/// read from the database (empty: unknown, keep the flag). Returns 1 on 0 → 1,
+/// plus 2 if the stored flag claims a newer status sequence than the one
+/// given (see `replace_future_flag`).
 const SOCKET_ONLINE_SCRIPT: &str = concat!(
     lua_announce!(),
     r"
-if ARGV[8] ~= '' then
-  set_hidden(ARGV[8], ARGV[9])
+local ahead = 0
+if ARGV[8] ~= '' and not set_hidden(ARGV[8], ARGV[9]) then
+  ahead = 2
 end
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
 local before = redis.call('ZCARD', KEYS[1])
@@ -165,11 +168,29 @@ redis.call('PEXPIRE', KEYS[1], ARGV[4])
 redis.call('ZADD', KEYS[2], 'GT', ARGV[2], ARGV[7])
 if before == 0 then
   announce(ARGV[5], ARGV[6])
+  return 1 + ahead
+end
+return ahead
+"
+);
+
+/// Replace a hidden flag whose status sequence is ahead of the database's
+/// current one (a flag the database does not know, e.g. after a restore).
+/// Compare-and-set: nothing happens if the flag is no longer ahead.
+///
+/// ARGV = current status sequence, hidden bit. Returns 1 if replaced.
+const REPLACE_FUTURE_FLAG_SCRIPT: &str = r"
+local flag = redis.call('GET', KEYS[4])
+if not flag then
+  return 0
+end
+local stored = tonumber(string.match(flag, '^(%d+):'))
+if stored and stored > tonumber(ARGV[1]) then
+  redis.call('SET', KEYS[4], ARGV[1] .. ':' .. ARGV[2])
   return 1
 end
 return 0
-"
-);
+";
 
 /// Remove a socket, then prune expired members. Reports 1 → 0 when the set is
 /// empty afterwards and this call removed anything (its own socket, expired
@@ -268,15 +289,22 @@ return 1
 "
 );
 
-/// Live socket count, presence version and hidden bit per user. KEYS =
-/// socket set, version key, hidden flag, repeating.
+/// Live socket count, presence version and hidden flag (1 hidden, 0 visible,
+/// 2 missing) per user. KEYS = socket set, version key, hidden flag,
+/// repeating.
 const LIVE_SNAPSHOT_SCRIPT: &str = r"
 local out = {}
 for i = 1, #KEYS, 3 do
   out[#out + 1] = redis.call('ZCOUNT', KEYS[i], '(' .. ARGV[1], '+inf')
   out[#out + 1] = tonumber(redis.call('GET', KEYS[i + 1]) or '0')
   local flag = redis.call('GET', KEYS[i + 2])
-  out[#out + 1] = (flag and string.sub(flag, -1) == '1') and 1 or 0
+  if not flag then
+    out[#out + 1] = 2
+  elseif string.sub(flag, -1) == '1' then
+    out[#out + 1] = 1
+  else
+    out[#out + 1] = 0
+  end
 end
 return out
 ";
@@ -337,8 +365,32 @@ pub async fn socket_online_announce(
     announce: Option<&str>,
     visibility: Option<Visibility>,
 ) -> Result<bool, PresenceError> {
+    socket_online_detailed(redis, user_id, socket_id, now_ms, announce, visibility)
+        .await
+        .map(|outcome| outcome.first)
+}
+
+/// What registering a socket found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OnlineOutcome {
+    /// First live socket (0 → 1).
+    pub first: bool,
+    /// The hidden flag claims a newer status sequence than `visibility`; the
+    /// caller re-checks the database ([`replace_future_flag`]).
+    pub flag_ahead: bool,
+}
+
+/// [`socket_online_announce`] with the full [`OnlineOutcome`].
+pub async fn socket_online_detailed(
+    redis: &Client,
+    user_id: Uuid,
+    socket_id: Uuid,
+    now_ms: i64,
+    announce: Option<&str>,
+    visibility: Option<Visibility>,
+) -> Result<OnlineOutcome, PresenceError> {
     let ttl = ttl_ms();
-    let first: i64 = redis
+    let result: i64 = redis
         .eval(
             SOCKET_ONLINE_SCRIPT,
             lifecycle_keys(user_id),
@@ -358,7 +410,27 @@ pub async fn socket_online_announce(
             ],
         )
         .await?;
-    Ok(first == 1)
+    Ok(OnlineOutcome {
+        first: result & 1 == 1,
+        flag_ahead: result & 2 == 2,
+    })
+}
+
+/// Replace the hidden flag with `visibility` (the database's current state)
+/// if the flag claims a newer status sequence; `true` if replaced.
+pub async fn replace_future_flag(
+    redis: &Client,
+    user_id: Uuid,
+    visibility: Visibility,
+) -> Result<bool, PresenceError> {
+    let replaced: i64 = redis
+        .eval(
+            REPLACE_FUTURE_FLAG_SCRIPT,
+            lifecycle_keys(user_id),
+            vec![visibility.seq.to_string(), visibility.bit().to_string()],
+        )
+        .await?;
+    Ok(replaced == 1)
 }
 
 /// Remove `socket_id`; `true` when no live socket remains (1 → 0).
@@ -509,6 +581,9 @@ pub struct LiveSnapshot {
     pub versions: HashMap<Uuid, u64>,
     /// Users whose hidden flag says invisible.
     pub hidden: HashSet<Uuid>,
+    /// Users without a hidden flag (never connected since it was introduced,
+    /// or lost).
+    pub flag_missing: HashSet<Uuid>,
 }
 
 /// [`LiveSnapshot`] of `user_ids` (one round trip).
@@ -536,8 +611,14 @@ pub async fn live_snapshot(
         snapshot
             .versions
             .insert(*id, u64::try_from(version).unwrap_or(0));
-        if row.get(2).copied().unwrap_or(0) == 1 {
-            snapshot.hidden.insert(*id);
+        match row.get(2).copied().unwrap_or(2) {
+            1 => {
+                snapshot.hidden.insert(*id);
+            }
+            0 => {}
+            _ => {
+                snapshot.flag_missing.insert(*id);
+            }
         }
     }
     Ok(snapshot)
@@ -738,6 +819,22 @@ pub fn effective_status(stored: &str, live: Option<bool>) -> &str {
     }
 }
 
+/// What others see as a message author's status.
+///
+/// `hidden_flag`: `Some(true)` invisible, `Some(false)` visible, `None` no
+/// flag in Valkey. Like [`effective_status`], except that a live user without
+/// a flag whose stored status is `offline` stays `offline`: an invisible user
+/// is stored as `offline`, and without the flag that cannot be told apart
+/// from a reconnect race, so this fails toward hidden.
+#[must_use]
+pub fn author_status(stored: &str, live: Option<bool>, hidden_flag: Option<bool>) -> &str {
+    match (hidden_flag, live) {
+        (Some(true), _) => "offline",
+        (None, Some(true)) if stored == "offline" => "offline",
+        _ => effective_status(stored, live),
+    }
+}
+
 /// Current time in Unix milliseconds.
 #[must_use]
 pub fn now_ms() -> i64 {
@@ -759,6 +856,22 @@ mod tests {
         assert_eq!(live_count(&[now - 90_000, now, now + 1], now), 1);
         assert_eq!(live_count(&[], now), 0);
         assert_eq!(live_count(&[now + 90_000, now + 30_000], now), 2);
+    }
+
+    #[test]
+    fn author_status_fails_toward_hidden_without_a_flag() {
+        // Live, flag missing, stored offline: maybe invisible, show offline.
+        assert_eq!(author_status("offline", Some(true), None), "offline");
+        // Live, flag says visible: a stored offline is a reconnect race.
+        assert_eq!(author_status("offline", Some(true), Some(false)), "online");
+        // Live, flag says hidden.
+        assert_eq!(author_status("busy", Some(true), Some(true)), "offline");
+        // Live, flag missing, a chosen status: shown.
+        assert_eq!(author_status("busy", Some(true), None), "busy");
+        // Not live.
+        assert_eq!(author_status("busy", Some(false), None), "offline");
+        // Valkey unreachable: stored status.
+        assert_eq!(author_status("away", None, None), "away");
     }
 
     #[test]

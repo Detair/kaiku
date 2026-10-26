@@ -1278,3 +1278,39 @@ async fn test_message_author_status_respects_invisible(pool: PgPool) {
 
     redis.quit().await.expect("quit test Valkey client");
 }
+
+/// A hidden flag with a status sequence the database does not know (e.g. the
+/// database was restored from a backup) is not trusted: the next connect
+/// replaces it with the database's state and announces the user.
+#[sqlx::test]
+async fn test_hidden_flag_ahead_of_database_is_replaced_on_connect(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+    use vc_server::presence::connections::hidden_key;
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let (a, b, _guild) = presence_pair(&pool, true).await;
+    let token_a = generate_access_token(&app.config, a);
+    let token_b = generate_access_token(&app.config, b);
+
+    // The database says visible at sequence 0; the flag claims hidden at 99.
+    let _: () = redis
+        .set(hidden_key(a), "99:1", None, None, false)
+        .await
+        .expect("SET future flag");
+
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut ws_a = connect_ready(&server, &token_a).await;
+    next_presence(&mut ws_b, a, "online").await;
+    let flag: Option<String> = redis.get(hidden_key(a)).await.expect("GET flag");
+    assert_eq!(flag.as_deref(), Some("0:0"));
+
+    ws_a.close(None).await.expect("close");
+    drop(ws_a);
+    next_presence(&mut ws_b, a, "offline").await;
+
+    redis.quit().await.expect("quit test Valkey client");
+}

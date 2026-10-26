@@ -1177,6 +1177,11 @@ async fn recheck_presence_peers(
     audience: AudienceRefresh<'_>,
     targets: HashSet<Uuid>,
 ) -> Result<(), PubsubExit> {
+    // Many membership changes coalesced (bulk joins, a burst of leaves): one
+    // full reload is cheaper than one query per user.
+    if targets.len() > RECHECK_TARGETS_MAX {
+        return refresh_presence_audience(state, audience).await;
+    }
     let mut changes = PeerChanges::default();
     for target in targets {
         let allowed = match is_presence_peer(&state.db, audience.user_id, target).await {
@@ -1188,7 +1193,8 @@ async fn recheck_presence_peers(
         };
         let peers = audience.presence.peers.read().await;
         let present = peers.contains(&target);
-        let room = i64::try_from(peers.len())
+        // Room for one more, counting the peers this batch already adds.
+        let room = i64::try_from(peers.len() + changes.added.len())
             .is_ok_and(|n| n < crate::presence::connections::PRESENCE_PEER_LIMIT);
         drop(peers);
         if present && !allowed {
@@ -1199,6 +1205,10 @@ async fn recheck_presence_peers(
     }
     apply_peer_changes(state, &audience, changes).await
 }
+
+/// Above this many coalesced re-check targets, a full audience reload replaces
+/// the per-user queries.
+const RECHECK_TARGETS_MAX: usize = 16;
 
 /// Difference to apply to a socket's presence audience.
 #[derive(Debug, Default)]
@@ -2538,7 +2548,7 @@ async fn presence_socket_up(state: &AppState, user_id: Uuid, socket_id: Uuid) ->
         .map(|(s, _)| {
             connections::status_event_json(user_id, connections::effective_status(s, Some(true)))
         });
-    match connections::socket_online_announce(
+    let outcome = match connections::socket_online_detailed(
         &state.redis,
         user_id,
         socket_id,
@@ -2548,11 +2558,47 @@ async fn presence_socket_up(state: &AppState, user_id: Uuid, socket_id: Uuid) ->
     )
     .await
     {
-        Ok(first) => first && stored.is_none(),
+        Ok(outcome) => outcome,
         Err(e) => {
             connections::log_unavailable(&e);
-            false
+            return false;
         }
+    };
+    if outcome.flag_ahead {
+        repair_future_hidden_flag(state, user_id).await;
+    }
+    outcome.first && stored.is_none()
+}
+
+/// The hidden flag claims a newer status sequence than the database had when
+/// this socket connected. Either a status change raced the connect (then the
+/// database has caught up) or the flag is from a future the database no
+/// longer knows (restore): re-read the sequence and, if the flag is still
+/// ahead, replace it and announce what the database says.
+async fn repair_future_hidden_flag(state: &AppState, user_id: Uuid) {
+    use crate::presence::connections;
+
+    let Ok((stored, seq)) = stored_presence(&state.db, user_id).await else {
+        return;
+    };
+    let visibility = visibility_of(&stored, seq);
+    match connections::replace_future_flag(&state.redis, user_id, visibility).await {
+        Ok(true) => {
+            let status = connections::effective_status(&stored, Some(true));
+            if let Err(e) = connections::sync_and_announce(
+                &state.redis,
+                user_id,
+                visibility,
+                status,
+                connections::now_ms(),
+            )
+            .await
+            {
+                connections::log_unavailable(&e);
+            }
+        }
+        Ok(false) => {}
+        Err(e) => connections::log_unavailable(&e),
     }
 }
 
