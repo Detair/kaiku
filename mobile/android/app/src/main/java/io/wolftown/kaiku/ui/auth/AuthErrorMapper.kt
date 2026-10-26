@@ -48,6 +48,8 @@ object AuthErrorMapper {
     @StringRes
     private fun common(e: Throwable): Int? = when {
         e is AlreadySignedInException -> R.string.auth_login_already_signed_in
+        // C22: a feature the server operator turned off (404/400).
+        e is ApiException && e.normalizedCode == "FEATURE_DISABLED" -> R.string.errors_feature_disabled
         e is ApiException && e.status == HttpStatusCode.TooManyRequests -> R.string.errors_rate_limited
         e is ApiException && e.status.value >= 500 -> R.string.errors_server
         e is IOException -> R.string.errors_network
