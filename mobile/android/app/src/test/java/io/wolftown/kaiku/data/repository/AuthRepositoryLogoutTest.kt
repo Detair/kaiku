@@ -287,7 +287,6 @@ class AuthRepositoryLogoutTest {
     fun `login waits until the previous session's teardown has finished`() = runTest {
         val authState = AuthState(backgroundScope)
         authState.setLoggedIn("user-a")
-        val sessionA = authState.session.value as AuthSession.LoggedIn
         val release = CompletableDeferred<Unit>()
         val sessionAtLastStep = mutableListOf<AuthSession>()
         val runner = SessionTeardownRunner(
@@ -308,18 +307,21 @@ class AuthRepositoryLogoutTest {
             io.wolftown.kaiku.domain.model.User(id = "user-b", username = "b", displayName = "B")
         every { tokenStorage.saveTokens(any(), any(), any(), any()) } answers { generation++ }
         val repository = AuthRepository(authApi, tokenStorage, authState, runner)
+        runner.start()
 
-        val logout = launch { repository.logout() }
+        // Session a ends at once (forced logout, e.g. a rejected refresh); its
+        // teardown keeps running while the login screen is already reachable.
+        authState.setLoggedOut()
         runCurrent() // session a's teardown is in step 10
         val login = async { repository.login("b", "pw") }
         runCurrent()
-        assertTrue(authState.session.value == sessionA) // login b is waiting
+        assertTrue(authState.session.value is AuthSession.LoggedOut) // login b is waiting
+        assertTrue(log.none { it == "teardown-20" })
 
         release.complete(Unit)
         advanceUntilIdle()
 
         assertTrue(login.await().isSuccess)
-        logout.join()
         // Every step of a ran, and before b was logged in.
         assertEquals(listOf("teardown-10", "teardown-20"), log.filter { it.startsWith("teardown") })
         assertEquals(1, sessionAtLastStep.size)
