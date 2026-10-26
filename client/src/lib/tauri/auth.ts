@@ -10,6 +10,7 @@ import type {
   ServerSettings,
   SessionListResponse,
   User,
+  UserStatus,
 } from "../types";
 import { codeIs, messageHasCode } from "@/lib/errorCode";
 import {
@@ -153,18 +154,17 @@ export async function login(
 }
 
 /**
- * Update the user's presence status (online, idle, dnd, invisible, offline).
+ * Update the user's presence status (online, idle, dnd, offline). The removed "invisible" status is never sent; it falls back to online.
  */
 export async function updateStatus(
-  status: "online" | "idle" | "dnd" | "invisible" | "offline",
+  status: UserStatus,
 ): Promise<void> {
-  // Map client status names to server enum values
+  // Map client status names to server enum values. The server accepts only
+  // online, away and busy; anything else (offline, a stale invisible) is online.
   const statusMap: Record<string, string> = {
     online: "online",
     idle: "away",
     dnd: "busy",
-    invisible: "offline",
-    offline: "offline",
   };
   const message = { type: "set_status", status: statusMap[status] ?? "online" };
   if (isTauri()) {
