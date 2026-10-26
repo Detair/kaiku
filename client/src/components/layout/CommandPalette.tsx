@@ -27,7 +27,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { Hash, Volume2, Search, Mic, MicOff, VolumeX } from "lucide-solid";
-import { channelsState, selectChannel } from "@/stores/channels";
+import { channelsState, selectChannel, visibleChannels } from "@/stores/channels";
 import { setShowGlobalSearch } from "@/stores/search";
 import { toggleMute, toggleDeafen, voiceState } from "@/stores/voice";
 import type { Channel } from "@/lib/types";
@@ -51,7 +51,7 @@ const CommandPalette: Component = () => {
     const items: CommandItem[] = [];
 
     // Add channels
-    channelsState.channels.forEach((channel: Channel) => {
+    visibleChannels(channelsState.channels).forEach((channel: Channel) => {
       items.push({
         id: channel.id,
         type: "channel",

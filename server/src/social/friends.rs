@@ -109,7 +109,14 @@ pub async fn list_friends(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<Vec<Friend>>, SocialError> {
-    let friends = queries::list_accepted_friends(&state.db, auth.id).await?;
+    let mut friends = queries::list_accepted_friends(&state.db, auth.id).await?;
+    // Online means "has a live socket"; unknown (Valkey
+    // down) shows offline.
+    let ids: Vec<Uuid> = friends.iter().map(|f| f.user_id).collect();
+    let live = crate::presence::connections::live_users_or_log(&state.redis, &ids).await;
+    for friend in &mut friends {
+        friend.is_online &= live.as_ref().is_some_and(|l| l.contains(&friend.user_id));
+    }
     Ok(Json(friends))
 }
 
@@ -201,6 +208,13 @@ pub async fn accept_friend_request(
     if let Err(e) = broadcast_to_user(&state.redis, friendship.requester_id, &event).await {
         tracing::warn!("Failed to send friend request accepted notification: {}", e);
     }
+    // Friends see each other's presence from now on.
+    crate::presence::connections::notify_pair_changed(
+        &state.redis,
+        friendship.requester_id,
+        friendship.addressee_id,
+    )
+    .await;
 
     Ok(Json(updated))
 }
@@ -283,36 +297,59 @@ pub async fn block_user(
         return Err(SocialError::UserNotFound);
     }
 
-    // Check if friendship already exists
-    let existing = queries::find_friendship_between(&state.db, auth.id, user_id).await?;
+    // Both sides stop forwarding each other at once (presence and channel
+    // events), before the block is committed; re-checked after the commit,
+    // whatever its outcome.
+    let revocation =
+        crate::presence::connections::begin_pair_revocation(&state.redis, auth.id, user_id, true)
+            .await;
+    crate::ws::test_hooks::before_revocation_commit(auth.id).await;
+    let committed = async {
+        // Check if friendship already exists
+        let existing = queries::find_friendship_between(&state.db, auth.id, user_id).await?;
 
-    let result = if let Some(friendship) = existing {
-        // If we're the requester, update status to blocked
-        if friendship.requester_id == auth.id {
-            queries::set_friendship_blocked(&state.db, friendship.id).await?
+        if let Some(friendship) = existing {
+            // If we're the requester, update status to blocked
+            if friendship.requester_id == auth.id {
+                queries::set_friendship_blocked(&state.db, friendship.id).await
+            } else {
+                // If they're the requester, delete and create new blocked entry
+                queries::delete_friendship(&state.db, friendship.id).await?;
+
+                let friendship_id = Uuid::now_v7();
+                queries::insert_blocked_friendship(&state.db, friendship_id, auth.id, user_id).await
+            }
         } else {
-            // If they're the requester, delete and create new blocked entry
-            queries::delete_friendship(&state.db, friendship.id).await?;
-
+            // Create new blocked friendship
             let friendship_id = Uuid::now_v7();
-            queries::insert_blocked_friendship(&state.db, friendship_id, auth.id, user_id).await?
+            queries::insert_blocked_friendship(&state.db, friendship_id, auth.id, user_id).await
         }
-    } else {
-        // Create new blocked friendship
-        let friendship_id = Uuid::now_v7();
-        queries::insert_blocked_friendship(&state.db, friendship_id, auth.id, user_id).await?
-    };
-
-    // Update Redis block cache
-    if let Err(e) = block_cache::add_block(&state.redis, auth.id, user_id).await {
-        tracing::warn!("Failed to update block cache: {}", e);
     }
+    .await;
 
-    // Broadcast UserBlocked to all of the blocker's sessions
-    let event = ServerEvent::UserBlocked { user_id };
-    if let Err(e) = broadcast_to_user(&state.redis, auth.id, &event).await {
-        tracing::warn!("Failed to broadcast UserBlocked event: {}", e);
+    if committed.is_ok() {
+        // Update Redis block cache
+        if let Err(e) = block_cache::add_block(&state.redis, auth.id, user_id).await {
+            tracing::warn!("Failed to update block cache: {}", e);
+        }
+
+        // Broadcast UserBlocked to all of the blocker's sessions
+        let event = ServerEvent::UserBlocked { user_id };
+        if let Err(e) = broadcast_to_user(&state.redis, auth.id, &event).await {
+            tracing::warn!("Failed to broadcast UserBlocked event: {}", e);
+        }
     }
+    crate::ws::test_hooks::after_revocation_commit(auth.id).await;
+    // Both sides re-check each other from the database (the blocked user's
+    // sockets are not told who blocked them).
+    crate::presence::connections::finish_pair_revocation(
+        &state.redis,
+        revocation,
+        auth.id,
+        user_id,
+    )
+    .await;
+    let result = committed?;
 
     Ok(Json(result))
 }
@@ -352,6 +389,7 @@ pub async fn unblock_user(
     if let Err(e) = broadcast_to_user(&state.redis, auth.id, &event).await {
         tracing::warn!("Failed to broadcast UserUnblocked event: {}", e);
     }
+    crate::presence::connections::notify_pair_changed(&state.redis, auth.id, user_id).await;
 
     Ok(Json(()))
 }
@@ -388,8 +426,24 @@ pub async fn remove_friend(
         return Err(SocialError::Unauthorized);
     }
 
-    // Delete the friendship
-    queries::delete_friendship(&state.db, friendship_id).await?;
+    // Presence peers change on both sides: suspended before the commit,
+    // re-checked after it, whatever the outcome.
+    let revocation = crate::presence::connections::begin_pair_revocation(
+        &state.redis,
+        friendship.requester_id,
+        friendship.addressee_id,
+        false,
+    )
+    .await;
+    let deleted = queries::delete_friendship(&state.db, friendship_id).await;
+    crate::presence::connections::finish_pair_revocation(
+        &state.redis,
+        revocation,
+        friendship.requester_id,
+        friendship.addressee_id,
+    )
+    .await;
+    deleted?;
 
     Ok(Json(()))
 }

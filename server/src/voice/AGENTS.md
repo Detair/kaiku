@@ -252,6 +252,8 @@ pub enum CallState {
 
 `end_call(state, channel_id, reason)` ends whatever call is current.
 
+**Phone wakes**: a `CallService` built with `for_state` (or `with_push`) sends the push `call` wake (`ringing` on start, `ended` once on every end path above); see `push/AGENTS.md`, "Call wakes". `CallService::new` alone sends none.
+
 **Concurrency**:
 - **Generation:** the stream's first entry holds a random `call_id`.
 - **Start:** a Lua script, "create if absent". It also SADDs `{channel}:{call_id}` to `call_ringing_by:{initiator}` and publishes `incoming_call` and `call_started`.

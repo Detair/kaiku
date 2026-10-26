@@ -354,6 +354,8 @@ pub struct SfuServer {
     /// Valkey client of the DM call store, so leaving a DM room can end its
     /// call. `None` in SFU-only unit tests.
     call_redis: Option<fred::clients::Client>,
+    /// Phone wakes for DM calls ended by the leave hook.
+    call_push: Option<Arc<crate::push::PushService>>,
 }
 
 /// Result of combining `VOICE_ICE_IP_FAMILY` with `PUBLIC_IP`.
@@ -547,6 +549,7 @@ impl SfuServer {
             stale_tx,
             stale_rx: Mutex::new(Some(stale_rx)),
             call_redis: None,
+            call_push: None,
         })
     }
 
@@ -556,6 +559,20 @@ impl SfuServer {
     pub fn with_call_redis(mut self, redis: fred::clients::Client) -> Self {
         self.call_redis = Some(redis);
         self
+    }
+
+    /// Attach the push service, so a DM call ended by the leave hook wakes
+    /// the callees' phones (`ended`).
+    #[must_use]
+    pub fn with_call_push(mut self, push: Arc<crate::push::PushService>) -> Self {
+        self.call_push = Some(push);
+        self
+    }
+
+    /// The push service for DM call wakes, if attached.
+    #[must_use]
+    pub const fn call_push(&self) -> Option<&Arc<crate::push::PushService>> {
+        self.call_push.as_ref()
     }
 
     /// The DM call store, if attached.

@@ -14,7 +14,7 @@ import {
   deleteWebhook,
   type IncomingWebhook,
 } from "@/lib/tauri";
-import { channelsState } from "@/stores/channels";
+import { channelsState, visibleChannels } from "@/stores/channels";
 
 interface WebhooksTabProps {
   guildId: string;
@@ -38,7 +38,7 @@ const WebhooksTab: Component<WebhooksTabProps> = (props) => {
 
   // Text, announcement, and forum channels can host webhooks.
   const webhookChannels = () =>
-    channelsState.channels
+    visibleChannels(channelsState.channels)
       .filter((c) =>
         ["text", "announcement", "forum"].includes(c.channel_type),
       )

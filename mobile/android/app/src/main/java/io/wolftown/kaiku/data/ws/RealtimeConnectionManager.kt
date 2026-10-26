@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.data.ws
 
+import io.wolftown.kaiku.data.api.normalizeErrorCode
 import io.wolftown.kaiku.data.auth.RefreshResult
 import io.wolftown.kaiku.data.auth.TokenRefresher
 import io.wolftown.kaiku.data.local.AuthSession
@@ -406,7 +407,7 @@ class RealtimeConnectionManager internal constructor(
                 lastPongAt = clock.nowMillis()
                 pongCount++
             }
-            is ServerEvent.Error -> if (event.code == PASSWORD_CHANGE_REQUIRED) onPasswordChangeRequired()
+            is ServerEvent.Error -> if (normalizeErrorCode(event.code) == PASSWORD_CHANGE_REQUIRED) onPasswordChangeRequired()
             else -> Unit
         }
     }

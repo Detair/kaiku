@@ -273,6 +273,11 @@ async fn main() -> Result<()> {
     let custom_status_sweep_handle =
         vc_server::ws::spawn_custom_status_sweep(db_pool.clone(), redis.clone());
 
+    // Start the presence sweeper: announces `offline` for users whose last
+    // socket expired without a disconnect (crashed server, failed command).
+    let presence_sweep_handle =
+        vc_server::presence::connections::spawn_presence_sweep(db_pool.clone(), redis.clone());
+
     // Start the scheduled-event reminder/status task (every 60 seconds) — only
     // while the scheduled-events feature is on.
     if config.optional_features.events {
@@ -441,6 +446,7 @@ async fn main() -> Result<()> {
     retention_handle.abort();
     voice_health_handle.abort();
     custom_status_sweep_handle.abort();
+    presence_sweep_handle.abort();
     let _ = voice_cleanup_handle.await;
     let _ = stale_peer_reaper_handle.await;
     let _ = db_cleanup_handle.await;
@@ -449,6 +455,7 @@ async fn main() -> Result<()> {
     let _ = retention_handle.await;
     let _ = voice_health_handle.await;
     let _ = custom_status_sweep_handle.await;
+    let _ = presence_sweep_handle.await;
     info!("Background cleanup tasks stopped");
 
     // 2. Flush and shut down OTel providers. Dropping these closes the channel senders

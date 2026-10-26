@@ -52,6 +52,7 @@
 
     <!-- Request errors -->
     <string name="errors_rate_limited">Too many attempts. Please wait a moment and try again.</string>
+    <string name="errors_feature_disabled">This feature is turned off on this server.</string>
     <string name="errors_server">Something went wrong on the server. Please try again in a moment.</string>
     <string name="errors_network">Can\'t reach the server. Check your connection.</string>
 

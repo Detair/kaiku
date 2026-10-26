@@ -91,6 +91,14 @@ describe("errorText", () => {
     ).toBe("Invalid username or password.");
   });
 
+  it("maps FEATURE_DISABLED to the turned-off sentence", () => {
+    const err = new HttpError(400, "x", "FEATURE_DISABLED");
+    expect(errorText(err, "auth.login.failed")).toBe("This feature is turned off on this server.");
+    expect(errorText(new HttpError(404, "x", "FEATURE_DISABLED"), "auth.login.failed")).toBe(
+      t("errors.featureDisabled"),
+    );
+  });
+
   it("maps a call to a blocked user to its own sentence", () => {
     const err = new HttpError(403, "blocked", "BLOCKED");
     expect(
