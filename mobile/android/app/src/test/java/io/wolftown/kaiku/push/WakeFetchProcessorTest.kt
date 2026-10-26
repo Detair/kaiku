@@ -114,6 +114,58 @@ class WakeFetchProcessorTest {
         }
     }
 
+    /** Server unread entry of the woken DM channel with a read cursor. */
+    private fun serverDmUnread(count: Long, cursor: String?) {
+        coEvery { unreadApi.getUnread() } returns UnreadAggregate(
+            dms = listOf(ChannelUnread(ch, unreadCount = count, lastReadMessageId = cursor)),
+        )
+    }
+
+    @Test
+    fun `cursor drops messages up to and including the read one`() = runTest {
+        serverDmUnread(3, cursor = "m1")
+        coEvery { messages.getMessages(ch, null, null, any()) } returns
+            page(msg("m3", bob, 3), msg("m2", bob, 2), msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTIFIED, processor.process(dm(count = 3), owner))
+
+        assertEquals(listOf("m2", "m3"), shown.single().lines.map { it.messageId })
+    }
+
+    @Test
+    fun `cursor older than the fetched page keeps all`() = runTest {
+        serverDmUnread(3, cursor = "m0")
+        coEvery { messages.getMessages(ch, null, null, any()) } returns
+            page(msg("m3", bob, 3), msg("m2", bob, 2), msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTIFIED, processor.process(dm(count = 3), owner))
+
+        assertEquals(listOf("m1", "m2", "m3"), shown.single().lines.map { it.messageId })
+    }
+
+    @Test
+    fun `null cursor keeps count-only behaviour`() = runTest {
+        serverDmUnread(2, cursor = null)
+        coEvery { messages.getMessages(ch, null, null, any()) } returns
+            page(msg("m3", bob, 3), msg("m2", bob, 2), msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTIFIED, processor.process(dm(count = 3), owner))
+
+        assertEquals(listOf("m2", "m3"), shown.single().lines.map { it.messageId })
+    }
+
+    @Test
+    fun `cursor covering every fetched message cancels the notification`() = runTest {
+        // Read and the late wake race: the server still counts 1 but the cursor is at the newest.
+        serverDmUnread(1, cursor = "m2")
+        coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m2", bob, 2), msg("m1", bob, 1))
+
+        assertEquals(WakeOutcome.NOTHING_NEW, processor.process(dm(count = 2), owner))
+
+        assertTrue(shown.isEmpty())
+        verify { sink.cancel(ch) }
+    }
+
     @Test
     fun `expired token is refreshed before fetching`() = runTest {
         coEvery { messages.getMessages(ch, null, null, any()) } returns page(msg("m1", bob, 1))

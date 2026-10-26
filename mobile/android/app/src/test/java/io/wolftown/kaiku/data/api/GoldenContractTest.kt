@@ -187,9 +187,11 @@ class GoldenContractTest {
         val dm = aggregate.dms.single()
         assertEquals("00000000-0000-4000-8000-00000000d101", dm.channelId)
         assertEquals(2L, dm.unreadCount)
+        assertEquals(null, dm.lastReadMessageId)
         val channel = aggregate.guilds.single().channels.single()
         assertEquals("00000000-0000-4000-8000-00000000c001", channel.channelId)
         assertEquals(3L, channel.unreadCount)
+        assertEquals("00000000-0000-4000-8000-00000000e001", channel.lastReadMessageId)
         assertEquals(5L, aggregate.total)
     }
 }

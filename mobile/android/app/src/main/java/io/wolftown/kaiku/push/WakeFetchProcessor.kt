@@ -44,8 +44,8 @@ enum class WakeOutcome {
  *
  * Wakes and reads are unordered (C20), so whether anything notifies is
  * decided by the server's unread count for the channel: at most the newest
- * N messages (N = unread count) can notify, none when N is 0. The local read
- * cursor and seen watermark only filter further.
+ * N messages (N = unread count) after the server's read cursor can notify,
+ * none when N is 0. The local read cursor and seen watermark only filter further.
  *
  * Push is only a hint (FCM may drop wakes, C20 note): correctness comes from
  * the catch-up on app start/reconnect ([io.wolftown.kaiku.data.sync.ResyncCoordinator]).
@@ -90,7 +90,12 @@ class WakeFetchProcessor @Inject constructor(
     private data class Account(val userId: String, val generation: Long)
 
     /** The server's unread state of one channel. */
-    private data class ServerUnread(val count: Int, val countsOwnMessages: Boolean)
+    private data class ServerUnread(
+        val count: Int,
+        val countsOwnMessages: Boolean,
+        /** The server's read cursor; messages up to and including it are read. */
+        val lastReadMessageId: String? = null,
+    )
 
     /**
      * [isStopped] reports that the work was stopped (e.g. a read cancelled it);
@@ -251,7 +256,8 @@ class WakeFetchProcessor @Inject constructor(
         val fromOthers = { m: Message -> m.author.id != account.userId }
         val window: Set<String>? = unread?.let { u ->
             // Guild counts include own messages, DM counts do not.
-            val candidates = if (u.countsOwnMessages) unseen else unseen.filter(fromOthers)
+            val afterCursor = afterReadCursor(unseen, u.lastReadMessageId)
+            val candidates = if (u.countsOwnMessages) afterCursor else afterCursor.filter(fromOthers)
             candidates.takeLast(u.count).mapTo(HashSet()) { it.id }
         }
         val afterSeen = afterLastSeen(
@@ -277,6 +283,13 @@ class WakeFetchProcessor @Inject constructor(
         unread: ServerUnread?,
     ): Boolean {
         if (unread?.count == 0) return true
+        // The server's cursor covers every fetched message from others.
+        val cursor = unread?.lastReadMessageId
+        if (cursor != null && unseen.any { it.id == cursor } &&
+            afterReadCursor(unseen, cursor).none { it.author.id != account.userId }
+        ) {
+            return true
+        }
         val newestFromOthers = unseen.lastOrNull { it.author.id != account.userId } ?: return false
         return ledger.readCursor(account.userId, channelId).unread(listOf(newestFromOthers)).isEmpty()
     }
@@ -285,12 +298,22 @@ class WakeFetchProcessor @Inject constructor(
     private suspend fun serverUnread(channelId: String): ServerUnread {
         val aggregate = unreadApi.getUnread()
         aggregate.dms.firstOrNull { it.channelId == channelId }?.let {
-            return ServerUnread(it.unreadCount.toCount(), countsOwnMessages = false)
+            return ServerUnread(it.unreadCount.toCount(), countsOwnMessages = false, it.lastReadMessageId)
         }
         aggregate.guilds.asSequence().flatMap { it.channels }.firstOrNull { it.channelId == channelId }?.let {
-            return ServerUnread(it.unreadCount.toCount(), countsOwnMessages = true)
+            return ServerUnread(it.unreadCount.toCount(), countsOwnMessages = true, it.lastReadMessageId)
         }
         return ServerUnread(0, countsOwnMessages = false)
+    }
+
+    /**
+     * Messages strictly after the server's read cursor ([sorted] is oldest first).
+     * A cursor older than the fetched page (not in the list) or no cursor keeps all.
+     */
+    private fun afterReadCursor(sorted: List<Message>, cursorId: String?): List<Message> {
+        if (cursorId == null) return sorted
+        val index = sorted.indexOfFirst { it.id == cursorId }
+        return if (index >= 0) sorted.drop(index + 1) else sorted
     }
 
     private fun Long.toCount(): Int = coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
