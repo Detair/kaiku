@@ -434,7 +434,7 @@ describe("websocket store", () => {
       vi.useRealTimers();
     });
 
-    it("SESSION_REVOKED signs out at once: no refresh, no reconnect", async () => {
+    it.each(["SESSION_REVOKED", "session_revoked"])("%s signs out at once: no refresh, no reconnect", async (code) => {
       vi.useFakeTimers();
       vi.mocked(tauri.wsConnect).mockResolvedValue(undefined);
       await connect();
@@ -444,7 +444,7 @@ describe("websocket store", () => {
 
       await handleServerEvent({
         type: "error",
-        code: "SESSION_REVOKED",
+        code,
         message: "Session revoked",
       });
       // The server closes with 1008 right after the event.
