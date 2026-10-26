@@ -373,3 +373,65 @@ async fn role_allow_wins_over_other_role_deny(pool: PgPool) {
 
     assert!(require_channel_access(pool, member, channel).await.is_ok());
 }
+
+/// A member who has not accepted the server rules yet gets no channel access,
+/// even when the `@everyone` override of a channel allows it. All three
+/// resolution paths agree; the owner still sees the channel.
+#[sqlx::test]
+async fn pending_member_ignores_everyone_override_allow(pool: PgPool) {
+    use vc_server::permissions::{filter_accessible_channels, filter_viewable_channels_in_guilds};
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let pool = &app.pool;
+    let (owner, _) = create_test_user(pool).await;
+    let (pending, _) = create_test_user(pool).await;
+    let guild = create_guild_with_default_role(pool, owner, GuildPermissions::empty()).await;
+    sqlx::query("UPDATE guilds SET screening_enabled = true WHERE id = $1")
+        .bind(guild)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO guild_members (guild_id, user_id, membership_state) VALUES ($1, $2, 'pending')",
+    )
+    .bind(guild)
+    .bind(pending)
+    .execute(pool)
+    .await
+    .unwrap();
+    let everyone = everyone_role(pool, guild).await;
+    let channel = create_channel(pool, guild, "welcome").await;
+    set_override(
+        pool,
+        channel,
+        everyone,
+        GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES,
+        GuildPermissions::empty(),
+    )
+    .await;
+
+    assert!(require_channel_access(pool, pending, channel)
+        .await
+        .is_err());
+    let accessible = filter_accessible_channels(pool, guild, pending, &[channel])
+        .await
+        .unwrap();
+    assert!(accessible.is_empty(), "{accessible:?}");
+    let viewable = filter_viewable_channels_in_guilds(pool, pending, &[(guild, channel)])
+        .await
+        .unwrap();
+    assert!(viewable.is_empty(), "{viewable:?}");
+
+    let token = generate_access_token(&app.config, pending);
+    let uri = format!("/api/messages/channel/{channel}");
+    assert_eq!(get(&app, &token, &uri).await.0, StatusCode::FORBIDDEN);
+
+    // Owner bypass is unaffected.
+    assert!(require_channel_access(pool, owner, channel).await.is_ok());
+    assert!(
+        filter_viewable_channels_in_guilds(pool, owner, &[(guild, channel)])
+            .await
+            .unwrap()
+            .contains(&channel)
+    );
+}

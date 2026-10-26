@@ -13,7 +13,8 @@ use super::models::{ChannelOverride, GuildRole};
 /// This is the single place that resolves channel overrides; every
 /// visibility and permission check goes through it. Resolution order:
 ///
-/// 1. The guild owner has every permission.
+/// 1. The guild owner has every permission; a `pending` member (screening rules not accepted yet)
+///    has none, before any override is looked at.
 /// 2. Guild base: `@everyone` permissions OR the permissions of every assigned role.
 /// 3. The `@everyone` channel override: its allow (masked with
 ///    [`GuildPermissions::EVERYONE_ALLOWED`]), then its deny.
@@ -29,12 +30,16 @@ use super::models::{ChannelOverride, GuildRole};
 pub fn compute_guild_permissions(
     user_id: Uuid,
     guild_owner_id: Uuid,
+    pending: bool,
     everyone_permissions: GuildPermissions,
     user_roles: &[GuildRole],
     channel_overrides: Option<&[ChannelOverride]>,
 ) -> GuildPermissions {
     if guild_owner_id == user_id {
         return GuildPermissions::all();
+    }
+    if pending {
+        return GuildPermissions::empty();
     }
 
     let mut perms = everyone_permissions;
@@ -216,8 +221,14 @@ mod tests {
     #[test]
     fn test_owner_has_all_permissions() {
         let owner_id = Uuid::new_v4();
-        let perms =
-            compute_guild_permissions(owner_id, owner_id, GuildPermissions::empty(), &[], None);
+        let perms = compute_guild_permissions(
+            owner_id,
+            owner_id,
+            false,
+            GuildPermissions::empty(),
+            &[],
+            None,
+        );
         assert_eq!(perms, GuildPermissions::all());
     }
 
@@ -227,7 +238,7 @@ mod tests {
         let owner_id = Uuid::new_v4();
         let everyone = GuildPermissions::SEND_MESSAGES | GuildPermissions::VOICE_CONNECT;
 
-        let perms = compute_guild_permissions(user_id, owner_id, everyone, &[], None);
+        let perms = compute_guild_permissions(user_id, owner_id, false, everyone, &[], None);
 
         assert!(perms.has(GuildPermissions::SEND_MESSAGES));
         assert!(perms.has(GuildPermissions::VOICE_CONNECT));
@@ -252,7 +263,8 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
 
-        let perms = compute_guild_permissions(user_id, owner_id, everyone, &[mod_role], None);
+        let perms =
+            compute_guild_permissions(user_id, owner_id, false, everyone, &[mod_role], None);
 
         assert!(perms.has(GuildPermissions::SEND_MESSAGES)); // from everyone
         assert!(perms.has(GuildPermissions::MANAGE_MESSAGES)); // from role
@@ -292,6 +304,7 @@ mod tests {
         let perms = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[role],
             Some(&[override_entry]),
@@ -331,6 +344,7 @@ mod tests {
         let masked = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[mk_role(true)],
             Some(std::slice::from_ref(&ovr)),
@@ -341,6 +355,7 @@ mod tests {
         let normal = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[mk_role(false)],
             Some(std::slice::from_ref(&ovr)),
@@ -445,7 +460,8 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
 
-        let perms = compute_guild_permissions(user_id, owner_id, everyone, &[role1, role2], None);
+        let perms =
+            compute_guild_permissions(user_id, owner_id, false, everyone, &[role1, role2], None);
 
         // Should have permissions from both roles
         assert!(perms.has(GuildPermissions::SEND_MESSAGES));
@@ -560,6 +576,7 @@ mod tests {
         let perms = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[role1, role2],
             Some(&[override1, override2]),
@@ -636,6 +653,7 @@ mod tests {
         let perms_a = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[allow_role.clone(), deny_role.clone()],
             Some(&overrides),
@@ -645,6 +663,7 @@ mod tests {
         let perms_b = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[deny_role, allow_role],
             Some(&overrides),
@@ -698,6 +717,7 @@ mod tests {
         compute_guild_permissions(
             Uuid::new_v4(),
             Uuid::new_v4(),
+            false,
             everyone,
             roles,
             Some(overrides),
@@ -783,5 +803,46 @@ mod tests {
     fn overrides_of_unassigned_roles_are_ignored() {
         let overrides = [ovr(Uuid::new_v4(), VIEW, NONE)];
         assert!(!channel_perms(NONE, &[], &overrides).has(VIEW));
+    }
+}
+
+#[cfg(test)]
+mod pending_tests {
+    use super::*;
+
+    #[test]
+    fn pending_member_gets_nothing_even_with_everyone_override_allow() {
+        let everyone = ChannelOverride {
+            id: Uuid::new_v4(),
+            channel_id: Uuid::nil(),
+            role_id: Uuid::new_v4(),
+            allow_permissions: GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES,
+            deny_permissions: GuildPermissions::empty(),
+            everyone: true,
+        };
+        let user = Uuid::new_v4();
+        let owner = Uuid::new_v4();
+        let pending = compute_guild_permissions(
+            user,
+            owner,
+            true,
+            GuildPermissions::empty(),
+            &[],
+            Some(std::slice::from_ref(&everyone)),
+        );
+        assert!(pending.is_empty());
+        let active = compute_guild_permissions(
+            user,
+            owner,
+            false,
+            GuildPermissions::empty(),
+            &[],
+            Some(std::slice::from_ref(&everyone)),
+        );
+        assert!(active.has(GuildPermissions::VIEW_CHANNEL));
+        // The owner is never treated as pending.
+        let owner_perms =
+            compute_guild_permissions(owner, owner, true, GuildPermissions::empty(), &[], None);
+        assert_eq!(owner_perms, GuildPermissions::all());
     }
 }

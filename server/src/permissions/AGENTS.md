@@ -91,6 +91,7 @@ pub struct Role {
 pub fn compute_guild_permissions(
     user_id: Uuid,
     guild_owner_id: Uuid,
+    pending: bool, // screening not accepted: no permissions, overrides ignored
     everyone_permissions: GuildPermissions,
     user_roles: &[GuildRole],
     channel_overrides: Option<&[ChannelOverride]>,
@@ -102,7 +103,7 @@ Handlers normally do not call it directly; they use `get_member_permission_conte
 
 **Channel Overrides** (`channel_overrides`: channel_id, role_id, allow/deny bits; no per-user overrides; the loaders set `ChannelOverride::everyone` from the role's `is_default`):
 - Resolved only in `compute_guild_permissions` (resolver.rs); all channel checks reach it via `require_channel_access`, `filter_accessible_channels` or `filter_viewable_channels_in_guilds`.
-- Order: owner → base (@everyone | assigned roles) → @everyone override (allow masked with `EVERYONE_ALLOWED`, then deny) → role overrides aggregated (OR of denies applied, then OR of allows).
+- Order: owner → pending member (empty, before any override) → base (@everyone | assigned roles) → @everyone override (allow masked with `EVERYONE_ALLOWED`, then deny) → role overrides aggregated (OR of denies applied, then OR of allows).
 - A role allow beats an @everyone deny and another role's deny of the same bit; a role deny beats an @everyone allow.
 
 ### Moderation Checks
