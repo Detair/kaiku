@@ -654,13 +654,26 @@ async fn test_callback_error_with_unknown_state_does_not_redirect(pool: PgPool) 
 // Request secrets stay out of tracing spans
 // ============================================================================
 
-/// Collects formatted tracing output of the current thread.
-#[derive(Clone, Default)]
-struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+thread_local! {
+    /// Buffer of the test on this thread that is capturing tracing output.
+    static CAPTURE: std::cell::RefCell<Option<std::sync::Arc<std::sync::Mutex<Vec<u8>>>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
-impl std::io::Write for CapturedLogs {
+fn capturing() -> bool {
+    CAPTURE.with(|c| c.borrow().is_some())
+}
+
+/// Writes formatted output into this thread's capture buffer, if any.
+struct ThreadCapture;
+
+impl std::io::Write for ThreadCapture {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
+        CAPTURE.with(|c| {
+            if let Some(out) = c.borrow().as_ref() {
+                out.lock().unwrap().extend_from_slice(buf);
+            }
+        });
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -668,25 +681,40 @@ impl std::io::Write for CapturedLogs {
     }
 }
 
-impl CapturedLogs {
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
-    }
+/// One global subscriber for the whole test binary, enabled only on threads
+/// that are capturing. A global dispatcher plus an always-`sometimes`
+/// callsite interest avoids callsites being cached as disabled by tests
+/// running in parallel (the cause of the earlier flakiness with per-thread
+/// `set_default`); the per-event filter keeps other tests' output out.
+fn install_capture_subscriber() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::Layer as _;
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(|| ThreadCapture)
+            // Decided per event/span: a callsite first hit on a thread that is
+            // not capturing must not be cached as never-enabled.
+            .with_filter(
+                tracing_subscriber::filter::dynamic_filter_fn(|_, _| capturing())
+                    .with_callsite_filter(|_| tracing::subscriber::Interest::sometimes()),
+            );
+        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer))
+            .expect("no other global subscriber in the integration tests");
+    });
 }
 
-/// Run `f` with a thread-local subscriber that formats every span field.
+/// Run `f` (on this thread; `#[sqlx::test]` uses a current-thread runtime)
+/// and return everything it logged.
 async fn capture<F: std::future::Future<Output = ()>>(f: F) -> String {
-    let logs = CapturedLogs::default();
-    let writer = logs.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_ansi(false)
-        .with_writer(move || writer.clone())
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
+    install_capture_subscriber();
+    let out = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    CAPTURE.with(|c| *c.borrow_mut() = Some(out.clone()));
     f.await;
-    drop(guard);
-    logs.text()
+    CAPTURE.with(|c| *c.borrow_mut() = None);
+    let bytes = out.lock().unwrap().clone();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 const SECRET_COOKIE: &str = "refresh_token=cookie-secret-do-not-log";
