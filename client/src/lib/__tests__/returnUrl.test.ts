@@ -26,6 +26,12 @@ describe("safeReturnUrl", () => {
     expect(safeReturnUrl("/%00/evil.example")).toBeNull();
   });
 
+  it("rejects dot segments that normalise to //host", () => {
+    expect(safeReturnUrl("/.//evil.example")).toBeNull();
+    expect(safeReturnUrl("/a/..//evil.example")).toBeNull();
+    expect(safeReturnUrl("%2F.%2F%2Fevil.example")).toBeNull();
+  });
+
   it("keeps the query and fragment of an in-app path", () => {
     expect(safeReturnUrl("/invite/abc?x=1#top")).toBe("/invite/abc?x=1#top");
   });

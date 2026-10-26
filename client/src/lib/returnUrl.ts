@@ -14,16 +14,18 @@ export function safeReturnUrl(raw: string | string[] | undefined): string | null
   } catch {
     return null;
   }
-  // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
-  if (!/^\/(?![/\\])/.test(decoded) || /[\u0000-\u001f\u007f]/.test(decoded)) {
-    return null;
-  }
+  if (!isInAppPath(decoded)) return null;
   try {
     const parsed = new URL(decoded, PROBE_ORIGIN);
-    return parsed.origin === PROBE_ORIGIN
-      ? `${parsed.pathname}${parsed.search}${parsed.hash}`
-      : null;
+    const out = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    // Re-check after normalisation: "/.//host" resolves to "//host".
+    return parsed.origin === PROBE_ORIGIN && isInAppPath(out) ? out : null;
   } catch {
     return null;
   }
+}
+
+function isInAppPath(path: string): boolean {
+  // eslint-disable-next-line no-control-regex -- rejecting control characters is the point
+  return /^\/(?![/\\])/.test(path) && !/[\u0000-\u001f\u007f]/.test(path);
 }
