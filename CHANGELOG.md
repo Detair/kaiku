@@ -64,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - API error codes are now consistently written in upper case (for example `VALIDATION_ERROR`).
 - Clearer message when an authenticator code was already used: signing in and confirming admin actions now say to wait for the next code and try again.
 - Unlocking admin actions asks you to confirm with your password or your sign-in provider, and creating new backup codes asks for an authenticator code. New accounts can be added to servers right away, and people land in their server after signing in.
+- Android: sign-in shows a clear message when the server has turned a feature off.
 - Onboarding now says "server" consistently.
 - Sign-in and sign-up errors now explain what went wrong (wrong password, username taken, sign-ups closed, server unreachable) instead of showing technical messages.
 - Error messages across the app (loading channels and messages, sending and editing messages, creating conversations, uploading an avatar, managing sessions, joining by invite, changing or resetting a password, voice devices) now say what went wrong in plain words instead of showing technical server messages. Messages that cannot be sent explain why (no permission, blocked, file too large, channel gone).
@@ -130,6 +131,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: update `dompurify` 3.4.2 → 3.4.11 (eight HTML-sanitizer XSS advisories — the markdown preview's runtime sanitizer), `vite` 8.0.0 → 8.0.16 (the `server.fs.deny` bypass and `__open-in-editor` NTLM dev-server CVEs), and add transitive overrides for `undici` → 7.28.0 (seven HTTP-client advisories via jsdom) and `@babel/core` → 7.29.6 (via vite-plugin-solid). The remaining flagged instance is the test-only vite 7.3.1 nested under vitest, whose fix is blocked by a JSX-transform incompatibility (documented as a justified, dev-server-only exception); the production bundle is built with the patched vite 8.0.16. This restores the weekly OSV scanner to green.
 
 ### Fixed
+- Android: a notification no longer reappears for a message you already read on another device.
 - Channels no longer stay marked as unread after replies in a thread, and notifications skip messages you have already read.
 - Direct-message calls show why they ended, and calling someone you've blocked says so.
 - Unread badges no longer count your own messages, thread replies or deleted messages, and never include channels you can't open.
