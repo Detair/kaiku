@@ -53,6 +53,7 @@ static VOICE_RTP_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static DB_QUERY_DURATION_SECONDS: OnceLock<Histogram<f64>> = OnceLock::new();
 
 static AUTH_TOKEN_REFRESH_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
+static RATELIMIT_VALKEY_UNAVAILABLE_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
 static OTEL_EXPORT_FAILURES_TOTAL: OnceLock<Counter<u64>> = OnceLock::new();
 
 /// Registered but not wired — `OTel` SDK 0.29 has no dropped-span callback.
@@ -256,6 +257,15 @@ pub fn register_metrics() {
             .build()
     });
 
+    RATELIMIT_VALKEY_UNAVAILABLE_TOTAL.get_or_init(|| {
+        meter
+            .u64_counter("kaiku_ratelimit_valkey_unavailable_total")
+            .with_description(
+                "Rate limit checks that could not reach Valkey, by category and outcome",
+            )
+            .build()
+    });
+
     OTEL_EXPORT_FAILURES_TOTAL.get_or_init(|| {
         meter
             .u64_counter("kaiku_otel_export_failures_total")
@@ -408,6 +418,20 @@ pub fn record_push_delivery(provider: &'static str, outcome: &'static str) {
             1,
             &[
                 KeyValue::new("provider", provider),
+                KeyValue::new("outcome", outcome),
+            ],
+        );
+    }
+}
+
+/// Record a rate limit check that could not reach Valkey (`outcome`:
+/// `fail_open|fail_closed`).
+pub fn record_ratelimit_valkey_unavailable(category: &'static str, outcome: &'static str) {
+    if let Some(counter) = RATELIMIT_VALKEY_UNAVAILABLE_TOTAL.get() {
+        counter.add(
+            1,
+            &[
+                KeyValue::new("category", category),
                 KeyValue::new("outcome", outcome),
             ],
         );

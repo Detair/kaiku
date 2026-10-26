@@ -11,6 +11,7 @@ import { dmsState, selectDM } from "@/stores/dms";
 import { hasActiveCallInChannel, callState } from "@/stores/call";
 import { isUserOnline } from "@/stores/presence";
 import { currentUser } from "@/stores/auth";
+import { formatShortDate } from "@/i18n/format";
 
 interface DMItemProps {
   dm: DMListItem;
@@ -74,7 +75,7 @@ const DMItem: Component<DMItemProps> = (props) => {
     if (diffMins < 60) return `${diffMins}m`;
     if (diffHours < 24) return `${diffHours}h`;
     if (diffDays < 7) return `${diffDays}d`;
-    return date.toLocaleDateString();
+    return formatShortDate(date, now);
   };
 
   const lastMessagePreview = () => {

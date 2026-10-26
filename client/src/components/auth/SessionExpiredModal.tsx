@@ -2,7 +2,14 @@ import { Component, Show, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import { useNavigate } from "@solidjs/router";
 import { LogIn } from "lucide-solid";
+import { t } from "@/i18n";
 import { authState, setAuthState, logout } from "@/stores/auth";
+
+const REASON_TEXT = {
+  expired: "connection.session.expired",
+  revoked: "connection.session.revoked",
+  banned: "connection.session.banned",
+} as const;
 
 const SessionExpiredModal: Component = () => {
   const navigate = useNavigate();
@@ -40,13 +47,15 @@ const SessionExpiredModal: Component = () => {
                 <LogIn class="w-5 h-5 text-status-warning" />
               </div>
               <h2 class="text-lg font-bold text-text-primary">
-                Session Expired
+                {authState.sessionEndReason === "expired"
+                  ? t("connection.session.expiredTitle")
+                  : t("connection.session.endedTitle")}
               </h2>
             </div>
 
             <div class="p-5 space-y-4">
               <p class="text-text-secondary text-sm">
-                Your session has expired. Please log in again to continue.
+                {t(REASON_TEXT[authState.sessionEndReason])}
               </p>
 
               <div class="flex justify-end">
@@ -54,7 +63,7 @@ const SessionExpiredModal: Component = () => {
                   onClick={handleLogin}
                   class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium transition-colors hover:bg-accent-primary/90"
                 >
-                  Log in
+                  {t("connection.session.logIn")}
                 </button>
               </div>
             </div>

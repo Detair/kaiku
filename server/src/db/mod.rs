@@ -92,21 +92,162 @@ pub async fn set_admin_bypass(
     Ok(())
 }
 
-/// Create Redis client.
+/// Default per-command Valkey timeout (`VALKEY_COMMAND_TIMEOUT_MS`).
+pub const DEFAULT_VALKEY_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Create and connect a Valkey client with [`DEFAULT_VALKEY_COMMAND_TIMEOUT`].
 pub async fn create_redis_client(redis_url: &str) -> Result<fred::clients::Client> {
+    create_redis_client_with_timeout(redis_url, DEFAULT_VALKEY_COMMAND_TIMEOUT).await
+}
+
+/// Create and connect a Valkey client whose commands fail after
+/// `command_timeout` (see [`build_redis_client`]).
+pub async fn create_redis_client_with_timeout(
+    redis_url: &str,
+    command_timeout: std::time::Duration,
+) -> Result<fred::clients::Client> {
     use fred::prelude::*;
 
-    let config = Config::from_url(redis_url)?;
-
-    // Explicit reconnect policy: constant 100ms delay, unlimited retries.
-    // Default is 2000ms which causes a 2-second stall on every request
-    // when the connection drops between requests.
-    let policy = ReconnectPolicy::new_constant(0, 100);
-
-    let client = Client::new(config, None, None, Some(policy));
+    let client = build_redis_client(redis_url, command_timeout)?;
     client.connect();
     client.wait_for_connect().await?;
 
     info!("Connected to Redis");
     Ok(client)
+}
+
+/// Build (but do not connect) a Valkey client.
+///
+/// Every command, the TCP connect and fred's internal setup commands
+/// (`PING`, `AUTH`, `SELECT`, ...) fail after `command_timeout`, so a hung or
+/// unreachable Valkey makes callers fail quickly instead of waiting for it.
+/// Clients derived from this one (`clone_new`, the per-socket subscriber)
+/// inherit these settings.
+///
+/// Reconnects never give up, with capped exponential backoff (100 ms doubling
+/// to at most 5 s): the first retry stays fast, an outage does not spin.
+pub fn build_redis_client(
+    redis_url: &str,
+    command_timeout: std::time::Duration,
+) -> Result<fred::clients::Client> {
+    use fred::prelude::*;
+
+    let config = Config::from_url(redis_url)?;
+    let perf = PerformanceConfig {
+        default_command_timeout: command_timeout,
+        ..PerformanceConfig::default()
+    };
+    let connection = ConnectionConfig {
+        connection_timeout: command_timeout,
+        internal_command_timeout: command_timeout,
+        ..ConnectionConfig::default()
+    };
+    let policy = ReconnectPolicy::new_exponential(0, 100, 5_000, 2);
+
+    Ok(Client::new(
+        config,
+        Some(perf),
+        Some(connection),
+        Some(policy),
+    ))
+}
+
+/// A Valkey command failed (timeout, lost connection or error reply).
+///
+/// Security checks that depend on Valkey turn this into "service unavailable"
+/// (fail closed); see [`crate::auth::AuthError::ServiceUnavailable`].
+#[derive(Debug, thiserror::Error)]
+#[error("Valkey unavailable: {0}")]
+pub struct ValkeyUnavailable(#[from] pub fred::error::Error);
+
+/// Lets a log line through at most once per `interval`, so a Valkey outage
+/// does not log once per request. Use one `static` per log site.
+pub struct LogThrottle {
+    /// Milliseconds since [`LogThrottle::epoch`] of the last allowed line, +1
+    /// (0 = never).
+    last_ms: std::sync::atomic::AtomicU64,
+}
+
+impl LogThrottle {
+    /// A throttle that allows its first line.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            last_ms: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn epoch() -> std::time::Instant {
+        static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        *EPOCH.get_or_init(std::time::Instant::now)
+    }
+
+    /// `true` if a line may be logged now (and records that it was).
+    pub fn allow(&self, interval: std::time::Duration) -> bool {
+        use std::sync::atomic::Ordering;
+
+        let now = u64::try_from(Self::epoch().elapsed().as_millis())
+            .unwrap_or(u64::MAX - 1)
+            .saturating_add(1);
+        let interval = u64::try_from(interval.as_millis()).unwrap_or(u64::MAX);
+        let last = self.last_ms.load(Ordering::Relaxed);
+        if last != 0 && now.saturating_sub(last) < interval {
+            return false;
+        }
+        self.last_ms
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    }
+}
+
+impl Default for LogThrottle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod valkey_client_tests {
+    use std::time::Duration;
+
+    use fred::prelude::*;
+
+    use super::build_redis_client;
+
+    #[test]
+    fn client_fails_commands_and_connects_within_the_command_timeout() {
+        let timeout = Duration::from_millis(1234);
+        let client = build_redis_client("redis://127.0.0.1:6379", timeout).unwrap();
+
+        assert_eq!(client.perf_config().default_command_timeout, timeout);
+        let connection = client.connection_config();
+        assert_eq!(connection.connection_timeout, timeout);
+        assert_eq!(connection.internal_command_timeout, timeout);
+    }
+
+    #[test]
+    fn client_reconnects_forever_with_capped_exponential_backoff() {
+        let client = build_redis_client("redis://127.0.0.1:6379", Duration::from_secs(3)).unwrap();
+        match client.client_reconnect_policy() {
+            Some(ReconnectPolicy::Exponential {
+                max_attempts,
+                min_delay,
+                max_delay,
+                ..
+            }) => {
+                assert_eq!(max_attempts, 0, "never give up reconnecting");
+                assert_eq!(min_delay, 100, "first retry stays fast");
+                assert_eq!(max_delay, 5_000, "backoff is capped");
+            }
+            other => panic!("expected capped exponential backoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn log_throttle_allows_one_line_per_interval() {
+        let throttle = super::LogThrottle::new();
+        assert!(throttle.allow(Duration::from_mins(1)));
+        assert!(!throttle.allow(Duration::from_mins(1)));
+        assert!(throttle.allow(Duration::ZERO));
+    }
 }

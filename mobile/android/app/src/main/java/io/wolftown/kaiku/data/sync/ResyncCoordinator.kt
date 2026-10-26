@@ -82,6 +82,7 @@ class ResyncCoordinator @Inject constructor(
     /** Channels waiting for their `subscribed` ack before catch-up, with the Ready generation. */
     private val awaitingAck = ConcurrentHashMap<String, Int>()
 
+    @Volatile
     private var resyncJobs: List<Job> = emptyList()
 
     /** Catch-up jobs of the current generation; the channel reload waits for them. */
@@ -114,6 +115,24 @@ class ResyncCoordinator @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Session teardown: stops the running resync (reloads, ack waits,
+     * catch-ups) so nothing of the ended session is fetched or cached again.
+     * The event collector keeps running; the next `Ready` starts afresh.
+     */
+    fun cancelForLogout() {
+        val gen = generation.incrementAndGet()
+        awaitingAck.clear()
+        resyncJobs.forEach { it.cancel() }
+        resyncJobs = emptyList()
+        val previousJobs = synchronized(catchUpLock) {
+            val previous = catchUpJobs.jobs.toList()
+            catchUpJobs = CatchUpJobs(gen)
+            previous
+        }
+        previousJobs.forEach { it.cancel() }
     }
 
     /**

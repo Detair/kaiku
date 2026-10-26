@@ -26,6 +26,7 @@ import {
 } from "lucide-solid";
 import type { Message } from "@/lib/types";
 import { formatTimestamp } from "@/lib/utils";
+import { formatTime } from "@/i18n/format";
 import Avatar from "@/components/ui/Avatar";
 import CodeBlock from "@/components/ui/CodeBlock";
 import BlurhashPlaceholder from "@/components/ui/BlurhashPlaceholder";
@@ -660,10 +661,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         <Show when={props.compact}>
           {/* Show timestamp on hover for compact messages */}
           <span class="text-xs text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity select-none leading-6">
-            {new Date(props.message.created_at).toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
+            {formatTime(props.message.created_at)}
           </span>
         </Show>
       </div>

@@ -8,18 +8,24 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import io.wolftown.kaiku.R
 
 /**
- * Compact bar shown at the bottom of other screens when the user is in a voice channel.
+ * Compact bar shown at the bottom of other screens while a voice call runs
+ * (see [shouldShowVoiceOverlay]).
  *
  * Height: 56dp with accent background.
- * Shows: "Connected to #channel-name"
- * Actions: mute toggle, tap to navigate, disconnect
+ * Shows: "Connected to #channel-name" ([channelName] null: "Connected to voice")
+ * Actions: mute toggle, tap to return to the call, disconnect
  */
 @Composable
 fun VoiceOverlay(
-    channelName: String,
+    channelName: String?,
     isMuted: Boolean,
     onMuteToggle: () -> Unit,
     onTap: () -> Unit,
@@ -29,7 +35,7 @@ fun VoiceOverlay(
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp)
-            .clickable(onClick = onTap),
+            .clickable(onClickLabel = stringResource(R.string.voice_overlay_return), onClick = onTap),
         color = MaterialTheme.colorScheme.primaryContainer,
         tonalElevation = 4.dp
     ) {
@@ -44,7 +50,11 @@ fun VoiceOverlay(
                 modifier = Modifier.weight(1f)
             ) {
                 Text(
-                    text = "Connected to #$channelName",
+                    text = if (channelName != null) {
+                        stringResource(R.string.voice_overlay_connected, channelName)
+                    } else {
+                        stringResource(R.string.voice_overlay_connected_unknown)
+                    },
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                     maxLines = 1
@@ -52,7 +62,15 @@ fun VoiceOverlay(
             }
 
             // Mute toggle
-            IconButton(onClick = onMuteToggle) {
+            val muteDescription = stringResource(R.string.voice_microphone)
+            val muteState = stringResource(if (isMuted) R.string.voice_muted else R.string.voice_microphone_on)
+            IconButton(
+                onClick = onMuteToggle,
+                modifier = Modifier.semantics {
+                    contentDescription = muteDescription
+                    stateDescription = muteState
+                }
+            ) {
                 Text(
                     text = if (isMuted) "🔇" else "🎤",
                     style = MaterialTheme.typography.titleMedium
@@ -63,7 +81,7 @@ fun VoiceOverlay(
             IconButton(onClick = onDisconnect) {
                 Icon(
                     imageVector = Icons.Default.Call,
-                    contentDescription = "Disconnect",
+                    contentDescription = stringResource(R.string.voice_disconnect),
                     tint = MaterialTheme.colorScheme.error
                 )
             }

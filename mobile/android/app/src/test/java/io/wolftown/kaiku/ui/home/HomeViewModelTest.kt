@@ -10,6 +10,7 @@ import io.wolftown.kaiku.domain.model.Category
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.Guild
+import io.wolftown.kaiku.push.PushRegistrar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +26,7 @@ class HomeViewModelTest {
     private lateinit var guildRepository: GuildRepository
     private lateinit var viewModel: HomeViewModel
     private lateinit var realtimeManager: RealtimeConnectionManager
+    private val pushRegistrar: PushRegistrar = mockk(relaxed = true)
     private val statusFlow = MutableStateFlow(RealtimeStatus.Connected)
 
     private val testDispatcher = StandardTestDispatcher()
@@ -72,7 +74,7 @@ class HomeViewModelTest {
             guildsFlow.value = sampleGuilds
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         coVerify { guildRepository.loadGuilds() }
@@ -95,7 +97,7 @@ class HomeViewModelTest {
             selectedGuildIdFlow.value = "guild-1"
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         viewModel.onGuildSelected("guild-1")
@@ -127,7 +129,7 @@ class HomeViewModelTest {
             selectedGuildIdFlow.value = "guild-1"
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         viewModel.onGuildSelected("guild-1")
@@ -150,7 +152,7 @@ class HomeViewModelTest {
             guildsFlow.value = sampleGuilds
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
 
         viewModel.isLoading.test {
             // Initial loading state should be true (loading started in init)
@@ -175,7 +177,7 @@ class HomeViewModelTest {
     fun `error state on API failure`() = runTest {
         coEvery { guildRepository.loadGuilds() } throws RuntimeException("Network error")
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         assertNotNull(viewModel.error.value)
@@ -197,7 +199,7 @@ class HomeViewModelTest {
             selectedGuildIdFlow.value = "guild-2"
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         assertNull(viewModel.selectedGuild.value)
@@ -218,7 +220,7 @@ class HomeViewModelTest {
             guildsFlow.value = sampleGuilds
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         viewModel.refresh()
@@ -244,7 +246,7 @@ class HomeViewModelTest {
             }
         }
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         assertNotNull(viewModel.error.value)
@@ -263,7 +265,7 @@ class HomeViewModelTest {
     @Test
     fun `unknown channel types are hidden from channel list`() = runTest {
         coEvery { guildRepository.loadGuilds() } just Runs
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         channelsFlow.value = listOf(
@@ -287,7 +289,7 @@ class HomeViewModelTest {
         coEvery { guildRepository.loadGuilds() } just Runs
         coEvery { guildRepository.loadChannels("guild-1") } throws RuntimeException("boom")
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
         viewModel.onGuildSelected("guild-1")
         advanceUntilIdle()
@@ -303,7 +305,7 @@ class HomeViewModelTest {
             id = "ch-dm", name = "dm", channelType = ChannelType.DM, position = 9
         )
 
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
 
         val sections = viewModel.sections.value
@@ -314,11 +316,61 @@ class HomeViewModelTest {
 
     @Test
     fun `connection status mirrors realtime manager`() = runTest {
-        viewModel = HomeViewModel(guildRepository, realtimeManager)
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
         advanceUntilIdle()
         assertEquals(RealtimeStatus.Connected, viewModel.connectionStatus.value)
 
         statusFlow.value = RealtimeStatus.Offline
         assertEquals(RealtimeStatus.Offline, viewModel.connectionStatus.value)
+    }
+
+    // ========================================================================
+    // Auto-select
+    // ========================================================================
+
+    @Test
+    fun `auto-selects the only server`() = runTest {
+        coEvery { guildRepository.loadGuilds() } coAnswers {
+            guildsFlow.value = listOf(sampleGuilds.first())
+        }
+
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        advanceUntilIdle()
+
+        verify { guildRepository.selectGuild("guild-1") }
+        coVerify { guildRepository.loadChannels("guild-1") }
+    }
+
+    @Test
+    fun `auto-select opens the first server when nothing is selected`() = runTest {
+        coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = sampleGuilds }
+
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        advanceUntilIdle()
+
+        verify { guildRepository.selectGuild("guild-1") }
+        verify(exactly = 0) { guildRepository.selectGuild("guild-2") }
+    }
+
+    @Test
+    fun `auto-select keeps an existing selection`() = runTest {
+        selectedGuildIdFlow.value = "guild-2"
+        coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = sampleGuilds }
+
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        advanceUntilIdle()
+
+        verify(exactly = 0) { guildRepository.selectGuild(any()) }
+    }
+
+    @Test
+    fun `no servers selects nothing`() = runTest {
+        coEvery { guildRepository.loadGuilds() } coAnswers { guildsFlow.value = emptyList() }
+
+        viewModel = HomeViewModel(guildRepository, realtimeManager, pushRegistrar)
+        advanceUntilIdle()
+
+        verify(exactly = 0) { guildRepository.selectGuild(any()) }
+        assertTrue(viewModel.guilds.value.isEmpty())
     }
 }

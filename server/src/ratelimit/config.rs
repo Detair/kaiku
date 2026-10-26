@@ -13,7 +13,9 @@ pub struct RateLimitConfig {
     pub enabled: bool,
     /// Prefix for Redis keys (e.g., "canis:rl")
     pub redis_key_prefix: String,
-    /// Whether to allow requests when Redis is unavailable
+    /// Whether authentication limits also let requests through while Valkey
+    /// is unavailable (general limits always do; see
+    /// `RateLimiter::allow_during_outage`).
     pub fail_open: bool,
     /// Proxies whose forwarded headers are trusted (default: none)
     pub trusted_proxies: TrustedProxies,
@@ -84,8 +86,8 @@ impl Default for RateLimitConfig {
         Self {
             enabled: true,
             redis_key_prefix: "canis:rl".to_string(),
-            // Security: fail_closed by default - reject requests when Redis unavailable
-            // Set RATE_LIMIT_FAIL_OPEN=true only if availability > security for your use case
+            // Security: authentication limits fail closed by default while Valkey
+            // is unavailable. RATE_LIMIT_FAIL_OPEN=true opens them too.
             fail_open: false,
             trusted_proxies: TrustedProxies::default(),
             allowlist: HashSet::new(),
@@ -170,7 +172,8 @@ impl RateLimitConfig {
     /// Environment variables:
     /// - `RATE_LIMIT_ENABLED`: Enable/disable rate limiting (default: true)
     /// - `RATE_LIMIT_PREFIX`: Redis key prefix (default: "canis:rl")
-    /// - `RATE_LIMIT_FAIL_OPEN`: Allow requests when Redis unavailable (default: false)
+    /// - `RATE_LIMIT_FAIL_OPEN`: Also fail open for authentication limits while Valkey is
+    ///   unavailable (default: false)
     /// - `RATE_LIMIT_TRUSTED_PROXIES`: Comma-separated CIDRs/IPs of proxies whose
     ///   `X-Forwarded-For`/`X-Real-IP` headers are trusted (default: none)
     /// - `RATE_LIMIT_TRUST_PROXY`: Deprecated and ignored (logs a warning)

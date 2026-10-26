@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.ui.channel
 
+import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import app.cash.turbine.test
 import io.mockk.*
@@ -17,6 +18,9 @@ import io.wolftown.kaiku.domain.model.DmConversation
 import io.wolftown.kaiku.domain.model.DmParticipant
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.domain.model.User
+import io.wolftown.kaiku.push.ActiveChannelTracker
+import io.wolftown.kaiku.push.NotificationLedger
+import io.wolftown.kaiku.push.NotificationSink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,6 +41,9 @@ class TextChannelViewModelTest {
     private val statusFlow = MutableStateFlow(RealtimeStatus.Connected)
     private lateinit var viewModel: TextChannelViewModel
     private lateinit var savedStateHandle: SavedStateHandle
+    private val activeChannelTracker = ActiveChannelTracker()
+    private val notificationSink: NotificationSink = mockk(relaxed = true)
+    private val notificationLedger: NotificationLedger = mockk(relaxed = true)
 
     private val testDispatcher = StandardTestDispatcher()
 
@@ -44,7 +51,7 @@ class TextChannelViewModelTest {
     private val channelsFlow = MutableStateFlow<List<Channel>>(emptyList())
     private val conversationsFlow = MutableStateFlow<List<DmConversation>>(emptyList())
     private val currentUserIdFlow = MutableStateFlow<String?>("me")
-    private val typingUsersFlow = MutableStateFlow<Set<String>>(emptySet())
+    private val typingUsersFlow = MutableStateFlow<Map<String, Long>>(emptyMap())
 
     private val testAuthor = User(
         id = "user-1",
@@ -93,7 +100,10 @@ class TextChannelViewModelTest {
     }
 
     private fun createViewModel(): TextChannelViewModel {
-        return TextChannelViewModel(chatRepository, guildRepository, dmRepository, authState, realtimeManager, savedStateHandle)
+        return TextChannelViewModel(
+            chatRepository, guildRepository, dmRepository, authState, realtimeManager,
+            activeChannelTracker, notificationSink, notificationLedger, savedStateHandle
+        )
     }
 
     // ========================================================================
@@ -259,6 +269,8 @@ class TextChannelViewModelTest {
         viewModel.onCleared()
 
         verify { chatRepository.unsubscribeFromChannel("ch-1") }
+        verify { guildRepository.clearActiveChannel("ch-1") }
+        verify { dmRepository.clearActiveChannel("ch-1") }
     }
 
     // ========================================================================
@@ -359,10 +371,27 @@ class TextChannelViewModelTest {
         viewModel = createViewModel()
         advanceUntilIdle()
 
-        typingUsersFlow.value = setOf("user-2", "user-3")
-        advanceUntilIdle()
+        viewModel.typingUserIds.test {
+            assertEquals(emptySet<String>(), awaitItem())
 
-        assertEquals(setOf("user-2", "user-3"), viewModel.typingUsers.value)
+            // The signed-in user ("me") is never shown as typing.
+            typingUsersFlow.value = mapOf("user-2" to 8_000L, "user-3" to 8_000L, "me" to 8_000L)
+            assertEquals(setOf("user-2", "user-3"), awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `member names come from message authors`() = runTest {
+        coEvery { chatRepository.loadMessages(any(), any()) } returns false
+        viewModel = createViewModel()
+
+        viewModel.memberNames.test {
+            assertEquals(emptyMap<String, String>(), awaitItem())
+            messagesFlow.value = sampleMessages
+            assertEquals(mapOf("user-1" to "Test User"), awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
     }
 
     @Test
@@ -571,5 +600,122 @@ class TextChannelViewModelTest {
 
         statusFlow.value = RealtimeStatus.Reconnecting
         assertEquals(RealtimeStatus.Reconnecting, viewModel.connectionStatus.value)
+    }
+
+    @Test
+    fun `upload failure exposes chat_upload_failed`() = runTest {
+        val uri = mockk<Uri>()
+        coEvery { chatRepository.sendAttachment("ch-1", uri, null) } returns
+            Result.failure(ChatRepository.AttachmentException.Failed())
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_upload_failed, viewModel.error.value)
+        assertFalse(viewModel.isUploading.value)
+    }
+
+    @Test
+    fun `too large upload exposes chat_upload_too_large`() = runTest {
+        val uri = mockk<Uri>()
+        coEvery { chatRepository.sendAttachment("ch-1", uri, null) } returns
+            Result.failure(ChatRepository.AttachmentException.TooLarge())
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_upload_too_large, viewModel.error.value)
+    }
+
+    @Test
+    fun `unsupported type exposes chat_upload_unsupported_type`() = runTest {
+        val uri = mockk<Uri>()
+        coEvery { chatRepository.sendAttachment("ch-1", uri, null) } returns
+            Result.failure(ChatRepository.AttachmentException.UnsupportedType())
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+
+        assertEquals(R.string.chat_upload_unsupported_type, viewModel.error.value)
+    }
+
+    @Test
+    fun `caption is cleared during upload and restored on failure`() = runTest {
+        val uri = mockk<Uri>()
+        val gate = kotlinx.coroutines.CompletableDeferred<Result<Message>>()
+        coEvery { chatRepository.sendAttachment("ch-1", uri, "look") } coAnswers { gate.await() }
+        viewModel = createViewModel()
+        advanceUntilIdle()
+        viewModel.onMessageInputChanged("look")
+
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+        assertEquals("", viewModel.messageInput.value)
+        assertTrue(viewModel.isUploading.value)
+
+        gate.complete(Result.failure(ChatRepository.AttachmentException.Failed()))
+        advanceUntilIdle()
+        assertEquals("look", viewModel.messageInput.value)
+        assertFalse(viewModel.isUploading.value)
+    }
+
+    @Test
+    fun `picks while uploading are ignored`() = runTest {
+        val uri = mockk<Uri>()
+        val gate = kotlinx.coroutines.CompletableDeferred<Result<Message>>()
+        coEvery { chatRepository.sendAttachment("ch-1", any(), any()) } coAnswers { gate.await() }
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onAttachmentPicked(uri)
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+        gate.complete(Result.success(sampleMessages[0]))
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { chatRepository.sendAttachment("ch-1", any(), any()) }
+    }
+
+    @Test
+    fun `successful upload sends draft as caption and keeps input empty`() = runTest {
+        val uri = mockk<Uri>()
+        coEvery { chatRepository.sendAttachment("ch-1", uri, "look") } returns
+            Result.success(sampleMessages[0])
+        viewModel = createViewModel()
+        advanceUntilIdle()
+        viewModel.onMessageInputChanged("look")
+
+        viewModel.onAttachmentPicked(uri)
+        advanceUntilIdle()
+
+        assertEquals("", viewModel.messageInput.value)
+        assertNull(viewModel.error.value)
+    }
+
+    // ========================================================================
+    // Notifications: visible screen clears and suppresses
+    // ========================================================================
+
+    @Test
+    fun `visible screen clears notification and marks newest message seen`() = runTest {
+        messagesFlow.value = sampleMessages
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onVisible()
+        advanceUntilIdle()
+
+        assertEquals("ch-1", activeChannelTracker.visibleChannelId.value)
+        verify { notificationSink.cancel("ch-1") }
+        verify { notificationLedger.markSeen("me", "ch-1", "msg-2", "2026-03-12T10:01:00Z") }
+
+        viewModel.onHidden()
+        assertNull(activeChannelTracker.visibleChannelId.value)
     }
 }

@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::Json;
@@ -10,18 +11,19 @@ use chrono::{Duration, Utc};
 use fred::prelude::*;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
+use validator::Validate;
 
 use super::backup_codes::{find_matching_backup_code, generate_backup_codes, BACKUP_CODE_COUNT};
 use super::error::{AuthError, AuthResult};
 use super::helpers::{extract_user_agent, should_return_refresh_token};
 use super::jwt::generate_token_pair;
-use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
+use super::mfa_crypto::encrypt_mfa_secret;
 use super::middleware::AuthUser;
 use super::types::{
-    AuthResponse, MfaBackupCodeCountResponse, MfaBackupCodesResponse, MfaSetupResponse,
-    MfaVerifyRequest, QrCreateResponse, QrRedeemRequest,
+    AuthResponse, BackupCodesRequest, MfaBackupCodeCountResponse, MfaBackupCodesResponse,
+    MfaSetupResponse, MfaVerifyRequest, QrCreateResponse, QrRedeemRequest,
 };
-use super::{cookies, hash_token};
+use super::{cookies, hash_token, reauth};
 use crate::api::AppState;
 use crate::db::{
     count_all_mfa_backup_codes, count_unused_mfa_backup_codes, create_session,
@@ -126,24 +128,17 @@ pub async fn mfa_setup(
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, request), fields(user_id = %auth_user.id))]
+#[tracing::instrument(skip(state, headers, request), fields(user_id = %auth_user.id))]
 pub async fn mfa_verify(
     State(state): State<AppState>,
     auth_user: AuthUser,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(request): Json<MfaVerifyRequest>,
 ) -> AuthResult<Json<serde_json::Value>> {
-    // Check if encryption key is configured
-    let encryption_key = state
-        .config
-        .mfa_encryption_key
-        .as_ref()
-        .ok_or_else(|| AuthError::Internal("MFA encryption not configured".to_string()))?;
+    reauth::ensure_not_locked(&state, auth_user.id).await?;
 
-    // Decode encryption key from hex
-    let key_bytes = hex::decode(encryption_key)
-        .map_err(|_| AuthError::Internal("Invalid MFA encryption key".to_string()))?;
-
-    // Get user to retrieve encrypted MFA secret
+    // Get user to retrieve encrypted MFA secret (the TOTP check decrypts it)
     let user = find_user_by_id(&state.db, auth_user.id)
         .await
         .map_err(|_| AuthError::Internal("Database error".to_string()))?
@@ -165,10 +160,6 @@ pub async fn mfa_verify(
         }
     };
 
-    // Decrypt the secret
-    let secret_str = decrypt_mfa_secret(&encrypted_secret, &key_bytes)
-        .map_err(|e| AuthError::Internal(format!("Failed to decrypt MFA secret: {e}")))?;
-
     // Count all backup codes (used + unused) BEFORE verification to detect first-time setup.
     // This must happen before any backup code is consumed, otherwise exhausting the last
     // code would be indistinguishable from never having had codes.
@@ -176,27 +167,15 @@ pub async fn mfa_verify(
         .await
         .map_err(AuthError::Database)?;
 
-    // Parse the secret
-    let secret = Secret::Encoded(secret_str);
-
-    // Create TOTP instance
-    let totp = TOTP::new(
-        Algorithm::SHA1,
-        6,
-        1,
-        30,
-        secret
-            .to_bytes()
-            .map_err(|_| AuthError::Internal("Invalid TOTP secret encoding".into()))?,
-        Some("Kaiku".to_string()),
-        user.username,
+    // Try TOTP code first (accepted once per step: replay protection)
+    let totp_valid = reauth::accept_totp(
+        &state,
+        auth_user.id,
+        &encrypted_secret,
+        &user.username,
+        &request.code,
     )
-    .map_err(|e| AuthError::Internal(format!("Failed to create TOTP: {e}")))?;
-
-    // Try TOTP code first
-    let totp_valid = totp
-        .check_current(&request.code)
-        .map_err(|e| AuthError::Internal(format!("Failed to verify TOTP code: {e}")))?;
+    .await?;
 
     if !totp_valid {
         // TOTP failed — try backup code
@@ -205,7 +184,7 @@ pub async fn mfa_verify(
             .map_err(AuthError::Database)?;
 
         let hashes: Vec<String> = backup_codes.iter().map(|c| c.code_hash.clone()).collect();
-        if let Some(matched_idx) = find_matching_backup_code(&request.code, &hashes) {
+        if let Some(matched_idx) = match_backup_code(&request.code, hashes).await? {
             let used_code_id = backup_codes[matched_idx].id;
             mark_mfa_backup_code_used(&state.db, used_code_id)
                 .await
@@ -216,6 +195,8 @@ pub async fn mfa_verify(
                 "MFA backup code used for verification"
             );
         } else {
+            let client_ip = reauth::client_ip(&state, &headers, addr);
+            reauth::record_failure(&state, auth_user.id, client_ip).await?;
             return Err(AuthError::InvalidMfaCode);
         }
     }
@@ -235,8 +216,7 @@ pub async fn mfa_verify(
     // "never had codes" from "used the last code in this request".
     if total_codes_before == 0 {
         // First-time verify after setup — auto-generate backup codes
-        let (plaintext_codes, hashes) = generate_backup_codes()
-            .map_err(|e| AuthError::Internal(format!("Failed to generate backup codes: {e}")))?;
+        let (plaintext_codes, hashes) = new_backup_codes().await?;
 
         store_mfa_backup_codes(&state.db, auth_user.id, &hashes)
             .await
@@ -274,20 +254,31 @@ pub async fn mfa_verify(
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, request), fields(user_id = %auth_user.id))]
+#[tracing::instrument(skip(state, headers, request), fields(user_id = %auth_user.id))]
 pub async fn mfa_disable(
     State(state): State<AppState>,
     auth_user: AuthUser,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(request): Json<MfaVerifyRequest>,
 ) -> AuthResult<Json<serde_json::Value>> {
     // Require MFA verification before disabling (security measure)
-    // First verify the provided code is valid
-    let verification_result =
-        mfa_verify(State(state.clone()), auth_user.clone(), Json(request)).await;
-
-    if verification_result.is_err() {
-        return Err(AuthError::InvalidMfaCode);
-    }
+    // First verify the provided code is valid. A lock or a limiter outage
+    // keeps its own answer; every other failure reads as a wrong code.
+    let _verified = mfa_verify(
+        State(state.clone()),
+        auth_user.clone(),
+        ConnectInfo(addr),
+        headers,
+        Json(request),
+    )
+    .await
+    .map_err(|e| match e {
+        AuthError::TooManyAttempts { .. }
+        | AuthError::ServiceUnavailable
+        | AuthError::Internal(_) => e,
+        _ => AuthError::InvalidMfaCode,
+    })?;
 
     // Clear MFA secret from database
     set_mfa_secret(&state.db, auth_user.id, None)
@@ -314,23 +305,35 @@ pub async fn mfa_disable(
 /// Calling this endpoint again regenerates all codes, invalidating any previously
 /// generated codes.
 ///
-/// Requires MFA to be enabled on the account.
+/// Requires MFA to be enabled on the account and a current TOTP code in the
+/// body (C24); backup codes are not accepted.
 ///
 /// POST /auth/mfa/backup-codes
 #[utoipa::path(
     post,
     path = "/auth/mfa/backup-codes",
     tag = "auth",
+    request_body = BackupCodesRequest,
     responses(
         (status = 200, description = "Backup codes generated", body = MfaBackupCodesResponse),
+        (status = 400, description = "Missing code, or MFA is not enabled"),
+        (status = 401, description = "Invalid code"),
+        (status = 429, description = "Too many failed attempts"),
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
+#[tracing::instrument(skip(state, headers, body), fields(user_id = %auth_user.id))]
 pub async fn mfa_generate_backup_codes(
     State(state): State<AppState>,
     auth_user: AuthUser,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<BackupCodesRequest>, JsonRejection>,
 ) -> AuthResult<Json<MfaBackupCodesResponse>> {
+    let Json(body) = body.map_err(|e| AuthError::Validation(e.body_text()))?;
+    body.validate()
+        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
+
     // Verify MFA is enabled before generating backup codes
     let user = find_user_by_id(&state.db, auth_user.id)
         .await
@@ -338,14 +341,24 @@ pub async fn mfa_generate_backup_codes(
         .ok_or(AuthError::UserNotFound)?;
 
     if user.mfa_secret.is_none() {
-        return Err(AuthError::Internal(
+        return Err(AuthError::Validation(
             "MFA must be enabled before generating backup codes".to_string(),
         ));
     }
 
+    let client_ip = reauth::client_ip(&state, &headers, addr);
+    reauth::verify_reauth(
+        &state,
+        auth_user.id,
+        None,
+        Some(&body.mfa_code),
+        false,
+        client_ip,
+    )
+    .await?;
+
     // Generate 10 random backup codes and their Argon2id hashes
-    let (plaintext_codes, hashes) = generate_backup_codes()
-        .map_err(|e| AuthError::Internal(format!("Failed to generate backup codes: {e}")))?;
+    let (plaintext_codes, hashes) = new_backup_codes().await?;
 
     // Store hashes (replaces any existing codes)
     store_mfa_backup_codes(&state.db, auth_user.id, &hashes)
@@ -361,6 +374,23 @@ pub async fn mfa_generate_backup_codes(
     Ok(Json(MfaBackupCodesResponse {
         codes: plaintext_codes,
     }))
+}
+
+/// Generate backup codes (Argon2 hashing) off the async runtime.
+async fn new_backup_codes() -> AuthResult<(Vec<String>, Vec<String>)> {
+    tokio::task::spawn_blocking(generate_backup_codes)
+        .await
+        .map_err(|e| AuthError::Internal(format!("Backup code generation failed: {e}")))?
+        .map_err(|e| AuthError::Internal(format!("Failed to generate backup codes: {e}")))
+}
+
+/// Find the stored backup code matching `code` (Argon2 checks) off the async
+/// runtime.
+async fn match_backup_code(code: &str, hashes: Vec<String>) -> AuthResult<Option<usize>> {
+    let code = code.to_owned();
+    tokio::task::spawn_blocking(move || find_matching_backup_code(&code, &hashes))
+        .await
+        .map_err(|e| AuthError::Internal(format!("Backup code check failed: {e}")))
 }
 
 /// Get remaining MFA backup code count.
@@ -478,6 +508,11 @@ pub async fn qr_redeem(
         crate::observability::metrics::record_auth_login_attempt(false);
         AuthError::InvalidCredentials
     })?;
+
+    // A banned account cannot start a new session.
+    if super::queries::is_user_globally_banned(&state.db, user_id).await? {
+        return Err(AuthError::AccountBanned);
+    }
 
     // Issue tokens
     let tokens = generate_token_pair(

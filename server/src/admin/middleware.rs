@@ -39,6 +39,9 @@ pub async fn require_system_admin(
 }
 
 /// Middleware that requires an elevated admin session.
+///
+/// The elevation must belong to the session of the request's access token
+/// (`sid`); other sessions of the same admin are not elevated (C24).
 #[tracing::instrument(skip(state, request, next))]
 pub async fn require_elevated(
     State(state): State<AppState>,
@@ -51,7 +54,13 @@ pub async fn require_elevated(
         .cloned()
         .ok_or(AdminError::NotAdmin)?;
 
-    let elevated = queries::find_latest_elevated_session(&state.db, admin.user_id)
+    let session_id = request
+        .extensions()
+        .get::<AuthUser>()
+        .and_then(|auth| auth.session_id)
+        .ok_or(AdminError::ElevationRequired)?;
+
+    let elevated = queries::find_elevated_session(&state.db, admin.user_id, session_id)
         .await?
         .ok_or(AdminError::ElevationRequired)?;
 

@@ -14,6 +14,7 @@ import io.ktor.util.*
 import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.auth.RefreshResult
 import io.wolftown.kaiku.data.auth.TokenRefresher
+import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.domain.model.AuthResponse
@@ -64,6 +65,14 @@ class KaikuHttpClient @Inject constructor(
          * and no C4 handling. Used by the refresh call and by explicit-bearer calls.
          */
         internal val SkipAuthInterceptor = AttributeKey<Boolean>("SkipAuthInterceptor")
+
+        /**
+         * Binds a request to the session ([AuthSession.LoggedIn.sessionId]) it
+         * was started in: if another session (or none) is current when it is
+         * about to be sent, it is not sent and [SessionChangedException] is
+         * thrown, so it can never go out with another account's token.
+         */
+        internal val RequiredSessionId = AttributeKey<Long>("RequiredSessionId")
 
         /**
          * Creates a [KaikuHttpClient] with a custom engine (for testing with MockEngine).
@@ -121,10 +130,16 @@ class KaikuHttpClient @Inject constructor(
             val generationAtRequest = tokenStorage.getSessionGeneration()
             val serverUrlAtRequest = tokenStorage.getServerUrl()
 
+            val requiredSession = request.attributes.getOrNull(RequiredSessionId)
+            if (requiredSession != null && currentSessionId() != requiredSession) throw SessionChangedException()
+
             // Attach Bearer token if available
             tokenStorage.getAccessToken()?.let { token ->
                 request.headers[HttpHeaders.Authorization] = "Bearer $token"
             }
+            // Checked again after reading the token: it belongs to the bound session
+            // only if that session was current on both sides of the read.
+            if (requiredSession != null && currentSessionId() != requiredSession) throw SessionChangedException()
 
             val originalCall = execute(request)
 
@@ -175,6 +190,8 @@ class KaikuHttpClient @Inject constructor(
 
         return client
     }
+
+    private fun currentSessionId(): Long? = (authState.session.value as? AuthSession.LoggedIn)?.sessionId
 
     override suspend fun ensureFresh(minValidityMs: Long): RefreshResult {
         if (isValidFor(minValidityMs)) return RefreshResult.SUCCESS
@@ -370,3 +387,6 @@ class KaikuHttpClient @Inject constructor(
         }
     }
 }
+
+/** A session-bound request was not sent because its session is no longer current. */
+class SessionChangedException : java.io.IOException("session changed; request not sent")

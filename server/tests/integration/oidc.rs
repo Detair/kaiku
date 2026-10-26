@@ -10,8 +10,9 @@
 
 use sqlx::PgPool;
 use vc_server::auth::oidc::{
-    append_collision_suffix, generate_username_from_claims, OidcFlowState, OidcProviderManager,
-    OidcUserInfo,
+    append_collision_suffix, client_return_url, generate_username_from_claims,
+    is_loopback_client_redirect, resolve_flow_redirects, FlowRedirectError, OidcFlowPurpose,
+    OidcFlowState, OidcProviderManager, OidcReauthBinding, OidcUserInfo,
 };
 
 // ============================================================================
@@ -320,7 +321,11 @@ fn test_flow_state_serialization_roundtrip() {
         nonce: "abc123nonce".to_string(),
         redirect_uri: "http://127.0.0.1:12345/callback".to_string(),
         created_at: 1706745600,
-        link_user_id: Some(link_user),
+        purpose: OidcFlowPurpose::Link {
+            user_id: link_user,
+            session_id: None,
+        },
+        client_redirect_uri: Some("http://127.0.0.1:12345/callback".to_string()),
     };
 
     let json = serde_json::to_string(&state).expect("Serialization should succeed");
@@ -332,7 +337,17 @@ fn test_flow_state_serialization_roundtrip() {
     assert_eq!(deserialized.nonce, "abc123nonce");
     assert_eq!(deserialized.redirect_uri, "http://127.0.0.1:12345/callback");
     assert_eq!(deserialized.created_at, 1706745600);
-    assert_eq!(deserialized.link_user_id, Some(link_user));
+    assert_eq!(
+        deserialized.purpose,
+        OidcFlowPurpose::Link {
+            user_id: link_user,
+            session_id: None
+        }
+    );
+    assert_eq!(
+        deserialized.client_redirect_uri.as_deref(),
+        Some("http://127.0.0.1:12345/callback")
+    );
 }
 
 #[test]
@@ -341,7 +356,51 @@ fn test_flow_state_link_user_id_defaults_to_none() {
     // must deserialize them as an ordinary login flow.
     let legacy = r#"{"slug":"google","pkce_verifier":"v","nonce":"n","redirect_uri":"https://x/cb","created_at":0}"#;
     let state: OidcFlowState = serde_json::from_str(legacy).expect("legacy state should parse");
-    assert_eq!(state.link_user_id, None);
+    assert_eq!(state.purpose, OidcFlowPurpose::Login);
+    assert_eq!(state.client_redirect_uri, None);
+}
+
+#[test]
+fn test_flow_state_legacy_link_user_id_stays_a_link() {
+    // A link state written before `purpose` existed must still finish as a
+    // link (never as a login or a re-authentication).
+    let user = uuid::Uuid::new_v4();
+    let legacy = format!(
+        r#"{{"slug":"google","pkce_verifier":"v","nonce":"n","redirect_uri":"https://x/cb","created_at":0,"link_user_id":"{user}"}}"#
+    );
+    let state: OidcFlowState = serde_json::from_str(&legacy).expect("legacy state should parse");
+    assert_eq!(
+        state.purpose,
+        OidcFlowPurpose::Link {
+            user_id: user,
+            session_id: None
+        }
+    );
+}
+
+#[test]
+fn test_flow_state_purpose_is_exclusive() {
+    // A re-authentication state round-trips as exactly that purpose.
+    let binding = OidcReauthBinding {
+        user_id: uuid::Uuid::new_v4(),
+        session_id: uuid::Uuid::new_v4(),
+        reason: None,
+        mfa_verified: true,
+    };
+    let state = OidcFlowState {
+        slug: "google".to_string(),
+        pkce_verifier: "v".to_string(),
+        nonce: "n".to_string(),
+        redirect_uri: "https://x/cb".to_string(),
+        created_at: 0,
+        purpose: OidcFlowPurpose::Reauth(binding.clone()),
+        client_redirect_uri: None,
+    };
+    let json = serde_json::to_value(&state).unwrap();
+    assert_eq!(json["purpose"]["kind"], "reauth");
+    assert!(json.get("link_user_id").is_none());
+    let back: OidcFlowState = serde_json::from_value(json).unwrap();
+    assert_eq!(back.purpose, OidcFlowPurpose::Reauth(binding));
 }
 
 #[test]
@@ -352,7 +411,8 @@ fn test_flow_state_json_format() {
         nonce: "nonce".to_string(),
         redirect_uri: "https://example.com/callback".to_string(),
         created_at: 0,
-        link_user_id: None,
+        purpose: OidcFlowPurpose::Login,
+        client_redirect_uri: None,
     };
 
     let json: serde_json::Value = serde_json::to_value(&state).unwrap();
@@ -626,19 +686,13 @@ async fn test_load_providers_from_database(pool: PgPool) {
 // Redirect URI Validation Tests (Unit tests - no database required)
 // ============================================================================
 
-/// These tests document which `redirect_uri` values the server's validation
-/// accepts or rejects. The server uses `Url::parse()` + pattern matching on
-/// `(scheme(), host_str())` against `("http", Some("localhost" | "127.0.0.1"))`.
-///
-/// We test the validation contract by examining URL host parsing behavior.
-/// The `url` crate's `Url::parse("http://X").host_str()` returns:
-///   - "localhost" for "<http://localhost:1234/path>"
-///   - "localhost.evil.com" for "<http://localhost.evil.com>" (NOT "localhost")
-///   - "evil.com" for "<http://localhost@evil.com>" (userinfo, NOT host)
+// Which desktop `redirect_uri` values the server accepts, checked against the
+// server's own rule (`is_loopback_client_redirect`). Note the `url` crate's
+// `host_str()` returns "localhost.evil.com" for `http://localhost.evil.com`
+// and "evil.com" for `http://localhost@evil.com` (userinfo, not host).
 
 #[test]
 fn test_redirect_uri_valid_patterns() {
-    // These should be accepted by the server's validation
     let valid = [
         "http://localhost:12345/callback",
         "http://localhost/callback",
@@ -647,18 +701,15 @@ fn test_redirect_uri_valid_patterns() {
     ];
     for uri in valid {
         let parsed = openidconnect::url::Url::parse(uri).expect(uri);
-        assert_eq!(parsed.scheme(), "http", "scheme for {uri}");
         assert!(
-            matches!(parsed.host_str(), Some("localhost" | "127.0.0.1")),
-            "host_str() for {uri} should be localhost or 127.0.0.1, got {:?}",
-            parsed.host_str()
+            is_loopback_client_redirect(&parsed),
+            "{uri} should be accepted"
         );
     }
 }
 
 #[test]
 fn test_redirect_uri_rejected_patterns() {
-    // These should be rejected by the server's validation
     let invalid: Vec<(&str, &str)> = vec![
         // Prefix-based bypass attempts (host_str != "localhost")
         (
@@ -679,37 +730,152 @@ fn test_redirect_uri_rejected_patterns() {
         // External hosts
         ("http://evil.com/callback", "external host"),
         ("http://example.com/auth/callback", "external host"),
+        // Not a URL with a host at all
+        ("javascript:alert(1)", "scheme is javascript"),
     ];
     for (uri, reason) in invalid {
         let parsed = openidconnect::url::Url::parse(uri).expect(uri);
-        let is_valid = matches!(
-            (parsed.scheme(), parsed.host_str()),
-            ("http", Some("localhost" | "127.0.0.1"))
+        assert!(
+            !is_loopback_client_redirect(&parsed),
+            "{uri} should be rejected ({reason})"
         );
-        assert!(!is_valid, "{uri} should be rejected ({reason})");
     }
 }
 
 #[test]
 fn test_redirect_uri_unparseable_rejected() {
-    // These should fail URL parsing entirely
-    let invalid = ["not-a-url", "", "javascript:alert(1)"];
-    for uri in invalid {
-        // "javascript:alert(1)" actually parses as a valid URL with scheme "javascript"
-        // so the scheme check rejects it. Empty and "not-a-url" fail parsing.
-        let result = openidconnect::url::Url::parse(uri);
-        if let Ok(parsed) = result {
-            let is_valid = matches!(
-                (parsed.scheme(), parsed.host_str()),
-                ("http", Some("localhost" | "127.0.0.1"))
-            );
-            assert!(
-                !is_valid,
-                "{uri} parsed but should be rejected by scheme/host check"
-            );
-        }
-        // If parsing fails, the server also rejects it — that's fine
+    for uri in ["not-a-url", ""] {
+        assert_eq!(
+            resolve_flow_redirects(Some(uri), Some("https://chat.example.com")),
+            Err(FlowRedirectError::InvalidClientRedirect),
+            "{uri:?} must be rejected"
+        );
     }
+}
+
+// ============================================================================
+// Flow Redirect Resolution Tests (Unit tests - no database required)
+// ============================================================================
+
+/// Desktop login: the provider must redirect to the server's own callback (the
+/// server holds the PKCE verifier and client secret and exchanges the code);
+/// the loopback address is only where the server hands the result back.
+#[test]
+fn test_desktop_flow_sends_server_callback_to_provider() {
+    let r = resolve_flow_redirects(
+        Some("http://127.0.0.1:54321/callback"),
+        Some("https://chat.example.com"),
+    )
+    .expect("loopback redirect is accepted");
+    assert_eq!(
+        r.provider_redirect_uri,
+        "https://chat.example.com/auth/oidc/callback"
+    );
+    assert_eq!(
+        r.client_redirect_uri.as_deref(),
+        Some("http://127.0.0.1:54321/callback")
+    );
+}
+
+#[test]
+fn test_browser_flow_has_no_client_redirect() {
+    let r = resolve_flow_redirects(None, Some("https://chat.example.com")).unwrap();
+    assert_eq!(
+        r.provider_redirect_uri,
+        "https://chat.example.com/auth/oidc/callback"
+    );
+    assert_eq!(r.client_redirect_uri, None);
+}
+
+#[test]
+fn test_flow_redirects_require_public_url() {
+    assert_eq!(
+        resolve_flow_redirects(None, None),
+        Err(FlowRedirectError::MissingPublicUrl)
+    );
+    assert_eq!(
+        resolve_flow_redirects(Some("http://127.0.0.1:1/callback"), None),
+        Err(FlowRedirectError::MissingPublicUrl)
+    );
+}
+
+#[test]
+fn test_flow_redirects_reject_non_loopback_client() {
+    for uri in [
+        "http://localhost.evil.com/callback",
+        "http://localhost@evil.com/callback",
+        "https://127.0.0.1/callback",
+        "not-a-url",
+    ] {
+        assert_eq!(
+            resolve_flow_redirects(Some(uri), Some("https://chat.example.com")),
+            Err(FlowRedirectError::InvalidClientRedirect),
+            "{uri} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn test_flow_redirects_trim_public_url_trailing_slash() {
+    let r = resolve_flow_redirects(None, Some("https://chat.example.com/")).unwrap();
+    assert_eq!(
+        r.provider_redirect_uri,
+        "https://chat.example.com/auth/oidc/callback"
+    );
+}
+
+/// The desktop contract is exactly `http://{localhost|127.0.0.1}[:port]/callback`.
+#[test]
+fn test_loopback_client_redirect_contract() {
+    for ok in [
+        "http://127.0.0.1:54321/callback",
+        "http://localhost:12345/callback",
+        "http://127.0.0.1/callback",
+    ] {
+        let u = openidconnect::url::Url::parse(ok).unwrap();
+        assert!(is_loopback_client_redirect(&u), "{ok} must be accepted");
+    }
+    for bad in [
+        "http://127.0.0.1:1/",
+        "http://127.0.0.1:1/other",
+        "http://127.0.0.1:1/callback/extra",
+        "http://127.0.0.1:1/callback?x=1",
+        "http://127.0.0.1:1/callback?",
+        "http://127.0.0.1:1/callback#frag",
+        "http://user@127.0.0.1:1/callback",
+        "http://user:pw@localhost:1/callback",
+    ] {
+        let u = openidconnect::url::Url::parse(bad).unwrap();
+        assert!(!is_loopback_client_redirect(&u), "{bad} must be rejected");
+    }
+}
+
+fn flow_state_with_client(client: Option<&str>) -> OidcFlowState {
+    OidcFlowState {
+        slug: "google".to_string(),
+        pkce_verifier: "v".to_string(),
+        nonce: "n".to_string(),
+        redirect_uri: "https://chat.example.com/auth/oidc/callback".to_string(),
+        created_at: 0,
+        purpose: OidcFlowPurpose::Login,
+        client_redirect_uri: client.map(str::to_string),
+    }
+}
+
+/// The callback hands the result to the desktop loopback only when the flow
+/// was started with one; the provider redirect URI never decides this.
+#[test]
+fn test_client_return_url_selects_desktop_or_browser() {
+    let desktop = flow_state_with_client(Some("http://127.0.0.1:54321/callback"));
+    assert_eq!(
+        client_return_url(&desktop)
+            .map(|u| u.to_string())
+            .as_deref(),
+        Some("http://127.0.0.1:54321/callback")
+    );
+    assert!(client_return_url(&flow_state_with_client(None)).is_none());
+    // A tampered/non-loopback stored value is never used as a return target.
+    assert!(client_return_url(&flow_state_with_client(Some("http://evil.com/cb"))).is_none());
 }
 
 // ============================================================================

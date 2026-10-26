@@ -16,11 +16,12 @@ use uuid::Uuid;
 use super::backup_codes::find_matching_backup_code;
 use super::error::{AuthError, AuthResult};
 use super::helpers::{extract_refresh_token, extract_user_agent, should_return_refresh_token};
-use super::jwt::{generate_token_pair, validate_refresh_token};
+use super::jwt::{generate_token_pair, generate_token_pair_for_session, validate_refresh_token};
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
 use super::oidc::{
-    append_collision_suffix, generate_username_from_claims, OidcFlowState, OidcUserInfo,
+    append_collision_suffix, client_return_url, generate_username_from_claims,
+    resolve_flow_redirects, FlowRedirectError, OidcFlowPurpose, OidcFlowState, OidcUserInfo,
 };
 use super::password::{hash_password, verify_password};
 use super::queries::{self, InsertSessionParams};
@@ -31,11 +32,10 @@ use super::types::{
 use super::{cookies, geoip, hash_token};
 use crate::api::AppState;
 use crate::db::{
-    self, create_password_reset_token, create_session, delete_session_by_token_hash,
-    find_session_by_token_hash, find_user_by_email, find_user_by_id, find_user_by_username,
-    find_user_id_by_identity, find_valid_reset_token, get_auth_methods_allowed,
-    get_unused_mfa_backup_codes, invalidate_user_reset_tokens, is_setup_complete,
-    mark_mfa_backup_code_used,
+    self, create_password_reset_token, create_session, find_session_by_token_hash,
+    find_user_by_email, find_user_by_id, find_user_by_username, find_user_id_by_identity,
+    find_valid_reset_token, get_auth_methods_allowed, get_unused_mfa_backup_codes,
+    invalidate_user_reset_tokens, is_setup_complete, mark_mfa_backup_code_used,
 };
 use crate::ratelimit::NormalizedIp;
 
@@ -64,23 +64,18 @@ pub async fn login(
     Json(body): Json<LoginRequest>,
 ) -> AuthResult<(CookieJar, Json<AuthResponse>)> {
     // Helper macro to record failed auth (if rate limiter is configured)
-    // SECURITY: Fails request if rate limiter is down (fail-closed pattern)
+    // SECURITY: Fails request with 503 if Valkey is down (fail-closed pattern)
     macro_rules! record_failed_auth {
         () => {
             if let (Some(ref rl), Some(Extension(ref nip))) = (&state.rate_limiter, &normalized_ip)
             {
-                if let Err(e) = rl.record_failed_auth(&nip.0).await {
-                    tracing::error!(
-                        error = %e,
-                        ip = ?nip.0,
-                        username = %body.username,
-                        "SECURITY: Failed to record failed authentication - BLOCKING REQUEST to prevent rate limit bypass"
-                    );
-                    // Fail closed - deny request when rate limiter is unavailable
-                    // This prevents attackers from bypassing rate limiting by triggering rate limiter failures
-                    return Err(AuthError::Internal(
-                        "Authentication service temporarily unavailable. Please try again later.".to_string()
-                    ));
+                if rl.record_failed_auth(&nip.0).await.is_err()
+                    && !rl.allow_during_outage(crate::ratelimit::RateLimitCategory::FailedAuth)
+                {
+                    // Fail closed (503, logged and counted by
+                    // `allow_during_outage`): otherwise a rate limiter failure
+                    // would let attackers bypass failed-login blocking.
+                    return Err(AuthError::ServiceUnavailable);
                 }
             }
         };
@@ -111,6 +106,12 @@ pub async fn login(
             return Err(AuthError::InvalidCredentials);
         }
     };
+
+    // A banned account cannot start a new session.
+    if queries::is_user_globally_banned(&state.db, user.id).await? {
+        crate::observability::metrics::record_auth_login_attempt(false);
+        return Err(AuthError::AccountBanned);
+    }
 
     // Check MFA if enabled
     if let Some(ref encrypted_secret) = user.mfa_secret {
@@ -276,6 +277,13 @@ pub async fn refresh_token(
     // Parse user ID
     let user_id: Uuid = claims.sub.parse().map_err(|_| AuthError::InvalidToken)?;
 
+    // A banned account cannot renew its session (its sessions were ended
+    // when the ban was issued; this answers with the reason).
+    if queries::is_user_globally_banned(&state.db, user_id).await? {
+        crate::observability::metrics::record_token_refresh(false);
+        return Err(AuthError::AccountBanned);
+    }
+
     let token_hash = hash_token(&raw_token);
 
     // Resolve GeoIP before the transaction to avoid holding a connection during HTTP call
@@ -301,33 +309,43 @@ pub async fn refresh_token(
         return Err(AuthError::InvalidToken);
     }
 
+    // A session whose id is denylisted has ended even if its row survived
+    // (e.g. ending it in Valkey succeeded but a later step failed): refuse,
+    // since every access token issued for it would be refused anyway. Fails
+    // closed (503) when Valkey cannot answer, like the access-token check.
+    if super::revocation::is_session_revoked(&state.redis, &session.id.to_string()).await? {
+        crate::observability::metrics::record_token_refresh(false);
+        return Err(AuthError::InvalidToken);
+    }
+
     // Verify user still exists
     let user = find_user_by_id(&state.db, user_id)
         .await?
         .ok_or(AuthError::UserNotFound)?;
 
-    // Delete old session within the transaction
-    queries::delete_session_by_token_hash_tx(&mut tx, &token_hash).await?;
-
-    // Generate new token pair
-    let new_tokens = generate_token_pair(
+    // Generate the new token pair for the same session: its id (the access
+    // token's `sid`) stays stable, so revoking the session later also reaches
+    // sockets opened before this refresh.
+    let new_tokens = generate_token_pair_for_session(
         user_id,
+        session.id,
         &state.config.jwt_private_key,
         state.config.jwt_access_expiry,
         state.config.jwt_refresh_expiry,
     )?;
 
-    // Store new refresh token session within the transaction
+    // Rotate the refresh token in place within the transaction
     let new_token_hash = hash_token(&new_tokens.refresh_token);
     let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
     let city = geo.as_ref().and_then(|g| g.city.as_deref());
     let country = geo.as_ref().and_then(|g| g.country.as_deref());
 
     let ip_str = addr.ip().to_string();
-    queries::insert_session_tx(
+    queries::rotate_session_tx(
         &mut tx,
+        session.id,
         &InsertSessionParams {
-            id: new_tokens.refresh_token_id,
+            id: session.id,
             user_id,
             token_hash: &new_token_hash,
             expires_at,
@@ -376,7 +394,7 @@ pub async fn refresh_token(
     post,
     path = "/auth/logout",
     tag = "auth",
-    request_body(content = LogoutRequest, description = "Required for Tauri clients; browser clients use HttpOnly cookie instead"),
+    request_body(content = LogoutRequest, description = "Optional; without a refresh token (body or HttpOnly cookie) the bearer token's session is ended"),
     responses(
         (status = 200, description = "Logged out successfully"),
     ),
@@ -389,34 +407,43 @@ pub async fn logout(
     jar: CookieJar,
     body: Option<Json<LogoutRequest>>,
 ) -> AuthResult<CookieJar> {
-    // Read refresh token from JSON body (Tauri) or HttpOnly cookie (browser)
-    let raw_token = extract_refresh_token(body.map(|b| b.0.refresh_token), &jar)?;
-
-    // Verify the session belongs to the authenticated user before deleting
-    let token_hash = hash_token(&raw_token);
-    let session = find_session_by_token_hash(&state.db, &token_hash)
-        .await?
-        .ok_or(AuthError::InvalidToken)?;
-
-    if session.user_id != auth_user.id {
+    // The session to end: the access token's own session, plus the one named
+    // by a refresh token (JSON body for Tauri/Android, HttpOnly cookie for
+    // browsers) when it belongs to the caller. Either alone is enough.
+    let mut session_ids: Vec<Uuid> = auth_user.session_id.into_iter().collect();
+    let body_token = body.and_then(|b| b.0.refresh_token);
+    if let Ok(raw_token) = extract_refresh_token(body_token, &jar) {
+        let token_hash = hash_token(&raw_token);
+        if let Some(session) = find_session_by_token_hash(&state.db, &token_hash).await? {
+            if session.user_id == auth_user.id && !session_ids.contains(&session.id) {
+                session_ids.push(session.id);
+            }
+        }
+    }
+    if session_ids.is_empty() {
         return Err(AuthError::InvalidToken);
     }
 
-    delete_session_by_token_hash(&state.db, &token_hash).await?;
-
-    // Deleting the refresh session kills future refreshes, but the current
-    // stateless access token would otherwise stay valid until it expires.
-    // Add its session id (== the access token's `sid` claim) to the revocation
-    // denylist for the access-token lifetime so it stops working immediately.
-    if let Err(e) = super::revocation::revoke_session(
-        &state.redis,
-        &session.id.to_string(),
-        state.config.jwt_access_expiry,
-    )
-    .await
-    {
-        tracing::warn!(error = %e, user_id = %auth_user.id, "Failed to denylist access token on logout");
+    // Delete the sessions (no more refreshes) and commit first: signing out
+    // never leaves a refreshable session. Then end them (their access tokens
+    // and sockets stop now); a Valkey failure answers 500 and a retry is safe.
+    let mut tx = state.db.begin().await?;
+    let mut ended = Vec::with_capacity(session_ids.len());
+    for session_id in session_ids {
+        if let Some(id) = queries::delete_user_session_tx(&mut tx, auth_user.id, session_id).await?
+        {
+            ended.push(id);
+        }
     }
+    // The access token's session may already be gone (e.g. revoked
+    // elsewhere); denylisting it again is harmless.
+    if let Some(own) = auth_user.session_id {
+        if !ended.contains(&own) {
+            ended.push(own);
+        }
+    }
+    tx.commit().await?;
+    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
 
     tracing::info!(user_id = %auth_user.id, "User logged out");
 
@@ -466,7 +493,7 @@ pub async fn oidc_providers(State(state): State<AppState>) -> AuthResult<Json<se
     tag = "auth",
     params(
         ("provider" = String, Path, description = "OIDC provider name"),
-        ("redirect_uri" = Option<String>, Query, description = "Optional redirect URI override"),
+        ("redirect_uri" = Option<String>, Query, description = "Optional desktop loopback return address (Tauri); the provider always returns to the server callback"),
     ),
     responses(
         (status = 307, description = "Redirect to provider authorization URL"),
@@ -485,18 +512,23 @@ pub async fn oidc_authorize(
         &state,
         &provider,
         query.redirect_uri.as_deref(),
-        None,
+        OidcFlowPurpose::Login,
         want_json,
     )
     .await
 }
 
+/// Flow-state TTL of a login or link flow.
+const OIDC_STATE_TTL_SECS: i64 = 600;
+/// Flow-state TTL of a re-authentication flow.
+const OIDC_REAUTH_STATE_TTL_SECS: i64 = 300;
+
 /// Begin an OIDC authorization flow and redirect to the provider.
 ///
-/// Shared by the public login flow (`link_user_id = None`) and the
-/// authenticated identity-link flow (`link_user_id = Some(current user)`); the
-/// only difference is what gets persisted in the encrypted Redis flow state, so
-/// the callback can tell a login apart from a link.
+/// Shared by the public login flow, the authenticated identity-link flow and
+/// the re-authentication flow; the only difference is what gets persisted in
+/// the encrypted Redis flow state (see [`OidcFlowPurpose`]), so the callback
+/// can tell them apart.
 ///
 /// When `want_json` is set, the provider authorization URL is returned as a JSON
 /// body (`{"url": ...}`) instead of a 307 redirect — for the browser link flow,
@@ -505,9 +537,10 @@ pub async fn start_oidc_flow(
     state: &AppState,
     provider: &str,
     redirect_uri: Option<&str>,
-    link_user_id: Option<Uuid>,
+    purpose: OidcFlowPurpose,
     want_json: bool,
 ) -> Result<Response, AuthError> {
+    let is_reauth = matches!(purpose, OidcFlowPurpose::Reauth(_));
     let auth_methods = get_auth_methods_allowed(&state.db).await?;
     if !auth_methods.oidc {
         return Err(AuthError::AuthMethodDisabled);
@@ -523,33 +556,24 @@ pub async fn start_oidc_flow(
         return Err(AuthError::OidcProviderNotFound);
     }
 
-    // Determine callback URL
-    let callback_base = if let Some(redirect_uri) = redirect_uri {
-        // Tauri flow: validate the redirect URI is a localhost callback
-        let parsed = openidconnect::url::Url::parse(redirect_uri)
-            .map_err(|_| AuthError::Validation("Invalid redirect_uri".to_string()))?;
-        if matches!(
-            (parsed.scheme(), parsed.host_str()),
-            ("http", Some("localhost" | "127.0.0.1"))
-        ) {
-            redirect_uri.to_string()
-        } else {
-            tracing::warn!(redirect_uri = %redirect_uri, "Rejected non-localhost redirect_uri");
-            return Err(AuthError::Validation(
-                "redirect_uri must be http://localhost or http://127.0.0.1".to_string(),
-            ));
-        }
-    } else {
-        // Browser flow: use the server's own callback endpoint
-        let public_url = std::env::var("PUBLIC_URL").map_err(|_| {
-            tracing::error!("PUBLIC_URL env var is not set; required for OIDC browser flow");
-            AuthError::Internal("Server misconfiguration: PUBLIC_URL is not set".to_string())
+    // Provider always returns to the server's callback; a desktop (Tauri)
+    // loopback address is only where the server hands the result back.
+    let redirects = resolve_flow_redirects(redirect_uri, state.config.public_url.as_deref())
+        .map_err(|e| match e {
+            FlowRedirectError::InvalidClientRedirect => {
+                tracing::warn!(redirect_uri = ?redirect_uri, "Rejected non-localhost redirect_uri");
+                AuthError::Validation(
+                    "redirect_uri must be http://localhost or http://127.0.0.1".to_string(),
+                )
+            }
+            FlowRedirectError::MissingPublicUrl => {
+                tracing::error!("PUBLIC_URL env var is not set; required for OIDC");
+                AuthError::Internal("Server misconfiguration: PUBLIC_URL is not set".to_string())
+            }
         })?;
-        format!("{public_url}/auth/oidc/callback")
-    };
 
     let (auth_url, csrf_state, nonce, pkce_verifier) = oidc_manager
-        .generate_auth_url(provider, &callback_base)
+        .generate_auth_url_with(provider, &redirects.provider_redirect_uri, is_reauth)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, provider = %provider, "Failed to generate OIDC auth URL");
@@ -563,9 +587,15 @@ pub async fn start_oidc_flow(
         slug: provider.to_string(),
         pkce_verifier,
         nonce,
-        redirect_uri: callback_base,
+        redirect_uri: redirects.provider_redirect_uri,
         created_at: Utc::now().timestamp(),
-        link_user_id,
+        purpose,
+        client_redirect_uri: redirects.client_redirect_uri,
+    };
+    let ttl = if is_reauth {
+        OIDC_REAUTH_STATE_TTL_SECS
+    } else {
+        OIDC_STATE_TTL_SECS
     };
 
     let flow_json =
@@ -587,7 +617,7 @@ pub async fn start_oidc_flow(
         .set::<(), _, _>(
             &redis_key,
             encrypted_flow.as_str(),
-            Some(Expiration::EX(600)),
+            Some(Expiration::EX(ttl)),
             None,
             false,
         )
@@ -597,7 +627,7 @@ pub async fn start_oidc_flow(
             AuthError::Internal("Failed to store OIDC state".to_string())
         })?;
 
-    tracing::info!(provider = %provider, link = link_user_id.is_some(), json = want_json, "Starting OIDC provider flow");
+    tracing::info!(provider = %provider, purpose = flow_state.purpose.kind(), json = want_json, "Starting OIDC provider flow");
     if want_json {
         Ok(Json(serde_json::json!({ "url": auth_url })).into_response())
     } else {
@@ -613,17 +643,21 @@ pub async fn start_oidc_flow(
     path = "/auth/oidc/callback",
     tag = "auth",
     params(
-        ("code" = String, Query, description = "Authorization code from provider"),
+        ("code" = Option<String>, Query, description = "Authorization code from provider (absent on provider error)"),
         ("state" = String, Query, description = "CSRF state parameter"),
+        ("error" = Option<String>, Query, description = "Provider error; returned to the sign-in origin as OIDC_PROVIDER_ERROR"),
     ),
     responses(
-        (status = 307, description = "Redirect to client with auth token"),
-        (status = 400, description = "Invalid callback parameters"),
+        (status = 200, description = "Browser popup result page (postMessage to opener), success or generic error code"),
+        (status = 307, description = "Redirect to the desktop loopback with the result or a generic error code"),
+        (status = 400, description = "Invalid or unknown state"),
     ),
 )]
-#[tracing::instrument(skip(state, jar, query))]
+#[tracing::instrument(skip(state, jar, headers, query))]
 pub async fn oidc_callback(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     jar: CookieJar,
     axum::extract::Query(query): axum::extract::Query<OidcCallbackQuery>,
 ) -> Result<Response, AuthError> {
@@ -660,32 +694,56 @@ pub async fn oidc_callback(
     let flow_state: OidcFlowState =
         serde_json::from_str(&flow_json).map_err(|e| AuthError::Internal(e.to_string()))?;
 
+    // From here on the state is valid and consumed: failures go back to the
+    // sign-in origin (desktop loopback / browser popup) with a generic code
+    // instead of an HTTP error the origin never sees.
+    let code = match (query.code.as_deref(), query.error.as_deref()) {
+        (Some(code), None) => code,
+        (_, provider_error) => {
+            let provider_error: Option<String> =
+                provider_error.map(|e| e.chars().take(64).collect());
+            tracing::info!(provider = %flow_state.slug, provider_error = ?provider_error, "OIDC provider returned no authorization code");
+            return Ok(flow_failure_response(&flow_state, OIDC_PROVIDER_ERROR));
+        }
+    };
+
+    // Re-authentication flow: verify the fresh provider login and elevate the
+    // bound session; never logs in or links.
+    if let OidcFlowPurpose::Reauth(ref binding) = flow_state.purpose {
+        let client_ip = super::reauth::client_ip(&state, &headers, addr);
+        return super::reauth::complete_oidc_reauth(&state, &flow_state, binding, code, client_ip)
+            .await;
+    }
+
     // Exchange code for tokens (also verifies ID token nonce for OIDC providers)
-    let (access_token, _id_token) = oidc_manager
+    let access_token = match oidc_manager
         .exchange_code(
             &flow_state.slug,
-            &query.code,
+            code,
             &flow_state.pkce_verifier,
             &flow_state.redirect_uri,
             &flow_state.nonce,
         )
         .await
-        .map_err(|e| {
+    {
+        Ok((access_token, _id_token)) => access_token,
+        Err(e) => {
             tracing::warn!(error = %e, provider = %flow_state.slug, "OIDC code exchange failed");
-            AuthError::OidcCodeExchangeFailed(e.to_string())
-        })?;
+            return Ok(flow_failure_response(&flow_state, OIDC_EXCHANGE_FAILED));
+        }
+    };
 
     // Extract user info
-    let user_info = oidc_manager
-        .extract_user_info(
-            &flow_state.slug,
-            &access_token,
-        )
+    let user_info = match oidc_manager
+        .extract_user_info(&flow_state.slug, &access_token)
         .await
-        .map_err(|e| {
+    {
+        Ok(user_info) => user_info,
+        Err(e) => {
             tracing::warn!(error = %e, provider = %flow_state.slug, "Failed to extract OIDC user info");
-            AuthError::OidcCodeExchangeFailed(format!("Failed to extract user info: {e}"))
-        })?;
+            return Ok(flow_failure_response(&flow_state, OIDC_EXCHANGE_FAILED));
+        }
+    };
 
     // Composite external_id: "{provider_slug}:{subject}". Retained as the
     // user's primary-identity marker; the authoritative lookup is the
@@ -699,8 +757,19 @@ pub async fn oidc_callback(
 
     // Link flow: attach this identity to the already-authenticated user instead
     // of logging in or creating an account.
-    if let Some(link_user_id) = flow_state.link_user_id {
-        return handle_identity_link(&state, &flow_state, &user_info, link_user_id).await;
+    if let OidcFlowPurpose::Link {
+        user_id: link_user_id,
+        session_id: link_session_id,
+    } = flow_state.purpose
+    {
+        return handle_identity_link(
+            &state,
+            &flow_state,
+            &user_info,
+            link_user_id,
+            link_session_id,
+        )
+        .await;
     }
 
     // User resolution: resolve the external identity to an account.
@@ -862,6 +931,11 @@ pub async fn oidc_callback(
         }
     };
 
+    // A banned account cannot start a new session.
+    if queries::is_user_globally_banned(&state.db, user.id).await? {
+        return Err(AuthError::AccountBanned);
+    }
+
     // Best-effort: record that this identity was just used to log in.
     if let Err(e) =
         db::touch_user_identity_last_used(&state.db, &flow_state.slug, &user_info.subject).await
@@ -897,17 +971,8 @@ pub async fn oidc_callback(
 
     tracing::info!(user_id = %user.id, provider = %flow_state.slug, "User logged in via OIDC");
 
-    // Check if redirect_uri is a localhost callback (Tauri flow)
-    let parsed_redirect = openidconnect::url::Url::parse(&flow_state.redirect_uri)
-        .map_err(|e| AuthError::Internal(format!("Invalid redirect URI: {e}")))?;
-    let is_localhost = matches!(
-        (parsed_redirect.scheme(), parsed_redirect.host_str()),
-        ("http", Some("localhost" | "127.0.0.1"))
-    );
-
-    if is_localhost {
-        // Tauri flow: redirect with tokens in query params
-        let mut redirect_url = parsed_redirect;
+    if let Some(mut redirect_url) = client_return_url(&flow_state) {
+        // Tauri flow: redirect to the desktop loopback with tokens in query params
         redirect_url
             .query_pairs_mut()
             .append_pair("access_token", &tokens.access_token)
@@ -957,7 +1022,17 @@ async fn handle_identity_link(
     flow_state: &OidcFlowState,
     user_info: &OidcUserInfo,
     link_user_id: Uuid,
+    link_session_id: Option<Uuid>,
 ) -> Result<Response, AuthError> {
+    // The session that started the flow must still be live, not revoked, of
+    // an unbanned account and (for a system admin) elevated.
+    if let Some(code) =
+        super::identities::link_refusal(state, link_user_id, link_session_id).await?
+    {
+        tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, error_code = code, "OIDC identity link refused: starting session no longer valid");
+        return Ok(flow_failure_response(flow_state, code));
+    }
+
     // Determine the link outcome. Genuine server faults (DB errors) propagate as
     // AuthError; a *conflict* instead becomes a generic error code carried back to
     // the opener via the same redirect/postMessage channel, so the popup always
@@ -986,7 +1061,26 @@ async fn handle_identity_link(
         )
         .await
         {
-            Ok(_) => {
+            Ok(identity) => {
+                // Linked from an elevated session: may confirm re-authentication
+                // right away (C24); otherwise only sessions started later can.
+                if let Some(session_id) = link_session_id {
+                    if crate::admin::queries::has_active_elevated_session(
+                        &state.db,
+                        link_user_id,
+                        session_id,
+                    )
+                    .await
+                    .map_err(|e| AuthError::Internal(format!("Elevation lookup failed: {e}")))?
+                    {
+                        sqlx::query(
+                            "UPDATE user_identities SET linked_while_elevated = TRUE WHERE id = $1",
+                        )
+                        .bind(identity.id)
+                        .execute(&state.db)
+                        .await?;
+                    }
+                }
                 tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, "Linked OIDC identity to account");
                 None
             }
@@ -999,50 +1093,116 @@ async fn handle_identity_link(
         },
     };
 
-    if let Some(code) = error_code {
-        tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, error_code = code, "OIDC identity link rejected");
-    }
-
     // Token-less result response (mirrors the login callback's Tauri-vs-browser
     // split, minus the session/cookie since the caller is already authenticated).
     // Always completes the handshake — success or a generic error code.
-    let parsed_redirect = openidconnect::url::Url::parse(&flow_state.redirect_uri)
-        .map_err(|e| AuthError::Internal(format!("Invalid redirect URI: {e}")))?;
-    let is_localhost = matches!(
-        (parsed_redirect.scheme(), parsed_redirect.host_str()),
-        ("http", Some("localhost" | "127.0.0.1"))
-    );
+    if let Some(code) = error_code {
+        tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, error_code = code, "OIDC identity link rejected");
+        return Ok(flow_failure_response(flow_state, code));
+    }
 
-    if is_localhost {
-        let mut redirect_url = parsed_redirect;
-        match error_code {
-            Some(code) => redirect_url
-                .query_pairs_mut()
-                .append_pair("link_error", code),
-            None => redirect_url
-                .query_pairs_mut()
-                .append_pair("linked", &flow_state.slug),
-        };
+    if let Some(mut redirect_url) = client_return_url(flow_state) {
+        redirect_url
+            .query_pairs_mut()
+            .append_pair("linked", &flow_state.slug);
         Ok(Redirect::temporary(redirect_url.as_str()).into_response())
     } else {
         let payload = serde_json::json!({
             "type": "oidc-link-callback",
-            "success": error_code.is_none(),
+            "success": true,
             "provider_slug": flow_state.slug,
-            "error_code": error_code,
+            "error_code": null,
         });
-        let html = format!(
-            r#"<!DOCTYPE html>
+        Ok(axum::response::Html(popup_result_page(&payload, true)).into_response())
+    }
+}
+
+/// Generic code: the provider returned an error instead of an authorization code.
+const OIDC_PROVIDER_ERROR: &str = "OIDC_PROVIDER_ERROR";
+/// Generic code: code exchange or user-info lookup with the provider failed.
+const OIDC_EXCHANGE_FAILED: &str = "OIDC_EXCHANGE_FAILED";
+
+/// Hand a failed flow back to its origin with a generic error code (never
+/// provider text). Only used once the flow state has been validated, so the
+/// return target is the stored, re-validated loopback — never callback input.
+///
+/// | flow  | desktop loopback       | browser popup (`postMessage`)                        |
+/// |-------|------------------------|------------------------------------------------------|
+/// | login | `?error=CODE`          | `{type: "oidc-callback", error}`                     |
+/// | link  | `?link_error=CODE`     | `{type: "oidc-link-callback", success: false, error_code}` |
+/// | reauth | `?reauth_error=CODE`  | `{type: "oidc-reauth-callback", success: false, error_code, expires_at: null}` |
+fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Response {
+    let is_link = match flow_state.purpose {
+        OidcFlowPurpose::Reauth(_) => {
+            return super::reauth::reauth_failure_response(flow_state, code);
+        }
+        OidcFlowPurpose::Link { .. } => true,
+        OidcFlowPurpose::Login => false,
+    };
+    if let Some(mut redirect_url) = client_return_url(flow_state) {
+        let key = if is_link { "link_error" } else { "error" };
+        redirect_url.query_pairs_mut().append_pair(key, code);
+        return Redirect::temporary(redirect_url.as_str()).into_response();
+    }
+    let payload = if is_link {
+        serde_json::json!({
+            "type": "oidc-link-callback",
+            "success": false,
+            "provider_slug": flow_state.slug,
+            "error_code": code,
+        })
+    } else {
+        serde_json::json!({ "type": "oidc-callback", "error": code })
+    };
+    // The link UI handles failures itself (closes the popup); the login page
+    // only reacts to success, so a failed login keeps the popup open with a hint.
+    axum::response::Html(popup_result_page(&payload, is_link)).into_response()
+}
+
+/// Popup page that posts `payload` to the opener (same origin only). With
+/// `close` it closes itself afterwards; otherwise it stays open showing that
+/// sign-in failed.
+fn popup_result_page(payload: &serde_json::Value, close: bool) -> String {
+    let (close_js, fallback) = if close {
+        ("window.close();", "You can close this window.")
+    } else {
+        (
+            "",
+            "Sign-in did not complete. Close this window and try again.",
+        )
+    };
+    format!(
+        r#"<!DOCTYPE html>
 <html><body><script>
 if (window.opener) {{
     window.opener.postMessage({payload}, window.location.origin);
-    window.close();
-}} else {{
-    document.body.innerText = "You can close this window.";
+    {close_js}
 }}
+document.body.innerText = "{fallback}";
 </script></body></html>"#,
-        );
-        Ok(axum::response::Html(html).into_response())
+    )
+}
+
+/// Hand a token-less OIDC flow result back to the client that started it.
+///
+/// Desktop (`return_url`, see [`client_return_url`]): redirect there with
+/// `query` appended. Browser: a popup page that posts `payload` to the opener
+/// window and closes itself.
+pub(super) fn oidc_hand_back(
+    return_url: Option<openidconnect::url::Url>,
+    query: &[(&str, String)],
+    payload: &serde_json::Value,
+) -> Response {
+    if let Some(mut redirect_url) = return_url {
+        {
+            let mut pairs = redirect_url.query_pairs_mut();
+            for (key, value) in query {
+                pairs.append_pair(key, value);
+            }
+        }
+        Redirect::temporary(redirect_url.as_str()).into_response()
+    } else {
+        axum::response::Html(popup_result_page(payload, true)).into_response()
     }
 }
 
@@ -1227,17 +1387,20 @@ pub async fn reset_password(
         })?;
 
     // Delete all user sessions (force re-login everywhere)
-    queries::delete_all_user_sessions_tx(&mut tx, reset_token.user_id)
+    let ended = queries::delete_user_sessions_except(&mut tx, reset_token.user_id, None)
         .await
         .map_err(|e| {
             tracing::error!(error = ?e, user_id = %reset_token.user_id, "Failed to delete sessions");
-            e
+            AuthError::Database(e)
         })?;
-
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, "Failed to commit password reset transaction");
         AuthError::Database(e)
     })?;
+
+    // End them now too: their access tokens and every open socket of the
+    // user stop working.
+    super::revocation::end_all_sessions(&state, reset_token.user_id, &ended).await?;
 
     tracing::info!(user_id = %reset_token.user_id, "Password reset successful, all sessions invalidated");
 

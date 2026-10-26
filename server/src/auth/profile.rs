@@ -1,6 +1,8 @@
 //! User profile handlers (get, update, avatar, password).
 
-use axum::extract::{Multipart, State};
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, Multipart, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use axum_extra::extract::CookieJar;
@@ -8,9 +10,8 @@ use chrono::Utc;
 use validator::Validate;
 
 use super::error::{AuthError, AuthResult};
-use super::helpers::extract_current_token_hash;
 use super::middleware::AuthUser;
-use super::password::{hash_password, verify_password};
+use super::password::hash_password;
 use super::queries;
 use super::types::{
     UpdatePasswordRequest, UpdateProfileRequest, UpdateProfileResponse, UserProfile,
@@ -298,6 +299,7 @@ pub async fn update_profile(
     responses(
         (status = 200, description = "Password updated successfully"),
         (status = 401, description = "Invalid current password"),
+        (status = 429, description = "Too many failed attempts"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -305,12 +307,15 @@ pub async fn update_profile(
 pub async fn update_password(
     State(state): State<AppState>,
     auth_user: AuthUser,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     jar: CookieJar,
     Json(body): Json<UpdatePasswordRequest>,
 ) -> AuthResult<Json<serde_json::Value>> {
     body.validate()
         .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
+
+    super::reauth::ensure_not_locked(&state, auth_user.id).await?;
 
     let user = find_user_by_id(&state.db, auth_user.id)
         .await
@@ -322,10 +327,9 @@ pub async fn update_password(
         .as_ref()
         .ok_or(AuthError::InvalidCredentials)?;
 
-    let valid = verify_password(&body.current_password, current_hash)
-        .map_err(|_| AuthError::PasswordHash)?;
-
-    if !valid {
+    if !super::reauth::password_matches(&body.current_password, current_hash).await? {
+        let client_ip = super::reauth::client_ip(&state, &headers, addr);
+        super::reauth::record_failure(&state, auth_user.id, client_ip).await?;
         return Err(AuthError::InvalidCredentials);
     }
 
@@ -338,30 +342,47 @@ pub async fn update_password(
 
     let new_hash = hash_password(&body.new_password).map_err(|_| AuthError::PasswordHash)?;
 
+    // Identify the caller's own session before changing anything (the access
+    // token's `sid`, or the refresh token sent as cookie/header). Without it
+    // the other sessions cannot be told apart from the caller's, so the
+    // request is refused rather than silently keeping them.
+    let keep = if body.revoke_others {
+        let current = super::sessions::current_session_id(&state, &auth_user, &headers, &jar)
+            .await?
+            .ok_or_else(|| {
+                tracing::warn!(
+                    user_id = %auth_user.id,
+                    "Cannot identify current session for password-change revocation"
+                );
+                AuthError::Validation(
+                    "Cannot identify current session. Please provide a refresh token via cookie or X-Refresh-Token header.".to_string(),
+                )
+            })?;
+        Some(current)
+    } else {
+        None
+    };
+
     // Transaction: update password (clearing a pending forced change) +
-    // optionally revoke other sessions
+    // optionally delete the other sessions
     let mut tx = state.db.begin().await.map_err(AuthError::Database)?;
 
     queries::update_password_hash_tx(&mut tx, auth_user.id, &new_hash).await?;
 
-    let revoked_count = if body.revoke_others {
-        let current_token_hash = extract_current_token_hash(&headers, &jar);
-        if let Some(ref hash) = current_token_hash {
-            queries::delete_other_user_sessions_tx(&mut tx, auth_user.id, hash).await?
-        } else {
-            // Cannot identify current session — skip revocation rather than
-            // accidentally deleting all sessions (including the caller's own).
-            tracing::warn!(
-                user_id = %auth_user.id,
-                "Cannot identify current session for password-change revocation; skipping"
-            );
-            0u64
+    let ended = match keep {
+        Some(keep) => {
+            queries::delete_user_sessions_except(&mut tx, auth_user.id, Some(keep)).await?
         }
-    } else {
-        0u64
+        None => Vec::new(),
     };
 
     tx.commit().await.map_err(AuthError::Database)?;
+
+    // End the deleted sessions now that the change is committed (their access
+    // tokens and sockets stop); a Valkey failure answers 500, retry is safe.
+    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
+    let revoked_count = ended.len() as u64;
+
     tracing::info!(user_id = %auth_user.id, revoked_others = body.revoke_others, revoked_count, "Password updated");
 
     Ok(Json(serde_json::json!({

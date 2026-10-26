@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -27,6 +28,8 @@ import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 
 @OptIn(ExperimentalMaterial3Api::class)
+// ImageProxy.image is a CameraX opt-in API (androidx marker, checked by lint).
+@androidx.annotation.OptIn(ExperimentalGetImage::class)
 @Composable
 fun QrScannerScreen(
     onQrScanned: (serverUrl: String, token: String) -> Unit,
@@ -118,7 +121,6 @@ fun QrScannerScreen(
                                 .build()
 
                             imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                                @androidx.camera.core.ExperimentalGetImage
                                 val mediaImage = imageProxy.image
                                 if (mediaImage != null && !hasScanned.get()) {
                                     val inputImage = InputImage.fromMediaImage(

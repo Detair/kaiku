@@ -12,17 +12,19 @@ stays rejected unless the policy is `open`.
 
 ## 2. Elevate your admin session
 
-Creating accounts is an elevated admin action. Elevate first:
+Creating accounts is an elevated admin action. Elevate first by confirming your password, plus the current code from your authenticator app if MFA is on (otherwise send `null`):
 
 ```http
 POST /api/admin/elevate
 Authorization: Bearer <admin access token>
 Content-Type: application/json
 
-{"reason": "create family accounts"}
+{"password": "<your password>", "mfa_code": "123456", "reason": "create family accounts"}
 ```
 
-The elevation is time-limited; elevate again if it expired.
+If your admin account signs in through a linked identity provider instead of a password, call `POST /auth/reauth/oidc/authorize/{provider}` with `{"redirect_uri": null, "reason": "...", "mfa_code": "<code, if MFA is on>"}`, open the returned `url` and sign in at the provider again. `GET /auth/reauth/methods` lists the options your account has. A provider you linked after this sign-in only becomes usable after you sign in again, unless you linked it while elevated.
+
+The elevation applies only to the session you elevated, and it is time-limited. Elevate again if it has expired. Repeated wrong attempts are blocked for a while.
 
 ## 3. Create the account
 

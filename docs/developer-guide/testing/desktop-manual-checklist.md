@@ -34,9 +34,16 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Join a voice channel: devtools console shows `[VoiceAdapter] Creating Tauri adapter` AND the devtools network tab shows the `get_auth_info` IPC call (`ipc://localhost/get_auth_info`); together they confirm the native runtime is detected with `withGlobalTauri: false` (joining during a 1-2 s reconnect may show an error; known, retry works)
 - [ ] Two-way audio with the browser participant
 - [ ] Mute and deafen work and are reflected for the browser participant
-- [ ] Switch the microphone device while connected: audio continues on the new device
+- [ ] 44.1 kHz headset: set a headset microphone to 2 channels, 44100 Hz (or use one that only offers that) and join voice: the browser participant hears you clearly, at normal pitch
+- [ ] Unplug mic mid-call: unplug the USB microphone or headset during a call: within about 3 s an error toast says "Microphone stopped working. Check your audio settings." (the call never just shows Connected with a dead mic); the toast stays up as long as the mic is unplugged; choose another microphone in Voice settings: the toast disappears and the browser participant hears you again. A Bluetooth headset that takes a few seconds to switch profiles on join must NOT show the toast
+- [ ] Switch mic mid-call: switch the microphone device while connected: audio continues on the new device without leaving the call; choosing a device that cannot be opened keeps the previous microphone working
+- [ ] Unplug speaker mid-call: unplug the USB headset or speaker during a call: "Speaker stopped working. Check your audio settings." appears; choose another speaker in Voice settings: the toast disappears and you hear the browser participant again
+- [ ] Saved headset missing: choose a USB headset in Voice settings, leave voice, unplug it, join again: the call uses the default microphone and speaker, the browser participant hears you and you hear them
+- [ ] Per-person volume: there is no volume slider yet; in the devtools console run `await window.__TAURI_INTERNALS__.invoke('set_user_volume', { userId: '<browser participant user id>', volume: 0 })`: the participant goes silent at once; `volume: 0.5` is quieter, `volume: 1` restores it
 - [ ] Leave voice: no ghost entry remains in the browser participant's list
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
+- [ ] Close the window during a voice call: one notification says Kaiku is still in the voice channel; the tray menu shows "Leave voice" and "Mute"/"Unmute"; "Leave voice" (clicked while the window stays hidden) ends the call for the browser participant
+- [ ] Quit during a call: in a call with the window closed to the tray, choose "Quit Kaiku" in the tray menu: the app exits within about 1 s and the browser participant sees you leave
 - [ ] QR code dialog shows a code that contains the server address
 - [ ] DM header shows no encryption padlock; no recovery-key prompt appears after login
 - [ ] Admin creates an account; the new user signs in with the temporary password and sees "Choose your own password" (no "Session Expired" dialog, no "Reconnecting…"); quit and restart before changing it: the same screen appears again and asks for the temporary password; after saving a new password the app loads; signing in with the temporary password then fails
@@ -60,9 +67,17 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Join a voice channel: devtools console shows `[VoiceAdapter] Creating Tauri adapter` AND the devtools network tab shows the `get_auth_info` IPC call (`ipc://localhost/get_auth_info`); together they confirm the native runtime is detected with `withGlobalTauri: false` (joining during a 1-2 s reconnect may show an error; known, retry works)
 - [ ] Two-way audio with the browser participant
 - [ ] Mute and deafen work and are reflected for the browser participant
-- [ ] Switch the microphone device while connected: audio continues on the new device
+- [ ] 44.1 kHz headset: set a headset microphone to 2 channels, 44100 Hz (or use one that only offers that) and join voice: the browser participant hears you clearly, at normal pitch
+- [ ] Unplug mic mid-call: unplug the USB microphone or headset during a call: within about 3 s an error toast says "Microphone stopped working. Check your audio settings." (the call never just shows Connected with a dead mic); the toast stays up as long as the mic is unplugged; choose another microphone in Voice settings: the toast disappears and the browser participant hears you again. A Bluetooth headset that takes a few seconds to switch profiles on join must NOT show the toast
+- [ ] Switch mic mid-call: switch the microphone device while connected: audio continues on the new device without leaving the call; choosing a device that cannot be opened keeps the previous microphone working
+- [ ] Unplug speaker mid-call: unplug the USB headset or speaker during a call: "Speaker stopped working. Check your audio settings." appears; choose another speaker in Voice settings: the toast disappears and you hear the browser participant again
+- [ ] Saved headset missing: choose a USB headset in Voice settings, leave voice, unplug it, join again: the call uses the default microphone and speaker, the browser participant hears you and you hear them
+- [ ] Per-person volume: there is no volume slider yet; in the devtools console run `await window.__TAURI_INTERNALS__.invoke('set_user_volume', { userId: '<browser participant user id>', volume: 0 })`: the participant goes silent at once; `volume: 0.5` is quieter, `volume: 1` restores it
 - [ ] Leave voice: no ghost entry remains in the browser participant's list
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
+- [ ] Close the window during a voice call: one notification says Kaiku is still in the voice channel; the tray menu shows "Leave voice" and "Mute"/"Unmute"; "Leave voice" (clicked while the window stays hidden) ends the call for the browser participant
+- [ ] Quit during a call: in a call with the window closed to the tray, choose "Quit Kaiku" in the tray menu: the app exits within about 1 s and the browser participant sees you leave
+- [ ] GNOME without an AppIndicator extension (no tray icon): closing the window outside a call quits Kaiku; closing it during a call minimises it to the dock/taskbar instead of hiding it (the call keeps running and the window can be restored from there)
 - [ ] QR code dialog shows a code that contains the server address
 - [ ] DM header shows no encryption padlock; no recovery-key prompt appears after login
 - [ ] Admin creates an account; the new user signs in with the temporary password and sees "Choose your own password" (no "Session Expired" dialog, no "Reconnecting…"); quit and restart before changing it: the same screen appears again and asks for the temporary password; after saving a new password the app loads; signing in with the temporary password then fails
@@ -86,9 +101,18 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Join a voice channel: devtools console shows `[VoiceAdapter] Creating Tauri adapter` AND the devtools network tab shows the `get_auth_info` IPC call (`ipc://localhost/get_auth_info`); together they confirm the native runtime is detected with `withGlobalTauri: false` (joining during a 1-2 s reconnect may show an error; known, retry works)
 - [ ] Two-way audio with the browser participant
 - [ ] Mute and deafen work and are reflected for the browser participant
-- [ ] Switch the microphone device while connected: audio continues on the new device
+- [ ] 44.1 kHz headset: set a headset microphone to 2 channels, 44100 Hz (or use one that only offers that) and join voice: the browser participant hears you clearly, at normal pitch
+- [ ] Unplug mic mid-call: unplug the USB microphone or headset during a call: within about 3 s an error toast says "Microphone stopped working. Check your audio settings." (the call never just shows Connected with a dead mic); the toast stays up as long as the mic is unplugged; choose another microphone in Voice settings: the toast disappears and the browser participant hears you again. A Bluetooth headset that takes a few seconds to switch profiles on join must NOT show the toast
+- [ ] Switch mic mid-call: switch the microphone device while connected: audio continues on the new device without leaving the call; choosing a device that cannot be opened keeps the previous microphone working
+- [ ] Unplug speaker mid-call: unplug the USB headset or speaker during a call: "Speaker stopped working. Check your audio settings." appears; choose another speaker in Voice settings: the toast disappears and you hear the browser participant again
+- [ ] Saved headset missing: choose a USB headset in Voice settings, leave voice, unplug it, join again: the call uses the default microphone and speaker, the browser participant hears you and you hear them
+- [ ] Per-person volume: there is no volume slider yet; in the devtools console run `await window.__TAURI_INTERNALS__.invoke('set_user_volume', { userId: '<browser participant user id>', volume: 0 })`: the participant goes silent at once; `volume: 0.5` is quieter, `volume: 1` restores it
 - [ ] Leave voice: no ghost entry remains in the browser participant's list
 - [ ] Tray icon is shown; closing the window keeps the app running in the tray; tray click restores it
+- [ ] Close the window during a voice call: one notification says Kaiku is still in the voice channel; the tray menu shows "Leave voice" and "Mute"/"Unmute"; "Leave voice" (clicked while the window stays hidden) ends the call for the browser participant
+- [ ] Quit during a call: in a call with the window closed to the tray, choose "Quit Kaiku" in the tray menu: the app exits within about 1 s and the browser participant sees you leave
+- [ ] With notification permission for Kaiku denied in System Settings, close the window during a call: note whether a notice appears (known gap: the window may hide without one; the menu-bar icon still offers "Leave voice")
+- [ ] Close the window, then click the Dock icon: the window reopens
 - [ ] QR code dialog shows a code that contains the server address
 - [ ] DM header shows no encryption padlock; no recovery-key prompt appears after login
 - [ ] Admin creates an account; the new user signs in with the temporary password and sees "Choose your own password" (no "Session Expired" dialog, no "Reconnecting…"); quit and restart before changing it: the same screen appears again and asks for the temporary password; after saving a new password the app loads; signing in with the temporary password then fails
@@ -99,6 +123,7 @@ once per OS before a release and record the result in the table at the bottom.
 - [ ] Reconnect catch-up: user A has a channel open; cut A's network for 30 s; meanwhile B sends 3 messages and starts a brand-new DM with A; restore A's network: the 3 messages appear in order, without duplicates and without a scroll jump, and the new DM is in A's list without a reload
 - [ ] Notifications while unfocused (desktop): Kaiku visible on a second screen with channel X open, focus another app; the browser participant posts in X: an OS notification appears; click into Kaiku and post again: no notification
 - [ ] Push-to-talk game safety (desktop): binding plain `V` is refused with "Choose a key with Ctrl, Alt or ⌘, or F13–F24, so your game still gets the key."; bind Alt+B (or F13), focus another app: holding it transmits; in Kaiku, holding the key while typing in the message box does not transmit; an older plain binding shows one "Push-to-talk works only in Kaiku" toast and still works while Kaiku is focused
+- [ ] Share a small game window (desktop, each OS): in voice, share a game or app window of about 800x600 or smaller on the "high" tier: the app does not crash, the browser participant sees the window sharp and undistorted (not stretched to 1080p); resize the window while sharing: the stream continues at the new size; share a 4K or ultrawide monitor on "medium": it arrives scaled down with the aspect ratio kept; turn on a webcam whose default resolution differs from the chosen quality: video appears, no crash
 
 ## Results
 

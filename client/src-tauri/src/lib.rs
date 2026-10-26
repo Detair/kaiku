@@ -100,7 +100,9 @@ pub fn run() {
             // Start presence polling service
             presence::start_presence_service(app.handle().clone());
 
-            // System tray: icon, menu, unread badge target
+            // System tray: icon, menu, unread badge target. A failed build leaves
+            // `TrayState::built` false, so closing the window does not hide it.
+            app.manage(tray::TrayState::default());
             if let Err(err) = tray::setup_tray(app.handle()) {
                 tracing::error!(error = %err, "Failed to set up system tray");
             }
@@ -108,13 +110,21 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Minimize-to-tray: closing the MAIN window hides it instead of
-            // quitting; "Quit Kaiku" in the tray menu exits for real. Other
-            // windows (screen-share pop-outs) must close normally.
+            // Close-to-tray for the MAIN window: hides to the tray when one is
+            // usable (with a notice while in voice); without a tray it minimizes
+            // during a call and quits otherwise. Focus re-checks the tray host in
+            // the background. Other windows (screen-share pop-outs) close normally.
             if window.label() == "main" {
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = window.hide();
+                match event {
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        tray::handle_main_close(window);
+                    }
+                    tauri::WindowEvent::Focused(true) => {
+                        tray::sync_menu_to_report(window.app_handle());
+                        tray::refresh_host_availability(window.app_handle());
+                    }
+                    _ => {}
                 }
             }
         })
@@ -147,12 +157,14 @@ pub fn run() {
             commands::voice::get_audio_devices,
             commands::voice::set_input_device,
             commands::voice::set_output_device,
+            commands::voice::set_user_volume,
             commands::voice::is_in_voice,
             commands::voice::get_voice_channel,
             commands::voice::voice_connection_stats,
             commands::voice::subscribe_video_frames,
             // Tray commands
             commands::tray::tray_set_unread,
+            commands::tray::set_tray_voice_state,
             // Screen share commands
             commands::screen_share::enumerate_capture_sources,
             commands::screen_share::start_screen_share,
@@ -219,8 +231,17 @@ pub fn run() {
             commands::clipboard::update_clipboard_settings,
             commands::clipboard::get_clipboard_settings,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // macOS: clicking the Dock icon while the window is hidden shows it.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                tray::show_main_window(app);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
 
 /// User status.
@@ -286,6 +307,8 @@ pub struct VoiceState {
     /// Per-track receive jitter estimates, fed by audio decode tasks and read
     /// by the `voice_connection_stats` command.
     pub connection_stats: voice::connection_stats::ConnectionStatsRegistry,
+    /// Per-person playback volume, shared with every call's audio mixer.
+    pub user_gains: voice::audio_mixer::UserGains,
 }
 
 impl VoiceState {
@@ -304,6 +327,7 @@ impl VoiceState {
             active_video_count: Arc::new(AtomicUsize::new(0)),
             video_frame_sinks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             connection_stats: voice::connection_stats::ConnectionStatsRegistry::new(),
+            user_gains: voice::audio_mixer::UserGains::default(),
         })
     }
 }

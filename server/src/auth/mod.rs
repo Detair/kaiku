@@ -16,7 +16,8 @@ mod middleware;
 pub mod oidc;
 mod password;
 pub(crate) mod profile;
-mod queries;
+pub(crate) mod queries;
+pub(crate) mod reauth;
 pub(crate) mod register;
 pub(crate) mod revocation;
 pub(crate) mod sessions;
@@ -33,7 +34,9 @@ pub use middleware::{require_auth, require_auth_allow_password_change, AuthUser}
 pub use password::{hash_password, verify_password};
 
 use crate::api::AppState;
-use crate::ratelimit::{check_ip_not_blocked, rate_limit_by_ip, with_category, RateLimitCategory};
+use crate::ratelimit::{
+    check_ip_not_blocked, rate_limit_by_ip, rate_limit_by_user, with_category, RateLimitCategory,
+};
 
 /// Create authentication router.
 ///
@@ -52,7 +55,7 @@ use crate::ratelimit::{check_ip_not_blocked, rate_limit_by_ip, with_category, Ra
 /// has not been replaced yet (`require_auth_allow_password_change`):
 /// - POST /logout - Invalidate session
 /// - GET /me - Get current user profile
-/// - POST /me/password - Change password (invalidates all sessions)
+/// - POST /me/password - Change password (invalidates all sessions; rate limited)
 ///
 /// Protected routes (auth required, password change completed):
 /// - GET /sessions - List active sessions
@@ -61,10 +64,13 @@ use crate::ratelimit::{check_ip_not_blocked, rate_limit_by_ip, with_category, Ra
 /// - POST /me - Update profile
 /// - POST /me/avatar - Upload avatar
 /// - POST /mfa/setup - Setup MFA
-/// - POST /mfa/verify - Verify MFA (TOTP or backup code)
-/// - POST /mfa/disable - Disable MFA
-/// - POST /mfa/backup-codes - Generate MFA backup codes
-/// - POST /qr/create - Create a one-time QR login token
+/// - POST /mfa/verify - Verify MFA (TOTP or backup code; rate limited)
+/// - POST /mfa/disable - Disable MFA (rate limited)
+/// - POST /mfa/backup-codes - Generate MFA backup codes (current TOTP code; rate limited)
+/// - POST /qr/create - Create a one-time QR login token (rate limited)
+/// - GET /reauth/methods - Re-authentication methods of the caller (C24)
+/// - POST /reauth/oidc/authorize/{provider} - Start an OIDC re-authentication that elevates the
+///   session (rate limited)
 pub fn router(state: AppState) -> Router<AppState> {
     // Login route with IP block check and rate limiting
     let login_route = Router::new()
@@ -178,11 +184,38 @@ pub fn router(state: AppState) -> Router<AppState> {
     let password_change_routes = Router::new()
         .route("/logout", post(login::logout))
         .route("/me", get(profile::get_profile))
-        .route("/me/password", post(profile::update_password))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             require_auth_allow_password_change,
         ));
+
+    // Routes that check a password or an MFA code (C24): per-user rate limit,
+    // and refused while the client IP is blocked after failed attempts. Auth
+    // runs first so the limit is keyed by the user.
+    let password_route = with_reauth_limits(
+        Router::new().route("/me/password", post(profile::update_password)),
+        &state,
+    )
+    .layer(axum_middleware::from_fn_with_state(
+        state.clone(),
+        require_auth_allow_password_change,
+    ));
+    let mfa_reauth_routes = with_reauth_limits(
+        Router::new()
+            .route(
+                "/reauth/oidc/authorize/{provider}",
+                post(reauth::oidc_reauth_authorize),
+            )
+            .route("/mfa/verify", post(mfa::mfa_verify))
+            .route("/mfa/disable", post(mfa::mfa_disable))
+            .route("/mfa/backup-codes", post(mfa::mfa_generate_backup_codes))
+            .route("/qr/create", post(mfa::qr_create)),
+        &state,
+    )
+    .layer(axum_middleware::from_fn_with_state(
+        state.clone(),
+        require_auth,
+    ));
 
     // Protected routes (auth required)
     let protected_routes = Router::new()
@@ -199,11 +232,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/me/identities", get(identities::list_identities))
         .route("/me/identities/{id}", delete(identities::unlink_identity))
         .route("/mfa/setup", post(mfa::mfa_setup))
-        .route("/mfa/verify", post(mfa::mfa_verify))
-        .route("/mfa/disable", post(mfa::mfa_disable))
-        .route("/mfa/backup-codes", post(mfa::mfa_generate_backup_codes))
+        .route("/reauth/methods", get(reauth::get_reauth_methods))
         .route("/mfa/backup-codes/count", get(mfa::mfa_backup_code_count))
-        .route("/qr/create", post(mfa::qr_create))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             require_auth,
@@ -229,6 +259,30 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     public_routes
         .merge(password_change_routes)
+        .merge(password_route)
+        .merge(mfa_reauth_routes)
         .merge(protected_routes)
         .merge(link_authorize_route)
+}
+
+/// Limits for routes that re-check a password or an MFA code (C24).
+///
+/// Wrap the result in the auth layer: `rate_limit_by_user` needs `AuthUser`.
+/// Outer to inner: IP block check, category, per-user rate limit.
+pub(crate) fn with_reauth_limits<S>(router: Router<S>, state: &AppState) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    router
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_by_user,
+        ))
+        .layer(axum_middleware::from_fn(with_category(
+            RateLimitCategory::AuthOther,
+        )))
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            check_ip_not_blocked,
+        ))
 }

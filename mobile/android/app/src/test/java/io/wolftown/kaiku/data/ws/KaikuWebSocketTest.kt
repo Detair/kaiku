@@ -359,6 +359,30 @@ class KaikuWebSocketTest {
     }
 
     @Test
+    fun `close 1013 while authenticating reports Disconnected, not AuthRejected`() = runTest {
+        // C11: 1013 (server busy, e.g. slow token validation) means reconnect with backoff.
+        mockServer.enqueue(
+            MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    if (text.contains("authenticate")) {
+                        webSocket.close(1013, "try again later")
+                    }
+                }
+            })
+        )
+
+        ws.connectionState.test(timeout = 10.seconds) {
+            assertEquals(ConnectionState.Disconnected, awaitItem())
+
+            ws.connect(serverUrl(), TOKEN)
+            assertEquals(ConnectionState.Connecting, awaitItem())
+            assertEquals(ConnectionState.Disconnected, awaitItem())
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `handshake 401 reports AuthRejected`() = runTest {
         assertHandshakeStatusReportsAuthRejected(401)
     }

@@ -169,7 +169,25 @@ impl GuildPermissions {
         .union(Self::MANAGE_PAGES)
         .union(Self::SCREEN_SHARE)
         .union(Self::MENTION_EVERYONE)
-        .union(Self::PIN_MESSAGES);
+        .union(Self::PIN_MESSAGES)
+        .union(Self::MANAGE_POSTS)
+        .union(Self::SEND_ANNOUNCEMENTS)
+        .union(Self::MANAGE_EVENTS)
+        .union(Self::MANAGE_WEBHOOKS);
+
+    /// Permissions that @everyone may hold.
+    ///
+    /// Together with [`Self::EVERYONE_FORBIDDEN`] this covers every permission
+    /// bit exactly once. A test enforces that a new bit must be classified.
+    pub const EVERYONE_ALLOWED: Self = Self::SEND_MESSAGES
+        .union(Self::EMBED_LINKS)
+        .union(Self::ATTACH_FILES)
+        .union(Self::USE_EMOJI)
+        .union(Self::ADD_REACTIONS)
+        .union(Self::VOICE_CONNECT)
+        .union(Self::VOICE_SPEAK)
+        .union(Self::CREATE_INVITE)
+        .union(Self::VIEW_CHANNEL);
 
     // === Database Conversion ===
 
@@ -380,6 +398,34 @@ mod tests {
 
         // But not ownership transfer
         assert!(!officer.has(GuildPermissions::TRANSFER_OWNERSHIP));
+    }
+
+    #[test]
+    fn every_permission_bit_is_classified() {
+        assert_eq!(
+            GuildPermissions::EVERYONE_FORBIDDEN | GuildPermissions::EVERYONE_ALLOWED,
+            GuildPermissions::all(),
+            "every permission bit must be explicitly allowed or forbidden for @everyone"
+        );
+        assert!(
+            (GuildPermissions::EVERYONE_FORBIDDEN & GuildPermissions::EVERYONE_ALLOWED).is_empty(),
+            "a permission bit cannot be both allowed and forbidden for @everyone"
+        );
+    }
+
+    #[test]
+    fn july_bits_are_forbidden_for_everyone() {
+        for perm in [
+            GuildPermissions::MANAGE_POSTS,
+            GuildPermissions::SEND_ANNOUNCEMENTS,
+            GuildPermissions::MANAGE_EVENTS,
+            GuildPermissions::MANAGE_WEBHOOKS,
+        ] {
+            assert!(
+                !perm.validate_for_everyone(),
+                "{perm:?} must be forbidden for @everyone"
+            );
+        }
     }
 
     #[test]

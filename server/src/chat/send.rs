@@ -12,7 +12,7 @@ use crate::api::AppState;
 use crate::db;
 use crate::moderation::filter_types::FilterAction;
 use crate::moderation::queries as filter_queries;
-use crate::permissions::{get_member_permission_context, GuildPermissions};
+use crate::permissions::GuildPermissions;
 use crate::social::block_cache;
 use crate::ws::{broadcast_admin_event, broadcast_to_channel, ServerEvent};
 
@@ -99,23 +99,40 @@ pub async fn authorize_send(
                 }
             }
         }
+
+        // The cache expires and a miss allows the send, so confirm in Postgres.
+        let others: Vec<Uuid> = participants
+            .iter()
+            .copied()
+            .filter(|&p| p != user_id)
+            .collect();
+        match queries::blocked_among(&state.db, user_id, &others).await {
+            Ok(blocked) if !blocked.is_empty() => return Err(ChatError::Blocked),
+            Ok(_) => {}
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    user_id = %user_id,
+                    fail_open = state.config.block_check_fail_open,
+                    "DB block check failed, using failsafe policy"
+                );
+                if !state.config.block_check_fail_open {
+                    return Err(ChatError::Blocked);
+                }
+            }
+        }
     }
 
-    // Check for @everyone/@here mentions in guild channels
-    if let Some(guild_id) = channel.guild_id {
-        if intent.content.contains("@everyone") || intent.content.contains("@here") {
-            // Load user's permissions in this guild
-            if let Ok(Some(ctx)) = get_member_permission_context(&state.db, guild_id, user_id).await
-            {
-                if !ctx.has_permission(GuildPermissions::MENTION_EVERYONE) {
-                    return Err(ChatError::Validation(
-                        "You do not have permission to mention @everyone or @here".to_string(),
-                    ));
-                }
-            } else {
-                // User is not a guild member, should not happen if channel access is correct
-                return Err(ChatError::Forbidden);
-            }
+    // Check for @everyone/@here mentions in guild channels. `ctx` comes from
+    // `require_channel_access`, so channel overrides apply.
+    if channel.guild_id.is_some() {
+        let mentions = super::mentions::extract_mentions(intent.content);
+        if (mentions.everyone || mentions.here)
+            && !ctx.has_permission(GuildPermissions::MENTION_EVERYONE)
+        {
+            return Err(ChatError::Validation(
+                "You do not have permission to mention @everyone or @here".to_string(),
+            ));
         }
     }
 
@@ -202,7 +219,7 @@ pub struct NewMessageDispatch<'a> {
 }
 
 /// Fan out a committed top-level message: `MessageNew` broadcast,
-/// announcement crosspost, DM push wake, bot/webhook events.
+/// announcement crosspost, push wake (DMs, mentions), bot/webhook events.
 ///
 /// Never fails; delivery problems are logged.
 pub async fn dispatch_new_message(state: &AppState, d: NewMessageDispatch<'_>) {
@@ -235,18 +252,15 @@ pub async fn dispatch_new_message(state: &AppState, d: NewMessageDispatch<'_>) {
         );
     }
 
-    // DM message → content-free mobile push to the other participant(s). The
-    // signal carries no text (E2EE-safe); the app wakes and syncs locally.
-    if d.channel.channel_type == db::ChannelType::Dm {
-        if let Ok(participants) = queries::list_dm_participant_ids(&state.db, channel_id).await {
-            let signal = crate::push::WakeSignal::dm(channel_id, 1);
-            for pid in participants {
-                if pid != d.author_id {
-                    crate::push::spawn_dispatch(state.clone(), pid, signal.clone());
-                }
-            }
-        }
-    }
+    // Content-free mobile wake: DM participants and @mention targets.
+    // Resolution and delivery run in a spawned task.
+    crate::push::spawn_wake_for_new_message(
+        state,
+        d.channel.clone(),
+        d.author_id,
+        d.content.to_string(),
+        d.encrypted,
+    );
 
     dispatch_bot_events(
         state,

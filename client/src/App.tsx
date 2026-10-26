@@ -53,6 +53,7 @@ import { fetchUploadLimits } from "./lib/tauri";
 import { initDrafts } from "./stores/drafts";
 import { initTrayBadge } from "./lib/trayBadge";
 import { initUpdater } from "./lib/updater";
+import { initTrayVoiceSync } from "./stores/voice";
 
 // Global modal state
 const [blockTarget, setBlockTarget] = createSignal<{
@@ -84,6 +85,8 @@ const Layout: Component<ParentProps> = (props) => {
     initDrafts();
     // Sync total unread count to the system tray badge (desktop only)
     initTrayBadge();
+    // Tray shows the call ("Leave voice", "Mute") and warns on close (desktop only)
+    initTrayVoiceSync();
     // Check for app updates shortly after startup (desktop only)
     initUpdater();
     // Fetch upload size limits from server (non-blocking)

@@ -33,8 +33,7 @@ async fn setup_admin(pool: &PgPool) -> (TestApp, TestServer, String) {
     let server = spawn_test_server(app.router.clone()).await;
     let (admin_id, _) = create_test_user(pool).await;
     make_admin(pool, admin_id).await;
-    create_elevated_session(pool, admin_id).await;
-    let token = generate_access_token(&app.config, admin_id);
+    let token = create_elevated_session(pool, &app.config, admin_id).await;
     (app, server, token)
 }
 

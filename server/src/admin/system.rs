@@ -5,13 +5,16 @@
 
 use std::net::SocketAddr;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{ConnectInfo, Path, State};
+use axum::http::HeaderMap;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use fred::interfaces::ClientLike;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 use uuid::Uuid;
+use validator::Validate;
 
 use super::error::AdminError;
 use super::queries;
@@ -20,6 +23,7 @@ use super::types::{
     ElevateResponse, ElevatedAdmin, SystemAdminUser,
 };
 use crate::api::AppState;
+use crate::auth::{AuthError, AuthUser};
 use crate::permissions::queries::{create_elevated_session, write_audit_log};
 
 /// De-elevate response.
@@ -144,11 +148,12 @@ pub async fn get_admin_status(
     // Check if user is a system admin
     let is_admin = get_system_admin(&state.db, auth.id).await?.is_some();
 
-    // Check for active elevated session
-    let elevated = if is_admin {
-        queries::find_latest_elevated_session_expiry(&state.db, auth.id).await?
-    } else {
-        None
+    // Check whether this session (the token's `sid`) is elevated
+    let elevated = match (is_admin, auth.session_id) {
+        (true, Some(session_id)) => {
+            queries::find_elevated_session(&state.db, auth.id, session_id).await?
+        }
+        _ => None,
     };
 
     Ok(Json(AdminStatusResponse {
@@ -188,59 +193,83 @@ pub async fn get_admin_stats(
 ///
 /// `POST /api/admin/elevate`
 ///
-/// Confirms elevation of the current admin session. MFA verification will be
-/// added in a future iteration.
+/// Re-authenticates the admin (password, plus a current TOTP code when MFA is
+/// on) and elevates the session of the calling access token for 15 minutes
+/// (C24). Other sessions of the same admin stay non-elevated.
 #[utoipa::path(
     post,
     path = "/api/admin/elevate",
     tag = "admin",
     request_body = ElevateRequest,
-    responses((status = 200, body = ElevateResponse)),
+    responses(
+        (status = 200, body = ElevateResponse),
+        (status = 400, description = "VALIDATION_ERROR, MFA_CODE_REQUIRED or REAUTH_UNAVAILABLE"),
+        (status = 401, description = "INVALID_CREDENTIALS"),
+        (status = 429, description = "Too many failed attempts"),
+    ),
     security(("bearer_auth" = []))
 )]
-#[tracing::instrument(skip(state, body))]
+#[tracing::instrument(skip(state, auth, headers, body))]
 pub async fn elevate_session(
     State(state): State<AppState>,
     Extension(admin): Extension<SystemAdminUser>,
+    Extension(auth): Extension<AuthUser>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(body): Json<ElevateRequest>,
+    headers: HeaderMap,
+    body: Result<Json<ElevateRequest>, JsonRejection>,
 ) -> Result<Json<ElevateResponse>, AdminError> {
-    // NOTE: MFA verification for admin elevation is deferred — elevation
-    // currently relies on password-only re-authentication.
+    let Json(body) = body.map_err(|e| AuthError::Validation(e.body_text()))?;
+    body.validate()
+        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
 
-    // Find an existing login session id — elevated_sessions.session_id
-    // references sessions.id, so this must resolve for the user.
-    let session_id = queries::find_latest_active_session_id(&state.db, admin.user_id)
-        .await?
+    // The elevation belongs to the access token's session. It must be a live
+    // session row (elevated_sessions.session_id references sessions.id).
+    let session_id = auth
+        .session_id
         .ok_or_else(|| AdminError::Validation("No active session found".to_string()))?;
+    if !queries::is_active_session(&state.db, admin.user_id, session_id).await? {
+        return Err(AdminError::Validation(
+            "No active session found".to_string(),
+        ));
+    }
 
-    // Create elevated session (15 minutes)
-    let ip_address = addr.ip().to_string();
-    let elevated = create_elevated_session(
-        &state.db,
+    let client_ip = crate::auth::reauth::client_ip(&state, &headers, addr);
+    let factors = match crate::auth::reauth::verify_reauth(
+        &state,
+        admin.user_id,
+        Some(&body.password),
+        body.mfa_code.as_deref(),
+        true,
+        client_ip,
+    )
+    .await
+    {
+        Ok(factors) => factors,
+        // No password: point to a provider that can confirm this session.
+        Err(AuthError::ReauthUnavailable) => {
+            let providers = crate::auth::reauth::linked_reauth_providers(
+                &state,
+                admin.user_id,
+                Some(session_id),
+            )
+            .await?;
+            return Err(if providers.is_empty() {
+                AuthError::ReauthUnavailable
+            } else {
+                AuthError::ReauthOidcRequired
+            }
+            .into());
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let elevated = record_elevation(
+        &state,
         admin.user_id,
         session_id,
-        &ip_address,
-        15, // 15 minutes
+        &client_ip.to_string(),
         body.reason.as_deref(),
-    )
-    .await?;
-
-    // Cache elevated status in Redis (TTL = 15 minutes = 900 seconds)
-    super::cache_elevated_status(&state.redis, admin.user_id, true, 900).await;
-
-    // Log the elevation
-    write_audit_log(
-        &state.db,
-        admin.user_id,
-        "admin.session.elevated",
-        Some("user"),
-        Some(admin.user_id),
-        Some(serde_json::json!({
-            "reason": body.reason,
-            "session_id": session_id,
-        })),
-        Some(&ip_address),
+        &factors.method(None),
     )
     .await?;
 
@@ -251,7 +280,55 @@ pub async fn elevate_session(
     }))
 }
 
-/// De-elevate admin session.
+/// Elevation lifetime in minutes.
+const ELEVATION_MINUTES: i64 = 15;
+
+/// Elevate `session_id` of a re-authenticated admin: create (or extend) the
+/// elevation record, cache it per session and write the audit entry.
+///
+/// Shared by the password path (`elevate_session`) and the OIDC
+/// re-authentication callback; the caller has already verified the admin.
+pub(crate) async fn record_elevation(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Uuid,
+    ip_address: &str,
+    reason: Option<&str>,
+    method: &str,
+) -> Result<crate::permissions::ElevatedSession, AdminError> {
+    let elevated = create_elevated_session(
+        &state.db,
+        user_id,
+        session_id,
+        ip_address,
+        ELEVATION_MINUTES,
+        reason,
+    )
+    .await?;
+
+    // Cache elevated status in Redis for the elevation's lifetime
+    super::cache_elevated_status(&state.redis, session_id, true, ELEVATION_MINUTES * 60).await;
+
+    write_audit_log(
+        &state.db,
+        user_id,
+        "admin.session.elevated",
+        Some("user"),
+        Some(user_id),
+        Some(serde_json::json!({
+            "reason": reason,
+            "session_id": session_id,
+            "method": method,
+        })),
+        Some(ip_address),
+    )
+    .await?;
+
+    Ok(elevated)
+}
+
+/// De-elevate the caller's session (the access token's `sid`); other
+/// sessions of the same admin stay elevated.
 ///
 /// `DELETE /api/admin/elevate`
 #[utoipa::path(
@@ -261,19 +338,30 @@ pub async fn elevate_session(
     responses((status = 200, body = DeElevateResponse)),
     security(("bearer_auth" = []))
 )]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, headers))]
 pub async fn de_elevate_session(
     State(state): State<AppState>,
     Extension(admin): Extension<SystemAdminUser>,
+    Extension(auth): Extension<AuthUser>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> Result<Json<DeElevateResponse>, AdminError> {
-    let ip_address = addr.ip().to_string();
+    let ip_address = crate::auth::reauth::client_ip(&state, &headers, addr).to_string();
 
-    // Delete all elevated sessions for this user
-    let removed = queries::delete_elevated_sessions(&state.db, admin.user_id).await?;
+    // De-elevate only the caller's session (C24: an elevation belongs to one
+    // session); other sessions of the same admin keep theirs.
+    let removed_sessions = match auth.session_id {
+        Some(session_id) => {
+            queries::delete_elevated_session(&state.db, admin.user_id, session_id).await?
+        }
+        None => Vec::new(),
+    };
 
-    // Clear elevated status cache
-    super::cache_elevated_status(&state.redis, admin.user_id, false, 1).await;
+    // Clear the cached elevated status of every de-elevated session
+    for session_id in &removed_sessions {
+        super::cache_elevated_status(&state.redis, *session_id, false, 60).await;
+    }
+    let removed = removed_sessions.len();
 
     // Log the de-elevation if any sessions were deleted
     if removed > 0 {
@@ -285,6 +373,7 @@ pub async fn de_elevate_session(
             Some(admin.user_id),
             Some(serde_json::json!({
                 "sessions_removed": removed,
+                "session_id": auth.session_id,
             })),
             Some(&ip_address),
         )

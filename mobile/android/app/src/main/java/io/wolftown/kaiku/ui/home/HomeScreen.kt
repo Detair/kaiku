@@ -1,6 +1,7 @@
 package io.wolftown.kaiku.ui.home
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Menu
@@ -16,6 +17,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.ui.shared.ConnectionBanner
+import io.wolftown.kaiku.ui.shared.NotificationPermissionPrompt
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -46,6 +48,8 @@ fun HomeScreen(
             }
         }
     }
+
+    NotificationPermissionPrompt(onGranted = viewModel::onNotificationsAllowed)
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -152,8 +156,9 @@ fun HomeScreen(
 
                     selectedGuild == null && guilds.isEmpty() && !isLoading -> {
                         Text(
-                            text = stringResource(R.string.home_no_servers),
-                            modifier = Modifier.align(Alignment.Center),
+                            text = stringResource(R.string.home_no_servers_hint),
+                            modifier = Modifier.align(Alignment.Center).padding(horizontal = 24.dp),
+                            textAlign = TextAlign.Center,
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

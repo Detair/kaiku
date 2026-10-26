@@ -9,7 +9,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.ktor.http.HttpStatusCode
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.api.ApiException
+import io.wolftown.kaiku.data.api.ProbeResult
+import io.wolftown.kaiku.data.api.ServerProbe
+import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,13 +33,22 @@ data class LoginUiState(
     val mfaRequired: Boolean = false,
     val loginSuccess: Boolean = false,
     /** C4: the account must choose its own password; the screen navigates to `change_password`. */
-    val passwordChangeRequired: Boolean = false
+    val passwordChangeRequired: Boolean = false,
+    /** Host of the server this sign-in goes to, for display; empty when unknown. */
+    val serverHost: String = "",
+    /** True only when the server's registration policy is `open`; Register is hidden otherwise. */
+    val registrationOpen: Boolean = false,
+    /** The registration check could not reach the server; the screen offers "Try again". */
+    val registrationCheckFailed: Boolean = false,
+    /** The person asked to change the server; the screen navigates to the server screen. */
+    val changeServerRequested: Boolean = false
 ) {
     // Never print the password or MFA code (logs, crash reports).
     override fun toString(): String =
         "LoginUiState(username=$username, isLoading=$isLoading, error=$error, " +
             "mfaRequired=$mfaRequired, loginSuccess=$loginSuccess, " +
-            "passwordChangeRequired=$passwordChangeRequired)"
+            "passwordChangeRequired=$passwordChangeRequired, serverHost=$serverHost, " +
+            "registrationOpen=$registrationOpen)"
 }
 
 /** Maps a login failure to user-facing copy by status / error code (never the server message). */
@@ -50,10 +63,14 @@ internal fun loginErrorRes(error: Throwable): Int = when {
 @HiltViewModel
 class LoginViewModel @Inject constructor(
     private val authRepository: AuthRepository,
-    private val oidcHandler: OidcHandler
+    private val oidcHandler: OidcHandler,
+    private val tokenStorage: TokenStorage,
+    private val serverProbe: ServerProbe
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(LoginUiState())
+    private val _uiState = MutableStateFlow(LoginUiState(serverHost = currentServerHost()))
+    private var probeJob: Job? = null
+    private var loginJob: Job? = null
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
 
     /**
@@ -64,6 +81,7 @@ class LoginViewModel @Inject constructor(
     val oidcCallbackUri = _oidcCallbackUri.receiveAsFlow()
 
     init {
+        probeRegistration()
         // Collect OIDC callbacks and process them
         viewModelScope.launch {
             oidcCallbackUri.collect { uri ->
@@ -103,6 +121,47 @@ class LoginViewModel @Inject constructor(
         }
     }
 
+    private fun currentServerHost(): String =
+        tokenStorage.getServerUrl()?.removePrefix("https://")?.removeSuffix("/") ?: ""
+
+    /** Asks the server whether Register may be shown; any failure leaves it hidden. */
+    private fun probeRegistration() {
+        val server = tokenStorage.getServerUrl() ?: return
+        probeJob?.cancel()
+        _uiState.update { it.copy(registrationCheckFailed = false) }
+        probeJob = viewModelScope.launch {
+            val result = serverProbe.probe(server)
+            _uiState.update {
+                it.copy(
+                    registrationOpen = result is ProbeResult.Ok && result.registrationOpen,
+                    registrationCheckFailed = result !is ProbeResult.Ok
+                )
+            }
+        }
+    }
+
+    /** "Try again" after the registration check failed (e.g. first launch offline). */
+    fun onRetryRegistrationCheck() {
+        probeRegistration()
+    }
+
+    /**
+     * Leaves this server: drops any in-flight login and pending password change
+     * (they belong to this server), clears everything typed and learned about it,
+     * and asks the screen to open the server screen.
+     */
+    fun onChangeServerClicked() {
+        probeJob?.cancel()
+        loginJob?.cancel()
+        authRepository.cancelPasswordChange()
+        _uiState.value = LoginUiState(changeServerRequested = true)
+    }
+
+    /** Called once the screen has navigated to the server screen. */
+    fun onChangeServerNavigated() {
+        _uiState.update { it.copy(changeServerRequested = false) }
+    }
+
     fun onUsernameChanged(username: String) {
         _uiState.update { it.copy(username = username) }
     }
@@ -119,7 +178,8 @@ class LoginViewModel @Inject constructor(
         val state = _uiState.value
         _uiState.update { it.copy(isLoading = true, error = null) }
 
-        viewModelScope.launch {
+        loginJob?.cancel()
+        loginJob = viewModelScope.launch {
             val mfaCode = state.mfaCode.ifBlank { null }
             val result = authRepository.login(state.username, state.password, mfaCode)
 

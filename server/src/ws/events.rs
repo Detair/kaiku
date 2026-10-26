@@ -10,7 +10,7 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use fred::prelude::*;
 use serde::{Deserialize, Serialize};
-use tracing::error;
+use tracing::{error, warn};
 use uuid::Uuid;
 use vc_common::protocol::PcType;
 
@@ -104,6 +104,9 @@ pub struct ClientMessageState {
     pub last_typing: HashMap<Uuid, Instant>,
     /// Per-connection flood ceiling across all inbound message types.
     pub flood: FloodBucket,
+    /// Session of the socket's token (`sid`); admin event subscription needs
+    /// this session to be elevated.
+    pub session_id: Option<Uuid>,
 }
 
 /// Default `pc_type` for backward compatibility with old clients.
@@ -1192,7 +1195,15 @@ pub(super) async fn broadcast_presence_update(
     let channel = format!("presence:{user_id}");
     let result: Result<(), Error> = state.redis.publish(&channel, &json).await;
     if let Err(e) = result {
-        error!("Failed to broadcast presence update: {}", e);
+        // Presence is best effort (fail open); throttled so a Valkey outage
+        // does not log once per status change.
+        static WARN: crate::db::LogThrottle = crate::db::LogThrottle::new();
+        if WARN.allow(std::time::Duration::from_mins(1)) {
+            warn!(
+                "Failed to broadcast presence update (logged at most once a minute): {}",
+                e
+            );
+        }
     }
 }
 

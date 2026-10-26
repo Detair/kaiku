@@ -12,6 +12,7 @@ import io.wolftown.kaiku.domain.groupChannels
 import io.wolftown.kaiku.domain.model.Channel
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.domain.model.Guild
+import io.wolftown.kaiku.push.PushRegistrar
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel as CoroutineChannel
 import kotlinx.coroutines.flow.*
@@ -22,7 +23,8 @@ import javax.inject.Inject
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val guildRepository: GuildRepository,
-    realtimeConnectionManager: RealtimeConnectionManager
+    realtimeConnectionManager: RealtimeConnectionManager,
+    private val pushRegistrar: PushRegistrar
 ) : ViewModel() {
 
     companion object {
@@ -74,6 +76,16 @@ class HomeViewModel @Inject constructor(
     val navigateToChannel = _navigateToChannel.receiveAsFlow()
 
     init {
+        // Open the first server when none is selected (or the selected one is gone),
+        // so someone on a single server lands in it without a tap.
+        viewModelScope.launch {
+            guildRepository.guilds.collect { list ->
+                val selectedId = guildRepository.selectedGuildId.value
+                if (list.isNotEmpty() && list.none { it.id == selectedId }) {
+                    onGuildSelected(list.first().id)
+                }
+            }
+        }
         // The realtime connection is owned by RealtimeConnectionManager, started by KaikuApplication.
         loadGuilds()
     }
@@ -112,6 +124,11 @@ class HomeViewModel @Inject constructor(
         if (result.isFailure) {
             logger.warning("navigateToChannel dropped (collector suspended or buffer full): $channelId")
         }
+    }
+
+    /** Notifications are (or became) allowed: register this device for push. */
+    fun onNotificationsAllowed() {
+        pushRegistrar.onPermissionChanged()
     }
 
     fun refresh() {

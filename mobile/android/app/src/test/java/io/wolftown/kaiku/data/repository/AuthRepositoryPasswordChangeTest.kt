@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.data.repository
 
+import io.wolftown.kaiku.testutil.noTeardown
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.toByteArray
@@ -31,6 +32,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.test.assertIs
+import io.wolftown.kaiku.push.PushRegistrar
 
 /**
  * C4 forced password change in [AuthRepository], over the real [AuthApiImpl]
@@ -100,7 +102,9 @@ class AuthRepositoryPasswordChangeTest {
     private val repository = AuthRepository(
         AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
         tokenStorage,
-        authState
+        authState,
+        mockk<PushRegistrar>(relaxed = true),
+        noTeardown(authState)
     )
 
     private companion object {
@@ -156,7 +160,7 @@ class AuthRepositoryPasswordChangeTest {
                 userId = "user-42"
             )
         }
-        assertEquals(AuthSession.LoggedIn("user-42"), authState.session.value)
+        assertEquals("user-42", (authState.session.value as AuthSession.LoggedIn).userId)
         assertFalse(repository.hasPendingPasswordChange())
     }
 

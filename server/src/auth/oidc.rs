@@ -51,7 +51,12 @@ pub struct OidcUserInfo {
 }
 
 /// OIDC state stored in Redis during the auth flow.
+///
+/// Deserialized through [`OidcFlowStateWire`] so states written before the
+/// `purpose` field existed (a bare `link_user_id`, or neither) still finish
+/// as the flow they were started as.
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(from = "OidcFlowStateWire")]
 pub struct OidcFlowState {
     /// Provider slug.
     pub slug: String,
@@ -63,11 +68,184 @@ pub struct OidcFlowState {
     pub redirect_uri: String,
     /// When the state was created (for debugging).
     pub created_at: i64,
-    /// When set, this is a *link* flow: the resulting identity is attached to
-    /// this already-authenticated user instead of logging in / creating an
-    /// account. `None` (the default) is an ordinary login flow.
+    /// What the flow is for: login, link or re-authentication. Exactly one;
+    /// the callback finishes the flow according to it.
+    pub purpose: OidcFlowPurpose,
+    /// Desktop (Tauri) loopback address the server hands the flow result to
+    /// after it has exchanged the code at its own callback. `None` is the
+    /// browser popup flow (result via `postMessage`). Never sent to the provider.
+    ///
+    /// Flow states stored before this field existed deserialize as `None`
+    /// (browser). Such in-flight *desktop* flows cannot complete and must be
+    /// restarted; the states expire after 10 minutes, so no migration is needed.
     #[serde(default)]
-    pub link_user_id: Option<Uuid>,
+    pub client_redirect_uri: Option<String>,
+}
+
+/// What an OIDC flow is for; persisted in the encrypted flow state so the
+/// shared callback knows how to finish it. The variants exclude each other.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum OidcFlowPurpose {
+    /// Log in (or register) with the provider.
+    #[default]
+    Login,
+    /// Link the provider identity to this signed-in user; the session that
+    /// started the flow, if known (an identity linked from an elevated session
+    /// may confirm re-authentication right away, C24).
+    Link {
+        user_id: Uuid,
+        #[serde(default)]
+        session_id: Option<Uuid>,
+    },
+    /// Re-authenticate this user and elevate the bound session (C24). Asks
+    /// the provider for a fresh login and uses a shorter state TTL.
+    Reauth(OidcReauthBinding),
+}
+
+impl OidcFlowPurpose {
+    /// Short name for logs.
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Login => "login",
+            Self::Link { .. } => "link",
+            Self::Reauth(_) => "reauth",
+        }
+    }
+}
+
+/// Serialized form of [`OidcFlowState`], also accepting the legacy
+/// `link_user_id` field of states written before `purpose` existed.
+#[derive(Deserialize)]
+struct OidcFlowStateWire {
+    slug: String,
+    pkce_verifier: String,
+    nonce: String,
+    redirect_uri: String,
+    created_at: i64,
+    #[serde(default)]
+    purpose: Option<OidcFlowPurpose>,
+    #[serde(default)]
+    link_user_id: Option<Uuid>,
+    #[serde(default)]
+    client_redirect_uri: Option<String>,
+}
+
+impl From<OidcFlowStateWire> for OidcFlowState {
+    fn from(wire: OidcFlowStateWire) -> Self {
+        let purpose = match (wire.purpose, wire.link_user_id) {
+            (Some(purpose), _) => purpose,
+            (None, Some(user_id)) => OidcFlowPurpose::Link {
+                user_id,
+                session_id: None,
+            },
+            (None, None) => OidcFlowPurpose::Login,
+        };
+        Self {
+            slug: wire.slug,
+            pkce_verifier: wire.pkce_verifier,
+            nonce: wire.nonce,
+            redirect_uri: wire.redirect_uri,
+            created_at: wire.created_at,
+            purpose,
+            client_redirect_uri: wire.client_redirect_uri,
+        }
+    }
+}
+
+/// What a re-authentication flow is bound to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OidcReauthBinding {
+    /// The signed-in user who started the flow.
+    pub user_id: Uuid,
+    /// The session (access token `sid`) to elevate.
+    pub session_id: Uuid,
+    /// Elevation reason for the audit log.
+    pub reason: Option<String>,
+    /// A TOTP code was verified when the flow started (required when the
+    /// account has MFA on).
+    #[serde(default)]
+    pub mfa_verified: bool,
+}
+
+/// Verified ID token claims needed for re-authentication.
+#[derive(Debug, Clone)]
+pub struct VerifiedIdClaims {
+    /// `sub` of the verified ID token.
+    pub subject: String,
+    /// `auth_time`, when the provider sent it.
+    pub auth_time: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Where an OIDC flow sends the provider and, afterwards, the client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowRedirects {
+    /// `redirect_uri` sent to the provider (and repeated in the code exchange).
+    pub provider_redirect_uri: String,
+    /// Desktop loopback return address; `None` for the browser flow.
+    pub client_redirect_uri: Option<String>,
+}
+
+/// Why [`resolve_flow_redirects`] refused a flow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlowRedirectError {
+    /// The client-supplied return address is not an `http` loopback URL.
+    InvalidClientRedirect,
+    /// `PUBLIC_URL` is not configured, so the server callback is unknown.
+    MissingPublicUrl,
+}
+
+/// Whether `url` matches the desktop return-address contract:
+/// `http://{localhost|127.0.0.1}[:port]/callback` — no userinfo, no query,
+/// no fragment, path exactly `/callback`, any port.
+pub fn is_loopback_client_redirect(url: &openidconnect::url::Url) -> bool {
+    matches!(
+        (url.scheme(), url.host_str()),
+        ("http", Some("localhost" | "127.0.0.1"))
+    ) && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/callback"
+        && url.query().is_none()
+        && url.fragment().is_none()
+}
+
+/// Resolve the provider and client redirect targets for a new flow.
+///
+/// `client_redirect_uri` is the optional desktop loopback address from the
+/// authorize request; `public_url` is the server's `PUBLIC_URL`.
+///
+/// The provider always redirects to the server's own `/auth/oidc/callback`:
+/// only the server holds the PKCE verifier and client secret, so only it can
+/// exchange the code. A desktop loopback address is kept separately and used
+/// solely to hand the result back once the server has finished the flow.
+pub fn resolve_flow_redirects(
+    client_redirect_uri: Option<&str>,
+    public_url: Option<&str>,
+) -> Result<FlowRedirects, FlowRedirectError> {
+    let client_redirect_uri = client_redirect_uri
+        .map(|uri| {
+            openidconnect::url::Url::parse(uri)
+                .ok()
+                .filter(is_loopback_client_redirect)
+                .map(|_| uri.to_string())
+                .ok_or(FlowRedirectError::InvalidClientRedirect)
+        })
+        .transpose()?;
+    let public_url = public_url.ok_or(FlowRedirectError::MissingPublicUrl)?;
+    Ok(FlowRedirects {
+        provider_redirect_uri: format!("{}/auth/oidc/callback", public_url.trim_end_matches('/')),
+        client_redirect_uri,
+    })
+}
+
+/// The desktop loopback URL to hand a finished flow's result to, or `None` for
+/// the browser popup flow. Re-validates the stored address (defence in depth).
+pub fn client_return_url(flow_state: &OidcFlowState) -> Option<openidconnect::url::Url> {
+    flow_state
+        .client_redirect_uri
+        .as_deref()
+        .and_then(|uri| openidconnect::url::Url::parse(uri).ok())
+        .filter(is_loopback_client_redirect)
 }
 
 /// Cached provider configuration with pre-built client.
@@ -195,6 +373,28 @@ impl OidcProviderManager {
         slug: &str,
         redirect_uri: &str,
     ) -> anyhow::Result<(String, String, String, String)> {
+        self.generate_auth_url_with(slug, redirect_uri, false).await
+    }
+
+    /// Whether the provider uses OIDC discovery, so its code exchange returns
+    /// a verified ID token (needed for re-authentication).
+    pub async fn issues_id_tokens(&self, slug: &str) -> bool {
+        self.providers
+            .read()
+            .await
+            .get(slug)
+            .is_some_and(|p| p.oidc_client.is_some())
+    }
+
+    /// Like [`Self::generate_auth_url`]; `force_login` asks the provider for
+    /// a fresh login (`prompt=login`, `max_age=0`), as re-authentication
+    /// needs. It is only honoured by OIDC discovery providers.
+    pub async fn generate_auth_url_with(
+        &self,
+        slug: &str,
+        redirect_uri: &str,
+        force_login: bool,
+    ) -> anyhow::Result<(String, String, String, String)> {
         let providers = self.providers.read().await;
         let cached = providers
             .get(slug)
@@ -208,7 +408,7 @@ impl OidcProviderManager {
             // OIDC discovery flow
             let state_clone = state.clone();
             let nonce_clone = nonce.clone();
-            let (url, _, _) = client
+            let mut request = client
                 .authorize_url(
                     AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
                     move || state_clone,
@@ -224,8 +424,13 @@ impl OidcProviderManager {
                         .scopes
                         .split_whitespace()
                         .map(|s| Scope::new(s.to_string())),
-                )
-                .url();
+                );
+            if force_login {
+                request = request
+                    .add_prompt(openidconnect::core::CoreAuthPrompt::Login)
+                    .set_max_age(std::time::Duration::ZERO);
+            }
+            let (url, _, _) = request.url();
             url.to_string()
         } else {
             // Manual OAuth2 endpoints (GitHub etc.)
@@ -267,6 +472,22 @@ impl OidcProviderManager {
         redirect_uri: &str,
         nonce: &str,
     ) -> anyhow::Result<(String, Option<String>)> {
+        let (access_token, id_token) = self
+            .exchange_code_verified(slug, code, pkce_verifier, redirect_uri, nonce)
+            .await?;
+        Ok((access_token, id_token.map(|(raw, _)| raw)))
+    }
+
+    /// Like [`Self::exchange_code`], but also returns the verified ID token
+    /// claims (signature, issuer, audience, expiry and nonce checked).
+    pub async fn exchange_code_verified(
+        &self,
+        slug: &str,
+        code: &str,
+        pkce_verifier: &str,
+        redirect_uri: &str,
+        nonce: &str,
+    ) -> anyhow::Result<(String, Option<(String, VerifiedIdClaims)>)> {
         let providers = self.providers.read().await;
         let cached = providers
             .get(slug)
@@ -287,20 +508,24 @@ impl OidcProviderManager {
                 .await
                 .map_err(|e| anyhow::anyhow!("Token exchange failed: {e}"))?;
 
-            // Verify ID token nonce if present
-            if let Some(id_token) = token_response.extra_fields().id_token() {
-                let verifier = client.id_token_verifier();
-                let expected_nonce = Nonce::new(nonce.to_string());
-                id_token
-                    .claims(&verifier, &expected_nonce)
-                    .map_err(|e| anyhow::anyhow!("ID token verification failed: {e}"))?;
-            }
+            // Verify the ID token (incl. nonce) if present
+            let id_token = match token_response.extra_fields().id_token() {
+                Some(id_token) => {
+                    let verifier = client.id_token_verifier();
+                    let expected_nonce = Nonce::new(nonce.to_string());
+                    let claims = id_token
+                        .claims(&verifier, &expected_nonce)
+                        .map_err(|e| anyhow::anyhow!("ID token verification failed: {e}"))?;
+                    let verified = VerifiedIdClaims {
+                        subject: claims.subject().to_string(),
+                        auth_time: claims.auth_time(),
+                    };
+                    Some((id_token.to_string(), verified))
+                }
+                None => None,
+            };
 
             let access_token = token_response.access_token().secret().clone();
-            let id_token = token_response
-                .extra_fields()
-                .id_token()
-                .map(|t| t.to_string());
 
             Ok((access_token, id_token))
         } else {

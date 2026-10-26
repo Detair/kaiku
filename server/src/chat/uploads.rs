@@ -662,17 +662,31 @@ pub async fn download(
             .sub
             .parse::<Uuid>()
             .map_err(|_| ChatError::Forbidden)?;
-        // This path bypasses `require_auth`, so apply its forced
-        // password-change rule here.
-        let must_change_password: Option<bool> =
-            sqlx::query_scalar("SELECT must_change_password FROM users WHERE id = $1")
-                .bind(user_id)
-                .fetch_optional(&state.db)
-                .await?;
-        match must_change_password {
-            Some(false) => user_id,
-            Some(true) => return Err(ChatError::PasswordChangeRequired),
-            None => return Err(ChatError::Forbidden),
+        // This path bypasses `require_auth`, so apply its rules here: ended
+        // sessions, banned accounts and a pending forced password change.
+        // Fails closed: if the denylist cannot be read, refuse with 503
+        // rather than serve a possibly revoked token.
+        if let Some(sid) = claims.sid.as_deref() {
+            match crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
+                Ok(false) => {}
+                Ok(true) => return Err(ChatError::SessionEnded),
+                Err(_) => return Err(ChatError::ServiceUnavailable),
+            }
+        }
+        let caller: Option<(bool, bool)> = sqlx::query_as(
+            "SELECT must_change_password,
+                    EXISTS(SELECT 1 FROM global_bans gb
+                           WHERE gb.user_id = users.id
+                             AND (gb.expires_at IS NULL OR gb.expires_at > NOW()))
+             FROM users WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?;
+        match caller {
+            Some((false, false)) => user_id,
+            Some((true, false)) => return Err(ChatError::PasswordChangeRequired),
+            Some((_, true)) | None => return Err(ChatError::Forbidden),
         }
     } else {
         return Err(ChatError::Forbidden);

@@ -30,9 +30,15 @@ Instead, inject the `EglBaseProvider` interface (defined in
 
 ```kotlin
 val eglProvider: EglBaseProvider = mockk(relaxed = true)
-val manager = WebRtcManager(context, voiceApi, eglProvider)
+val factoryProvider: PeerConnectionFactoryProvider = mockk(relaxed = true)
+val manager = WebRtcManager(voiceApi, eglProvider, factoryProvider, voiceScope)
 // manager.eglBase is lazy; only triggers provider.create() on first read.
 ```
+
+The `PeerConnectionFactory` comes from `PeerConnectionFactoryProvider` (one per
+process). To count creations without native WebRTC, construct
+`DefaultPeerConnectionFactoryProvider(create = { ... })` with a relaxed
+`mockk<PeerConnectionFactory>()` (see `WebRtcManagerTest`).
 
 If the test never reads `manager.eglBase`, the provider's `create()` is never
 invoked and no EGL interaction occurs at all.

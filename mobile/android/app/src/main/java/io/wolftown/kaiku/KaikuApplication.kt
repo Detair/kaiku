@@ -1,6 +1,8 @@
 package io.wolftown.kaiku
 
 import android.app.Application
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
@@ -12,15 +14,20 @@ import com.google.android.gms.security.ProviderInstaller
 import dagger.hilt.android.HiltAndroidApp
 import io.wolftown.kaiku.data.api.AuthHeaderInterceptor
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.data.session.SessionTeardownRunner
 import io.wolftown.kaiku.data.sync.ResyncCoordinator
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
+import io.wolftown.kaiku.push.NotificationChannels
+import io.wolftown.kaiku.push.PushRegistrar
+import io.wolftown.kaiku.push.PushSessionObserver
+import io.wolftown.kaiku.push.ReadSyncObserver
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import java.util.logging.Logger
 import javax.inject.Inject
 
 @HiltAndroidApp
-class KaikuApplication : Application(), SingletonImageLoader.Factory {
+class KaikuApplication : Application(), SingletonImageLoader.Factory, Configuration.Provider {
     private val logger = Logger.getLogger("KaikuApplication")
 
     /** The app's TLS 1.3 client (see WebSocketModule); shared so images reuse its connection pool. */
@@ -38,11 +45,41 @@ class KaikuApplication : Application(), SingletonImageLoader.Factory {
     @Inject
     lateinit var resyncCoordinator: ResyncCoordinator
 
+    /** Tears down voice, realtime and caches whenever a session ends (logout or rejection). */
+    @Inject
+    lateinit var sessionTeardownRunner: SessionTeardownRunner
+
+    /** Clears message notifications read in another session. */
+    @Inject
+    lateinit var readSyncObserver: ReadSyncObserver
+
+    /** Clears message notifications and wake work when the account signs out or changes. */
+    @Inject
+    lateinit var pushSessionObserver: PushSessionObserver
+
+    /** Registers this device for push whenever a session starts. */
+    @Inject
+    lateinit var pushRegistrar: PushRegistrar
+
+    /** Creates @HiltWorker workers (wake fetch); WorkManager's default initializer is removed in the manifest. */
+    @Inject
+    lateinit var workerFactory: HiltWorkerFactory
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setWorkerFactory(workerFactory)
+            .build()
+
     override fun onCreate() {
         super.onCreate()
+        NotificationChannels.ensureCreated(this)
         // First connect waits for AuthState.initialize() in MainActivity, which runs after the ProviderInstaller TLS step below.
         // Observe Ready before the first connect can produce one.
         resyncCoordinator.start()
+        sessionTeardownRunner.start()
+        readSyncObserver.start()
+        pushSessionObserver.start()
+        pushRegistrar.start()
         realtimeConnectionManager.start()
         try {
             ProviderInstaller.installIfNeeded(this)

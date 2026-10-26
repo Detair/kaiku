@@ -322,39 +322,24 @@ pub struct UpdateMessageRequest {
     pub content: String,
 }
 
-/// Detect mention type in message content.
-/// Returns the highest priority mention type found.
+/// Detect mention type in message content (C21 tokenizer).
+/// Returns the highest priority mention type found:
+/// `Everyone`, then `Here`, then `Direct` for any username other than the
+/// author's.
 pub fn detect_mention_type(content: &str, author_username: Option<&str>) -> Option<MentionType> {
-    static MENTION_RE: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"@(\w+)").unwrap());
+    let mentions = crate::chat::mentions::extract_mentions(content);
 
-    // Check for @everyone first (highest priority for notifications)
-    if content.contains("@everyone") {
+    if mentions.everyone {
         return Some(MentionType::Everyone);
     }
-
-    // Check for @here
-    if content.contains("@here") {
+    if mentions.here {
         return Some(MentionType::Here);
     }
-
-    // Check for direct @username mentions (excluding self-mentions)
-    let mention_pattern = &*MENTION_RE;
-    for cap in mention_pattern.captures_iter(content) {
-        let mentioned = &cap[1];
-        // Skip if mentioning self
-        if let Some(author) = author_username {
-            if mentioned.eq_ignore_ascii_case(author) {
-                continue;
-            }
-        }
-        // Any other @mention is a direct mention
-        if mentioned != "everyone" && mentioned != "here" {
-            return Some(MentionType::Direct);
-        }
-    }
-
-    None
+    let mentions_other = mentions
+        .usernames
+        .iter()
+        .any(|name| author_username.is_none_or(|author| !name.eq_ignore_ascii_case(author)));
+    mentions_other.then_some(MentionType::Direct)
 }
 
 static CODE_BLOCK_RE: LazyLock<regex::Regex> =

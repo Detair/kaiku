@@ -45,12 +45,21 @@ const PUBSUB_READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// torn down.
 const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// How long a post-connect socket may take to send its `Authenticate` frame.
+const AUTH_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Close code: authentication rejected (policy violation).
 const CLOSE_POLICY_VIOLATION: u16 = 1008;
 
 /// Error code sent before closing a socket whose user must change their
 /// password first.
 const PASSWORD_CHANGE_REQUIRED: &str = "PASSWORD_CHANGE_REQUIRED";
+
+/// Error code (and close reason) for a socket whose session has ended.
+const SESSION_REVOKED: &str = "SESSION_REVOKED";
+
+/// Error code for a socket refused because the account is banned.
+const ACCOUNT_BANNED: &str = "ACCOUNT_BANNED";
 
 /// Close code: server-side event pipeline failed; reconnect and catch up.
 const CLOSE_INTERNAL_ERROR: u16 = 1011;
@@ -138,8 +147,15 @@ pub async fn handler(
 
         // Reject access tokens whose session was logged out or revoked.
         if let Some(sid) = claims.sid.as_deref() {
-            if crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
-                return error_response(401, "Session revoked");
+            match check_session(&state, sid).await {
+                SessionCheck::Active => {}
+                SessionCheck::Revoked => return error_response(401, "Session revoked"),
+                // Fail closed with the shared JSON 503 body.
+                SessionCheck::Unavailable => {
+                    return axum::response::IntoResponse::into_response(
+                        crate::auth::AuthError::ServiceUnavailable,
+                    );
+                }
             }
         }
 
@@ -150,27 +166,35 @@ pub async fn handler(
             }
         };
 
-        // Verify the user still exists and has no pending forced password change.
-        match user_must_change_password(&state, user_id).await {
-            Ok(Some(false)) => {}
-            Ok(Some(true)) => {
+        // Verify the user still exists, is not banned and has no pending
+        // forced password change.
+        match account_status(&state, user_id).await {
+            Ok(AccountStatus::Active) => {}
+            Ok(AccountStatus::Banned) => {
+                return error_response(403, ACCOUNT_BANNED);
+            }
+            Ok(AccountStatus::PasswordChangeRequired) => {
                 return error_response(403, PASSWORD_CHANGE_REQUIRED);
             }
-            Ok(None) => {
+            Ok(AccountStatus::Missing) => {
                 return error_response(401, "User not found");
             }
             Err(e) => {
                 warn!("Database error during WS auth: {}", e);
-                return error_response(503, "Service temporarily unavailable");
+                // The shared JSON 503 body, like a denylist outage.
+                return axum::response::IntoResponse::into_response(
+                    crate::auth::AuthError::ServiceUnavailable,
+                );
             }
         }
+        let session_id = claims.sid.as_deref().and_then(|sid| sid.parse().ok());
 
         // Respond with the protocol to confirm (required for WebSocket handshake)
         return ws
             .protocols(["access_token"])
             .max_message_size(256 * 1024)
             .max_frame_size(64 * 1024)
-            .on_upgrade(move |socket| handle_socket(socket, state, user_id));
+            .on_upgrade(move |socket| handle_socket(socket, state, user_id, session_id));
     }
 
     // No header token — accept upgrade, authenticate via first frame
@@ -184,23 +208,37 @@ pub async fn handler(
 async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
     let (ws_sender, mut ws_receiver) = socket.split();
 
-    // Wait up to 5 seconds for the Authenticate frame
-    let user_id = match tokio::time::timeout(
-        Duration::from_secs(5),
-        wait_for_auth_frame(&mut ws_receiver, &state),
-    )
-    .await
-    {
-        Ok(Ok(uid)) => uid,
-        Ok(Err(AuthFrameError::PasswordChangeRequired)) => {
-            debug!("Post-connect auth refused: password change required");
-            refuse_password_change_required(ws_sender).await;
+    // The 5 s budget covers receiving the Authenticate frame only; validating
+    // it (session denylist, account status lookup) runs afterwards on its own
+    // 5 s budget, and running out of that one closes with 1013 like a Valkey
+    // outage.
+    let received =
+        match tokio::time::timeout(AUTH_FRAME_TIMEOUT, wait_for_auth_frame(&mut ws_receiver)).await
+        {
+            Ok(Ok(token)) => Ok(tokio::time::timeout(
+                AUTH_FRAME_TIMEOUT,
+                validate_auth_token(&state, &token),
+            )
+            .await
+            .unwrap_or(Err(AuthFrameError::Unavailable))),
+            Ok(Err(e)) => Ok(Err(e)),
+            Err(elapsed) => Err(elapsed),
+        };
+    let (user_id, session_id) = match received {
+        Ok(Ok(authed)) => authed,
+        Ok(Err(AuthFrameError::Refused(refusal))) => {
+            debug!("Post-connect auth refused: {}", refusal.code);
+            refuse_auth(ws_sender, refusal).await;
+            return;
+        }
+        Ok(Err(AuthFrameError::Unavailable)) => {
+            debug!("Post-connect auth refused: session or account check unavailable");
+            close_pre_auth(ws_sender, CLOSE_TRY_AGAIN_LATER, "service unavailable").await;
             return;
         }
         Ok(Err(AuthFrameError::Failed(reason))) => {
             warn!("Post-connect auth failed: {}", reason);
-            let mut ws_sender = ws_sender;
-            let _ = ws_sender.close().await;
+            close_pre_auth(ws_sender, CLOSE_POLICY_VIOLATION, "authentication failed").await;
             return;
         }
         Err(_) => {
@@ -215,26 +253,68 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
     let socket = ws_sender
         .reunite(ws_receiver)
         .expect("reunite should never fail for same socket");
-    handle_socket(socket, state, user_id).await;
+    handle_socket(socket, state, user_id, session_id).await;
 }
 
-/// Look up whether a user must change their password before connecting.
-///
-/// `Ok(None)` means the user does not exist.
-async fn user_must_change_password(
-    state: &AppState,
-    user_id: Uuid,
-) -> Result<Option<bool>, sqlx::Error> {
-    sqlx::query_scalar::<_, bool>("SELECT must_change_password FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await
+/// Whether an authenticated user may open a socket.
+enum AccountStatus {
+    Active,
+    Banned,
+    PasswordChangeRequired,
+    /// The user does not exist.
+    Missing,
 }
+
+/// Look up whether a user may connect: exists, is not banned (C25) and has no
+/// pending forced password change (C4).
+async fn account_status(state: &AppState, user_id: Uuid) -> Result<AccountStatus, sqlx::Error> {
+    let row: Option<(bool, bool)> = sqlx::query_as(
+        "SELECT must_change_password,
+                EXISTS(SELECT 1 FROM global_bans gb
+                       WHERE gb.user_id = users.id
+                         AND (gb.expires_at IS NULL OR gb.expires_at > NOW()))
+         FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?;
+    Ok(match row {
+        None => AccountStatus::Missing,
+        Some((_, true)) => AccountStatus::Banned,
+        Some((true, false)) => AccountStatus::PasswordChangeRequired,
+        Some((false, false)) => AccountStatus::Active,
+    })
+}
+
+/// An auth refusal that is reported to the client: an `error` event with
+/// `code`, then close 1008 with `code` as the reason.
+struct AuthRefusal {
+    code: &'static str,
+    message: &'static str,
+}
+
+const REFUSE_PASSWORD_CHANGE: AuthRefusal = AuthRefusal {
+    code: PASSWORD_CHANGE_REQUIRED,
+    message: "You must change your password before connecting",
+};
+
+const REFUSE_SESSION_REVOKED: AuthRefusal = AuthRefusal {
+    code: SESSION_REVOKED,
+    message: "This session has ended; sign in again",
+};
+
+const REFUSE_ACCOUNT_BANNED: AuthRefusal = AuthRefusal {
+    code: ACCOUNT_BANNED,
+    message: "This account has been banned",
+};
 
 /// Why post-connect authentication did not produce a user.
 enum AuthFrameError {
-    /// The user must change their password first (close 1008 with an error event).
-    PasswordChangeRequired,
+    /// Refused with an error event and close 1008 (C11: refresh, then login).
+    Refused(AuthRefusal),
+    /// The session could not be checked (Valkey unavailable) or validation
+    /// ran out of time: close 1013 so the client retries later.
+    Unavailable,
     /// Any other failure; the socket is simply closed.
     Failed(String),
 }
@@ -245,15 +325,29 @@ impl From<String> for AuthFrameError {
     }
 }
 
-/// Tell a pre-auth socket that the password must be changed first, then close
-/// it with 1008. Both sends together are bounded by [`CLOSE_FLUSH_TIMEOUT`] so a
-/// stalled client cannot hold the task.
-async fn refuse_password_change_required(
+/// Close a pre-auth socket with `code`, bounded by [`CLOSE_FLUSH_TIMEOUT`].
+async fn close_pre_auth(
     mut ws_sender: futures::stream::SplitSink<WebSocket, Message>,
+    code: u16,
+    reason: &'static str,
+) {
+    let close = ws_sender.send(Message::Close(Some(CloseFrame {
+        code,
+        reason: reason.into(),
+    })));
+    let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, close).await;
+}
+
+/// Tell a pre-auth socket why it is refused, then close it with 1008. Both
+/// sends together are bounded by [`CLOSE_FLUSH_TIMEOUT`] so a stalled client
+/// cannot hold the task.
+async fn refuse_auth(
+    mut ws_sender: futures::stream::SplitSink<WebSocket, Message>,
+    refusal: AuthRefusal,
 ) {
     let event = ServerEvent::Error {
-        code: PASSWORD_CHANGE_REQUIRED.to_string(),
-        message: "You must change your password before connecting".to_string(),
+        code: refusal.code.to_string(),
+        message: refusal.message.to_string(),
     };
     let refuse = async {
         if let Ok(json) = serde_json::to_string(&event) {
@@ -262,43 +356,21 @@ async fn refuse_password_change_required(
         ws_sender
             .send(Message::Close(Some(CloseFrame {
                 code: CLOSE_POLICY_VIOLATION,
-                reason: PASSWORD_CHANGE_REQUIRED.into(),
+                reason: refusal.code.into(),
             })))
             .await
     };
     let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, refuse).await;
 }
 
-/// Read frames until an `Authenticate` event arrives and validate its token.
+/// Read frames until an `Authenticate` event arrives and return its token.
 async fn wait_for_auth_frame(
     receiver: &mut futures::stream::SplitStream<WebSocket>,
-    state: &AppState,
-) -> Result<Uuid, AuthFrameError> {
+) -> Result<String, AuthFrameError> {
     while let Some(msg) = receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => match serde_json::from_str::<ClientEvent>(&text) {
-                Ok(ClientEvent::Authenticate { token }) => {
-                    let claims = jwt::validate_access_token(&token, &state.config.jwt_public_key)
-                        .map_err(|e| format!("Invalid token: {e}"))?;
-
-                    // Reject access tokens whose session was logged out or revoked.
-                    if let Some(sid) = claims.sid.as_deref() {
-                        if crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
-                            return Err("Session revoked".to_string().into());
-                        }
-                    }
-
-                    let user_id = Uuid::parse_str(&claims.sub)
-                        .map_err(|_| "Invalid user ID in token".to_string())?;
-
-                    // Verify the user exists and has no pending forced password change.
-                    return match user_must_change_password(state, user_id).await {
-                        Ok(Some(false)) => Ok(user_id),
-                        Ok(Some(true)) => Err(AuthFrameError::PasswordChangeRequired),
-                        Ok(None) => Err("User not found".to_string().into()),
-                        Err(e) => Err(format!("Database error: {e}").into()),
-                    };
-                }
+                Ok(ClientEvent::Authenticate { token }) => return Ok(token),
                 Ok(_) => {
                     // Ignore non-Authenticate events during pre-auth
                 }
@@ -318,8 +390,77 @@ async fn wait_for_auth_frame(
     Err("Connection closed before authentication".to_string().into())
 }
 
+/// Validate a post-connect `Authenticate` token: signature, session denylist
+/// (fail closed, see [`check_session`]) and user state.
+///
+/// Returns the user and the token's session id (`sid`).
+async fn validate_auth_token(
+    state: &AppState,
+    token: &str,
+) -> Result<(Uuid, Option<Uuid>), AuthFrameError> {
+    let claims = jwt::validate_access_token(token, &state.config.jwt_public_key)
+        .map_err(|e| format!("Invalid token: {e}"))?;
+
+    // Reject access tokens whose session was logged out or revoked.
+    if let Some(sid) = claims.sid.as_deref() {
+        match check_session(state, sid).await {
+            SessionCheck::Active => {}
+            SessionCheck::Revoked => return Err(AuthFrameError::Refused(REFUSE_SESSION_REVOKED)),
+            SessionCheck::Unavailable => return Err(AuthFrameError::Unavailable),
+        }
+    }
+    let session_id = claims.sid.as_deref().and_then(|sid| sid.parse().ok());
+
+    let user_id =
+        Uuid::parse_str(&claims.sub).map_err(|_| "Invalid user ID in token".to_string())?;
+
+    // Verify the user exists, is not banned and has no pending forced
+    // password change.
+    match account_status(state, user_id).await {
+        Ok(AccountStatus::Active) => Ok((user_id, session_id)),
+        Ok(AccountStatus::Banned) => Err(AuthFrameError::Refused(REFUSE_ACCOUNT_BANNED)),
+        Ok(AccountStatus::PasswordChangeRequired) => {
+            Err(AuthFrameError::Refused(REFUSE_PASSWORD_CHANGE))
+        }
+        Ok(AccountStatus::Missing) => Err("User not found".to_string().into()),
+        // A database outage is not an auth problem: close 1013 so the client
+        // reconnects later instead of signing out.
+        Err(e) => {
+            warn!("Database error during WS frame auth: {}", e);
+            Err(AuthFrameError::Unavailable)
+        }
+    }
+}
+
+/// Outcome of the session denylist check during WebSocket auth.
+enum SessionCheck {
+    Active,
+    Revoked,
+    /// Valkey errored or did not answer within the command timeout.
+    Unavailable,
+}
+
+/// Check the session denylist, bounded by the Valkey command timeout. Fails
+/// closed: an error or timeout is [`SessionCheck::Unavailable`].
+async fn check_session(state: &AppState, sid: &str) -> SessionCheck {
+    let check = crate::auth::revocation::is_session_revoked(&state.redis, sid);
+    match tokio::time::timeout(state.config.valkey_command_timeout, check).await {
+        Ok(Ok(false)) => SessionCheck::Active,
+        Ok(Ok(true)) => SessionCheck::Revoked,
+        Ok(Err(_)) | Err(_) => SessionCheck::Unavailable,
+    }
+}
+
 /// Handle WebSocket connection.
-async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
+///
+/// `session_id` is the `sid` of the token the socket authenticated with; the
+/// socket closes with 1008 when that session ends (C25).
+async fn handle_socket(
+    socket: WebSocket,
+    state: AppState,
+    user_id: Uuid,
+    session_id: Option<Uuid>,
+) {
     use futures::stream::{SplitSink, SplitStream};
     let (mut ws_sender, mut ws_receiver): (SplitSink<WebSocket, Message>, SplitStream<WebSocket>) =
         socket.split();
@@ -444,6 +585,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
             admin_subscribed: admin_subscribed.clone(),
             blocked_users: blocked_users.clone(),
             user_id,
+            session_id,
             friend_ids,
             guild_ids,
         },
@@ -475,6 +617,50 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
         }
     }
 
+    // The session may have ended, or the account been banned, between
+    // authentication and the moment the subscriptions went live (the notice
+    // would have been missed): check both once more before announcing `Ready`.
+    // The denylist check fails closed like the authentication check: an
+    // unreachable denylist closes with 1013.
+    if exit.is_none() {
+        let session = match session_id {
+            Some(sid) => check_session(&state, &sid.to_string()).await,
+            None => SessionCheck::Active,
+        };
+        let refusal = match session {
+            SessionCheck::Revoked => Some((session_revoked_event(), PubsubExit::SessionRevoked)),
+            SessionCheck::Unavailable => {
+                exit = Some(PubsubExit::SessionCheckUnavailable);
+                None
+            }
+            SessionCheck::Active => {
+                match tokio::time::timeout(AUTH_FRAME_TIMEOUT, account_status(&state, user_id))
+                    .await
+                {
+                    Ok(Ok(AccountStatus::Banned)) => {
+                        Some((account_banned_event(), PubsubExit::AccountBanned))
+                    }
+                    Ok(Ok(AccountStatus::Missing)) => {
+                        Some((session_revoked_event(), PubsubExit::SessionRevoked))
+                    }
+                    // Pending password change cannot appear after a successful
+                    // handshake; a DB error or timeout keeps the handshake's
+                    // verdict.
+                    Ok(
+                        Ok(AccountStatus::Active | AccountStatus::PasswordChangeRequired) | Err(_),
+                    )
+                    | Err(_) => None,
+                }
+            }
+        };
+        if let Some((event, reason)) = refusal {
+            exit = Some(match send_outbound(&tx, event).await {
+                Ok(()) => reason,
+                Err(err) => err.into(),
+            });
+        }
+    }
+
     // On a setup failure there is no `Ready`; the socket is closed below.
     if exit.is_none() {
         if let Err(err) = send_ready_and_snapshot(&state, user_id, &tx, start_tx).await {
@@ -484,7 +670,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
 
     if exit.is_none() {
         // Per-connection mutable state for rate limiting and deduplication
-        let mut msg_state = ClientMessageState::default();
+        let mut msg_state = ClientMessageState {
+            session_id,
+            ..ClientMessageState::default()
+        };
 
         // Server-side heartbeat: detect dead connections via Ping/Pong
         let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
@@ -570,7 +759,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, user_id: Uuid) {
             "Closing socket ({:?}) with {}: user={}",
             exit, code, user_id
         );
-        close_and_flush(&tx, &mut sender_handle, code).await;
+        let reason = exit.map_or(CLOSE_REASON_RESYNC, PubsubExit::close_reason);
+        close_and_flush(&tx, &mut sender_handle, code, reason).await;
     }
 
     // Cleanup
@@ -664,22 +854,16 @@ fn outbound_failure(err: &(dyn std::error::Error + 'static)) -> Option<PubsubExi
     }
 }
 
-/// Queue a Close frame (reason "resync") and give the sender task up to
+/// Queue a Close frame and give the sender task up to
 /// [`CLOSE_FLUSH_TIMEOUT`] to deliver it.
 async fn close_and_flush(
     tx: &mpsc::Sender<OutboundMsg>,
     sender_handle: &mut tokio::task::JoinHandle<()>,
     code: u16,
+    reason: &'static str,
 ) {
     let flush = async {
-        if tx
-            .send(OutboundMsg::Close {
-                code,
-                reason: CLOSE_REASON_RESYNC,
-            })
-            .await
-            .is_ok()
-        {
+        if tx.send(OutboundMsg::Close { code, reason }).await.is_ok() {
             let _ = sender_handle.await;
         }
     };
@@ -1072,9 +1256,15 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::AdminSubscribe => {
-            // Check if user is an elevated admin
-            let is_elevated =
-                crate::admin::is_elevated_admin(&state.redis, &state.db, user_id).await;
+            // Check if this socket's session is elevated (an elevation
+            // belongs to one session, C24)
+            let is_elevated = match msg_state.session_id {
+                Some(session_id) => {
+                    crate::admin::is_elevated_admin(&state.redis, &state.db, user_id, session_id)
+                        .await
+                }
+                None => false,
+            };
             if !is_elevated {
                 send_outbound(
                     tx,
@@ -1138,11 +1328,12 @@ async fn handle_component_interaction(
     // publish + DB reads, so spammed clicks must not flood a bot or Redis.
     if let Some(rate_limiter) = &state.rate_limiter {
         let identifier = format!("component_interaction:{user_id}");
-        let allowed = rate_limiter
-            .check(crate::ratelimit::RateLimitCategory::WsMessage, &identifier)
-            .await
-            .map(|r| r.allowed)
-            .unwrap_or(true); // fail-open on limiter error (availability)
+        let category = crate::ratelimit::RateLimitCategory::WsMessage;
+        let allowed = match rate_limiter.check(category, &identifier).await {
+            Ok(r) => r.allowed,
+            // Fail open (logged, counted) while Valkey is unavailable.
+            Err(_) => rate_limiter.allow_during_outage(category),
+        };
         if !allowed {
             send_err("rate_limited", "You're interacting too quickly").await?;
             return Ok(());
@@ -1248,6 +1439,8 @@ pub(crate) struct HandlePubsubParams {
     admin_subscribed: Arc<tokio::sync::RwLock<bool>>,
     blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
     user_id: Uuid,
+    /// Session of the socket's token; `None` for tokens without a `sid`.
+    session_id: Option<Uuid>,
     friend_ids: Vec<Uuid>,
     guild_ids: Vec<Uuid>,
 }
@@ -1271,6 +1464,15 @@ pub(crate) enum PubsubExit {
     SlowClient,
     /// The outbound queue was closed (the socket is already shutting down).
     ClientGone,
+    /// The socket's session ended (C25); the client was told with an `error`
+    /// event `SESSION_REVOKED`.
+    SessionRevoked,
+    /// The session denylist could not be checked after the subscriptions went
+    /// live (Valkey unavailable); the client retries later.
+    SessionCheckUnavailable,
+    /// The account was found banned during socket setup; the client was told
+    /// with an `error` event `ACCOUNT_BANNED`.
+    AccountBanned,
 }
 
 impl PubsubExit {
@@ -1281,13 +1483,40 @@ impl PubsubExit {
     /// pipeline failed. Both mean "reconnect and catch up".
     pub(crate) const fn close_code(self) -> Option<u16> {
         match self {
-            Self::SlowClient => Some(CLOSE_TRY_AGAIN_LATER),
+            Self::SessionRevoked | Self::AccountBanned => Some(CLOSE_POLICY_VIOLATION),
+            Self::SlowClient | Self::SessionCheckUnavailable => Some(CLOSE_TRY_AGAIN_LATER),
             Self::ClientGone => None,
             Self::ConnectFailed | Self::SubscribeFailed | Self::StreamEnded | Self::Lagged => {
                 Some(CLOSE_INTERNAL_ERROR)
             }
         }
     }
+
+    /// Close reason sent with [`Self::close_code`] (1011/1013: "resync").
+    pub(crate) const fn close_reason(self) -> &'static str {
+        match self {
+            Self::SessionRevoked => SESSION_REVOKED,
+            Self::AccountBanned => ACCOUNT_BANNED,
+            _ => CLOSE_REASON_RESYNC,
+        }
+    }
+}
+
+/// The `error` event sent before a socket of a banned account closes (found
+/// by the setup re-check; a ban notice itself uses [`session_revoked_event`]).
+fn account_banned_event() -> OutboundMsg {
+    OutboundMsg::Event(ServerEvent::Error {
+        code: ACCOUNT_BANNED.to_string(),
+        message: REFUSE_ACCOUNT_BANNED.message.to_string(),
+    })
+}
+
+/// The `error` event sent before a socket of an ended session closes.
+fn session_revoked_event() -> OutboundMsg {
+    OutboundMsg::Event(ServerEvent::Error {
+        code: SESSION_REVOKED.to_string(),
+        message: REFUSE_SESSION_REVOKED.message.to_string(),
+    })
 }
 
 /// Handle Redis pub/sub messages.
@@ -1530,6 +1759,25 @@ pub(crate) async fn forward_pubsub_messages(
         // Handle user events (user:{uuid}) - for preferences sync across devices
         else if channel_name == user_channel {
             if let Some(payload) = message.value.as_str() {
+                // Internal session notices are consumed here, never forwarded.
+                if let Ok(notice) =
+                    serde_json::from_str::<crate::auth::revocation::SessionNotice>(&payload)
+                {
+                    use crate::auth::revocation::SessionNotice;
+                    let ends_this_socket = match notice {
+                        SessionNotice::SessionRevoked { session_ids } => params
+                            .session_id
+                            .is_some_and(|sid| session_ids.contains(&sid)),
+                        SessionNotice::AllSessionsRevoked => true,
+                    };
+                    if ends_this_socket {
+                        if let Err(err) = send_outbound(&params.tx, session_revoked_event()).await {
+                            return err.into();
+                        }
+                        return PubsubExit::SessionRevoked;
+                    }
+                    continue;
+                }
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
                     // Handle block/unblock events to update in-memory set
                     match &event {
@@ -1764,6 +2012,106 @@ mod pubsub_tests {
     use super::*;
 
     const CHANNEL: Uuid = Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_0001);
+    const OWN_SESSION: Uuid = Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_0051);
+    const OTHER_SESSION: Uuid = Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_0052);
+
+    fn session_notice(user_id: Uuid, session_ids: Vec<Uuid>) -> PubsubMessage {
+        let notice = crate::auth::revocation::SessionNotice::SessionRevoked { session_ids };
+        PubsubMessage {
+            channel: channels::user_events(user_id).into(),
+            value: PubsubValue::from(serde_json::to_string(&notice).expect("serialize")),
+            kind: MessageKind::Message,
+            server: Server::new("127.0.0.1", 6379),
+        }
+    }
+
+    #[test]
+    fn session_notice_wire_format() {
+        let notice = crate::auth::revocation::SessionNotice::SessionRevoked {
+            session_ids: vec![OWN_SESSION],
+        };
+        assert_eq!(
+            serde_json::to_value(&notice).unwrap(),
+            serde_json::json!({ "type": "session_revoked", "session_ids": [OWN_SESSION] })
+        );
+    }
+
+    #[tokio::test]
+    async fn own_session_revoked_sends_error_and_ends_pipeline() {
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        let (params, mut rx) = test_params(16);
+        btx.send(session_notice(
+            params.user_id,
+            vec![OTHER_SESSION, OWN_SESSION],
+        ))
+        .unwrap();
+
+        assert_eq!(
+            forward_pubsub_messages(brx, &params).await,
+            PubsubExit::SessionRevoked
+        );
+        match rx.recv().await {
+            Some(OutboundMsg::Event(ServerEvent::Error { code, .. })) => {
+                assert_eq!(code, "SESSION_REVOKED");
+            }
+            other => panic!("expected SESSION_REVOKED error, got {other:?}"),
+        }
+        assert_eq!(PubsubExit::SessionRevoked.close_code(), Some(1008));
+        assert_eq!(PubsubExit::SessionRevoked.close_reason(), "SESSION_REVOKED");
+    }
+
+    #[tokio::test]
+    async fn all_sessions_revoked_ends_every_socket() {
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        let (mut params, mut rx) = test_params(16);
+        // Also a socket whose token carried no session id.
+        params.session_id = None;
+        let notice = crate::auth::revocation::SessionNotice::AllSessionsRevoked;
+        btx.send(PubsubMessage {
+            channel: channels::user_events(params.user_id).into(),
+            value: PubsubValue::from(serde_json::to_string(&notice).expect("serialize")),
+            kind: MessageKind::Message,
+            server: Server::new("127.0.0.1", 6379),
+        })
+        .unwrap();
+
+        assert_eq!(
+            forward_pubsub_messages(brx, &params).await,
+            PubsubExit::SessionRevoked
+        );
+        match rx.recv().await {
+            Some(OutboundMsg::Event(ServerEvent::Error { code, .. })) => {
+                assert_eq!(code, "SESSION_REVOKED");
+            }
+            other => panic!("expected SESSION_REVOKED error, got {other:?}"),
+        }
+        assert_eq!(
+            serde_json::to_value(&notice).unwrap(),
+            serde_json::json!({ "type": "all_sessions_revoked" })
+        );
+    }
+
+    #[tokio::test]
+    async fn other_session_revoked_is_consumed_not_forwarded() {
+        let (btx, brx) = tokio::sync::broadcast::channel(8);
+        let (params, mut rx) = test_params(16);
+        btx.send(session_notice(params.user_id, vec![OTHER_SESSION]))
+            .unwrap();
+        btx.send(channel_message(CHANNEL, &typing_event())).unwrap();
+        params.subscribed_channels.write().await.insert(CHANNEL);
+        drop(btx);
+
+        assert_eq!(
+            forward_pubsub_messages(brx, &params).await,
+            PubsubExit::StreamEnded
+        );
+        // Only the channel event reaches the client.
+        assert!(matches!(
+            rx.recv().await,
+            Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
+        ));
+        assert!(rx.try_recv().is_err());
+    }
 
     fn test_params(capacity: usize) -> (HandlePubsubParams, mpsc::Receiver<OutboundMsg>) {
         let (tx, rx) = mpsc::channel(capacity);
@@ -1773,6 +2121,7 @@ mod pubsub_tests {
             admin_subscribed: Arc::new(tokio::sync::RwLock::new(false)),
             blocked_users: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             user_id: Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00aa),
+            session_id: Some(OWN_SESSION),
             friend_ids: Vec::new(),
             guild_ids: Vec::new(),
         };
@@ -2003,14 +2352,56 @@ mod pubsub_tests {
         ));
     }
 
+    /// A Valkey that accepts connections but never answers.
+    async fn hung_valkey_url() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                // Keep the socket open without ever answering.
+                tokio::spawn(async move {
+                    let _socket = socket;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        format!("redis://{addr}")
+    }
+
+    #[tokio::test]
+    async fn subscriber_setup_against_hung_valkey_ends_as_pipeline_failure() {
+        let base =
+            crate::db::build_redis_client(&hung_valkey_url().await, Duration::from_millis(500))
+                .unwrap();
+        let subscriber = new_subscriber_client(&base);
+        let (params, _rx) = test_params(16);
+        let (ready_tx, _ready_rx) = oneshot::channel();
+        let (_start_tx, start_rx) = oneshot::channel();
+
+        // Must give up on its own, before the socket's ready timeout.
+        let exit = tokio::time::timeout(
+            PUBSUB_READY_TIMEOUT,
+            handle_pubsub(subscriber.clone(), params, ready_tx, start_rx),
+        )
+        .await
+        .expect("subscriber setup hung while Valkey was unavailable");
+        let _ = subscriber.quit().await;
+
+        assert!(
+            matches!(
+                exit,
+                PubsubExit::ConnectFailed | PubsubExit::SubscribeFailed
+            ),
+            "{exit:?}"
+        );
+        assert_eq!(exit.close_code(), Some(CLOSE_INTERNAL_ERROR));
+    }
+
     #[test]
     fn subscriber_client_gets_larger_broadcast_capacity() {
-        let base = Client::new(
-            fred::types::config::Config::default(),
-            None,
-            None,
-            Some(ReconnectPolicy::new_constant(0, 100)),
-        );
+        let base =
+            crate::db::build_redis_client("redis://127.0.0.1:6379", Duration::from_millis(1234))
+                .unwrap();
         assert!(base.perf_config().broadcast_channel_capacity < SUBSCRIBER_BROADCAST_CAPACITY);
 
         let subscriber = new_subscriber_client(&base);
@@ -2019,6 +2410,12 @@ mod pubsub_tests {
             SUBSCRIBER_BROADCAST_CAPACITY
         );
         assert!(subscriber.has_reconnect_policy());
+        // The command timeout carries over, so a hung Valkey fails the
+        // subscriber's commands instead of blocking them.
+        assert_eq!(
+            subscriber.perf_config().default_command_timeout,
+            Duration::from_millis(1234)
+        );
         // The shared base client is left untouched.
         assert!(base.perf_config().broadcast_channel_capacity < SUBSCRIBER_BROADCAST_CAPACITY);
     }
@@ -2082,5 +2479,8 @@ mod pubsub_tests {
         assert_eq!(PubsubExit::ConnectFailed.close_code(), Some(1011));
         assert_eq!(PubsubExit::SubscribeFailed.close_code(), Some(1011));
         assert_eq!(PubsubExit::ClientGone.close_code(), None);
+        assert_eq!(PubsubExit::SessionRevoked.close_code(), Some(1008));
+        assert_eq!(PubsubExit::AccountBanned.close_code(), Some(1008));
+        assert_eq!(PubsubExit::AccountBanned.close_reason(), "ACCOUNT_BANNED");
     }
 }
