@@ -2175,8 +2175,11 @@ async fn set_presence_status(
 /// Bring what observers see in line with the database (late announcement,
 /// recovery, stale registration); see
 /// [`connections::reconcile_from_db`](crate::presence::connections::reconcile_from_db).
-/// `Err(())` means "still owed": the caller retries on the next heartbeat.
-async fn reconcile_presence(state: &AppState, user_id: Uuid) -> Result<(), ()> {
+/// An error means "still owed": the caller retries on the next heartbeat.
+async fn reconcile_presence(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<(), crate::presence::connections::ReconcileOwed> {
     crate::presence::connections::reconcile_from_db(&state.db, &state.redis, user_id).await
 }
 

@@ -72,6 +72,13 @@ pub(crate) use stored_presence_sql;
 #[error("presence store unavailable: {0}")]
 pub struct PresenceError(#[from] pub fred::error::Error);
 
+/// A reconcile could not complete because the database or Valkey was
+/// unreachable (already logged); the reconciliation is still owed and the
+/// caller retries (the user stays dirty).
+#[derive(Debug, thiserror::Error)]
+#[error("presence reconcile still owed: store unavailable")]
+pub struct ReconcileOwed;
+
 /// Valkey key of a user's socket set.
 #[must_use]
 pub fn sockets_key(user_id: Uuid) -> String {
@@ -692,9 +699,24 @@ pub fn log_unavailable(e: &PresenceError) {
 /// and is replaced compare-and-set on the exact value found (a concurrent
 /// newer change is never undone), then the reconcile is repeated.
 ///
-/// `Err(())` (database or Valkey unreachable) means "still owed": the user
-/// stays dirty (or the caller retries).
-pub async fn reconcile_from_db(db: &sqlx::PgPool, redis: &Client, user_id: Uuid) -> Result<(), ()> {
+/// [`ReconcileOwed`] (database or Valkey unreachable) means "still owed": the
+/// user stays dirty (or the caller retries).
+pub async fn reconcile_from_db(
+    db: &sqlx::PgPool,
+    redis: &Client,
+    user_id: Uuid,
+) -> Result<(), ReconcileOwed> {
+    reconcile_from_db_inner(db, redis, user_id)
+        .await
+        .map_err(|()| ReconcileOwed)
+}
+
+/// [`reconcile_from_db`]; `Err(())` is reported (and logged) by the callee.
+async fn reconcile_from_db_inner(
+    db: &sqlx::PgPool,
+    redis: &Client,
+    user_id: Uuid,
+) -> Result<(), ()> {
     for _ in 0..3 {
         let (stored, seq) = stored_status(db, user_id).await?;
         let shown = effective_status(&stored, Some(true));
