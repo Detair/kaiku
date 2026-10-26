@@ -189,12 +189,12 @@ class VoiceCallService : Service() {
             .setSilent(true)
             .addAction(
                 android.R.drawable.ic_lock_silent_mode,
-                getString(R.string.voice_mute),
+                getString(R.string.voice_controls_mute_label),
                 mutePendingIntent
             )
             .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
-                getString(R.string.voice_disconnect),
+                getString(R.string.voice_panel_disconnect),
                 disconnectPendingIntent
             )
             .build()

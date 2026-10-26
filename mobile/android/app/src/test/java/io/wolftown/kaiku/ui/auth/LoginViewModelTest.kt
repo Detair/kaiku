@@ -57,7 +57,7 @@ class LoginViewModelTest {
         assertEquals("", state.password)
         assertEquals("", state.mfaCode)
         assertFalse(state.isLoading)
-        assertNull(state.error)
+        assertNull(state.errorRes)
         assertFalse(state.mfaRequired)
         assertFalse(state.loginSuccess)
     }
@@ -116,7 +116,7 @@ class LoginViewModelTest {
         val state = viewModel.uiState.value
         assertTrue(state.loginSuccess)
         assertFalse(state.isLoading)
-        assertNull(state.error)
+        assertNull(state.errorRes)
     }
 
     // ========================================================================
@@ -139,11 +139,41 @@ class LoginViewModelTest {
         assertFalse(state.loginSuccess)
         assertFalse(state.isLoading)
         // C16: copy comes from resources by status/code, never the server message.
-        assertEquals(R.string.auth_invalid_credentials, state.error)
+        assertEquals(R.string.auth_login_invalid_credentials, state.errorRes)
     }
 
     @Test
-    fun `network failure shows generic login error`() = runTest {
+    fun `failed login exposes a string resource, not the server message`() = runTest {
+        coEvery {
+            authRepository.login("testuser", "wrong", null)
+        } returns Result.failure(
+            ApiException(HttpStatusCode.Unauthorized, "Invalid credentials", "INVALID_CREDENTIALS")
+        )
+
+        viewModel.onUsernameChanged("testuser")
+        viewModel.onPasswordChanged("wrong")
+        viewModel.onLoginClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_login_invalid_credentials, viewModel.uiState.value.errorRes)
+    }
+
+    @Test
+    fun `sign in while a session runs says so`() = runTest {
+        coEvery {
+            authRepository.login("testuser", "pass", null)
+        } returns Result.failure(io.wolftown.kaiku.data.repository.AlreadySignedInException())
+
+        viewModel.onUsernameChanged("testuser")
+        viewModel.onPasswordChanged("pass")
+        viewModel.onLoginClicked()
+        advanceUntilIdle()
+
+        assertEquals(R.string.auth_login_already_signed_in, viewModel.uiState.value.errorRes)
+    }
+
+    @Test
+    fun `network failure shows network error`() = runTest {
         coEvery {
             authRepository.login("testuser", "pass", null)
         } returns Result.failure(java.io.IOException("timeout"))
@@ -153,7 +183,7 @@ class LoginViewModelTest {
         viewModel.onLoginClicked()
         advanceUntilIdle()
 
-        assertEquals(R.string.auth_login_failed, viewModel.uiState.value.error)
+        assertEquals(R.string.errors_network, viewModel.uiState.value.errorRes)
     }
 
     // ========================================================================
@@ -175,7 +205,7 @@ class LoginViewModelTest {
         assertTrue(state.passwordChangeRequired)
         assertFalse(state.isLoading)
         assertFalse(state.loginSuccess)
-        assertNull(state.error)
+        assertNull(state.errorRes)
         // The temporary password is not kept in the login form.
         assertEquals("", state.password)
 
@@ -202,7 +232,7 @@ class LoginViewModelTest {
         val state = viewModel.uiState.value
         assertTrue(state.mfaRequired)
         assertFalse(state.isLoading)
-        assertNull(state.error)
+        assertNull(state.errorRes)
     }
 
     // ========================================================================
@@ -294,11 +324,11 @@ class LoginViewModelTest {
         viewModel.onLoginClicked()
         advanceUntilIdle()
 
-        assertNotNull(viewModel.uiState.value.error)
+        assertNotNull(viewModel.uiState.value.errorRes)
 
         viewModel.clearError()
 
-        assertNull(viewModel.uiState.value.error)
+        assertNull(viewModel.uiState.value.errorRes)
     }
 
     // ========================================================================
@@ -395,7 +425,7 @@ class LoginViewModelTest {
         assertFalse(state.mfaRequired)
         assertFalse(state.registrationOpen)
         assertEquals("", state.serverHost)
-        assertNull(state.error)
+        assertNull(state.errorRes)
         // The pending password change and any login in flight belong to the old server.
         verify { authRepository.cancelPasswordChange() }
 

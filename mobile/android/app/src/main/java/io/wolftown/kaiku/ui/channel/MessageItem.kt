@@ -163,7 +163,15 @@ fun MessageItem(
                                     onToggleReaction?.invoke(message.id, reaction.emoji, reaction.mine)
                                 },
                                 enabled = onToggleReaction != null,
-                                label = { Text("${reaction.emoji} ${reaction.count}") },
+                                label = {
+                                    Text(
+                                        stringResource(
+                                            R.string.chat_reaction_chip_label,
+                                            reaction.emoji,
+                                            reaction.count
+                                        )
+                                    )
+                                },
                                 modifier = Modifier.semantics { contentDescription = description }
                             )
                         }
@@ -173,7 +181,7 @@ fun MessageItem(
                 // Edited indicator
                 if (message.editedAt != null) {
                     Text(
-                        text = stringResource(R.string.chat_edited),
+                        text = stringResource(R.string.chat_message_edited_badge),
                         style = MaterialTheme.typography.labelSmall,
                         fontStyle = FontStyle.Italic,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

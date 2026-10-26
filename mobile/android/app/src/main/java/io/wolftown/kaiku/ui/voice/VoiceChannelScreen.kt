@@ -258,7 +258,7 @@ fun VoiceChannelScreen(
                         )
                     }) { Text(stringResource(R.string.voice_permission_open_settings)) }
                     TextButton(onClick = { evaluate() }) {
-                        Text(stringResource(R.string.voice_permission_try_again))
+                        Text(stringResource(R.string.common_try_again))
                     }
                 }
             }
@@ -357,7 +357,7 @@ private fun ParticipantCard(participant: VoiceParticipant) {
             if (participant.muted) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = stringResource(R.string.voice_muted),
+                    text = stringResource(R.string.voice_participants_muted),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -497,7 +497,7 @@ private fun VoiceBottomBar(
         ) {
             // Mute/unmute toggle
             val muteDescription = stringResource(R.string.voice_microphone)
-            val muteState = stringResource(if (isMuted) R.string.voice_muted else R.string.voice_microphone_on)
+            val muteState = stringResource(if (isMuted) R.string.voice_participants_muted else R.string.voice_microphone_on)
             FilledIconToggleButton(
                 checked = isMuted,
                 onCheckedChange = { onToggleMute() },
@@ -577,7 +577,7 @@ private fun VoiceBottomBar(
             ) {
                 Icon(
                     imageVector = Icons.Default.Call,
-                    contentDescription = stringResource(R.string.voice_disconnect)
+                    contentDescription = stringResource(R.string.voice_panel_disconnect)
                 )
             }
         }

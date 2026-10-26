@@ -54,7 +54,7 @@ fun ChangePasswordScreen(
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            text = stringResource(R.string.auth_change_password_title),
+            text = stringResource(R.string.auth_forced_change_title),
             style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.primary,
             textAlign = TextAlign.Center
@@ -63,7 +63,7 @@ fun ChangePasswordScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = stringResource(R.string.auth_change_password_explanation),
+            text = stringResource(R.string.auth_forced_change_intro),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
@@ -74,7 +74,7 @@ fun ChangePasswordScreen(
         OutlinedTextField(
             value = uiState.newPassword,
             onValueChange = viewModel::onNewPasswordChanged,
-            label = { Text(stringResource(R.string.auth_new_password)) },
+            label = { Text(stringResource(R.string.auth_forced_change_new_password)) },
             supportingText = { Text(stringResource(R.string.auth_password_requirements)) },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
@@ -91,7 +91,7 @@ fun ChangePasswordScreen(
         OutlinedTextField(
             value = uiState.confirm,
             onValueChange = viewModel::onConfirmChanged,
-            label = { Text(stringResource(R.string.auth_confirm_password)) },
+            label = { Text(stringResource(R.string.auth_forced_change_confirm_password)) },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(
@@ -128,7 +128,7 @@ fun ChangePasswordScreen(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
             }
-            Text(stringResource(R.string.auth_change_password_submit))
+            Text(stringResource(R.string.auth_forced_change_submit))
         }
 
         Spacer(modifier = Modifier.height(12.dp))

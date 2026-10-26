@@ -89,9 +89,9 @@ class ChangePasswordViewModel @Inject constructor(
         // Count code points like the server's validator, not UTF-16 units.
         val length = newPassword.codePointCount(0, newPassword.length)
         return when {
-            length < MIN_PASSWORD_LENGTH -> R.string.auth_password_too_short
-            length > MAX_PASSWORD_LENGTH -> R.string.auth_password_too_long
-            newPassword != confirm -> R.string.auth_password_mismatch
+            length < MIN_PASSWORD_LENGTH -> R.string.auth_forced_change_length
+            length > MAX_PASSWORD_LENGTH -> R.string.auth_forced_change_length
+            newPassword != confirm -> R.string.auth_forced_change_mismatch
             else -> null
         }
     }
@@ -101,9 +101,9 @@ class ChangePasswordViewModel @Inject constructor(
         // No pending change (e.g. the app was restarted): sign in again.
         e is IllegalStateException -> R.string.auth_password_change_expired
         // The only server-side validation left is "must differ from the temporary password".
-        e is ApiException && e.code == "VALIDATION_ERROR" -> R.string.auth_password_must_differ
+        e is ApiException && e.code == "VALIDATION_ERROR" -> R.string.auth_forced_change_same_as_temporary
         e is ApiException && e.status == HttpStatusCode.Unauthorized ->
             R.string.auth_password_change_expired
-        else -> R.string.auth_password_change_failed
+        else -> R.string.auth_forced_change_failed
     }
 }
