@@ -80,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Signing in with an identity provider in the desktop app no longer passes your session tokens through the browser: the browser only receives a one-time code that expires after 60 seconds and that only the app that started the sign-in can redeem. Older desktop apps must be updated to sign in with an identity provider.
 - An authenticator code can only be used once when signing in; entering the same code again is refused. If the check cannot be completed, sign-in is refused with a temporary error.
 - Updated the Markdown sanitizer, diagram renderer and UI runtime libraries to versions without known vulnerabilities; the frontend dependency audit now blocks CI on production advisories.
 - The default role can no longer be given webhook, post, event or announcement management rights, including through channel permission overrides.

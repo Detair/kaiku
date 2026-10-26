@@ -317,11 +317,26 @@ pub struct OidcAuthorizeQuery {
     /// result back here after exchanging the code; it is never sent to the
     /// provider, which always redirects to `/auth/oidc/callback`.
     pub redirect_uri: Option<String>,
+    /// Desktop login (with `redirect_uri`) only, and required there: S256
+    /// challenge (unpadded base64url SHA-256, 43 characters) of a random
+    /// verifier the desktop keeps. The loopback then receives a one-time
+    /// `code` that only that verifier can redeem at
+    /// `POST /auth/oidc/desktop/exchange`. Missing → 400 `OIDC_CLIENT_OUTDATED`.
+    pub client_challenge: Option<String>,
     /// When `"json"`, return the provider authorization URL as a JSON body
     /// (`{"url": ...}`) instead of a 307 redirect. Used by the browser link
     /// flow, which calls this endpoint as an authenticated XHR (a top-level
     /// popup can't send the Bearer header) and then opens the URL itself.
     pub response: Option<String>,
+}
+
+/// Body of `POST /auth/oidc/desktop/exchange`.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct OidcHandoffExchangeRequest {
+    /// One-time code from the desktop loopback hand-back (valid 60 s).
+    pub code: String,
+    /// The verifier whose S256 challenge was sent with the authorize request.
+    pub verifier: String,
 }
 
 /// Body of `POST /auth/reauth/oidc/authorize/{provider}` (C24).

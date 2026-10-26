@@ -15,7 +15,9 @@ use tower::ServiceExt;
 use uuid::Uuid;
 use vc_server::api::{create_router, AppState, AppStateConfig};
 use vc_server::auth::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
-use vc_server::auth::oidc::{OidcFlowPurpose, OidcFlowState, OidcProviderManager};
+use vc_server::auth::oidc::{
+    handoff_key, OidcFlowPurpose, OidcFlowState, OidcHandoffGrant, OidcProviderManager,
+};
 use vc_server::config::Config;
 use vc_server::db;
 use vc_server::voice::sfu::SfuServer;
@@ -105,6 +107,7 @@ fn flow(client: Option<&str>, link_user_id: Option<Uuid>) -> OidcFlowState {
             session_id: None,
         }),
         client_redirect_uri: client.map(str::to_string),
+        client_challenge: None,
     }
 }
 
@@ -143,14 +146,18 @@ fn denied_uri(csrf_state: &str) -> String {
 // Authorize wiring
 // ============================================================================
 
-/// The provider gets the server callback; the loopback is stored only as the
-/// client return address.
-#[sqlx::test]
-async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool) {
-    let user_id = create_test_user(&pool).await.0;
-    let mut methods = db::get_auth_methods_allowed(&pool).await.unwrap();
+/// RFC 7636 appendix B verifier and its S256 challenge.
+const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+/// Desktop return address with a per-flow value.
+const LOOPBACK_WITH_FLOW: &str = "http://127.0.0.1:54321/callback?flow=perflowvalue_0123456789";
+
+/// Create an enabled OIDC provider with manual endpoints; returns its slug.
+async fn create_manual_provider(pool: &PgPool) -> String {
+    let user_id = create_test_user(pool).await.0;
+    let mut methods = db::get_auth_methods_allowed(pool).await.unwrap();
     methods.oidc = true;
-    db::set_auth_methods_allowed(&pool, &methods, Some(user_id))
+    db::set_auth_methods_allowed(pool, &methods, Some(user_id))
         .await
         .unwrap();
     let slug = format!("wire-{}", Uuid::new_v4().simple());
@@ -158,7 +165,7 @@ async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool
         .encrypt_secret("secret")
         .unwrap();
     db::create_oidc_provider(
-        &pool,
+        pool,
         db::CreateOidcProviderParams {
             slug: &slug,
             display_name: "Wire",
@@ -176,13 +183,39 @@ async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool
     )
     .await
     .unwrap();
+    slug
+}
+
+fn authorize_uri(slug: &str, query: &[(&str, &str)]) -> String {
+    let mut url = openidconnect::url::Url::parse("http://x/").unwrap();
+    url.set_path(&format!("/auth/oidc/authorize/{slug}"));
+    for (k, v) in query {
+        url.query_pairs_mut().append_pair(k, v);
+    }
+    format!("{}?{}", url.path(), url.query().unwrap_or(""))
+}
+
+async fn error_code(resp: axum::response::Response) -> String {
+    let body: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    body["error"].as_str().unwrap_or_default().to_string()
+}
+
+/// The provider gets the server callback; the loopback (with its per-flow
+/// value) and the client challenge are stored only in the flow state.
+#[sqlx::test]
+async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool) {
+    let slug = create_manual_provider(&pool).await;
 
     // Trailing slash on PUBLIC_URL must not produce "//auth/oidc/callback".
     let app = oidc_app(&pool, "https://chat.example.com/").await;
     let resp = get(
         &app,
-        &format!(
-            "/auth/oidc/authorize/{slug}?redirect_uri=http%3A%2F%2F127.0.0.1%3A54321%2Fcallback"
+        &authorize_uri(
+            &slug,
+            &[
+                ("redirect_uri", LOOPBACK_WITH_FLOW),
+                ("client_challenge", CHALLENGE),
+            ],
         ),
     )
     .await;
@@ -194,6 +227,9 @@ async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool
         q.get("redirect_uri").map(String::as_str),
         Some("https://chat.example.com/auth/oidc/callback")
     );
+    // Nothing of the desktop's values reaches the provider.
+    assert!(!location(&resp).contains(CHALLENGE));
+    assert!(!location(&resp).contains("perflowvalue"));
 
     let stored: Option<String> = app
         .state
@@ -209,8 +245,212 @@ async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool
         flow.redirect_uri,
         "https://chat.example.com/auth/oidc/callback"
     );
-    assert_eq!(flow.client_redirect_uri.as_deref(), Some(LOOPBACK));
+    assert_eq!(
+        flow.client_redirect_uri.as_deref(),
+        Some(LOOPBACK_WITH_FLOW)
+    );
+    assert_eq!(flow.client_challenge.as_deref(), Some(CHALLENGE));
     assert_eq!(flow.purpose, OidcFlowPurpose::Login);
+}
+
+/// A desktop sign-in without a client challenge (an older app) is refused
+/// with a code the app can show, instead of handing tokens to the browser.
+#[sqlx::test]
+async fn test_authorize_desktop_without_challenge_is_outdated(pool: PgPool) {
+    let slug = create_manual_provider(&pool).await;
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    let resp = get(&app, &authorize_uri(&slug, &[("redirect_uri", LOOPBACK)])).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(resp.headers().get("location").is_none());
+    assert_eq!(error_code(resp).await, "OIDC_CLIENT_OUTDATED");
+}
+
+#[sqlx::test]
+async fn test_authorize_rejects_malformed_or_misplaced_challenge(pool: PgPool) {
+    let slug = create_manual_provider(&pool).await;
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    // Not an S256 digest.
+    let resp = get(
+        &app,
+        &authorize_uri(
+            &slug,
+            &[("redirect_uri", LOOPBACK), ("client_challenge", "plain")],
+        ),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(resp).await, "VALIDATION_ERROR");
+    // Browser flow: there is no desktop to redeem a code.
+    let resp = get(
+        &app,
+        &authorize_uri(&slug, &[("client_challenge", CHALLENGE)]),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(resp).await, "VALIDATION_ERROR");
+}
+
+/// The browser flow is unchanged: no challenge needed, nothing stored for one.
+#[sqlx::test]
+async fn test_authorize_browser_flow_unchanged(pool: PgPool) {
+    let slug = create_manual_provider(&pool).await;
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    let resp = get(&app, &authorize_uri(&slug, &[])).await;
+    assert_eq!(resp.status(), StatusCode::TEMPORARY_REDIRECT);
+    let auth_url = openidconnect::url::Url::parse(&location(&resp)).unwrap();
+    let q: std::collections::HashMap<_, _> = auth_url.query_pairs().into_owned().collect();
+    let stored: Option<String> = app
+        .state
+        .redis
+        .getdel(redis_key(&q["state"]))
+        .await
+        .unwrap();
+    let flow: OidcFlowState = serde_json::from_str(
+        &decrypt_mfa_secret(&stored.expect("flow state stored"), &enc_key(&app.config)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(flow.client_redirect_uri, None);
+    assert_eq!(flow.client_challenge, None);
+}
+
+// ============================================================================
+// Hand-off code exchange
+// ============================================================================
+
+async fn post_exchange(app: &OidcApp, body: &serde_json::Value) -> axum::response::Response {
+    app.router
+        .clone()
+        .oneshot(
+            Request::post("/auth/oidc/desktop/exchange")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// Store a hand-off grant the way the callback does; returns the code.
+async fn store_grant(app: &OidcApp, user_id: Uuid, created_at: i64) -> String {
+    let code = format!("code-{}", Uuid::new_v4().simple());
+    let grant = OidcHandoffGrant {
+        user_id,
+        slug: "wire".to_string(),
+        client_challenge: CHALLENGE.to_string(),
+        created_at,
+    };
+    app.state
+        .redis
+        .set::<(), _, _>(
+            handoff_key(&code),
+            serde_json::to_string(&grant).unwrap().as_str(),
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    code
+}
+
+#[sqlx::test]
+async fn test_exchange_redeems_a_fresh_grant_once(pool: PgPool) {
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    let user_id = create_test_user(&pool).await.0;
+    let code = store_grant(&app, user_id, chrono::Utc::now().timestamp()).await;
+    let body = serde_json::json!({ "code": code, "verifier": VERIFIER });
+
+    let resp = post_exchange(&app, &body).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().get("set-cookie").is_none(), "no cookie");
+    let tokens: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    assert!(tokens["access_token"]
+        .as_str()
+        .is_some_and(|t| !t.is_empty()));
+    assert!(tokens["refresh_token"]
+        .as_str()
+        .is_some_and(|t| !t.is_empty()));
+    assert_eq!(tokens["token_type"], "Bearer");
+    assert!(tokens["expires_in"].as_i64().is_some());
+    assert!(tokens["setup_required"].is_boolean());
+    assert_eq!(tokens["password_change_required"], false);
+
+    let left: Option<String> = app.state.redis.get(handoff_key(&code)).await.unwrap();
+    assert!(left.is_none(), "grant is consumed");
+    let resp = post_exchange(&app, &body).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(resp).await, "OIDC_HANDOFF_INVALID");
+}
+
+#[sqlx::test]
+async fn test_exchange_refuses_an_expired_grant(pool: PgPool) {
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    let user_id = create_test_user(&pool).await.0;
+    let code = store_grant(&app, user_id, chrono::Utc::now().timestamp() - 61).await;
+    let resp = post_exchange(
+        &app,
+        &serde_json::json!({ "code": code, "verifier": VERIFIER }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(resp).await, "OIDC_HANDOFF_INVALID");
+}
+
+/// A wrong verifier fails and burns the code: the right one cannot follow.
+#[sqlx::test]
+async fn test_exchange_wrong_verifier_burns_the_code(pool: PgPool) {
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    let user_id = create_test_user(&pool).await.0;
+    let code = store_grant(&app, user_id, chrono::Utc::now().timestamp()).await;
+    let wrong = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXK";
+    let resp = post_exchange(
+        &app,
+        &serde_json::json!({ "code": code, "verifier": wrong }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(resp).await, "OIDC_HANDOFF_INVALID");
+    let resp = post_exchange(
+        &app,
+        &serde_json::json!({ "code": code, "verifier": VERIFIER }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(resp).await, "OIDC_HANDOFF_INVALID");
+}
+
+#[sqlx::test]
+async fn test_exchange_refuses_unknown_or_malformed_codes(pool: PgPool) {
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    for body in [
+        serde_json::json!({ "code": "never-issued", "verifier": VERIFIER }),
+        serde_json::json!({ "code": "", "verifier": VERIFIER }),
+        serde_json::json!({ "code": "x".repeat(4096), "verifier": VERIFIER }),
+    ] {
+        let resp = post_exchange(&app, &body).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(error_code(resp).await, "OIDC_HANDOFF_INVALID");
+    }
+}
+
+/// A banned account cannot redeem a grant issued just before the ban.
+#[sqlx::test]
+async fn test_exchange_refuses_a_banned_account(pool: PgPool) {
+    let app = oidc_app(&pool, PUBLIC_URL).await;
+    let user_id = create_test_user(&pool).await.0;
+    let code = store_grant(&app, user_id, chrono::Utc::now().timestamp()).await;
+    sqlx::query("INSERT INTO global_bans (user_id, banned_by, reason) VALUES ($1, $1, 'test')")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let resp = post_exchange(
+        &app,
+        &serde_json::json!({ "code": code, "verifier": VERIFIER }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(error_code(resp).await, "ACCOUNT_BANNED");
 }
 
 // ============================================================================

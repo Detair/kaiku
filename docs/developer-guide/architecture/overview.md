@@ -110,6 +110,7 @@ flowchart TD
 │  GET    /auth/oidc/providers          List configured SSO providers   │
 │  GET    /auth/oidc/authorize/{prov}   Start SSO flow                  │
 │  GET    /auth/oidc/callback           SSO callback handler            │
+│  POST   /auth/oidc/desktop/exchange   Redeem desktop SSO hand-off     │
 │  POST   /auth/forgot-password         Request password reset          │
 │  POST   /auth/reset-password          Complete password reset         │
 │                                                                       │

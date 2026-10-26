@@ -93,6 +93,15 @@ pub enum AuthError {
     #[error("OIDC authentication failed")]
     OidcCodeExchangeFailed(String),
 
+    /// Desktop sign-in from an app too old for the hand-off code flow (no
+    /// `client_challenge`); the app must be updated.
+    #[error("Update the app to sign in with this provider")]
+    OidcClientOutdated,
+
+    /// Unknown, expired, already used or wrongly verified desktop hand-off code.
+    #[error("Sign-in could not be completed. Please try again.")]
+    OidcHandoffInvalid,
+
     /// Registration is disabled by server policy.
     #[error("Registration is disabled")]
     RegistrationDisabled,
@@ -191,6 +200,8 @@ impl IntoResponse for AuthError {
             Self::OidcNotConfigured => (StatusCode::SERVICE_UNAVAILABLE, "OIDC_NOT_CONFIGURED"),
             Self::OidcStateMismatch => (StatusCode::BAD_REQUEST, "OIDC_STATE_MISMATCH"),
             Self::OidcCodeExchangeFailed(_) => (StatusCode::BAD_GATEWAY, "OIDC_EXCHANGE_FAILED"),
+            Self::OidcClientOutdated => (StatusCode::BAD_REQUEST, "OIDC_CLIENT_OUTDATED"),
+            Self::OidcHandoffInvalid => (StatusCode::BAD_REQUEST, "OIDC_HANDOFF_INVALID"),
             Self::RegistrationDisabled => (StatusCode::FORBIDDEN, "REGISTRATION_DISABLED"),
             Self::AuthMethodDisabled => (StatusCode::FORBIDDEN, "AUTH_METHOD_DISABLED"),
             Self::PasswordChangeRequired => (StatusCode::FORBIDDEN, "PASSWORD_CHANGE_REQUIRED"),
