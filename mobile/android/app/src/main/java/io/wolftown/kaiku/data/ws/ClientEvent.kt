@@ -60,7 +60,7 @@ sealed class ClientEvent {
     ) : ClientEvent()
 
     @Serializable
-    @SerialName("voice_mute")
+    @SerialName("voice_controls_mute_label")
     data class VoiceMute(val channelId: String) : ClientEvent()
 
     @Serializable

@@ -2,10 +2,13 @@ package io.wolftown.kaiku.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.annotation.StringRes
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.model.User
+import io.wolftown.kaiku.domain.model.UserStatus
 import io.wolftown.kaiku.push.PushPlatform
 import io.wolftown.kaiku.push.PushPreferences
 import io.wolftown.kaiku.push.PushRegistrar
@@ -43,6 +46,19 @@ data class NotificationSettingsState(
                 (status as? PushStatus.Active)?.kind == TransportKind.UNIFIED_PUSH)
 }
 
+/**
+ * Label for a presence status in the profile (C5 `UNKNOWN` included). Online/idle/dnd mirror web
+ * `home.status.*`; offline/unknown have no web key, so they are Android-only `settings_status_*`.
+ */
+@StringRes
+internal fun statusLabelRes(status: UserStatus): Int = when (status) {
+    UserStatus.ONLINE -> R.string.home_status_online
+    UserStatus.IDLE -> R.string.home_status_idle
+    UserStatus.DND -> R.string.home_status_dnd
+    UserStatus.OFFLINE -> R.string.settings_status_offline
+    UserStatus.UNKNOWN -> R.string.settings_status_unknown
+}
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val authRepository: AuthRepository,
@@ -62,8 +78,10 @@ class SettingsViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
+    private val _error = MutableStateFlow<Int?>(null)
+
+    /** `@StringRes` of the profile-load failure, or null. Exception text is never shown. */
+    val error: StateFlow<Int?> = _error.asStateFlow()
 
     private val pushInputs = MutableStateFlow(readPushInputs())
 
@@ -103,14 +121,13 @@ class SettingsViewModel @Inject constructor(
                 if (result.isSuccess) {
                     _user.value = result.getOrNull()
                 } else {
-                    _error.value = result.exceptionOrNull()?.message
-                        ?: "Failed to load user profile"
+                    _error.value = R.string.settings_profile_load_failed
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 logger.log(Level.WARNING, "Failed to load user", e)
-                _error.value = e.message ?: "Failed to load user profile"
+                _error.value = R.string.settings_profile_load_failed
             } finally {
                 _isLoading.value = false
             }

@@ -42,7 +42,7 @@ fun NotificationSettingsSection(
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         Text(
-            text = stringResource(R.string.notif_settings_title),
+            text = stringResource(R.string.common_notifications),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(vertical = 12.dp),

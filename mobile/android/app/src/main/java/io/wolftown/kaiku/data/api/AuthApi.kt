@@ -153,7 +153,7 @@ class AuthApiImpl @Inject constructor(
 
         if (!response.status.isSuccess()) {
             val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(response.status, errorBody?.message ?: "Registration failed")
+            throw ApiException(response.status, errorBody?.message ?: "Registration failed", code = errorBody?.error)
         }
 
         return response.body()
@@ -197,7 +197,7 @@ class AuthApiImpl @Inject constructor(
 
         if (!response.status.isSuccess()) {
             val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(response.status, errorBody?.message ?: "Failed to get user")
+            throw ApiException(response.status, errorBody?.message ?: "Failed to get user", code = errorBody?.error)
         }
 
         return response.body()
@@ -214,7 +214,7 @@ class AuthApiImpl @Inject constructor(
 
         if (!response.status.isSuccess()) {
             val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(response.status, errorBody?.message ?: "Failed to get user")
+            throw ApiException(response.status, errorBody?.message ?: "Failed to get user", code = errorBody?.error)
         }
 
         return response.body()
@@ -249,7 +249,7 @@ class AuthApiImpl @Inject constructor(
 
         if (!response.status.isSuccess()) {
             val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(response.status, errorBody?.message ?: "Failed to load OIDC providers")
+            throw ApiException(response.status, errorBody?.message ?: "Failed to load OIDC providers", code = errorBody?.error)
         }
 
         return response.body()
@@ -277,7 +277,8 @@ class AuthApiImpl @Inject constructor(
             val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
             throw ApiException(
                 response.status,
-                errorBody?.message ?: "OIDC code exchange failed"
+                errorBody?.message ?: "OIDC code exchange failed",
+                code = errorBody?.error
             )
         }
 
@@ -294,7 +295,8 @@ class AuthApiImpl @Inject constructor(
             val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
             throw ApiException(
                 response.status,
-                errorBody?.message ?: "QR code expired or already used"
+                errorBody?.message ?: "QR code expired or already used",
+                code = errorBody?.error
             )
         }
 

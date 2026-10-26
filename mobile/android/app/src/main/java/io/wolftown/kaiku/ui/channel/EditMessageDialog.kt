@@ -35,12 +35,12 @@ fun EditMessageDialog(
         },
         confirmButton = {
             TextButton(onClick = { onConfirm(text) }, enabled = canSave) {
-                Text(stringResource(R.string.chat_edit_save))
+                Text(stringResource(R.string.common_save))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.chat_edit_cancel))
+                Text(stringResource(R.string.common_cancel))
             }
         }
     )

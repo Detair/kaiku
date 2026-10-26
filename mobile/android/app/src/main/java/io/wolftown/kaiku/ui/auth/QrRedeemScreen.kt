@@ -5,8 +5,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.wolftown.kaiku.R
 
 @Composable
 fun QrRedeemScreen(
@@ -15,18 +17,14 @@ fun QrRedeemScreen(
     onSuccess: () -> Unit,
     onError: () -> Unit
 ) {
-    var isLoading by remember { mutableStateOf(true) }
-    var error by remember { mutableStateOf<String?>(null) }
-
     val viewModel: QrRedeemViewModel = hiltViewModel()
+    val state by viewModel.uiState.collectAsState()
 
-    LaunchedEffect(Unit) {
-        val result = viewModel.redeem(serverUrl, token)
-        if (result.isSuccess) {
+    LaunchedEffect(Unit) { viewModel.start(serverUrl, token) }
+    LaunchedEffect(state.succeeded, state.navigated) {
+        if (state.succeeded && !state.navigated) {
+            viewModel.onNavigated()
             onSuccess()
-        } else {
-            isLoading = false
-            error = result.exceptionOrNull()?.message ?: "QR code expired or already used"
         }
     }
 
@@ -34,22 +32,26 @@ fun QrRedeemScreen(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        if (isLoading) {
+        if (state.isLoading || state.succeeded) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 CircularProgressIndicator()
                 Spacer(modifier = Modifier.height(16.dp))
-                Text("Signing in...", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    stringResource(R.string.qr_redeem_signing_in),
+                    style = MaterialTheme.typography.bodyLarge
+                )
             }
-        } else if (error != null) {
+        } else {
+            // Not loading and not signed in: always say why, even if no specific error was stored.
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = error ?: "An error occurred",
+                    text = stringResource(state.errorRes ?: R.string.qr_redeem_failed),
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Spacer(modifier = Modifier.height(16.dp))
                 Button(onClick = onError) {
-                    Text("Go back")
+                    Text(stringResource(R.string.common_back))
                 }
             }
         }

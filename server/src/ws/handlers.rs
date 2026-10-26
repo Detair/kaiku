@@ -167,8 +167,9 @@ pub async fn handler(
         };
 
         // Verify the user still exists, is not banned and has no pending
-        // forced password change.
-        match account_status(&state, user_id).await {
+        // forced password change. Bounded like the frame path, so a stalled
+        // database answers 503 instead of holding the upgrade open.
+        match bounded_lookup(AUTH_FRAME_TIMEOUT, account_status(&state, user_id)).await {
             Ok(AccountStatus::Active) => {}
             Ok(AccountStatus::Banned) => {
                 return error_response(403, ACCOUNT_BANNED);
@@ -254,6 +255,18 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
         .reunite(ws_receiver)
         .expect("reunite should never fail for same socket");
     handle_socket(socket, state, user_id, session_id).await;
+}
+
+/// Run a database lookup under `budget`. Running out of time is reported as
+/// [`sqlx::Error::PoolTimedOut`], which callers already treat as "database
+/// unavailable".
+async fn bounded_lookup<T>(
+    budget: Duration,
+    lookup: impl std::future::Future<Output = Result<T, sqlx::Error>>,
+) -> Result<T, sqlx::Error> {
+    tokio::time::timeout(budget, lookup)
+        .await
+        .unwrap_or(Err(sqlx::Error::PoolTimedOut))
 }
 
 /// Whether an authenticated user may open a socket.
@@ -2418,6 +2431,19 @@ mod pubsub_tests {
         );
         // The shared base client is left untouched.
         assert!(base.perf_config().broadcast_channel_capacity < SUBSCRIBER_BROADCAST_CAPACITY);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bounded_lookup_gives_up_when_the_database_stalls() {
+        let result: Result<(), sqlx::Error> =
+            bounded_lookup(AUTH_FRAME_TIMEOUT, std::future::pending()).await;
+        assert!(matches!(result, Err(sqlx::Error::PoolTimedOut)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bounded_lookup_passes_a_timely_answer_through() {
+        let result = bounded_lookup(AUTH_FRAME_TIMEOUT, async { Ok::<_, sqlx::Error>(7) }).await;
+        assert_eq!(result.unwrap(), 7);
     }
 
     #[tokio::test(start_paused = true)]
