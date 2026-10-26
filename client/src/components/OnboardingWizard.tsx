@@ -48,6 +48,7 @@ import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds, joinDiscoverable } from "@/lib/tauri";
 import { createDialog } from "@/lib/a11y/dialog";
 import { t } from "@/i18n";
+import { formatNumber } from "@/i18n/format";
 
 const MicTestPanel = lazy(() => import("@/components/voice/MicTestPanel"));
 
@@ -176,9 +177,8 @@ const OnboardingDialog: Component = () => {
         console.error("Failed to save display name:", err);
         showToast({
           type: "warning",
-          title: "Could Not Save Name",
-          message:
-            "Your display name wasn't saved. You can update it later in settings.",
+          title: t("onboarding.saveName.failedTitle"),
+          message: t("onboarding.saveName.failed"),
           duration: 8000,
         });
         setSavingName(false);
@@ -217,14 +217,14 @@ const OnboardingDialog: Component = () => {
       if (result.already_member) {
         showToast({
           type: "info",
-          title: "Already a Member",
-          message: `You're already in ${result.guild_name}.`,
+          title: t("onboarding.join.alreadyMemberTitle"),
+          message: t("onboarding.join.alreadyMember", { server: result.guild_name }),
         });
       } else {
         showToast({
           type: "success",
-          title: "Joined!",
-          message: `You've joined ${result.guild_name}.`,
+          title: t("onboarding.join.joinedTitle"),
+          message: t("onboarding.join.joined", { server: result.guild_name }),
         });
         // Refresh guild list so sidebar shows the new guild after wizard closes
         try {
@@ -243,8 +243,8 @@ const OnboardingDialog: Component = () => {
       console.error("Failed to join discoverable guild:", err);
       showToast({
         type: "error",
-        title: "Join Failed",
-        message: "Could not join this server.",
+        title: t("onboarding.join.failedTitle"),
+        message: t("onboarding.join.failed"),
       });
       return false;
     }
@@ -259,15 +259,15 @@ const OnboardingDialog: Component = () => {
       setInviteCode("");
       showToast({
         type: "success",
-        title: "Joined!",
-        message: "You've joined the server.",
+        title: t("onboarding.join.joinedTitle"),
+        message: t("onboarding.join.joinedGeneric"),
       });
     } catch (err: unknown) {
       console.error("Failed to join via invite code:", err);
       showToast({
         type: "error",
-        title: "Invalid Invite",
-        message: "Could not join with this invite code.",
+        title: t("onboarding.join.invalidInviteTitle"),
+        message: t("onboarding.join.invalidInvite"),
       });
     } finally {
       setJoiningInvite(false);
@@ -283,7 +283,7 @@ const OnboardingDialog: Component = () => {
         role={dialog.dialogProps.role}
         aria-modal={dialog.dialogProps["aria-modal"]}
         tabIndex={dialog.dialogProps.tabIndex}
-        aria-label={t("onboarding.dialogLabel")}
+        aria-label={t("onboarding.dialog.label")}
         ref={dialog.ref}
         class="w-[36rem] max-h-[85vh] rounded-xl border border-white/10 shadow-2xl flex flex-col overflow-hidden"
         style={{"background-color":"var(--color-surface-layer2)"}}
@@ -295,7 +295,7 @@ const OnboardingDialog: Component = () => {
           aria-valuenow={position() + 1}
           aria-valuemin={1}
           aria-valuemax={steps().length}
-          aria-label={`Step ${position() + 1} of ${steps().length}`}
+          aria-label={t("onboarding.progress.label", { step: position() + 1, total: steps().length })}
         >
           <For each={steps()}>
             {(s) => (
@@ -315,12 +315,12 @@ const OnboardingDialog: Component = () => {
           {/* Step 0: Welcome */}
           <Show when={step() === 0}>
             <div class="text-center mb-6">
-              <img src={getThemeImage("floki_onboard_welcome.png")} alt="Floki waving hello" class="w-24 h-24 mx-auto mb-3 object-contain" loading="lazy" decoding="async" />
+              <img src={getThemeImage("floki_onboard_welcome.png")} alt={t("onboarding.step.profile.mascotAlt")} class="w-24 h-24 mx-auto mb-3 object-contain" loading="lazy" decoding="async" />
               <h2 class="text-2xl font-bold text-text-primary">
-                Welcome to Kaiku
+                {t("onboarding.step.profile.title")}
               </h2>
               <p class="text-sm text-text-secondary mt-2">
-                Let's get you set up in just a few steps.
+                {t("onboarding.step.profile.intro")}
               </p>
             </div>
             <div>
@@ -328,7 +328,7 @@ const OnboardingDialog: Component = () => {
                 for="onboarding-display-name"
                 class="block text-sm font-medium text-text-secondary mb-2"
               >
-                Display Name
+                {t("onboarding.step.profile.displayName")}
               </label>
               <input
                 id="onboarding-display-name"
@@ -337,12 +337,12 @@ const OnboardingDialog: Component = () => {
                 type="text"
                 value={displayName()}
                 onInput={(e) => setDisplayName(e.currentTarget.value)}
-                placeholder="How should others see you?"
+                placeholder={t("onboarding.step.profile.displayNamePlaceholder")}
                 maxLength={32}
                 class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
               />
               <p class="text-xs text-text-secondary mt-2">
-                You can change this later in settings.
+                {t("onboarding.step.profile.displayNameHint")}
               </p>
             </div>
           </Show>
@@ -350,51 +350,51 @@ const OnboardingDialog: Component = () => {
           {/* Step 1: Theme */}
           <Show when={step() === 1}>
             <div class="text-center mb-6">
-              <img src={getThemeImage("floki_onboard_theme.png")} alt="Floki painting with colors" class="w-20 h-20 mx-auto mb-3 object-contain" loading="lazy" decoding="async" />
+              <img src={getThemeImage("floki_onboard_theme.png")} alt={t("onboarding.step.theme.mascotAlt")} class="w-20 h-20 mx-auto mb-3 object-contain" loading="lazy" decoding="async" />
               <h2 class="text-xl font-bold text-text-primary">
-                Pick a Theme
+                {t("onboarding.step.theme.title")}
               </h2>
               <p class="text-sm text-text-secondary mt-1">
-                Choose how Kaiku looks. You can change this anytime.
+                {t("onboarding.step.theme.intro")}
               </p>
             </div>
             <div class="grid grid-cols-2 gap-3">
               <For each={pickerThemes()}>
-                {(t: ThemeDefinition) => (
+                {(th: ThemeDefinition) => (
                   <button
-                    onClick={() => setTheme(t.id)}
+                    onClick={() => setTheme(th.id)}
                     class="text-left p-3 rounded-xl border-2 transition-all"
                     classList={{
                       "border-accent-primary bg-accent-primary/10":
-                        theme() === t.id,
+                        theme() === th.id,
                       "border-white/10 hover:border-accent-primary/50":
-                        theme() !== t.id,
+                        theme() !== th.id,
                     }}
                   >
                     <div class="flex items-center gap-2 mb-1">
                       <div class="flex gap-1">
                         <div
                           class="w-3 h-3 rounded-full border border-white/20"
-                          style={{ "background-color": t.preview.surface }}
+                          style={{ "background-color": th.preview.surface }}
                         />
                         <div
                           class="w-3 h-3 rounded-full border border-white/20"
-                          style={{ "background-color": t.preview.accent }}
+                          style={{ "background-color": th.preview.accent }}
                         />
                         <div
                           class="w-3 h-3 rounded-full border border-white/20"
-                          style={{ "background-color": t.preview.text }}
+                          style={{ "background-color": th.preview.text }}
                         />
                       </div>
-                      <Show when={theme() === t.id}>
+                      <Show when={theme() === th.id}>
                         <Check class="w-3.5 h-3.5 text-accent-primary ml-auto" />
                       </Show>
                     </div>
                     <div class="text-sm font-semibold text-text-primary">
-                      {t.name}
+                      {th.name}
                     </div>
                     <div class="text-xs text-text-secondary">
-                      {t.description}
+                      {th.description}
                     </div>
                   </button>
                 )}
@@ -405,16 +405,18 @@ const OnboardingDialog: Component = () => {
           {/* Step 2: Mic Setup */}
           <Show when={step() === 2}>
             <div class="text-center mb-4">
-              <img src={getThemeImage("floki_onboard_mic.png")} alt="Floki with gaming headset" class="w-20 h-20 mx-auto mb-2 object-contain" loading="lazy" decoding="async" />
-              <h2 class="text-xl font-bold text-text-primary">Mic Setup</h2>
+              <img src={getThemeImage("floki_onboard_mic.png")} alt={t("onboarding.step.mic.mascotAlt")} class="w-20 h-20 mx-auto mb-2 object-contain" loading="lazy" decoding="async" />
+              <h2 class="text-xl font-bold text-text-primary">
+                {t("onboarding.step.mic.title")}
+              </h2>
               <p class="text-sm text-text-secondary mt-1">
-                Test your microphone and speakers. You can skip this step.
+                {t("onboarding.step.mic.intro")}
               </p>
             </div>
             <Suspense
               fallback={
                 <div class="h-40 flex items-center justify-center text-text-secondary text-sm">
-                  Loading...
+                  {t("common.loading")}
                 </div>
               }
             >
@@ -425,12 +427,12 @@ const OnboardingDialog: Component = () => {
           {/* Step 3: Join a Server */}
           <Show when={step() === 3}>
             <div class="text-center mb-4">
-              <img src={getThemeImage("floki_onboard_join.png")} alt="Floki exploring server islands" class="w-20 h-20 mx-auto mb-2 object-contain" loading="lazy" decoding="async" />
+              <img src={getThemeImage("floki_onboard_join.png")} alt={t("onboarding.step.join.mascotAlt")} class="w-20 h-20 mx-auto mb-2 object-contain" loading="lazy" decoding="async" />
               <h2 class="text-xl font-bold text-text-primary">
-                Join a Server
+                {t("onboarding.step.join.title")}
               </h2>
               <p class="text-sm text-text-secondary mt-1">
-                Find a community or enter an invite code.
+                {t("onboarding.step.join.intro")}
               </p>
             </div>
 
@@ -438,7 +440,7 @@ const OnboardingDialog: Component = () => {
             <div
               class="flex rounded-lg border border-white/10 overflow-hidden text-xs mb-4"
               role="tablist"
-              aria-label="Join method"
+              aria-label={t("onboarding.join.methodLabel")}
             >
               <button
                 id="tab-discover"
@@ -453,7 +455,7 @@ const OnboardingDialog: Component = () => {
                     joinTab() !== "discover",
                 }}
               >
-                Discover
+                {t("onboarding.join.tabDiscover")}
               </button>
               <button
                 id="tab-invite"
@@ -468,7 +470,7 @@ const OnboardingDialog: Component = () => {
                     joinTab() !== "invite",
                 }}
               >
-                Invite Code
+                {t("onboarding.join.tabInvite")}
               </button>
             </div>
 
@@ -491,16 +493,19 @@ const OnboardingDialog: Component = () => {
                 <Show when={!discoveryLoading() && discoveryError()}>
                   <div class="text-center py-8 text-text-secondary text-sm">
                     <p>
-                      {discoveryPermanent()
-                        ? "Guild discovery is not enabled on this server."
-                        : "Could not load servers. Check your connection."}
+                      <Show
+                        when={discoveryPermanent()}
+                        fallback={t("onboarding.join.loadFailed")}
+                      >
+                        {t("onboarding.join.discoveryDisabled")}
+                      </Show>
                     </p>
                     <Show when={!discoveryPermanent()}>
                       <button
                         onClick={loadDiscoveryGuilds}
                         class="mt-2 px-3 py-1 text-xs bg-accent-primary text-on-accent rounded-lg hover:bg-primary-hover"
                       >
-                        Retry
+                        {t("common.retry")}
                       </button>
                     </Show>
                   </div>
@@ -513,8 +518,7 @@ const OnboardingDialog: Component = () => {
                   }
                 >
                   <div class="text-center py-8 text-text-secondary text-sm">
-                    No discoverable servers yet. Try using an invite code
-                    instead.
+                    {t("onboarding.join.noneDiscoverable")}
                   </div>
                 </Show>
                 <Show
@@ -548,7 +552,7 @@ const OnboardingDialog: Component = () => {
                               >
                                 <img
                                   src={guild.icon_url!}
-                                  alt=""
+                                  alt={""}
                                   class="w-full h-full object-cover"
                                 />
                               </Show>
@@ -559,7 +563,7 @@ const OnboardingDialog: Component = () => {
                               </div>
                               <div class="flex items-center gap-1 text-[10px] text-text-secondary">
                                 <Users class="w-2.5 h-2.5" />
-                                {guild.member_count.toLocaleString()}
+                                {formatNumber(guild.member_count)}
                               </div>
                             </div>
                             <button
@@ -573,7 +577,12 @@ const OnboardingDialog: Component = () => {
                                   isJoined(),
                               }}
                             >
-                              {isJoined() ? "Joined" : "Join"}
+                              <Show
+                                when={isJoined()}
+                                fallback={t("onboarding.join.joinButton")}
+                              >
+                                {t("onboarding.join.joinedBadge")}
+                              </Show>
                             </button>
                           </div>
                         );
@@ -596,7 +605,7 @@ const OnboardingDialog: Component = () => {
                   type="text"
                   value={inviteCode()}
                   onInput={(e) => setInviteCode(e.currentTarget.value)}
-                  placeholder="Enter invite code (e.g. AbCdEfGh)"
+                  placeholder={t("onboarding.join.invitePlaceholder")}
                   maxLength={8}
                   class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
                   onKeyDown={(e) => {
@@ -608,7 +617,12 @@ const OnboardingDialog: Component = () => {
                   disabled={!inviteCode().trim() || joiningInvite()}
                   class="w-full py-2.5 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover disabled:opacity-50 transition-colors"
                 >
-                  {joiningInvite() ? "Joining..." : "Join Server"}
+                  <Show
+                    when={joiningInvite()}
+                    fallback={t("onboarding.join.joinServer")}
+                  >
+                    {t("onboarding.join.joining")}
+                  </Show>
                 </button>
               </div>
             </Show>
@@ -617,13 +631,17 @@ const OnboardingDialog: Component = () => {
           {/* Step 4: Done */}
           <Show when={step() === 4}>
             <div class="text-center py-6">
-              <img src={flokiDone} alt="Floki celebrating" class="w-28 h-28 mx-auto mb-4 object-contain" loading="lazy" decoding="async" />
+              <img src={flokiDone} alt={t("onboarding.step.done.mascotAlt")} class="w-28 h-28 mx-auto mb-4 object-contain" loading="lazy" decoding="async" />
               <h2 class="text-2xl font-bold text-text-primary">
-                You're All Set!
+                {t("onboarding.step.done.title")}
               </h2>
               <p class="text-sm text-text-secondary mt-2 max-w-xs mx-auto">
-                Welcome aboard, {currentUser()?.display_name ?? "friend"}.
-                Explore servers, chat with friends, and join voice channels.
+                <Show
+                  when={currentUser()?.display_name}
+                  fallback={t("onboarding.step.done.welcomeAnonymous")}
+                >
+                  {(name) => t("onboarding.step.done.welcomeNamed", { name: name() })}
+                </Show>
               </p>
             </div>
           </Show>
@@ -638,7 +656,7 @@ const OnboardingDialog: Component = () => {
                 class="flex items-center gap-1 text-sm text-text-secondary hover:text-text-primary transition-colors"
               >
                 <ChevronLeft class="w-4 h-4" />
-                Back
+                {t("onboarding.nav.back")}
               </button>
             </Show>
           </div>
@@ -651,7 +669,7 @@ const OnboardingDialog: Component = () => {
                 data-testid="onboarding-skip"
                 class="text-sm text-text-secondary hover:text-text-primary transition-colors"
               >
-                Skip
+                {t("onboarding.nav.skip")}
               </button>
             </Show>
 
@@ -664,7 +682,7 @@ const OnboardingDialog: Component = () => {
                   data-testid="onboarding-get-started"
                   class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover transition-colors"
                 >
-                  Get Started
+                  {t("onboarding.nav.getStarted")}
                   <ChevronRight class="w-4 h-4" />
                 </button>
               }
@@ -677,11 +695,17 @@ const OnboardingDialog: Component = () => {
                 disabled={savingName()}
                 class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover disabled:opacity-50 transition-colors"
               >
-                {savingName()
-                  ? "Saving..."
-                  : step() === 0
-                    ? "Continue"
-                    : "Next"}
+                <Show
+                  when={!savingName()}
+                  fallback={t("onboarding.nav.saving")}
+                >
+                  <Show
+                    when={step() === 0}
+                    fallback={t("onboarding.nav.next")}
+                  >
+                    {t("onboarding.nav.continue")}
+                  </Show>
+                </Show>
                 <ChevronRight class="w-4 h-4" />
               </button>
             </Show>

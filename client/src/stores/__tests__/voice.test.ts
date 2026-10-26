@@ -350,7 +350,7 @@ describe("voice store", () => {
         error: { type: "permission_denied", message: "Mic denied" },
       });
 
-      await expect(joinVoice("ch-1")).rejects.toThrow("Mic denied");
+      await expect(joinVoice("ch-1")).rejects.toThrow("Microphone access denied");
       expect(voiceState.state).toBe("disconnected");
       expect(voiceState.channelId).toBeNull();
     });

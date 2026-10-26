@@ -45,6 +45,7 @@ import { loadGuilds, landOnFirstServerIfIdle, guildsState, isDiscoveryActive, is
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
 import { authState } from "@/stores/auth";
+import { t } from "@/i18n";
 import { threadsState } from "@/stores/threads";
 import {
   showGlobalSearch,
@@ -259,8 +260,8 @@ const Main: Component = () => {
                       <button
                         onClick={() => setShowPinDrawer(!showPinDrawer())}
                         class="p-1.5 rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors relative"
-                        title="Pinned Messages"
-                        aria-label="Pinned Messages"
+                        title={t("chat.pins.title")}
+                        aria-label={t("chat.pins.title")}
                       >
                         <Pin class="w-4 h-4" />
                         <Show when={pinCount() > 0}>
@@ -335,10 +336,10 @@ const Main: Component = () => {
                 <div class="text-center text-text-secondary">
                   <Hash class="w-12 h-12 mx-auto mb-4 opacity-30" />
                   <p class="text-lg font-medium">
-                    Select a channel to start chatting
+                    {t("chat.noChannel.title")}
                   </p>
                   <p class="text-sm mt-2 opacity-60">
-                    Or press Ctrl+K to search
+                    {t("chat.noChannel.hint")}
                   </p>
                 </div>
               </div>

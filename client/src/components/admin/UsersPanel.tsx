@@ -289,7 +289,7 @@ const UsersPanel: Component = () => {
               onClick={() => setShowCreateAccount(true)}
               class="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-primary hover:bg-accent-primary/80 text-on-accent transition-colors text-sm font-medium"
             >
-              {t("admin.createAccount.button")}
+              {t("admin.createAccount.title")}
             </button>
 
             {/* Export Button */}

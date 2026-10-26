@@ -11,6 +11,7 @@ import { getTrack as getWebcamTrack } from "@/stores/webcamViewer";
 import { viewerState as screenShareViewerState } from "@/stores/screenShareViewer";
 import TauriVideoFrame from "./TauriVideoFrame";
 import { isTauri } from "@/lib/tauri/common";
+import { t } from "@/i18n";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -184,7 +185,7 @@ const ScreenShareTile: Component<{
           /* Loading placeholder */
           <div class="flex flex-col items-center justify-center h-full gap-2 text-text-muted">
             <Monitor size={28} />
-            <span class="text-xs">Connecting...</span>
+            <span class="text-xs">{t("voice.status.connecting")}</span>
           </div>
         }
       >
@@ -194,7 +195,7 @@ const ScreenShareTile: Component<{
             /* Popped out placeholder */
             <div class="flex flex-col items-center justify-center h-full gap-2">
               <Monitor size={28} class="text-text-muted" />
-              <span class="text-xs text-text-muted">Popped out</span>
+              <span class="text-xs text-text-muted">{t("voice.tile.poppedOut")}</span>
               <Show when={props.onBringBack}>
                 <button
                   class="mt-1 text-xs text-text-primary hover:text-text-secondary px-2 py-1 rounded bg-surface-highlight transition-colors"
@@ -205,7 +206,7 @@ const ScreenShareTile: Component<{
                 >
                   <div class="flex items-center gap-1">
                     <Undo2 size={12} />
-                    Bring back
+                    {t("voice.tile.bringBack")}
                   </div>
                 </button>
               </Show>
@@ -235,7 +236,7 @@ const ScreenShareTile: Component<{
       {/* Label at bottom */}
       <div class="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
         <span class="text-sm text-text-primary font-medium truncate block">
-          {props.tile.username}'s Screen
+          {t("voice.tile.screenOf", { username: props.tile.username })}
         </span>
       </div>
 
@@ -248,7 +249,7 @@ const ScreenShareTile: Component<{
               e.stopPropagation();
               props.onStopShare?.();
             }}
-            title="Stop sharing"
+            title={t("voice.tile.stopSharing")}
           >
             <MonitorOff size={14} />
           </button>
@@ -260,7 +261,7 @@ const ScreenShareTile: Component<{
               e.stopPropagation();
               props.onPopOut?.();
             }}
-            title="Pop out"
+            title={t("voice.tile.popOut")}
           >
             <ExternalLink size={14} />
           </button>

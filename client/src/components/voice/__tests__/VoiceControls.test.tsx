@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@solidjs/testing-library";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, cleanup } from "@solidjs/testing-library";
 
 vi.mock("@/stores/voice", () => ({
   voiceState: {
@@ -24,6 +24,8 @@ vi.mock("../ScreenShareSourcePicker", () => ({ default: () => null }));
 
 import VoiceControls from "../VoiceControls";
 
+afterEach(cleanup);
+
 describe("VoiceControls", () => {
   it("every voice control button has an accessible name", () => {
     render(() => <VoiceControls />);
@@ -33,5 +35,15 @@ describe("VoiceControls", () => {
       expect(b.getAttribute("aria-label")?.trim() || b.textContent?.trim()).toBeTruthy();
       expect(b.getAttribute("type")).toBe("button");
     }
+  });
+
+  it("deafen and mute button titles carry the shortcut", () => {
+    render(() => <VoiceControls />);
+    expect(screen.getByTestId("voice-deafen").getAttribute("title")).toBe(
+      "Deafen (Ctrl+Shift+D)",
+    );
+    expect(screen.getByTestId("voice-mute").getAttribute("title")).toBe(
+      "Mute (Ctrl+Shift+M)",
+    );
   });
 });

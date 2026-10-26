@@ -1,6 +1,7 @@
 import { Component, Show } from "solid-js";
 import type { ConnectionMetrics } from "../../lib/webrtc/types";
 import type { QualityLevel } from "../../lib/types";
+import { t } from "@/i18n";
 
 interface QualityIndicatorProps {
   metrics: ConnectionMetrics | "unknown" | null;
@@ -42,7 +43,7 @@ export const QualityIndicator: Component<QualityIndicatorProps> = (props) => {
               <span
                 class={`text-xs font-mono ${qualityTextColors[m().quality]}`}
               >
-                {m().latency}ms
+                {t("common.unit.ms", { value: m().latency })}
               </span>
             }
           >

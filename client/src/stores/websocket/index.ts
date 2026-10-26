@@ -126,6 +126,7 @@ import {
   type ConnectionSupervisor,
 } from "./connection";
 import { isTauri, PASSWORD_CHANGE_REQUIRED_EVENT } from "@/lib/tauri/common";
+import { t } from "@/i18n";
 
 export type { ConnectionState } from "./connection";
 
@@ -693,7 +694,7 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       void import("@/components/ui/Toast").then(({ showToast }) =>
         showToast({
           type: "info",
-          title: "Event starting soon",
+          title: t("notifications.toast.eventReminderTitle"),
           message: name,
           duration: 8000,
           id: `event-reminder-${event.event_id}`,
@@ -821,8 +822,8 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       const { showToast } = await import("@/components/ui/Toast");
       showToast({
         type: "warning",
-        title: "Command Timeout",
-        message: `Command /${event.command_name} did not respond within 30 seconds.`,
+        title: t("notifications.toast.commandTimeoutTitle"),
+        message: t("notifications.toast.commandTimeoutMessage", { name: event.command_name }),
         duration: 5000,
         id: `cmd-timeout-${event.command_name}`,
       });

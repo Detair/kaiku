@@ -36,6 +36,7 @@ import {
 import { areThreadsEnabled } from "@/stores/guilds";
 import { shouldGroupWithPrevious } from "@/lib/utils";
 import { isEscapeForOverlay } from "@/lib/a11y/dialog";
+import { plural, t } from "@/i18n";
 
 interface MessageListProps {
   channelId: string;
@@ -492,7 +493,7 @@ const MessageList: Component<MessageListProps> = (props) => {
       ref={containerRef}
       class="flex-1 overflow-y-auto relative"
       role="list"
-      aria-label="Messages"
+      aria-label={t("chat.list.label")}
       onScroll={handleScroll}
     >
       {/* Sentinel for infinite scroll (top) */}
@@ -505,10 +506,10 @@ const MessageList: Component<MessageListProps> = (props) => {
             <MessageSquare class="w-8 h-8 text-text-secondary" />
           </div>
           <h2 class="text-lg font-semibold text-text-primary mb-1">
-            Beginning of conversation
+            {t("chat.list.start.title")}
           </h2>
           <p class="text-sm text-text-secondary">
-            This is the start of the message history.
+            {t("chat.list.start.hint")}
           </p>
         </div>
       </Show>
@@ -517,13 +518,13 @@ const MessageList: Component<MessageListProps> = (props) => {
       <Show when={paginationError() && messages().length > 0}>
         <div class="flex items-center justify-center gap-2 py-3 px-4 text-sm text-accent-danger">
           <AlertCircle class="w-4 h-4 flex-shrink-0" />
-          <span>Failed to load older messages</span>
+          <span>{t("chat.list.olderFailed")}</span>
           <button
             onClick={() => triggerLoadMore().catch(() => {})}
             class="ml-1 text-text-link hover:underline inline-flex items-center gap-1"
           >
             <RefreshCw class="w-3 h-3" />
-            Retry
+            {t("common.retry")}
           </button>
         </div>
       </Show>
@@ -539,38 +540,38 @@ const MessageList: Component<MessageListProps> = (props) => {
       <Show when={loading() && messages().length === 0}>
         <div class="flex flex-col items-center justify-center h-full">
           <Loader2 class="w-8 h-8 text-text-secondary animate-spin mb-4" />
-          <p class="text-text-secondary">Loading messages...</p>
+          <p class="text-text-secondary">{t("chat.list.loading")}</p>
         </div>
       </Show>
 
       {/* Error state */}
-      <Show when={!loading() && messages().length === 0 && messagesState.error}>
+      <Show when={!loading() && messages().length === 0 && messagesState.loadError}>
         <div class="flex flex-col items-center justify-center h-full text-center px-4">
           <AlertCircle class="w-10 h-10 text-accent-danger mb-4" />
           <h3 class="text-lg font-semibold text-text-primary mb-2">
-            Failed to load messages
+            {t("chat.list.loadFailedTitle")}
           </h3>
-          <p class="text-text-secondary max-w-sm mb-4">{messagesState.error}</p>
+          <p class="text-text-secondary max-w-sm mb-4">{messagesState.loadError}</p>
           <button
             onClick={() => loadInitialMessages(props.channelId)}
             class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 transition-opacity"
           >
-            Retry
+            {t("common.retry")}
           </button>
         </div>
       </Show>
 
       {/* Empty state */}
       <Show
-        when={!loading() && messages().length === 0 && !messagesState.error}
+        when={!loading() && messages().length === 0 && !messagesState.loadError}
       >
         <div class="flex flex-col items-center justify-center h-full text-center px-4">
-          <img src={flokiHappy} alt="" class="w-16 h-16 object-contain mb-4" loading="lazy" />
+          <img src={flokiHappy} alt={""} class="w-16 h-16 object-contain mb-4" loading="lazy" />
           <h3 class="text-lg font-semibold text-text-primary mb-2">
-            No messages yet
+            {t("chat.list.empty.title")}
           </h3>
           <p class="text-text-secondary max-w-sm">
-            Be the first to send a message in this channel!
+            {t("chat.list.empty.hint")}
           </p>
         </div>
       </Show>
@@ -612,7 +613,7 @@ const MessageList: Component<MessageListProps> = (props) => {
                           <div class="flex items-center gap-2 px-4 py-1 my-1">
                             <div class="flex-1 h-px bg-accent-danger" />
                             <span class="text-xs font-semibold text-accent-danger uppercase tracking-wide">
-                              New Messages
+                              {t("chat.list.newMessages")}
                             </span>
                             <div class="flex-1 h-px bg-accent-danger" />
                           </div>
@@ -640,9 +641,10 @@ const MessageList: Component<MessageListProps> = (props) => {
         >
           <ChevronDown class="w-4 h-4" />
           <span>
-            {newMessageCount() === 1
-              ? "1 new message"
-              : `${newMessageCount()} new messages`}
+            {plural(newMessageCount(), {
+              one: "chat.list.newCount.one",
+              other: "chat.list.newCount.other",
+            })}
           </span>
         </button>
       </Show>

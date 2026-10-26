@@ -92,3 +92,14 @@ describe("format", () => {
     expect(formatNumber(1234.5, ["en-US"])).toBe("1,234.5");
   });
 });
+
+describe("formatCompactRelative", () => {
+  it("keeps the compact English of the DM list", async () => {
+    const { formatCompactRelative } = await load();
+    const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
+    expect(formatCompactRelative(ago(30_000), NOW)).toBe("now");
+    expect(formatCompactRelative(ago(5 * 60_000), NOW)).toBe("5m");
+    expect(formatCompactRelative(ago(3 * 3_600_000), NOW)).toBe("3h");
+    expect(formatCompactRelative(ago(2 * 86_400_000), NOW)).toBe("2d");
+  });
+});

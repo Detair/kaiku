@@ -149,7 +149,7 @@ describe("dms store", () => {
 
       expect(dmsState.dms).toEqual([]);
       expect(dmsState.isLoading).toBe(false);
-      expect(dmsState.error).toBe("Network error");
+      expect(dmsState.error).toBe("Could not load direct messages. Please try again.");
     });
   });
 

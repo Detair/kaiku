@@ -26,6 +26,7 @@ import type { TileData } from "./VoiceTile";
 import VoiceTileStrip from "./VoiceTileStrip";
 import { calculateGrid } from "./tileLayout";
 import { popOut, bringBack, closeAll } from "./screenSharePopOut";
+import { t } from "@/i18n";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -217,7 +218,7 @@ const VoiceTileGrid: Component<VoiceTileGridProps> = (props) => {
       {/* Empty state */}
       <Show when={tiles().length === 0}>
         <div class="flex items-center justify-center h-full text-text-muted text-sm">
-          Waiting for others...
+          {t("voice.grid.waiting")}
         </div>
       </Show>
 

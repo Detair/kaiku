@@ -10,6 +10,8 @@ import * as tauri from "@/lib/tauri";
 import { subscribeChannel, waitForConnection } from "@/stores/websocket";
 import { showToast } from "@/components/ui/Toast";
 import { currentUser } from "@/stores/auth";
+import { t } from "@/i18n";
+import { errorText } from "@/i18n/errors";
 
 interface DMsStoreState {
   dms: DMListItem[];
@@ -61,7 +63,7 @@ export async function loadDMs(): Promise<void> {
   } catch (err) {
     console.error("Failed to load DMs:", err);
     setDmsState({
-      error: err instanceof Error ? err.message : "Failed to load DMs",
+      error: errorText(err, "dm.list.loadFailed"),
       isLoading: false,
     });
   }
@@ -177,8 +179,8 @@ export async function markAllDMsAsRead(): Promise<void> {
     console.error("[DMs] Failed to mark all DMs as read:", err);
     showToast({
       type: "error",
-      title: "Mark All Read Failed",
-      message: "Could not mark all DMs as read. Please try again.",
+      title: t("home.unread.toast.markReadFailedTitle"),
+      message: t("dm.list.markAllReadFailed"),
       duration: 8000,
     });
   }

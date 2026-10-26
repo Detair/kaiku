@@ -9,6 +9,7 @@
  */
 import { showToast } from "@/components/ui/Toast";
 import { isTauri } from "@/lib/tauri/common";
+import { t } from "@/i18n";
 
 /** Delay before the startup check so it never competes with app boot. */
 const STARTUP_CHECK_DELAY_MS = 10_000;
@@ -39,8 +40,8 @@ async function checkForUpdate(): Promise<void> {
     console.info(`[Updater] Update available: ${update.version}`);
     showToast({
       type: "info",
-      title: `Update available: Kaiku ${update.version}`,
-      message: "Downloading in the background…",
+      title: t("common.updater.availableTitle", { version: update.version }),
+      message: t("common.updater.downloading"),
       duration: 5000,
       id: "app-update",
     });
@@ -50,12 +51,12 @@ async function checkForUpdate(): Promise<void> {
     const { relaunch } = await import("@tauri-apps/plugin-process");
     showToast({
       type: "success",
-      title: `Kaiku ${update.version} is ready`,
-      message: "Restart to apply the update.",
+      title: t("common.updater.readyTitle", { version: update.version }),
+      message: t("common.updater.readyMessage"),
       duration: 0,
       id: "app-update",
       action: {
-        label: "Restart now",
+        label: t("common.updater.restartNow"),
         onClick: () => {
           void relaunch();
         },

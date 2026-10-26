@@ -15,6 +15,7 @@ import {
 } from "solid-js";
 import { fetchApi } from "../../lib/tauri";
 import { formatShortDate, formatTime } from "@/i18n/format";
+import { t, type MessageKey } from "@/i18n";
 
 interface SessionSummary {
   id: string;
@@ -41,7 +42,12 @@ const qualityColors = [
   "bg-yellow-500",
   "bg-green-500",
 ];
-const qualityLabels = ["Poor", "Fair", "Good", "Excellent"];
+const qualityLabels: MessageKey[] = [
+  "settings.sessionList.qualityPoor",
+  "settings.sessionList.qualityFair",
+  "settings.sessionList.qualityGood",
+  "settings.sessionList.qualityExcellent",
+];
 
 async function fetchSessions(offset: number): Promise<SessionSummary[]> {
   const response = await fetchApi<SessionListResponse>(
@@ -73,8 +79,8 @@ export const SessionList: Component = () => {
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
 
-    if (d.toDateString() === today.toDateString()) return "Today";
-    if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+    if (d.toDateString() === today.toDateString()) return t("settings.sessionList.today");
+    if (d.toDateString() === yesterday.toDateString()) return t("settings.sessionList.yesterday");
     return formatShortDate(d, today);
   };
 
@@ -82,22 +88,24 @@ export const SessionList: Component = () => {
     const ms = new Date(end).getTime() - new Date(start).getTime();
     const mins = Math.floor(ms / 60000);
     const hours = Math.floor(mins / 60);
-    if (hours > 0) return `${hours}h ${mins % 60}m`;
-    return `${mins}m`;
+    if (hours > 0) {
+      return t("settings.sessionList.durationHoursMinutes", { hours, minutes: mins % 60 });
+    }
+    return t("settings.sessionList.durationMinutes", { minutes: mins });
   };
 
   return (
     <div class="space-y-2">
       <Show
         when={!page.loading || allSessions().length > 0}
-        fallback={<div class="text-text-secondary text-sm">Loading...</div>}
+        fallback={<div class="text-text-secondary text-sm">{t("common.loading")}</div>}
       >
         <For each={allSessions()}>
           {(session) => (
             <div class="flex items-center gap-3 p-3 bg-surface-layer2 rounded-lg">
               <div
                 class={`w-2 h-2 rounded-full ${qualityColors[session.worst_quality ?? 0]}`}
-                title={qualityLabels[session.worst_quality ?? 0]}
+                title={t(qualityLabels[session.worst_quality ?? 0])}
               />
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
@@ -106,20 +114,22 @@ export const SessionList: Component = () => {
                   </span>
                   <Show when={session.guild_name}>
                     <span class="text-text-secondary text-xs">
-                      in {session.guild_name}
+                      {t("settings.sessionList.inGuild", { guild: session.guild_name ?? "" })}
                     </span>
                   </Show>
                 </div>
                 <div class="text-xs text-text-secondary">
-                  {formatDate(session.started_at)},{" "}
-                  {formatTime(session.started_at)} -{" "}
-                  {formatTime(session.ended_at)} (
-                  {formatDuration(session.started_at, session.ended_at)})
+                  {t("settings.sessionList.when", {
+                    date: formatDate(session.started_at),
+                    start: formatTime(session.started_at),
+                    end: formatTime(session.ended_at),
+                    duration: formatDuration(session.started_at, session.ended_at),
+                  })}
                 </div>
               </div>
               <div class="text-right text-xs text-text-secondary">
-                <div>{session.avg_latency ?? "-"}ms</div>
-                <div>{session.avg_loss?.toFixed(1) ?? "-"}% loss</div>
+                <div>{t("common.unit.ms", { value: session.avg_latency ?? "-" })}</div>
+                <div>{t("settings.sessionList.loss", { percent: session.avg_loss?.toFixed(1) ?? "-" })}</div>
               </div>
             </div>
           )}
@@ -131,7 +141,7 @@ export const SessionList: Component = () => {
             disabled={page.loading}
             onClick={() => setOffset((o) => o + 10)}
           >
-            {page.loading ? "Loading..." : "Load more..."}
+            {page.loading ? t("common.loading") : t("settings.sessionList.loadMore")}
           </button>
         </Show>
       </Show>

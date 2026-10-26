@@ -139,7 +139,7 @@ describe("channels store", () => {
 
       await loadChannelsForGuild("guild-1");
 
-      expect(channelsState.error).toBe("fail");
+      expect(channelsState.error).toBe("Could not load channels. Please try again.");
     });
   });
 

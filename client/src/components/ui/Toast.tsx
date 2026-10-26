@@ -29,6 +29,7 @@
 
 import { Component, For, createSignal, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
+import { t } from "@/i18n";
 
 export type ToastType = "info" | "success" | "warning" | "error";
 
@@ -198,7 +199,7 @@ const ToastItem: Component<{ toast: ToastInstance }> = (props) => {
         type="button"
         class="flex-shrink-0 p-1 rounded hover:bg-white/20 transition-colors"
         onClick={() => dismissToast(props.toast.id)}
-        aria-label="Dismiss"
+        aria-label={t("common.dismiss")}
       >
         <span class="i-lucide-x w-4 h-4" />
       </button>
@@ -225,7 +226,7 @@ export const ToastContainer: Component = () => {
       <div
         class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"
         aria-live="polite"
-        aria-label="Notifications"
+        aria-label={t("common.notifications")}
       >
         <For each={toasts().slice(-MAX_TOASTS)}>
           {(toast) => <ToastItem toast={toast} />}

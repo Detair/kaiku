@@ -1,5 +1,6 @@
 import { Component, createSignal, JSX, splitProps } from "solid-js";
 import { Eye, EyeOff } from "lucide-solid";
+import { t } from "@/i18n";
 
 type PasswordInputProps = Omit<JSX.InputHTMLAttributes<HTMLInputElement>, "type" | "children">;
 
@@ -26,7 +27,7 @@ const PasswordInput: Component<PasswordInputProps> = (props) => {
         type="button"
         class="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-text-secondary hover:text-text-primary transition-colors rounded"
         onClick={() => setVisible(!visible())}
-        aria-label={visible() ? "Hide password" : "Show password"}
+        aria-label={visible() ? t("common.password.hide") : t("common.password.show")}
         tabIndex={-1}
       >
         {visible() ? <EyeOff class="w-4 h-4" /> : <Eye class="w-4 h-4" />}

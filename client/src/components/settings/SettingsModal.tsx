@@ -21,7 +21,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { initE2EE } from "@/lib/tauri";
 import { isE2EEEnabled } from "@/lib/featureFlags";
 import { createDialog } from "@/lib/a11y/dialog";
-import { t } from "@/i18n";
 import AccountSettings from "./AccountSettings";
 import AppearanceSettings from "./AppearanceSettings";
 import NotificationSettings from "./NotificationSettings";
@@ -31,6 +30,7 @@ import FocusSettings from "./FocusSettings";
 import RecoveryKeyModal from "./RecoveryKeyModal";
 import AudioSettings from "./AudioSettings";
 import VoiceSettings from "./VoiceSettings";
+import { t, type MessageKey } from "@/i18n";
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -48,19 +48,19 @@ type TabId =
 
 interface TabDefinition {
   id: TabId;
-  label: string;
+  label: MessageKey;
   icon: typeof Palette;
 }
 
 const tabs: TabDefinition[] = [
-  { id: "account", label: "My Account", icon: User },
-  { id: "appearance", label: "Appearance", icon: Palette },
-  { id: "notifications", label: "Notifications", icon: Bell },
-  { id: "focus", label: "Focus", icon: Crosshair },
-  { id: "audio", label: "Audio", icon: Volume2 },
-  { id: "voice", label: "Voice", icon: Mic },
-  { id: "privacy", label: "Privacy", icon: Eye },
-  { id: "security", label: "Security", icon: Shield },
+  { id: "account", label: "settings.tabs.account", icon: User },
+  { id: "appearance", label: "settings.tabs.appearance", icon: Palette },
+  { id: "notifications", label: "common.notifications", icon: Bell },
+  { id: "focus", label: "settings.tabs.focus", icon: Crosshair },
+  { id: "audio", label: "settings.tabs.audio", icon: Volume2 },
+  { id: "voice", label: "settings.tabs.voice", icon: Mic },
+  { id: "privacy", label: "settings.tabs.privacy", icon: Eye },
+  { id: "security", label: "settings.tabs.security", icon: Shield },
 ];
 
 const SettingsModal: Component<SettingsModalProps> = (props) => {
@@ -85,7 +85,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
       setShowRecoveryKey(true);
     } catch (e) {
       console.error("Failed to generate recovery key:", e);
-      setBackupError("Failed to generate recovery key. Please try again.");
+      setBackupError(t("settings.recoveryKey.generateFailed"));
     }
   };
 
@@ -118,7 +118,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
       setRecoveryKey(null);
     } catch (e) {
       console.error("Failed to create backup:", e);
-      setBackupError("Failed to create backup. Please try again.");
+      setBackupError(t("settings.recoveryKey.backupFailed"));
     } finally {
       setIsBackingUp(false);
     }
@@ -146,7 +146,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
           {/* Header */}
           <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">
             <h2 id={dialog.titleId} class="text-xl font-bold text-text-primary">
-              {t("settings.title")}
+              {t("settings.modal.title")}
             </h2>
             <button
               type="button"
@@ -183,7 +183,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
                           "text-accent-primary": activeTab() === tab.id,
                         }}
                       />
-                      <span class="font-medium">{tab.label}</span>
+                      <span class="font-medium">{t(tab.label)}</span>
                     </button>
                   );
                 }}

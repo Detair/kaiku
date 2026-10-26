@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MockedFunction } from "vitest";
+import { HttpError } from "@/lib/tauri/common";
 
 vi.mock("@/lib/tauri", () => ({
   getCurrentUser: vi.fn(),
@@ -454,13 +455,13 @@ describe("auth store", () => {
 
     it("sets error and re-throws on failure", async () => {
       vi.mocked(tauri.login).mockRejectedValue(
-        new Error("Invalid credentials"),
+        new HttpError(401, "Invalid credentials", "INVALID_CREDENTIALS"),
       );
 
       await expect(
         login("https://server.com", "alice", "wrong"),
       ).rejects.toThrow("Invalid credentials");
-      expect(authState.error).toBe("Invalid credentials");
+      expect(authState.error).toBe("Invalid username or password.");
       expect(authState.isLoading).toBe(false);
     });
   });
@@ -501,12 +502,14 @@ describe("auth store", () => {
     });
 
     it("sets error and re-throws on failure", async () => {
-      vi.mocked(tauri.register).mockRejectedValue(new Error("Username taken"));
+      vi.mocked(tauri.register).mockRejectedValue(
+        new HttpError(409, "Username taken", "USER_EXISTS"),
+      );
 
       await expect(
         register("https://server.com", "alice", "password"),
       ).rejects.toThrow("Username taken");
-      expect(authState.error).toBe("Username taken");
+      expect(authState.error).toBe("That username is already taken.");
     });
   });
 

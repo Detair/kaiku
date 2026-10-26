@@ -62,6 +62,7 @@ import {
   calculateDropPosition,
   type DraggableType,
 } from "./ChannelDragContext";
+import { t } from "@/i18n";
 
 interface ChannelListProps {
   /** Called after a navigation action (e.g. channel selected). Used to close the mobile drawer. */
@@ -291,8 +292,11 @@ const ChannelList: Component<ChannelListProps> = (props) => {
       if (!allowed) {
         showToast({
           type: "warning",
-          title: "Cannot move channel",
-          message: `${channel.channel_type === "voice" ? "Voice" : "Text"} channels can't be moved to a ${category.category_type}-only category.`,
+          title: t("channels.list.cannotMoveTitle"),
+          message:
+            channel.channel_type === "voice"
+              ? t("channels.list.cannotMoveVoice")
+              : t("channels.list.cannotMoveText"),
           duration: 5000,
         });
       }
@@ -614,12 +618,12 @@ const ChannelList: Component<ChannelListProps> = (props) => {
         >
           <div class="flex items-center justify-between px-2 py-1 mb-1 rounded-lg hover:bg-white/5 transition-colors group">
             <span class="text-xs font-bold text-text-secondary uppercase tracking-wider group-hover:text-text-primary transition-colors">
-              Uncategorized
+              {t("channels.list.uncategorized")}
             </span>
             <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
                 class="p-1 text-text-secondary hover:text-accent-primary rounded-lg hover:bg-white/10 transition-all duration-200"
-                title="Test Microphone" aria-label="Test Microphone"
+                title={t("channels.list.testMicrophone")} aria-label={t("channels.list.testMicrophone")}
                 onClick={() => setShowMicTest(true)}
               >
                 <Mic class="w-4 h-4" />
@@ -627,7 +631,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
               <button
                 class="p-1 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
                 data-testid="create-channel-button"
-                title="Create Channel" aria-label="Create Channel"
+                title={t("channels.list.createChannel")} aria-label={t("channels.list.createChannel")}
                 onClick={() => openCreateModal("text", null)}
               >
                 <Plus class="w-4 h-4" />
@@ -652,7 +656,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
         <div class="flex items-center justify-center gap-2 py-4">
           <button
             class="p-2 text-text-secondary hover:text-accent-primary rounded-lg hover:bg-white/10 transition-all duration-200"
-            title="Test Microphone" aria-label="Test Microphone"
+            title={t("channels.list.testMicrophone")} aria-label={t("channels.list.testMicrophone")}
             onClick={() => setShowMicTest(true)}
           >
             <Mic class="w-5 h-5" />
@@ -661,7 +665,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
             <button
               class="p-2 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
               data-testid="create-channel-button"
-              title="Create Channel" aria-label="Create Channel"
+              title={t("channels.list.createChannel")} aria-label={t("channels.list.createChannel")}
               onClick={() => openCreateModal("text", null)}
             >
               <Plus class="w-5 h-5" />
@@ -681,8 +685,8 @@ const ChannelList: Component<ChannelListProps> = (props) => {
         }
       >
         <div class="px-2 py-4 text-center text-text-secondary text-sm">
-          <img src={flokiHappy} alt="" class="w-10 h-10 mx-auto mb-1 object-contain" loading="lazy" />
-          No channels yet
+          <img src={flokiHappy} alt={""} class="w-10 h-10 mx-auto mb-1 object-contain" loading="lazy" />
+          {t("channels.list.empty")}
         </div>
       </Show>
 

@@ -18,6 +18,7 @@ import {
   lazy,
   Suspense,
 } from "solid-js";
+import { t } from "@/i18n";
 import { useNavigate } from "@solidjs/router";
 import { Settings, Search, BookOpen, Calendar } from "lucide-solid";
 import { getActiveGuild, isGuildOwner } from "@/stores/guilds";
@@ -39,6 +40,7 @@ import UserPanel from "./UserPanel";
 import VoicePanel from "@/components/voice/VoicePanel";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { PageListItem } from "@/lib/types";
+import { APP_NAME } from "@/lib/brand";
 
 const GuildSettingsModal = lazy(
   () => import("@/components/guilds/GuildSettingsModal"),
@@ -87,6 +89,8 @@ const Sidebar: Component<SidebarProps> = (props) => {
     }
   });
 
+  const guildTitle = () => activeGuild()?.name || APP_NAME;
+
   // Get guild pages for the active guild
   const guildPages = () => {
     const guild = activeGuild();
@@ -114,7 +118,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
       <header role="banner" class="h-12 px-4 flex items-center justify-between border-b border-border-subtle group">
         <div class="flex items-center gap-2 flex-1 min-w-0 rounded-lg -ml-2 px-2 py-1">
           <h1 class="font-bold text-lg text-text-primary truncate">
-            {activeGuild()?.name || "Kaiku"}
+            {guildTitle()}
           </h1>
         </div>
 
@@ -124,7 +128,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
             <button
               onClick={() => setShowEvents(true)}
               class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
-              title="Events"
+              title={t("home.guildSidebar.events")}
             >
               <Calendar class="w-4 h-4" />
             </button>
@@ -132,7 +136,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
               data-testid="guild-settings-button"
               onClick={() => setShowGuildSettings(true)}
               class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
-              title="Server Settings"
+              title={t("home.guildSidebar.settings")}
             >
               <Settings class="w-4 h-4" />
             </button>
@@ -149,7 +153,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
             style={{"background-color":"var(--color-surface-base)"}}
           >
             <Search class="w-4 h-4" />
-            <span>Search messages...</span>
+            <span>{t("home.guildSidebar.searchMessages")}</span>
           </button>
         </Show>
         <Show when={!activeGuild()}>
@@ -157,7 +161,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
             class="w-full px-3 py-2 rounded-xl text-sm text-text-muted border border-white/5"
             style={{"background-color":"var(--color-surface-base)"}}
           >
-            Search...
+            {t("home.guildSidebar.search")}
           </div>
         </Show>
       </div>
@@ -171,7 +175,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
       {/* Guild Pages Section */}
       <Show when={activeGuild() && guildPages().length > 0}>
         <PageSection
-          title="Information"
+          title={t("home.guildSidebar.information")}
           pages={guildPages()}
           pendingPageIds={pendingPageIds()}
           selectedPageId={selectedPageId()}
@@ -189,7 +193,7 @@ const Sidebar: Component<SidebarProps> = (props) => {
           class="mx-2 mb-1 flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors"
         >
           <BookOpen class="w-4 h-4" />
-          Library
+          {t("home.guildSidebar.library")}
         </button>
       </Show>
 

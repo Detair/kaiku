@@ -9,6 +9,10 @@ import WebcamButton from "./WebcamButton";
 import { isTauri } from "@/lib/tauri/common";
 import { t } from "@/i18n";
 
+// Shortcut labels are not translated.
+const MUTE_SHORTCUT = "Ctrl+Shift+M";
+const DEAFEN_SHORTCUT = "Ctrl+Shift+D";
+
 /**
  * Voice controls for mute/deafen/settings.
  */
@@ -50,7 +54,7 @@ const VoiceControls: Component = () => {
         <button
           type="button"
           data-testid="voice-mute"
-          aria-label={t("voice.mute")}
+          aria-label={t("voice.controls.muteLabel")}
           aria-pressed={voiceState.muted}
           onClick={() => { if (!isPttActive()) toggleMute(); }}
           class={`p-2 rounded-full transition-colors ${
@@ -60,10 +64,10 @@ const VoiceControls: Component = () => {
           } ${isPttActive() ? "opacity-50 cursor-not-allowed" : ""}`}
           title={
             isPttActive()
-              ? "Controlled by Push-to-Talk / Push-to-Mute"
+              ? t("voice.controls.pttControlled")
               : voiceState.muted
-                ? "Unmute (Ctrl+Shift+M)"
-                : "Mute (Ctrl+Shift+M)"
+                ? t("voice.controls.unmute", { shortcut: MUTE_SHORTCUT })
+                : t("voice.controls.mute", { shortcut: MUTE_SHORTCUT })
           }
           disabled={voiceState.state !== "connected" || isPttActive()}
         >
@@ -78,7 +82,7 @@ const VoiceControls: Component = () => {
         <button
           type="button"
           data-testid="voice-deafen"
-          aria-label={t("voice.deafen")}
+          aria-label={t("voice.controls.deafenLabel")}
           aria-pressed={voiceState.deafened}
           onClick={() => toggleDeafen()}
           class={`p-2 rounded-full transition-colors ${
@@ -86,7 +90,11 @@ const VoiceControls: Component = () => {
               ? "bg-accent-danger/20 text-accent-danger hover:bg-accent-danger/30"
               : "bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary"
           }`}
-          title={voiceState.deafened ? "Undeafen (Ctrl+Shift+D)" : "Deafen (Ctrl+Shift+D)"}
+          title={
+            voiceState.deafened
+              ? t("voice.controls.undeafen", { shortcut: DEAFEN_SHORTCUT })
+              : t("voice.controls.deafen", { shortcut: DEAFEN_SHORTCUT })
+          }
           disabled={voiceState.state !== "connected"}
         >
           {voiceState.deafened ? (
@@ -111,10 +119,10 @@ const VoiceControls: Component = () => {
         <button
           type="button"
           data-testid="voice-settings"
-          aria-label={t("voice.settings")}
+          aria-label={t("voice.controls.settingsLabel")}
           onClick={() => setShowMicTest(true)}
           class="p-2 rounded-full bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary transition-colors"
-          title="Voice Settings"
+          title={t("voice.controls.settings")}
         >
           <Settings class="w-5 h-5" />
         </button>

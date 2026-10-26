@@ -11,6 +11,7 @@
 import { Component, createSignal, Show } from "solid-js";
 import { ChevronDown, ChevronRight, Plus, Settings, Hash, Volume2 } from "lucide-solid";
 import type { CategoryType } from "@/lib/types";
+import { t } from "@/i18n";
 
 interface CategoryHeaderProps {
   /** Category ID */
@@ -67,10 +68,10 @@ const CategoryHeader: Component<CategoryHeaderProps> = (props) => {
 
       {/* Category type icon */}
       <Show when={props.categoryType === "text"}>
-        <span title="Text only"><Hash class="w-3 h-3 text-text-muted shrink-0" /></span>
+        <span title={t("channels.category.textOnly")}><Hash class="w-3 h-3 text-text-muted shrink-0" /></span>
       </Show>
       <Show when={props.categoryType === "voice"}>
-        <span title="Voice only"><Volume2 class="w-3 h-3 text-text-muted shrink-0" /></span>
+        <span title={t("channels.category.voiceOnly")}><Volume2 class="w-3 h-3 text-text-muted shrink-0" /></span>
       </Show>
 
       {/* Unread indicator - shown when collapsed and has unread */}
@@ -88,7 +89,7 @@ const CategoryHeader: Component<CategoryHeaderProps> = (props) => {
             <button
               class="p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
               onClick={props.onCreateChannel}
-              title="Create Channel" aria-label="Create Channel"
+              title={t("channels.category.createChannel")} aria-label={t("channels.category.createChannel")}
             >
               <Plus class="w-3.5 h-3.5" />
             </button>
@@ -97,7 +98,7 @@ const CategoryHeader: Component<CategoryHeaderProps> = (props) => {
             <button
               class="p-0.5 text-text-secondary hover:text-text-primary rounded hover:bg-white/10 transition-all duration-200"
               onClick={props.onSettings}
-              title="Category Settings" aria-label="Category Settings"
+              title={t("channels.category.settings")} aria-label={t("channels.category.settings")}
             >
               <Settings class="w-3.5 h-3.5" />
             </button>

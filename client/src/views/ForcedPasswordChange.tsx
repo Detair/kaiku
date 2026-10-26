@@ -9,6 +9,8 @@
 import { Component, Show, createSignal, onCleanup } from "solid-js";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { t, type MessageKey } from "@/i18n";
+import { errorText } from "@/i18n/errors";
+import { HttpError } from "@/lib/tauri/common";
 import {
   completeForcedPasswordChange,
   hasPendingTemporaryPassword,
@@ -21,23 +23,30 @@ import {
 const MIN_LENGTH = 8;
 const MAX_LENGTH = 128;
 
-/** Map a failed change to a message key; the server text is never shown. */
-function errorKey(err: unknown): MessageKey {
+/** Server codes for the forced change; the server text is never shown. */
+const CHANGE_ERRORS: Partial<Record<string, MessageKey>> = {
+  INVALID_CREDENTIALS: "auth.forcedChange.wrongTemporary",
+};
+
+/** Map a failed change to a sentence. */
+function errorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   if (message === PASSWORD_SAVED_REFRESH_FAILED) {
-    return "auth.forcedChange.savedOffline";
+    return t("auth.forcedChange.savedOffline");
   }
-  const status =
-    typeof err === "object" && err !== null && "status" in err
-      ? (err as { status: unknown }).status
-      : undefined;
-  if (status === 401 || /invalid credentials/i.test(message)) {
-    return "auth.forcedChange.wrongTemporary";
-  }
+  // The server sends this one as a generic VALIDATION_ERROR without its own
+  // code, so the message is the only handle (see server auth/profile.rs).
   if (/must differ from the temporary password/i.test(message)) {
-    return "auth.forcedChange.sameAsTemporary";
+    return t("auth.forcedChange.sameAsTemporary");
   }
-  return "auth.forcedChange.failed";
+  // This screen words its own sentences, so server validation text is not
+  // shown verbatim here.
+  if (err instanceof HttpError && err.code === "VALIDATION_ERROR") {
+    return t("auth.forcedChange.failed");
+  }
+  return errorText(err, "auth.forcedChange.failed", CHANGE_ERRORS, {
+    401: "auth.forcedChange.wrongTemporary",
+  });
 }
 
 const ForcedPasswordChange: Component = () => {
@@ -57,7 +66,7 @@ const ForcedPasswordChange: Component = () => {
   const [current, setCurrent] = createSignal("");
   const [newPassword, setNewPassword] = createSignal("");
   const [confirm, setConfirm] = createSignal("");
-  const [error, setError] = createSignal<MessageKey | null>(null);
+  const [error, setError] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
 
   const handleSubmit = async (e: Event) => {
@@ -69,7 +78,7 @@ const ForcedPasswordChange: Component = () => {
       try {
         await retryForcedPasswordChangeFinish();
       } catch (err) {
-        setError(errorKey(err));
+        setError(errorMessage(err));
       } finally {
         setSaving(false);
         setSaved(isForcedPasswordChangeSaved());
@@ -78,20 +87,20 @@ const ForcedPasswordChange: Component = () => {
     }
 
     if (askForCurrent() && current().length === 0) {
-      setError("auth.forcedChange.currentRequired");
+      setError(t("auth.forcedChange.currentRequired"));
       return;
     }
     const next = newPassword();
     if (next.length < MIN_LENGTH || next.length > MAX_LENGTH) {
-      setError("auth.forcedChange.length");
+      setError(t("auth.forcedChange.length"));
       return;
     }
     if (next !== confirm()) {
-      setError("auth.forcedChange.mismatch");
+      setError(t("auth.forcedChange.mismatch"));
       return;
     }
     if (askForCurrent() && next === current()) {
-      setError("auth.forcedChange.sameAsTemporary");
+      setError(t("auth.forcedChange.sameAsTemporary"));
       return;
     }
 
@@ -103,7 +112,7 @@ const ForcedPasswordChange: Component = () => {
       );
     } catch (err) {
       console.warn("[ForcedPasswordChange] Password change failed");
-      setError(errorKey(err));
+      setError(errorMessage(err));
     } finally {
       setSaving(false);
       setSaved(isForcedPasswordChangeSaved());
@@ -196,7 +205,7 @@ const ForcedPasswordChange: Component = () => {
           </Show>
 
           <Show when={error()}>
-            {(key) => (
+            {(message) => (
               <div
                 role="alert"
                 class="p-3 rounded-md text-sm"
@@ -206,7 +215,7 @@ const ForcedPasswordChange: Component = () => {
                   color: "var(--color-error-text)",
                 }}
               >
-                {t(key())}
+                {message()}
               </div>
             )}
           </Show>
@@ -219,7 +228,7 @@ const ForcedPasswordChange: Component = () => {
             {saving()
               ? t("auth.forcedChange.saving")
               : saved()
-                ? t("auth.forcedChange.retry")
+                ? t("common.tryAgain")
                 : t("auth.forcedChange.submit")}
           </button>
 
