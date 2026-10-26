@@ -191,6 +191,28 @@ describe("channels store", () => {
   });
 
   describe("getTotalUnreadCount", () => {
+    it("hidden forum channel with unread does not count", async () => {
+      const { loadServerFeatures, resetServerFeatures } = await import("../serverFeatures");
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValueOnce({
+        features: {
+          forum_channels: false,
+          announcement_channels: true,
+          scheduled_events: false,
+          membership_screening: false,
+        },
+      } as never);
+      await loadServerFeatures();
+      setChannelsState({
+        channels: [
+          createChannelWithUnread({ id: "t1", channel_type: "text", unread_count: 1 }),
+          createChannelWithUnread({ id: "f1", channel_type: "forum", unread_count: 4 }),
+          createChannelWithUnread({ id: "a1", channel_type: "announcement", unread_count: 2 }),
+        ],
+      });
+      expect(getTotalUnreadCount()).toBe(3);
+      resetServerFeatures();
+    });
+
     it("sums unread across text channels only", () => {
       setChannelsState({
         channels: [

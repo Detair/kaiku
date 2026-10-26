@@ -16,6 +16,10 @@ vi.mock("@/lib/tauri", () => ({
   kickGuildMember: vi.fn(),
 }));
 
+vi.mock("@/stores/serverFeatures", () => ({
+  isHiddenChannel: (c: { channel_type: string }) => c.channel_type === "forum",
+}));
+
 vi.mock("@/components/ui/Toast", () => ({
   showToast: vi.fn(),
 }));
@@ -138,6 +142,16 @@ describe("guilds store", () => {
   });
 
   describe("loadGuilds", () => {
+    it("hidden channels do not feed the guild unread badge", async () => {
+      vi.mocked(tauri.getGuilds).mockResolvedValue([createGuildObj({ id: "g1" })]);
+      vi.mocked(tauri.getGuildChannels).mockResolvedValue([
+        { id: "t", channel_type: "text", unread_count: 2 },
+        { id: "f", channel_type: "forum", unread_count: 7 },
+      ] as never);
+      await loadGuilds();
+      expect(getGuildUnreadCount("g1")).toBe(2);
+    });
+
     it("loads guilds and prefetches unread counts", async () => {
       const guilds = [
         createGuildObj({ id: "g1" }),

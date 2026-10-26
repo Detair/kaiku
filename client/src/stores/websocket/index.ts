@@ -4,7 +4,7 @@
  * Manages WebSocket connection and routes events to appropriate stores.
  */
 
-import { loadServerFeatures } from "@/stores/serverFeatures";
+import { loadServerFeatures, isHiddenChannel } from "@/stores/serverFeatures";
 import { isTextLikeChannelType } from "@/lib/channelTypes";
 import { createStore } from "solid-js/store";
 import { codeIs } from "@/lib/errorCode";
@@ -375,7 +375,11 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
 
         // Thread replies never count toward channel unread (server rule).
         const isThreadReply = event.message.parent_id != null;
-        if (!isThreadReply && !isActiveGuildChannel && !isActiveDM) {
+        const hiddenChannel = (() => {
+          const ch = getChannel(event.channel_id);
+          return ch ? isHiddenChannel(ch) : false;
+        })();
+        if (!isThreadReply && !isActiveGuildChannel && !isActiveDM && !hiddenChannel) {
           const channel = getChannel(event.channel_id);
           if (channel && channel.guild_id && isTextLikeChannelType(channel.channel_type)) {
             incrementUnreadCount(event.channel_id);

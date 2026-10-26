@@ -8,7 +8,7 @@
 
 import { createSignal } from "solid-js";
 import { fetchServerSettings, getServerUrl } from "@/lib/tauri";
-import type { ServerFeatures } from "@/lib/types";
+import type { Channel, ServerFeatures } from "@/lib/types";
 
 export type OptionalFeatureKey =
   | "forum_channels"
@@ -89,4 +89,11 @@ const PERMISSION_FEATURE: Partial<Record<string, OptionalFeatureKey>> = {
 export function isPermissionVisible(key: string): boolean {
   const feature = PERMISSION_FEATURE[key];
   return feature === undefined || isFeatureEnabled(feature);
+}
+
+/** A forum/announcement channel whose feature the server turned off. */
+export function isHiddenChannel(channel: Pick<Channel, "channel_type">): boolean {
+  if (channel.channel_type === "forum") return isFeatureOff("forum_channels");
+  if (channel.channel_type === "announcement") return isFeatureOff("announcement_channels");
+  return false;
 }

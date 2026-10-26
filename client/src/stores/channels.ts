@@ -6,7 +6,9 @@
 
 import { createStore } from "solid-js/store";
 import type { Channel, ChannelWithUnread } from "@/lib/types";
-import { isFeatureOff } from "@/stores/serverFeatures";
+import { isHiddenChannel } from "@/stores/serverFeatures";
+
+export { isHiddenChannel };
 import * as tauri from "@/lib/tauri";
 import { HttpError } from "@/lib/tauri/common";
 import { isTextLikeChannelType } from "@/lib/channelTypes";
@@ -38,11 +40,7 @@ const [channelsState, setChannelsState] = createStore<ChannelsState>({
  * The server still lists them; the app hides them (contract C22).
  */
 export function visibleChannels<T extends Channel>(channels: T[]): T[] {
-  return channels.filter((c) => {
-    if (c.channel_type === "forum") return !isFeatureOff("forum_channels");
-    if (c.channel_type === "announcement") return !isFeatureOff("announcement_channels");
-    return true;
-  });
+  return channels.filter((c) => !isHiddenChannel(c));
 }
 
 export const selectedChannel = () =>
@@ -225,7 +223,7 @@ export function getUnreadCount(channelId: string): number {
  */
 export function getTotalUnreadCount(): number {
   return channelsState.channels
-    .filter((c) => isTextLikeChannelType(c.channel_type))
+    .filter((c) => isTextLikeChannelType(c.channel_type) && !isHiddenChannel(c))
     .reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
 }
 
