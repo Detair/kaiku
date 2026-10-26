@@ -30,6 +30,9 @@ The server follows a service-oriented architecture with clear boundaries:
 - `src/permissions/` - Authorization checks - all changes need review
 - `src/ratelimit/` - Rate limiting - protect against abuse
 
+### Error Codes
+Every machine-readable error code (HTTP `error`/`code` fields, WebSocket `error` events and close reasons) is UPPER_SNAKE (`^[A-Z0-9_]+$`), e.g. `VALIDATION_ERROR`, `NOT_FOUND`, `FORBIDDEN`, `INTERNAL_ERROR`. Human-readable text goes in `message`. `src/error_code_tests.rs` renders every error enum variant and fails on a lower-case code; extend it when adding an error enum or variant.
+
 ### Performance-Critical Paths
 - `src/voice/` - Voice service (SFU coordination) - <50ms latency target
 - `src/ws/` - WebSocket message routing - must be fast

@@ -40,14 +40,14 @@ pub struct CallApiError {
 impl IntoResponse for CallError {
     fn into_response(self) -> axum::response::Response {
         let (status, code) = match &self {
-            Self::CallNotFound => (StatusCode::NOT_FOUND, "call_not_found"),
-            Self::CallAlreadyExists => (StatusCode::CONFLICT, "call_already_exists"),
+            Self::CallNotFound => (StatusCode::NOT_FOUND, "CALL_NOT_FOUND"),
+            Self::CallAlreadyExists => (StatusCode::CONFLICT, "CALL_ALREADY_EXISTS"),
             Self::Contention => (StatusCode::CONFLICT, "CALL_CONFLICT"),
-            Self::Redis(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
-            Self::InvalidEvent(_) => (StatusCode::BAD_REQUEST, "invalid_event"),
-            Self::StateTransition(_) => (StatusCode::CONFLICT, "invalid_transition"),
+            Self::Redis(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
+            Self::InvalidEvent(_) => (StatusCode::BAD_REQUEST, "INVALID_EVENT"),
+            Self::StateTransition(_) => (StatusCode::CONFLICT, "INVALID_TRANSITION"),
             Self::Serialization(_) | Self::Internal(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR")
             }
         };
 
@@ -61,6 +61,7 @@ impl IntoResponse for CallError {
 }
 
 /// Custom error type for call handlers that combines `CallError` and database errors
+#[derive(Debug)]
 pub enum CallHandlerError {
     Call(CallError),
     NotFound,
@@ -77,7 +78,7 @@ impl IntoResponse for CallHandlerError {
                 StatusCode::NOT_FOUND,
                 Json(CallApiError {
                     error: "DM channel not found".to_string(),
-                    code: "not_found".to_string(),
+                    code: "NOT_FOUND".to_string(),
                 }),
             )
                 .into_response(),
@@ -85,7 +86,7 @@ impl IntoResponse for CallHandlerError {
                 StatusCode::FORBIDDEN,
                 Json(CallApiError {
                     error: "Not a participant of this DM".to_string(),
-                    code: "forbidden".to_string(),
+                    code: "FORBIDDEN".to_string(),
                 }),
             )
                 .into_response(),
@@ -101,7 +102,7 @@ impl IntoResponse for CallHandlerError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(CallApiError {
                     error: format!("Database error: {e}"),
-                    code: "internal_error".to_string(),
+                    code: "INTERNAL_ERROR".to_string(),
                 }),
             )
                 .into_response(),

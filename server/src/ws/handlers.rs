@@ -80,7 +80,7 @@ const SLOW_CLIENT_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 const SUBSCRIBER_BROADCAST_CAPACITY: usize = 1024;
 
 /// Close reason sent with 1011/1013: the client should reconnect and resync.
-const CLOSE_REASON_RESYNC: &str = "resync";
+const CLOSE_REASON_RESYNC: &str = "RESYNC";
 
 /// Extract JWT token from Sec-WebSocket-Protocol header.
 ///
@@ -717,7 +717,7 @@ async fn handle_socket(
                                 }
                                 warn!("Error handling message: {}", e);
                                 let reply = OutboundMsg::Event(ServerEvent::Error {
-                                    code: "message_error".to_string(),
+                                    code: "MESSAGE_ERROR".to_string(),
                                     message: e.to_string(),
                                 });
                                 if let Err(err) = send_outbound(&tx, reply).await {
@@ -1020,7 +1020,7 @@ pub async fn handle_client_message(
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::Error {
-                        code: "channel_not_found".to_string(),
+                        code: "CHANNEL_NOT_FOUND".to_string(),
                         message: "Channel not found".to_string(),
                     }),
                 )
@@ -1036,7 +1036,7 @@ pub async fn handle_client_message(
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::Error {
-                        code: "forbidden".to_string(),
+                        code: "FORBIDDEN".to_string(),
                         message: "You don't have permission to view this channel".to_string(),
                     }),
                 )
@@ -1149,7 +1149,7 @@ pub async fn handle_client_message(
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::VoiceError {
-                        code: "voice_error".to_string(),
+                        code: "VOICE_ERROR".to_string(),
                         message: e.to_string(),
                     }),
                 )
@@ -1296,7 +1296,7 @@ pub async fn handle_client_message(
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::Error {
-                        code: "admin_not_elevated".to_string(),
+                        code: "ADMIN_NOT_ELEVATED".to_string(),
                         message: "Must be an elevated admin to subscribe to admin events"
                             .to_string(),
                     }),
@@ -1362,21 +1362,21 @@ async fn handle_component_interaction(
             Err(_) => rate_limiter.allow_during_outage(category),
         };
         if !allowed {
-            send_err("rate_limited", "You're interacting too quickly").await?;
+            send_err("RATE_LIMITED", "You're interacting too quickly").await?;
             return Ok(());
         }
     }
 
     // The message must exist and the user must be able to view its channel.
     let Some(message) = db::find_message_by_id(&state.db, message_id).await? else {
-        send_err("message_not_found", "Message not found").await?;
+        send_err("MESSAGE_NOT_FOUND", "Message not found").await?;
         return Ok(());
     };
     if crate::permissions::require_channel_access(&state.db, user_id, message.channel_id)
         .await
         .is_err()
     {
-        send_err("forbidden", "You cannot interact with this message").await?;
+        send_err("FORBIDDEN", "You cannot interact with this message").await?;
         return Ok(());
     }
 
@@ -1387,13 +1387,13 @@ async fn handle_component_interaction(
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
     if !crate::chat::components::custom_id_present(&rows, custom_id) {
-        send_err("component_not_found", "No such component on this message").await?;
+        send_err("COMPONENT_NOT_FOUND", "No such component on this message").await?;
         return Ok(());
     }
 
     // The owning bot is the message author; it must be a bot.
     let Some(bot_id) = message.user_id else {
-        send_err("component_not_found", "Message has no author").await?;
+        send_err("COMPONENT_NOT_FOUND", "Message has no author").await?;
         return Ok(());
     };
     let is_bot = db::find_user_by_id(&state.db, bot_id)
@@ -1401,7 +1401,7 @@ async fn handle_component_interaction(
         .map(|u| u.is_bot)
         .unwrap_or(false);
     if !is_bot {
-        send_err("component_not_found", "Message is not bot-authored").await?;
+        send_err("COMPONENT_NOT_FOUND", "Message is not bot-authored").await?;
         return Ok(());
     }
 
@@ -1519,7 +1519,7 @@ impl PubsubExit {
         }
     }
 
-    /// Close reason sent with [`Self::close_code`] (1011/1013: "resync").
+    /// Close reason sent with [`Self::close_code`] (1011/1013: "RESYNC").
     pub(crate) const fn close_reason(self) -> &'static str {
         match self {
             Self::SessionRevoked => SESSION_REVOKED,

@@ -20,6 +20,7 @@ mod dm_http;
 mod e2ee_keys;
 mod e2ee_settings;
 mod embeds_http;
+mod error_codes_http;
 mod events_http;
 mod favorites;
 mod files_http;
