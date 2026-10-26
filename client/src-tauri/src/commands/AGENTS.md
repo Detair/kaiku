@@ -31,6 +31,7 @@ clipboard.
 | File | Purpose | Key Commands |
 |------|---------|--------------|
 | `auth.rs` | Authentication, registration, logout | `login`, `register`, `logout`, `get_current_user` |
+| `oidc_loopback.rs` | Hardened loopback listener + secrets for the OIDC flows | — (used by `oidc_authorize`, `oidc_link_identity`) |
 | `crypto.rs` | E2EE encryption operations (Olm + Megolm) | `init_e2ee`, `encrypt_message`, `decrypt_message`, `create_megolm_session`, `encrypt_group_message`, `decrypt_group_message` |
 | `voice.rs` | Voice channel join/leave, mute/deafen | `join_voice`, `leave_voice`, `set_mute`, `handle_voice_offer` |
 | `settings.rs` | User preferences (audio, theme, etc.) | `get_settings`, `update_settings` |
@@ -109,6 +110,13 @@ listen('voice:state_change', (event) => console.log(event.payload));
 3. `GET {server_url}/auth/me` to fetch user profile
 4. Store tokens in `AppState.auth`
 5. Store refresh token in OS keyring (keyring-rs)
+
+**Flow (OIDC login, `oidc_authorize`):**
+1. Bind `127.0.0.1:0`; create a random per-flow value and a random verifier (`oidc_loopback::new_secret`)
+2. `GET /auth/oidc/authorize/{slug}?redirect_uri=http://127.0.0.1:PORT/callback?flow=<value>&client_challenge=<S256(verifier)>` (redirect not followed), open the provider URL in the system browser
+3. Wait (60 s overall, 2 s per connection) for `GET /callback` with exactly that `flow`; the server hands back only `?code=` (or `?error=CODE`). Anything else gets 204 and is ignored; the result page sends `Cache-Control: no-store` and `Referrer-Policy: no-referrer`
+4. `SessionManager::exchange_oidc_code` → `POST /auth/oidc/desktop/exchange {code, verifier}` → tokens stay in Rust/keyring
+The link flow (`oidc_link_identity`) uses the same listener and per-flow value (`?linked=` / `?link_error=`).
 
 **Security:**
 - Access token: In-memory only (15min expiry)
