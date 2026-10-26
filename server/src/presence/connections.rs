@@ -85,10 +85,12 @@ pub const DUE_KEY: &str = "presence:due";
 /// Valkey hash with a user's last **published** presence.
 ///
 /// Fields: `status` (`online`, `away`, `busy`, `offline`; missing =
-/// `offline`) and `v`, its version (incremented with every publish). Written
-/// only by the publishing scripts, in the same step as the publish, so a
-/// snapshot read from it is always a state observers were (or will be) sent,
-/// with its own version.
+/// `offline`) and `v`, its version (incremented with every status publish);
+/// `activity` / `custom` (the last published `rich_presence_update` /
+/// `custom_status_update` event JSON) with their own versions `av` / `cv`.
+/// Written only by the publishing scripts, in the same step as the publish,
+/// so a snapshot read from it is always a state observers were (or will be)
+/// sent, with its own version.
 #[must_use]
 pub fn state_key(user_id: Uuid) -> String {
     format!("presence:state:{user_id}")
@@ -298,16 +300,44 @@ return out
 ";
 
 /// Published state per user. KEYS = state hashes. Returns status (empty if
-/// never published) and version, repeating.
+/// never published), version, activity event (empty if none), its version,
+/// custom status event (empty if none), its version, repeating.
 const PUBLISHED_STATES_SCRIPT: &str = r"
 local out = {}
 for _, key in ipairs(KEYS) do
-  local state = redis.call('HMGET', key, 'status', 'v')
-  out[#out + 1] = state[1] or ''
-  out[#out + 1] = state[2] or '0'
+  local state = redis.call('HMGET', key, 'status', 'v', 'activity', 'av', 'custom', 'cv')
+  for i = 1, 6 do
+    local value = state[i]
+    if not value then
+      if i % 2 == 0 then value = '0' else value = '' end
+    end
+    out[#out + 1] = value
+  end
 end
 return out
 ";
+
+/// Publish a rich-presence event (activity or custom status) as a versioned
+/// envelope and record it as published, in one step. With ARGV[5] = '1' only
+/// if it differs from what was last published (reconcile).
+///
+/// ARGV = user id, now ms, kind (`activity` | `custom`), event JSON, only-if-
+/// different flag. Returns 1 if published.
+const PUBLISH_RICH_SCRIPT: &str = r#"
+local field = ARGV[3]
+if ARGV[5] == '1' and redis.call('HGET', KEYS[3], field) == ARGV[4] then
+  return 0
+end
+local version_field = 'av'
+if field == 'custom' then
+  version_field = 'cv'
+end
+local v = redis.call('HINCRBY', KEYS[3], version_field, 1)
+redis.call('HSET', KEYS[3], field, ARGV[4])
+redis.call('PUBLISH', 'presence:' .. ARGV[1],
+  '{"rv":' .. v .. ',"kind":"' .. field .. '","event":' .. ARGV[4] .. '}')
+return 1
+"#;
 
 fn ttl_ms() -> i64 {
     i64::try_from(SOCKET_TTL.as_millis()).unwrap_or(i64::MAX)
@@ -511,19 +541,16 @@ pub async fn replace_future_seq(
     Ok(replaced == 1)
 }
 
-/// Publish a rich-presence event (activity, custom status) on the user's
-/// presence channel (unversioned).
+/// Publish a rich-presence event (activity or custom status) as a versioned
+/// envelope and record it as published (`presence:state`), in one step.
 pub async fn publish_rich(
     redis: &Client,
     user_id: Uuid,
     event: &crate::ws::ServerEvent,
 ) -> Result<(), PresenceError> {
-    let Ok(payload) = serde_json::to_string(event) else {
-        return Ok(());
-    };
-    let channel = crate::ws::channels::user_presence(user_id);
-    let published: Result<(), fred::error::Error> = redis.publish(&channel, payload).await;
-    Ok(published?)
+    publish_rich_inner(redis, user_id, event, false)
+        .await
+        .map(|_| ())
 }
 
 /// The users among `user_ids` that have at least one live socket. One Valkey
@@ -549,12 +576,20 @@ pub async fn live_users(
 }
 
 /// A user's last published presence (see [`state_key`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Published {
     /// Status observers were sent (`offline` if never published).
     pub status: String,
     /// Its version (0 if never published).
     pub version: u64,
+    /// Last published `rich_presence_update` event JSON, if any.
+    pub activity: Option<String>,
+    /// Its version.
+    pub activity_version: u64,
+    /// Last published `custom_status_update` event JSON, if any.
+    pub custom: Option<String>,
+    /// Its version.
+    pub custom_version: u64,
 }
 
 /// The last published presence of `user_ids`, read in one atomic step.
@@ -569,39 +604,59 @@ pub async fn published_states(
     let values: Vec<String> = redis
         .eval(PUBLISHED_STATES_SCRIPT, keys, Vec::<String>::new())
         .await?;
+    let text = |v: Option<&String>| v.filter(|v| !v.is_empty()).cloned();
+    let number = |v: Option<&String>| v.and_then(|v| v.parse().ok()).unwrap_or(0);
     Ok(user_ids
         .iter()
-        .zip(values.chunks(2))
-        .map(|(id, pair)| {
-            let status = pair.first().map(String::as_str).unwrap_or_default();
-            let version = pair.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
-            let status = if status.is_empty() { "offline" } else { status };
+        .zip(values.chunks(6))
+        .map(|(id, row)| {
             (
                 *id,
                 Published {
-                    status: status.to_string(),
-                    version,
+                    status: text(row.first()).unwrap_or_else(|| "offline".to_string()),
+                    version: number(row.get(1)),
+                    activity: text(row.get(2)),
+                    activity_version: number(row.get(3)),
+                    custom: text(row.get(4)),
+                    custom_version: number(row.get(5)),
                 },
             )
         })
         .collect())
 }
 
-/// Peers whose published version is newer than what was sent to a socket
-/// (`sent`; a peer without an entry has been sent nothing). Used by the
-/// periodic backstop; sorted by user id.
-#[must_use]
-pub fn advanced_states<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
-    states: &HashMap<Uuid, Published, S1>,
-    sent: &HashMap<Uuid, u64, S2>,
-) -> Vec<(Uuid, Published)> {
-    let mut advanced: Vec<(Uuid, Published)> = states
-        .iter()
-        .filter(|(id, state)| sent.get(*id).is_none_or(|v| state.version > *v))
-        .map(|(id, state)| (*id, state.clone()))
-        .collect();
-    advanced.sort_by_key(|(id, _)| *id);
-    advanced
+/// Which rich-presence field an event belongs to.
+const fn rich_kind(event: &crate::ws::ServerEvent) -> Option<&'static str> {
+    match event {
+        crate::ws::ServerEvent::RichPresenceUpdate { .. } => Some("activity"),
+        crate::ws::ServerEvent::CustomStatusUpdate { .. } => Some("custom"),
+        _ => None,
+    }
+}
+
+async fn publish_rich_inner(
+    redis: &Client,
+    user_id: Uuid,
+    event: &crate::ws::ServerEvent,
+    only_if_different: bool,
+) -> Result<bool, PresenceError> {
+    let (Some(kind), Ok(payload)) = (rich_kind(event), serde_json::to_string(event)) else {
+        return Ok(false);
+    };
+    let published: i64 = redis
+        .eval(
+            PUBLISH_RICH_SCRIPT,
+            lifecycle_keys(user_id),
+            vec![
+                user_id.to_string(),
+                String::new(),
+                kind.to_string(),
+                payload,
+                if only_if_different { "1" } else { "0" }.to_string(),
+            ],
+        )
+        .await?;
+    Ok(published == 1)
 }
 
 /// [`live_users`], failing open: on a Valkey error it logs (throttled) and
@@ -649,7 +704,7 @@ pub async fn reconcile_from_db(db: &sqlx::PgPool, redis: &Client, user_id: Uuid)
         let applied = match reconciled {
             Reconciled::Applied { .. } => {
                 clear_dirty(db, user_id, seq).await;
-                return Ok(());
+                return reconcile_rich_from_db(db, redis, user_id).await;
             }
             Reconciled::Ahead { applied } => applied,
         };
@@ -658,6 +713,37 @@ pub async fn reconcile_from_db(db: &sqlx::PgPool, redis: &Client, user_id: Uuid)
             return Ok(());
         }
         replace_future_seq(redis, user_id, applied, db_seq)
+            .await
+            .map_err(|e| log_unavailable(&e))?;
+    }
+    Ok(())
+}
+
+/// Publish the user's stored activity and custom status where they differ
+/// from what was last published (heals a lost or reordered rich update).
+async fn reconcile_rich_from_db(
+    db: &sqlx::PgPool,
+    redis: &Client,
+    user_id: Uuid,
+) -> Result<(), ()> {
+    let (activity, custom_status): (Option<serde_json::Value>, Option<serde_json::Value>) =
+        sqlx::query_as("SELECT activity, custom_status FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(db)
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, %user_id, "Failed to read rich presence");
+            })?;
+    let activity = crate::ws::ServerEvent::RichPresenceUpdate {
+        user_id,
+        activity: activity.and_then(|a| serde_json::from_value(a).ok()),
+    };
+    let custom = crate::ws::ServerEvent::CustomStatusUpdate {
+        user_id,
+        custom_status: custom_status.and_then(|c| serde_json::from_value(c).ok()),
+    };
+    for event in [activity, custom] {
+        publish_rich_inner(redis, user_id, &event, true)
             .await
             .map_err(|e| log_unavailable(&e))?;
     }
@@ -809,14 +895,47 @@ pub async fn reconcile_connected(
     redis: &Client,
     limit: i64,
 ) -> Result<usize, PresenceError> {
-    let users: Vec<String> = redis
-        .zrange(DUE_KEY, 0, limit - 1, None, false, None, false)
+    let population: i64 = redis.zcard(DUE_KEY).await?;
+    let cursor: Option<i64> = redis.get(RECONCILE_CURSOR_KEY).await?;
+    let (ranges, next) = reconcile_window(population, cursor.unwrap_or(0), limit);
+    let mut users = Vec::new();
+    for (start, stop) in ranges {
+        let ids: Vec<String> = redis
+            .zrange(DUE_KEY, start, stop, None, false, None, false)
+            .await?;
+        users.extend(ids.iter().filter_map(|id| Uuid::parse_str(id).ok()));
+    }
+    let _: () = redis
+        .set(RECONCILE_CURSOR_KEY, next, None, None, false)
         .await?;
-    let users: Vec<Uuid> = users
-        .iter()
-        .filter_map(|id| Uuid::parse_str(id).ok())
-        .collect();
     Ok(reconcile_users(db, redis, &users).await)
+}
+
+/// Rank offset in the due set where the next periodic reconcile continues.
+pub const RECONCILE_CURSOR_KEY: &str = "presence:reconcile_cursor";
+
+/// Which ranks of the due set one periodic reconcile covers.
+///
+/// For a due set of `population` users, starting at `cursor`, at most `limit`
+/// users; returns the rank ranges (inclusive) and the next cursor. Everyone
+/// when the population fits; otherwise a rotating window, so every connected
+/// user is reconciled at least once every `ceil(population / limit)` runs.
+#[must_use]
+pub fn reconcile_window(population: i64, cursor: i64, limit: i64) -> (Vec<(i64, i64)>, i64) {
+    if population <= 0 || limit <= 0 {
+        return (Vec::new(), 0);
+    }
+    if population <= limit {
+        return (vec![(0, population - 1)], 0);
+    }
+    let start = cursor.rem_euclid(population);
+    let end = start + limit - 1;
+    if end < population {
+        (vec![(start, end)], (end + 1) % population)
+    } else {
+        let wrapped = end - population;
+        (vec![(start, population - 1), (0, wrapped)], wrapped + 1)
+    }
 }
 
 /// Reconcile the given users from a fresh database read (see
@@ -868,6 +987,21 @@ pub fn spawn_presence_sweep(db: sqlx::PgPool, redis: Client) -> tokio::task::Joi
 /// How many connected users one periodic reconcile handles at most.
 pub const RECONCILE_BATCH: i64 = 1000;
 
+/// A rich-presence update as published on `presence:{user_id}`.
+///
+/// The event plus its kind (`activity` | `custom`) and that kind's version.
+/// Internal: sockets forward `event` only if `rv` is newer than what they
+/// sent.
+#[derive(Debug, serde::Deserialize)]
+pub struct RichEnvelope {
+    /// Version of this kind (`av` / `cv` in `presence:state:{user_id}`).
+    pub rv: u64,
+    /// `activity` or `custom`.
+    pub kind: String,
+    /// The event to forward.
+    pub event: crate::ws::ServerEvent,
+}
+
 /// A presence update as published on `presence:{user_id}`.
 ///
 /// The event plus the user's presence version. Internal: sockets unwrap it
@@ -893,34 +1027,64 @@ pub enum PresenceNotice {
     /// user; without it, or for that user's own sockets, everything is
     /// reloaded.
     PresenceAudienceChanged {
-        /// The user whose membership changed.
+        /// The counterpart whose relation to the recipient changed (friend,
+        /// block, server membership). Without it (own server membership,
+        /// server deleted) everything is reloaded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         user_id: Option<Uuid>,
     },
+    /// A socket's own fence (on its `user:{id}` channel): once the socket has
+    /// processed it, every notice published before it has been applied.
+    PresenceFence {
+        /// Matches the waiting socket.
+        id: Uuid,
+    },
 }
 
-/// Tell the sockets of `users` to reload their presence audience. Best
-/// effort: failures are logged (throttled).
-pub async fn notify_audience_changed(redis: &Client, users: &[Uuid]) {
-    let notice = PresenceNotice::PresenceAudienceChanged { user_id: None };
-    let channels: Vec<String> = users
-        .iter()
-        .map(|id| crate::ws::channels::user_events(*id))
-        .collect();
-    publish_notice(redis, &notice, channels).await;
+/// The relation between `a` and `b` changed (friendship, block).
+///
+/// Each one's sockets get a notice naming the other, stop forwarding them at
+/// once and re-check them. Best effort: failures are logged (throttled).
+pub async fn notify_pair_changed(redis: &Client, a: Uuid, b: Uuid) {
+    for (recipient, counterpart) in [(a, b), (b, a)] {
+        let notice = PresenceNotice::PresenceAudienceChanged {
+            user_id: Some(counterpart),
+        };
+        publish_notice(
+            redis,
+            &notice,
+            vec![crate::ws::channels::user_events(recipient)],
+        )
+        .await;
+    }
 }
 
-/// A server's membership changed: `changed` joined or left (members re-check
-/// only that user; `changed` itself reloads everything), or `None` (server
-/// deleted: everyone reloads).
+/// A server's membership changed: `changed` joined or left (members get a
+/// notice naming that user; `changed` itself reloads everything), or `None`
+/// (server deleted: everyone reloads).
 pub async fn notify_guild_audience_changed(redis: &Client, guild_id: Uuid, changed: Option<Uuid>) {
     let notice = PresenceNotice::PresenceAudienceChanged { user_id: changed };
-    let mut channels = vec![crate::ws::channels::guild_events(guild_id)];
+    publish_notice(
+        redis,
+        &notice,
+        vec![crate::ws::channels::guild_events(guild_id)],
+    )
+    .await;
     if let Some(user) = changed {
-        // The user may not follow the server channel (yet).
-        channels.push(crate::ws::channels::user_events(user));
+        // The user may not follow the server channel (yet): a full reload.
+        let own = PresenceNotice::PresenceAudienceChanged { user_id: None };
+        publish_notice(redis, &own, vec![crate::ws::channels::user_events(user)]).await;
     }
-    publish_notice(redis, &notice, channels).await;
+}
+
+/// Publish a fence for one socket of `user_id` (see
+/// [`PresenceNotice::PresenceFence`]).
+pub async fn publish_fence(redis: &Client, user_id: Uuid, id: Uuid) -> Result<(), PresenceError> {
+    let payload = serde_json::to_string(&PresenceNotice::PresenceFence { id }).unwrap_or_default();
+    let sent: Result<(), fred::error::Error> = redis
+        .publish(crate::ws::channels::user_events(user_id), payload)
+        .await;
+    Ok(sent?)
 }
 
 async fn publish_notice(redis: &Client, notice: &PresenceNotice, channels: Vec<String>) {
@@ -988,33 +1152,33 @@ mod tests {
     }
 
     #[test]
-    fn backstop_sends_only_advanced_versions() {
-        let (a, b, c, d) = (
-            Uuid::from_u128(1),
-            Uuid::from_u128(2),
-            Uuid::from_u128(3),
-            Uuid::from_u128(4),
-        );
-        let published = |status: &str, version| Published {
-            status: status.to_string(),
-            version,
-        };
-        let states: HashMap<Uuid, Published> = [
-            (a, published("busy", 5)),
-            (b, published("online", 3)),
-            (c, published("away", 9)),
-            (d, published("offline", 0)),
-        ]
-        .into_iter()
-        .collect();
-        // a: newer than sent; b: same; c: older than sent; d: never sent.
-        let sent: HashMap<Uuid, u64> = [(a, 4), (b, 3), (c, 10)].into_iter().collect();
-
-        let advanced = advanced_states(&states, &sent);
-        assert_eq!(
-            advanced,
-            vec![(a, published("busy", 5)), (d, published("offline", 0))]
-        );
+    fn reconcile_window_covers_everyone_within_ceil_n_over_bound() {
+        // Population fits: everyone, every run.
+        assert_eq!(reconcile_window(5, 3, 10), (vec![(0, 4)], 0));
+        // Bound smaller than the population: every rank within ceil(n/bound)
+        // runs, from any starting cursor.
+        for (population, limit) in [(7_i64, 3_i64), (10, 4), (9, 3), (1000, 7)] {
+            let runs = (population + limit - 1) / limit;
+            for start in [0, 1, population - 1] {
+                let mut seen = std::collections::HashSet::new();
+                let mut cursor = start;
+                for _ in 0..runs {
+                    let (ranges, next) = reconcile_window(population, cursor, limit);
+                    let covered: i64 = ranges.iter().map(|(a, b)| b - a + 1).sum();
+                    assert_eq!(covered, limit, "{population}/{limit}");
+                    for (a, b) in ranges {
+                        seen.extend(a..=b);
+                    }
+                    cursor = next;
+                }
+                assert_eq!(
+                    seen.len() as i64,
+                    population,
+                    "{population}/{limit} from {start}"
+                );
+            }
+        }
+        assert_eq!(reconcile_window(0, 0, 10), (Vec::new(), 0));
     }
 
     #[test]

@@ -1636,3 +1636,188 @@ async fn test_stale_observer_status_heals_within_one_reconcile(pool: PgPool) {
 
     redis.quit().await.expect("quit test Valkey client");
 }
+
+/// Assert that nothing (status or rich presence) about `user` arrives within
+/// [`QUIET_WINDOW`].
+async fn expect_nothing_about(ws: &mut super::helpers::WsClient, user: Uuid) {
+    let wait = async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let ev: serde_json::Value = serde_json::from_str(&text).expect("JSON frame");
+                    let presence = matches!(
+                        ev["type"].as_str(),
+                        Some("presence_update" | "rich_presence_update" | "custom_status_update")
+                    );
+                    assert!(
+                        !(presence && ev["user_id"] == user.to_string()),
+                        "unexpected presence: {ev}"
+                    );
+                }
+                Some(Ok(Message::Close(frame))) => panic!("socket closed: {frame:?}"),
+                Some(Ok(_)) => {}
+                other => panic!("socket ended: {other:?}"),
+            }
+        }
+    };
+    let _ = tokio::time::timeout(QUIET_WINDOW, wait).await;
+}
+
+/// Send `set_status` and wait until the server handled it (pong).
+async fn set_status_handled(ws: &mut super::helpers::WsClient, status: &str) {
+    let set = serde_json::json!({ "type": "set_status", "status": status }).to_string();
+    ws.send(Message::Text(set.into()))
+        .await
+        .expect("set_status");
+    let ping = serde_json::json!({ "type": "ping" }).to_string();
+    ws.send(Message::Text(ping.into())).await.expect("ping");
+    next_ws_event(ws, "pong", EVENT_TIMEOUT).await;
+}
+
+/// (a) A member who leaves during the observer's final validation read (the
+/// read already listed them) never reaches the observer: the invalidation
+/// overtakes the read, and nothing about them is sent, not even later.
+#[sqlx::test]
+async fn test_leave_during_final_validation_read_discloses_nothing(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let (u, b, guild, code) = join_scenario(&pool, &app, &server).await;
+    let token_u = generate_access_token(&app.config, u);
+    let token_b = generate_access_token(&app.config, b);
+    let mut ws_u = connect_ready(&server, &token_u).await;
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let hooks_wait = |pause: vc_server::ws::test_hooks::Pause| async move {
+        tokio::time::timeout(EVENT_TIMEOUT, pause.reached.notified())
+            .await
+            .expect("hook reached");
+        pause
+    };
+
+    // Round 1 reads `u`, subscribes `u` and the server; round 2 (the final
+    // validation read) reads `u` again and stops.
+    let read1 = vc_server::ws::test_hooks::pause_in_audience_reload(b);
+    post_ok(format!("{}/api/invites/{code}/join", server.url), &token_b).await;
+    let read1 = hooks_wait(read1).await;
+    let barrier = vc_server::ws::test_hooks::pause_after_audience_barrier(b);
+    read1.release.notify_one();
+    let barrier = hooks_wait(barrier).await;
+    let read2 = vc_server::ws::test_hooks::pause_in_audience_reload(b);
+    barrier.release.notify_one();
+    let read2 = hooks_wait(read2).await;
+
+    // `u` leaves after that read, then publishes.
+    post_ok(format!("{}/api/guilds/{guild}/leave", server.url), &token_u).await;
+    set_status_handled(&mut ws_u, "busy").await;
+    read2.release.notify_one();
+
+    wait_for_no_presence_subscribers(&redis, u).await;
+    expect_nothing_about(&mut ws_b, u).await;
+
+    redis.quit().await.expect("quit test Valkey client");
+}
+
+/// (b) A block that the observer's socket has processed is honoured by a
+/// snapshot that was already under way.
+#[sqlx::test]
+async fn test_block_during_snapshot_is_honoured(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (u, b, _guild) = presence_pair(&pool, false).await;
+    let token_u = generate_access_token(&app.config, u);
+    let token_b = generate_access_token(&app.config, b);
+    let _ws_u = connect_ready(&server, &token_u).await;
+
+    // `b` connects; its connect snapshot stops before queuing anything.
+    let pause = vc_server::ws::test_hooks::pause_in_snapshot(b);
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    tokio::time::timeout(EVENT_TIMEOUT, pause.reached.notified())
+        .await
+        .expect("snapshot paused");
+
+    // `b` blocks `u`; the socket processes it (its `user_blocked` arrives).
+    post_ok(format!("{}/api/friends/{u}/block", server.url), &token_b).await;
+    next_ws_event(&mut ws_b, "user_blocked", EVENT_TIMEOUT).await;
+    pause.release.notify_one();
+
+    expect_nothing_about(&mut ws_b, u).await;
+}
+
+/// (c) After `u` blocks `b`, `u`'s next update is not forwarded to `b`, even
+/// before `b`'s re-check of `u` has applied.
+#[sqlx::test]
+async fn test_blocked_users_update_is_not_forwarded_before_recheck(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let (u, b, _guild) = presence_pair(&pool, false).await;
+    let token_u = generate_access_token(&app.config, u);
+    let token_b = generate_access_token(&app.config, b);
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut ws_u = connect_ready(&server, &token_u).await;
+    next_presence(&mut ws_b, u, "online").await;
+
+    // `b`'s re-check of `u` stops after its read.
+    let recheck = vc_server::ws::test_hooks::pause_in_audience_reload(b);
+    post_ok(format!("{}/api/friends/{b}/block", server.url), &token_u).await;
+    tokio::time::timeout(EVENT_TIMEOUT, recheck.reached.notified())
+        .await
+        .expect("re-check paused");
+    set_status_handled(&mut ws_u, "busy").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    recheck.release.notify_one();
+
+    // Only the final `offline` (the dropped peer), never `busy`.
+    expect_no_ws_event_about(&mut ws_b, u).await;
+}
+
+/// Rich presence is versioned and heals: an activity update the observer
+/// missed is delivered by its next backstop run.
+#[sqlx::test]
+async fn test_missed_activity_heals_with_backstop(pool: PgPool) {
+    use fred::interfaces::HashesInterface;
+
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let (a, b, _guild) = presence_pair(&pool, true).await;
+    let token_a = generate_access_token(&app.config, a);
+    let token_b = generate_access_token(&app.config, b);
+
+    let backstop = vc_server::ws::test_hooks::run_backstop(b);
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut ws_a = connect_ready(&server, &token_a).await;
+    next_presence(&mut ws_b, a, "online").await;
+
+    let activity = |name: &str| serde_json::json!({ "type": "game", "name": name, "started_at": "2026-10-26T12:00:00Z" });
+    let set = serde_json::json!({ "type": "set_activity", "activity": activity("Chess") });
+    ws_a.send(Message::Text(set.to_string().into()))
+        .await
+        .expect("activity");
+    let ev = next_ws_event(&mut ws_b, "rich_presence_update", EVENT_TIMEOUT).await;
+    assert_eq!(ev["activity"]["name"], "Chess");
+
+    // A newer activity was published while `b` missed it (state advanced,
+    // the live event never arrived).
+    let missed = serde_json::json!({
+        "type": "rich_presence_update",
+        "user_id": a,
+        "activity": activity("Go"),
+    })
+    .to_string();
+    let state = vc_server::presence::connections::state_key(a);
+    let _: i64 = redis.hincrby(&state, "av", 1).await.expect("HINCRBY");
+    let _: () = redis
+        .hset(&state, ("activity", missed))
+        .await
+        .expect("HSET");
+
+    backstop.notify_one();
+    let ev = next_ws_event(&mut ws_b, "rich_presence_update", EVENT_TIMEOUT).await;
+    assert_eq!(ev["activity"]["name"], "Go");
+
+    redis.quit().await.expect("quit test Valkey client");
+}

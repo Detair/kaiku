@@ -21,6 +21,9 @@ use uuid::Uuid;
 use super::events::{
     broadcast_to_channel, channels, ClientEvent, ClientMessageState, OutboundMsg, ServerEvent,
 };
+use super::presence_audience::{
+    self as audience_mod, Audience, AudienceCtx, AudiencePending, PresenceState, ReloadMode,
+};
 use crate::api::AppState;
 use crate::auth::jwt;
 use crate::db;
@@ -525,7 +528,7 @@ async fn handle_socket(
 
     // Presence peers (friends, then members of the user's servers; capped):
     // the socket subscribes to their presence and gets their snapshot.
-    let presence_peer_ids = match get_presence_peers(&state.db, user_id).await {
+    let presence_peer_ids = match audience_mod::get_presence_peers(&state.db, user_id).await {
         Ok(peers) => {
             debug!(
                 "User {} has {} presence peers for presence subscriptions",
@@ -580,27 +583,15 @@ async fn handle_socket(
         }
     };
 
-    let blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>> = Arc::new(
-        tokio::sync::RwLock::new(blocked_ids.union(&blocked_by_ids).copied().collect()),
-    );
+    let blocked_set: HashSet<Uuid> = blocked_ids.union(&blocked_by_ids).copied().collect();
+    let blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>> =
+        Arc::new(tokio::sync::RwLock::new(blocked_set.clone()));
 
     crate::ws::test_hooks::after_audience_read(user_id).await;
 
-    // Presence audience: whose presence this socket forwards (updated when an
-    // audience notice arrives), the server channels it follows, and the last
-    // presence version sent per peer.
-    let presence: PresenceState = PresenceState {
-        peers: Arc::new(tokio::sync::RwLock::new(
-            presence_peer_ids.iter().copied().collect(),
-        )),
-        subscribed: Arc::new(tokio::sync::RwLock::new(
-            presence_peer_ids.iter().copied().collect(),
-        )),
-        guilds: Arc::new(tokio::sync::RwLock::new(
-            guild_ids.iter().copied().collect(),
-        )),
-        versions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-    };
+    // Presence audience (authorization and delivery state under one lock;
+    // see `presence_audience`).
+    let presence = PresenceState::new(Audience::new(&presence_peer_ids, blocked_set), &guild_ids);
     let (audience_tx, mut audience_rx) = mpsc::channel::<()>(1);
     let audience_wake = audience_tx.clone();
     let audience_pending: Arc<std::sync::Mutex<AudiencePending>> = Arc::default();
@@ -702,16 +693,17 @@ async fn handle_socket(
     // live; a change in between published a notice this socket never saw.
     // Revalidate them now, before anything is forwarded or the snapshot is
     // built (a database error closes with 1011 so the client reconnects).
+    let ctx = AudienceCtx {
+        state: &state,
+        user_id,
+        subscriber: &subscriber,
+        presence: &presence,
+        blocked_users: &blocked_users,
+        tx: &tx,
+        pending: &audience_pending,
+    };
     if exit.is_none() {
-        let audience = AudienceRefresh {
-            user_id,
-            subscriber: &subscriber,
-            presence: &presence,
-            blocked_users: &blocked_users,
-            tx: &tx,
-            retry: &audience_pending,
-        };
-        match refresh_presence_audience(&state, audience, ReloadMode::Initial).await {
+        match audience_mod::refresh_full(&ctx, ReloadMode::Initial).await {
             Ok(true) => {}
             Ok(false) => exit = Some(PubsubExit::SubscribeFailed),
             Err(reason) => exit = Some(reason),
@@ -721,14 +713,22 @@ async fn handle_socket(
 
     // On a setup failure there is no `Ready`; the socket is closed below.
     if exit.is_none() {
-        let peer_ids: Vec<Uuid> = presence.peers.read().await.iter().copied().collect();
-        let snapshot = SnapshotScope {
-            peer_ids: &peer_ids,
-            blocked_users: &blocked_users,
-            versions: &presence.versions,
-        };
-        if let Err(err) = send_ready_and_snapshot(&state, user_id, &tx, start_tx, snapshot).await {
+        if let Err(err) = send_ready(user_id, &tx, start_tx).await {
             exit = Some(err.into());
+        }
+    }
+    // The forwarder runs from here on (fences need it): the connect snapshot.
+    if exit.is_none() {
+        let peers: Vec<Uuid> = presence
+            .audience
+            .lock()
+            .await
+            .peers
+            .iter()
+            .copied()
+            .collect();
+        if let Err(reason) = audience_mod::send_states(&ctx, &peers).await {
+            exit = Some(reason);
         }
     }
 
@@ -757,9 +757,10 @@ async fn handle_socket(
         let jitter =
             Duration::from_millis(u64::try_from(Uuid::new_v4().as_u128() % 10_000).unwrap_or(0));
         let mut presence_backstop = tokio::time::interval_at(
-            tokio::time::Instant::now() + PRESENCE_BACKSTOP_INTERVAL + jitter,
-            PRESENCE_BACKSTOP_INTERVAL,
+            tokio::time::Instant::now() + audience_mod::PRESENCE_BACKSTOP_INTERVAL + jitter,
+            audience_mod::PRESENCE_BACKSTOP_INTERVAL,
         );
+        let backstop_trigger = crate::ws::test_hooks::backstop_trigger(user_id);
         presence_backstop.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         // Handle incoming messages with heartbeat
@@ -851,20 +852,10 @@ async fn handle_socket(
                     let pending = std::mem::take(
                         &mut *audience_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
                     );
-                    let audience = AudienceRefresh {
-                        user_id,
-                        subscriber: &subscriber,
-                        presence: &presence,
-                        blocked_users: &blocked_users,
-                        tx: &tx,
-                        retry: &audience_pending,
-                    };
                     let refreshed = if pending.full {
-                        refresh_presence_audience(&state, audience, ReloadMode::Update)
-                            .await
-                            .map(|_| ())
+                        audience_mod::refresh_full(&ctx, ReloadMode::Update).await.map(|_| ())
                     } else {
-                        recheck_presence_peers(&state, audience, pending.targets).await
+                        audience_mod::recheck(&ctx, pending.targets).await
                     };
                     if let Err(reason) = refreshed {
                         exit = Some(reason);
@@ -872,11 +863,20 @@ async fn handle_socket(
                     }
                 }
 
+                () = backstop_now(backstop_trigger.as_ref()) => {
+                    let peers: Vec<Uuid> =
+                        presence.audience.lock().await.peers.iter().copied().collect();
+                    if let Err(reason) = audience_mod::send_states(&ctx, &peers).await {
+                        exit = Some(reason);
+                        break;
+                    }
+                }
+
                 _ = presence_backstop.tick() => {
-                    if let Err(err) =
-                        resend_advanced_presence(&state, &presence, &blocked_users, &tx).await
-                    {
-                        exit = Some(err.into());
+                    let peers: Vec<Uuid> =
+                        presence.audience.lock().await.peers.iter().copied().collect();
+                    if let Err(reason) = audience_mod::send_states(&ctx, &peers).await {
+                        exit = Some(reason);
                         break;
                     }
                 }
@@ -1021,25 +1021,12 @@ async fn close_and_flush(
     let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, flush).await;
 }
 
-/// Whose presence a new socket gets in its snapshot.
-struct SnapshotScope<'a> {
-    /// Presence peers (see [`get_presence_peers`]).
-    peer_ids: &'a [Uuid],
-    /// Users hidden from this socket (blocked either way).
-    blocked_users: &'a tokio::sync::RwLock<HashSet<Uuid>>,
-    /// Last presence version sent per peer (shared with the forwarder).
-    versions: &'a tokio::sync::Mutex<std::collections::HashMap<Uuid, u64>>,
-}
-
-/// Queue `Ready` as the socket's first frame, release the pub/sub forwarder
-/// (`start`; events published meanwhile wait in its receiver), then send the
-/// presence peers' snapshot.
-async fn send_ready_and_snapshot(
-    state: &AppState,
+/// Queue `Ready` as the socket's first frame and release the pub/sub
+/// forwarder (`start`; events published meanwhile wait in its receiver).
+async fn send_ready(
     user_id: Uuid,
     tx: &mpsc::Sender<OutboundMsg>,
     start: oneshot::Sender<()>,
-    snapshot: SnapshotScope<'_>,
 ) -> Result<(), OutboundSendError> {
     send_outbound(
         tx,
@@ -1050,564 +1037,16 @@ async fn send_ready_and_snapshot(
     )
     .await?;
     let _ = start.send(());
-    send_presence_snapshot(state, user_id, tx, snapshot).await
-}
-
-/// Send the presence peers' snapshot.
-///
-/// Status and version come from the peers' **published** state
-/// (`presence:state`), never from the database, so the snapshot is a state
-/// observers were sent, with its own version. A peer for which this socket
-/// already sent that version or newer is skipped; otherwise the version is
-/// recorded while the snapshot is queued (versions lock), so snapshot and
-/// live updates never overwrite each other out of order. Activity and custom
-/// status (unversioned) are read from the database and sent unless the peer
-/// shows as offline. If Valkey is unreachable nothing is sent: the client
-/// shows no status until updates arrive or the backstop runs.
-async fn send_presence_snapshot(
-    state: &AppState,
-    user_id: Uuid,
-    tx: &mpsc::Sender<OutboundMsg>,
-    scope: SnapshotScope<'_>,
-) -> Result<(), OutboundSendError> {
-    use crate::presence::connections;
-
-    if scope.peer_ids.is_empty() {
-        return Ok(());
-    }
-    let published = match connections::published_states(&state.redis, scope.peer_ids).await {
-        Ok(published) => published,
-        Err(e) => {
-            connections::log_unavailable(&e);
-            return Ok(());
-        }
-    };
-    let rich = match get_rich_presence(&state.db, scope.peer_ids).await {
-        Ok(rich) => rich,
-        Err(e) => {
-            warn!(
-                "Failed to fetch rich presence snapshot for {}: {}",
-                user_id, e
-            );
-            std::collections::HashMap::new()
-        }
-    };
-    let blocked = scope.blocked_users.read().await.clone();
-    for peer in scope.peer_ids {
-        if blocked.contains(peer) {
-            continue;
-        }
-        let Some(current) = published.get(peer) else {
-            continue;
-        };
-        let mut versions = scope.versions.lock().await;
-        if versions
-            .get(peer)
-            .is_some_and(|sent| *sent >= current.version)
-        {
-            continue;
-        }
-        versions.insert(*peer, current.version);
-        let (activity, custom_status) = rich.get(peer).cloned().unwrap_or_default();
-        send_peer_snapshot(tx, *peer, &current.status, activity, custom_status).await?;
-        drop(versions);
-    }
-
     Ok(())
 }
 
-/// Queue one peer's snapshot: status, then activity and custom status unless
-/// the peer shows as offline.
-async fn send_peer_snapshot(
-    tx: &mpsc::Sender<OutboundMsg>,
-    peer: Uuid,
-    status: &str,
-    activity: Option<serde_json::Value>,
-    custom_status: Option<serde_json::Value>,
-) -> Result<(), OutboundSendError> {
-    let presence_event = ServerEvent::PresenceUpdate {
-        user_id: peer,
-        status: status.to_string(),
-    };
-    send_outbound(tx, OutboundMsg::Event(presence_event)).await?;
-    if status == "offline" {
-        return Ok(());
+/// Resolves when a test asks this socket to run its presence backstop now
+/// (`test_hooks::run_backstop`); never otherwise.
+async fn backstop_now(trigger: Option<&Arc<tokio::sync::Notify>>) {
+    match trigger {
+        Some(trigger) => trigger.notified().await,
+        None => std::future::pending().await,
     }
-    if let Some(activity) =
-        activity.and_then(|a| serde_json::from_value::<crate::presence::Activity>(a).ok())
-    {
-        let activity_event = ServerEvent::RichPresenceUpdate {
-            user_id: peer,
-            activity: Some(activity),
-        };
-        send_outbound(tx, OutboundMsg::Event(activity_event)).await?;
-    }
-    if let Some(cs) =
-        custom_status.and_then(|c| serde_json::from_value::<crate::presence::CustomStatus>(c).ok())
-    {
-        let cs_event = ServerEvent::CustomStatusUpdate {
-            user_id: peer,
-            custom_status: Some(cs),
-        };
-        send_outbound(tx, OutboundMsg::Event(cs_event)).await?;
-    }
-    Ok(())
-}
-
-/// Backstop: re-send the status of every peer whose published version is
-/// newer than what this socket sent (read from `presence:state`, one call for
-/// all peers), through the same version filter as live updates. Bounds any
-/// remaining way a socket could keep a stale status.
-async fn resend_advanced_presence(
-    state: &AppState,
-    presence: &PresenceState,
-    blocked_users: &tokio::sync::RwLock<HashSet<Uuid>>,
-    tx: &mpsc::Sender<OutboundMsg>,
-) -> Result<(), OutboundSendError> {
-    use crate::presence::connections;
-
-    let peers: Vec<Uuid> = presence.peers.read().await.iter().copied().collect();
-    if peers.is_empty() {
-        return Ok(());
-    }
-    let published = match connections::published_states(&state.redis, &peers).await {
-        Ok(published) => published,
-        Err(e) => {
-            connections::log_unavailable(&e);
-            return Ok(());
-        }
-    };
-    let mut versions = presence.versions.lock().await;
-    let advanced = connections::advanced_states(&published, &versions);
-    let blocked = blocked_users.read().await;
-    let allowed = presence.peers.read().await;
-    for (peer, current) in advanced {
-        if blocked.contains(&peer) || !allowed.contains(&peer) {
-            continue;
-        }
-        versions.insert(peer, current.version);
-        let event = ServerEvent::PresenceUpdate {
-            user_id: peer,
-            status: current.status,
-        };
-        send_outbound(tx, OutboundMsg::Event(event)).await?;
-    }
-    Ok(())
-}
-
-/// How often a socket runs [`resend_advanced_presence`] (plus jitter up to
-/// ten seconds, so sockets do not run it all at once). Together with the
-/// server's periodic reconcile
-/// ([`connections::reconcile_connected`](crate::presence::connections::reconcile_connected))
-/// any stale status heals within about a minute.
-const PRESENCE_BACKSTOP_INTERVAL: Duration = Duration::from_mins(1);
-
-/// Shared presence audience of one socket.
-#[derive(Clone)]
-pub(crate) struct PresenceState {
-    /// Users whose presence events this socket forwards (validated peers).
-    peers: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
-    /// Users whose `presence:{id}` channel the socket follows: the validated
-    /// peers plus peers subscribed but not yet validated (not forwarded).
-    subscribed: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
-    /// Servers whose `guild:{id}` channel the socket follows.
-    guilds: Arc<tokio::sync::RwLock<HashSet<Uuid>>>,
-    /// Last presence version sent per peer (snapshot or live).
-    versions: Arc<tokio::sync::Mutex<std::collections::HashMap<Uuid, u64>>>,
-}
-
-/// What [`refresh_presence_audience`] works on.
-struct AudienceRefresh<'a> {
-    user_id: Uuid,
-    subscriber: &'a Client,
-    presence: &'a PresenceState,
-    blocked_users: &'a tokio::sync::RwLock<HashSet<Uuid>>,
-    tx: &'a mpsc::Sender<OutboundMsg>,
-    /// Work that failed (database error) before anything was installed goes
-    /// back here and is retried with the next heartbeat.
-    retry: &'a std::sync::Mutex<AudiencePending>,
-}
-
-impl AudienceRefresh<'_> {
-    fn requeue(&self, full: bool, targets: impl IntoIterator<Item = Uuid>) {
-        let mut pending = self
-            .retry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        pending.full |= full;
-        pending.targets.extend(targets);
-    }
-}
-
-/// Whether an audience reload runs during socket setup (before `Ready`) or
-/// on a live socket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReloadMode {
-    /// Socket setup: nothing has been sent yet; dropped peers need no final
-    /// `offline` and the caller sends the snapshot.
-    Initial,
-    /// Live socket: dropped peers get a final `offline`, new peers a
-    /// snapshot.
-    Update,
-}
-
-/// Reload presence peers, block sets and servers and apply them. Runs at
-/// socket setup (after the subscriptions went live, before `Ready`) and when
-/// an audience notice arrived for this user (friendship, block or own server
-/// membership changed, or a server was deleted).
-///
-/// Each round reads the audience and applies it: dropped peers leave the
-/// forwarding filter (live socket: with a final `offline`) and are
-/// unsubscribed; new peers and servers are subscribed behind a barrier but
-/// **not** forwarded yet (pending). A round that installed new subscriptions
-/// is followed by another read: a change published on a channel before it
-/// was subscribed (e.g. a member leaving a just-joined server) is never
-/// missed. Only when a read installs nothing new are the pending peers that
-/// it still lists validated: they enter the forwarding filter and get their
-/// snapshot.
-///
-/// A database error before anything was installed returns `Ok(false)` and the
-/// work is retried with the next heartbeat. A database error after
-/// subscriptions were installed, a subscription failure, or no quiet read
-/// within [`MAX_AUDIENCE_RELOAD_ROUNDS`] ends the socket with 1011: the client
-/// reconnects and gets a clean, full state.
-async fn refresh_presence_audience(
-    state: &AppState,
-    audience: AudienceRefresh<'_>,
-    mode: ReloadMode,
-) -> Result<bool, PubsubExit> {
-    let user_id = audience.user_id;
-    let mut pending: HashSet<Uuid> = HashSet::new();
-    let mut installed = false;
-    for _ in 0..MAX_AUDIENCE_RELOAD_ROUNDS {
-        let loaded = async {
-            if crate::ws::test_hooks::audience_read_fails(user_id) {
-                return Err(sqlx::Error::Protocol(
-                    "test hook: audience read fails".into(),
-                ));
-            }
-            let peers = get_presence_peers(&state.db, user_id).await?;
-            let guilds = db::get_user_guild_ids(&state.db, user_id).await?;
-            let blocked = block_cache::load_blocked_users(&state.db, &state.redis, user_id)
-                .await
-                .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-            let blocked_by = block_cache::load_blocked_by(&state.db, &state.redis, user_id)
-                .await
-                .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-            Ok::<_, sqlx::Error>((peers, guilds, blocked, blocked_by))
-        };
-        let (peers, guilds, blocked, blocked_by) = match loaded.await {
-            Ok(loaded) => loaded,
-            Err(e) if installed => {
-                warn!(
-                    "Failed to revalidate presence audience for {} after subscribing; closing: {}",
-                    user_id, e
-                );
-                return Err(PubsubExit::SubscribeFailed);
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to refresh presence audience for {} (retried with the next heartbeat): {}",
-                    user_id, e
-                );
-                audience.requeue(true, []);
-                return Ok(false);
-            }
-        };
-        if mode == ReloadMode::Update {
-            crate::ws::test_hooks::in_audience_reload(user_id).await;
-        }
-
-        *audience.blocked_users.write().await = blocked.union(&blocked_by).copied().collect();
-        let wanted: HashSet<Uuid> = peers.into_iter().collect();
-        let subscribed = audience.presence.subscribed.read().await.clone();
-        let new_guilds: HashSet<Uuid> = guilds.into_iter().collect();
-        let old_guilds = audience.presence.guilds.read().await.clone();
-        let changes = PeerChanges {
-            removed: subscribed.difference(&wanted).copied().collect(),
-            added: wanted.difference(&subscribed).copied().collect(),
-            removed_guilds: old_guilds.difference(&new_guilds).copied().collect(),
-            added_guilds: new_guilds.difference(&old_guilds).copied().collect(),
-        };
-        pending.retain(|id| wanted.contains(id));
-        let added = apply_peer_changes(&audience, changes, mode).await?;
-        *audience.presence.guilds.write().await = new_guilds;
-        if added.any {
-            installed = true;
-            pending.extend(added.peers);
-            crate::ws::test_hooks::after_audience_barrier(user_id).await;
-            continue;
-        }
-        // This read happened after every barrier and installed nothing new:
-        // the pending peers it still lists are validated.
-        let validated: Vec<Uuid> = pending.into_iter().collect();
-        audience
-            .presence
-            .peers
-            .write()
-            .await
-            .extend(validated.iter().copied());
-        if mode == ReloadMode::Update {
-            send_added_snapshot(state, &audience, validated).await?;
-        }
-        return Ok(true);
-    }
-    warn!(
-        "Presence audience of {} kept changing during revalidation; closing",
-        user_id
-    );
-    Err(PubsubExit::SubscribeFailed)
-}
-
-/// Rounds of "read audience, subscribe what is new" per reload before giving
-/// up and closing the socket (each round only repeats if new subscriptions
-/// were installed).
-const MAX_AUDIENCE_RELOAD_ROUNDS: usize = 4;
-
-/// Send the snapshot of newly validated peers.
-async fn send_added_snapshot(
-    state: &AppState,
-    audience: &AudienceRefresh<'_>,
-    mut added: Vec<Uuid>,
-) -> Result<(), PubsubExit> {
-    added.sort_unstable();
-    added.dedup();
-    if added.is_empty() {
-        return Ok(());
-    }
-    let scope = SnapshotScope {
-        peer_ids: &added,
-        blocked_users: audience.blocked_users,
-        versions: &audience.presence.versions,
-    };
-    send_presence_snapshot(state, audience.user_id, audience.tx, scope)
-        .await
-        .map_err(PubsubExit::from)
-}
-
-/// Another user's server membership changed: re-check only `targets` (one
-/// cheap query each) instead of reloading the whole audience. A target that
-/// becomes a peer is subscribed first and checked again after the barrier
-/// before it is forwarded (and gets its snapshot).
-async fn recheck_presence_peers(
-    state: &AppState,
-    audience: AudienceRefresh<'_>,
-    targets: HashSet<Uuid>,
-) -> Result<(), PubsubExit> {
-    // Many membership changes coalesced (bulk joins, a burst of leaves): one
-    // full reload is cheaper than one query per user.
-    if targets.len() > RECHECK_TARGETS_MAX {
-        return refresh_presence_audience(state, audience, ReloadMode::Update)
-            .await
-            .map(|_| ());
-    }
-    let mut changes = PeerChanges::default();
-    for target in targets {
-        let allowed = match is_presence_peer(&state.db, audience.user_id, target).await {
-            Ok(allowed) => allowed,
-            Err(e) => {
-                warn!(
-                    "Failed to re-check presence peer {} (retried with the next heartbeat): {}",
-                    target, e
-                );
-                audience.requeue(false, [target]);
-                continue;
-            }
-        };
-        let subscribed = audience.presence.subscribed.read().await;
-        let present = subscribed.contains(&target);
-        // Room for one more, counting the peers this batch already adds.
-        let room = i64::try_from(subscribed.len() + changes.added.len())
-            .is_ok_and(|n| n < crate::presence::connections::PRESENCE_PEER_LIMIT);
-        drop(subscribed);
-        if present && !allowed {
-            changes.removed.push(target);
-        } else if !present && allowed && room {
-            changes.added.push(target);
-        }
-    }
-    let added = apply_peer_changes(&audience, changes, ReloadMode::Update).await?;
-    let mut validated = Vec::new();
-    let mut dropped = Vec::new();
-    for peer in added.peers {
-        match is_presence_peer(&state.db, audience.user_id, peer).await {
-            Ok(true) => validated.push(peer),
-            Ok(false) => dropped.push(peer),
-            Err(e) => {
-                warn!(
-                    "Failed to validate presence peer {} after subscribing; closing: {}",
-                    peer, e
-                );
-                return Err(PubsubExit::SubscribeFailed);
-            }
-        }
-    }
-    if !dropped.is_empty() {
-        let changes = PeerChanges {
-            removed: dropped,
-            ..PeerChanges::default()
-        };
-        apply_peer_changes(&audience, changes, ReloadMode::Update).await?;
-    }
-    audience
-        .presence
-        .peers
-        .write()
-        .await
-        .extend(validated.iter().copied());
-    send_added_snapshot(state, &audience, validated).await
-}
-
-/// Above this many coalesced re-check targets, a full audience reload replaces
-/// the per-user queries.
-const RECHECK_TARGETS_MAX: usize = 16;
-
-/// Difference to apply to a socket's presence subscriptions.
-#[derive(Debug, Default)]
-struct PeerChanges {
-    removed: Vec<Uuid>,
-    added: Vec<Uuid>,
-    removed_guilds: Vec<Uuid>,
-    added_guilds: Vec<Uuid>,
-}
-
-/// Apply subscription changes; returns what was newly subscribed.
-///
-/// Dropped peers: under the versions lock (shared with the forwarder) they
-/// leave the forwarding filter and, on a live socket, get a final
-/// `presence_update` `offline` if they had been forwarded, so the client does
-/// not keep a frozen status and nothing of theirs can follow it. Then their
-/// channels (and dropped servers) are unsubscribed. New peers and servers are
-/// subscribed behind a PING barrier; new peers are **not** added to the
-/// forwarding filter here (the caller validates them first).
-async fn apply_peer_changes(
-    audience: &AudienceRefresh<'_>,
-    changes: PeerChanges,
-    mode: ReloadMode,
-) -> Result<Subscribed, PubsubExit> {
-    let PeerChanges {
-        removed,
-        added,
-        removed_guilds,
-        added_guilds,
-    } = changes;
-
-    if !removed.is_empty() {
-        let mut versions = audience.presence.versions.lock().await;
-        let mut forwarded = Vec::new();
-        {
-            let mut peers = audience.presence.peers.write().await;
-            let mut subscribed = audience.presence.subscribed.write().await;
-            for id in &removed {
-                if peers.remove(id) {
-                    forwarded.push(*id);
-                }
-                subscribed.remove(id);
-            }
-        }
-        for id in &removed {
-            versions.remove(id);
-        }
-        if mode == ReloadMode::Update {
-            for id in forwarded {
-                let offline = ServerEvent::PresenceUpdate {
-                    user_id: id,
-                    status: "offline".to_string(),
-                };
-                send_outbound(audience.tx, OutboundMsg::Event(offline))
-                    .await
-                    .map_err(PubsubExit::from)?;
-            }
-        }
-    }
-    let unsubscribe: Vec<String> = removed
-        .iter()
-        .map(|id| channels::user_presence(*id))
-        .chain(removed_guilds.iter().map(|id| channels::guild_events(*id)))
-        .collect();
-    if !unsubscribe.is_empty() {
-        if let Err(e) = audience.subscriber.unsubscribe(unsubscribe).await {
-            // Already filtered out above; this only saves traffic.
-            warn!("Failed to unsubscribe dropped presence peers: {}", e);
-        }
-    }
-
-    let subscribe: Vec<String> = added
-        .iter()
-        .map(|id| channels::user_presence(*id))
-        .chain(added_guilds.iter().map(|id| channels::guild_events(*id)))
-        .collect();
-    if subscribe.is_empty() {
-        return Ok(Subscribed {
-            peers: Vec::new(),
-            any: false,
-        });
-    }
-    // Same barrier as at connect: the PING reply proves the subscriptions
-    // are live before anything is read again.
-    let subscribed = async {
-        audience.subscriber.subscribe(subscribe).await?;
-        audience.subscriber.ping::<fred::types::Value>(None).await
-    };
-    if let Err(e) = subscribed.await {
-        error!("Failed to subscribe to new presence peers: {}", e);
-        return Err(PubsubExit::SubscribeFailed);
-    }
-    audience
-        .presence
-        .subscribed
-        .write()
-        .await
-        .extend(added.iter().copied());
-    Ok(Subscribed {
-        peers: added,
-        any: true,
-    })
-}
-
-/// What [`apply_peer_changes`] subscribed.
-struct Subscribed {
-    /// Peers newly subscribed (not forwarded until validated).
-    peers: Vec<Uuid>,
-    /// Any new subscription (peer or server) was installed: notices published
-    /// on it before its barrier were missed, so the audience is read again.
-    any: bool,
-}
-
-/// Whether `other` is a presence peer of `user_id`: friends or members of a
-/// common server, and not blocked in either direction. One query.
-async fn is_presence_peer(
-    db: &sqlx::PgPool,
-    user_id: Uuid,
-    other: Uuid,
-) -> Result<bool, sqlx::Error> {
-    let (peer,): (bool,) = sqlx::query_as(
-        r"
-        SELECT (
-            EXISTS (
-                SELECT 1 FROM friendships f
-                WHERE f.status = 'accepted'
-                  AND ((f.requester_id = $1 AND f.addressee_id = $2)
-                    OR (f.requester_id = $2 AND f.addressee_id = $1))
-            )
-            OR EXISTS (
-                SELECT 1 FROM guild_members mine
-                JOIN guild_members other ON other.guild_id = mine.guild_id
-                WHERE mine.user_id = $1 AND other.user_id = $2
-            )
-        ) AND NOT EXISTS (
-            SELECT 1 FROM friendships b
-            WHERE b.status = 'blocked'
-              AND ((b.requester_id = $1 AND b.addressee_id = $2)
-                OR (b.requester_id = $2 AND b.addressee_id = $1))
-        )
-        ",
-    )
-    .bind(user_id)
-    .bind(other)
-    .fetch_one(db)
-    .await?;
-    Ok(peer)
 }
 
 /// Handle a client message.
@@ -2109,7 +1548,7 @@ pub(crate) struct HandlePubsubParams {
     /// Users whose `presence:{id}` channel the socket follows at connect.
     presence_peer_ids: Vec<Uuid>,
     guild_ids: Vec<Uuid>,
-    /// Current presence audience (peers, servers, versions sent).
+    /// Presence audience (authorization and delivery state).
     presence: PresenceState,
     /// Wakes the socket loop to recompute the audience (coalescing).
     audience_tx: mpsc::Sender<()>,
@@ -2452,9 +1891,25 @@ pub(crate) async fn forward_pubsub_messages(
                     }
                     continue;
                 }
-                if audience_notice(&payload).is_some() {
-                    // On the own channel: always a full reload.
-                    queue_audience_refresh(params, None);
+                if let Ok(notice) =
+                    serde_json::from_str::<crate::presence::connections::PresenceNotice>(&payload)
+                {
+                    use crate::presence::connections::PresenceNotice;
+                    match notice {
+                        PresenceNotice::PresenceFence { id } => {
+                            audience_mod::on_fence(&params.presence, id);
+                        }
+                        PresenceNotice::PresenceAudienceChanged { user_id: changed } => {
+                            audience_mod::on_audience_notice(
+                                &params.presence,
+                                &params.audience_pending,
+                                &params.audience_tx,
+                                params.user_id,
+                                changed,
+                            )
+                            .await;
+                        }
+                    }
                     continue;
                 }
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
@@ -2477,11 +1932,13 @@ pub(crate) async fn forward_pubsub_messages(
                             user_id: blocked_id,
                         } => {
                             params.blocked_users.write().await.insert(*blocked_id);
+                            audience_mod::set_blocked(&params.presence, *blocked_id, true).await;
                         }
                         ServerEvent::UserUnblocked {
                             user_id: unblocked_id,
                         } => {
                             params.blocked_users.write().await.remove(unblocked_id);
+                            audience_mod::set_blocked(&params.presence, *unblocked_id, false).await;
                         }
                         // Subscribe before forwarding: Redis keeps publish
                         // order on this connection, so the DM's first
@@ -2529,27 +1986,11 @@ pub(crate) async fn forward_pubsub_messages(
             let Some(payload) = message.value.as_str() else {
                 continue;
             };
-            // The audience check runs under the versions lock, which the
-            // audience refresh also holds while it drops a peer and queues its
-            // `offline`: nothing of a dropped peer can follow that `offline`.
-            let mut versions = params.presence.versions.lock().await;
-            let allowed = params.presence.peers.read().await.contains(&uid)
-                && !params.blocked_users.read().await.contains(&uid);
-            if !allowed {
-                continue;
-            }
-            if let Ok(envelope) =
-                serde_json::from_str::<crate::presence::connections::PresenceEnvelope>(&payload)
+            if let Err(err) =
+                audience_mod::forward_presence(&params.presence, &params.tx, uid, &payload).await
             {
-                if versions.get(&uid).is_some_and(|sent| *sent >= envelope.v) {
-                    continue;
-                }
-                versions.insert(uid, envelope.v);
-                try_forward!(envelope.event);
-            } else if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                try_forward!(event);
+                return err.into();
             }
-            drop(versions);
         }
         // Handle user events (user:{uuid}) for cross-device sync
         else if channel_name.starts_with("user:") {
@@ -2564,13 +2005,18 @@ pub(crate) async fn forward_pubsub_messages(
         else if channel_name.starts_with("guild:") {
             // Forward guild/member patch events to all guild members
             if let Some(payload) = message.value.as_str() {
-                if let Some(
-                    crate::presence::connections::PresenceNotice::PresenceAudienceChanged {
-                        user_id: changed,
-                    },
-                ) = audience_notice(&payload)
+                if let Ok(crate::presence::connections::PresenceNotice::PresenceAudienceChanged {
+                    user_id: changed,
+                }) = serde_json::from_str(&payload)
                 {
-                    queue_audience_refresh(params, changed);
+                    audience_mod::on_audience_notice(
+                        &params.presence,
+                        &params.audience_pending,
+                        &params.audience_tx,
+                        params.user_id,
+                        changed,
+                    )
+                    .await;
                     continue;
                 }
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
@@ -2579,48 +2025,6 @@ pub(crate) async fn forward_pubsub_messages(
             }
         }
     }
-}
-
-/// The internal presence audience notice, if a `user:`/`guild:` payload is one
-/// (consumed by the socket, never forwarded).
-fn audience_notice(payload: &str) -> Option<crate::presence::connections::PresenceNotice> {
-    serde_json::from_str(payload).ok()
-}
-
-/// What the socket loop still has to recompute after audience notices.
-#[derive(Debug, Default)]
-pub(crate) struct AudiencePending {
-    /// Reload everything (friendship, block, own membership, server deleted).
-    full: bool,
-    /// Re-check only these users (another member joined or left a server).
-    targets: HashSet<Uuid>,
-}
-
-impl AudiencePending {
-    fn has_work(&self) -> bool {
-        self.full || !self.targets.is_empty()
-    }
-}
-
-/// Record an audience notice and wake the socket loop. `changed` (another
-/// user's server membership changed) asks for a cheap re-check of that user;
-/// `None`, or the socket's own user, for a full reload. Repeated notices
-/// coalesce until the loop runs.
-fn queue_audience_refresh(params: &HandlePubsubParams, changed: Option<Uuid>) {
-    {
-        let mut pending = params
-            .audience_pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match changed {
-            Some(user) if user != params.user_id => {
-                pending.targets.insert(user);
-            }
-            _ => pending.full = true,
-        }
-    }
-    // A full queue already holds a wake-up.
-    let _ = params.audience_tx.try_send(());
 }
 
 /// Spawn a background task that periodically clears expired custom statuses.
@@ -2679,12 +2083,11 @@ pub fn spawn_custom_status_sweep(
                     user_id: *uid,
                     custom_status: None,
                 };
-                let json = match serde_json::to_string(&event) {
-                    Ok(j) => j,
-                    Err(_) => continue,
-                };
-                let channel = format!("presence:{uid}");
-                let _: Result<(), _> = redis.publish(&channel, &json).await;
+                if let Err(e) =
+                    crate::presence::connections::publish_rich(&redis, *uid, &event).await
+                {
+                    crate::presence::connections::log_unavailable(&e);
+                }
             }
         }
     })
@@ -2873,68 +2276,6 @@ async fn mark_connected(db: &sqlx::PgPool, user_id: Uuid) -> Result<(String, i64
     .await
 }
 
-/// Presence peers of `user_id` in one query: accepted friends first, then
-/// members of the user's servers, without duplicates, the user, or anyone
-/// blocked in either direction, at most `PRESENCE_PEER_LIMIT`.
-async fn get_presence_peers(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
-    let peers: Vec<(Uuid,)> = sqlx::query_as(
-        r"
-        SELECT peer_id FROM (
-            SELECT CASE
-                WHEN f.requester_id = $1 THEN f.addressee_id
-                ELSE f.requester_id
-            END AS peer_id, 0 AS rank
-            FROM friendships f
-            WHERE (f.requester_id = $1 OR f.addressee_id = $1)
-              AND f.status = 'accepted'
-            UNION ALL
-            SELECT other.user_id AS peer_id, 1 AS rank
-            FROM guild_members mine
-            JOIN guild_members other ON other.guild_id = mine.guild_id
-            WHERE mine.user_id = $1 AND other.user_id <> $1
-        ) peers
-        WHERE NOT EXISTS (
-            SELECT 1 FROM friendships b
-            WHERE b.status = 'blocked'
-              AND ((b.requester_id = $1 AND b.addressee_id = peers.peer_id)
-                OR (b.requester_id = peers.peer_id AND b.addressee_id = $1))
-        )
-        GROUP BY peer_id
-        ORDER BY MIN(rank), peer_id
-        LIMIT $2
-        ",
-    )
-    .bind(user_id)
-    .bind(crate::presence::connections::PRESENCE_PEER_LIMIT)
-    .fetch_all(db)
-    .await?;
-
-    Ok(peers.into_iter().map(|(id,)| id).collect())
-}
-
-/// Stored activity and custom status of `peer_ids` (unversioned rich
-/// presence for the snapshot).
-async fn get_rich_presence(
-    db: &sqlx::PgPool,
-    peer_ids: &[Uuid],
-) -> Result<
-    std::collections::HashMap<Uuid, (Option<serde_json::Value>, Option<serde_json::Value>)>,
-    sqlx::Error,
-> {
-    if peer_ids.is_empty() {
-        return Ok(std::collections::HashMap::new());
-    }
-    let rows: Vec<(Uuid, Option<serde_json::Value>, Option<serde_json::Value>)> =
-        sqlx::query_as("SELECT id, activity, custom_status FROM users WHERE id = ANY($1)")
-            .bind(peer_ids)
-            .fetch_all(db)
-            .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(id, activity, custom_status)| (id, (activity, custom_status)))
-        .collect())
-}
-
 #[cfg(test)]
 mod pubsub_tests {
     use fred::types::config::Server;
@@ -3055,12 +2396,7 @@ mod pubsub_tests {
             session_id: Some(OWN_SESSION),
             presence_peer_ids: Vec::new(),
             guild_ids: Vec::new(),
-            presence: PresenceState {
-                peers: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
-                subscribed: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
-                guilds: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
-                versions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-            },
+            presence: PresenceState::new(Audience::default(), &[]),
             audience_tx: mpsc::channel(1).0,
             audience_pending: Arc::default(),
         };
@@ -3163,9 +2499,12 @@ mod pubsub_tests {
     #[tokio::test]
     async fn presence_updates_older_than_sent_version_are_dropped() {
         let (params, mut rx) = test_params(16);
-        params.presence.peers.write().await.insert(PEER);
-        // The connect snapshot already sent version 2 of this peer.
-        params.presence.versions.lock().await.insert(PEER, 2);
+        {
+            let mut audience = params.presence.audience.lock().await;
+            audience.peers.insert(PEER);
+            // The connect snapshot already sent version 2 of this peer.
+            audience.versions.insert(PEER, 2);
+        }
 
         let statuses = forwarded_statuses(
             &params,
@@ -3181,7 +2520,10 @@ mod pubsub_tests {
         .await;
 
         assert_eq!(statuses, ["busy", "offline"]);
-        assert_eq!(params.presence.versions.lock().await.get(&PEER), Some(&5));
+        assert_eq!(
+            params.presence.audience.lock().await.versions.get(&PEER),
+            Some(&5)
+        );
     }
 
     #[tokio::test]
@@ -3193,8 +2535,11 @@ mod pubsub_tests {
         assert!(statuses.is_empty());
 
         // A peer, but blocked.
-        params.presence.peers.write().await.insert(PEER);
-        params.blocked_users.write().await.insert(PEER);
+        {
+            let mut audience = params.presence.audience.lock().await;
+            audience.peers.insert(PEER);
+            audience.blocked.insert(PEER);
+        }
         let statuses =
             forwarded_statuses(&params, &mut rx, vec![versioned_status(2, "online")]).await;
         assert!(statuses.is_empty());
@@ -3212,17 +2557,26 @@ mod pubsub_tests {
         };
         let guild = Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00dd);
 
-        // Another member joined or left: re-check just that user.
+        // Another member (a current peer) left: suspended at once, so its
+        // next update in the same stream is not forwarded; re-check it.
+        params.presence.audience.lock().await.peers.insert(PEER);
         let statuses = forwarded_statuses(
             &params,
             &mut rx,
-            vec![raw_message(
-                channels::guild_events(guild),
-                notice(Some(PEER)),
-            )],
+            vec![
+                raw_message(channels::guild_events(guild), notice(Some(PEER))),
+                versioned_status(1, "busy"),
+            ],
         )
         .await;
-        assert!(statuses.is_empty());
+        assert!(statuses.is_empty(), "suspended before the next message");
+        assert!(params
+            .presence
+            .audience
+            .lock()
+            .await
+            .suspended
+            .contains(&PEER));
         assert!(rx.try_recv().is_err(), "notice must not be forwarded");
         assert_eq!(audience_rx.try_recv(), Ok(()));
         {

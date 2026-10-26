@@ -31,6 +31,7 @@ pub mod bot_events;
 pub mod bot_gateway;
 pub mod events;
 pub mod handlers;
+pub(crate) mod presence_audience;
 
 pub use events::{
     broadcast_admin_event, broadcast_guild_patch, broadcast_member_patch, broadcast_to_channel,
@@ -233,6 +234,50 @@ pub mod test_hooks {
 
     pub(crate) fn audience_read_fails(user_id: Uuid) -> bool {
         failing_reads()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&user_id)
+    }
+
+    fn snapshot_pauses() -> &'static Mutex<HashMap<Uuid, Pause>> {
+        static PAUSES: OnceLock<Mutex<HashMap<Uuid, Pause>>> = OnceLock::new();
+        PAUSES.get_or_init(Mutex::default)
+    }
+
+    /// Pause the next presence snapshot (connect, new peers, backstop) of a
+    /// socket of `user_id` after its fence, before it queues any entry.
+    pub fn pause_in_snapshot(user_id: Uuid) -> Pause {
+        let pause = Pause::default();
+        snapshot_pauses()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, pause.clone());
+        pause
+    }
+
+    pub(crate) async fn in_snapshot(user_id: Uuid) {
+        wait(snapshot_pauses(), user_id).await;
+    }
+
+    fn backstop_triggers() -> &'static Mutex<HashMap<Uuid, Arc<Notify>>> {
+        static TRIGGERS: OnceLock<Mutex<HashMap<Uuid, Arc<Notify>>>> = OnceLock::new();
+        TRIGGERS.get_or_init(Mutex::default)
+    }
+
+    /// Let tests run the presence backstop of `user_id`'s next socket on
+    /// demand: register before the socket connects, then notify.
+    pub fn run_backstop(user_id: Uuid) -> Arc<Notify> {
+        let trigger = Arc::new(Notify::new());
+        backstop_triggers()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(user_id, trigger.clone());
+        trigger
+    }
+
+    /// The backstop trigger registered for `user_id`, if any (taken once).
+    pub(crate) fn backstop_trigger(user_id: Uuid) -> Option<Arc<Notify>> {
+        backstop_triggers()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&user_id)
