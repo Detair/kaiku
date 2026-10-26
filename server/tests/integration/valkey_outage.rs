@@ -34,9 +34,10 @@ use super::helpers::{
     TestServer,
 };
 
-/// Upper bound for any request while Valkey hangs. Well above the 3 s default
-/// command timeout, well below "the server hangs".
-const HANG_GUARD: Duration = Duration::from_secs(10);
+/// Upper bound for any request while Valkey or the database hangs. Well above
+/// the 3 s default command timeout and the 5 s auth budget, well below "the
+/// server hangs", with headroom for loaded CI runners.
+const HANG_GUARD: Duration = Duration::from_secs(15);
 
 /// TCP proxy in front of the dev Valkey that can be frozen.
 struct ValkeyProxy {

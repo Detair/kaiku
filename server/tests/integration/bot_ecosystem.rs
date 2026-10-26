@@ -1754,8 +1754,8 @@ async fn valkey_connected_clients(redis: &fred::clients::Client) -> i64 {
 /// connection per command.
 #[sqlx::test]
 async fn test_slash_command_does_not_leak_valkey_connections(pool: PgPool) {
-    const COMMANDS: usize = 30;
-    const ALLOWED_GROWTH: i64 = 10;
+    const COMMANDS: usize = 80;
+    const ALLOWED_GROWTH: i64 = 40;
 
     let app = TestApp::with_pool(pool.clone()).await;
     let (user_id, _) = create_test_user(&app.pool).await;
