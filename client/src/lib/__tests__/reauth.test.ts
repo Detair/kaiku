@@ -19,6 +19,7 @@ import {
   infoFromServer,
   waitForBrowserReauth,
   reauthErrorText,
+  isRejectedCode,
   defaultReauthStrategy,
 } from "../reauth";
 import { errorText } from "@/i18n/errors";
@@ -258,6 +259,17 @@ describe("reauthErrorText", () => {
     expect(errorText(new HttpError(401, "x", "INVALID_MFA"), "admin.reauth.error.generic", LOGIN_ERRORS)).toBe(
       "That code didn't work. If you just used it, wait for the next code and try again.",
     );
+  });
+
+  it("normalises lowercase codes of a wrapped error too", () => {
+    const wrapped = new Error("wrapped", {
+      cause: new HttpError(401, "x", "invalid_credentials"),
+    });
+    expect(reauthErrorText(wrapped)).toBe("That password or code is not correct.");
+    expect(isRejectedCode(wrapped)).toBe(true);
+    const deeper = new Error("outer", { cause: new Error("inner", { cause: new HttpError(0, "x", "reauth_stale") }) });
+    expect(reauthErrorText(deeper)).toContain("too old");
+    expect(isRejectedCode(new Error("plain"))).toBe(false);
   });
 
   it("maps the server's wrong-code codes like a wrong password", () => {

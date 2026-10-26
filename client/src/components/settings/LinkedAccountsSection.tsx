@@ -57,7 +57,13 @@ const LinkedAccountsSection: Component = () => {
   // Stops the running browser attempt (listener + timers); also on dispose, so a
   // stale timer can never touch a popup opened later.
   let stopActive: (() => void) | null = null;
-  onCleanup(() => stopActive?.());
+  // Abandons an attempt whose authorize request is still pending (closes the
+  // blank popup; the continuation then does nothing).
+  let abandonPending: (() => void) | null = null;
+  onCleanup(() => {
+    abandonPending?.();
+    stopActive?.();
+  });
 
   // Providers not already linked to this account.
   const availableProviders = (): OidcProvider[] => {
@@ -111,6 +117,15 @@ const LinkedAccountsSection: Component = () => {
       return;
     }
     setLinking(provider.slug);
+    let disposed = false;
+    const abandon = () => {
+      disposed = true;
+      popup?.close();
+    };
+    abandonPending = abandon;
+    const settled = () => {
+      if (abandonPending === abandon) abandonPending = null;
+    };
 
     const needElevation = () => {
       setLinking(null);
@@ -126,6 +141,8 @@ const LinkedAccountsSection: Component = () => {
       try {
         result = await tauri.linkIdentity(provider.slug);
       } catch (err) {
+        if (disposed) return;
+        settled();
         popup?.close();
         if (tauri.isElevationRequiredError(err)) {
           needElevation();
@@ -133,6 +150,8 @@ const LinkedAccountsSection: Component = () => {
         }
         throw err;
       }
+      if (disposed) return;
+      settled();
 
       if (result.mode === "tauri" || !popup) {
         // Native command resolved on success; refresh the list.

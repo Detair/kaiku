@@ -192,9 +192,28 @@ const REAUTH_ERRORS: Record<string, MessageKey> = {
   SERVICE_UNAVAILABLE: "admin.reauth.error.serviceUnavailable",
 };
 
-/** The server error code carried by a failed call, if any. */
+/**
+ * The `HttpError` behind a failure, unwrapped through `cause` the same way
+ * `errorText()` does, with its code upper-cased (servers spell some codes in
+ * lowercase). `undefined` when no HTTP error is involved.
+ */
+function normalisedHttpError(err: unknown): HttpError | undefined {
+  let current: unknown = err;
+  for (let depth = 0; depth < 8 && current !== undefined; depth++) {
+    if (current instanceof HttpError) {
+      const code = current.code;
+      return code && code !== code.toUpperCase()
+        ? new HttpError(current.status, current.message, code.toUpperCase())
+        : current;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return undefined;
+}
+
+/** The server error code carried by a failed call (upper-case), if any. */
 export function reauthErrorCode(err: unknown): string | undefined {
-  return err instanceof HttpError ? err.code : undefined;
+  return normalisedHttpError(err)?.code;
 }
 
 const REAUTH_STATUS_ERRORS: Partial<Record<number, MessageKey>> = {
@@ -213,7 +232,7 @@ const WRONG_CODE = new Set(["INVALID_CREDENTIALS", "INVALID_MFA", "INVALID_MFA_C
  */
 export function isRejectedCode(err: unknown): boolean {
   const code = reauthErrorCode(err);
-  return code !== undefined && WRONG_CODE.has(code.toUpperCase());
+  return code !== undefined && WRONG_CODE.has(code);
 }
 
 /**
@@ -221,10 +240,6 @@ export function isRejectedCode(err: unknown): boolean {
  * One shared mapping (R12): the re-auth codes on top of `errorText()`.
  */
 export function reauthErrorText(err: unknown): string {
-  // Servers spell some codes in lowercase; the lookup is case-insensitive.
-  const normalised =
-    err instanceof HttpError && err.code && err.code !== err.code.toUpperCase()
-      ? new HttpError(err.status, err.message, err.code.toUpperCase())
-      : err;
-  return errorText(normalised, "admin.reauth.error.generic", REAUTH_ERRORS, REAUTH_STATUS_ERRORS);
+  // Case-insensitive lookup, also for a wrapped HttpError.
+  return errorText(normalisedHttpError(err) ?? err, "admin.reauth.error.generic", REAUTH_ERRORS, REAUTH_STATUS_ERRORS);
 }

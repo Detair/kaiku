@@ -86,6 +86,18 @@ describe("ReauthDialog", () => {
     },
   );
 
+  it("a wrapped lowercase rejection with a code also adds the hint", async () => {
+    const onSubmit = vi
+      .fn()
+      .mockRejectedValue(new Error("w", { cause: new HttpError(401, "x", "invalid_credentials") }));
+    setup({ onSubmit, mfaEnabled: true });
+    type(/password/i, "pw");
+    type(/authenticator code/i, "123456");
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain(USED_HINT));
+    expect(screen.getByRole("alert").textContent).toContain("not correct");
+  });
+
   it("no already-used hint when no code was sent", async () => {
     const onSubmit = vi.fn().mockRejectedValue(new HttpError(401, "x", "INVALID_CREDENTIALS"));
     setup({ onSubmit });

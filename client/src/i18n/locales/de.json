@@ -6,6 +6,7 @@
   "admin.createAccount.failed": "",
   "admin.createAccount.generate": "",
   "admin.createAccount.handover": "",
+  "admin.createAccount.invalid": "",
   "admin.createAccount.needsElevation": "",
   "admin.createAccount.password": "",
   "admin.createAccount.passwordLength": "",

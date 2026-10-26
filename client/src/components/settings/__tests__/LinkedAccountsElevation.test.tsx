@@ -195,6 +195,31 @@ describe("LinkedAccountsSection admin elevation", () => {
     }
   });
 
+  it("dispose while authorize is pending: no navigation, no listener, no timers", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const popup = fakePopup();
+      vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+      const addListener = vi.spyOn(window, "addEventListener");
+      let resolve!: (v: unknown) => void;
+      linkIdentity.mockReturnValue(new Promise((r) => (resolve = r)));
+      const view = render(() => <LinkedAccountsSection />);
+      await clickLink();
+      expect(window.open).toHaveBeenCalledTimes(1);
+      view.unmount();
+      expect(popup.close).toHaveBeenCalledTimes(1);
+      resolve({ mode: "browser", authUrl: "https://idp/x" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(popup.location.href).toBe("");
+      expect(addListener.mock.calls.filter((c) => c[0] === "message")).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(121_000);
+      expect(popup.close).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("ignores a callback message from another window", async () => {
     vi.spyOn(window, "open").mockReturnValue(popupStub());
     linkIdentity.mockResolvedValue({ mode: "browser", authUrl: "https://idp/x" });
