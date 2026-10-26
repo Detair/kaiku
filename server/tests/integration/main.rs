@@ -1,3 +1,4 @@
+mod guild_member_privacy;
 mod helpers;
 
 mod admin_create_user;
