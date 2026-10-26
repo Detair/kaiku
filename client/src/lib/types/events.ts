@@ -132,22 +132,31 @@ export type ServerEvent =
       channel_id: string;
       initiator: string;
       initiator_name: string;
+      call_id?: string;
     }
-  | { type: "call_started"; channel_id: string }
+  | {
+      type: "call_started";
+      channel_id: string;
+      call_id?: string;
+      initiator?: string;
+      initiator_name?: string;
+    }
   | {
       type: "call_ended";
       channel_id: string;
+      call_id?: string;
       reason: string;
       duration_secs: number | null;
     }
   | {
       type: "call_participant_joined";
       channel_id: string;
+      call_id?: string;
       user_id: string;
       username: string;
     }
-  | { type: "call_participant_left"; channel_id: string; user_id: string }
-  | { type: "call_declined"; channel_id: string; user_id: string }
+  | { type: "call_participant_left"; channel_id: string; call_id?: string; user_id: string }
+  | { type: "call_declined"; channel_id: string; call_id?: string; user_id: string }
   // Voice metrics events
   | {
       type: "voice_user_stats";
