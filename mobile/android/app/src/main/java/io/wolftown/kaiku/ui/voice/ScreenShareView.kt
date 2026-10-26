@@ -108,7 +108,7 @@ fun ScreenShareView(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Connecting to screen share...",
+                        text = stringResource(R.string.voice_screen_share_connecting),
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.7f)
                     )
@@ -137,7 +137,7 @@ fun ScreenShareView(
                     // Username and source label
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = screenShareInfo.username.ifEmpty { "Unknown" },
+                            text = screenShareInfo.username.ifEmpty { stringResource(R.string.voice_unknown_user) },
                             style = MaterialTheme.typography.labelLarge,
                             color = Color.White,
                             maxLines = 1,
@@ -181,9 +181,9 @@ fun ScreenShareView(
                 ) {
                     // Layer quality chips
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        layerOptions.forEach { (label, value) ->
+                        layerOptions.forEach { (labelRes, value) ->
                             LayerChip(
-                                label = label,
+                                label = stringResource(labelRes),
                                 isSelected = currentLayer == value,
                                 onClick = { onLayerChange(value) }
                             )
@@ -196,7 +196,7 @@ fun ScreenShareView(
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
                     ) {
                         Text(
-                            text = "Fullscreen",
+                            text = stringResource(R.string.voice_screen_share_fullscreen),
                             style = MaterialTheme.typography.labelSmall,
                             color = Color.White
                         )
@@ -236,10 +236,10 @@ private fun LayerChip(
 
 /** Ordered list of layer options displayed as chips. */
 private val layerOptions = listOf(
-    "Auto" to "auto",
-    "High" to "high",
-    "Med" to "medium",
-    "Low" to "low"
+    R.string.voice_screen_share_layer_auto to "auto",
+    R.string.voice_screen_share_layer_high to "high",
+    R.string.voice_screen_share_layer_medium to "medium",
+    R.string.voice_screen_share_layer_low to "low"
 )
 
 /** Returns a color for the quality badge based on the quality string. */

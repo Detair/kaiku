@@ -142,4 +142,25 @@ class SettingsViewModelTest {
         assertEquals("org.example.other", vm.notificationState.value.selectedDistributor)
         verify(exactly = 1) { registrar.refreshAsync() }
     }
+
+    @Test
+    fun `load failure exposes a string resource`() {
+        val vm = viewModel() // the unstubbed repository throws while loading the profile
+        assertEquals(io.wolftown.kaiku.R.string.settings_profile_load_failed, vm.error.value)
+    }
+
+    @Test
+    fun `status maps to a label resource for every enum value`() {
+        io.wolftown.kaiku.domain.model.UserStatus.entries.forEach { status ->
+            statusLabelRes(status) // none throws
+        }
+        assertEquals(
+            io.wolftown.kaiku.R.string.settings_status_unknown,
+            statusLabelRes(io.wolftown.kaiku.domain.model.UserStatus.UNKNOWN)
+        )
+        assertEquals(
+            io.wolftown.kaiku.R.string.home_status_dnd,
+            statusLabelRes(io.wolftown.kaiku.domain.model.UserStatus.DND)
+        )
+    }
 }

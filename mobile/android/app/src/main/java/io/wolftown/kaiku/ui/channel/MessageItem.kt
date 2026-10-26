@@ -163,7 +163,15 @@ fun MessageItem(
                                     onToggleReaction?.invoke(message.id, reaction.emoji, reaction.mine)
                                 },
                                 enabled = onToggleReaction != null,
-                                label = { Text("${reaction.emoji} ${reaction.count}") },
+                                label = {
+                                    Text(
+                                        stringResource(
+                                            R.string.chat_reaction_chip_label,
+                                            reaction.emoji,
+                                            reaction.count
+                                        )
+                                    )
+                                },
                                 modifier = Modifier.semantics { contentDescription = description }
                             )
                         }

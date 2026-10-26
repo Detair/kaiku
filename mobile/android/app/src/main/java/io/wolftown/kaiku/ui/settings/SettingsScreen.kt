@@ -14,8 +14,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.wolftown.kaiku.R
 
 private const val NTFY_HELP_URL = "https://docs.ntfy.sh/subscribe/phone/"
 
@@ -65,12 +67,12 @@ fun SettingsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Settings") },
+                title = { Text(stringResource(R.string.settings_modal_title)) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back"
+                            contentDescription = stringResource(R.string.common_back)
                         )
                     }
                 }
@@ -85,7 +87,7 @@ fun SettingsScreen(
         ) {
             // Account section
             Text(
-                text = "Account",
+                text = stringResource(R.string.settings_section_account),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(vertical = 12.dp)
@@ -99,22 +101,28 @@ fun SettingsScreen(
                     strokeWidth = 2.dp
                 )
             } else if (user != null) {
-                SettingsRow(label = "Username", value = user!!.username)
-                SettingsRow(label = "Display name", value = user!!.displayName)
-                SettingsRow(label = "Status", value = user!!.status.name.lowercase())
+                SettingsRow(label = stringResource(R.string.common_username), value = user!!.username)
+                SettingsRow(label = stringResource(R.string.settings_display_name), value = user!!.displayName)
+                SettingsRow(
+                    label = stringResource(R.string.settings_status_label),
+                    value = stringResource(statusLabelRes(user!!.status))
+                )
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
             // Server section
             Text(
-                text = "Server",
+                text = stringResource(R.string.settings_section_server),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(vertical = 12.dp)
             )
 
-            SettingsRow(label = "Server URL", value = serverUrl ?: "Not configured")
+            SettingsRow(
+                label = stringResource(R.string.settings_server_url),
+                value = serverUrl ?: stringResource(R.string.settings_server_url_not_configured)
+            )
 
             // No QR sign-in here: switching accounts needs signing out first
             // (AuthRepository refuses to replace a running session).
@@ -133,13 +141,13 @@ fun SettingsScreen(
 
             // About section
             Text(
-                text = "About",
+                text = stringResource(R.string.settings_section_about),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(vertical = 12.dp)
             )
 
-            SettingsRow(label = "App version", value = appVersion)
+            SettingsRow(label = stringResource(R.string.settings_app_version), value = appVersion)
 
             Spacer(modifier = Modifier.weight(1f))
 
@@ -153,7 +161,7 @@ fun SettingsScreen(
                     containerColor = MaterialTheme.colorScheme.error
                 )
             ) {
-                Text("Log out")
+                Text(stringResource(R.string.home_user_panel_logout))
             }
         }
     }
@@ -161,8 +169,8 @@ fun SettingsScreen(
     if (showLogoutDialog) {
         AlertDialog(
             onDismissRequest = { showLogoutDialog = false },
-            title = { Text("Log out") },
-            text = { Text("Are you sure you want to log out?") },
+            title = { Text(stringResource(R.string.home_user_panel_logout)) },
+            text = { Text(stringResource(R.string.settings_logout_confirm)) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -170,12 +178,12 @@ fun SettingsScreen(
                         viewModel.logout()
                     }
                 ) {
-                    Text("Log out", color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(R.string.home_user_panel_logout), color = MaterialTheme.colorScheme.error)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showLogoutDialog = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.common_cancel))
                 }
             }
         )

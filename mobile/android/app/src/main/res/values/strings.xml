@@ -5,6 +5,7 @@
     <!-- Common -->
     <string name="common_back">Back</string>
     <string name="common_retry">Retry</string>
+    <string name="common_cancel">Cancel</string>
     <string name="common_username">Username</string>
     <string name="common_error_generic">Something went wrong.</string>
     <string name="common_avatar_description">%1$s\'s avatar</string>
@@ -113,8 +114,29 @@
     <string name="chat_reaction_failed">Couldn\'t update your reaction.</string>
     <string name="chat_edit_title">Edit message</string>
     <string name="chat_edit_save">Save</string>
+    <string name="chat_message_add_reaction">Add reaction</string>
+    <string name="chat_reaction_chip_label">%1$s %2$d</string>
     <string name="chat_edit_cancel">Cancel</string>
     <string name="chat_edit_label">Message</string>
+
+    <!-- Settings -->
+    <string name="settings_modal_title">Settings</string>
+    <string name="settings_section_account">Account</string>
+    <string name="settings_display_name">Display name</string>
+    <string name="settings_status_label">Status</string>
+    <string name="settings_status_offline">Offline</string>
+    <string name="settings_status_unknown">Unknown</string>
+    <string name="settings_section_server">Server</string>
+    <string name="settings_server_url">Server URL</string>
+    <string name="settings_server_url_not_configured">Not configured</string>
+    <string name="settings_section_about">About</string>
+    <string name="settings_app_version">App version</string>
+    <string name="settings_logout_confirm">Are you sure you want to log out?</string>
+    <string name="settings_profile_load_failed">Couldn\'t load your profile.</string>
+    <string name="home_user_panel_logout">Logout</string>
+    <string name="home_status_online">Online</string>
+    <string name="home_status_idle">Idle</string>
+    <string name="home_status_dnd">Do Not Disturb</string>
 
     <!-- Connection banner -->
     <string name="connection_reconnecting">Reconnecting…</string>
@@ -156,6 +178,12 @@
     <string name="voice_microphone">Microphone</string>
     <string name="voice_microphone_on">On</string>
     <string name="voice_audio_output">Audio output</string>
+    <string name="voice_screen_share_connecting">Connecting to screen share…</string>
+    <string name="voice_screen_share_fullscreen">Fullscreen</string>
+    <string name="voice_screen_share_layer_auto">Auto</string>
+    <string name="voice_screen_share_layer_high">High</string>
+    <string name="voice_screen_share_layer_medium">Med</string>
+    <string name="voice_screen_share_layer_low">Low</string>
     <string name="voice_overlay_connected">Connected to #%1$s</string>
     <string name="voice_overlay_connected_unknown">Connected to voice</string>
     <string name="voice_overlay_return">Return to call</string>
