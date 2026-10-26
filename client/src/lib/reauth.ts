@@ -13,6 +13,7 @@ import {
   isTauri,
   HttpError,
 } from "@/lib/tauri";
+import { normalizeCode } from "@/lib/errorCode";
 import type { ReauthMethodsResponse } from "@/lib/types";
 import type { MessageKey } from "@/i18n";
 import { errorText } from "@/i18n/errors";
@@ -201,9 +202,9 @@ function normalisedHttpError(err: unknown): HttpError | undefined {
   let current: unknown = err;
   for (let depth = 0; depth < 8 && current !== undefined; depth++) {
     if (current instanceof HttpError) {
-      const code = current.code;
-      return code && code !== code.toUpperCase()
-        ? new HttpError(current.status, current.message, code.toUpperCase())
+      const code = normalizeCode(current.code);
+      return code !== null && code !== current.code
+        ? new HttpError(current.status, current.message, code)
         : current;
     }
     current = current instanceof Error ? current.cause : undefined;

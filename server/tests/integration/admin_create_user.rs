@@ -163,7 +163,7 @@ async fn create_user_requires_elevation(pool: PgPool) {
     let resp = create_user(&server, &token, "oma", TEMP_PASSWORD).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["error"], "elevation_required");
+    assert_eq!(body["error"], "ELEVATION_REQUIRED");
 
     // Listing users stays available without elevation.
     let resp = reqwest::Client::new()
@@ -195,7 +195,7 @@ async fn create_user_duplicate_username_409(pool: PgPool) {
     let resp = create_user(&server, &token, "oma", TEMP_PASSWORD).await;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["error"], "conflict");
+    assert_eq!(body["error"], "CONFLICT");
 }
 
 #[sqlx::test]

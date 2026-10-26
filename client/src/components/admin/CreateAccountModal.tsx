@@ -115,9 +115,10 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
           {
             USER_EXISTS: "admin.createAccount.usernameTaken",
             // e.g. an unknown server or too many in guild_ids; never the server's
-            // text. The admin validator answers with lowercase "validation".
+            // text. The admin validator answered "validation" before it
+            // joined VALIDATION_ERROR (lookup ignores case).
             VALIDATION_ERROR: "admin.createAccount.invalid",
-            validation: "admin.createAccount.invalid",
+            VALIDATION: "admin.createAccount.invalid",
           },
           { 409: "admin.createAccount.usernameTaken" },
         ),

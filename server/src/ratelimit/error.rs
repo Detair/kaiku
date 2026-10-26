@@ -50,7 +50,7 @@ impl IntoResponse for RateLimitError {
                 .into_response(),
             Self::LimitExceeded(result) => {
                 let body = RateLimitErrorResponse {
-                    error: "rate_limited",
+                    error: "RATE_LIMITED",
                     message: format!("Too many requests. Wait {} seconds.", result.retry_after),
                     retry_after: result.retry_after,
                     limit: result.limit,
@@ -65,7 +65,7 @@ impl IntoResponse for RateLimitError {
             }
             Self::IpBlocked { retry_after } => {
                 let body = RateLimitErrorResponse {
-                    error: "ip_blocked",
+                    error: "IP_BLOCKED",
                     message: format!("IP blocked. Wait {retry_after} seconds."),
                     retry_after,
                     limit: 0,

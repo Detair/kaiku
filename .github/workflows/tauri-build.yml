@@ -26,7 +26,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          # Follows ubuntu-latest again: the workspace [patch.crates-io]
+          # (bindgen 0.72 for libspa-sys/pipewire-sys/env-libvpx-sys) builds
+          # against current PipeWire/libvpx headers and libclang.
+          - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: linux
             allow_failure: true

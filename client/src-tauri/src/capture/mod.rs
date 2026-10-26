@@ -8,6 +8,9 @@ pub mod convert;
 pub mod source;
 pub mod webcam;
 
+#[cfg(all(test, target_os = "linux"))]
+mod pipewire_ffi_tests;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

@@ -4,6 +4,7 @@
  * Manages guild (server) state for multi-server support.
  */
 
+import { isTextLikeChannelType } from "@/lib/channelTypes";
 import { createStore } from "solid-js/store";
 import type { Guild, GuildMember, GuildInvite, Channel } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
@@ -479,7 +480,7 @@ async function loadAllGuildUnreadCounts(guilds: Guild[]): Promise<void> {
         }
         // Sum unread counts from text channels
         const total = channels
-          .filter((c) => c.channel_type === "text")
+          .filter((c) => isTextLikeChannelType(c.channel_type))
           .reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
         setGuildsState("guildUnreadCounts", guild.id, total);
       } catch (err) {
