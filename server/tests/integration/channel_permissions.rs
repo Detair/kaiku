@@ -318,8 +318,10 @@ async fn test_channel_override_allow_grants_access(pool: PgPool) {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// Role overrides are aggregated: when one of the member's roles allows a bit
+/// and another denies it, the allow wins.
 #[sqlx::test]
-async fn test_channel_override_deny_wins_over_allow(pool: PgPool) {
+async fn test_channel_override_role_allow_wins_over_role_deny(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (owner_id, _) = create_test_user(&app.pool).await;
     let (user_id, _) = create_test_user(&app.pool).await;
@@ -340,7 +342,7 @@ async fn test_channel_override_deny_wins_over_allow(pool: PgPool) {
     // Override 1: Allow VIEW_CHANNEL
     create_channel_override(&app.pool, channel_id, allow_role, VIEW_CHANNEL, 0).await;
 
-    // Override 2: Deny VIEW_CHANNEL (deny wins)
+    // Override 2: Deny VIEW_CHANNEL (the other role's allow wins)
     create_channel_override(&app.pool, channel_id, deny_role, 0, VIEW_CHANNEL).await;
 
     let request = Request::builder()
@@ -351,7 +353,7 @@ async fn test_channel_override_deny_wins_over_allow(pool: PgPool) {
         .unwrap();
 
     let response = app.oneshot(request).await;
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 // ============================================================================
@@ -434,15 +436,14 @@ async fn test_cannot_send_message_without_view_channel(pool: PgPool) {
 
     let request = Request::builder()
         .method(Method::POST)
-        .uri(format!("/api/channels/{channel_id}/messages"))
+        .uri(format!("/api/messages/channel/{channel_id}"))
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(serde_json::to_string(&body_json).unwrap()))
         .unwrap();
 
     let response = app.oneshot(request).await;
-    // Returns 404 to avoid leaking channel existence to unauthorized users
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[sqlx::test]
@@ -461,14 +462,13 @@ async fn test_cannot_read_messages_without_view_channel(pool: PgPool) {
 
     let request = Request::builder()
         .method(Method::GET)
-        .uri(format!("/api/channels/{channel_id}/messages"))
+        .uri(format!("/api/messages/channel/{channel_id}"))
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
 
     let response = app.oneshot(request).await;
-    // Returns 404 to avoid leaking channel existence to unauthorized users
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 // ============================================================================

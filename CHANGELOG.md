@@ -131,6 +131,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Channels no longer stay marked as unread after replies in a thread, and notifications skip messages you have already read.
 - Direct-message calls show why they ended, and calling someone you've blocked says so.
 - Unread badges no longer count your own messages, thread replies or deleted messages, and never include channels you can't open.
+- Channels visible only to certain roles now work as expected.
 - A channel no longer stays marked unread for good after "mark all as read" picked a thread reply as the last read message.
 - Running a bot slash command no longer leaves a connection to the server's cache open each time, which could exhaust connections on busy servers.
 - Calling someone again right after a missed or dropped call works, and calls ring even when the other person has the conversation closed.

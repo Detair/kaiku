@@ -670,6 +670,25 @@ async fn test_viewable_filter_matches_require_channel_access(pool: PgPool) {
     .await
     .unwrap();
     let screened_channel = create_channel(pool, screened, "rules-first").await;
+    // Even an @everyone override allow does not open it before the rules are accepted.
+    let screened_open = create_channel(pool, screened, "rules-open").await;
+    let screened_everyone: Uuid =
+        sqlx::query_scalar("SELECT id FROM guild_roles WHERE guild_id = $1 AND is_default")
+            .bind(screened)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO channel_overrides (id, channel_id, role_id, allow_permissions, deny_permissions)
+         VALUES ($1, $2, $3, $4, 0)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(screened_open)
+    .bind(screened_everyone)
+    .bind((GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES).to_db())
+    .execute(pool)
+    .await
+    .unwrap();
 
     // Guild the user is not a member of.
     let foreign = create_guild(pool, other).await;
@@ -683,6 +702,7 @@ async fn test_viewable_filter_matches_require_channel_access(pool: PgPool) {
         (member_guild, role_only),
         (screened, screened_channel),
         (foreign, foreign_channel),
+        (screened, screened_open),
     ];
     let batched = filter_viewable_channels_in_guilds(pool, user, &pairs)
         .await
@@ -695,17 +715,39 @@ async fn test_viewable_filter_matches_require_channel_access(pool: PgPool) {
         expected.push(single);
     }
     // The fixtures exercise both outcomes: owner bypass, plain member access,
-    // role-only allow; @everyone deny, pending screening, non-member. (The
-    // role allow vs @everyone deny case is only checked for parity.)
+    // role allow over an @everyone deny (private channel), role-only allow;
+    // @everyone deny, pending screening (also with an @everyone override
+    // allow), non-member.
     for (index, want) in [
         (0, true),
         (1, true),
+        (3, true),
         (4, true),
         (2, false),
         (5, false),
         (6, false),
+        (7, false),
     ] {
         assert_eq!(expected[index], want, "fixture {index}");
+    }
+
+    // A member without the role: the private channel stays hidden, on both
+    // paths alike.
+    let (plain, _) = create_test_user(pool).await;
+    add_guild_member(pool, member_guild, plain).await;
+    let member_pairs = &pairs[1..5];
+    let batched = filter_viewable_channels_in_guilds(pool, plain, member_pairs)
+        .await
+        .expect("batched filter");
+    for (index, want) in [(0, true), (1, false), (2, false), (3, true)] {
+        let channel = member_pairs[index].1;
+        let single = require_channel_access(pool, plain, channel).await.is_ok();
+        assert_eq!(
+            batched.contains(&channel),
+            single,
+            "plain channel {channel}"
+        );
+        assert_eq!(single, want, "plain fixture {index}");
     }
 }
 

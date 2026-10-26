@@ -809,9 +809,11 @@ pub async fn get_channel_overrides(
 ) -> sqlx::Result<Vec<crate::permissions::models::ChannelOverride>> {
     sqlx::query_as::<_, crate::permissions::models::ChannelOverride>(
         r"
-        SELECT id, channel_id, role_id, allow_permissions, deny_permissions
-        FROM channel_overrides
-        WHERE channel_id = $1
+        SELECT o.id, o.channel_id, o.role_id, o.allow_permissions, o.deny_permissions,
+               r.is_default AS everyone
+        FROM channel_overrides o
+        INNER JOIN guild_roles r ON r.id = o.role_id
+        WHERE o.channel_id = $1
         ",
     )
     .bind(channel_id)
@@ -830,9 +832,11 @@ pub async fn get_channel_overrides_batch(
 
     sqlx::query_as::<_, crate::permissions::models::ChannelOverride>(
         r"
-        SELECT id, channel_id, role_id, allow_permissions, deny_permissions
-        FROM channel_overrides
-        WHERE channel_id = ANY($1)
+        SELECT o.id, o.channel_id, o.role_id, o.allow_permissions, o.deny_permissions,
+               r.is_default AS everyone
+        FROM channel_overrides o
+        INNER JOIN guild_roles r ON r.id = o.role_id
+        WHERE o.channel_id = ANY($1)
         ",
     )
     .bind(channel_ids)

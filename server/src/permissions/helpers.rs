@@ -21,6 +21,7 @@ pub struct MemberPermissionContext {
     /// Permissions from the @everyone role.
     pub everyone_permissions: GuildPermissions,
 
+    /// ID of the guild's @everyone role.
     pub everyone_role_id: Option<Uuid>,
 
     /// All roles assigned to this member (excluding @everyone).
@@ -35,6 +36,10 @@ pub struct MemberPermissionContext {
 
     /// Whether this member is the guild owner.
     pub is_owner: bool,
+
+    /// Member has not accepted the screening rules yet (never the owner): no
+    /// permissions at all, channel overrides included.
+    pub pending: bool,
 }
 
 impl MemberPermissionContext {
@@ -176,6 +181,7 @@ fn assemble_context(
             computed_permissions: GuildPermissions::empty(),
             highest_role_position: None,
             is_owner: false,
+            pending: true,
         };
     }
 
@@ -189,6 +195,7 @@ fn assemble_context(
     let computed_permissions = compute_guild_permissions(
         user_id,
         guild_info.guild_owner_id,
+        false,
         everyone_permissions,
         &member_roles,
         None, // No channel overrides for guild-level context
@@ -202,33 +209,27 @@ fn assemble_context(
         computed_permissions,
         highest_role_position,
         is_owner: guild_info.guild_owner_id == user_id,
+        pending: false,
     }
 }
 
-/// Effective permissions of a (non-owner) member in one channel, given that
-/// channel's overrides. Shared by [`require_channel_access`] and the batched
-/// channel filters so every `VIEW_CHANNEL` decision is made the same way.
+/// Effective permissions of a member in one channel, given that channel's
+/// overrides. Shared by [`require_channel_access`] and the batched channel
+/// filters so every `VIEW_CHANNEL` decision is made the same way; the
+/// override order itself lives in [`compute_guild_permissions`].
 fn channel_permissions(
     ctx: &MemberPermissionContext,
     user_id: Uuid,
     overrides: Option<&[super::models::ChannelOverride]>,
 ) -> GuildPermissions {
-    let mut perms = compute_guild_permissions(
+    compute_guild_permissions(
         user_id,
         ctx.guild_owner_id,
+        ctx.pending,
         ctx.everyone_permissions,
         &ctx.member_roles,
         overrides,
-    );
-    if let Some(everyone_role_id) = ctx.everyone_role_id {
-        if let Some(override_entry) =
-            overrides.and_then(|v| v.iter().find(|ovr| ovr.role_id == everyone_role_id))
-        {
-            perms |= override_entry.allow_permissions & GuildPermissions::EVERYONE_ALLOWED;
-            perms &= !override_entry.deny_permissions;
-        }
-    }
-    perms
+    )
 }
 
 /// Load permission context and require a specific permission.
@@ -312,6 +313,7 @@ pub async fn require_channel_access(
             computed_permissions: GuildPermissions::all(), // Full access to participant
             highest_role_position: None,
             is_owner: false,
+            pending: false,
         });
     }
 
@@ -571,6 +573,7 @@ mod tests {
             computed_permissions: GuildPermissions::SEND_MESSAGES | GuildPermissions::VOICE_CONNECT,
             highest_role_position: None,
             is_owner: false,
+            pending: false,
         };
 
         assert!(ctx.has_permission(GuildPermissions::SEND_MESSAGES));
@@ -588,6 +591,7 @@ mod tests {
             computed_permissions: GuildPermissions::SEND_MESSAGES | GuildPermissions::MANAGE_ROLES,
             highest_role_position: Some(50),
             is_owner: false,
+            pending: false,
         };
 
         assert!(ctx
@@ -608,6 +612,7 @@ mod tests {
             computed_permissions: GuildPermissions::SEND_MESSAGES,
             highest_role_position: None,
             is_owner: false,
+            pending: false,
         };
 
         let result = ctx.require_permission(GuildPermissions::BAN_MEMBERS);
@@ -625,6 +630,7 @@ mod tests {
             computed_permissions: GuildPermissions::all(), // Owners have all permissions
             highest_role_position: None,
             is_owner: true,
+            pending: false,
         };
 
         assert!(ctx.is_owner);
@@ -643,6 +649,7 @@ mod tests {
             computed_permissions: GuildPermissions::empty(),
             highest_role_position: None,
             is_owner: false,
+            pending: false,
         };
         assert_eq!(ctx_no_roles.highest_role_position, None);
 
@@ -655,6 +662,7 @@ mod tests {
             computed_permissions: GuildPermissions::KICK_MEMBERS,
             highest_role_position: Some(50),
             is_owner: false,
+            pending: false,
         };
         assert_eq!(ctx_with_roles.highest_role_position, Some(50));
     }
@@ -675,6 +683,7 @@ mod tests {
             computed_permissions: GuildPermissions::all(),
             highest_role_position: None,
             is_owner: true,
+            pending: false,
         };
 
         // The owner bypass check is: if ctx.is_owner { return all }
