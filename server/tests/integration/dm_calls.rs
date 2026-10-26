@@ -21,7 +21,8 @@ use uuid::Uuid;
 use vc_server::config::Config;
 use vc_server::voice::call::EndReason;
 use vc_server::voice::call_service::{
-    caller_socket_closed, end_call, ring_timeout_fired, CallError, CallService,
+    caller_socket_closed, end_call, last_voice_peer_left, may_have_ringing_calls,
+    ring_timeout_fired, CallError, CallService,
 };
 
 use super::helpers::{
@@ -512,7 +513,6 @@ async fn test_old_peer_leaving_does_not_end_newer_active_call(pool: PgPool) {
     next_ws_event(&mut caller_ws, "call_ended", EVENT_TIMEOUT).await;
 
     // Call B, answered (active), while the old peer is still in the room.
-    tokio::time::sleep(Duration::from_millis(5)).await;
     assert_eq!(start(&fx, &fx.callee_token).await, StatusCode::CREATED);
     assert_eq!(
         call_post(&fx, &fx.caller_token, "join").await.status(),
@@ -647,4 +647,88 @@ async fn test_initiator_cannot_join_own_ringing_call(pool: PgPool) {
     let resp = call_post(&fx, &fx.caller_token, "join").await;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
     assert_eq!(call_state(&fx).await["status"], "ringing");
+}
+
+/// The ringing index only lists ringing calls: an answered call leaves it,
+/// so the initiator's socket closes no longer trigger a cleanup check.
+#[sqlx::test]
+async fn test_answered_call_leaves_ringing_index(pool: PgPool) {
+    let fx = setup(&pool).await;
+    let redis = fx.app.state.redis.clone();
+
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    assert!(may_have_ringing_calls(&redis, fx.caller).await);
+    assert_eq!(
+        call_post(&fx, &fx.callee_token, "join").await.status(),
+        StatusCode::OK
+    );
+    let members: Vec<String> = redis
+        .smembers(format!("call_ringing_by:{}", fx.caller))
+        .await
+        .unwrap();
+    assert!(
+        members.is_empty(),
+        "answered call still indexed: {members:?}"
+    );
+    assert!(!may_have_ringing_calls(&redis, fx.caller).await);
+}
+
+/// The initiator cancelling a ringing call sends only `call_ended`.
+#[sqlx::test]
+async fn test_cancel_sends_only_call_ended(pool: PgPool) {
+    let fx = setup(&pool).await;
+    let mut callee_ws = connect_ready(&fx.server, &fx.callee_token).await;
+
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    next_ws_event(&mut callee_ws, "incoming_call", EVENT_TIMEOUT).await;
+    assert_eq!(
+        call_post(&fx, &fx.caller_token, "leave").await.status(),
+        StatusCode::OK
+    );
+
+    // Events arrive in publish order: nothing may precede `call_ended`.
+    use futures::StreamExt;
+    let first = tokio::time::timeout(EVENT_TIMEOUT, async {
+        loop {
+            if let Some(Ok(Message::Text(text))) = callee_ws.next().await {
+                let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if v["type"].as_str().is_some_and(|t| t.starts_with("call_")) {
+                    return v;
+                }
+            }
+        }
+    })
+    .await
+    .expect("call event");
+    assert_eq!(first["type"], "call_ended", "got {first}");
+    assert_eq!(first["reason"], "cancelled");
+    expect_no_ws_event(
+        &mut callee_ws,
+        "call_participant_left",
+        Duration::from_millis(300),
+    )
+    .await;
+}
+
+/// The leave hook compares at millisecond precision (the start time is
+/// stored in ms): a peer from the same millisecond as the start never ends
+/// the call; one from a later millisecond does.
+#[sqlx::test]
+async fn test_leave_hook_compares_start_time_in_ms(pool: PgPool) {
+    let fx = setup(&pool).await;
+    let calls = calls(&fx, &pool);
+
+    assert_eq!(start(&fx, &fx.caller_token).await, StatusCode::CREATED);
+    let (_, meta) = calls.get_call(fx.dm).await.unwrap().expect("call");
+    let same_ms = meta.started_at + chrono::Duration::microseconds(500);
+    assert!(!last_voice_peer_left(&calls, fx.dm, fx.caller, same_ms)
+        .await
+        .unwrap());
+    assert_eq!(call_state(&fx).await["status"], "ringing");
+
+    let later = meta.started_at + chrono::Duration::milliseconds(2);
+    assert!(last_voice_peer_left(&calls, fx.dm, fx.caller, later)
+        .await
+        .unwrap());
+    assert!(call_state(&fx).await.is_null());
 }

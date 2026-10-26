@@ -46,7 +46,9 @@ impl IntoResponse for CallError {
             Self::Redis(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
             Self::InvalidEvent(_) => (StatusCode::BAD_REQUEST, "invalid_event"),
             Self::StateTransition(_) => (StatusCode::CONFLICT, "invalid_transition"),
-            Self::Serialization(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
+            Self::Serialization(_) | Self::Internal(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+            }
         };
 
         let body = Json(CallApiError {
@@ -296,7 +298,7 @@ pub async fn start_call(
             .await
     })
     .await
-    .map_err(|e| CallError::Redis(format!("call start task failed: {e}")))??;
+    .map_err(|e| CallError::Internal(format!("call start task failed: {e}")))??;
 
     Ok((StatusCode::CREATED, Json(response(channel_id, started))))
 }

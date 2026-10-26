@@ -75,13 +75,21 @@ pub type CallEndReason = EndReason;
 /// KEYS: stream, ringing index of the initiator.
 /// ARGV: `call_id`, Started JSON, targets JSON, start ms, TTL, index member,
 /// then (user channel, payload) pairs to publish.
+///
+/// Publishing never fails the script (`redis.pcall`): it returns 2 instead of
+/// 1 if a publish failed after the call was created.
 const START_SCRIPT: &str = r"
 if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end
 redis.call('XADD', KEYS[1], '*', 'call_id', ARGV[1], 'data', ARGV[2], 'targets', ARGV[3], 'started_ms', ARGV[4])
 redis.call('EXPIRE', KEYS[1], ARGV[5])
 redis.call('SADD', KEYS[2], ARGV[6])
 redis.call('EXPIRE', KEYS[2], ARGV[5])
-for i = 7, #ARGV, 2 do redis.call('PUBLISH', ARGV[i], ARGV[i + 1]) end
+local failed = 0
+for i = 7, #ARGV, 2 do
+  local r = redis.pcall('PUBLISH', ARGV[i], ARGV[i + 1])
+  if type(r) == 'table' and r.err then failed = failed + 1 end
+end
+if failed > 0 then return 2 end
 return 1
 ";
 
@@ -90,8 +98,10 @@ return 1
 ///
 /// KEYS: stream, ringing index of the initiator.
 /// ARGV: `call_id`, last entry id, op (`append` | `delete`), event JSON,
-/// TTL to set (`0` keeps the current one), index member, then (user channel,
-/// payload) pairs to publish once applied.
+/// TTL to set (`0` keeps the current one), index member, `1` to drop the
+/// index member (the call stops ringing), then (user channel, payload) pairs
+/// to publish once applied. Returns 2 instead of 1 if the change applied but a
+/// publish failed (publishing never fails the script: `redis.pcall`).
 const CAS_SCRIPT: &str = r"
 local last = redis.call('XREVRANGE', KEYS[1], '+', '-', 'COUNT', 1)
 if #last == 0 or last[1][1] ~= ARGV[2] then return 0 end
@@ -108,8 +118,14 @@ if ARGV[3] == 'delete' then
 else
   redis.call('XADD', KEYS[1], '*', 'data', ARGV[4])
   if tonumber(ARGV[5]) > 0 then redis.call('EXPIRE', KEYS[1], ARGV[5]) end
+  if ARGV[7] == '1' then redis.call('SREM', KEYS[2], ARGV[6]) end
 end
-for i = 7, #ARGV, 2 do redis.call('PUBLISH', ARGV[i], ARGV[i + 1]) end
+local failed = 0
+for i = 8, #ARGV, 2 do
+  local r = redis.pcall('PUBLISH', ARGV[i], ARGV[i + 1])
+  if type(r) == 'table' and r.err then failed = failed + 1 end
+end
+if failed > 0 then return 2 end
 return 1
 ";
 
@@ -164,6 +180,17 @@ impl CallMeta {
 struct LoadedCall {
     state: Option<CallState>,
     meta: CallMeta,
+}
+
+/// The write half of one compare-and-set (see `CAS_SCRIPT`).
+struct CasWrite<'a> {
+    /// `append` or `delete`.
+    op: &'static str,
+    event_json: &'a str,
+    /// TTL to set; `0` keeps the current one.
+    ttl_secs: u64,
+    /// Drop the call from the initiator's ringing index.
+    unindex: bool,
 }
 
 /// Result of a successful transition.
@@ -350,18 +377,17 @@ impl CallService {
         &self,
         channel_id: Uuid,
         meta: &CallMeta,
-        op: &str,
-        event_json: &str,
-        ttl_secs: u64,
+        write: CasWrite<'_>,
         publish: Vec<String>,
     ) -> Result<bool, CallError> {
         let mut args = vec![
             meta.call_id.clone(),
             meta.last_id.clone(),
-            op.to_string(),
-            event_json.to_string(),
-            ttl_secs.to_string(),
+            write.op.to_string(),
+            write.event_json.to_string(),
+            write.ttl_secs.to_string(),
             Self::index_member(channel_id, &meta.call_id),
+            if write.unindex { "1" } else { "0" }.to_string(),
         ];
         args.extend(publish);
         let applied: i64 = self
@@ -376,7 +402,10 @@ impl CallService {
             )
             .await
             .map_err(|e| CallError::Redis(e.to_string()))?;
-        Ok(applied == 1)
+        if applied == 2 {
+            tracing::warn!(%channel_id, "Call change applied but an event could not be published");
+        }
+        Ok(applied >= 1)
     }
 
     /// Start a new call, ring the targets (`incoming_call`) and start its ring
@@ -439,8 +468,11 @@ impl CallService {
                 .eval(START_SCRIPT, vec![key.clone(), index.clone()], args)
                 .await
                 .map_err(|e| CallError::Redis(e.to_string()))?;
+            if started == 2 {
+                tracing::warn!(%channel_id, "Call started but an event could not be published");
+            }
 
-            if started == 1 {
+            if started >= 1 {
                 spawn_ring_timeout(
                     self.clone(),
                     channel_id,
@@ -479,8 +511,18 @@ impl CallService {
                 }
                 // Leftover of an ended or broken call: remove it, then retry.
                 Some(LoadedCall { state: None, meta }) => {
-                    self.cas(channel_id, &meta, "delete", "", 0, Vec::new())
-                        .await?;
+                    self.cas(
+                        channel_id,
+                        &meta,
+                        CasWrite {
+                            op: "delete",
+                            event_json: "",
+                            ttl_secs: 0,
+                            unindex: true,
+                        },
+                        Vec::new(),
+                    )
+                    .await?;
                 }
                 // Vanished in between: retry.
                 None => {}
@@ -530,6 +572,8 @@ impl CallService {
             let new_state = state
                 .apply(&event)
                 .map_err(|e| CallError::StateTransition(e.to_string()))?;
+            // The ringing index only lists calls that still ring.
+            let unindex = !matches!(new_state, CallState::Ringing { .. });
             let (op, ttl) = match &new_state {
                 CallState::Ended { .. } => ("delete", 0),
                 CallState::Active { .. } => ("append", ACTIVE_TTL_SECS),
@@ -543,7 +587,17 @@ impl CallService {
             let publish = Self::publish_args(&recipients, &events)?;
             before_cas().await;
             if self
-                .cas(channel_id, &meta, op, &event_json, ttl, publish)
+                .cas(
+                    channel_id,
+                    &meta,
+                    CasWrite {
+                        op,
+                        event_json: &event_json,
+                        ttl_secs: ttl,
+                        unindex,
+                    },
+                    publish,
+                )
                 .await?
             {
                 return Ok(Some(Transition {
@@ -664,12 +718,14 @@ impl CallService {
                     Err(CallError::StateTransition("Call already ended".into()))
                 }
             },
-            |_, _, meta| {
-                vec![ServerEvent::CallParticipantLeft {
+            |event, _, meta| match event {
+                // The initiator cancelled a ringing call: only `call_ended`.
+                CallEventType::Ended { .. } => Vec::new(),
+                _ => vec![ServerEvent::CallParticipantLeft {
                     channel_id,
                     call_id: meta.call_uuid(),
                     user_id,
-                }]
+                }],
             },
         )
         .await?
@@ -747,9 +803,9 @@ fn spawn_ring_timeout(calls: CallService, channel_id: Uuid, call_id: String, aft
 /// that peer belonged to it.
 ///
 /// The peer belonged to `user_id` and connected at `peer_connected_at`. A
-/// peer that connected before the call started belongs to an earlier call and
-/// never ends this one. Otherwise an active call ends (`last_left`), and a
-/// ringing call ends (`cancelled`) only if `user_id` started it.
+/// peer that did not connect after the call started (millisecond precision)
+/// belongs to an earlier call and never ends this one. Otherwise an active call ends (`last_left`),
+/// and a ringing call ends (`cancelled`) only if `user_id` started it.
 pub async fn last_voice_peer_left(
     calls: &CallService,
     channel_id: Uuid,
@@ -758,7 +814,11 @@ pub async fn last_voice_peer_left(
 ) -> Result<bool, CallError> {
     Ok(calls
         .end_call_when(channel_id, None, |state, meta| {
-            if peer_connected_at < meta.started_at {
+            // Compare in ms (the start time is stored in ms). A peer from the
+            // same ms as the start is treated as older: it can only end the
+            // call if it connected strictly later (a stale call is still
+            // cleaned up as an orphan or by the ring timer).
+            if peer_connected_at.timestamp_millis() <= meta.started_at.timestamp_millis() {
                 return None;
             }
             match state {
@@ -861,6 +921,8 @@ pub enum CallError {
     StateTransition(String),
     #[error("Serialization error: {0}")]
     Serialization(String),
+    #[error("Internal error: {0}")]
+    Internal(String),
 }
 
 #[cfg(test)]
