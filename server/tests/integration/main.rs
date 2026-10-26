@@ -50,6 +50,7 @@ mod reaction_roles;
 mod reauth;
 mod reauth_oidc;
 mod reports;
+mod role_channel_overrides;
 mod roles_security;
 mod screening_http;
 mod screenshare;

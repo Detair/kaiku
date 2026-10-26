@@ -21,6 +21,8 @@ pub struct MemberPermissionContext {
     /// Permissions from the @everyone role.
     pub everyone_permissions: GuildPermissions,
 
+    /// ID of the guild's @everyone role (its channel override is applied
+    /// before role overrides).
     pub everyone_role_id: Option<Uuid>,
 
     /// All roles assigned to this member (excluding @everyone).
@@ -190,6 +192,7 @@ fn assemble_context(
         user_id,
         guild_info.guild_owner_id,
         everyone_permissions,
+        everyone_role_id,
         &member_roles,
         None, // No channel overrides for guild-level context
     );
@@ -205,30 +208,23 @@ fn assemble_context(
     }
 }
 
-/// Effective permissions of a (non-owner) member in one channel, given that
-/// channel's overrides. Shared by [`require_channel_access`] and the batched
-/// channel filters so every `VIEW_CHANNEL` decision is made the same way.
+/// Effective permissions of a member in one channel, given that channel's
+/// overrides. Shared by [`require_channel_access`] and the batched channel
+/// filters so every `VIEW_CHANNEL` decision is made the same way; the
+/// override order itself lives in [`compute_guild_permissions`].
 fn channel_permissions(
     ctx: &MemberPermissionContext,
     user_id: Uuid,
     overrides: Option<&[super::models::ChannelOverride]>,
 ) -> GuildPermissions {
-    let mut perms = compute_guild_permissions(
+    compute_guild_permissions(
         user_id,
         ctx.guild_owner_id,
         ctx.everyone_permissions,
+        ctx.everyone_role_id,
         &ctx.member_roles,
         overrides,
-    );
-    if let Some(everyone_role_id) = ctx.everyone_role_id {
-        if let Some(override_entry) =
-            overrides.and_then(|v| v.iter().find(|ovr| ovr.role_id == everyone_role_id))
-        {
-            perms |= override_entry.allow_permissions & GuildPermissions::EVERYONE_ALLOWED;
-            perms &= !override_entry.deny_permissions;
-        }
-    }
-    perms
+    )
 }
 
 /// Load permission context and require a specific permission.

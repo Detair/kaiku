@@ -10,7 +10,7 @@
 - Define guild-level permission flags for RBAC
 - Compute effective permissions for users in guilds
 - Role hierarchy and moderation checks
-- Permission overrides at channel level (future)
+- Permission overrides at channel level (`channel_overrides`, per role)
 
 ## Key Files
 
@@ -124,10 +124,10 @@ pub async fn compute_guild_permissions(
 
 **ADMINISTRATOR Bypass**: Users with `ADMINISTRATOR` permission skip all other checks (god mode).
 
-**Channel Overrides** (future):
-- `channel_permission_overwrites` table (channel_id, role_id OR user_id, allow_bitfield, deny_bitfield)
-- Resolution order: Base → Role Permissions → Role Overwrites → User Overwrites
-- Deny takes precedence over allow
+**Channel Overrides** (`channel_overrides`: channel_id, role_id, allow/deny bits; no per-user overrides):
+- Resolved only in `compute_guild_permissions` (resolver.rs); all channel checks reach it via `require_channel_access`, `filter_accessible_channels` or `filter_viewable_channels_in_guilds`.
+- Order: owner → base (@everyone | assigned roles) → @everyone override (allow masked with `EVERYONE_ALLOWED`, then deny) → role overrides aggregated (OR of denies applied, then OR of allows).
+- A role allow beats an @everyone deny and another role's deny of the same bit; a role deny beats an @everyone allow.
 
 ### Moderation Checks
 
@@ -248,7 +248,7 @@ pub async fn get_user_roles(
 - [ ] Role hierarchy: equal positions cannot moderate each other
 - [ ] Cannot moderate guild owner (unless you are owner)
 - [ ] Permission check fails for user without required permission
-- [ ] Channel overrides (future): deny overrides allow
+- [x] Channel overrides: @everyone override, then aggregated role overrides (role allow wins)
 
 ### Common Security Mistakes
 
@@ -268,23 +268,7 @@ pub async fn get_user_roles(
 
 ### Future Enhancements
 
-**Channel Permission Overrides**:
-```sql
-CREATE TABLE channel_permission_overwrites (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    channel_id UUID NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-    target_type TEXT NOT NULL CHECK (target_type IN ('role', 'user')),
-    target_id UUID NOT NULL,  -- role_id or user_id
-    allow_bitfield BIGINT NOT NULL DEFAULT 0,
-    deny_bitfield BIGINT NOT NULL DEFAULT 0
-);
-```
-
-**Permission Resolution with Overrides**:
-1. Start with base guild permissions (OR of all roles)
-2. Apply role-level overwrites (OR all allow, OR all deny)
-3. Apply user-level overwrites
-4. Final: `(base | role_allow | user_allow) & ~(role_deny | user_deny)`
+**Per-user channel overrides**: not implemented; if added, apply them after the role overrides (deny, then allow) inside `compute_guild_permissions`.
 
 **Audit Logs**:
 - Track permission changes (role created, permissions modified, role assigned/removed)
