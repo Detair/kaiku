@@ -288,6 +288,10 @@ pub async fn forward_presence(
 }
 
 /// Forwarder: a block or unblock of the own user's sessions.
+///
+/// Also invalidates `user` (epoch bump), so a read that started before the
+/// change can neither undo an applied block nor authorize on stale data; the
+/// accompanying audience notice re-checks the user.
 pub async fn set_blocked(presence: &PresenceState, user: Uuid, blocked: bool) {
     let mut audience = presence.audience.lock().await;
     if blocked {
@@ -295,6 +299,7 @@ pub async fn set_blocked(presence: &PresenceState, user: Uuid, blocked: bool) {
     } else {
         audience.blocked.remove(&user);
     }
+    audience.invalidate(Some(user));
 }
 
 /// Whether a reload runs during socket setup (before `Ready`) or on a live
@@ -472,24 +477,26 @@ pub async fn refresh_full(ctx: &AudienceCtx<'_>, mode: ReloadMode) -> Result<boo
         }
 
         // A quiet read: authorize, unless an invalidation overtook it.
-        let newly = {
+        let authorized = {
             let mut audience = ctx.presence.audience.lock().await;
             let fresh = wanted.iter().all(|user| audience.fresh_for(user, start))
                 && audience.all_invalidated <= start;
             if fresh {
-                let newly: Vec<Uuid> = wanted.difference(&audience.peers).copied().collect();
+                let authorized: Vec<Uuid> = wanted.iter().copied().collect();
                 audience.peers = wanted;
                 audience.lift(start);
-                Some(newly)
+                Some(authorized)
             } else {
                 None
             }
         };
-        let Some(newly) = newly else {
+        let Some(authorized) = authorized else {
             continue;
         };
         if mode == ReloadMode::Update {
-            send_states(ctx, &newly).await?;
+            // New and re-authorized peers (a lifted suspension may have hidden
+            // updates) get what advanced; the version filter skips the rest.
+            send_states(ctx, &authorized).await?;
         }
         return Ok(true);
     }
@@ -564,7 +571,10 @@ pub async fn recheck(ctx: &AudienceCtx<'_>, targets: HashSet<Uuid>) -> Result<()
                     }
                     audience.clear_suspension(&target);
                 } else if audience.subscribed.contains(&target) {
-                    if audience.peers.insert(target) {
+                    // New, or re-authorized after a suspension that may have
+                    // hidden updates: send what advanced.
+                    let was_suspended = audience.suspended.contains(&target);
+                    if audience.peers.insert(target) || was_suspended {
                         newly.push(target);
                     }
                     audience.clear_suspension(&target);
@@ -612,6 +622,33 @@ pub async fn recheck(ctx: &AudienceCtx<'_>, targets: HashSet<Uuid>) -> Result<()
         return Err(PubsubExit::SubscribeFailed);
     }
     send_states(ctx, &newly).await
+}
+
+/// Periodic backstop of a live socket (about every minute): revalidate the
+/// whole audience against the database (peers, servers, both block sets;
+/// [`refresh_full`]), which also catches an audience notice that was lost
+/// (Valkey error, crash) after its change committed. Removals go through the
+/// same path as a notice (under the lock, final `offline` if anything was
+/// sent); then everything that advanced is re-sent to every peer.
+///
+/// If the database cannot be read, only the re-send runs (with the current,
+/// unchanged authorization) and the revalidation is retried with the next
+/// heartbeat.
+pub async fn backstop(ctx: &AudienceCtx<'_>) -> Result<(), PubsubExit> {
+    if refresh_full(ctx, ReloadMode::Update).await? {
+        // `refresh_full` already re-sent every authorized peer.
+        return Ok(());
+    }
+    let peers: Vec<Uuid> = ctx
+        .presence
+        .audience
+        .lock()
+        .await
+        .peers
+        .iter()
+        .copied()
+        .collect();
+    send_states(ctx, &peers).await
 }
 
 /// Send the published presence of `peers` (status, activity, custom

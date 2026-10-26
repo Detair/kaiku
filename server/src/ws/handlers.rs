@@ -864,18 +864,14 @@ async fn handle_socket(
                 }
 
                 () = backstop_now(backstop_trigger.as_ref()) => {
-                    let peers: Vec<Uuid> =
-                        presence.audience.lock().await.peers.iter().copied().collect();
-                    if let Err(reason) = audience_mod::send_states(&ctx, &peers).await {
+                    if let Err(reason) = audience_mod::backstop(&ctx).await {
                         exit = Some(reason);
                         break;
                     }
                 }
 
                 _ = presence_backstop.tick() => {
-                    let peers: Vec<Uuid> =
-                        presence.audience.lock().await.peers.iter().copied().collect();
-                    if let Err(reason) = audience_mod::send_states(&ctx, &peers).await {
+                    if let Err(reason) = audience_mod::backstop(&ctx).await {
                         exit = Some(reason);
                         break;
                     }
@@ -2067,15 +2063,28 @@ pub fn spawn_custom_status_sweep(
             let user_ids: Vec<Uuid> = expired.into_iter().map(|(id,)| id).collect();
             debug!(count = user_ids.len(), "Clearing expired custom statuses");
 
-            // Clear in database
-            if let Err(e) = sqlx::query("UPDATE users SET custom_status = NULL WHERE id = ANY($1)")
-                .bind(&user_ids)
-                .execute(&db)
-                .await
+            // Clear in database, repeating the expiry condition: a custom
+            // status set again since the query above is kept.
+            let user_ids: Vec<Uuid> = match sqlx::query_as::<_, (Uuid,)>(
+                r"
+                UPDATE users SET custom_status = NULL
+                WHERE id = ANY($1)
+                  AND custom_status IS NOT NULL
+                  AND custom_status->>'expires_at' IS NOT NULL
+                  AND (custom_status->>'expires_at')::timestamptz <= NOW()
+                RETURNING id
+                ",
+            )
+            .bind(&user_ids)
+            .fetch_all(&db)
+            .await
             {
-                warn!(error = %e, "Custom status sweep: clear failed");
-                continue;
-            }
+                Ok(rows) => rows.into_iter().map(|(id,)| id).collect(),
+                Err(e) => {
+                    warn!(error = %e, "Custom status sweep: clear failed");
+                    continue;
+                }
+            };
 
             // Broadcast to friends
             for uid in &user_ids {

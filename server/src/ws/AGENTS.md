@@ -288,6 +288,8 @@ while let Some(msg) = ws_receiver.next().await {
   - Dropped peers get a final `offline` only if this socket had sent them anything.
 - **Snapshots** (`send_states`: at connect, for new peers, and the backstop) read the published state, then **fence** the forwarder: the socket publishes a `presence_fence` on its own user channel and waits until the forwarder has seen it, so every notice published before is applied. Then each entry is authorized and version-checked under the lock.
 - **At connect** the audience is revalidated after the subscription barrier and before `Ready`, the snapshot or any forwarding; a database error there closes with 1011.
+- **Periodic revalidation**: each socket's backstop (about every minute) first revalidates the whole audience against the database (`presence_audience::backstop` → `refresh_full`), then re-sends what advanced. This catches an audience notice that was lost after its change committed. Notices are published with a bounded retry (3 attempts).
+- A block or unblock processed by the socket (`set_blocked`) also invalidates the user, so a read started earlier cannot overwrite it. Re-authorized peers (a suspension lifted) are re-sent what advanced, not only new peers.
 - Test hooks (`ws::test_hooks`, `#[doc(hidden)]`):
   - `pause_after_audience_read`: connect, between the audience read and subscribing
   - `pause_in_audience_reload`: after a reload's or re-check's read
@@ -295,6 +297,15 @@ while let Some(msg) = ws_receiver.next().await {
   - `pause_in_snapshot`: after the fence, before queuing
   - `fail_next_audience_read`: makes the next audience read fail
   - `run_backstop`: runs the socket backstop on demand
+
+#### Known limits (v1.0)
+
+- **Lost audience notice:** a friendship, block or server-membership change commits to the database and then publishes its notice (3 attempts). If every attempt is lost (Valkey outage, server crash between commit and publish), an observer can keep receiving that user's presence until its next revalidation. That is about 60 s (plus up to 10 s jitter) and happens only after an infrastructure failure. Reconnecting also revalidates.
+- **Stale but not leaking:**
+  - A status or rich presence can be stale until the next periodic reconcile or backstop (about 60 s). Examples: concurrent rich updates from two devices published out of database order, or a reconcile that briefly publishes the rich value it read just before a newer one.
+  - REST readers (member list, friends, message authors) derive status from the database plus live sockets, not from the published state.
+- **Reconcile cursor:** above the bound of 1000 connected users the periodic reconcile walks the due set by rank. Ranks shift as users connect and disconnect, so coverage within ceil(n/bound) runs holds for a stable population; with churn a user can occasionally wait one extra run.
+- **Notice churn:** if a reload or re-check cannot settle within four rounds (the audience keeps changing, or the same user is invalidated again and again), the socket closes with 1011 and the client reconnects with a fresh state.
 
 ### Voice Event Delegation
 

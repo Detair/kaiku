@@ -1092,12 +1092,30 @@ async fn publish_notice(redis: &Client, notice: &PresenceNotice, channels: Vec<S
         return;
     };
     for channel in channels {
-        let sent: Result<(), fred::error::Error> = redis.publish(&channel, payload.as_str()).await;
-        if let Err(e) = sent {
-            log_unavailable(&PresenceError(e));
+        // Bounded retry: a lost notice is only caught by the receivers'
+        // periodic revalidation (about a minute).
+        for attempt in 1..=NOTICE_ATTEMPTS {
+            let sent: Result<(), fred::error::Error> =
+                redis.publish(&channel, payload.as_str()).await;
+            match sent {
+                Ok(()) => break,
+                Err(e) if attempt == NOTICE_ATTEMPTS => {
+                    tracing::warn!(
+                        error = %e,
+                        attempts = NOTICE_ATTEMPTS,
+                        "Presence audience notice could not be published; receivers revalidate within a minute"
+                    );
+                }
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(50 * (1 << attempt))).await;
+                }
+            }
         }
     }
 }
+
+/// Attempts per audience notice and channel.
+const NOTICE_ATTEMPTS: u32 = 3;
 
 /// JSON of a `presence_update` event.
 #[must_use]

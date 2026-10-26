@@ -1821,3 +1821,41 @@ async fn test_missed_activity_heals_with_backstop(pool: PgPool) {
 
     redis.quit().await.expect("quit test Valkey client");
 }
+
+/// A relationship change whose audience notice was lost (here: changed in the
+/// database without any notice) is caught by the socket's periodic
+/// revalidation: the peer gets a final `offline` (it had been forwarded) and
+/// nothing of it is forwarded afterwards.
+#[sqlx::test]
+async fn test_lost_notice_is_caught_by_periodic_revalidation(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let server = spawn_test_server(app.router.clone()).await;
+    let redis = db::create_redis_client(&app.config.redis_url)
+        .await
+        .expect("connect test Valkey");
+    let (u, b, guild) = presence_pair(&pool, false).await;
+    let token_u = generate_access_token(&app.config, u);
+    let token_b = generate_access_token(&app.config, b);
+
+    let backstop = vc_server::ws::test_hooks::run_backstop(b);
+    let mut ws_b = connect_ready(&server, &token_b).await;
+    let mut ws_u = connect_ready(&server, &token_u).await;
+    next_presence(&mut ws_b, u, "online").await;
+
+    // `u` leaves the only shared server; no notice is published.
+    sqlx::query("DELETE FROM guild_members WHERE guild_id = $1 AND user_id = $2")
+        .bind(guild)
+        .bind(u)
+        .execute(&pool)
+        .await
+        .expect("remove membership");
+
+    // One revalidation period.
+    backstop.notify_one();
+    next_presence(&mut ws_b, u, "offline").await;
+    wait_for_no_presence_subscribers(&redis, u).await;
+    set_status_handled(&mut ws_u, "busy").await;
+    expect_nothing_about(&mut ws_b, u).await;
+
+    redis.quit().await.expect("quit test Valkey client");
+}

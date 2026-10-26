@@ -217,6 +217,12 @@ pub async fn delete_message(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bo
 }
 ```
 
+## Presence Privacy
+
+Who may see a user's online status, activity and custom status (friends and members of a shared server, never blocked users) is enforced per WebSocket under one lock, at the moment each event is queued. Friendship, block and server-membership changes notify the affected sockets, which stop forwarding the user at once. See `src/ws/AGENTS.md` ("Presence System").
+
+**Known limit (v1.0):** the notice is published after the database change commits, with a bounded retry. If it is lost anyway (Valkey outage, server crash in between), an observer can keep receiving that user's presence until its socket's periodic revalidation, about 60 seconds later, or until it reconnects. Without such an infrastructure failure, a change takes effect immediately.
+
 ## Rate Limiting
 
 ### Current Implementation
