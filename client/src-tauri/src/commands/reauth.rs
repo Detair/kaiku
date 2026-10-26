@@ -115,17 +115,21 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
 
 /// Run `flow` unless the attempt is cancelled. Cancellation is checked first
 /// and polled first, so a ready flow cannot win against a pending cancel; a
-/// cancelled flow is dropped where it stands (no browser, no listener).
+/// cancelled flow is dropped where it stands (no browser, no listener). The
+/// flag is checked once more on the way out, so a cancel that lands while the
+/// flow itself is being polled still wins: a cancelled attempt never succeeds.
 async fn run_cancellable<T>(
     attempt: &Attempt,
     flow: impl std::future::Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
     attempt.check()?;
-    tokio::select! {
+    let result = tokio::select! {
         biased;
         () = attempt.wake.notified() => Err(CANCELLED.to_string()),
         result = flow => result,
-    }
+    };
+    attempt.check()?;
+    result
 }
 
 /// Cancel a running (or about to start) re-authentication attempt.
@@ -249,6 +253,7 @@ pub async fn wait_for_callback(
     listener: &TcpListener,
     timeout: Duration,
     read_deadline: Duration,
+    attempt: &Attempt,
 ) -> Result<ReauthCallback, String> {
     let accept = async {
         loop {
@@ -261,9 +266,15 @@ pub async fn wait_for_callback(
                 .and_then(request_target)
                 .and_then(parse_callback_target);
             if let Some(result) = result {
+                // Cancelled meanwhile: the page must not claim a confirmation
+                // and the result is dropped.
+                if attempt.is_cancelled() {
+                    respond(&mut stream, false).await;
+                    return Err(CANCELLED.to_string());
+                }
                 let ok = matches!(result, ReauthCallback::Elevated { .. });
                 respond(&mut stream, ok).await;
-                return result;
+                return Ok(result);
             }
             let _ = stream
                 .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
@@ -271,9 +282,11 @@ pub async fn wait_for_callback(
             let _ = stream.flush().await;
         }
     };
-    tokio::time::timeout(timeout, accept)
+    let result = tokio::time::timeout(timeout, accept)
         .await
-        .map_err(|_| "REAUTH_TIMEOUT".to_string())
+        .map_err(|_| "REAUTH_TIMEOUT".to_string())??;
+    attempt.check()?;
+    Ok(result)
 }
 
 /// Re-authenticate with an OIDC provider (desktop).
@@ -384,7 +397,7 @@ async fn reauth_flow(
     info!("Opened browser for re-authentication, waiting for callback");
 
     attempt.check()?;
-    match wait_for_callback(&listener, CALLBACK_TIMEOUT, READ_DEADLINE).await? {
+    match wait_for_callback(&listener, CALLBACK_TIMEOUT, READ_DEADLINE, attempt).await? {
         ReauthCallback::Elevated { expires_at } => Ok(ReauthOutcome { expires_at }),
         ReauthCallback::Error(code) => Err(code),
     }
@@ -536,6 +549,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancel_during_the_flow_poll_never_yields_its_result() {
+        // The cancel lands while the flow itself is being polled and the flow
+        // completes in that same poll: the result must still be discarded.
+        let attempt = Attempt::default();
+        let result = run_cancellable(&attempt, async {
+            attempt.cancel();
+            Ok::<_, String>(7)
+        })
+        .await;
+        assert_eq!(result, Err(CANCELLED.to_string()));
+    }
+
+    #[tokio::test]
+    async fn cancelled_attempt_ignores_an_arriving_callback() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let attempt = Attempt::default();
+        attempt.cancel();
+        let client = tokio::spawn(async move { get(port, "/callback?reauth=elevated").await });
+        let result = wait_for_callback(&listener, LONG, LONG, &attempt).await;
+        assert_eq!(result, Err(CANCELLED.to_string()));
+        let page = client.await.unwrap();
+        assert!(!page.contains("<h2>Confirmed</h2>"));
+    }
+
+    #[tokio::test]
     async fn finished_flow_wins_without_cancel() {
         let attempt = Attempt::default();
         let result = run_cancellable(&attempt, async { Ok::<_, String>(7) }).await;
@@ -581,7 +620,7 @@ mod tests {
             let ok = get(port, "/callback?reauth=elevated").await;
             (other, ok)
         });
-        let result = wait_for_callback(&listener, LONG, LONG).await;
+        let result = wait_for_callback(&listener, LONG, LONG, &Attempt::default()).await;
         assert_eq!(result, Ok(ReauthCallback::Elevated { expires_at: None }));
         let (other, ok) = client.await.unwrap();
         assert!(other.starts_with("HTTP/1.1 204"));
@@ -599,7 +638,7 @@ mod tests {
             send(port, "POST /callback?reauth=elevated HTTP/1.1\r\n\r\n").await;
             get(port, "/callback?reauth_error=REAUTH_STALE").await;
         });
-        let result = wait_for_callback(&listener, LONG, LONG).await;
+        let result = wait_for_callback(&listener, LONG, LONG, &Attempt::default()).await;
         assert_eq!(result, Ok(ReauthCallback::Error("REAUTH_STALE".into())));
         client.await.unwrap();
     }
@@ -617,7 +656,7 @@ mod tests {
             drop(idle);
             ok
         });
-        let result = wait_for_callback(&listener, LONG, SHORT).await;
+        let result = wait_for_callback(&listener, LONG, SHORT, &Attempt::default()).await;
         assert_eq!(result, Ok(ReauthCallback::Elevated { expires_at: None }));
         client.await.unwrap();
     }
@@ -625,7 +664,13 @@ mod tests {
     #[tokio::test]
     async fn listener_times_out() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let result = wait_for_callback(&listener, Duration::from_millis(50), SHORT).await;
+        let result = wait_for_callback(
+            &listener,
+            Duration::from_millis(50),
+            SHORT,
+            &Attempt::default(),
+        )
+        .await;
         assert_eq!(result, Err("REAUTH_TIMEOUT".to_string()));
     }
 }

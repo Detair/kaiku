@@ -1,4 +1,4 @@
-import { Component, createSignal, onMount, For, Show } from "solid-js";
+import { Component, createSignal, onCleanup, onMount, For, Show } from "solid-js";
 import { KeyRound, Unlink, Plus } from "lucide-solid";
 import * as tauri from "@/lib/tauri";
 import { formatRelativeTimeShort } from "@/lib/utils";
@@ -8,6 +8,9 @@ import { t } from "@/i18n";
 
 /** Longest the browser link flow waits for the provider window. */
 const LINK_TIMEOUT_MS = 120_000;
+
+/** Counts browser link attempts, for a window name no earlier attempt used. */
+let linkAttempt = 0;
 
 /**
  * Lists the external (OIDC) identities linked to the account, and lets the user
@@ -51,6 +54,11 @@ const LinkedAccountsSection: Component = () => {
 
   onMount(loadData);
 
+  // Stops the running browser attempt (listener + timers); also on dispose, so a
+  // stale timer can never touch a popup opened later.
+  let stopActive: (() => void) | null = null;
+  onCleanup(() => stopActive?.());
+
   // Providers not already linked to this account.
   const availableProviders = (): OidcProvider[] => {
     const linkedSlugs = new Set(identities().map((i) => i.provider_slug));
@@ -89,6 +97,19 @@ const LinkedAccountsSection: Component = () => {
   // "elevation required" then ends in an error instead of asking again.
   const handleLink = async (provider: OidcProvider, afterElevation = false) => {
     setError(null);
+    stopActive?.();
+
+    // Browser: the popup must open inside the click, before any request, or the
+    // browser may block it once the user activation has expired. It starts
+    // blank and is pointed at the provider once the server answers. A unique
+    // name per attempt keeps an older window from being reused.
+    const popup = tauri.isTauri()
+      ? null
+      : window.open("about:blank", `oidc-link-${Date.now()}-${++linkAttempt}`, "width=600,height=700");
+    if (!tauri.isTauri() && !popup) {
+      setError(t("settings.linkedAccounts.error.popupBlocked"));
+      return;
+    }
     setLinking(provider.slug);
 
     const needElevation = () => {
@@ -105,6 +126,7 @@ const LinkedAccountsSection: Component = () => {
       try {
         result = await tauri.linkIdentity(provider.slug);
       } catch (err) {
+        popup?.close();
         if (tauri.isElevationRequiredError(err)) {
           needElevation();
           return;
@@ -112,21 +134,17 @@ const LinkedAccountsSection: Component = () => {
         throw err;
       }
 
-      if (result.mode === "tauri") {
+      if (result.mode === "tauri" || !popup) {
         // Native command resolved on success; refresh the list.
+        popup?.close();
         await loadData();
         setLinking(null);
         return;
       }
 
-      // Browser: open a popup and wait for the callback's postMessage.
+      // Browser: point the popup at the provider and wait for the callback's postMessage.
       const expectedOrigin = new URL(tauri.getServerUrl()).origin;
-      const popup = window.open(result.authUrl, "oidc-link", "width=600,height=700");
-      if (!popup) {
-        setError(t("settings.linkedAccounts.error.popupBlocked"));
-        setLinking(null);
-        return;
-      }
+      popup.location.href = result.authUrl;
       const timers: {
         poll?: ReturnType<typeof setInterval>;
         ceiling?: ReturnType<typeof setTimeout>;
@@ -135,11 +153,14 @@ const LinkedAccountsSection: Component = () => {
         window.removeEventListener("message", messageHandler);
         clearInterval(timers.poll);
         clearTimeout(timers.ceiling);
+        if (stopActive === stop) stopActive = null;
       };
       const messageHandler = (event: MessageEvent) => {
         if (event.origin !== expectedOrigin) return;
+        if (event.source !== popup) return;
         if (event.data?.type !== "oidc-link-callback") return;
         stop();
+        popup.close();
         if (event.data.success) {
           loadData().catch(() => {});
           setLinking(null);
@@ -157,6 +178,7 @@ const LinkedAccountsSection: Component = () => {
         );
         setLinking(null);
       };
+      stopActive = stop;
       window.addEventListener("message", messageHandler);
       // Stop waiting if the popup is closed without completing.
       timers.poll = setInterval(() => {
@@ -173,6 +195,7 @@ const LinkedAccountsSection: Component = () => {
         setLinking(null);
       }, LINK_TIMEOUT_MS);
     } catch (err) {
+      popup?.close();
       const text = err instanceof Error ? err.message : String(err);
       setError(linkErrorText(text) ?? text);
       setLinking(null);
