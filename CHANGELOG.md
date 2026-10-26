@@ -125,6 +125,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Unread badges no longer count your own messages, thread replies or deleted messages, and never include channels you can't open.
+- A channel no longer stays marked unread for good after "mark all as read" picked a thread reply as the last read message.
 - Running a bot slash command no longer leaves a connection to the server's cache open each time, which could exhaust connections on busy servers.
 - Desktop voice works with headsets that don't offer 48 kHz mono, tells you when the microphone stops working, and can switch microphones during a call.
 - Sharing a small window or a webcam with an unusual resolution no longer crashes the desktop app.

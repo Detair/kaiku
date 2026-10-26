@@ -684,6 +684,9 @@ pub async fn mark_as_read(
         return Err(ChatError::Forbidden);
     }
 
+    // The cursor must be a top-level message of this conversation.
+    queries::validate_read_cursor(&state.db, channel_id, body.last_read_message_id).await?;
+
     let now = chrono::Utc::now();
 
     // Atomic forward-only upsert: only advances the cursor, never moves it backward

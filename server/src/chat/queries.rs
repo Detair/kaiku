@@ -156,6 +156,30 @@ pub async fn is_guild_member(
     Ok(exists)
 }
 
+/// Check that a read cursor names a top-level message of `channel_id`.
+///
+/// Read cursors always point at the channel feed (never at a thread reply or a
+/// message of another channel), so the cursor can be compared with the
+/// channel's last top-level message.
+pub async fn validate_read_cursor(
+    pool: &PgPool,
+    channel_id: Uuid,
+    message_id: Uuid,
+) -> Result<(), ChatError> {
+    let row: Option<(Uuid, Option<Uuid>)> =
+        sqlx::query_as("SELECT channel_id, parent_id FROM messages WHERE id = $1")
+            .bind(message_id)
+            .fetch_optional(pool)
+            .await?;
+    match row {
+        Some((msg_channel, None)) if msg_channel == channel_id => Ok(()),
+        _ => Err(ChatError::Validation(
+            "last_read_message_id must be a message of this channel, not a thread reply"
+                .to_string(),
+        )),
+    }
+}
+
 /// Forward-only upsert into `channel_read_state` for a guild channel.
 ///
 /// The cursor only moves forward — stale requests cannot rewind it.
@@ -677,6 +701,9 @@ pub async fn upsert_dm_read_state(
 
 /// Bulk upsert `dm_read_state` for every DM channel a user participates in.
 ///
+/// The cursor is the newest top-level message (never a thread reply), the
+/// same message the conversation feed ends with.
+///
 /// Returns `(channel_id, last_read_message_id)` pairs so the caller can
 /// fan out broadcast events to other sessions.
 pub async fn mark_all_dms_read(
@@ -688,7 +715,7 @@ pub async fn mark_all_dms_read(
         r"INSERT INTO dm_read_state (user_id, channel_id, last_read_at, last_read_message_id)
           SELECT $1, dp.channel_id, $2, (
               SELECT m.id FROM messages m
-              WHERE m.channel_id = dp.channel_id AND m.deleted_at IS NULL
+              WHERE m.channel_id = dp.channel_id AND m.deleted_at IS NULL AND m.parent_id IS NULL
               ORDER BY m.created_at DESC LIMIT 1
           )
           FROM dm_participants dp

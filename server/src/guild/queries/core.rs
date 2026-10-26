@@ -391,68 +391,41 @@ pub async fn update_channel_position(
 // Channel read state
 // ============================================================================
 
-/// Initialize `channel_read_state` rows for all read-tracked (text, forum,
-/// announcement) channels in a guild.
-/// Sets `last_read_at` to `NOW()` so pre-existing messages don't appear unread.
+/// Initialize the user's read cursors for a guild they just joined.
+///
+/// Covers the read-tracked (text, forum, announcement) channels the user may
+/// view, pointing at each channel's newest top-level message, so pre-existing
+/// messages don't appear unread. Existing cursors are kept; hidden channels
+/// get no cursor.
 pub async fn initialize_channel_read_state(
     pool: &PgPool,
     guild_id: Uuid,
     user_id: Uuid,
 ) -> Result<(), GuildError> {
-    let sql = concat!(
-        r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
-           SELECT $1, c.id, NOW(), (
-               SELECT m.id FROM messages m
-               WHERE m.channel_id = c.id AND m.deleted_at IS NULL AND m.parent_id IS NULL
-               ORDER BY m.created_at DESC LIMIT 1
-           )
-           FROM channels c
-           WHERE c.guild_id = $2 AND c.channel_type IN ",
-        crate::chat::unread::text_like_channel_types!(),
-        r"
-           ON CONFLICT (user_id, channel_id) DO NOTHING"
-    );
-    sqlx::query(sql)
-        .bind(user_id)
-        .bind(guild_id)
-        .execute(pool)
+    let channel_ids =
+        crate::chat::unread::viewable_read_tracked_channels(pool, user_id, Some(guild_id)).await?;
+    crate::chat::unread::mark_guild_channels_read(pool, user_id, &channel_ids, Utc::now(), true)
         .await?;
     Ok(())
 }
 
-/// Mark every read-tracked channel in a guild as read for a user.
+/// Mark every read-tracked channel in a guild that the user may view as read.
 ///
-/// Covers text, forum and announcement channels. Returns the
-/// `(channel_id, last_read_message_id)` pairs that were updated so callers can
-/// broadcast `ChannelRead` events.
+/// Covers text, forum and announcement channels; hidden channels are left
+/// untouched. Returns the `(channel_id, last_read_message_id)` pairs that were
+/// updated so callers can broadcast `ChannelRead` events.
 pub async fn mark_all_guild_channels_read(
     pool: &PgPool,
     user_id: Uuid,
     guild_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<Vec<(Uuid, Option<Uuid>)>, GuildError> {
-    let sql = concat!(
-        r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
-          SELECT $1, c.id, $3, (
-              SELECT m.id FROM messages m
-              WHERE m.channel_id = c.id AND m.deleted_at IS NULL AND m.parent_id IS NULL
-              ORDER BY m.created_at DESC LIMIT 1
-          )
-          FROM channels c
-          WHERE c.guild_id = $2 AND c.channel_type IN ",
-        crate::chat::unread::text_like_channel_types!(),
-        r"
-          ON CONFLICT (user_id, channel_id)
-          DO UPDATE SET last_read_at = EXCLUDED.last_read_at, last_read_message_id = EXCLUDED.last_read_message_id
-          RETURNING channel_id, last_read_message_id"
-    );
-    let rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(sql)
-        .bind(user_id)
-        .bind(guild_id)
-        .bind(now)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows)
+    let channel_ids =
+        crate::chat::unread::viewable_read_tracked_channels(pool, user_id, Some(guild_id)).await?;
+    Ok(
+        crate::chat::unread::mark_guild_channels_read(pool, user_id, &channel_ids, now, false)
+            .await?,
+    )
 }
 
 // ============================================================================

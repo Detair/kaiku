@@ -145,7 +145,7 @@ pub enum ChannelType {
 impl ChannelType {
     /// Guild channel types that hold a message feed and are read-tracked
     /// (text, forum, announcement). Matches the SQL in
-    /// `crate::chat::unread::TEXT_LIKE_CHANNEL_TYPES`.
+    /// `crate::chat::unread::text_like_channel_types!`.
     #[must_use]
     pub const fn is_text_like(&self) -> bool {
         matches!(self, Self::Text | Self::Forum | Self::Announcement)

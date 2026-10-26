@@ -254,8 +254,8 @@ pub async fn mark_all_channels_read(
 
     let now = chrono::Utc::now();
 
-    // Batch UPSERT channel_read_state for all text channels in this guild
-    // Uses a subquery to get the latest message ID per channel
+    // Batch UPSERT channel_read_state for the read-tracked channels the user can
+    // open (hidden channels get no cursor and no event)
     let rows = core_q::mark_all_guild_channels_read(&state.db, auth.id, guild_id, now).await?;
 
     // Broadcast ChannelRead events (and clear phone notifications) for each

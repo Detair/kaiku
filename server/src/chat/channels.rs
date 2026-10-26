@@ -393,7 +393,7 @@ pub async fn remove_member(
     request_body = MarkChannelAsReadRequest,
     responses(
         (status = 200, description = "Marked as read"),
-        (status = 400, description = "Channel type has no read state (voice)"),
+        (status = 400, description = "Channel type has no read state (voice), or the message is not a top-level message of this channel"),
         (status = 403, description = "Not allowed to view the channel"),
         (status = 404, description = "Channel not found"),
     ),
@@ -426,11 +426,20 @@ pub async fn mark_as_read(
     //    it from the unread summary.
     crate::permissions::require_channel_access(&state.db, auth.id, channel_id)
         .await
-        .map_err(|_| ChatError::Forbidden)?;
+        .map_err(|e| match e {
+            crate::permissions::PermissionError::DatabaseError(msg) => {
+                ChatError::Database(sqlx::Error::Protocol(msg))
+            }
+            crate::permissions::PermissionError::NotFound => ChatError::ChannelNotFound,
+            _ => ChatError::Forbidden,
+        })?;
+
+    // 4. The cursor must be a top-level message of this channel.
+    queries::validate_read_cursor(&state.db, channel_id, body.last_read_message_id).await?;
 
     let now = chrono::Utc::now();
 
-    // 4. Atomic forward-only UPSERT into channel_read_state.
+    // 5. Atomic forward-only UPSERT into channel_read_state.
     // The WHERE clause inside the query ensures the read cursor only moves
     // forward by comparing message timestamps, preventing stale requests
     // from moving it backward.
@@ -447,7 +456,7 @@ pub async fn mark_as_read(
         state.push.notify_read(&state, auth.id, channel_id);
     }
 
-    // 5. Broadcast ChannelRead event to all user's other sessions
+    // 6. Broadcast ChannelRead event to all user's other sessions
     if let Err(e) = broadcast_to_user(
         &state.redis,
         auth.id,
