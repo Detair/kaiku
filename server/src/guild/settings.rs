@@ -13,7 +13,7 @@ use super::queries::{core as core_q, limits};
 use super::types::{Guild, GuildSettings, UpdateGuildSettingsRequest};
 use crate::api::AppState;
 use crate::auth::AuthUser;
-use crate::db::{self, ChannelType};
+use crate::db;
 use crate::discovery::types::TAG_REGEX;
 use crate::permissions::{require_guild_permission, GuildPermissions, PermissionError};
 use crate::util::format_file_size;
@@ -29,7 +29,8 @@ pub struct ChannelWithUnread {
     #[serde(flatten)]
     #[schema(inline)]
     pub channel: db::Channel,
-    /// Number of unread messages (only for text channels).
+    /// Number of unread messages from others (text, forum and announcement
+    /// channels; thread replies and deleted messages are not counted).
     pub unread_count: i64,
     /// User's read cursor for this channel.
     pub last_read_message_id: Option<Uuid>,
@@ -119,10 +120,10 @@ pub async fn list_channels(
         .filter(|c| accessible_set.contains(&c.id))
         .collect();
 
-    // Collect text channel IDs for batched unread count query
+    // Collect read-tracked channel IDs for batched unread count query
     let text_channel_ids: Vec<Uuid> = channels
         .iter()
-        .filter(|c| c.channel_type == ChannelType::Text)
+        .filter(|c| c.channel_type.is_text_like())
         .map(|c| c.id)
         .collect();
 
@@ -144,15 +145,15 @@ pub async fn list_channels(
     let result: Vec<ChannelWithUnread> = channels
         .into_iter()
         .map(|channel| {
-            let is_text = channel.channel_type == ChannelType::Text;
-            let (unread_count, last_read_message_id, last_message_id) = if is_text {
-                channel_states
-                    .get(&channel.id)
-                    .map(|(u, r, l)| (*u, *r, *l))
-                    .unwrap_or((0, None, None))
-            } else {
-                (0, None, None)
-            };
+            let (unread_count, last_read_message_id, last_message_id) =
+                if channel.channel_type.is_text_like() {
+                    channel_states
+                        .get(&channel.id)
+                        .map(|(u, r, l)| (*u, *r, *l))
+                        .unwrap_or((0, None, None))
+                } else {
+                    (0, None, None)
+                };
             ChannelWithUnread {
                 channel,
                 unread_count,

@@ -538,40 +538,34 @@ pub async fn fetch_last_message_preview(
 
 /// Compute the unread message count for a user in a DM channel.
 ///
-/// If the user has never read the channel, every message counts as unread.
+/// Counts messages matching [`UNREAD_MESSAGE_PREDICATE`] after the user's read
+/// cursor (`dm_read_state.last_read_message_id`), or after the user joined the
+/// DM when there is no cursor. Returns 0 for a non-participant.
+///
+/// [`UNREAD_MESSAGE_PREDICATE`]: crate::chat::unread::UNREAD_MESSAGE_PREDICATE
 pub async fn dm_unread_count(
     pool: &PgPool,
     user_id: Uuid,
     channel_id: Uuid,
 ) -> Result<i64, ChatError> {
-    let read_state_row = sqlx::query!(
-        r#"SELECT last_read_at FROM dm_read_state
-               WHERE user_id = $1 AND channel_id = $2"#,
-        user_id,
-        channel_id
-    )
-    .fetch_optional(pool)
-    .await?;
-
-    let count = if let Some(read_state) = read_state_row {
-        sqlx::query_scalar!(
-            r#"SELECT COUNT(*) as "count!" FROM messages
-                   WHERE channel_id = $1 AND created_at > $2"#,
-            channel_id,
-            read_state.last_read_at
-        )
+    let sql = concat!(
+        r"SELECT COUNT(m.id)::bigint
+          FROM dm_participants dp
+          LEFT JOIN dm_read_state rs
+              ON rs.user_id = dp.user_id AND rs.channel_id = dp.channel_id
+          LEFT JOIN messages cursor_msg ON cursor_msg.id = rs.last_read_message_id
+          INNER JOIN messages m ON m.channel_id = dp.channel_id
+              AND ",
+        crate::chat::unread::unread_message_predicate!(),
+        r"
+              AND m.created_at > COALESCE(cursor_msg.created_at, dp.joined_at)
+          WHERE dp.user_id = $1 AND dp.channel_id = $2"
+    );
+    let count: i64 = sqlx::query_scalar(sql)
+        .bind(user_id)
+        .bind(channel_id)
         .fetch_one(pool)
-        .await?
-    } else {
-        // No read state = all messages are unread
-        sqlx::query_scalar!(
-            r#"SELECT COUNT(*) as "count!" FROM messages WHERE channel_id = $1"#,
-            channel_id
-        )
-        .fetch_one(pool)
-        .await?
-    };
-
+        .await?;
     Ok(count)
 }
 

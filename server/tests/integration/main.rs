@@ -60,6 +60,7 @@ mod setup_http;
 mod setup_integration;
 mod tenancy_isolation;
 mod threads;
+mod unread;
 mod upload_limits;
 mod uploads_http;
 mod valkey_outage;

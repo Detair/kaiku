@@ -281,14 +281,21 @@ pub async fn list_guild_members(
 // Channel listing / reorder
 // ============================================================================
 
-/// Fetch unread counts, read cursors, and last message ids for a set of text
-/// channels in one round trip.
+/// Fetch unread counts, read cursors, and last message ids for a set of
+/// read-tracked guild channels in one round trip.
+///
+/// Unread messages match [`UNREAD_MESSAGE_PREDICATE`] and are newer than the
+/// read cursor, or than the user's `guild_members.joined_at` without one.
+/// `last_message_id` is the newest top-level message (the channel feed's last
+/// entry, what clients mark as read).
+///
+/// [`UNREAD_MESSAGE_PREDICATE`]: crate::chat::unread::UNREAD_MESSAGE_PREDICATE
 pub async fn fetch_channel_states(
     pool: &PgPool,
     user_id: Uuid,
     channel_ids: &[Uuid],
 ) -> Result<Vec<ChannelStateRow>, GuildError> {
-    let rows = sqlx::query_as::<_, ChannelStateRow>(
+    let sql = concat!(
         r"
         WITH cursors AS (
             SELECT channel_id, last_read_message_id,
@@ -299,7 +306,7 @@ pub async fn fetch_channel_states(
         latest_msgs AS (
             SELECT DISTINCT ON (channel_id) channel_id, id AS last_message_id
             FROM messages
-            WHERE channel_id = ANY($2) AND deleted_at IS NULL
+            WHERE channel_id = ANY($2) AND deleted_at IS NULL AND parent_id IS NULL
             ORDER BY channel_id, created_at DESC
         )
         SELECT
@@ -308,20 +315,24 @@ pub async fn fetch_channel_states(
             crs.last_read_message_id,
             lm.last_message_id
         FROM channels c
+        INNER JOIN guild_members gm ON gm.guild_id = c.guild_id AND gm.user_id = $1
         LEFT JOIN cursors crs ON crs.channel_id = c.id
         LEFT JOIN latest_msgs lm ON lm.channel_id = c.id
         LEFT JOIN messages m
             ON m.channel_id = c.id
-            AND m.deleted_at IS NULL
-            AND (crs.cursor_at IS NULL OR m.created_at > crs.cursor_at)
+            AND ",
+        crate::chat::unread::unread_message_predicate!(),
+        r"
+            AND m.created_at > COALESCE(crs.cursor_at, gm.joined_at)
         WHERE c.id = ANY($2)
         GROUP BY c.id, crs.last_read_message_id, lm.last_message_id
-        ",
-    )
-    .bind(user_id)
-    .bind(channel_ids)
-    .fetch_all(pool)
-    .await?;
+        "
+    );
+    let rows = sqlx::query_as::<_, ChannelStateRow>(sql)
+        .bind(user_id)
+        .bind(channel_ids)
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 
@@ -380,32 +391,38 @@ pub async fn update_channel_position(
 // Channel read state
 // ============================================================================
 
-/// Initialize `channel_read_state` rows for all text channels in a guild.
+/// Initialize `channel_read_state` rows for all read-tracked (text, forum,
+/// announcement) channels in a guild.
 /// Sets `last_read_at` to `NOW()` so pre-existing messages don't appear unread.
 pub async fn initialize_channel_read_state(
     pool: &PgPool,
     guild_id: Uuid,
     user_id: Uuid,
 ) -> Result<(), GuildError> {
-    sqlx::query(
+    let sql = concat!(
         r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
            SELECT $1, c.id, NOW(), (
                SELECT m.id FROM messages m
-               WHERE m.channel_id = c.id AND m.deleted_at IS NULL
+               WHERE m.channel_id = c.id AND m.deleted_at IS NULL AND m.parent_id IS NULL
                ORDER BY m.created_at DESC LIMIT 1
            )
            FROM channels c
-           WHERE c.guild_id = $2 AND c.channel_type = 'text'
-           ON CONFLICT (user_id, channel_id) DO NOTHING",
-    )
-    .bind(user_id)
-    .bind(guild_id)
-    .execute(pool)
-    .await?;
+           WHERE c.guild_id = $2 AND c.channel_type IN ",
+        crate::chat::unread::text_like_channel_types!(),
+        r"
+           ON CONFLICT (user_id, channel_id) DO NOTHING"
+    );
+    sqlx::query(sql)
+        .bind(user_id)
+        .bind(guild_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
-/// Mark every text channel in a guild as read for a user. Returns the
+/// Mark every read-tracked channel in a guild as read for a user.
+///
+/// Covers text, forum and announcement channels. Returns the
 /// `(channel_id, last_read_message_id)` pairs that were updated so callers can
 /// broadcast `ChannelRead` events.
 pub async fn mark_all_guild_channels_read(
@@ -414,24 +431,27 @@ pub async fn mark_all_guild_channels_read(
     guild_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<Vec<(Uuid, Option<Uuid>)>, GuildError> {
-    let rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
+    let sql = concat!(
         r"INSERT INTO channel_read_state (user_id, channel_id, last_read_at, last_read_message_id)
           SELECT $1, c.id, $3, (
               SELECT m.id FROM messages m
-              WHERE m.channel_id = c.id AND m.deleted_at IS NULL
+              WHERE m.channel_id = c.id AND m.deleted_at IS NULL AND m.parent_id IS NULL
               ORDER BY m.created_at DESC LIMIT 1
           )
           FROM channels c
-          WHERE c.guild_id = $2 AND c.channel_type = 'text'
+          WHERE c.guild_id = $2 AND c.channel_type IN ",
+        crate::chat::unread::text_like_channel_types!(),
+        r"
           ON CONFLICT (user_id, channel_id)
           DO UPDATE SET last_read_at = EXCLUDED.last_read_at, last_read_message_id = EXCLUDED.last_read_message_id
-          RETURNING channel_id, last_read_message_id",
-    )
-    .bind(user_id)
-    .bind(guild_id)
-    .bind(now)
-    .fetch_all(pool)
-    .await?;
+          RETURNING channel_id, last_read_message_id"
+    );
+    let rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(sql)
+        .bind(user_id)
+        .bind(guild_id)
+        .bind(now)
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 
