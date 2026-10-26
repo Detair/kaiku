@@ -76,3 +76,6 @@ __pycache__/
 # =============================================================================
 .worktrees/
 .claude/worktrees/
+
+# Android Firebase config (written by the release workflow from a secret)
+mobile/android/app/google-services.json

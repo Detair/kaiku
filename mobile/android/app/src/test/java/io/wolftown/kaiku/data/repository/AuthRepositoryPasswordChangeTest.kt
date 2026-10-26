@@ -31,6 +31,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.test.assertIs
+import io.wolftown.kaiku.push.PushRegistrar
 
 /**
  * C4 forced password change in [AuthRepository], over the real [AuthApiImpl]
@@ -100,7 +101,8 @@ class AuthRepositoryPasswordChangeTest {
     private val repository = AuthRepository(
         AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
         tokenStorage,
-        authState
+        authState,
+        mockk<PushRegistrar>(relaxed = true)
     )
 
     private companion object {

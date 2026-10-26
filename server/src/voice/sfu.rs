@@ -1155,10 +1155,18 @@ impl SfuServer {
     pub async fn check_rate_limit(&self, user_id: Uuid) -> Result<(), VoiceError> {
         if let Some(limiter) = &self.rate_limiter {
             // Note: We use user_id as identifier (stringified)
-            let result = limiter
+            let result = match limiter
                 .check(RateLimitCategory::VoiceJoin, &user_id.to_string())
                 .await
-                .map_err(|e| VoiceError::Internal(e.to_string()))?;
+            {
+                Ok(result) => result,
+                // Voice join is a WebSocket limit: fail open while Valkey is
+                // unavailable.
+                Err(_) if limiter.allow_during_outage(RateLimitCategory::VoiceJoin) => {
+                    return Ok(());
+                }
+                Err(e) => return Err(VoiceError::Internal(e.to_string())),
+            };
 
             if !result.allowed {
                 return Err(VoiceError::RateLimited("voice_join"));

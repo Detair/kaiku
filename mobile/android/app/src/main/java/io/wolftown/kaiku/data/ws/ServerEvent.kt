@@ -91,6 +91,18 @@ sealed class ServerEvent {
     @SerialName("dm_created")
     data class DmCreated(val channel: JsonObject) : ServerEvent()
 
+    // -- Read sync ------------------------------------------------------------
+
+    /** A guild channel was read in another session of this user. */
+    @Serializable
+    @SerialName("channel_read")
+    data class ChannelRead(val channelId: String, val lastReadMessageId: String? = null) : ServerEvent()
+
+    /** A DM was read in another session of this user. */
+    @Serializable
+    @SerialName("dm_read")
+    data class DmRead(val channelId: String, val lastReadMessageId: String? = null) : ServerEvent()
+
     // -- Typing ---------------------------------------------------------------
 
     @Serializable

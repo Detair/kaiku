@@ -407,3 +407,27 @@ async fn test_upload_message_broadcasts_message_new(pool: PgPool) {
 
     expect_no_ws_event(&mut ws_b, "message_new", Duration::from_secs(1)).await;
 }
+
+/// An `authenticate` frame with an invalid token is an auth problem: the socket
+/// is closed with 1008 so clients refresh or sign in instead of retrying.
+#[sqlx::test]
+async fn ws_invalid_auth_frame_closes_with_policy_violation(pool: PgPool) {
+    let app = TestApp::with_pool(pool).await;
+    let server = spawn_test_server(app.router.clone()).await;
+
+    let mut ws = ws_connect(&server, "not-a-valid-token").await;
+    let close = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Close(frame))) => return frame,
+                Some(Ok(_)) => {}
+                other => panic!("socket ended without a close frame: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("no close frame after an invalid authenticate frame");
+
+    let code: u16 = close.expect("close frame carries a code").code.into();
+    assert_eq!(code, 1008);
+}

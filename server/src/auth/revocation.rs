@@ -8,11 +8,13 @@
 //! add the session id with a TTL equal to the access-token lifetime — after
 //! that the token is expired anyway, so the entry can be dropped.
 //!
-//! The check is intentionally **fail-open**: if Redis is unavailable we accept
-//! the token rather than lock everyone out. This is no worse than the previous
-//! behaviour (no revocation at all) and preserves availability.
+//! The check **fails closed**: if Valkey cannot answer (within the command
+//! timeout) the caller rejects the request as temporarily unavailable instead
+//! of accepting a token that may have been revoked.
 
 use fred::prelude::*;
+
+use crate::db::{LogThrottle, ValkeyUnavailable};
 
 /// Redis key for a revoked session id.
 fn revoked_key(sid: &str) -> String {
@@ -40,16 +42,24 @@ pub async fn revoke_session(
         .await
 }
 
-/// Returns `true` if the session id has been revoked.
+/// Returns `Ok(true)` if the session id has been revoked.
 ///
-/// Fails open (returns `false`) on Redis errors so an outage cannot lock out
-/// legitimate users; a warning is logged so the condition is observable.
-pub async fn is_session_revoked(redis: &Client, sid: &str) -> bool {
+/// A Valkey error or timeout is returned as [`ValkeyUnavailable`]; callers
+/// fail closed (503 / WebSocket close 1013). The warning is throttled so an
+/// outage does not log once per request.
+pub async fn is_session_revoked(redis: &Client, sid: &str) -> Result<bool, ValkeyUnavailable> {
+    static WARN: LogThrottle = LogThrottle::new();
+
     match redis.exists::<i64, _>(revoked_key(sid)).await {
-        Ok(count) => count > 0,
+        Ok(count) => Ok(count > 0),
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to check token revocation denylist; failing open");
-            false
+            if WARN.allow(std::time::Duration::from_mins(1)) {
+                tracing::warn!(
+                    error = %e,
+                    "Token revocation denylist unavailable; rejecting authenticated requests"
+                );
+            }
+            Err(ValkeyUnavailable(e))
         }
     }
 }

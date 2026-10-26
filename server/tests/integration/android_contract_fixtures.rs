@@ -24,7 +24,7 @@ use vc_server::chat::types::{
     AttachmentInfo, AuthorProfile, CursorPaginatedResponse, DMListResponse, DMParticipant,
     LastMessagePreview, MessageResponse,
 };
-use vc_server::db::{Channel, ChannelType};
+use vc_server::db::{Channel, ChannelType, ChannelUnread, GuildUnreadSummary, UnreadAggregate};
 use vc_server::guild::categories::{Category, CategoryType};
 use vc_server::guild::settings::ChannelWithUnread;
 use vc_server::ws::ServerEvent;
@@ -414,5 +414,63 @@ fn android_golden_dm_list() {
     check_golden(
         "dm_list.json",
         serde_json::to_value(&list).expect("serialize dm list"),
+    );
+}
+
+/// `channel_read`: the user read a guild channel on another session; Android
+/// clears that channel's message notification.
+#[test]
+fn android_golden_ws_channel_read() {
+    let event = ServerEvent::ChannelRead {
+        channel_id: CHANNEL_ID,
+        last_read_message_id: Some(NEWER_MESSAGE_ID),
+    };
+
+    check_golden(
+        "ws_channel_read.json",
+        serde_json::to_value(&event).expect("serialize channel_read"),
+    );
+}
+
+/// `dm_read` without a read position (`last_read_message_id` absent or null).
+#[test]
+fn android_golden_ws_dm_read() {
+    let event = ServerEvent::DmRead {
+        channel_id: DM_CHANNEL_ID,
+        last_read_message_id: None,
+    };
+
+    check_golden(
+        "ws_dm_read.json",
+        serde_json::to_value(&event).expect("serialize dm_read"),
+    );
+}
+
+/// `GET /api/me/unread`: Android's wake fetch reads the server's unread count
+/// of the woken channel (guild channels count all authors, DMs only others).
+#[test]
+fn android_golden_unread_aggregate() {
+    let aggregate = UnreadAggregate {
+        guilds: vec![GuildUnreadSummary {
+            guild_id: GUILD_ID,
+            guild_name: "Family".to_string(),
+            channels: vec![ChannelUnread {
+                channel_id: CHANNEL_ID,
+                channel_name: "general".to_string(),
+                unread_count: 3,
+            }],
+            total_unread: 3,
+        }],
+        dms: vec![ChannelUnread {
+            channel_id: DM_CHANNEL_ID,
+            channel_name: String::new(),
+            unread_count: 2,
+        }],
+        total: 5,
+    };
+
+    check_golden(
+        "unread_aggregate.json",
+        serde_json::to_value(&aggregate).expect("serialize unread aggregate"),
     );
 }

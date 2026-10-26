@@ -26,6 +26,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
+import io.wolftown.kaiku.push.PushRegistrar
 
 /** A login only persists (or clears) for its own attempt and server. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -40,7 +41,7 @@ class AuthRepositoryLoginRaceTest {
 
     // UnconfinedTestDispatcher drives AuthState's stateIn synchronously (see app/src/test/AGENTS.md).
     private val authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
-    private val repository = AuthRepository(authApi, tokenStorage, authState)
+    private val repository = AuthRepository(authApi, tokenStorage, authState, mockk<PushRegistrar>(relaxed = true))
 
     private fun response(access: String) = AuthResponse(
         accessToken = access,
@@ -107,7 +108,8 @@ class AuthRepositoryLoginRaceTest {
         val realRepository = AuthRepository(
             AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
             tokenStorage,
-            authState
+            authState,
+            mockk<PushRegistrar>(relaxed = true)
         )
 
         val result = realRepository.login("anna", "pw")
