@@ -10,7 +10,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::header::HeaderValue;
 use axum::middleware::Next;
 use axum::response::Response;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::api::AppState;
 use crate::auth::AuthUser;
@@ -67,7 +67,8 @@ fn add_rate_limit_headers(response: &mut Response, result: &RateLimitResult) {
 /// # Behavior
 ///
 /// - If rate limiter is not configured (`state.rate_limiter` is `None`), requests pass through.
-/// - If Redis is unavailable and `fail_open` is true, requests pass through with a warning.
+/// - If Valkey is unavailable, see
+///   [`RateLimiter::allow_during_outage`](crate::ratelimit::RateLimiter::allow_during_outage).
 /// - If the rate limit is exceeded, returns `429 Too Many Requests` with retry information.
 /// - Stores `NormalizedIp` in request extensions for downstream handlers.
 #[tracing::instrument(skip(state, request, next))]
@@ -115,14 +116,8 @@ pub async fn rate_limit_by_ip(
     let result = match rate_limiter.check(category, &normalized_ip).await {
         Ok(result) => result,
         Err(RateLimitError::RedisUnavailable) => {
-            // Fail open if configured - SECURITY WARNING: rate limiting is disabled!
-            if rate_limiter.config().fail_open {
-                warn!(
-                    category = %category.as_str(),
-                    ip = %normalized_ip,
-                    security_impact = "high",
-                    "SECURITY WARNING: Redis unavailable - RATE LIMITING DISABLED! API vulnerable to abuse/DoS attacks. Investigate Redis connectivity immediately."
-                );
+            // Valkey outage: general limits fail open, auth limits fail closed.
+            if rate_limiter.allow_during_outage(category) {
                 return Ok(next.run(request).await);
             }
             return Err(RateLimitError::RedisUnavailable);
@@ -222,14 +217,8 @@ pub async fn rate_limit_by_user(
     let result = match rate_limiter.check(category, &identifier).await {
         Ok(result) => result,
         Err(RateLimitError::RedisUnavailable) => {
-            // Fail open if configured - SECURITY WARNING: rate limiting is disabled!
-            if rate_limiter.config().fail_open {
-                warn!(
-                    category = %category.as_str(),
-                    identifier = %identifier,
-                    security_impact = "high",
-                    "SECURITY WARNING: Redis unavailable - RATE LIMITING DISABLED! API vulnerable to abuse/DoS attacks. Investigate Redis connectivity immediately."
-                );
+            // Valkey outage: general limits fail open, auth limits fail closed.
+            if rate_limiter.allow_during_outage(category) {
                 return Ok(next.run(request).await);
             }
             return Err(RateLimitError::RedisUnavailable);
@@ -307,13 +296,8 @@ pub async fn check_ip_not_blocked(
     let is_blocked = match rate_limiter.is_blocked(&normalized_ip).await {
         Ok(blocked) => blocked,
         Err(RateLimitError::RedisUnavailable) => {
-            // Fail open if configured - SECURITY WARNING: IP blocking is disabled!
-            if rate_limiter.config().fail_open {
-                warn!(
-                    ip = %normalized_ip,
-                    security_impact = "critical",
-                    "SECURITY WARNING: Redis unavailable - IP BLOCKING DISABLED! Brute-force protection inactive. Investigate Redis connectivity immediately."
-                );
+            // Valkey outage: the failed-login IP block is an auth limit.
+            if rate_limiter.allow_during_outage(RateLimitCategory::FailedAuth) {
                 return Ok(next.run(request).await);
             }
             return Err(RateLimitError::RedisUnavailable);

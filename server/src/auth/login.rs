@@ -65,23 +65,18 @@ pub async fn login(
     Json(body): Json<LoginRequest>,
 ) -> AuthResult<(CookieJar, Json<AuthResponse>)> {
     // Helper macro to record failed auth (if rate limiter is configured)
-    // SECURITY: Fails request if rate limiter is down (fail-closed pattern)
+    // SECURITY: Fails request with 503 if Valkey is down (fail-closed pattern)
     macro_rules! record_failed_auth {
         () => {
             if let (Some(ref rl), Some(Extension(ref nip))) = (&state.rate_limiter, &normalized_ip)
             {
-                if let Err(e) = rl.record_failed_auth(&nip.0).await {
-                    tracing::error!(
-                        error = %e,
-                        ip = ?nip.0,
-                        username = %body.username,
-                        "SECURITY: Failed to record failed authentication - BLOCKING REQUEST to prevent rate limit bypass"
-                    );
-                    // Fail closed - deny request when rate limiter is unavailable
-                    // This prevents attackers from bypassing rate limiting by triggering rate limiter failures
-                    return Err(AuthError::Internal(
-                        "Authentication service temporarily unavailable. Please try again later.".to_string()
-                    ));
+                if rl.record_failed_auth(&nip.0).await.is_err()
+                    && !rl.allow_during_outage(crate::ratelimit::RateLimitCategory::FailedAuth)
+                {
+                    // Fail closed (503, logged and counted by
+                    // `allow_during_outage`): otherwise a rate limiter failure
+                    // would let attackers bypass failed-login blocking.
+                    return Err(AuthError::ServiceUnavailable);
                 }
             }
         };

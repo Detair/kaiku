@@ -58,6 +58,10 @@ pub struct Config {
     /// Valkey/Redis connection URL (uses redis:// protocol)
     pub redis_url: String,
 
+    /// Per-command Valkey timeout (`VALKEY_COMMAND_TIMEOUT_MS`, default 3 s).
+    /// Commands that get no answer in time fail instead of waiting for Valkey.
+    pub valkey_command_timeout: std::time::Duration,
+
     /// JWT private key (PEM format, base64 encoded) for signing tokens
     pub jwt_private_key: String,
 
@@ -354,6 +358,8 @@ impl Config {
             env_opt("FCM_SERVICE_ACCOUNT_JSON"),
         )?;
         let fcm_api_base = crate::push::fcm::FCM_API_BASE.to_string();
+        let valkey_command_timeout =
+            parse_valkey_command_timeout(env_opt("VALKEY_COMMAND_TIMEOUT_MS").as_deref())?;
         if let Some(key) = &fcm_service_account {
             // Refuse to start with a key the FCM client cannot use.
             crate::push::fcm::FcmClient::new(key.clone(), &fcm_api_base)?;
@@ -362,6 +368,7 @@ impl Config {
             bind_address: env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".into()),
             database_url: env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
             redis_url: env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into()),
+            valkey_command_timeout,
             jwt_private_key: env::var("JWT_PRIVATE_KEY")
                 .context("JWT_PRIVATE_KEY must be set (base64-encoded PEM)")?,
             jwt_public_key: env::var("JWT_PUBLIC_KEY")
@@ -606,6 +613,7 @@ impl Config {
             bind_address: "127.0.0.1:8080".into(),
             database_url,
             redis_url,
+            valkey_command_timeout: crate::db::DEFAULT_VALKEY_COMMAND_TIMEOUT,
             // Test RSA key pair (2048-bit, generated for testing only)
             jwt_private_key: TEST_JWT_PRIVATE_KEY.into(),
             jwt_public_key: TEST_JWT_PUBLIC_KEY.into(),
@@ -706,6 +714,29 @@ const TEST_MFA_ENCRYPTION_KEY: &str =
 /// empty issuer URL on the beta server.
 fn env_opt(name: &str) -> Option<String> {
     env::var(name).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// Exclusive upper bound for `VALKEY_COMMAND_TIMEOUT_MS`: the WebSocket
+/// pub/sub setup must fail on its own before its 5 s ready timeout.
+const MAX_VALKEY_COMMAND_TIMEOUT_MS: u64 = 5000;
+
+/// Parse `VALKEY_COMMAND_TIMEOUT_MS`: milliseconds in `1..5000`; unset means
+/// [`crate::db::DEFAULT_VALKEY_COMMAND_TIMEOUT`]. Anything else refuses
+/// startup (`0` would disable the timeout).
+fn parse_valkey_command_timeout(raw: Option<&str>) -> Result<std::time::Duration> {
+    let Some(raw) = raw.map(str::trim) else {
+        return Ok(crate::db::DEFAULT_VALKEY_COMMAND_TIMEOUT);
+    };
+    match raw.parse::<u64>() {
+        Ok(ms) if ms > 0 && ms < MAX_VALKEY_COMMAND_TIMEOUT_MS => {
+            Ok(std::time::Duration::from_millis(ms))
+        }
+        _ => anyhow::bail!(
+            "Invalid VALKEY_COMMAND_TIMEOUT_MS value '{raw}'. Must be a number of milliseconds \
+             from 1 to {} (below the 5000 ms WebSocket ready timeout)",
+            MAX_VALKEY_COMMAND_TIMEOUT_MS - 1
+        ),
+    }
 }
 
 /// IP family allowed for ICE candidates.
@@ -963,5 +994,59 @@ mod cors_origin_tests {
     #[test]
     fn effective_origins_keep_wildcard() {
         assert_eq!(config_with(&["*"]).effective_cors_origins(), vec!["*"]);
+    }
+}
+
+#[cfg(test)]
+mod valkey_command_timeout_tests {
+    use std::time::Duration;
+
+    use super::{parse_valkey_command_timeout, Config};
+
+    #[test]
+    fn defaults_to_three_seconds() {
+        assert_eq!(
+            parse_valkey_command_timeout(None).unwrap(),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            Config::default_for_test().valkey_command_timeout,
+            Duration::from_secs(3)
+        );
+    }
+
+    #[test]
+    fn accepts_milliseconds() {
+        assert_eq!(
+            parse_valkey_command_timeout(Some(" 1500 ")).unwrap(),
+            Duration::from_millis(1500)
+        );
+    }
+
+    #[test]
+    fn rejects_values_not_below_the_websocket_ready_timeout() {
+        assert_eq!(
+            parse_valkey_command_timeout(Some("4999")).unwrap(),
+            Duration::from_millis(4999)
+        );
+        for raw in ["5000", "30000"] {
+            let err = parse_valkey_command_timeout(Some(raw))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("VALKEY_COMMAND_TIMEOUT_MS") && err.contains("5000"),
+                "{raw}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_values_at_startup() {
+        for raw in ["0", "-1", "3s", "abc", "1.5"] {
+            let err = parse_valkey_command_timeout(Some(raw))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("VALKEY_COMMAND_TIMEOUT_MS"), "{raw}: {err}");
+        }
     }
 }

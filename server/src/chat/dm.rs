@@ -687,7 +687,7 @@ pub async fn mark_as_read(
     let now = chrono::Utc::now();
 
     // Atomic forward-only upsert: only advances the cursor, never moves it backward
-    queries::upsert_dm_read_state(
+    let marked = queries::upsert_dm_read_state(
         &state.db,
         auth.id,
         channel_id,
@@ -695,6 +695,10 @@ pub async fn mark_as_read(
         body.last_read_message_id,
     )
     .await?;
+    if marked {
+        // Clear the phone notification, if one was pushed (C20 `read`).
+        state.push.notify_read(&state, auth.id, channel_id);
+    }
 
     // Broadcast dm_read event to all user's other WebSocket sessions
     // Note: Broadcast failure shouldn't fail the request since the DB state is already updated
@@ -747,6 +751,7 @@ pub async fn mark_all_dms_read(
 
     // Broadcast DmRead events for each updated DM channel
     for (channel_id, last_read_message_id) in &rows {
+        state.push.notify_read(&state, auth.id, *channel_id);
         if let Err(e) = broadcast_to_user(
             &state.redis,
             auth.id,

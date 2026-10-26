@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Kaiku Android lint configuration (lintDebug is a blocking CI step). -->
+<lint>
+    <issue id="HardcodedText" severity="error" />
+    <issue id="ExtraTranslation" severity="error" />
+    <issue id="UnusedResources" severity="error" />
+
+    <!-- until German translation starts — C17 is enforced by i18n:check -->
+    <issue id="MissingTranslation" severity="ignore" />
+
+    <!--
+        Custom rule from :lint-rules. Never ignore globally: the per-file list below covers
+        exactly the files that still contain hardcoded text; each i18n batch shrinks it.
+    -->
+    <issue id="ComposeHardcodedText" severity="error">
+        <ignore path="src/main/java/io/wolftown/kaiku/ui/auth/RegisterScreen.kt" />
+        <ignore path="src/main/java/io/wolftown/kaiku/ui/auth/ServerUrlScreen.kt" />
+        <ignore path="src/main/java/io/wolftown/kaiku/ui/auth/QrScannerScreen.kt" />
+        <ignore path="src/main/java/io/wolftown/kaiku/ui/auth/QrRedeemScreen.kt" />
+        <ignore path="src/main/java/io/wolftown/kaiku/ui/settings/SettingsScreen.kt" />
+        <ignore path="src/main/java/io/wolftown/kaiku/ui/voice/VoiceOverlay.kt" />
+        <ignore path="src/main/java/io/wolftown/kaiku/ui/voice/ScreenShareView.kt" />
+        <ignore path="src/main/java/io/wolftown/kaiku/ui/channel/EmojiPicker.kt" />
+    </issue>
+</lint>

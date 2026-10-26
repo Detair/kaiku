@@ -5,11 +5,13 @@ import io.wolftown.kaiku.data.api.MfaRequiredApiException
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.domain.model.User
+import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.ui.auth.MfaRequiredException
 import io.wolftown.kaiku.ui.auth.PasswordChangeRequiredException
 import java.util.logging.Level
 import java.util.logging.Logger
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,10 +37,14 @@ internal data class PendingPasswordChange(
 class AuthRepository @Inject constructor(
     private val authApi: AuthApi,
     private val tokenStorage: TokenStorage,
-    private val authState: AuthState
+    private val authState: AuthState,
+    private val pushRegistrar: PushRegistrar
 ) {
     companion object {
         private val logger = Logger.getLogger("AuthRepository")
+
+        /** Logout never waits longer than this for the push device DELETE. */
+        const val PUSH_UNREGISTER_TIMEOUT_MS = 3_000L
     }
 
     /**
@@ -253,6 +259,8 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun logout() {
+        // First step, while the tokens still authenticate the DELETE.
+        unregisterPush()
         invalidateLogin()
         try {
             authApi.logout()
@@ -263,6 +271,17 @@ class AuthRepository @Inject constructor(
         }
         tokenStorage.clear()
         authState.setLoggedOut()
+    }
+
+    /** Removes this device's push registration; bounded and best effort, never blocks logout. */
+    private suspend fun unregisterPush() {
+        try {
+            withTimeoutOrNull(PUSH_UNREGISTER_TIMEOUT_MS) { pushRegistrar.unregisterForLogout() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warning("Push unregister failed (best-effort): ${e.javaClass.simpleName}")
+        }
     }
 
     suspend fun getCurrentUser(): Result<User> {

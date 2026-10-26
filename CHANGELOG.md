@@ -16,7 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
-- The server can deliver Android push notifications through Firebase Cloud Messaging when an FCM service account is configured.
+- **Mobile push notifications (server side)**: the server can wake the Android app through Firebase Cloud Messaging (when an FCM service account is configured) or UnifiedPush. Phones are now also notified about @mentions, not only DMs (photo and file DMs already pushed before). Bursts of messages are coalesced into one notification, and reading a conversation on another device clears its notification. Wake signals carry only a type, channel and count, never message text, so end-to-end encryption is preserved. Blocked users never trigger a notification, and blocks are enforced for DMs even when cached data has expired. Endpoints are registered per device under `/api/me/push-subscriptions`, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
+- Android: new messages show as notifications with the sender and text, grouped per conversation; tapping one opens the conversation, and reading it anywhere clears the notification.
+- Android: phones without Google services can get notifications through UnifiedPush (for example ntfy), and Settings shows whether notifications are working.
+- Android: after signing in, Kaiku asks once for permission to show notifications.
+- Android: notifications arrive while the app is closed, using Google's push service on phones that have it.
 - People signing in with a temporary password are asked to choose their own password first.
 - Admins can create accounts with a temporary password from the admin dashboard, so registration can stay closed.
 - Releases now include a signed Android app (`Kaiku-<version>.apk`) that updates in place over earlier installs.
@@ -26,7 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Apps can fetch messages they missed while offline (`GET /api/messages/channel/{id}?after=…`), and the realtime connection now reports the server time on connect so reconnecting apps catch up reliably.
 - **Incoming webhooks (Discord-compatible)**: paste a Kaiku webhook URL anywhere a Discord webhook URL is expected — game-server plugins, Grafana, Uptime-Kuma, CI notifiers — and it just works, no adapter needed. Admins create webhooks per channel (new **Manage Webhooks** permission); each webhook gets a secret URL (`/api/webhooks/{id}/{token}`, token encrypted at rest) that accepts Discord-format payloads: message content, per-message username/avatar overrides, and up to 10 rich embeds (unknown fields like `tts`/`components`/`polls` are safely ignored). Includes the `/slack` compatibility endpoint (Slack-format `text`/`attachments` payloads), forum-channel support (`thread_name` creates a post, `thread_id` replies into one), Discord-matching error bodies and status codes so client libraries behave, and Discord's rate limit (5 posts per 2s per webhook with a proper `retry_after` 429). Webhook messages render with the posted name/avatar and never trigger @everyone pings; guild content filters still apply. File uploads and the `/github` endpoint are not yet supported.
 - **Membership screening (rules gate)**: a guild can require new members to read and accept its rules before participating. Newly-joined members enter a **pending** state — enforced server-side (no channel read/send/voice/subscribe, not just hidden) until they accept a rules screen. Admins set the rules text and toggle screening; disabling it promotes any pending members. Existing members are unaffected.
-- **Mobile push notifications (server foundation)**: a provider-agnostic, **content-free** push dispatcher so mobile clients can be woken while backgrounded. Users register device endpoints (`/api/me/push-subscriptions`); a DM triggers a wake signal carrying only a type + channel id + count (never message text, so E2EE is preserved) — the app wakes and syncs locally. Delivery goes through FCM (when the operator configures a service account) or UnifiedPush; user-supplied endpoints pass through the same SSRF guard as webhooks, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
 - **Scheduled events**: guilds can schedule events (game nights, streams, meetings) with a name, time, and location (a voice channel or an external link). Members RSVP **interested** or **going** and see live counts; a new **Manage Events** permission gates create/edit/cancel. An **Events** panel (calendar button in the server header) lists upcoming events, and a reminder notification fires shortly before an event you've RSVP'd to starts.
 - **Announcement channels**: a new channel type for broadcasts. Posting requires a dedicated **Send Announcements** permission (distinct from Send Messages). Any guild can **follow** an announcement channel so its posts **crosspost** into a chosen channel in the follower's guild — the fan-out runs asynchronously (a slow follower can't hold up the post) and crossposts are flagged so they never loop back.
 - **Forum channels**: a new channel type that organizes discussion into posts. Create a forum channel, start posts (title + body, optionally tagged), browse them as a card list sorted by recent activity, and filter by tag. Replies reuse the existing thread system, and each reply bumps the post's activity. Moderators (new **Manage Posts** permission) can pin, lock, and delete posts and manage the channel's tag set; authors can delete their own posts.
@@ -53,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Dates in the direct-message list and the sessions list are shorter ("Oct 22" instead of "10/22/2026", year only when it differs) and follow your region's format.
 - Each phone now holds one push registration; signing in with another account on the same phone stops notifications for the previous account.
 - **End-to-end encryption paused for 1.0**: End-to-end encryption setup is no longer offered and the DM padlock is removed; direct messages are protected in transit (TLS) and on the server, and end-to-end encryption will return in a later release.
 - Windows releases ship a single `-setup.exe` installer (MSI dropped)
@@ -105,6 +109,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Signing in (and linking an account) with an external identity provider in the desktop app now completes: the provider returns to the server, which finishes the sign-in and hands the result to the app. If the provider declines or the sign-in fails, the app or sign-in window now shows an error right away instead of waiting for a timeout.
+- In the browser, Kaiku now signs you out right away when your session is ended elsewhere and stops retrying with an expired login.
+- The server no longer hangs when its cache (Valkey) is unavailable; affected requests fail quickly instead.
+- E-mail addresses and code snippets are no longer treated as @mentions.
 - Desktop notifications also appear when Kaiku is open on another screen, and push-to-talk no longer fires while typing or steals plain keys from games.
 - Closing a dialog with Escape no longer marks the channel as read, dismissing an upload error no longer sends your message, and the main dialogs work with the keyboard and screen readers.
 - Hard-to-read Solarized themes are no longer offered, and buttons, menu actions and Android warning buttons use readable colours.

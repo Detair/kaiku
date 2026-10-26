@@ -50,6 +50,32 @@ describe("token refresh failure handling", () => {
     expect(common.browserState.accessToken).toBeNull();
   });
 
+  it("a forced refresh that hits a 503 throws instead of claiming success", async () => {
+    fetchMock.mockResolvedValue(respond(503));
+
+    await expect(common.forceRefreshAccessToken()).rejects.toThrow();
+    expect(common.browserState.accessToken).toBe("old-token");
+  });
+
+  it("a forced refresh rejected with 401 resolves false", async () => {
+    fetchMock.mockResolvedValue(respond(401));
+
+    expect(await common.forceRefreshAccessToken()).toBe(false);
+  });
+
+  it("a 403 ACCOUNT_BANNED refresh ends the session as banned", async () => {
+    fetchMock.mockResolvedValue(respond(403, { error: "ACCOUNT_BANNED" }));
+    const ended = vi.fn();
+    const listener = (e: Event) => ended((e as CustomEvent).detail);
+    window.addEventListener("kaiku:session-ended", listener);
+
+    expect(await common.refreshAccessToken()).toBe(false);
+    window.removeEventListener("kaiku:session-ended", listener);
+
+    expect(common.browserState.accessToken).toBeNull();
+    expect(ended).toHaveBeenCalledWith({ reason: "banned" });
+  });
+
   it("a 503 refresh during reconnect keeps the session and schedules a retry", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0.5);

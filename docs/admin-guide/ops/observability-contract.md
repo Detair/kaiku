@@ -207,6 +207,7 @@ These follow [OTel DB semantic conventions](https://opentelemetry.io/docs/specs/
 | `kaiku_db_pool_connections_idle` | Gauge | connections | Idle database pool connections. |
 | `kaiku_auth_login_attempts_total` | Counter | attempts | Login attempts, by outcome (`success`, `failure`). |
 | `kaiku_auth_token_refresh_total` | Counter | refreshes | Token refresh operations, by outcome. |
+| `kaiku_ratelimit_valkey_unavailable_total` | Counter | checks | Rate limit checks that could not reach Valkey, by `category` and `outcome` (`fail_open`, `fail_closed`). |
 | `kaiku_otel_export_failures_total` | Counter | failures | OTLP export failures from the SDK. |
 | `kaiku_otel_dropped_spans_total` | Counter | spans | Spans dropped due to queue overflow. |
 | `kaiku_process_memory_bytes` | Gauge | bytes | Process resident set size (RSS) from /proc/self/status. |

@@ -54,6 +54,7 @@ variables marked "empty = unset".
 | Variable | Required / default | Purpose |
 |----------|--------------------|---------|
 | `REDIS_URL` | `redis://localhost:6379` | Valkey (Redis-compatible) connection URL |
+| `VALKEY_COMMAND_TIMEOUT_MS` | `3000` | How long a Valkey command, connect or reconnect handshake may take before it fails, in milliseconds. While Valkey is unavailable, requests fail quickly instead of waiting: signed-in requests get `503`, general rate limits and presence fail open. Must be an integer from `1` to `4999` (below the 5 s WebSocket ready timeout); any other value stops the server at startup |
 
 Rate limiting also uses Valkey; see [rate-limiting.md](rate-limiting.md).
 
