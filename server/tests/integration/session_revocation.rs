@@ -670,50 +670,104 @@ async fn server_with_failing_valkey(
     server_with_valkey(pool, config, redis).await
 }
 
+/// Run one `ACL` subcommand on the test Valkey as the default user.
+async fn valkey_acl(redis_url: &str, args: Vec<String>) -> Result<(), fred::error::Error> {
+    use fred::prelude::ClientLike;
+
+    let admin = db::create_redis_client(redis_url).await.expect("Valkey");
+    let result: Result<(), _> = admin
+        .custom(
+            fred::types::CustomCommand::new_static("ACL", None, false),
+            args,
+        )
+        .await;
+    let _ = admin.quit().await;
+    result
+}
+
+/// Removes its Valkey ACL user when dropped, also when the test panics (best
+/// effort, on a separate thread with its own runtime because `Drop` cannot
+/// await).
+struct AclUserGuard {
+    redis_url: String,
+    user: String,
+}
+
+impl Drop for AclUserGuard {
+    fn drop(&mut self) {
+        let redis_url = self.redis_url.clone();
+        let user = self.user.clone();
+        let _ = std::thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            runtime.block_on(async {
+                if let Err(e) = valkey_acl(&redis_url, vec!["DELUSER".into(), user]).await {
+                    eprintln!("ACL DELUSER failed (ignored): {e}");
+                }
+            });
+        })
+        .join();
+    }
+}
+
 /// A server whose Valkey client can read (so the fail-closed session
 /// denylist check in `require_auth` passes) but is refused `SET` and
 /// `PUBLISH`, so ending sessions fails after the handler's commit. Uses a
-/// dedicated Valkey ACL user.
+/// Valkey ACL user unique to this run; keep the returned guard alive for the
+/// test, it deletes the user afterwards.
 async fn server_with_write_refusing_valkey(
     pool: &PgPool,
-) -> (TestServer, std::sync::Arc<vc_server::config::Config>) {
+) -> (
+    TestServer,
+    std::sync::Arc<vc_server::config::Config>,
+    AclUserGuard,
+) {
     use fred::prelude::{ClientLike, Config as ValkeyConfig};
 
-    const ACL_USER: &str = "kaiku-test-no-writes";
-    const ACL_PASSWORD: &str = "kaiku-test-no-writes";
-
     let config = vc_server::config::Config::default_for_test();
-    let admin = db::create_redis_client(&config.redis_url)
-        .await
-        .expect("Valkey");
-    let _: () = admin
-        .custom(
-            fred::types::CustomCommand::new_static("ACL", None, false),
-            vec![
-                "SETUSER",
-                ACL_USER,
-                "reset",
-                "on",
-                &format!(">{ACL_PASSWORD}"),
-                "~*",
-                "&*",
-                "+@all",
-                "-set",
-                "-publish",
-            ],
-        )
-        .await
-        .expect("ACL SETUSER");
-    let _ = admin.quit().await;
+    let user = format!("kaiku-test-no-writes-{}", Uuid::new_v4().simple());
+    let password = Uuid::new_v4().simple().to_string();
+    let guard = AclUserGuard {
+        redis_url: config.redis_url.clone(),
+        user: user.clone(),
+    };
+    valkey_acl(
+        &config.redis_url,
+        [
+            "SETUSER",
+            user.as_str(),
+            "reset",
+            "on",
+            &format!(">{password}"),
+            "~*",
+            "&*",
+            "+@all",
+            "-@dangerous",
+            "-set",
+            "-publish",
+        ]
+        .map(String::from)
+        .to_vec(),
+    )
+    .await
+    .expect("ACL SETUSER");
 
     let mut valkey_config = ValkeyConfig::from_url(&config.redis_url).expect("Valkey URL");
-    valkey_config.username = Some(ACL_USER.to_string());
-    valkey_config.password = Some(ACL_PASSWORD.to_string());
+    valkey_config.username = Some(user);
+    valkey_config.password = Some(password);
     let redis = fred::clients::Client::new(valkey_config, None, None, None);
     redis.connect();
-    redis.wait_for_connect().await.expect("connect Valkey");
+    redis
+        .wait_for_connect()
+        .await
+        .expect("connect Valkey as the restricted ACL user");
 
-    server_with_valkey(pool, config, redis).await
+    let (server, config) = server_with_valkey(pool, config, redis).await;
+    (server, config, guard)
 }
 
 /// A test server on `pool` that uses `redis` as its Valkey client.
@@ -746,7 +800,7 @@ async fn server_with_valkey(
 /// request is already refused with 503 by the fail-closed denylist check.)
 #[sqlx::test]
 async fn test_ban_is_audited_when_ending_sessions_fails(pool: PgPool) {
-    let (server, config) = server_with_write_refusing_valkey(&pool).await;
+    let (server, config, _acl_user) = server_with_write_refusing_valkey(&pool).await;
     let (admin_id, _) = create_test_user(&pool).await;
     make_admin(&pool, admin_id).await;
     let admin_token = create_elevated_session(&pool, &config, admin_id).await;
