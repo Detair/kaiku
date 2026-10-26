@@ -15,17 +15,23 @@
 //! - Exactly once per `call_id`: `ended` swaps the stored set for a tombstone atomically (`SET ...
 //!   GET`), and `ringing` stores its set with `NX`, so an `ended` that wins a race against a slow
 //!   `ringing` task suppresses that `ringing` instead of leaving a phone ringing.
-//! - Both run in spawned tasks (best effort) and bypass coalescing, but count toward the per-user
-//!   cap ([`super::PushService::admit_call`]).
+//! - Ordering: a per-call in-process lock is held from before the set is stored until every
+//!   `ringing` delivery finished; `ended` waits for it, so `ended` is always the last wake sent for
+//!   a call (single replica).
+//! - Both run in spawned tasks (best effort) and bypass coalescing. `ringing` has its own budget
+//!   per callee ([`super::PushService::admit_ringing`], 10/min); message wakes are not affected.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use fred::prelude::*;
 use fred::types::{Expiration, SetOptions};
+use futures::future::join_all;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use super::service::deliver_call;
 use super::{PushPayload, PushService};
 use crate::chat::queries::blocked_among;
 use crate::voice::call::EndReason;
@@ -154,23 +160,62 @@ impl CallPusher {
         });
     }
 
-    async fn ringing(
+    /// Ring `targets` for the call `call_id` and wait until the deliveries
+    /// are done. Public for tests; production uses [`Self::spawn_ringing`].
+    ///
+    /// # Errors
+    /// The block lookup or the Valkey write failed (nobody is woken).
+    pub async fn ringing(
         &self,
         channel_id: Uuid,
         call_id: Uuid,
         caller: Uuid,
         targets: Vec<Uuid>,
     ) -> anyhow::Result<()> {
-        let targets: Vec<Uuid> = targets.into_iter().filter(|&id| id != caller).collect();
+        self.ringing_hooked(channel_id, call_id, caller, targets, async {})
+            .await
+    }
+
+    /// [`Self::ringing`] with `after_store` awaited right after the set was
+    /// stored and before any delivery (test seam).
+    ///
+    /// # Errors
+    /// As [`Self::ringing`].
+    pub async fn ringing_hooked(
+        &self,
+        channel_id: Uuid,
+        call_id: Uuid,
+        caller: Uuid,
+        mut targets: Vec<Uuid>,
+        after_store: impl std::future::Future<Output = ()>,
+    ) -> anyhow::Result<()> {
+        // Held until every `ringing` delivery finished; `ended` takes it
+        // before sending, so a callee never gets `ended` before `ringing`.
+        // Taken before the set is stored, so `ended` (which only waits after
+        // finding the set) always waits for it.
+        let lock = self.push.call_lock(call_id, true).unwrap_or_default();
+        let _ordered = lock.lock().await;
+        let _cleanup = DropCallLock(&self.push, call_id);
+
+        targets.sort_unstable();
+        targets.dedup();
+        targets.retain(|&id| id != caller);
         // A failed block lookup wakes nobody (same rule as DM wakes).
         let blocked = blocked_among(&self.db, caller, &targets).await?;
-        // Admit before storing, so a wake dropped by the per-user cap leaves
-        // that user out of the set and no `ended` follows for them.
+        // Reserve a ringing slot per callee before storing, so a callee over
+        // the budget is left out of the set (and gets no `ended`). If the set
+        // cannot be stored, the slots are given back.
+        let now = Instant::now();
         let recipients: Vec<Uuid> = targets
             .into_iter()
-            .filter(|id| !blocked.contains(id) && self.push.admit_call(*id))
+            .filter(|id| !blocked.contains(id) && self.push.admit_ringing_at(*id, now))
             .collect();
-        let stored: Option<String> = self
+        let refund = || {
+            for &user in &recipients {
+                self.push.refund_ringing(user, now);
+            }
+        };
+        let stored: Result<Option<String>, _> = self
             .redis
             .set(
                 rung_key(call_id),
@@ -179,19 +224,36 @@ impl CallPusher {
                 Some(SetOptions::NX),
                 false,
             )
-            .await?;
-        if stored.is_none() {
+            .await;
+        match stored {
+            Ok(Some(_)) => {}
             // The call already ended (tombstone): do not ring.
-            return Ok(());
+            Ok(None) => {
+                refund();
+                return Ok(());
+            }
+            Err(e) => {
+                refund();
+                return Err(e.into());
+            }
         }
+        after_store.await;
         let wake = CallWake::ringing(channel_id, call_id, caller);
-        for user in recipients {
-            self.push.send_call(&self.db, user, wake.clone());
-        }
+        join_all(
+            recipients
+                .iter()
+                .map(|&user| deliver_call(&self.db, &self.push, user, &wake)),
+        )
+        .await;
         Ok(())
     }
 
-    async fn ended(
+    /// Send `ended` for the call `call_id` to the users that got `ringing`,
+    /// once. Public for tests; production uses [`Self::spawn_ended`].
+    ///
+    /// # Errors
+    /// The Valkey swap failed or the stored set is unreadable.
+    pub async fn ended(
         &self,
         channel_id: Uuid,
         call_id: Uuid,
@@ -214,10 +276,30 @@ impl CallPusher {
             return Ok(());
         };
         let recipients: Vec<Uuid> = serde_json::from_str(&previous)?;
-        let wake = CallWake::ended(channel_id, call_id, caller, reason);
-        for user in recipients {
-            self.push.notify_call(&self.db, user, wake.clone());
+        // The set exists, so the ringing task stored it while holding the
+        // call's lock: wait until its deliveries are done, so `ended` is the
+        // last wake for this call. Every send is bounded by its HTTP timeout,
+        // so the wait is too. No lock means the ringing task already finished.
+        if let Some(lock) = self.push.call_lock(call_id, false) {
+            drop(lock.lock().await);
         }
+        // Not rate-limited: every recipient's `ringing` went out.
+        let wake = CallWake::ended(channel_id, call_id, caller, reason);
+        join_all(
+            recipients
+                .iter()
+                .map(|&user| deliver_call(&self.db, &self.push, user, &wake)),
+        )
+        .await;
         Ok(())
+    }
+}
+
+/// Removes the per-call ordering lock when the ringing task finishes.
+struct DropCallLock<'a>(&'a PushService, Uuid);
+
+impl Drop for DropCallLock<'_> {
+    fn drop(&mut self) {
+        self.0.drop_call_lock(self.1);
     }
 }

@@ -1,6 +1,7 @@
 //! Push transports configured for this server instance, plus the in-memory
 //! coalescer (single replica, see [`super::coalesce`]).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -19,6 +20,8 @@ use crate::config::Config;
 pub struct PushService {
     fcm: Option<Arc<FcmClient>>,
     coalescer: Coalescer,
+    /// Per-call locks ordering `ringing` before `ended` ([`super::call`]).
+    call_locks: std::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl PushService {
@@ -37,7 +40,7 @@ impl PushService {
                 tracing::info!("push: FCM enabled for project {project_id}");
                 Self {
                     fcm: Some(Arc::new(client)),
-                    coalescer: Coalescer::new(),
+                    ..Self::default()
                 }
             }
             Err(e) => {
@@ -103,32 +106,59 @@ impl PushService {
 }
 
 impl PushService {
-    /// Admit one call wake for `user_id`: call wakes bypass the coalescing
-    /// window but count toward the per-user cap. Returns whether it may go out.
+    /// Admit one call `ringing` wake for `user_id` (own budget per callee;
+    /// message wakes are not affected). Returns whether it may go out.
     #[must_use]
-    pub fn admit_call(&self, user_id: Uuid) -> bool {
-        self.coalescer.admit_direct(user_id, Instant::now())
+    pub fn admit_ringing(&self, user_id: Uuid) -> bool {
+        self.admit_ringing_at(user_id, Instant::now())
     }
 
-    /// Send a call wake to every device of `user_id` in a spawned task, if the
-    /// per-user cap allows it. Never blocks; errors are logged without secrets.
-    pub fn notify_call(self: &Arc<Self>, db: &sqlx::PgPool, user_id: Uuid, wake: super::CallWake) {
-        if self.admit_call(user_id) {
-            self.send_call(db, user_id, wake);
+    pub(crate) fn admit_ringing_at(&self, user_id: Uuid, now: Instant) -> bool {
+        self.coalescer.admit_ringing(user_id, now)
+    }
+
+    /// Give back a ringing slot admitted at `at` that was not used.
+    pub(crate) fn refund_ringing(&self, user_id: Uuid, at: Instant) {
+        self.coalescer.refund_ringing(user_id, at);
+    }
+
+    /// The per-call lock that orders a call's `ringing` before its `ended`
+    /// (single replica). `create` inserts it if missing.
+    pub(crate) fn call_lock(
+        &self,
+        call_id: Uuid,
+        create: bool,
+    ) -> Option<Arc<tokio::sync::Mutex<()>>> {
+        let mut locks = self
+            .call_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if create {
+            Some(Arc::clone(locks.entry(call_id).or_default()))
         } else {
-            tracing::debug!(user_id = %user_id, "push: per-user cap reached; call wake dropped");
+            locks.get(&call_id).cloned()
         }
     }
 
-    /// Send a call wake already admitted with [`Self::admit_call`], in a
-    /// spawned task.
-    pub fn send_call(self: &Arc<Self>, db: &sqlx::PgPool, user_id: Uuid, wake: super::CallWake) {
-        let (push, db) = (Arc::clone(self), db.clone());
-        tokio::spawn(async move {
-            if let Err(e) = super::deliver_with(&db, &push, user_id, &wake).await {
-                tracing::warn!(error = %e, user_id = %user_id, "push: call wake delivery failed");
-            }
-        });
+    /// Forget the per-call lock (the ringing deliveries are done).
+    pub(crate) fn drop_call_lock(&self, call_id: Uuid) {
+        self.call_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&call_id);
+    }
+}
+
+/// Deliver one call wake to every device of `user_id`; errors are logged
+/// without secrets.
+pub(crate) async fn deliver_call(
+    db: &sqlx::PgPool,
+    push: &PushService,
+    user_id: Uuid,
+    wake: &super::CallWake,
+) {
+    if let Err(e) = super::deliver_with(db, push, user_id, wake).await {
+        tracing::warn!(error = %e, user_id = %user_id, "push: call wake delivery failed");
     }
 }
 

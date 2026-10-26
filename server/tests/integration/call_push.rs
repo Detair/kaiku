@@ -11,12 +11,15 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::config::Config;
+use vc_server::push::call::CallPusher;
+use vc_server::push::coalesce::CALL_RINGING_MAX_PER_MINUTE;
 use vc_server::voice::call::EndReason;
 use vc_server::voice::call_service::{end_call, CallService};
 
 use crate::helpers::{
-    body_to_json, create_dm_channel, create_test_user, generate_access_token, spawn_fcm_mock,
-    test_service_account, FcmMock, FcmMockResponse, TestApp,
+    body_to_json, create_dm_channel, create_test_user, generate_access_token, next_ws_event,
+    spawn_fcm_mock, spawn_test_server, test_service_account, ws_connect, FcmMock, FcmMockResponse,
+    TestApp, WsClient,
 };
 
 /// Upper bound for a push to arrive (generous: the full suite runs in parallel).
@@ -284,17 +287,235 @@ async fn test_call_wakes_bypass_coalescing(pool: PgPool) {
     assert_eq!(m["data"]["call_id"], second.as_str());
 }
 
-/// The callee's own message wakes and call wakes share the per-user cap.
+/// Exhaust `user`'s ringing budget for the current minute.
+fn exhaust_ringing_budget(fx: &Fx, user: Uuid) {
+    let push = &fx.app.state.push;
+    while push.admit_ringing(user) {}
+}
+
+/// Many calls use the call budget only: 10 rings (and their `ended`) go out,
+/// the rest is dropped, and a DM wake afterwards still goes out.
 #[sqlx::test]
-async fn test_call_wake_counts_toward_user_cap(pool: PgPool) {
+async fn test_call_spam_does_not_use_message_budget(pool: PgPool) {
     let fx = fixture(pool).await;
-    // Exhaust the callee's per-minute budget through the service.
-    for _ in 0..vc_server::push::coalesce::USER_MAX_PER_MINUTE {
-        assert!(fx.app.state.push.admit_call(fx.callee));
+    for _ in 0..15 {
+        start(&fx).await;
+        assert_eq!(call_post(&fx, &fx.caller_token, "leave").await.0, 200);
     }
+    let got = settle(&fx.mock, 20).await;
+    let count = |state: &str| {
+        got.iter()
+            .filter(|p| msg(p)["data"]["call_state"] == state)
+            .count()
+    };
+    assert_eq!(count("ringing"), CALL_RINGING_MAX_PER_MINUTE, "{got:?}");
+    assert_eq!(count("ended"), CALL_RINGING_MAX_PER_MINUTE, "{got:?}");
+
+    let req = TestApp::request(Method::POST, &format!("/api/messages/channel/{}", fx.dm))
+        .header("Authorization", format!("Bearer {}", fx.caller_token))
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"content":"hi"}"#))
+        .unwrap();
+    assert_eq!(fx.app.oneshot(req).await.status().as_u16(), 201);
+    let got = settle(&fx.mock, 21).await;
+    assert_eq!(got.len(), 21, "{got:?}");
+    assert_eq!(msg(&got[20])["data"]["t"], "dm");
+}
+
+/// `ended` for a call that rang is never rate-limited.
+#[sqlx::test]
+async fn test_ended_delivered_with_exhausted_call_budget(pool: PgPool) {
+    let fx = fixture(pool).await;
+    let call_id = start(&fx).await;
+    assert_eq!(settle(&fx.mock, 1).await.len(), 1);
+    exhaust_ringing_budget(&fx, fx.callee);
+
+    assert_eq!(call_post(&fx, &fx.caller_token, "leave").await.0, 200);
+    let got = settle(&fx.mock, 2).await;
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_ended(&got[1], &fx, &call_id, &fx.fcm_callee, "cancelled");
+}
+
+/// A ring dropped by the budget is followed by no `ended` either.
+#[sqlx::test]
+async fn test_no_ringing_means_no_ended(pool: PgPool) {
+    let fx = fixture(pool).await;
+    exhaust_ringing_budget(&fx, fx.callee);
     start(&fx).await;
+    assert_eq!(call_post(&fx, &fx.caller_token, "leave").await.0, 200);
     assert!(
         settle(&fx.mock, 1).await.is_empty(),
-        "over the cap no call wake goes out"
+        "{:?}",
+        received(&fx.mock)
     );
+}
+
+/// A ring suppressed because `ended` already went out consumes no budget.
+#[sqlx::test]
+async fn test_suppressed_ring_consumes_no_budget(pool: PgPool) {
+    let fx = fixture(pool).await;
+    let pusher = pusher(&fx);
+    let call_id = Uuid::new_v4();
+    // `ended` wins the race: it runs before the ringing task stored its set.
+    pusher
+        .ended(fx.dm, call_id, fx.caller, EndReason::Cancelled)
+        .await
+        .unwrap();
+    pusher
+        .ringing(fx.dm, call_id, fx.caller, vec![fx.callee])
+        .await
+        .unwrap();
+    assert!(
+        settle(&fx.mock, 1).await.is_empty(),
+        "{:?}",
+        received(&fx.mock)
+    );
+    // The full budget is still there.
+    for i in 0..CALL_RINGING_MAX_PER_MINUTE {
+        assert!(fx.app.state.push.admit_ringing(fx.callee), "slot {i}");
+    }
+    assert!(!fx.app.state.push.admit_ringing(fx.callee));
+}
+
+fn pusher(fx: &Fx) -> CallPusher {
+    CallPusher {
+        db: fx.app.pool.clone(),
+        redis: fx.app.state.redis.clone(),
+        push: fx.app.state.push.clone(),
+    }
+}
+
+/// `ended` is always the last wake: with the ringing task paused after it
+/// stored its set, `ended` waits; once ringing resumes the phone gets
+/// `ringing` then `ended`, never the reverse. Duplicate targets ring once.
+#[sqlx::test]
+async fn test_ended_never_overtakes_ringing(pool: PgPool) {
+    let fx = fixture(pool).await;
+    let p = pusher(&fx);
+    let call_id = Uuid::new_v4();
+    let (stored_tx, stored_rx) = tokio::sync::oneshot::channel::<()>();
+    let (resume_tx, resume_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let ringing = {
+        let p = p.clone();
+        let (dm, caller, callee) = (fx.dm, fx.caller, fx.callee);
+        tokio::spawn(async move {
+            p.ringing_hooked(dm, call_id, caller, vec![callee, callee, caller], async {
+                stored_tx.send(()).unwrap();
+                resume_rx.await.unwrap();
+            })
+            .await
+        })
+    };
+    stored_rx.await.unwrap();
+
+    let ended = {
+        let (dm, caller) = (fx.dm, fx.caller);
+        tokio::spawn(async move { p.ended(dm, call_id, caller, EndReason::Cancelled).await })
+    };
+    // `ended` must wait for the paused ringing task.
+    assert!(
+        settle(&fx.mock, 1).await.is_empty(),
+        "ended overtook ringing: {:?}",
+        received(&fx.mock)
+    );
+
+    resume_tx.send(()).unwrap();
+    ringing.await.unwrap().unwrap();
+    ended.await.unwrap().unwrap();
+    let got = settle(&fx.mock, 2).await;
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(msg(&got[0])["data"]["call_state"], "ringing");
+    assert_eq!(msg(&got[0])["token"], fx.fcm_callee.as_str());
+    assert_ended(
+        &got[1],
+        &fx,
+        &call_id.to_string(),
+        &fx.fcm_callee,
+        "cancelled",
+    );
+}
+
+/// A block in the other direction (the caller blocked the participant) also
+/// keeps that participant from ringing.
+#[sqlx::test]
+async fn test_caller_blocking_participant_prevents_ring(pool: PgPool) {
+    let fx = fixture(pool).await;
+    sqlx::query(
+        "INSERT INTO friendships (requester_id, addressee_id, status) VALUES ($1, $2, 'blocked')",
+    )
+    .bind(fx.caller)
+    .bind(fx.callee)
+    .execute(&fx.app.pool)
+    .await
+    .unwrap();
+    let call_id = Uuid::new_v4();
+    let p = pusher(&fx);
+    p.ringing(fx.dm, call_id, fx.caller, vec![fx.callee])
+        .await
+        .unwrap();
+    p.ended(fx.dm, call_id, fx.caller, EndReason::Cancelled)
+        .await
+        .unwrap();
+    assert!(
+        settle(&fx.mock, 1).await.is_empty(),
+        "{:?}",
+        received(&fx.mock)
+    );
+}
+
+/// An answered call that ends because the last voice peer left (SFU leave
+/// hook) sends `ended` with `last_left`.
+#[sqlx::test]
+async fn test_ended_last_left_via_sfu_leave_hook(pool: PgPool) {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    async fn ws_send(ws: &mut WsClient, value: Value) {
+        ws.send(Message::Text(value.to_string().into()))
+            .await
+            .expect("send WebSocket frame");
+    }
+    const EVENT: Duration = Duration::from_secs(15);
+
+    let fx = fixture(pool).await;
+    let server = spawn_test_server(fx.app.router.clone()).await;
+    let mut caller_ws = ws_connect(&server, &fx.caller_token).await;
+    next_ws_event(&mut caller_ws, "ready", EVENT).await;
+    let mut callee_ws = ws_connect(&server, &fx.callee_token).await;
+    next_ws_event(&mut callee_ws, "ready", EVENT).await;
+
+    let call_id = start(&fx).await;
+    assert_eq!(settle(&fx.mock, 1).await.len(), 1);
+    ws_send(
+        &mut caller_ws,
+        serde_json::json!({ "type": "voice_join", "channel_id": fx.dm }),
+    )
+    .await;
+    next_ws_event(&mut caller_ws, "voice_room_state", EVENT).await;
+    assert_eq!(call_post(&fx, &fx.callee_token, "join").await.0, 200);
+    ws_send(
+        &mut callee_ws,
+        serde_json::json!({ "type": "voice_join", "channel_id": fx.dm }),
+    )
+    .await;
+    next_ws_event(&mut callee_ws, "voice_room_state", EVENT).await;
+
+    ws_send(
+        &mut caller_ws,
+        serde_json::json!({ "type": "voice_leave", "channel_id": fx.dm }),
+    )
+    .await;
+    next_ws_event(&mut callee_ws, "voice_user_left", EVENT).await;
+    ws_send(
+        &mut callee_ws,
+        serde_json::json!({ "type": "voice_leave", "channel_id": fx.dm }),
+    )
+    .await;
+    let ended = next_ws_event(&mut callee_ws, "call_ended", EVENT).await;
+    assert_eq!(ended["reason"], "last_left");
+
+    let got = settle(&fx.mock, 2).await;
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_ended(&got[1], &fx, &call_id, &fx.fcm_callee, "last_left");
 }

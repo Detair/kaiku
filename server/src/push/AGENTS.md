@@ -92,15 +92,29 @@ channel.
   the one that ended.
 - Recipients of `ringing`: the call's targets (DM participants except the
   caller) minus users blocked in either direction (DB check, like DM wakes)
-  minus users over the per-user cap. That set is stored as JSON in Valkey
+  minus callees over their ringing budget (targets are deduplicated first). That set is stored as JSON in Valkey
   `call_push_rung:{call_id}` (7 h, covering the 6 h active-call backstop).
 - `ended` goes only to the stored set, exactly once per `call_id`: it swaps the
   set for a tombstone with one `SET ... GET` (tombstone 1 h). `ringing` stores
   its set with `SET NX`, so an `ended` that wins a race against a slow
   `ringing` task suppresses that ring. A user added to the DM later, or not
   rung, gets no `ended`. A call that lasted longer than 7 h sends no `ended`.
-- Rate limiting: call wakes skip the coalescing window (`Coalescer::admit_direct`)
-  but count toward `USER_MAX_PER_MINUTE`; over the cap the wake is dropped.
+- Rate limiting: call wakes skip the coalescing window and never touch the
+  message budget (`USER_MAX_PER_MINUTE`). `ringing` has its own budget per
+  callee, `CALL_RINGING_MAX_PER_MINUTE` (10, `Coalescer::admit_ringing`). A
+  callee over it gets no `ringing`, is left out of the stored set and so gets
+  no `ended` either. `ended` is never rate-limited: it only goes to callees
+  whose `ringing` went out. Slots are reserved before the set is stored and
+  given back (`refund_ringing`) if the store fails or finds the tombstone, so a
+  suppressed ring consumes no budget.
+- Ordering: the ringing task holds a per-call in-process lock
+  (`PushService::call_lock`, taken before the set is stored) until all its
+  deliveries finished. `ended` waits for the same lock before sending (each
+  send is bounded by its HTTP timeout), so `ended` is always the last wake
+  the server sends for a call: a phone gets nothing, or `ringing` then
+  `ended`, never `ended` then `ringing`. FCM still does not guarantee delivery order, so clients must match
+  `call_id` and state and ignore a `ringing` for a call they already know
+  ended. Single replica, like the coalescer.
 - Best effort: all of this runs in spawned tasks; failures are logged with the
   channel or user id only.
 
@@ -135,8 +149,10 @@ URLs or the repo. FCM logs carry only the HTTP status and the FCM `errorCode`.
 
 - Unit tests in `fcm.rs` use a local axum mock on 127.0.0.1.
 - Call wakes: message-builder unit tests in `fcm.rs`, UnifiedPush body in
-  `mod.rs`, cap/bypass in `coalesce.rs`, end to end in
-  `tests/integration/call_push.rs`.
+  `mod.rs`, ringing budget/refund in `coalesce.rs`, end to end through the FCM
+  mock in `tests/integration/call_push.rs` (`CallPusher::ringing_hooked` is the
+  seam for the ordering test). UnifiedPush delivery is not tested end to end:
+  a local mock fails the https + SSRF checks by design.
 - Integration tests (`tests/integration/push_http.rs`) use `spawn_fcm_mock` and
   `test_service_account` from `tests/integration/helpers`. The RSA key in
   `server/tests/fixtures/fcm_test_key.rs` is test-only. No test may reach the
