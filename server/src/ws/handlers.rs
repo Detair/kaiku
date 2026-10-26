@@ -803,8 +803,7 @@ async fn handle_socket(
     // ringing DM calls after a grace period (see `caller_socket_closed`).
     // Runs after the subscriber quit, so this socket no longer counts as open.
     if crate::voice::call_service::may_have_ringing_calls(&state.redis, user_id).await {
-        let calls =
-            crate::voice::call_service::CallService::new(state.redis.clone(), state.db.clone());
+        let calls = crate::voice::call_service::CallService::for_state(&state);
         tokio::spawn(async move {
             if let Err(e) = crate::voice::call_service::caller_socket_closed(&calls, user_id).await
             {

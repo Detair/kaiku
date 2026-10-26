@@ -36,6 +36,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, TimeZone, Utc};
@@ -44,6 +45,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::api::AppState;
+use crate::push::call::CallPusher;
+use crate::push::PushService;
 use crate::voice::call::{CallEventType, CallState, EndReason};
 use crate::ws::events::channels;
 use crate::ws::ServerEvent;
@@ -233,11 +236,36 @@ pub fn end_reason_name(reason: EndReason) -> String {
 pub struct CallService {
     redis: Client,
     db: PgPool,
+    /// Phone wakes for ringing and ended calls (`None`: no push).
+    pusher: Option<CallPusher>,
 }
 
 impl CallService {
+    /// A call service without phone wakes.
     pub const fn new(redis: Client, db: PgPool) -> Self {
-        Self { redis, db }
+        Self {
+            redis,
+            db,
+            pusher: None,
+        }
+    }
+
+    /// A call service that wakes callees' phones (`ringing` / `ended`).
+    #[must_use]
+    pub fn for_state(state: &AppState) -> Self {
+        Self::new(state.redis.clone(), state.db.clone()).with_push(Some(state.push.clone()))
+    }
+
+    /// Attach (or detach, with `None`) phone wakes. The ring timer and every
+    /// end path of this service send them.
+    #[must_use]
+    pub fn with_push(mut self, push: Option<Arc<PushService>>) -> Self {
+        self.pusher = push.map(|push| CallPusher {
+            db: self.db.clone(),
+            redis: self.redis.clone(),
+            push,
+        });
+        self
     }
 
     /// Get Redis stream key for a channel's call events
@@ -473,6 +501,9 @@ impl CallService {
             }
 
             if started >= 1 {
+                if let Some(pusher) = &self.pusher {
+                    pusher.spawn_ringing(channel_id, call_uuid, initiator, targets.clone());
+                }
                 spawn_ring_timeout(
                     self.clone(),
                     channel_id,
@@ -600,6 +631,10 @@ impl CallService {
                 )
                 .await?
             {
+                if let (Some(pusher), CallState::Ended { reason, .. }) = (&self.pusher, &new_state)
+                {
+                    pusher.spawn_ended(channel_id, meta.call_uuid(), meta.initiator, *reason);
+                }
                 return Ok(Some(Transition {
                     state: new_state,
                     meta,
@@ -767,7 +802,7 @@ pub async fn end_call(
     channel_id: Uuid,
     reason: CallEndReason,
 ) -> Result<(), CallError> {
-    CallService::new(state.redis.clone(), state.db.clone())
+    CallService::for_state(state)
         .end_call_when(channel_id, None, |_, _| Some(reason))
         .await
         .map(|_| ())

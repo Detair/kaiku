@@ -12,6 +12,8 @@
 //!   changes nothing else: the window and a pending trailing push stay, so a message arriving
 //!   around a read is still pushed and alternating message/read does not produce repeated immediate
 //!   wakes.
+//! - Call wakes use [`Coalescer::admit_direct`]: never coalesced, but counted against the same
+//!   per-user cap.
 //! - A flush timer that has not run a full [`WINDOW`] after its deadline is treated as lost, so the
 //!   channel is not blocked forever.
 //!
@@ -263,6 +265,13 @@ impl Coalescer {
         Admit::SendNow
     }
 
+    /// A push that bypasses coalescing (call wakes): no window and no read
+    /// gate, but it counts toward [`USER_MAX_PER_MINUTE`]. Returns whether it
+    /// may be sent.
+    pub fn admit_direct(&self, user: Uuid, now: Instant) -> bool {
+        self.lock().try_consume(user, now)
+    }
+
     /// The trailing flush for (`user`, `channel`): the pending count, if any and within the
     /// per-user cap. A non-empty flush re-arms the window and the read gate.
     pub fn flush(&self, user: Uuid, channel: Uuid, now: Instant) -> Option<u32> {
@@ -458,6 +467,26 @@ mod tests {
             .filter(|&&o| c.admit(u, o, t0 + WINDOW) == Admit::SendNow)
             .count();
         assert_eq!(sent, USER_MAX_PER_MINUTE - 2);
+    }
+
+    #[test]
+    fn direct_admission_bypasses_window_but_counts_toward_cap() {
+        let (c, u, ch, t0) = ids();
+        // A message wake opens the window for (u, ch) ...
+        assert_eq!(c.admit(u, ch, t0), Admit::SendNow);
+        // ... yet call wakes go out immediately, every time.
+        assert!(c.admit_direct(u, t0 + ms(1)));
+        assert!(c.admit_direct(u, t0 + ms(2)));
+        // They consumed budget: 3 of 30 used.
+        for i in 3..USER_MAX_PER_MINUTE {
+            assert!(c.admit_direct(u, t0 + ms(10 + i as u64)), "push {i}");
+        }
+        assert!(!c.admit_direct(u, t0 + ms(100)), "over the cap");
+        assert_eq!(c.admit(u, Uuid::now_v7(), t0 + ms(100)), Admit::Dropped);
+        assert!(c.admit_direct(Uuid::now_v7(), t0 + ms(100)), "other user");
+        assert!(c.admit_direct(u, t0 + Duration::from_secs(61)));
+        // No (user, channel) entry is created for a direct admission.
+        assert_eq!(c.entry_count(), 1);
     }
 
     #[test]

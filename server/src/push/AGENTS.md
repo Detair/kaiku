@@ -2,14 +2,18 @@
 
 # Push Module
 
-Content-free mobile wake signals (contract C20). A push carries only `t`,
-`channel_id` and `count`; the app fetches content over its normal
-authenticated channel.
+Content-free mobile wake signals (contract C20). A message wake carries only
+`t`, `channel_id` and `count`; a call wake only routing ids and the call state
+(see "Call wakes"). The app fetches content over its normal authenticated
+channel.
 
 ## Files
 
-- `mod.rs` - `WakeSignal`, `deliver`, `send_one` (provider dispatch),
-  UnifiedPush transport, subscription CRUD.
+- `mod.rs` - `WakeSignal`, the `PushPayload` trait (FCM data, UnifiedPush
+  body, priority, collapse key, TTL), `deliver` / `deliver_with`, `send_one`
+  (provider dispatch), UnifiedPush transport, subscription CRUD.
+- `call.rs` - `CallWake` (C20 addendum "call wake") and `CallPusher`, which the
+  DM call service uses to send `ringing` and `ended`.
 - `fcm.rs` - FCM HTTP v1 transport: service-account loading, RS256 OAuth2
   assertion, cached access token (single flight), `fcm_message` (C20),
   `classify_fcm_response`.
@@ -67,6 +71,39 @@ authenticated channel.
   coalescing and without state (no read gate); eviction is retried at most
   once per second.
 
+## Call wakes (C20 addendum)
+
+- Payload (FCM data-only, every value a string; UnifiedPush gets the same
+  JSON): `{"t":"call","channel_id":"<dm>","call_id":"<uuid>","caller_id":"<uuid>","call_state":"ringing"|"ended","reason":"..."}`.
+  `reason` only for `ended`: `no_answer`, `all_declined`, `cancelled`,
+  `last_left`. `caller_id` in both states. No display name, content or count;
+  there is no `answered` state.
+- FCM: `priority` HIGH for both states, `collapse_key` = `call-{channel_id}`
+  (message wakes and `read` use the bare channel id), TTL `45s` (`ringing`) /
+  `3600s` (`ended`).
+- Hooks live in `voice::call_service::CallService`, which holds a
+  `CallPusher` when built with `CallService::for_state` or `with_push` (the
+  SFU leave hook gets the push service through `SfuServer::with_call_push`).
+  `ringing` is spawned when `start_call` creates the call (the moment
+  `incoming_call` is published); `ended` is spawned on every successful
+  transition into `Ended` (decline-all, ring timeout, cancel, last leave,
+  caller disconnect, orphan cleanup). Both use the `call_id` of the call the
+  service acted on, never a re-read, so a newer call is never confused with
+  the one that ended.
+- Recipients of `ringing`: the call's targets (DM participants except the
+  caller) minus users blocked in either direction (DB check, like DM wakes)
+  minus users over the per-user cap. That set is stored as JSON in Valkey
+  `call_push_rung:{call_id}` (7 h, covering the 6 h active-call backstop).
+- `ended` goes only to the stored set, exactly once per `call_id`: it swaps the
+  set for a tombstone with one `SET ... GET` (tombstone 1 h). `ringing` stores
+  its set with `SET NX`, so an `ended` that wins a race against a slow
+  `ringing` task suppresses that ring. A user added to the DM later, or not
+  rung, gets no `ended`. A call that lasted longer than 7 h sends no `ended`.
+- Rate limiting: call wakes skip the coalescing window (`Coalescer::admit_direct`)
+  but count toward `USER_MAX_PER_MINUTE`; over the cap the wake is dropped.
+- Best effort: all of this runs in spawned tasks; failures are logged with the
+  channel or user id only.
+
 ## Transports
 
 - `unifiedpush`: the endpoint is user-supplied. It must stay https-only and go
@@ -97,6 +134,9 @@ URLs or the repo. FCM logs carry only the HTTP status and the FCM `errorCode`.
 ## Tests
 
 - Unit tests in `fcm.rs` use a local axum mock on 127.0.0.1.
+- Call wakes: message-builder unit tests in `fcm.rs`, UnifiedPush body in
+  `mod.rs`, cap/bypass in `coalesce.rs`, end to end in
+  `tests/integration/call_push.rs`.
 - Integration tests (`tests/integration/push_http.rs`) use `spawn_fcm_mock` and
   `test_service_account` from `tests/integration/helpers`. The RSA key in
   `server/tests/fixtures/fcm_test_key.rs` is test-only. No test may reach the

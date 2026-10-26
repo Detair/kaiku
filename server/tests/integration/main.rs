@@ -10,6 +10,7 @@ mod auth;
 mod blocking;
 mod bot_ecosystem;
 mod bot_intents;
+mod call_push;
 mod channel_permissions;
 mod channel_pins;
 mod channels_http;

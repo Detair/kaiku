@@ -102,6 +102,36 @@ impl PushService {
     }
 }
 
+impl PushService {
+    /// Admit one call wake for `user_id`: call wakes bypass the coalescing
+    /// window but count toward the per-user cap. Returns whether it may go out.
+    #[must_use]
+    pub fn admit_call(&self, user_id: Uuid) -> bool {
+        self.coalescer.admit_direct(user_id, Instant::now())
+    }
+
+    /// Send a call wake to every device of `user_id` in a spawned task, if the
+    /// per-user cap allows it. Never blocks; errors are logged without secrets.
+    pub fn notify_call(self: &Arc<Self>, db: &sqlx::PgPool, user_id: Uuid, wake: super::CallWake) {
+        if self.admit_call(user_id) {
+            self.send_call(db, user_id, wake);
+        } else {
+            tracing::debug!(user_id = %user_id, "push: per-user cap reached; call wake dropped");
+        }
+    }
+
+    /// Send a call wake already admitted with [`Self::admit_call`], in a
+    /// spawned task.
+    pub fn send_call(self: &Arc<Self>, db: &sqlx::PgPool, user_id: Uuid, wake: super::CallWake) {
+        let (push, db) = (Arc::clone(self), db.clone());
+        tokio::spawn(async move {
+            if let Err(e) = super::deliver_with(&db, &push, user_id, &wake).await {
+                tracing::warn!(error = %e, user_id = %user_id, "push: call wake delivery failed");
+            }
+        });
+    }
+}
+
 fn spawn_deliver(state: AppState, user_id: Uuid, signal: WakeSignal) {
     tokio::spawn(async move { deliver_logged(&state, user_id, &signal).await });
 }

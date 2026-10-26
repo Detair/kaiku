@@ -1,7 +1,7 @@
 //! FCM HTTP v1 transport.
 //!
-//! Sends the content-free [`WakeSignal`] as a data-only FCM message (contract
-//! C20). Authentication is a Google service account: an RS256-signed JWT is
+//! Sends the content-free [`super::WakeSignal`] (and call wakes) as a data-only FCM message
+//! (contract C20). Authentication is a Google service account: an RS256-signed JWT is
 //! exchanged for a short-lived `OAuth2` access token, which is cached and shared
 //! by all sends (single flight).
 //!
@@ -20,7 +20,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{Delivery, WakeSignal};
+use super::{Delivery, PushPayload};
 
 /// The only `OAuth2` token endpoint a service account may name.
 pub const GOOGLE_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
@@ -131,20 +131,15 @@ fn encoding_key(pem: &str) -> anyhow::Result<EncodingKey> {
 // ============================================================================
 
 /// Build the FCM v1 `messages:send` body: data-only, all data values strings.
-pub(crate) fn fcm_message(token: &str, signal: &WakeSignal) -> serde_json::Value {
-    let channel_id = signal.channel_id.to_string();
+pub(crate) fn fcm_message<P: PushPayload>(token: &str, signal: &P) -> serde_json::Value {
     json!({
         "message": {
             "token": token,
-            "data": {
-                "t": signal.t,
-                "channel_id": channel_id,
-                "count": signal.count.to_string(),
-            },
+            "data": signal.fcm_data(),
             "android": {
-                "priority": if signal.is_high_priority() { "HIGH" } else { "NORMAL" },
-                "collapse_key": channel_id,
-                "ttl": "86400s",
+                "priority": if signal.high_priority() { "HIGH" } else { "NORMAL" },
+                "collapse_key": signal.collapse_key(),
+                "ttl": signal.ttl(),
             },
         }
     })
@@ -278,7 +273,7 @@ impl FcmClient {
 
     /// Send one wake signal to one registration token. On a 401 the access
     /// token is refreshed and the send retried once.
-    pub async fn send(&self, token: &str, signal: &WakeSignal) -> Delivery {
+    pub async fn send<P: PushPayload>(&self, token: &str, signal: &P) -> Delivery {
         let body = fcm_message(token, signal);
         for attempt in 0..2 {
             let access = match self.access_token().await {
@@ -439,7 +434,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::push::{Delivery, WakeSignal};
+    use crate::push::{CallWake, Delivery, WakeSignal};
+    use crate::voice::call::EndReason;
 
     include!("../../tests/fixtures/fcm_test_key.rs");
 
@@ -604,6 +600,56 @@ mod tests {
         assert_eq!(v["message"]["data"]["t"], "read");
         assert_eq!(v["message"]["data"]["count"], "0");
         assert_eq!(v["message"]["android"]["priority"], "NORMAL");
+    }
+
+    #[test]
+    fn call_ringing_message_matches_contract() {
+        let (ch, call, caller) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let v = fcm_message("tok", &CallWake::ringing(ch, call, caller));
+        assert!(v["message"].get("notification").is_none());
+        assert_eq!(
+            v["message"]["data"],
+            json!({
+                "t": "call",
+                "channel_id": ch.to_string(),
+                "call_id": call.to_string(),
+                "caller_id": caller.to_string(),
+                "call_state": "ringing",
+            })
+        );
+        let android = &v["message"]["android"];
+        assert_eq!(android["priority"], "HIGH");
+        assert_eq!(android["collapse_key"], format!("call-{ch}"));
+        assert_eq!(android["ttl"], "45s");
+        assert!(android.get("notification").is_none());
+    }
+
+    #[test]
+    fn call_ended_message_matches_contract() {
+        let (ch, call, caller) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        for (reason, wire) in [
+            (EndReason::NoAnswer, "no_answer"),
+            (EndReason::AllDeclined, "all_declined"),
+            (EndReason::Cancelled, "cancelled"),
+            (EndReason::LastLeft, "last_left"),
+        ] {
+            let v = fcm_message("tok", &CallWake::ended(ch, call, caller, reason));
+            assert_eq!(
+                v["message"]["data"],
+                json!({
+                    "t": "call",
+                    "channel_id": ch.to_string(),
+                    "call_id": call.to_string(),
+                    "caller_id": caller.to_string(),
+                    "call_state": "ended",
+                    "reason": wire,
+                })
+            );
+            let android = &v["message"]["android"];
+            assert_eq!(android["priority"], "HIGH");
+            assert_eq!(android["collapse_key"], format!("call-{ch}"));
+            assert_eq!(android["ttl"], "3600s");
+        }
     }
 
     // ---- response classification ------------------------------------------
