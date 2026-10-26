@@ -168,16 +168,75 @@ pub async fn lock_session_by_token_hash_tx(
     Ok(session)
 }
 
-/// Delete the session identified by `token_hash` inside a transaction.
-pub async fn delete_session_by_token_hash_tx(
+/// Rotate a session's refresh token in place.
+///
+/// The session keeps its id, so the `sid` carried by every access token of
+/// this login stays the same across refreshes: revoking the session reaches
+/// tokens and sockets opened before any refresh.
+pub async fn rotate_session_tx(
     conn: &mut PgConnection,
-    token_hash: &str,
+    session_id: Uuid,
+    params: &InsertSessionParams<'_>,
 ) -> Result<(), AuthError> {
-    sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
-        .bind(token_hash)
-        .execute(conn)
-        .await?;
+    sqlx::query(
+        r"UPDATE sessions
+          SET token_hash = $2, expires_at = $3, ip_address = $4::inet,
+              user_agent = $5, city = $6, country = $7
+          WHERE id = $1",
+    )
+    .bind(session_id)
+    .bind(params.token_hash)
+    .bind(params.expires_at)
+    .bind(params.ip_address)
+    .bind(params.user_agent)
+    .bind(params.city)
+    .bind(params.country)
+    .execute(conn)
+    .await?;
     Ok(())
+}
+
+/// Delete one session of `user_id` inside a transaction. Returns the deleted
+/// id, or `None` when no such session belongs to the user.
+pub async fn delete_user_session_tx(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    session_id: Uuid,
+) -> sqlx::Result<Option<Uuid>> {
+    sqlx::query_scalar("DELETE FROM sessions WHERE id = $1 AND user_id = $2 RETURNING id")
+        .bind(session_id)
+        .bind(user_id)
+        .fetch_optional(conn)
+        .await
+}
+
+/// Delete every session of `user_id` except `keep` (`None` deletes all) and
+/// return the deleted ids.
+pub async fn delete_user_sessions_except(
+    tx: &mut PgConnection,
+    user_id: Uuid,
+    keep: Option<Uuid>,
+) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar(
+        "DELETE FROM sessions WHERE user_id = $1 AND ($2::uuid IS NULL OR id <> $2) RETURNING id",
+    )
+    .bind(user_id)
+    .bind(keep)
+    .fetch_all(tx)
+    .await
+}
+
+/// Whether the user has an active global ban (no expiry, or one in the future).
+pub async fn is_user_globally_banned(pool: &PgPool, user_id: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM global_bans
+             WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())
+         )",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
 }
 
 /// List all non-expired sessions belonging to a user.
@@ -208,57 +267,6 @@ pub async fn find_session_by_id(
     .fetch_optional(pool)
     .await?;
     Ok(session)
-}
-
-/// Delete a session by id.
-pub async fn delete_session_by_id(pool: &PgPool, session_id: Uuid) -> Result<(), AuthError> {
-    sqlx::query("DELETE FROM sessions WHERE id = $1")
-        .bind(session_id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
-/// Delete all sessions for a user other than the one identified by
-/// `current_token_hash`. Returns the number of deleted rows.
-pub async fn delete_other_user_sessions(
-    pool: &PgPool,
-    user_id: Uuid,
-    current_token_hash: &str,
-) -> Result<u64, AuthError> {
-    let result = sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND token_hash != $2")
-        .bind(user_id)
-        .bind(current_token_hash)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected())
-}
-
-/// Delete all sessions for a user other than `current_token_hash` inside a
-/// transaction. Returns the number of deleted rows.
-pub async fn delete_other_user_sessions_tx(
-    conn: &mut PgConnection,
-    user_id: Uuid,
-    current_token_hash: &str,
-) -> Result<u64, AuthError> {
-    let result = sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND token_hash != $2")
-        .bind(user_id)
-        .bind(current_token_hash)
-        .execute(conn)
-        .await?;
-    Ok(result.rows_affected())
-}
-
-/// Delete all sessions for a user inside a transaction.
-pub async fn delete_all_user_sessions_tx(
-    conn: &mut PgConnection,
-    user_id: Uuid,
-) -> Result<(), AuthError> {
-    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
-        .bind(user_id)
-        .execute(conn)
-        .await?;
-    Ok(())
 }
 
 // ============================================================================

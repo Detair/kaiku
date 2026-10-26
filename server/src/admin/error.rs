@@ -46,6 +46,11 @@ pub enum AdminError {
     #[error("Permission denied: {0}")]
     Permission(#[from] PermissionError),
 
+    /// Re-authentication failed or was refused (C24); answered with the
+    /// auth error codes (`INVALID_CREDENTIALS`, `MFA_CODE_REQUIRED`, ...).
+    #[error(transparent)]
+    Reauth(#[from] crate::auth::AuthError),
+
     /// Internal server error.
     #[error("Internal error: {0}")]
     Internal(String),
@@ -54,6 +59,7 @@ pub enum AdminError {
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
+            Self::Reauth(e) => return e.into_response(),
             Self::NotAdmin => (
                 StatusCode::FORBIDDEN,
                 serde_json::json!({"error": "not_admin", "message": "System admin privileges required"}),

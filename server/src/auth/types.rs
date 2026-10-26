@@ -75,8 +75,10 @@ pub struct RefreshRequest {
 /// Logout request.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct LogoutRequest {
-    /// Refresh token to invalidate.
-    pub refresh_token: String,
+    /// Refresh token of the session to end. Optional: without it the session
+    /// of the bearer access token is ended.
+    #[serde(default)]
+    pub refresh_token: Option<String>,
 }
 
 /// Authentication response with tokens.
@@ -153,6 +155,25 @@ pub struct MfaBackupCodeCountResponse {
 pub struct MfaVerifyRequest {
     /// 6-digit TOTP code.
     pub code: String,
+}
+
+/// Request to generate new MFA backup codes (C24).
+///
+/// Needs a current TOTP code from the authenticator app; backup codes are
+/// not accepted here.
+#[derive(Deserialize, Validate, utoipa::ToSchema)]
+pub struct BackupCodesRequest {
+    /// Current 6-digit TOTP code.
+    #[validate(length(min = 1, max = 16))]
+    pub mfa_code: String,
+}
+
+impl std::fmt::Debug for BackupCodesRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackupCodesRequest")
+            .field("mfa_code", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Update profile request.
@@ -301,6 +322,54 @@ pub struct OidcAuthorizeQuery {
     /// flow, which calls this endpoint as an authenticated XHR (a top-level
     /// popup can't send the Bearer header) and then opens the URL itself.
     pub response: Option<String>,
+}
+
+/// Body of `POST /auth/reauth/oidc/authorize/{provider}` (C24).
+///
+/// A JSON body, so the TOTP code never appears in a URL.
+#[derive(Deserialize, Validate, utoipa::ToSchema)]
+pub struct OidcReauthRequest {
+    /// Desktop loopback return address; omit (or `null`) for the browser flow.
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
+    /// Elevation reason for the audit log (max 255 characters).
+    #[serde(default)]
+    #[validate(length(max = 255))]
+    pub reason: Option<String>,
+    /// Current TOTP code; required when the account has MFA on.
+    #[serde(default)]
+    #[validate(length(max = 16))]
+    pub mfa_code: Option<String>,
+}
+
+impl std::fmt::Debug for OidcReauthRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OidcReauthRequest")
+            .field("redirect_uri", &self.redirect_uri)
+            .field("reason", &self.reason)
+            .field("mfa_code", &self.mfa_code.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+/// A linked provider that can confirm a fresh sign-in.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReauthOidcProvider {
+    /// Provider slug (path segment of the authorize endpoint).
+    pub provider_id: String,
+    /// Human-readable provider name.
+    pub display_name: String,
+}
+
+/// `GET /auth/reauth/methods`: how the caller can re-authenticate (C24).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReauthMethodsResponse {
+    /// The account has a password (`POST /api/admin/elevate` with `password`).
+    pub password: bool,
+    /// The password path also needs a current TOTP code (`mfa_code`).
+    pub mfa_required: bool,
+    /// Linked providers usable for `POST /auth/reauth/oidc/authorize/{provider_id}`.
+    pub oidc: Vec<ReauthOidcProvider>,
 }
 
 /// Forgot password request.

@@ -782,6 +782,22 @@ pub async fn guild_role_exists(
     Ok(exists.is_some())
 }
 
+/// Whether the role (in the given guild) is the default @everyone role.
+/// `None` when the role does not exist in that guild.
+pub async fn guild_role_is_default(
+    pool: &PgPool,
+    role_id: Uuid,
+    guild_id: Uuid,
+) -> Result<Option<bool>, ChatError> {
+    let row: Option<(bool,)> =
+        sqlx::query_as("SELECT is_default FROM guild_roles WHERE id = $1 AND guild_id = $2")
+            .bind(role_id)
+            .bind(guild_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|r| r.0))
+}
+
 /// Upsert a permission override for a (channel, role) pair.
 pub async fn upsert_channel_override(
     pool: &PgPool,

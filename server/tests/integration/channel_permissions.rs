@@ -524,3 +524,80 @@ async fn test_can_favorite_channel_with_view_permission(pool: PgPool) {
     let response = app.oneshot(request).await;
     assert_eq!(response.status(), StatusCode::OK); // Endpoint returns 200 OK, not 201 CREATED
 }
+
+// ============================================================================
+// Tests: default role overrides
+// ============================================================================
+
+async fn put_override(
+    app: &TestApp,
+    token: &str,
+    channel_id: Uuid,
+    role_id: Uuid,
+    body: serde_json::Value,
+) -> StatusCode {
+    let request = Request::builder()
+        .method(Method::PUT)
+        .uri(format!("/api/channels/{channel_id}/overrides/{role_id}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    app.oneshot(request).await.status()
+}
+
+#[sqlx::test]
+async fn test_default_role_override_rejects_forbidden_allow_bits(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (owner_id, _) = create_test_user(&app.pool).await;
+    let token = generate_access_token(&app.config, owner_id);
+    let guild_id = create_guild_with_owner(&app.pool, owner_id).await;
+    let channel_id = create_channel(&app.pool, guild_id, "general").await;
+
+    let everyone_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+         VALUES ($1, $2, '@everyone', $3, 999, true)",
+    )
+    .bind(everyone_id)
+    .bind(guild_id)
+    .bind(VIEW_CHANNEL)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let normal_id = create_role(&app.pool, guild_id, "Helpers", VIEW_CHANNEL).await;
+
+    let webhooks = vc_server::permissions::GuildPermissions::MANAGE_WEBHOOKS.bits();
+    let attach = vc_server::permissions::GuildPermissions::ATTACH_FILES.bits();
+
+    // Forbidden allow bit on the default role is refused.
+    let status = put_override(
+        &app,
+        &token,
+        channel_id,
+        everyone_id,
+        json!({"allow": webhooks}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Deny is unrestricted, and ordinary allow bits are fine.
+    let status = put_override(
+        &app,
+        &token,
+        channel_id,
+        everyone_id,
+        json!({"allow": attach, "deny": webhooks}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // The same bit is still allowed on a normal role.
+    let status = put_override(
+        &app,
+        &token,
+        channel_id,
+        normal_id,
+        json!({"allow": webhooks}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}

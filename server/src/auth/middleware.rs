@@ -33,6 +33,9 @@ pub struct AuthUser {
     pub deletion_scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Whether the user must set a new password before using the rest of the API.
     pub must_change_password: bool,
+    /// Session the access token belongs to (`sid` claim); `None` for tokens
+    /// issued without one.
+    pub session_id: Option<Uuid>,
 }
 
 impl From<User> for AuthUser {
@@ -46,6 +49,7 @@ impl From<User> for AuthUser {
             mfa_enabled: user.mfa_secret.is_some(),
             deletion_scheduled_at: user.deletion_scheduled_at,
             must_change_password: user.must_change_password,
+            session_id: None,
         }
     }
 }
@@ -127,12 +131,18 @@ async fn authenticate(
         .await?
         .ok_or(AuthError::UserNotFound)?;
 
+    // A banned account is refused even with a token that is still valid.
+    if super::queries::is_user_globally_banned(&state.db, user.id).await? {
+        return Err(AuthError::AccountBanned);
+    }
+
     if user.must_change_password && !allow_password_change {
         return Err(AuthError::PasswordChangeRequired);
     }
 
     // Inject AuthUser into request extensions
-    let auth_user = AuthUser::from(user);
+    let mut auth_user = AuthUser::from(user);
+    auth_user.session_id = claims.sid.as_deref().and_then(|sid| sid.parse().ok());
     request.extensions_mut().insert(auth_user);
 
     // Continue to handler

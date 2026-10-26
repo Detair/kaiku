@@ -18,6 +18,14 @@ pub enum ChatError {
     #[error("You must change your password before continuing")]
     PasswordChangeRequired,
 
+    /// The token's session has ended (logged out or revoked).
+    #[error("Invalid or expired token")]
+    SessionEnded,
+
+    /// The session state cannot be checked right now (Valkey unavailable).
+    #[error("Service temporarily unavailable. Please try again later.")]
+    ServiceUnavailable,
+
     #[error("Validation error: {0}")]
     Validation(String),
 
@@ -81,6 +89,12 @@ impl IntoResponse for ChatError {
             // Channel
             Self::ChannelNotFound => (StatusCode::NOT_FOUND, "CHANNEL_NOT_FOUND", self.to_string()),
             Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", self.to_string()),
+            Self::SessionEnded => (StatusCode::UNAUTHORIZED, "INVALID_TOKEN", self.to_string()),
+            Self::ServiceUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
+                self.to_string(),
+            ),
             Self::PasswordChangeRequired => (
                 StatusCode::FORBIDDEN,
                 "PASSWORD_CHANGE_REQUIRED",

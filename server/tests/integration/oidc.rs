@@ -11,8 +11,8 @@
 use sqlx::PgPool;
 use vc_server::auth::oidc::{
     append_collision_suffix, client_return_url, generate_username_from_claims,
-    is_loopback_client_redirect, resolve_flow_redirects, FlowRedirectError, OidcFlowState,
-    OidcProviderManager, OidcUserInfo,
+    is_loopback_client_redirect, resolve_flow_redirects, FlowRedirectError, OidcFlowPurpose,
+    OidcFlowState, OidcProviderManager, OidcReauthBinding, OidcUserInfo,
 };
 
 // ============================================================================
@@ -321,7 +321,10 @@ fn test_flow_state_serialization_roundtrip() {
         nonce: "abc123nonce".to_string(),
         redirect_uri: "http://127.0.0.1:12345/callback".to_string(),
         created_at: 1706745600,
-        link_user_id: Some(link_user),
+        purpose: OidcFlowPurpose::Link {
+            user_id: link_user,
+            session_id: None,
+        },
         client_redirect_uri: Some("http://127.0.0.1:12345/callback".to_string()),
     };
 
@@ -334,7 +337,13 @@ fn test_flow_state_serialization_roundtrip() {
     assert_eq!(deserialized.nonce, "abc123nonce");
     assert_eq!(deserialized.redirect_uri, "http://127.0.0.1:12345/callback");
     assert_eq!(deserialized.created_at, 1706745600);
-    assert_eq!(deserialized.link_user_id, Some(link_user));
+    assert_eq!(
+        deserialized.purpose,
+        OidcFlowPurpose::Link {
+            user_id: link_user,
+            session_id: None
+        }
+    );
     assert_eq!(
         deserialized.client_redirect_uri.as_deref(),
         Some("http://127.0.0.1:12345/callback")
@@ -347,8 +356,51 @@ fn test_flow_state_link_user_id_defaults_to_none() {
     // must deserialize them as an ordinary login flow.
     let legacy = r#"{"slug":"google","pkce_verifier":"v","nonce":"n","redirect_uri":"https://x/cb","created_at":0}"#;
     let state: OidcFlowState = serde_json::from_str(legacy).expect("legacy state should parse");
-    assert_eq!(state.link_user_id, None);
+    assert_eq!(state.purpose, OidcFlowPurpose::Login);
     assert_eq!(state.client_redirect_uri, None);
+}
+
+#[test]
+fn test_flow_state_legacy_link_user_id_stays_a_link() {
+    // A link state written before `purpose` existed must still finish as a
+    // link (never as a login or a re-authentication).
+    let user = uuid::Uuid::new_v4();
+    let legacy = format!(
+        r#"{{"slug":"google","pkce_verifier":"v","nonce":"n","redirect_uri":"https://x/cb","created_at":0,"link_user_id":"{user}"}}"#
+    );
+    let state: OidcFlowState = serde_json::from_str(&legacy).expect("legacy state should parse");
+    assert_eq!(
+        state.purpose,
+        OidcFlowPurpose::Link {
+            user_id: user,
+            session_id: None
+        }
+    );
+}
+
+#[test]
+fn test_flow_state_purpose_is_exclusive() {
+    // A re-authentication state round-trips as exactly that purpose.
+    let binding = OidcReauthBinding {
+        user_id: uuid::Uuid::new_v4(),
+        session_id: uuid::Uuid::new_v4(),
+        reason: None,
+        mfa_verified: true,
+    };
+    let state = OidcFlowState {
+        slug: "google".to_string(),
+        pkce_verifier: "v".to_string(),
+        nonce: "n".to_string(),
+        redirect_uri: "https://x/cb".to_string(),
+        created_at: 0,
+        purpose: OidcFlowPurpose::Reauth(binding.clone()),
+        client_redirect_uri: None,
+    };
+    let json = serde_json::to_value(&state).unwrap();
+    assert_eq!(json["purpose"]["kind"], "reauth");
+    assert!(json.get("link_user_id").is_none());
+    let back: OidcFlowState = serde_json::from_value(json).unwrap();
+    assert_eq!(back.purpose, OidcFlowPurpose::Reauth(binding));
 }
 
 #[test]
@@ -359,7 +411,7 @@ fn test_flow_state_json_format() {
         nonce: "nonce".to_string(),
         redirect_uri: "https://example.com/callback".to_string(),
         created_at: 0,
-        link_user_id: None,
+        purpose: OidcFlowPurpose::Login,
         client_redirect_uri: None,
     };
 
@@ -805,7 +857,7 @@ fn flow_state_with_client(client: Option<&str>) -> OidcFlowState {
         nonce: "n".to_string(),
         redirect_uri: "https://chat.example.com/auth/oidc/callback".to_string(),
         created_at: 0,
-        link_user_id: None,
+        purpose: OidcFlowPurpose::Login,
         client_redirect_uri: client.map(str::to_string),
     }
 }

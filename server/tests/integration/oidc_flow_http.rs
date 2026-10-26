@@ -15,7 +15,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 use vc_server::api::{create_router, AppState, AppStateConfig};
 use vc_server::auth::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
-use vc_server::auth::oidc::{OidcFlowState, OidcProviderManager};
+use vc_server::auth::oidc::{OidcFlowPurpose, OidcFlowState, OidcProviderManager};
 use vc_server::config::Config;
 use vc_server::db;
 use vc_server::voice::sfu::SfuServer;
@@ -60,7 +60,10 @@ async fn oidc_app(pool: &PgPool, public_url: &str) -> OidcApp {
         http_client: reqwest::Client::new(),
     });
     OidcApp {
-        router: create_router(state.clone()),
+        // The callback reads the peer address (re-authentication audit IP).
+        router: create_router(state.clone()).layer(axum::extract::connect_info::MockConnectInfo(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+        )),
         state,
         config,
     }
@@ -97,7 +100,10 @@ fn flow(client: Option<&str>, link_user_id: Option<Uuid>) -> OidcFlowState {
         nonce: "n".to_string(),
         redirect_uri: format!("{PUBLIC_URL}/auth/oidc/callback"),
         created_at: 0,
-        link_user_id,
+        purpose: link_user_id.map_or(OidcFlowPurpose::Login, |user_id| OidcFlowPurpose::Link {
+            user_id,
+            session_id: None,
+        }),
         client_redirect_uri: client.map(str::to_string),
     }
 }
@@ -204,7 +210,7 @@ async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool
         "https://chat.example.com/auth/oidc/callback"
     );
     assert_eq!(flow.client_redirect_uri.as_deref(), Some(LOOPBACK));
-    assert_eq!(flow.link_user_id, None);
+    assert_eq!(flow.purpose, OidcFlowPurpose::Login);
 }
 
 // ============================================================================

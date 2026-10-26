@@ -105,6 +105,15 @@ pub enum AuthError {
     #[error("You must change your password before continuing")]
     PasswordChangeRequired,
 
+    /// The account is banned from this server.
+    #[error("This account has been banned")]
+    AccountBanned,
+
+    /// A system admin must use an elevated session for this action (same
+    /// 403 `elevation_required` body as the admin middleware).
+    #[error("This action requires an elevated session")]
+    ElevationRequired,
+
     /// Refusing to unlink the account's only remaining login method.
     #[error("Cannot remove your only login method; set a password or link another account first")]
     CannotUnlinkLastIdentity,
@@ -112,6 +121,31 @@ pub enum AuthError {
     /// A dependency needed to authenticate (Valkey) is unavailable.
     #[error("Service temporarily unavailable")]
     ServiceUnavailable,
+
+    /// Re-authentication needs a TOTP code because the account has MFA on.
+    #[error("Your authenticator code is required")]
+    MfaCodeRequired,
+
+    /// Re-authentication is impossible: the account has no local password.
+    #[error("This account has no password to confirm with")]
+    ReauthUnavailable,
+
+    /// The account has no password but can re-authenticate with a linked
+    /// provider (`GET /auth/reauth/methods`).
+    #[error("Confirm with your linked sign-in provider instead")]
+    ReauthOidcRequired,
+
+    /// The provider is not linked to this account or cannot confirm a fresh
+    /// sign-in.
+    #[error("This sign-in provider cannot be used to confirm your identity")]
+    ReauthProviderUnavailable,
+
+    /// Too many failed re-authentication attempts; try again later.
+    #[error("Too many failed attempts. Try again later.")]
+    TooManyAttempts {
+        /// Seconds until attempts are accepted again.
+        retry_after: u64,
+    },
 
     /// Internal server error.
     #[error("Internal server error")]
@@ -160,8 +194,17 @@ impl IntoResponse for AuthError {
             Self::RegistrationDisabled => (StatusCode::FORBIDDEN, "REGISTRATION_DISABLED"),
             Self::AuthMethodDisabled => (StatusCode::FORBIDDEN, "AUTH_METHOD_DISABLED"),
             Self::PasswordChangeRequired => (StatusCode::FORBIDDEN, "PASSWORD_CHANGE_REQUIRED"),
+            Self::AccountBanned => (StatusCode::FORBIDDEN, "ACCOUNT_BANNED"),
+            Self::ElevationRequired => (StatusCode::FORBIDDEN, "elevation_required"),
             Self::CannotUnlinkLastIdentity => (StatusCode::CONFLICT, "CANNOT_UNLINK_LAST_IDENTITY"),
             Self::ServiceUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),
+            Self::MfaCodeRequired => (StatusCode::BAD_REQUEST, "MFA_CODE_REQUIRED"),
+            Self::ReauthUnavailable => (StatusCode::BAD_REQUEST, "REAUTH_UNAVAILABLE"),
+            Self::ReauthOidcRequired => (StatusCode::BAD_REQUEST, "REAUTH_OIDC_REQUIRED"),
+            Self::ReauthProviderUnavailable => {
+                (StatusCode::BAD_REQUEST, "REAUTH_PROVIDER_UNAVAILABLE")
+            }
+            Self::TooManyAttempts { .. } => (StatusCode::TOO_MANY_REQUESTS, "TOO_MANY_ATTEMPTS"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         };
 
@@ -170,7 +213,13 @@ impl IntoResponse for AuthError {
             message: self.to_string(),
         });
 
-        (status, body).into_response()
+        let mut response = (status, body).into_response();
+        if let Self::TooManyAttempts { retry_after } = self {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, retry_after.into());
+        }
+        response
     }
 }
 

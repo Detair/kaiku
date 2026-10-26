@@ -11,7 +11,7 @@
 //! caller can use `?` on sqlx errors.
 
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, QueryBuilder};
+use sqlx::{PgConnection, PgPool, QueryBuilder};
 use uuid::Uuid;
 
 use super::error::AdminError;
@@ -21,12 +21,8 @@ use crate::permissions::models::AuditLogEntry;
 // Internal row types
 // ============================================================================
 
-/// Row returned when looking up the caller's most recent elevated session.
-pub(super) struct ElevatedSessionExpiresAt {
-    pub expires_at: DateTime<Utc>,
-}
-
-/// Full elevated session row used by the `require_elevated` middleware.
+/// Elevated session row used by the `require_elevated` middleware.
+#[derive(sqlx::FromRow)]
 pub(super) struct ElevatedSessionRow {
     pub user_id: Uuid,
     pub elevated_at: DateTime<Utc>,
@@ -146,95 +142,89 @@ pub(super) struct AuditLogFilter<'a> {
 // Elevated sessions
 // ============================================================================
 
-/// Return whether the user has an active elevated admin session.
+// An elevation belongs to one login session (`sessions.id`, the access
+// token's `sid`); other sessions of the same admin are not elevated (C24).
+
+/// Return whether this session of the user is currently elevated.
 ///
 /// Used as the fail-secure fallback for the Redis-cached admin elevation
 /// check in `admin::is_elevated_admin`.
-pub async fn has_active_elevated_session(pool: &PgPool, user_id: Uuid) -> Result<bool, AdminError> {
-    let exists = sqlx::query_scalar!(
-        r#"SELECT EXISTS(
+pub async fn has_active_elevated_session(
+    pool: &PgPool,
+    user_id: Uuid,
+    session_id: Uuid,
+) -> Result<bool, AdminError> {
+    let exists: bool = sqlx::query_scalar(
+        r"SELECT EXISTS(
             SELECT 1 FROM elevated_sessions
-            WHERE user_id = $1 AND expires_at > NOW()
-        ) as "exists!""#,
-        user_id
+            WHERE user_id = $1 AND session_id = $2 AND expires_at > NOW()
+        )",
     )
+    .bind(user_id)
+    .bind(session_id)
     .fetch_one(pool)
     .await?;
     Ok(exists)
 }
 
-/// Fetch the most recent active elevated session for a user (if any).
+/// Fetch the active elevation of this session (if any).
 ///
-/// Used by the `/api/admin/status` endpoint to report the current elevation
-/// state back to the client.
-pub(super) async fn find_latest_elevated_session_expiry(
+/// Used by the `require_elevated` middleware and `/api/admin/status`.
+pub(super) async fn find_elevated_session(
     pool: &PgPool,
     user_id: Uuid,
-) -> Result<Option<ElevatedSessionExpiresAt>, AdminError> {
-    let row = sqlx::query_as!(
-        ElevatedSessionExpiresAt,
-        r#"SELECT expires_at
-           FROM elevated_sessions
-           WHERE user_id = $1 AND expires_at > NOW()
-           ORDER BY elevated_at DESC
-           LIMIT 1"#,
-        user_id
-    )
-    .fetch_optional(pool)
-    .await?;
-    Ok(row)
-}
-
-/// Fetch the most recent active elevated session with full details for the
-/// `require_elevated` middleware.
-pub(super) async fn find_latest_elevated_session(
-    pool: &PgPool,
-    user_id: Uuid,
+    session_id: Uuid,
 ) -> Result<Option<ElevatedSessionRow>, AdminError> {
-    let row = sqlx::query_as!(
-        ElevatedSessionRow,
-        r#"SELECT user_id, elevated_at, expires_at, reason
+    let row = sqlx::query_as::<_, ElevatedSessionRow>(
+        r"SELECT user_id, elevated_at, expires_at, reason
            FROM elevated_sessions
-           WHERE user_id = $1 AND expires_at > NOW()
-           ORDER BY elevated_at DESC
-           LIMIT 1"#,
-        user_id
+           WHERE user_id = $1 AND session_id = $2 AND expires_at > NOW()",
     )
+    .bind(user_id)
+    .bind(session_id)
     .fetch_optional(pool)
     .await?;
     Ok(row)
 }
 
-/// Find the most recent active login session id for a user, if any.
+/// Return whether `session_id` is an unexpired login session of the user.
 ///
 /// Elevation requires an existing session row because
 /// `elevated_sessions.session_id` references `sessions.id`.
-pub(super) async fn find_latest_active_session_id(
+pub(crate) async fn is_active_session(
     pool: &PgPool,
     user_id: Uuid,
-) -> Result<Option<Uuid>, AdminError> {
-    let id = sqlx::query_scalar!(
-        r#"SELECT id
-           FROM sessions
-           WHERE user_id = $1 AND expires_at > NOW()
-           ORDER BY created_at DESC
-           LIMIT 1"#,
-        user_id
+    session_id: Uuid,
+) -> Result<bool, AdminError> {
+    let exists: bool = sqlx::query_scalar(
+        r"SELECT EXISTS(
+            SELECT 1 FROM sessions
+            WHERE id = $1 AND user_id = $2 AND expires_at > NOW()
+        )",
     )
-    .fetch_optional(pool)
+    .bind(session_id)
+    .bind(user_id)
+    .fetch_one(pool)
     .await?;
-    Ok(id)
+    Ok(exists)
 }
 
-/// Delete all elevated sessions for a user. Returns the number removed.
-pub(super) async fn delete_elevated_sessions(
+/// Delete the elevation of one session of a user. Returns the session ids
+/// whose elevation was removed (empty or `[session_id]`).
+pub(super) async fn delete_elevated_session(
     pool: &PgPool,
     user_id: Uuid,
-) -> Result<u64, AdminError> {
-    let result = sqlx::query!("DELETE FROM elevated_sessions WHERE user_id = $1", user_id)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected())
+    session_id: Uuid,
+) -> Result<Vec<Uuid>, AdminError> {
+    let ids = sqlx::query_scalar(
+        "DELETE FROM elevated_sessions WHERE user_id = $1 AND session_id = $2 \
+         RETURNING session_id",
+    )
+    .bind(user_id)
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(ids)
 }
 
 // ============================================================================
@@ -558,7 +548,7 @@ pub(super) async fn is_user_banned(pool: &PgPool, user_id: Uuid) -> Result<bool,
 
 /// Insert or update a global ban, replacing any existing ban row for the user.
 pub(super) async fn upsert_global_ban(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     user_id: Uuid,
     banned_by: Uuid,
     reason: &str,
@@ -577,7 +567,7 @@ pub(super) async fn upsert_global_ban(
         reason,
         expires_at
     )
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(())
 }
@@ -586,7 +576,7 @@ pub(super) async fn upsert_global_ban(
 /// ban flow which checks for an existing ban separately so that it can
 /// report "already banned" counts to the caller.
 pub(super) async fn insert_global_ban(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     user_id: Uuid,
     banned_by: Uuid,
     reason: &str,
@@ -600,7 +590,7 @@ pub(super) async fn insert_global_ban(
         reason,
         expires_at
     )
-    .execute(pool)
+    .execute(conn)
     .await?;
     Ok(())
 }

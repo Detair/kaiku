@@ -134,6 +134,9 @@ tokio-util = { version = "0.7.18", features = ["io", "compat"] }
 tokio-test = "0.4"
 http-body-util = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
+# Signing keys for the mock OIDC provider in tests (already in the tree via
+# jsonwebtoken / openidconnect).
+rsa = "0.9"
 
 [lints]
 workspace = true

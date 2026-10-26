@@ -61,3 +61,135 @@ fn test_everyone_role_validation_logic() {
         "Safe permissions should pass validation"
     );
 }
+
+#[sqlx::test]
+async fn migration_strips_forbidden_bits_from_default_roles_only(pool: PgPool) -> sqlx::Result<()> {
+    let owner = vc_server::db::create_user(&pool, "owner", "Owner", None, "password123")
+        .await
+        .expect("create user");
+    let guild_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
+        .bind(guild_id)
+        .bind("Test Guild")
+        .bind(owner.id)
+        .execute(&pool)
+        .await?;
+
+    let july = GuildPermissions::MANAGE_POSTS
+        | GuildPermissions::SEND_ANNOUNCEMENTS
+        | GuildPermissions::MANAGE_EVENTS
+        | GuildPermissions::MANAGE_WEBHOOKS;
+    let base = GuildPermissions::SEND_MESSAGES | GuildPermissions::VOICE_CONNECT;
+    let everyone_id = uuid::Uuid::new_v4();
+    let custom_id = uuid::Uuid::new_v4();
+    for (id, name, is_default) in [
+        (everyone_id, "@everyone", true),
+        (custom_id, "Helpers", false),
+    ] {
+        sqlx::query(
+            "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+             VALUES ($1, $2, $3, $4, 0, $5)",
+        )
+        .bind(id)
+        .bind(guild_id)
+        .bind(name)
+        .bind((base | july).to_db())
+        .bind(is_default)
+        .execute(&pool)
+        .await?;
+    }
+
+    // Run the migration SQL (twice: it must be idempotent).
+    let sql = include_str!("../../migrations/20261110000100_strip_everyone_forbidden.sql");
+    sqlx::raw_sql(sql).execute(&pool).await?;
+    sqlx::raw_sql(sql).execute(&pool).await?;
+
+    let perms = |id| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT permissions FROM guild_roles WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+        }
+    };
+    assert_eq!(perms(everyone_id).await?, base.to_db());
+    assert_eq!(perms(custom_id).await?, (base | july).to_db());
+    Ok(())
+}
+
+#[sqlx::test]
+async fn migration_strips_forbidden_bits_from_default_role_overrides(
+    pool: PgPool,
+) -> sqlx::Result<()> {
+    let owner = vc_server::db::create_user(&pool, "owner", "Owner", None, "password123")
+        .await
+        .expect("create user");
+    let guild_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, $2, $3)")
+        .bind(guild_id)
+        .bind("Test Guild")
+        .bind(owner.id)
+        .execute(&pool)
+        .await?;
+    let channel_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channels (id, name, channel_type, guild_id, position, max_screen_shares)
+         VALUES ($1, 'general', 'text', $2, 0, 5)",
+    )
+    .bind(channel_id)
+    .bind(guild_id)
+    .execute(&pool)
+    .await?;
+
+    let forbidden = GuildPermissions::EVERYONE_FORBIDDEN;
+    let allowed = GuildPermissions::SEND_MESSAGES | GuildPermissions::ATTACH_FILES;
+    let deny = GuildPermissions::SEND_MESSAGES;
+    let mut override_ids = Vec::new();
+    for (name, is_default) in [("@everyone", true), ("Helpers", false)] {
+        let role_id = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO guild_roles (id, guild_id, name, permissions, position, is_default)
+             VALUES ($1, $2, $3, 0, 0, $4)",
+        )
+        .bind(role_id)
+        .bind(guild_id)
+        .bind(name)
+        .bind(is_default)
+        .execute(&pool)
+        .await?;
+        let id = sqlx::query_scalar::<_, uuid::Uuid>(
+            "INSERT INTO channel_overrides (channel_id, role_id, allow_permissions, deny_permissions)
+             VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind(channel_id)
+        .bind(role_id)
+        .bind((allowed | forbidden).to_db())
+        .bind(deny.to_db())
+        .fetch_one(&pool)
+        .await?;
+        override_ids.push(id);
+    }
+
+    let sql = include_str!("../../migrations/20261110000100_strip_everyone_forbidden.sql");
+    sqlx::raw_sql(sql).execute(&pool).await?;
+    sqlx::raw_sql(sql).execute(&pool).await?;
+
+    let row = |id| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (i64, i64)>(
+                "SELECT allow_permissions, deny_permissions FROM channel_overrides WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+        }
+    };
+    assert_eq!(row(override_ids[0]).await?, (allowed.to_db(), deny.to_db()));
+    assert_eq!(
+        row(override_ids[1]).await?,
+        ((allowed | forbidden).to_db(), deny.to_db())
+    );
+    Ok(())
+}

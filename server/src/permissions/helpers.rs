@@ -285,7 +285,7 @@ pub async fn require_channel_access(
     );
     if let Some(everyone_role_id) = ctx.everyone_role_id {
         if let Some(override_entry) = overrides.iter().find(|ovr| ovr.role_id == everyone_role_id) {
-            perms |= override_entry.allow_permissions;
+            perms |= override_entry.allow_permissions & GuildPermissions::EVERYONE_ALLOWED;
             perms &= !override_entry.deny_permissions;
         }
     }
@@ -366,7 +366,7 @@ pub async fn filter_accessible_channels(
             if let Some(override_entry) =
                 overrides.and_then(|v| v.iter().find(|ovr| ovr.role_id == everyone_role_id))
             {
-                perms |= override_entry.allow_permissions;
+                perms |= override_entry.allow_permissions & GuildPermissions::EVERYONE_ALLOWED;
                 perms &= !override_entry.deny_permissions;
             }
         }

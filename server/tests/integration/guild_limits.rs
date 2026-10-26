@@ -411,7 +411,8 @@ async fn test_globally_banned_user_cannot_join_via_discovery(pool: PgPool) {
         .await;
     assert_eq!(banned_resp.status(), StatusCode::FORBIDDEN);
     let body = body_to_json(banned_resp).await;
-    assert_eq!(body["error"], "FORBIDDEN");
+    // A banned account is refused by authentication itself (C25).
+    assert_eq!(body["error"], "ACCOUNT_BANNED");
 }
 
 // ============================================================================

@@ -103,7 +103,7 @@ Config::default()  // Uses OWASP-recommended defaults
 
 **State Parameter**: Prevents CSRF. Generated as random UUID, stored in Redis with 10min TTL (`oidc:state:{uuid}` key).
 
-**Identity Resolution & Linking**: An OIDC login resolves the account via the `user_identities` table keyed by `(provider_slug, subject)` (the authoritative lookup; `users.external_id` is retained as the primary-identity marker only). A first-time login provisions a new account + identity row; a known identity logs in. Authenticated users can attach additional identities (`/auth/me/identities/authorize/{provider}` stamps `link_user_id` into the encrypted flow state; the callback's `handle_identity_link` binds the identity instead of logging in) and unlink them (`DELETE /auth/me/identities/{id}`, refused if it's the only login method of a passwordless account → `CANNOT_UNLINK_LAST_IDENTITY`). A conflict (identity already bound elsewhere) is reported as a generic `IDENTITY_ALREADY_LINKED` code.
+**Identity Resolution & Linking**: An OIDC login resolves the account via the `user_identities` table keyed by `(provider_slug, subject)` (the authoritative lookup; `users.external_id` is retained as the primary-identity marker only). A first-time login provisions a new account + identity row; a known identity logs in. Authenticated users can attach additional identities (`/auth/me/identities/authorize/{provider}` stamps `OidcFlowPurpose::Link {user_id, session_id}` into the encrypted flow state; the callback's `handle_identity_link` binds the identity instead of logging in) and unlink them (`DELETE /auth/me/identities/{id}`, refused if it's the only login method of a passwordless account → `CANNOT_UNLINK_LAST_IDENTITY`). A conflict (identity already bound elsewhere) is reported as a generic `IDENTITY_ALREADY_LINKED` code.
 
 ### Rate Limiting Strategy
 
@@ -129,6 +129,105 @@ Config::default()  // Uses OWASP-recommended defaults
 - Rotate JWT secret on compromise (invalidates all sessions)
 - Audit token expiry changes (longer = more risk)
 - Test auth flows with expired/malformed tokens
+
+### Session end (C25)
+
+A ban (single or bulk), a single-session revoke, "revoke all other sessions", a password change with `revoke_others`, a password reset, logout and the account-deletion logout end the affected sessions right away.
+
+- **Order:**
+  1. Commit the durable change first: the ban row, the session-row deletion, the password, and the admin audit entry.
+  2. Then call `revocation::end_sessions` (a list of ids) or `end_all_sessions` (every socket of the user).
+- **What ending does:**
+  - It denylists each session id (`canis:revoked_sid:{sid}`, TTL `jwt_access_expiry` + 60 s).
+  - It publishes the internal `session_revoked` / `all_sessions_revoked` notice on `user:{id}`. Sockets consume the notice (it is never forwarded) and answer with an `error` event `SESSION_REVOKED`, then close 1008.
+- **Bans:** every authenticated request and every WS handshake re-checks the ban in the DB. A Valkey problem can never undo a ban.
+- **Bounded failure window:** if Valkey fails after the commit, the request answers 500 and the durable change stands.
+  - The session rows are gone, so refresh is impossible.
+  - Open sockets close anyway, because their pub/sub pipeline fails as well (close 1011), and no new socket can become ready while Valkey is down.
+  - The residual exposure is an access token that is not denylisted, until it expires (`jwt_access_expiry`, 15 min).
+  - Every ending call is idempotent, so a retry finishes the job.
+- **Stable session id:** refresh rotates the session row in place, so the `sid` stays the same for the whole login. Do not change refresh back to delete-and-insert: sockets and tokens from before a refresh would then escape revocation.
+- **Possible follow-up:** a durable revocation outbox (a DB row per pending end, drained to Valkey) would close the residual window.
+
+### Re-authentication (C24)
+
+Admin elevation and backup-code regeneration ask the caller to prove the account again (`reauth.rs`).
+
+- **Password path:** `POST /api/admin/elevate` with `{"password": string, "mfa_code": string|null, "reason": string|null}`.
+  - When MFA is on, a current TOTP code is required. Backup codes are never accepted.
+  - `POST /auth/mfa/backup-codes` takes `{"mfa_code": string}`, which must be a current TOTP code.
+- **TOTP replay:** `accept_totp` accepts each 30 s step once per user (`mfa:totp_step:{user_id}`, 90 s TTL).
+  - It is used by elevation, the OIDC start, backup-code regeneration and `/auth/mfa/verify` (also behind `/auth/mfa/disable`).
+  - A replayed code counts as a wrong code.
+  - If Valkey errors, the request gets 503 `SERVICE_UNAVAILABLE` (fail closed).
+- **OIDC path (elevation only):** `POST /auth/reauth/oidc/authorize/{provider_id}` (bearer, system admin) with the JSON body `{"redirect_uri": string|null, "reason": string|null, "mfa_code": string|null}`.
+  - It answers 200 `{"url": string}` (the provider URL to open); there is no redirect variant.
+  - Secrets never go into a URL. A missing or invalid body is 400 `VALIDATION_ERROR`; `reason` has a 255-character limit.
+  - When MFA is on, `mfa_code` (TOTP) is verified here, with the same lockout and replay protection. The result is bound into the flow state. `amr` never replaces it.
+  - The provider is asked for a fresh login (`prompt=login`, `max_age=0`); normal login flows do not get these parameters.
+  - The provider always redirects to `{PUBLIC_URL}/auth/oidc/callback` (`Config::public_url`, trailing slash ignored).
+  - A desktop loopback `redirect_uri` is stored as `client_redirect_uri` and used only for the hand-back.
+  - The flow state is encrypted and single use (300 s TTL). `OidcFlowState.purpose` is one `OidcFlowPurpose` (`Login`, `Link {user_id, session_id}` or `Reauth(binding)`), so link and reauth exclude each other.
+  - Legacy states deserialize as before: a bare `link_user_id` becomes `Link`, nothing becomes `Login`.
+  - The binding holds the user, the token's `sid`, the reason and `mfa_verified`.
+  - The callback dispatches a reauth state before any login or link work. `complete_oidc_reauth` then checks, in this order:
+    1. ID token signature, issuer, audience, expiry and nonce;
+    2. `auth_time` present, with no fallback;
+    3. `auth_time` at most 300 s old and at most 30 s in the future;
+    4. (provider, `sub`) linked to that user;
+    5. the session still live and not revoked (fail closed);
+    6. the identity eligible for that session (see below);
+    7. the user still a system admin;
+    8. TOTP verified at the start when MFA is on.
+  - Only then does `admin::system::record_elevation` elevate that session. It writes the same row, cache and audit entry as the password path.
+  - Hand-back works like the identity-link flow (`login::oidc_hand_back`):
+    - desktop: a 307 to `client_redirect_uri` with `reauth=elevated&expires_at=<RFC 3339>` or `reauth_error=<CODE>`;
+    - browser: a `postMessage` of `{"type": "oidc-reauth-callback", "success", "error_code", "expires_at"}`.
+    - a provider error (callback without `code`) and server faults also hand back, as `reauth_error=OIDC_PROVIDER_ERROR` / `REAUTH_FAILED` (`reauth::reauth_failure_response`, used by `login::flow_failure_response` for reauth states).
+- **Eligible identity:** linked no later than the session's original start (`sessions.created_at`, stable across refresh), or linked from an elevated session (`user_identities.linked_while_elevated`).
+  - An identity linked in a non-elevated session can confirm only sessions that start later.
+  - **Admin links need elevation:** a system admin may link an identity only from an elevated session. `GET /auth/me/identities/authorize/{provider}` answers 403 `elevation_required` (same body as the admin middleware) otherwise; non-admins are unaffected. Without this, a stolen non-elevated admin token could link an attacker's identity, sign in through it (a new, later session) and elevate from there. With it, every identity an admin links carries `linked_while_elevated`.
+  - **Link callback re-checks the starting session** (`identities::link_refusal`, before anything is inserted). Refusals go back through the link hand-back (`?link_error=` / `oidc-link-callback`):
+    - `LINK_SESSION_INVALID`: the state names no session (legacy `link_user_id` states), or the session is missing, expired or denylisted;
+    - `SERVICE_UNAVAILABLE`: the denylist cannot be read (fail closed);
+    - `ACCOUNT_BANNED`: the account is banned;
+    - `elevation_required`: a system admin's session is no longer elevated.
+  - "Usable" means: an enabled provider with OIDC discovery (plain OAuth2 has no ID token, so no `auth_time`), and OIDC sign-in allowed.
+- **Methods:** `GET /auth/reauth/methods` (bearer) returns `{"password": bool, "mfa_required": bool, "oidc": [{"provider_id": string, "display_name": string}]}`.
+  - `mfa_required` applies to both paths.
+  - `oidc` lists the usable, eligible providers for the calling session.
+- **Audit:** `details.method` names the factors actually verified: `password`, `password+totp`, `oidc` or `oidc+totp`.
+- **Errors:**
+  - 400 `VALIDATION_ERROR` (missing field or body)
+  - 400 `MFA_CODE_REQUIRED` (both paths)
+  - 401 `INVALID_CREDENTIALS` (wrong or replayed password or code; it never says which)
+  - 400 `REAUTH_OIDC_REQUIRED` (no password, but a usable, eligible provider exists)
+  - 400 `REAUTH_UNAVAILABLE` (neither)
+  - 400 `REAUTH_PROVIDER_UNAVAILABLE` (OIDC start for a provider that is not linked, not usable or not eligible)
+  - 403 (OIDC start by a non-admin; `GET` on the start path is 405)
+  - 429 (rate limited or locked)
+  - 503 `SERVICE_UNAVAILABLE` (replay store, re-auth limiter or session denylist unavailable)
+- **Callback codes:**
+  - `REAUTH_AUTH_TIME_MISSING`
+  - `REAUTH_STALE`
+  - `REAUTH_IDENTITY_MISMATCH`
+  - `REAUTH_SESSION_INVALID`
+  - `REAUTH_IDENTITY_NOT_ELIGIBLE`
+  - `REAUTH_NOT_ALLOWED`
+  - `MFA_CODE_REQUIRED`
+  - `OIDC_EXCHANGE_FAILED` (bad signature, wrong nonce, failed exchange)
+  - `OIDC_PROVIDER_ERROR` (the provider returned an error instead of a code)
+  - `REAUTH_FAILED` (server fault, logged)
+  - A missing or reused state is HTTP 400 `OIDC_STATE_MISMATCH`.
+- **Session binding:** an elevation belongs to the access token's `sid`. It comes from the flow state, never from cookies.
+  - `require_elevated`, `/api/admin/status` and the WebSocket admin subscription look up `(user_id, session_id)`.
+  - The Valkey cache key is `admin:elevated:{session_id}`. Ending a session (`revocation::end_sessions` / `end_all_sessions`) deletes it too (best effort, logged).
+  - `DELETE /api/admin/elevate` de-elevates only the caller's session.
+- **Limits:**
+  - These routes have `check_ip_not_blocked`, `AuthOther` and `rate_limit_by_user` (`with_reauth_limits`): `/auth/me/password`, `/auth/mfa/verify`, `/auth/mfa/disable`, `/auth/mfa/backup-codes`, `/auth/qr/create`, `/auth/reauth/oidc/authorize/*` and `POST /api/admin/elevate`.
+  - The login MFA step is part of `/auth/login` (`AuthLogin`, with IP blocking).
+  - Each wrong password or code is recorded per IP and per account (`reauth:{user_id}`). Ten failures lock both, including the OIDC start.
+  - Limiter errors fail closed with 503 `SERVICE_UNAVAILABLE` (`RateLimiter::allow_during_outage(FailedAuth)`, so `RATE_LIMIT_FAIL_OPEN=true` opens them like the other auth limits).
 
 ### Error Handling
 

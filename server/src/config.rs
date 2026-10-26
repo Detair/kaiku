@@ -704,7 +704,7 @@ const TEST_JWT_PUBLIC_KEY: &str = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRW
 /// Test MFA encryption key (32-byte hex) - DO NOT USE IN PRODUCTION
 /// Generated with: openssl rand -hex 32
 const TEST_MFA_ENCRYPTION_KEY: &str =
-    "a4f8e2d1b7c9036f5e8d4a2b1c7f9e3d6a8b5c2d4e7f1a3b9c6d8e2f5a7b4c";
+    "a4f8e2d1b7c9036f5e8d4a2b1c7f9e3d6a8b5c2d4e7f1a3b9c6d8e2f5a7b4c1d";
 
 /// Read an optional env var, treating unset AND empty/whitespace as `None`.
 ///
