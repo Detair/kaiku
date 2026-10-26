@@ -111,6 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop voice works with headsets that don't offer 48 kHz mono, tells you when the microphone stops working, and can switch microphones during a call.
 - Sharing a small window or a webcam with an unusual resolution no longer crashes the desktop app.
 - Closing the window during a voice call tells you Kaiku is still connected and lets you leave from the tray; the window can always be reopened.
+- Signing in (and linking an account) with an external identity provider in the desktop app now completes: the provider returns to the server, which finishes the sign-in and hands the result to the app. If the provider declines or the sign-in fails, the app or sign-in window now shows an error right away instead of waiting for a timeout.
 - In the browser, Kaiku now signs you out right away when your session is ended elsewhere and stops retrying with an expired login.
 - The server no longer hangs when its cache (Valkey) is unavailable; affected requests fail quickly instead.
 - E-mail addresses and code snippets are no longer treated as @mentions.

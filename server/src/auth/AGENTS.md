@@ -94,9 +94,12 @@ Config::default()  // Uses OWASP-recommended defaults
 
 **Flow**:
 1. `GET /auth/oidc/authorize/:provider` redirects to IdP with state parameter
-2. IdP redirects back to `GET /auth/oidc/callback?code=...&state=...`
+2. IdP redirects back to `GET /auth/oidc/callback?code=...&state=...` — always the server's own callback (`{PUBLIC_URL}/auth/oidc/callback`, `OidcFlowState.redirect_uri`), also for desktop
 3. Exchange code for tokens, fetch userinfo, create/update user
-4. Return access + refresh tokens
+4. Return the result: browser → HttpOnly refresh cookie + `postMessage` page; desktop (Tauri, authorize called with `?redirect_uri=http://127.0.0.1:PORT/callback`, stored as `OidcFlowState.client_redirect_uri`, never sent to the IdP) → 307 to that loopback URL with tokens (link flow: `?linked=`/`?link_error=`). Use `oidc::client_return_url` to pick the branch. Desktop return address contract: `http://{localhost|127.0.0.1}[:port]/callback`, no userinfo/query/fragment (`oidc::is_loopback_client_redirect`). `PUBLIC_URL` comes from `Config::public_url` (trailing slash trimmed).
+5. Failures after the state is validated (provider `?error=` without code → `OIDC_PROVIDER_ERROR`; code exchange / user-info failure → `OIDC_EXCHANGE_FAILED`) go back to the origin via `flow_failure_response`: desktop login `?error=CODE`, desktop link `?link_error=CODE`, browser the usual `postMessage` payload. Never provider text; unknown/invalid state → 400, no redirect. New flow kinds (e.g. re-auth `?reauth_error=`) extend this one function.
+
+**Legacy flow states**: flow states stored before `client_redirect_uri` existed deserialize with `None` (browser). In-flight *desktop* flows from before the upgrade cannot complete and must be restarted (states expire after 10 min).
 
 **State Parameter**: Prevents CSRF. Generated as random UUID, stored in Redis with 10min TTL (`oidc:state:{uuid}` key).
 
