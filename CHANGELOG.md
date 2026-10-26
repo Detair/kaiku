@@ -84,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- The desktop app no longer bundles an unused embedded database and compression stack that came in with the credential-storage library and had newly published memory-safety advisories; stored sign-in data is unaffected and still lives in the system keychain.
 - An authenticator code can only be used once when signing in; entering the same code again is refused. If the check cannot be completed, sign-in is refused with a temporary error.
 - Updated the Markdown sanitizer, diagram renderer and UI runtime libraries to versions without known vulnerabilities; the frontend dependency audit now blocks CI on production advisories.
 - The default role can no longer be given webhook, post, event or announcement management rights, including through channel permission overrides.
