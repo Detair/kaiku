@@ -15,9 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Milestone: v1.0 Family Release (Goal 8)
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
-### Fixed
-- Signing in with a suspended account says so, and the Create account dialog can unlock admin actions directly.
-
 ### Added
 - Admins can add a new account to servers while creating it.
 - API: `GET /api/me/unread` now includes `last_read_message_id` for every channel and DM entry (`null` if it was never read), so apps can notify only for messages newer than the read position.
@@ -129,6 +126,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: update `dompurify` 3.4.2 → 3.4.11 (eight HTML-sanitizer XSS advisories — the markdown preview's runtime sanitizer), `vite` 8.0.0 → 8.0.16 (the `server.fs.deny` bypass and `__open-in-editor` NTLM dev-server CVEs), and add transitive overrides for `undici` → 7.28.0 (seven HTTP-client advisories via jsdom) and `@babel/core` → 7.29.6 (via vite-plugin-solid). The remaining flagged instance is the test-only vite 7.3.1 nested under vitest, whose fix is blocked by a JSX-transform incompatibility (documented as a justified, dev-server-only exception); the production bundle is built with the patched vite 8.0.16. This restores the weekly OSV scanner to green.
 
 ### Fixed
+- Signing in with a suspended account says so, and the Create account dialog can unlock admin actions directly.
 - Running a bot slash command no longer leaves a connection to the server's cache open each time, which could exhaust connections on busy servers.
 - Desktop voice works with headsets that don't offer 48 kHz mono, tells you when the microphone stops working, and can switch microphones during a call.
 - Sharing a small window or a webcam with an unusual resolution no longer crashes the desktop app.
