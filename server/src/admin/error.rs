@@ -38,6 +38,15 @@ pub enum AdminError {
     #[error("Validation failed: {0}")]
     Validation(String),
 
+    /// A requested server (guild) does not exist (C23).
+    #[error("unknown server")]
+    UnknownServer,
+
+    /// Invalid request answered with the uppercase `VALIDATION_ERROR` code
+    /// (C23 account creation; other admin validation keeps `validation`).
+    #[error("{0}")]
+    InvalidRequest(String),
+
     /// Database error.
     #[error("Database error")]
     Database(#[from] sqlx::Error),
@@ -87,6 +96,14 @@ impl IntoResponse for AdminError {
             Self::Validation(msg) => (
                 StatusCode::BAD_REQUEST,
                 serde_json::json!({"error": "validation", "message": msg}),
+            ),
+            Self::UnknownServer => (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error": "VALIDATION_ERROR", "message": "unknown server"}),
+            ),
+            Self::InvalidRequest(msg) => (
+                StatusCode::BAD_REQUEST,
+                serde_json::json!({"error": "VALIDATION_ERROR", "message": msg}),
             ),
             Self::Database(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

@@ -5,9 +5,10 @@
  * admin hands to the new user.
  */
 
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createEffect, createSignal, For, Show } from "solid-js";
 import { X } from "lucide-solid";
 import { adminState, createUser } from "@/stores/admin";
+import { guildsState } from "@/stores/guilds";
 import { getServerUrl } from "@/lib/tauri";
 import { generateTemporaryPassword } from "@/lib/passwords";
 import { showToast } from "@/components/ui/Toast";
@@ -15,6 +16,9 @@ import { copyHandoverText, canDismissCreateAccount } from "@/lib/adminHandover";
 import { t } from "@/i18n";
 import { createDialog } from "@/lib/a11y/dialog";
 import { errorText } from "@/i18n/errors";
+
+/** Most servers one admin-created account can join at creation (contract C23). */
+const MAX_GUILDS = 10;
 
 const USERNAME_RE = /^[a-z0-9_]{3,32}$/;
 
@@ -28,6 +32,23 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
   const [password, setPassword] = createSignal(generateTemporaryPassword());
   const [error, setError] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
+  // Every server the admin belongs to is ticked by default (up to the limit).
+  const [checkedGuilds, setCheckedGuilds] = createSignal<Set<string>>(new Set());
+  // Seed once the list is known (it may arrive after the dialog opens); after
+  // that the admin's choices are left alone.
+  let seeded = false;
+  createEffect(() => {
+    if (seeded || guildsState.guilds.length === 0) return;
+    seeded = true;
+    setCheckedGuilds(new Set(guildsState.guilds.slice(0, MAX_GUILDS).map((g) => g.id)));
+  });
+  const toggleGuild = (id: string, on: boolean) =>
+    setCheckedGuilds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
   const [created, setCreated] = createSignal<{
     name: string;
     username: string;
@@ -76,6 +97,9 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
         username: name,
         display_name: displayName().trim() || null,
         temporary_password: pw,
+        guild_ids: guildsState.guilds
+          .map((g) => g.id)
+          .filter((id) => checkedGuilds().has(id)),
       });
       setCreated({
         name: user.display_name || user.username,
@@ -88,7 +112,13 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
         errorText(
           err,
           "admin.createAccount.failed",
-          { USER_EXISTS: "admin.createAccount.usernameTaken" },
+          {
+            USER_EXISTS: "admin.createAccount.usernameTaken",
+            // e.g. an unknown server or too many in guild_ids; never the server's
+            // text. The admin validator answers with lowercase "validation".
+            VALIDATION_ERROR: "admin.createAccount.invalid",
+            validation: "admin.createAccount.invalid",
+          },
           { 409: "admin.createAccount.usernameTaken" },
         ),
       );
@@ -198,6 +228,49 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
                   </button>
                 </div>
               </div>
+
+              <fieldset class="space-y-1">
+                <legend class="text-sm text-text-secondary">
+                  {t("admin.createAccount.servers")}
+                </legend>
+                <Show
+                  when={guildsState.guilds.length > 0}
+                  fallback={
+                    <p class="text-xs text-text-secondary">
+                      {t("admin.createAccount.serversNone")}
+                    </p>
+                  }
+                >
+                  <p class="text-xs text-text-secondary">
+                    {t("admin.createAccount.serversHint")}
+                  </p>
+                  <div class="max-h-32 overflow-y-auto space-y-1 pt-1">
+                    <For each={guildsState.guilds}>
+                      {(g) => (
+                        <label class="flex items-center gap-2 text-sm text-text-primary">
+                          <input
+                            type="checkbox"
+                            checked={checkedGuilds().has(g.id)}
+                            disabled={
+                              !adminState.isElevated ||
+                              submitting() ||
+                              (!checkedGuilds().has(g.id) &&
+                                checkedGuilds().size >= MAX_GUILDS)
+                            }
+                            onChange={(e) => toggleGuild(g.id, e.currentTarget.checked)}
+                          />
+                          {g.name}
+                        </label>
+                      )}
+                    </For>
+                  </div>
+                  <Show when={guildsState.guilds.length > MAX_GUILDS}>
+                    <p class="text-xs text-text-secondary">
+                      {t("admin.createAccount.serversMax")}
+                    </p>
+                  </Show>
+                </Show>
+              </fieldset>
 
               <Show when={error()}>
                 <p role="alert" class="text-sm text-status-error">

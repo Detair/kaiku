@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Admins can add a new account to servers while creating it.
 - API: `GET /api/me/unread` now includes `last_read_message_id` for every channel and DM entry (`null` if it was never read), so apps can notify only for messages newer than the read position.
 - **Mobile push notifications (server side)**: the server can wake the Android app through Firebase Cloud Messaging (when an FCM service account is configured) or UnifiedPush. Phones are now also notified about @mentions, not only DMs (photo and file DMs already pushed before). Bursts of messages are coalesced into one notification, and reading a conversation on another device clears its notification. Wake signals carry only a type, channel and count, never message text, so end-to-end encryption is preserved. Blocked users never trigger a notification, and blocks are enforced for DMs even when cached data has expired. Endpoints are registered per device under `/api/me/push-subscriptions`, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
 - Android: you can send photos and videos from your phone.
@@ -59,9 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - The desktop app hides forum, announcement, event and screening features when the server has them turned off.
+- Clearer message when an authenticator code was already used: signing in and confirming admin actions now say to wait for the next code and try again.
+- Unlocking admin actions asks you to confirm with your password or your sign-in provider, and creating new backup codes asks for an authenticator code. New accounts can be added to servers right away, and people land in their server after signing in.
 - Onboarding now says "server" consistently.
 - Sign-in and sign-up errors now explain what went wrong (wrong password, username taken, sign-ups closed, server unreachable) instead of showing technical messages.
 - Error messages across the app (loading channels and messages, sending and editing messages, creating conversations, uploading an avatar, managing sessions, joining by invite, changing or resetting a password, voice devices) now say what went wrong in plain words instead of showing technical server messages. Messages that cannot be sent explain why (no permission, blocked, file too large, channel gone).
+- Forum and announcement channels, scheduled events and membership screening are turned off by default. Server operators can turn them on with `KAIKU_OPTIONAL_FEATURES`.
 - Android: sign-in errors now say what went wrong instead of showing raw server messages.
 - Dates in the direct-message list and the sessions list are shorter ("Oct 22" instead of "10/22/2026", year only when it differs) and follow your region's format.
 - Each phone now holds one push registration; signing in with another account on the same phone stops notifications for the previous account.

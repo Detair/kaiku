@@ -6,6 +6,7 @@ pub mod auth;
 pub mod clipboard;
 pub mod crypto;
 pub mod presence;
+pub mod reauth;
 pub mod screen_share;
 pub mod settings;
 pub mod sound;

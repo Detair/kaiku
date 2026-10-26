@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+# Superseded pull-request runs are cancelled to free the scarce macOS runners;
+# pushes to main/develop get one group per commit, so every commit runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 

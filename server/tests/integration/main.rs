@@ -37,6 +37,7 @@ mod messages_http;
 mod observability_queries;
 mod oidc;
 mod oidc_flow_http;
+mod optional_features;
 mod pages;
 mod performance_budgets;
 mod push_http;

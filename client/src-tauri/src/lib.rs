@@ -139,6 +139,8 @@ pub fn run() {
             commands::auth::register,
             commands::auth::oidc_authorize,
             commands::auth::oidc_link_identity,
+            commands::reauth::oidc_reauth,
+            commands::reauth::oidc_reauth_cancel,
             // Voice commands
             commands::voice::join_voice,
             commands::voice::leave_voice,

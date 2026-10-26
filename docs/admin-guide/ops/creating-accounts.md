@@ -33,17 +33,27 @@ POST /api/admin/users
 Authorization: Bearer <admin access token>
 Content-Type: application/json
 
-{"username": "oma", "display_name": "Oma Erna", "temporary_password": "<temporary password>"}
+{"username": "oma", "display_name": "Oma Erna", "temporary_password": "<temporary password>",
+ "guild_ids": ["<family server id>"]}
 ```
 
 - `username`: 3–32 characters, lowercase letters, digits and `_`.
 - `display_name`: optional (`null` uses the username), at most 64 characters.
 - `temporary_password`: 8–128 characters.
+- `guild_ids`: optional list (at most 10) of server ids the new account joins
+  right away, as a normal active member (membership screening never holds an
+  admin-added account back). **Add the family server here**, so the new user
+  finds it as soon as they sign in. Repeated ids are ignored. If any id does
+  not exist, the request fails with `400` (`VALIDATION_ERROR`, "unknown
+  server") and nothing is created. More than 10 ids, or a server that has
+  reached its member limit, also fail with `400` (`VALIDATION_ERROR`) and
+  create nothing. Omit the field to create the account without
+  any server.
 
 The response is `201 Created` with the same user object that
 `GET /api/admin/users` lists. A taken username answers `409`. The admin audit
-log records the action as `admin.users.create` (username and display name
-only; the password is never logged).
+log records the action as `admin.users.create` (username, display name and
+server ids only; the password is never logged).
 
 ## 4. Hand over the temporary password
 

@@ -24,11 +24,11 @@ import {
   Ban,
   ExternalLink,
 } from "lucide-solid";
+import ElevateDialog from "./ElevateDialog";
 import {
   adminState,
   checkAdminStatus,
   loadAdminStats,
-  elevateSession,
   deElevateSession,
   getElevationTimeRemaining,
 } from "@/stores/admin";
@@ -60,10 +60,7 @@ const AdminQuickModal: Component<AdminQuickModalProps> = (props) => {
     }
   });
 
-  // Handle elevation
-  const handleElevate = async () => {
-    await elevateSession();
-  };
+  const [showElevate, setShowElevate] = createSignal(false);
 
   // Handle de-elevation
   const handleDeElevate = async () => {
@@ -142,7 +139,7 @@ const AdminQuickModal: Component<AdminQuickModalProps> = (props) => {
                       <span class="text-sm font-medium">Session not elevated</span>
                     </div>
                     <button
-                      onClick={handleElevate}
+                      onClick={() => setShowElevate(true)}
                       disabled={adminState.isElevating}
                       class="w-full px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium transition-colors hover:bg-accent-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
@@ -228,6 +225,9 @@ const AdminQuickModal: Component<AdminQuickModalProps> = (props) => {
           </div>
         </div>
       </div>
+      <Show when={showElevate()}>
+        <ElevateDialog onClose={() => setShowElevate(false)} />
+      </Show>
     </Portal>
   );
 };

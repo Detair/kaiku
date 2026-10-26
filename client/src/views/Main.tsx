@@ -42,7 +42,7 @@ import KeyboardShortcutsDialog from "@/components/ui/KeyboardShortcutsDialog";
 import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import { selectedChannel } from "@/stores/channels";
 import FeatureGate from "@/components/ui/FeatureGate";
-import { loadGuilds, guildsState, isDiscoveryActive, isGuildOwner } from "@/stores/guilds";
+import { loadGuilds, landOnFirstServerIfIdle, guildsState, isDiscoveryActive, isGuildOwner } from "@/stores/guilds";
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
 import { authState } from "@/stores/auth";
@@ -87,7 +87,7 @@ const Main: Component = () => {
 
   // Load guilds on mount
   onMount(() => {
-    loadGuilds();
+    void loadGuilds().then(landOnFirstServerIfIdle);
   });
 
   // Load pins when channel changes
