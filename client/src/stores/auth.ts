@@ -24,7 +24,11 @@ import { clearAllDrafts, cleanupDrafts } from "./drafts";
 import { resetE2EEState } from "./e2ee";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
-import { isTauri, PASSWORD_CHANGE_REQUIRED_EVENT } from "@/lib/tauri/common";
+import {
+  isTauri,
+  PASSWORD_CHANGE_REQUIRED_EVENT,
+  SESSION_ENDED_EVENT,
+} from "@/lib/tauri/common";
 
 // Auth state interface
 interface AuthState {
@@ -36,6 +40,8 @@ interface AuthState {
   setupRequired: boolean;
   mfaRequired: boolean;
   sessionExpired: boolean;
+  /** Why the session ended while `sessionExpired` is set (selects the text). */
+  sessionEndReason: tauri.SessionEndReason;
   /**
    * A stored login exists but the server could not be reached at start.
    * The login is kept and the restore retried; the UI shows a
@@ -60,6 +66,7 @@ const [authState, setAuthState] = createStore<AuthState>({
   setupRequired: false,
   mfaRequired: false,
   sessionExpired: false,
+  sessionEndReason: "expired",
   restorePending: false,
   passwordChangeRequired: false,
 });
@@ -230,6 +237,32 @@ function stopSessionServices(): Promise<void> {
 // Session-expired listener (registered once globally to prevent leaks)
 let sessionExpiredListenerRegistered = false;
 
+/** Tear down the session and show the sign-in prompt for `reason`. */
+async function endSession(reason: tauri.SessionEndReason): Promise<void> {
+  // Claim the end first so a concurrent expiry report does not repeat it.
+  setAuthState({ user: null });
+  try {
+    await requestStop();
+  } catch (err) {
+    console.error("[Auth] Stopping services during session end failed:", err);
+  }
+  try {
+    clearAllDrafts();
+    cleanupDrafts();
+  } catch (err) {
+    console.error("[Auth] Cleanup during session end failed:", err);
+  }
+  pendingTemporaryPassword = null;
+  passwordChangeSaved = false;
+  setAuthState({
+    user: null,
+    sessionExpired: true,
+    sessionEndReason: reason,
+    passwordChangeRequired: false,
+    error: null,
+  });
+}
+
 function registerSessionExpiredListener() {
   if (typeof window === "undefined" || sessionExpiredListenerRegistered) return;
 
@@ -259,25 +292,20 @@ function registerSessionExpiredListener() {
       return;
     }
 
+    // The session may have been ended for a specific reason while the retry ran.
+    if (!authState.user) return;
     console.warn("[Kaiku:Auth] Silent retry: failed — showing expiry modal");
+    await endSession("expired");
+  });
 
-    // Clean up connections and drafts
-    await requestStop();
-    try {
-      clearAllDrafts();
-      cleanupDrafts();
-    } catch (err) {
-      console.error("[Auth] Cleanup during session expiry failed:", err);
-    }
-
-    pendingTemporaryPassword = null;
-    passwordChangeSaved = false;
-    setAuthState({
-      user: null,
-      sessionExpired: true,
-      passwordChangeRequired: false,
-      error: null,
-    });
+  // The session is over for good (revoked, banned, or the server kept
+  // refusing a fresh token): no silent retry, straight to the sign-in prompt.
+  window.addEventListener(SESSION_ENDED_EVENT, (event) => {
+    if (!authState.user) return;
+    const reason = (event as CustomEvent<{ reason: tauri.SessionEndReason }>)
+      .detail?.reason;
+    console.warn(`[Kaiku:Auth] Session ended (${reason}) — showing sign-in prompt`);
+    void endSession(reason ?? "expired");
   });
 
   // A request was refused because the temporary password is still in use

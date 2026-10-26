@@ -25,10 +25,17 @@ function makeSupervisor(overrides: Partial<SupervisorOptions> = {}) {
     ensureFreshToken: vi
       .fn<SupervisorOptions["ensureFreshToken"]>()
       .mockResolvedValue(true),
+    onAuthRejected: vi.fn<() => void>(),
   };
   const supervisor = createConnectionSupervisor({ ...opts, ...overrides });
   return { supervisor, driver, opts };
 }
+
+/** What the browser driver rejects with when the socket closed before it opened. */
+const closedBeforeOpen = (code: number) =>
+  Object.assign(new Error("WebSocket closed before it opened"), {
+    closeCode: code,
+  });
 
 describe("connection supervisor", () => {
   let active: { stop(): void } | null = null;
@@ -175,6 +182,7 @@ describe("connection supervisor", () => {
     try {
       const { supervisor, driver } = makeSupervisor({
         ensureFreshToken: vi.fn(async () => false),
+        onAuthRejected: undefined, // native: legacy expiry event
       });
       active = supervisor;
       await supervisor.start();
@@ -329,5 +337,143 @@ describe("connection supervisor", () => {
       expect(await first).toBe(false);
       expect(driver.close).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("connection supervisor close codes (C11/C25)", () => {
+  let active: { stop(): void } | null = null;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+  });
+
+  afterEach(() => {
+    active?.stop();
+    active = null;
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("1008 forces one token refresh, then reconnects", async () => {
+    const { supervisor, driver, opts } = makeSupervisor();
+    active = supervisor;
+    await supervisor.start();
+
+    supervisor.notifyClosed(false, 1008);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(opts.ensureFreshToken).toHaveBeenCalledTimes(1);
+    expect(opts.ensureFreshToken).toHaveBeenLastCalledWith(true);
+    expect(driver.open).toHaveBeenCalledTimes(2);
+    expect(opts.onAuthRejected).not.toHaveBeenCalled();
+  });
+
+  it("a second 1008 stops reconnecting and reports the auth rejection", async () => {
+    const { supervisor, driver, opts } = makeSupervisor();
+    active = supervisor;
+    await supervisor.start();
+    supervisor.notifyClosed(false, 1008);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(driver.open).toHaveBeenCalledTimes(2);
+
+    supervisor.notifyClosed(false, 1008);
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(opts.onAuthRejected).toHaveBeenCalledTimes(1);
+    expect(driver.open).toHaveBeenCalledTimes(2);
+    expect(opts.ensureFreshToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("a transient refresh failure after 1008 backs off and retries the refresh", async () => {
+    const ensureFreshToken = vi
+      .fn<SupervisorOptions["ensureFreshToken"]>()
+      .mockRejectedValueOnce(new Error("503"))
+      .mockResolvedValue(true);
+    const { supervisor, driver, opts } = makeSupervisor({ ensureFreshToken });
+    active = supervisor;
+    await supervisor.start();
+
+    supervisor.notifyClosed(false, 1008);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(opts.onAuthRejected).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(ensureFreshToken.mock.calls.map((c) => c[0])).toEqual([true, true]);
+    expect(driver.open).toHaveBeenCalledTimes(2);
+    expect(opts.onAuthRejected).not.toHaveBeenCalled();
+  });
+
+  it("a rejected refresh after 1008 ends the session", async () => {
+    const { supervisor, driver, opts } = makeSupervisor({
+      ensureFreshToken: vi.fn().mockResolvedValue(false),
+    });
+    active = supervisor;
+    await supervisor.start();
+
+    supervisor.notifyClosed(false, 1008);
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(driver.open).toHaveBeenCalledTimes(1);
+    expect(opts.onAuthRejected).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([1011, 1013])(
+    "%i backs off and catches up without a forced refresh",
+    async (code) => {
+      const { supervisor, driver, opts } = makeSupervisor();
+      active = supervisor;
+      await supervisor.start();
+
+      supervisor.notifyClosed(false, code);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(driver.open).toHaveBeenCalledTimes(2);
+      expect(opts.ensureFreshToken).toHaveBeenCalledTimes(1);
+      expect(opts.ensureFreshToken).toHaveBeenLastCalledWith(false);
+      expect(opts.onRecovered).toHaveBeenCalledTimes(1);
+      expect(opts.onAuthRejected).not.toHaveBeenCalled();
+    },
+  );
+
+  it("close-before-open refreshes once per streak, then plain backoff", async () => {
+    const { supervisor, driver, opts } = makeSupervisor();
+    active = supervisor;
+    driver.open.mockRejectedValue(closedBeforeOpen(1006));
+    await supervisor.start().catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(4000);
+
+    expect(driver.open).toHaveBeenCalledTimes(4);
+    expect(opts.ensureFreshToken.mock.calls.map((c) => c[0])).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    expect(opts.onAuthRejected).not.toHaveBeenCalled();
+  });
+
+  it("the refresh allowance returns once a connection stayed up for 60 s", async () => {
+    const { supervisor, driver, opts } = makeSupervisor({
+      // Keep the silence watchdog out of the 60 s window.
+      timings: { pingEveryMs: 20_000, silenceLimitMs: 600_000 },
+    });
+    active = supervisor;
+    driver.open.mockRejectedValueOnce(closedBeforeOpen(1006));
+    await supervisor.start().catch(() => {});
+    await vi.advanceTimersByTimeAsync(1000); // forced refresh, opens
+    await vi.advanceTimersByTimeAsync(60_000); // healthy
+
+    supervisor.notifyClosed(false, 1008);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(opts.ensureFreshToken.mock.calls.map((c) => c[0])).toEqual([
+      true,
+      true,
+    ]);
+    expect(opts.onAuthRejected).not.toHaveBeenCalled();
+    expect(driver.open).toHaveBeenCalledTimes(3);
   });
 });

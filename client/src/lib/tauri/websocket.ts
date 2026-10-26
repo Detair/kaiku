@@ -25,8 +25,11 @@ let browserWsStatus: ConnectionStatus = { type: "disconnected" };
 
 /** Lifecycle callbacks for the current browser socket (reconnect supervisor). */
 export interface BrowserSocketHooks {
-  /** The live socket closed; `intentional` is true only for wsDisconnect(). */
-  onClose(intentional: boolean): void;
+  /**
+   * The live socket closed; `intentional` is true only for wsDisconnect().
+   * `code` is the CloseEvent code of an unintentional close.
+   */
+  onClose(intentional: boolean, code?: number): void;
   /** Any inbound frame arrived (watchdog liveness). */
   onFrame(): void;
 }
@@ -35,6 +38,14 @@ let socketHooks: BrowserSocketHooks | null = null;
 
 export function setBrowserSocketHooks(hooks: BrowserSocketHooks): void {
   socketHooks = hooks;
+}
+
+/** A socket that closed before it opened; carries the close code. */
+export class SocketClosedError extends Error {
+  constructor(public readonly closeCode: number) {
+    super("WebSocket closed before it opened");
+    this.name = "SocketClosedError";
+  }
 }
 
 // ============================================================================
@@ -87,20 +98,21 @@ export async function wsConnect(): Promise<void> {
       if (isCurrent()) socketHooks?.onFrame();
     });
 
+    // An error is always followed by a close event, which settles the promise
+    // with the close code (a handshake the server refused shows up as 1006).
     ws.onerror = (err) => {
       if (isCurrent()) browserWsStatus = { type: "disconnected" };
       console.error("[WebSocket] Connection error:", err);
-      reject(err);
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (!isCurrent()) return;
       browserWs = null;
       browserWsStatus = { type: "disconnected" };
       console.log("[WebSocket] Connection closed");
       // No-op if the socket had opened; settles a handshake that closed early.
-      reject(new Error("WebSocket closed before it opened"));
-      socketHooks?.onClose(false);
+      reject(new SocketClosedError(event.code));
+      socketHooks?.onClose(false, event.code);
     };
   });
 }

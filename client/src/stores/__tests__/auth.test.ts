@@ -675,6 +675,26 @@ describe("auth store", () => {
       expect(authState.user).toBeNull();
     });
 
+    it.each(["revoked", "banned"] as const)(
+      "kaiku:session-ended (%s) signs out without a silent refresh",
+      async (reason) => {
+        setAuthState({ user: createUser(), isInitialized: true });
+        vi.mocked(wsDisconnect).mockResolvedValue(undefined);
+        vi.mocked(cleanupWebSocket).mockResolvedValue(undefined);
+
+        window.dispatchEvent(
+          new CustomEvent("kaiku:session-ended", { detail: { reason } }),
+        );
+
+        await vi.waitFor(() => {
+          expect(authState.sessionExpired).toBe(true);
+        });
+        expect(authState.sessionEndReason).toBe(reason);
+        expect(authState.user).toBeNull();
+        expect(tauri.refreshAccessToken).not.toHaveBeenCalled();
+      },
+    );
+
     it("ignores event when not authenticated", async () => {
       setAuthState({ user: null, isInitialized: true });
 
