@@ -51,31 +51,79 @@ interface CallStoreState {
     string,
     { initiator: string; initiatorName: string; participants: string[] }
   >;
-  /** Server call_id of the current call once known (from incoming_call/call_started). */
-  callId: string | null;
+  /** Server call_id per DM channel, once known (HTTP response or events). */
+  callIds: Record<string, string>;
+  /** Recently ended call_ids per DM channel; their late events are ignored. */
+  endedCallIds: Record<string, string[]>;
 }
 
 const [callState, setCallState] = createStore<CallStoreState>({
   currentCall: { status: "idle" },
   activeCallsByChannel: {},
-  callId: null,
+  callIds: {},
+  endedCallIds: {},
 });
 
-/** Remember the server's call_id for the current call. */
-export function setCurrentCallId(callId: string | undefined): void {
-  if (callId) setCallState("callId", callId);
+const MAX_ENDED_IDS = 5;
+const NIL_UUID = "00000000-0000-0000-0000-000000000000";
+
+/** Older servers send the nil UUID for "no call id": treat it as unknown. */
+function knownCallId(callId: string | undefined | null): string | undefined {
+  return callId && callId !== NIL_UUID ? callId : undefined;
+}
+
+/** Remember the server's call_id for a DM (ignored if that call already ended). */
+export function setChannelCallId(
+  channelId: string,
+  rawCallId: string | undefined,
+): void {
+  const callId = knownCallId(rawCallId);
+  if (!callId || isEndedCallId(channelId, callId)) return;
+  const known = callState.callIds[channelId];
+  if (known && known !== callId) return;
+  setCallState("callIds", channelId, callId);
+}
+
+function isEndedCallId(channelId: string, callId: string): boolean {
+  return (callState.endedCallIds[channelId] ?? []).includes(callId);
+}
+
+/** Move a channel's tracked call_id (and `extra`) into the ended set. */
+function rememberEnded(channelId: string, extra?: string): void {
+  const ids = [callState.callIds[channelId], extra].filter(
+    (id): id is string => !!id,
+  );
+  setCallState(
+    produce((state) => {
+      const ended = state.endedCallIds[channelId] ?? [];
+      for (const id of ids) if (!ended.includes(id)) ended.push(id);
+      state.endedCallIds[channelId] = ended.slice(-MAX_ENDED_IDS);
+      delete state.callIds[channelId];
+    }),
+  );
 }
 
 /**
- * Does a call event belong to the call this client is in? Same channel, and
- * the same call_id where both sides know one.
+ * Does an event with this call_id belong to a different (older) call in the
+ * channel? Unknown ids are applied unless they are a recently ended call.
+ */
+export function isStaleCallEvent(channelId: string, rawCallId?: string): boolean {
+  const callId = knownCallId(rawCallId);
+  if (!callId) return false;
+  if (isEndedCallId(channelId, callId)) return true;
+  const known = callState.callIds[channelId];
+  return !!known && known !== callId;
+}
+
+/**
+ * Does a call event belong to the call this client is in? Same channel and
+ * not a stale call_id.
  */
 export function callEventMatches(channelId: string, callId?: string): boolean {
   const current = callState.currentCall;
   if (current.status === "idle" || !("channelId" in current)) return false;
   if (current.channelId !== channelId) return false;
-  if (callId && callState.callId && callId !== callState.callId) return false;
-  return true;
+  return !isStaleCallEvent(channelId, callId);
 }
 
 /**
@@ -94,7 +142,12 @@ export function abortOutgoingCall(
   if (!stillOurs) return;
   if (why === "conflict") {
     stopRinging();
-    setCallState({ currentCall: { status: "idle" }, callId: null });
+    setCallState("currentCall", { status: "idle" });
+    setCallState(
+      produce((state) => {
+        delete state.callIds[channelId];
+      }),
+    );
   } else {
     endCall(channelId, "cancelled");
   }
@@ -107,7 +160,11 @@ export function abortOutgoingCall(
  */
 export function startCall(channelId: string): void {
   stopRinging();
-  setCallState("callId", null);
+  setCallState(
+    produce((state) => {
+      delete state.callIds[channelId];
+    }),
+  );
   setCallState("currentCall", {
     status: "outgoing_ringing",
     channelId,
@@ -122,16 +179,23 @@ export function receiveIncomingCall(
   channelId: string,
   initiator: string,
   initiatorName: string,
-  callId?: string,
+  rawCallId?: string,
 ): void {
+  const callId = knownCallId(rawCallId);
   // Glare: the other side called this DM while ours was still ringing, so
   // theirs wins (the server rejected or will reject our start).
   const cur = callState.currentCall;
   const glare =
     cur.status === "outgoing_ringing" && cur.channelId === channelId;
   // Only update if we're idle (don't interrupt an existing call)
+  if (callId && isEndedCallId(channelId, callId)) return;
   if (cur.status === "idle" || glare) {
-    setCallState("callId", callId ?? null);
+    setCallState(
+      produce((state) => {
+        if (callId) state.callIds[channelId] = callId;
+        else delete state.callIds[channelId];
+      }),
+    );
     setCallState("currentCall", {
       status: "incoming_ringing",
       channelId,
@@ -142,6 +206,9 @@ export function receiveIncomingCall(
     startRinging();
   }
   // Always track in activeCallsByChannel for sidebar indicator
+  if (callId && !(cur.status === "idle" || glare)) {
+    setChannelCallId(channelId, callId);
+  }
   setCallState("activeCallsByChannel", channelId, {
     initiator,
     initiatorName,
@@ -192,7 +259,12 @@ export function connectOnFirstJoin(
 /**
  * A participant joined the call.
  */
-export function participantJoined(channelId: string, userId: string): void {
+export function participantJoined(
+  channelId: string,
+  userId: string,
+  callId?: string,
+): void {
+  if (isStaleCallEvent(channelId, callId)) return;
   const current = callState.currentCall;
   if (current.status === "connected" && current.channelId === channelId) {
     setCallState(
@@ -227,7 +299,12 @@ export function participantJoined(channelId: string, userId: string): void {
 /**
  * A participant left the call.
  */
-export function participantLeft(channelId: string, userId: string): void {
+export function participantLeft(
+  channelId: string,
+  userId: string,
+  callId?: string,
+): void {
+  if (isStaleCallEvent(channelId, callId)) return;
   const current = callState.currentCall;
   if (current.status === "connected" && current.channelId === channelId) {
     const remaining = current.participants.filter((id) => id !== userId);
@@ -277,6 +354,7 @@ export function declineCall(channelId: string): void {
   ) {
     // Stop ringing when declining the call
     stopRinging();
+    rememberEnded(channelId);
     setCallState("currentCall", { status: "idle" });
   }
 }
@@ -295,6 +373,7 @@ export function endCall(
     callEndedTimeoutId = null;
   }
 
+  rememberEnded(channelId);
   setCallState("currentCall", {
     status: "ended",
     channelId,
@@ -312,7 +391,6 @@ export function endCall(
   callEndedTimeoutId = setTimeout(() => {
     if (callState.currentCall.status === "ended") {
       setCallState("currentCall", { status: "idle" });
-      setCallState("callId", null);
     }
     callEndedTimeoutId = null;
   }, CALL_ENDED_DISPLAY_MS);
@@ -328,7 +406,8 @@ export function callEndedExternally(
   callId?: string,
 ): void {
   // An end for a different call (e.g. the previous one in this DM) is stale.
-  if (callId && callState.callId && callId !== callState.callId) return;
+  if (isStaleCallEvent(channelId, callId)) return;
+  rememberEnded(channelId, knownCallId(callId));
   // Remove from active calls
   setCallState(
     produce((state) => {

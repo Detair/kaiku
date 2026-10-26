@@ -627,6 +627,7 @@
   "voice.call.ended.default": "",
   "voice.call.ended.lastLeft": "",
   "voice.call.ended.noAnswer": "",
+  "voice.call.error.alreadyExists": "",
   "voice.call.error.conflict": "",
   "voice.call.inCall": "",
   "voice.call.incoming": "",

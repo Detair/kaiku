@@ -134,7 +134,13 @@ export type ServerEvent =
       initiator_name: string;
       call_id?: string;
     }
-  | { type: "call_started"; channel_id: string; call_id?: string }
+  | {
+      type: "call_started";
+      channel_id: string;
+      call_id?: string;
+      initiator?: string;
+      initiator_name?: string;
+    }
   | {
       type: "call_ended";
       channel_id: string;

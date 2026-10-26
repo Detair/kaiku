@@ -37,6 +37,8 @@ export const CALL_START_ERRORS: { byCode: ByCode } = {
   byCode: {
     BLOCKED: "voice.call.blocked",
     CALL_CONFLICT: "voice.call.error.conflict",
+    CALL_ALREADY_EXISTS: "voice.call.error.alreadyExists",
+    call_already_exists: "voice.call.error.alreadyExists",
   },
 };
 

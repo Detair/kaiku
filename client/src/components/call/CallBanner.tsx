@@ -13,7 +13,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { Users } from "lucide-solid";
-import { callState, joinCall, declineCall, endCall } from "@/stores/call";
+import { callState, setChannelCallId, joinCall, declineCall, endCall } from "@/stores/call";
 import {
   joinDMCall,
   declineDMCall,
@@ -23,7 +23,7 @@ import {
 } from "@/lib/tauri";
 import { t } from "@/i18n";
 
-import { endReasonText } from "@/lib/callEnd";
+import { endReasonText, isCallAlreadyGoneError } from "@/lib/callEnd";
 
 interface CallBannerProps {
   channelId: string;
@@ -32,11 +32,6 @@ interface CallBannerProps {
 const CallBanner: Component<CallBannerProps> = (props) => {
   const [isLoading, setIsLoading] = createSignal(false);
   const [callDuration, setCallDuration] = createSignal(0);
-
-  const isCallAlreadyGoneError = (err: unknown): boolean => {
-    if (!(err instanceof Error)) return false;
-    return /call not found|call_not_found/i.test(err.message);
-  };
 
   // Duration timer for connected calls
   createEffect(() => {
@@ -63,7 +58,8 @@ const CallBanner: Component<CallBannerProps> = (props) => {
     setIsLoading(true);
     try {
       joinCall(props.channelId);
-      await joinDMCall(props.channelId);
+      const res = await joinDMCall(props.channelId);
+      setChannelCallId(props.channelId, res.call_id);
       // Start voice connection after signaling join
       await joinVoice(props.channelId);
     } catch (err) {

@@ -96,6 +96,14 @@ describe("errorText", () => {
     ).toBe(t("errors.server"));
   });
 
+  it("maps call_already_exists (any case) on call start", () => {
+    for (const code of ["call_already_exists", "CALL_ALREADY_EXISTS"]) {
+      expect(
+        errorText(new HttpError(409, "x", code), "voice.call.startFailed", CALL_START_ERRORS.byCode),
+      ).toBe(t("voice.call.error.alreadyExists"));
+    }
+  });
+
   it("maps CALL_CONFLICT on call start", () => {
     expect(
       errorText(new HttpError(409, "x", "CALL_CONFLICT"), "voice.call.startFailed", CALL_START_ERRORS.byCode),
