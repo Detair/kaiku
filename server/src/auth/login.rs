@@ -1024,6 +1024,15 @@ async fn handle_identity_link(
     link_user_id: Uuid,
     link_session_id: Option<Uuid>,
 ) -> Result<Response, AuthError> {
+    // The session that started the flow must still be live, not revoked, of
+    // an unbanned account and (for a system admin) elevated.
+    if let Some(code) =
+        super::identities::link_refusal(state, link_user_id, link_session_id).await?
+    {
+        tracing::info!(user_id = %link_user_id, provider = %flow_state.slug, error_code = code, "OIDC identity link refused: starting session no longer valid");
+        return Ok(flow_failure_response(flow_state, code));
+    }
+
     // Determine the link outcome. Genuine server faults (DB errors) propagate as
     // AuthError; a *conflict* instead becomes a generic error code carried back to
     // the opener via the same redirect/postMessage channel, so the popup always

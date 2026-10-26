@@ -708,6 +708,15 @@ async fn test_oidc_reauth_state_is_single_use_and_session_bound(pool: PgPool) {
 async fn test_link_and_reauth_flows_do_not_cross(pool: PgPool) {
     let ctx = setup(&pool).await;
     let (admin, (_, token), _) = admin_with_two_sessions(&ctx, "sub-admin").await;
+    // An admin links only from an elevated session.
+    let resp = client()
+        .post(format!("{}/api/admin/elevate", ctx.server.url))
+        .bearer_auth(&token)
+        .json(&json!({ "password": PASSWORD }))
+        .send()
+        .await
+        .expect("elevate");
+    assert_eq!(resp.status().as_u16(), 200);
 
     // A link flow (same provider and sub) only links: no elevation, no login.
     let (status, body) = start_json(
@@ -731,7 +740,14 @@ async fn test_link_and_reauth_flows_do_not_cross(pool: PgPool) {
         "a link never logs in"
     );
     assert!(!chain.result.contains_key("reauth"));
-    assert!(!is_elevated(&ctx, &token).await, "a link never elevates");
+    let resp = client()
+        .delete(format!("{}/api/admin/elevate", ctx.server.url))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("de-elevate");
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(!is_elevated(&ctx, &token).await);
 
     // A reauth flow only elevates: no tokens, no new link.
     let url = start_reauth(&ctx, &token, None).await;
@@ -756,13 +772,14 @@ async fn test_link_and_reauth_flows_do_not_cross(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn test_identity_linked_after_session_start_cannot_elevate(pool: PgPool) {
+async fn test_non_elevated_admin_cannot_link_and_late_identity_cannot_elevate(pool: PgPool) {
     let ctx = setup(&pool).await;
     let admin = create_user(&ctx.pool, true).await;
     make_admin(&ctx.pool, admin).await;
     let (_, token) = create_session_with_token(&ctx.pool, &ctx.config, admin).await;
 
-    // A non-elevated session links an identity through the real link flow.
+    // (1) A non-elevated admin session cannot start a link: the same 403 as
+    // the admin middleware gives for non-elevated access.
     let (status, body) = start_json(
         &ctx,
         &format!("/auth/me/identities/authorize/{}", ctx.slug),
@@ -770,12 +787,17 @@ async fn test_identity_linked_after_session_start_cannot_elevate(pool: PgPool) {
         &[],
     )
     .await;
-    assert_eq!(status, 200, "{body}");
-    issue(&ctx, fresh("sub-new"));
-    let chain = follow(body["url"].as_str().expect("url")).await;
-    assert_eq!(chain.result.get("linked"), Some(&ctx.slug));
+    assert_eq!(
+        (status, body["error"].clone()),
+        (403, json!("elevation_required")),
+        "{body}"
+    );
 
-    // Not usable to elevate that session.
+    // (2) An identity that reached the account some other way after this
+    // session started, not while elevated, cannot elevate this session.
+    vc_server::db::insert_user_identity(&ctx.pool, admin, &ctx.slug, "sub-new", None)
+        .await
+        .expect("insert identity");
     assert_eq!(methods(&ctx, &token).await["oidc"], json!([]));
     let (status, body) = post_reauth_start(&ctx, &token, Some(start_body(None))).await;
     assert_eq!(
@@ -783,12 +805,111 @@ async fn test_identity_linked_after_session_start_cannot_elevate(pool: PgPool) {
         (400, json!("REAUTH_PROVIDER_UNAVAILABLE"))
     );
 
-    // A session that starts after the link may use it.
+    // A session that starts after the link may use it (eligibility rule:
+    // linked no later than the session's start, or while elevated).
     let (_, later) = create_session_with_token(&ctx.pool, &ctx.config, admin).await;
     assert_eq!(
         methods(&ctx, &later).await["oidc"][0]["provider_id"],
         json!(ctx.slug)
     );
+}
+
+/// Start a link for `token`; returns the provider URL.
+async fn start_link(ctx: &Ctx, token: &str) -> String {
+    let (status, body) = start_json(
+        ctx,
+        &format!("/auth/me/identities/authorize/{}", ctx.slug),
+        token,
+        &[],
+    )
+    .await;
+    assert_eq!(status, 200, "start link: {body}");
+    body["url"].as_str().expect("url").to_string()
+}
+
+async fn identity_count(ctx: &Ctx, user_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM user_identities WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&ctx.pool)
+        .await
+        .expect("count")
+}
+
+/// The link callback re-checks the session that started the flow: once it is
+/// revoked, the link is refused and no identity is inserted.
+#[sqlx::test]
+async fn test_link_refused_after_starting_session_revoked(pool: PgPool) {
+    let ctx = setup(&pool).await;
+    let user = create_user(&ctx.pool, true).await;
+    let (session_a, token_a) = create_session_with_token(&ctx.pool, &ctx.config, user).await;
+    let (_, token_b) = create_session_with_token(&ctx.pool, &ctx.config, user).await;
+
+    let url = start_link(&ctx, &token_a).await;
+    let resp = client()
+        .delete(format!("{}/auth/sessions/{session_a}", ctx.server.url))
+        .bearer_auth(&token_b)
+        .send()
+        .await
+        .expect("revoke A");
+    assert!(resp.status().is_success(), "revoke session A");
+
+    issue(&ctx, fresh("sub-link"));
+    let chain = follow(&url).await;
+    assert_eq!(
+        chain.result.get("link_error").map(String::as_str),
+        Some("LINK_SESSION_INVALID"),
+        "{:?}",
+        chain.result
+    );
+    assert!(!chain.result.contains_key("linked"));
+    assert_eq!(identity_count(&ctx, user).await, 0, "no identity inserted");
+}
+
+/// A link state that names no session (legacy `link_user_id` form) is
+/// refused in the callback.
+#[sqlx::test]
+async fn test_legacy_link_state_without_session_is_refused(pool: PgPool) {
+    use sha2::{Digest, Sha256};
+    use vc_server::auth::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
+
+    let ctx = setup(&pool).await;
+    let user = create_user(&ctx.pool, true).await;
+    let (_, token) = create_session_with_token(&ctx.pool, &ctx.config, user).await;
+    let url = start_link(&ctx, &token).await;
+
+    // Rewrite the stored state into the legacy form (bare `link_user_id`).
+    let state = query_of(&url).remove("state").expect("state");
+    let key = format!(
+        "oidc:state:{}",
+        hex::encode(Sha256::digest(state.as_bytes()))
+    );
+    let enc_key = hex::decode(ctx.config.mfa_encryption_key.as_ref().expect("key")).expect("hex");
+    let redis = vc_server::db::create_redis_client(&ctx.config.redis_url)
+        .await
+        .expect("Valkey");
+    let stored: String = fred::interfaces::KeysInterface::get(&redis, &key)
+        .await
+        .expect("GET state");
+    let mut flow: Value =
+        serde_json::from_str(&decrypt_mfa_secret(&stored, &enc_key).expect("decrypt"))
+            .expect("json");
+    let object = flow.as_object_mut().expect("object");
+    object.remove("purpose");
+    object.insert("link_user_id".to_string(), json!(user));
+    let rewritten = encrypt_mfa_secret(&flow.to_string(), &enc_key).expect("encrypt");
+    let _: () = fred::interfaces::KeysInterface::set(&redis, &key, rewritten, None, None, false)
+        .await
+        .expect("SET state");
+
+    issue(&ctx, fresh("sub-link"));
+    let chain = follow(&url).await;
+    assert_eq!(
+        chain.result.get("link_error").map(String::as_str),
+        Some("LINK_SESSION_INVALID"),
+        "{:?}",
+        chain.result
+    );
+    assert_eq!(identity_count(&ctx, user).await, 0, "no identity inserted");
 }
 
 #[sqlx::test]
@@ -821,6 +942,27 @@ async fn test_identity_linked_while_elevated_can_elevate(pool: PgPool) {
         methods(&ctx, &token).await["oidc"][0]["provider_id"],
         json!(ctx.slug)
     );
+
+    // Full chain: after de-elevating, the same session elevates again through
+    // the identity it linked while elevated.
+    let resp = client()
+        .delete(format!("{}/api/admin/elevate", ctx.server.url))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("de-elevate");
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(!is_elevated(&ctx, &token).await);
+    let url = start_reauth(&ctx, &token, None).await;
+    issue(&ctx, fresh("sub-new"));
+    let chain = follow(&url).await;
+    assert_eq!(
+        chain.result.get("reauth").map(String::as_str),
+        Some("elevated"),
+        "{:?}",
+        chain.result
+    );
+    assert!(is_elevated(&ctx, &token).await);
 }
 
 #[sqlx::test]
@@ -1032,4 +1174,41 @@ async fn test_oidc_reauth_provider_error_hands_back(pool: PgPool) {
     );
     assert!(!result.contains_key("error"), "not a login hand-back");
     assert!(!is_elevated(&ctx, &token_a).await);
+}
+
+/// An admin whose session is no longer elevated when the provider returns
+/// cannot finish a link started while elevated.
+#[sqlx::test]
+async fn test_admin_link_refused_when_elevation_ended_before_callback(pool: PgPool) {
+    let ctx = setup(&pool).await;
+    let admin = create_user(&ctx.pool, true).await;
+    make_admin(&ctx.pool, admin).await;
+    let (_, token) = create_session_with_token(&ctx.pool, &ctx.config, admin).await;
+    let resp = client()
+        .post(format!("{}/api/admin/elevate", ctx.server.url))
+        .bearer_auth(&token)
+        .json(&json!({ "password": PASSWORD }))
+        .send()
+        .await
+        .expect("elevate");
+    assert_eq!(resp.status().as_u16(), 200);
+    let url = start_link(&ctx, &token).await;
+
+    let resp = client()
+        .delete(format!("{}/api/admin/elevate", ctx.server.url))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("de-elevate");
+    assert_eq!(resp.status().as_u16(), 200);
+
+    issue(&ctx, fresh("sub-new"));
+    let chain = follow(&url).await;
+    assert_eq!(
+        chain.result.get("link_error").map(String::as_str),
+        Some("elevation_required"),
+        "{:?}",
+        chain.result
+    );
+    assert_eq!(identity_count(&ctx, admin).await, 0, "no identity inserted");
 }

@@ -109,6 +109,11 @@ pub enum AuthError {
     #[error("This account has been banned")]
     AccountBanned,
 
+    /// A system admin must use an elevated session for this action (same
+    /// 403 `elevation_required` body as the admin middleware).
+    #[error("This action requires an elevated session")]
+    ElevationRequired,
+
     /// Refusing to unlink the account's only remaining login method.
     #[error("Cannot remove your only login method; set a password or link another account first")]
     CannotUnlinkLastIdentity,
@@ -190,6 +195,7 @@ impl IntoResponse for AuthError {
             Self::AuthMethodDisabled => (StatusCode::FORBIDDEN, "AUTH_METHOD_DISABLED"),
             Self::PasswordChangeRequired => (StatusCode::FORBIDDEN, "PASSWORD_CHANGE_REQUIRED"),
             Self::AccountBanned => (StatusCode::FORBIDDEN, "ACCOUNT_BANNED"),
+            Self::ElevationRequired => (StatusCode::FORBIDDEN, "elevation_required"),
             Self::CannotUnlinkLastIdentity => (StatusCode::CONFLICT, "CANNOT_UNLINK_LAST_IDENTITY"),
             Self::ServiceUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),
             Self::MfaCodeRequired => (StatusCode::BAD_REQUEST, "MFA_CODE_REQUIRED"),
