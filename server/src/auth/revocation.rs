@@ -86,7 +86,9 @@ pub enum SessionNotice {
 ///
 /// Denylists each id for the access-token lifetime plus a small leeway (so
 /// every access token of those sessions is refused) and tells the user's open
-/// sockets, which close with 1008 when their own session is listed.
+/// sockets, which close with 1008 when their own session is listed. The
+/// sessions' cached elevation (`admin:elevated:{sid}`) is dropped too (best
+/// effort; the `elevated_sessions` rows go with the session rows).
 ///
 /// Call it **after** the session rows are deleted and committed. Unlike the
 /// denylist *check*, this fails closed: a Valkey error is logged and returned
@@ -140,6 +142,8 @@ async fn denylist(
             tracing::error!(error = %e, user_id = %user_id, "Failed to denylist ended session");
             super::AuthError::Internal("Failed to end session".to_string())
         })?;
+        // The ended session's elevation must not linger in the cache.
+        crate::admin::clear_elevated_cache(&state.redis, *sid).await;
     }
     Ok(())
 }

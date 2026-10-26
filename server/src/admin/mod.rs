@@ -21,7 +21,7 @@ use axum::routing::{delete, get, post, put};
 use axum::Router;
 pub use error::AdminError;
 pub use middleware::{require_elevated, require_system_admin};
-pub use shared::{cache_elevated_status, is_elevated_admin};
+pub use shared::{cache_elevated_status, clear_elevated_cache, is_elevated_admin};
 pub use types::{ElevatedAdmin, SystemAdminUser};
 
 use crate::api::AppState;

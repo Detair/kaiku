@@ -96,6 +96,14 @@ pub async fn is_elevated_admin(
     is_elevated
 }
 
+/// Drop a session's cached elevation status (best effort, logged), e.g. when
+/// the session ends. The `elevated_sessions` row goes with the session row.
+pub async fn clear_elevated_cache(redis: &Client, session_id: AdminUuid) {
+    if let Err(e) = redis.del::<(), _>(elevated_cache_key(session_id)).await {
+        tracing::warn!(error = %e, %session_id, "Failed to clear the cached elevation of an ended session");
+    }
+}
+
 /// Cache a session's elevated status in Redis (called after elevation).
 pub async fn cache_elevated_status(
     redis: &Client,

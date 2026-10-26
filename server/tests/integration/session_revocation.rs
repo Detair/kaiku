@@ -781,3 +781,49 @@ async fn test_ban_is_audited_when_ending_sessions_fails(pool: PgPool) {
     .unwrap();
     assert_eq!(audited, 1, "the committed ban must be audited");
 }
+
+/// Whether the cached elevation key of `sid` exists in Valkey.
+async fn elevation_cached(fx: &Fixture, sid: Uuid) -> bool {
+    use fred::interfaces::KeysInterface;
+    let count: i64 = fx
+        .app
+        .state
+        .redis
+        .exists(format!("admin:elevated:{sid}"))
+        .await
+        .expect("EXISTS");
+    count > 0
+}
+
+async fn cache_elevation(fx: &Fixture, sid: Uuid) {
+    vc_server::admin::cache_elevated_status(&fx.app.state.redis, sid, true, 600).await;
+    assert!(elevation_cached(fx, sid).await, "cache primed");
+}
+
+/// Ending a session drops its cached elevation, both for a single-session
+/// revoke and when all sessions end (ban).
+#[sqlx::test]
+async fn test_ending_sessions_clears_cached_elevation(pool: PgPool) {
+    let fx = setup(&pool).await;
+    let (user_id, username) = create_password_user(&pool).await;
+    let a = login(&fx.server, &username).await;
+    let b = login(&fx.server, &username).await;
+    let sid_a = session_id(&fx.app, &a.access);
+    let sid_b = session_id(&fx.app, &b.access);
+
+    // Single session.
+    cache_elevation(&fx, sid_b).await;
+    let resp = reqwest::Client::new()
+        .delete(format!("{}/auth/sessions/{sid_b}", fx.server.url))
+        .bearer_auth(&a.access)
+        .send()
+        .await
+        .expect("DELETE /auth/sessions/{id}");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert!(!elevation_cached(&fx, sid_b).await, "revoked session");
+
+    // All sessions.
+    cache_elevation(&fx, sid_a).await;
+    ban(&fx, user_id).await;
+    assert!(!elevation_cached(&fx, sid_a).await, "banned account");
+}
