@@ -149,6 +149,13 @@ wiremock = "0.6"
 # Paused clock for the WebSocket watchdog test
 tokio = { workspace = true, features = ["test-util"] }
 
+# Layout checks for the PipeWire FFI bindings scap uses (capture/
+# pipewire_ffi_tests.rs). Same crates scap already pulls in via pipewire 0.8
+# (vendored under third_party/, see workspace [patch.crates-io]).
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libspa-sys = "0.8"
+pipewire-sys = "0.8"
+
 [lints]
 workspace = true
 
