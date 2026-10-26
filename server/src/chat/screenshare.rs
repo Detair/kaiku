@@ -36,7 +36,12 @@ impl IntoResponse for ScreenShareError {
                 "Maximum 3 concurrent screen shares per user",
             ),
         };
-        (status, Json(serde_json::json!({ "error": msg }))).into_response()
+        let code = self.code();
+        (
+            status,
+            Json(serde_json::json!({ "error": code, "message": msg })),
+        )
+            .into_response()
     }
 }
 

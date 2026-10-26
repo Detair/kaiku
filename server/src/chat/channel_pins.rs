@@ -66,6 +66,9 @@ pub enum ChannelPinsError {
     PinLimitReached,
     #[error("Forbidden")]
     Forbidden,
+    /// Forum channel while the forum feature is off.
+    #[error("This feature is turned off on this server.")]
+    FeatureDisabled,
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -94,6 +97,11 @@ impl IntoResponse for ChannelPinsError {
                 "This channel has reached the maximum of 50 pins",
             ),
             Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Forbidden"),
+            Self::FeatureDisabled => (
+                StatusCode::BAD_REQUEST,
+                crate::features::FEATURE_DISABLED,
+                crate::features::FEATURE_DISABLED_MESSAGE,
+            ),
             Self::Database(err) => {
                 tracing::error!("Database error: {}", err);
                 (
@@ -205,6 +213,12 @@ pub async fn pin_message(
     )
     .await
     .map_err(|_| ChannelPinsError::Forbidden)?;
+
+    // Pinning writes a system message; nothing new goes into a forum channel
+    // while the forum feature is off.
+    if !crate::features::channel_writable(&state.config.optional_features, &channel.channel_type) {
+        return Err(ChannelPinsError::FeatureDisabled);
+    }
 
     // Verify message exists, belongs to this channel, and is not deleted
     let message = db::find_message_by_id(&state.db, message_id)

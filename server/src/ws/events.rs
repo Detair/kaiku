@@ -699,6 +699,11 @@ pub enum ServerEvent {
     IncomingCall {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// User who initiated the call.
         initiator: Uuid,
         /// Initiator's username.
@@ -711,6 +716,11 @@ pub enum ServerEvent {
     CallStarted {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// User who initiated the call.
         initiator: Uuid,
         /// Initiator's username.
@@ -723,6 +733,11 @@ pub enum ServerEvent {
     CallEnded {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// End reason.
         reason: String,
         /// Call duration in seconds (if call was connected).
@@ -732,6 +747,11 @@ pub enum ServerEvent {
     CallParticipantJoined {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// User who joined.
         user_id: Uuid,
         /// User's username.
@@ -741,6 +761,11 @@ pub enum ServerEvent {
     CallParticipantLeft {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// User who left.
         user_id: Uuid,
     },
@@ -748,6 +773,11 @@ pub enum ServerEvent {
     CallDeclined {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// User who declined.
         user_id: Uuid,
     },

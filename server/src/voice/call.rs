@@ -140,6 +140,18 @@ impl CallState {
     /// Apply an event to derive new state
     pub fn apply(self, event: &CallEventType) -> Result<Self, CallStateError> {
         match (self, event) {
+            // Only a rung user can answer: not the initiator, not an outsider.
+            (
+                Self::Ringing {
+                    started_by,
+                    target_users,
+                    ..
+                },
+                CallEventType::Joined { user_id } | CallEventType::Declined { user_id },
+            ) if *user_id == started_by || !target_users.contains(user_id) => {
+                Err(CallStateError::NotRung(*user_id))
+            }
+
             // Ringing -> Active when someone joins
             (
                 Self::Ringing {
@@ -273,6 +285,8 @@ impl CallState {
 pub enum CallStateError {
     #[error("Call has already ended")]
     CallAlreadyEnded,
+    #[error("User {0} was not rung by this call")]
+    NotRung(Uuid),
     #[error("Invalid state transition: {state} + {event}")]
     InvalidTransition { state: String, event: String },
 }
@@ -342,10 +356,10 @@ mod tests {
 
     #[test]
     fn test_ringing_to_active_on_join() {
-        let mut targets = HashSet::new();
-        targets.insert(Uuid::new_v4());
-        let initiator = Uuid::new_v4();
         let joiner = Uuid::new_v4();
+        let mut targets = HashSet::new();
+        targets.insert(joiner);
+        let initiator = Uuid::new_v4();
 
         let state = CallState::new_ringing(initiator, targets);
         let new_state = state
@@ -357,6 +371,31 @@ mod tests {
             assert!(participants.contains(&initiator));
             assert!(participants.contains(&joiner));
         }
+    }
+
+    #[test]
+    fn test_initiator_cannot_answer_own_ringing_call() {
+        let initiator = Uuid::new_v4();
+        let state = CallState::new_ringing(initiator, HashSet::from([Uuid::new_v4()]));
+        for event in [
+            CallEventType::Joined { user_id: initiator },
+            CallEventType::Declined { user_id: initiator },
+        ] {
+            assert!(matches!(
+                state.clone().apply(&event),
+                Err(CallStateError::NotRung(u)) if u == initiator
+            ));
+        }
+    }
+
+    #[test]
+    fn test_non_target_cannot_answer_ringing_call() {
+        let outsider = Uuid::new_v4();
+        let state = CallState::new_ringing(Uuid::new_v4(), HashSet::from([Uuid::new_v4()]));
+        assert!(matches!(
+            state.apply(&CallEventType::Joined { user_id: outsider }),
+            Err(CallStateError::NotRung(_))
+        ));
     }
 
     #[test]

@@ -26,6 +26,8 @@ import {
 } from "@/lib/tauri";
 import type { AuthMethodsConfig, AdminOidcProvider } from "@/lib/types";
 import { adminState, checkAdminStatus } from "@/stores/admin";
+import ElevateDialog from "./ElevateDialog";
+import { t } from "@/i18n";
 
 function providerIcon(hint: string | null) {
   switch (hint) {
@@ -60,6 +62,7 @@ const AdminSettings: Component = () => {
     success: null,
   });
 
+  const [showElevate, setShowElevate] = createSignal(false);
   const [showAddProvider, setShowAddProvider] = createSignal(false);
   const [deletingProvider, setDeletingProvider] = createSignal<string | null>(
     null,
@@ -281,6 +284,13 @@ const AdminSettings: Component = () => {
                 Settings require an elevated session. Elevate your session to
                 make changes.
               </p>
+              <button
+                type="button"
+                onClick={() => setShowElevate(true)}
+                class="ml-auto px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-sm font-medium hover:bg-accent-primary/90"
+              >
+                {t("admin.reauth.elevateTitle")}
+              </button>
             </div>
           </div>
         </Show>
@@ -711,6 +721,9 @@ const AdminSettings: Component = () => {
           </section>
         </Show>
       </div>
+      <Show when={showElevate()}>
+        <ElevateDialog onClose={() => setShowElevate(false)} />
+      </Show>
     </div>
   );
 };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { t } from "../index";
-import { errorText } from "../errors";
+import { errorText, CALL_START_ERRORS } from "../errors";
 import { HttpError } from "@/lib/tauri/common";
 
 describe("errorText", () => {
@@ -56,6 +56,11 @@ describe("errorText", () => {
     expect(errorText(err, "auth.register.failed")).toBe(t("auth.register.failed"));
   });
 
+  it("does not show the code when message and code differ only in case", () => {
+    const err = new HttpError(400, "validation_error", "VALIDATION_ERROR");
+    expect(errorText(err, "auth.register.failed")).toBe(t("auth.register.failed"));
+  });
+
   it("ignores prototype-shaped codes", () => {
     for (const code of ["constructor", "toString", "hasOwnProperty", "__proto__"]) {
       const text = errorText(
@@ -84,5 +89,29 @@ describe("errorText", () => {
     expect(
       errorText(wrapped, "auth.login.failed", { INVALID_CREDENTIALS: "auth.login.invalidCredentials" }),
     ).toBe("Invalid username or password.");
+  });
+
+  it("maps a call to a blocked user to its own sentence", () => {
+    const err = new HttpError(403, "blocked", "BLOCKED");
+    expect(
+      errorText(err, "voice.call.startFailed", CALL_START_ERRORS.byCode),
+    ).toBe(t("voice.call.blocked"));
+    expect(
+      errorText(new HttpError(500, "x"), "voice.call.startFailed", CALL_START_ERRORS.byCode),
+    ).toBe(t("errors.server"));
+  });
+
+  it("maps call_already_exists (any case) on call start", () => {
+    for (const code of ["call_already_exists", "CALL_ALREADY_EXISTS"]) {
+      expect(
+        errorText(new HttpError(409, "x", code), "voice.call.startFailed", CALL_START_ERRORS.byCode),
+      ).toBe(t("voice.call.error.alreadyExists"));
+    }
+  });
+
+  it("maps CALL_CONFLICT on call start", () => {
+    expect(
+      errorText(new HttpError(409, "x", "CALL_CONFLICT"), "voice.call.startFailed", CALL_START_ERRORS.byCode),
+    ).toBe(t("voice.call.error.conflict"));
   });
 });

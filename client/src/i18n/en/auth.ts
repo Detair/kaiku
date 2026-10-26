@@ -44,7 +44,7 @@ export const auth = {
   "auth.login.invalidCredentials": "Invalid username or password.",
   "auth.login.failed": "Login failed. Please try again.",
   "auth.login.ssoFailed": "SSO login failed.",
-  "auth.login.mfaInvalid": "That code didn't work. Try again.",
+  "auth.login.mfaInvalid": "That code didn't work. If you just used it, wait for the next code and try again.",
   "auth.register.pageTitle": "Create Account",
   "auth.register.heading": "Create an account",
   "auth.register.subtitle": "Join Kaiku to start chatting",

@@ -223,4 +223,92 @@ mod tests {
         broken.y.truncate(10);
         assert!(encoder.encode(&broken).is_err());
     }
+
+    /// Mean absolute difference between a `w`x`h` source plane and a decoded
+    /// plane that may carry row padding (`stride >= w`).
+    fn plane_mad(src: &[u8], decoded: &[u8], w: usize, h: usize, stride: usize) -> f64 {
+        let mut sum = 0u64;
+        for row in 0..h {
+            for col in 0..w {
+                sum += u64::from(src[row * w + col].abs_diff(decoded[row * stride + col]));
+            }
+        }
+        sum as f64 / (w * h) as f64
+    }
+
+    /// Encode a known pattern with libvpx (vpx-encode), packetize it like
+    /// `video::rtp`, then decode it with kaiku-vp8-decoder and compare.
+    ///
+    /// Guards the libvpx bindings end to end: with Clang >= 22, bindgen <
+    /// 0.72.1 emitted opaque stubs for `vpx_codec_enc_cfg` /
+    /// `vpx_codec_dec_cfg`, which the decoder crate compiled with no error.
+    #[test]
+    fn vp8_encode_decode_round_trip() {
+        use kaiku_vp8_decoder::Vp8VideoDecoder;
+        use webrtc::rtp::header::Header;
+        use webrtc::rtp::packet::Packet;
+
+        const W: u32 = 96;
+        const H: u32 = 64;
+        let (w, h) = (W as usize, H as usize);
+        let (cw, ch) = (w / 2, h / 2);
+        // Smooth gradients: easy to code, but every pixel position differs.
+        let frame = I420Frame {
+            y: (0..w * h)
+                .map(|i| (16 + (i % w) * 2 + (i / w)) as u8)
+                .collect(),
+            u: (0..cw * ch).map(|i| (64 + (i % cw) * 2) as u8).collect(),
+            v: (0..cw * ch).map(|i| (192 - (i / cw) * 2) as u8).collect(),
+            width: W,
+            height: H,
+        };
+
+        let mut encoder = Vp8Encoder::new(&QualityParams {
+            width: W,
+            height: H,
+            fps: 30,
+            bitrate_kbps: 2000,
+        })
+        .expect("encoder");
+        let mut decoder = Vp8VideoDecoder::new("round-trip".into()).expect("decoder");
+
+        let mut seq = 1u16;
+        let mut decoded = Vec::new();
+        // A few frames so rate control settles; each must decode.
+        for _ in 0..5 {
+            for pkt in encoder.encode(&frame).expect("encode") {
+                // Small fragments so the depacketizer has to reassemble.
+                let chunks: Vec<&[u8]> = pkt.data.chunks(200).collect();
+                for (i, chunk) in chunks.iter().enumerate() {
+                    let mut payload = vec![if i == 0 { 0x10 } else { 0x00 }];
+                    payload.extend_from_slice(chunk);
+                    let rtp = Packet {
+                        header: Header {
+                            version: 2,
+                            marker: i == chunks.len() - 1,
+                            payload_type: 96,
+                            sequence_number: seq,
+                            ..Default::default()
+                        },
+                        payload: payload.into(),
+                    };
+                    seq = seq.wrapping_add(1);
+                    decoded.extend(decoder.process_packet(&rtp).expect("decode"));
+                }
+            }
+        }
+
+        let last = decoded.last().expect("at least one decoded frame");
+        assert_eq!((last.width, last.height), (W, H));
+        let (ys, uvs) = (last.y_stride as usize, last.uv_stride as usize);
+        assert!(ys >= w && uvs >= cw);
+        let y_mad = plane_mad(&frame.y, &last.y_plane, w, h, ys);
+        let u_mad = plane_mad(&frame.u, &last.u_plane, cw, ch, uvs);
+        let v_mad = plane_mad(&frame.v, &last.v_plane, cw, ch, uvs);
+        // Lossy codec, but at this bitrate the pattern must survive closely
+        // (a broken binding yields garbage, zeros, or a crash).
+        assert!(y_mad < 4.0, "Y mean abs diff {y_mad}");
+        assert!(u_mad < 4.0, "U mean abs diff {u_mad}");
+        assert!(v_mad < 4.0, "V mean abs diff {v_mad}");
+    }
 }

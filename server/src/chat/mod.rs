@@ -32,9 +32,10 @@ pub use error::ChatError;
 pub use s3::S3Client;
 
 use crate::api::AppState;
+use crate::features::{gated, OptionalFeature};
 
 /// Create channels router.
-pub fn channels_router() -> Router<AppState> {
+pub fn channels_router(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/", post(channels::create))
         .route("/{id}", get(channels::get))
@@ -55,27 +56,42 @@ pub fn channels_router() -> Router<AppState> {
         .route("/{id}/screenshare/check", post(screenshare::check))
         .route("/{id}/screenshare/start", post(screenshare::start))
         .route("/{id}/screenshare/stop", post(screenshare::stop))
-        // Forum posts + tags (channel-scoped)
-        .route(
-            "/{id}/posts",
-            get(forum::list_posts).post(forum::create_post),
-        )
-        .route("/{id}/tags", get(forum::list_tags).post(forum::create_tag))
-        .route("/{id}/tags/{tag_id}", delete(forum::delete_tag))
-        // Announcement follow (target-side) + followers (source-side)
-        .route("/{id}/follow", post(announcements::follow_channel))
-        .route(
-            "/{id}/follow/{follow_id}",
-            delete(announcements::unfollow_channel),
-        )
-        .route("/{id}/followers", get(announcements::list_followers))
+        // Forum posts + tags and announcement follows are optional features.
+        .merge(gated(
+            state,
+            OptionalFeature::Forum,
+            Router::new()
+                .route(
+                    "/{id}/posts",
+                    get(forum::list_posts).post(forum::create_post),
+                )
+                .route("/{id}/tags", get(forum::list_tags).post(forum::create_tag))
+                .route("/{id}/tags/{tag_id}", delete(forum::delete_tag)),
+        ))
+        .merge(gated(
+            state,
+            OptionalFeature::Announcements,
+            Router::new()
+                // Announcement follow (target-side) + followers (source-side)
+                .route("/{id}/follow", post(announcements::follow_channel))
+                .route(
+                    "/{id}/follow/{follow_id}",
+                    delete(announcements::unfollow_channel),
+                )
+                .route("/{id}/followers", get(announcements::list_followers)),
+        ))
 }
 
-/// Forum post moderation router (mounted at `/api/forum`).
-pub fn forum_router() -> Router<AppState> {
-    Router::new().route(
-        "/posts/{post_id}",
-        patch(forum::update_post).delete(forum::delete_post),
+/// Forum post moderation router (mounted at `/api/forum`; gated on the
+/// forum feature).
+pub fn forum_router(state: &AppState) -> Router<AppState> {
+    gated(
+        state,
+        OptionalFeature::Forum,
+        Router::new().route(
+            "/posts/{post_id}",
+            patch(forum::update_post).delete(forum::delete_post),
+        ),
     )
 }
 

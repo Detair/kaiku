@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+# Superseded pull-request runs are cancelled to free the scarce macOS runners;
+# pushes to main/develop get one group per commit, so every commit runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -20,7 +26,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          # Follows ubuntu-latest again: the workspace [patch.crates-io]
+          # (bindgen 0.72 for libspa-sys/pipewire-sys/env-libvpx-sys) builds
+          # against current PipeWire/libvpx headers and libclang.
+          - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: linux
             allow_failure: true

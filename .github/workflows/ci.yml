@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Superseded pull-request runs are cancelled to free the scarce macOS runners;
+# pushes to main/develop get one group per commit, so every commit runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -407,6 +413,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Follows ubuntu-latest again: the vendored -sys crates in
+          # third_party/ use bindgen 0.72.1, which handles Clang >= 22
+          # (ubuntu-latest = 26.04). release.yml stays on 24.04 (glibc baseline).
           - platform: ubuntu-latest
             allow_failure: false
           - platform: windows-latest

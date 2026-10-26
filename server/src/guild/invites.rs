@@ -216,8 +216,13 @@ pub async fn join_via_invite(
     }
 
     // Add as member (ON CONFLICT DO NOTHING to handle duplicate join attempts)
-    let rows_affected =
-        queries::insert_member_idempotent(&mut tx, invite.guild_id, auth.id).await?;
+    let rows_affected = queries::insert_member_idempotent(
+        &mut tx,
+        invite.guild_id,
+        auth.id,
+        state.config.optional_features.screening,
+    )
+    .await?;
 
     // If no rows affected, user was already a member (race with the earlier check)
     if rows_affected == 0 {

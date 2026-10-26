@@ -145,7 +145,7 @@ When rate limited, the server returns:
 - **Body**:
 ```json
 {
-  "error": "rate_limited",
+  "error": "RATE_LIMITED",
   "message": "Too many requests. Wait 45 seconds.",
   "retry_after": 45,
   "limit": 3,
@@ -156,7 +156,7 @@ When rate limited, the server returns:
 For blocked IPs:
 ```json
 {
-  "error": "ip_blocked",
+  "error": "IP_BLOCKED",
   "message": "IP blocked. Wait 900 seconds.",
   "retry_after": 900,
   "limit": 0,

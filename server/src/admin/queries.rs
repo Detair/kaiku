@@ -477,6 +477,21 @@ where
     }
 }
 
+/// Count how many of `guild_ids` exist (used to reject unknown servers).
+pub(super) async fn count_existing_guilds<'e, E>(
+    executor: E,
+    guild_ids: &[Uuid],
+) -> Result<i64, AdminError>
+where
+    E: sqlx::PgExecutor<'e>,
+{
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM guilds WHERE id = ANY($1)")
+        .bind(guild_ids)
+        .fetch_one(executor)
+        .await?;
+    Ok(count)
+}
+
 /// Return the username for a user by id (`None` if the row does not exist).
 pub(super) async fn get_username(
     pool: &PgPool,

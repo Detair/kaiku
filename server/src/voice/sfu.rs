@@ -351,6 +351,9 @@ pub struct SfuServer {
     stale_tx: mpsc::UnboundedSender<StalePeer>,
     /// Receiving end of `stale_tx`, taken once by the reaper.
     stale_rx: Mutex<Option<mpsc::UnboundedReceiver<StalePeer>>>,
+    /// Valkey client of the DM call store, so leaving a DM room can end its
+    /// call. `None` in SFU-only unit tests.
+    call_redis: Option<fred::clients::Client>,
 }
 
 /// Result of combining `VOICE_ICE_IP_FAMILY` with `PUBLIC_IP`.
@@ -543,7 +546,22 @@ impl SfuServer {
             voice_rate_limiter: Arc::new(VoiceRateLimiter::new()),
             stale_tx,
             stale_rx: Mutex::new(Some(stale_rx)),
+            call_redis: None,
         })
+    }
+
+    /// Attach the DM call store: when the last peer leaves a room, that
+    /// channel's DM call ends (see [`super::leave::leave_voice_internal`]).
+    #[must_use]
+    pub fn with_call_redis(mut self, redis: fred::clients::Client) -> Self {
+        self.call_redis = Some(redis);
+        self
+    }
+
+    /// The DM call store, if attached.
+    #[must_use]
+    pub const fn call_redis(&self) -> Option<&fred::clients::Client> {
+        self.call_redis.as_ref()
     }
 
     /// Sender for reporting stale peers to the reaper.

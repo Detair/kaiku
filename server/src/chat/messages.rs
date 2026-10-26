@@ -2061,7 +2061,8 @@ mod tests {
             .expect("User not found");
 
         let profile2 = AuthorProfile::from(updated_user);
-        assert_eq!(profile2.status, "online");
+        // Live presence is never part of the author payload.
+        assert_eq!(profile2.status, "offline");
     }
 
     #[sqlx::test]

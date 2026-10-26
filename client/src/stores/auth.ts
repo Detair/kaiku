@@ -5,6 +5,7 @@
  */
 
 import { createStore } from "solid-js/store";
+import { codeIs } from "@/lib/errorCode";
 import type { User } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import {
@@ -806,7 +807,7 @@ export const PASSWORD_SAVED_REFRESH_FAILED = "PASSWORD_SAVED_REFRESH_FAILED";
 /** Whether a failed change means the temporary password itself was wrong. */
 function isInvalidCredentials(err: unknown): boolean {
   const { status, code } = (err ?? {}) as { status?: unknown; code?: unknown };
-  return status === 401 || code === "INVALID_CREDENTIALS";
+  return status === 401 || codeIs(code, "INVALID_CREDENTIALS");
 }
 
 /**

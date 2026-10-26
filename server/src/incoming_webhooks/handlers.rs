@@ -106,8 +106,15 @@ fn effective_avatar(avatar: Option<String>, avatar_url: Option<String>) -> Optio
     avatar_url.or(avatar).filter(|u| u.starts_with("https://"))
 }
 
-/// Channel types that can host an incoming webhook.
-fn assert_webhook_channel(channel_type: &ChannelType) -> Result<(), IncomingWebhookError> {
+/// Channel types that can host an incoming webhook. A forum channel needs the
+/// forum feature (announcement channels keep working, without crossposts).
+fn assert_webhook_channel(
+    state: &AppState,
+    channel_type: &ChannelType,
+) -> Result<(), IncomingWebhookError> {
+    if *channel_type == ChannelType::Forum && !state.config.optional_features.forum {
+        return Err(IncomingWebhookError::FeatureDisabled);
+    }
     match channel_type {
         ChannelType::Text | ChannelType::Announcement | ChannelType::Forum => Ok(()),
         ChannelType::Voice | ChannelType::Dm => Err(IncomingWebhookError::Validation(
@@ -173,7 +180,7 @@ pub async fn create_channel_webhook(
     let guild_id = channel
         .guild_id
         .ok_or(IncomingWebhookError::UnknownChannel)?;
-    assert_webhook_channel(&channel.channel_type)?;
+    assert_webhook_channel(&state, &channel.channel_type)?;
     require_guild_permission(
         &state.db,
         guild_id,
@@ -354,7 +361,7 @@ pub async fn modify_webhook(
                 "Webhooks can only be moved within the same guild".to_string(),
             ));
         }
-        assert_webhook_channel(&channel.channel_type)?;
+        assert_webhook_channel(&state, &channel.channel_type)?;
     }
     let avatar = effective_avatar(body.avatar, body.avatar_url);
 

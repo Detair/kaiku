@@ -7,56 +7,75 @@ use uuid::Uuid;
 use super::guild::GuildPermissions;
 use super::models::{ChannelOverride, GuildRole};
 
-/// Compute guild permissions for a user.
+/// Compute a member's effective permissions in a guild, or in one of its
+/// channels when `channel_overrides` is given.
 ///
-/// Resolution order:
-/// 1. Guild owner has all permissions
-/// 2. Start with @everyone role permissions
-/// 3. Add permissions from assigned roles (by position)
-/// 4. Apply channel overrides if channel context provided
+/// This is the single place that resolves channel overrides; every
+/// visibility and permission check goes through it. Resolution order:
+///
+/// 1. The guild owner has every permission; a `pending` member (screening rules not accepted yet)
+///    has none, before any override is looked at.
+/// 2. Guild base: `@everyone` permissions OR the permissions of every assigned role.
+/// 3. The `@everyone` channel override: its allow (masked with
+///    [`GuildPermissions::EVERYONE_ALLOWED`]), then its deny.
+/// 4. The member's role overrides, aggregated: all role denies OR-ed and applied, then all role
+///    allows OR-ed and applied. A role allow therefore beats both an `@everyone` deny and another
+///    role's deny of the same bit.
+///
+/// The `@everyone` override is recognised by its own
+/// [`ChannelOverride::everyone`] flag (loaded from the role), or by matching an
+/// `is_default` entry of `user_roles`; it is applied exactly once, in step 3,
+/// and never takes part in the role aggregation. Overrides only exist per role
+/// (there are no per-member overrides).
 pub fn compute_guild_permissions(
     user_id: Uuid,
     guild_owner_id: Uuid,
+    pending: bool,
     everyone_permissions: GuildPermissions,
     user_roles: &[GuildRole],
     channel_overrides: Option<&[ChannelOverride]>,
 ) -> GuildPermissions {
-    // Guild owner has everything
     if guild_owner_id == user_id {
         return GuildPermissions::all();
     }
+    if pending {
+        return GuildPermissions::empty();
+    }
 
-    // Start with @everyone permissions
     let mut perms = everyone_permissions;
-
-    // Add role permissions (sorted by position, lower number = higher rank)
-    let mut sorted_roles: Vec<_> = user_roles.iter().collect();
-    sorted_roles.sort_by_key(|r| r.position);
-
-    for role in sorted_roles {
+    for role in user_roles {
         perms |= role.permissions;
     }
 
-    // Apply channel overrides if provided
-    if let Some(overrides) = channel_overrides {
-        let mut role_allow = GuildPermissions::empty();
-        let mut role_deny = GuildPermissions::empty();
+    let Some(overrides) = channel_overrides else {
+        return perms;
+    };
 
-        for role in user_roles {
-            if let Some(ovr) = overrides.iter().find(|o| o.role_id == role.id) {
-                // The default role can never gain forbidden bits through an override.
-                role_allow |= if role.is_default {
-                    ovr.allow_permissions & GuildPermissions::EVERYONE_ALLOWED
-                } else {
-                    ovr.allow_permissions
-                };
-                role_deny |= ovr.deny_permissions;
-            }
-        }
+    let is_everyone = |ovr: &ChannelOverride| {
+        ovr.everyone
+            || user_roles
+                .iter()
+                .any(|r| r.is_default && r.id == ovr.role_id)
+    };
 
-        perms |= role_allow;
-        perms &= !role_deny; // Deny wins regardless of role iteration order
+    // @everyone override.
+    if let Some(ovr) = overrides.iter().find(|o| is_everyone(o)) {
+        perms |= ovr.allow_permissions & GuildPermissions::EVERYONE_ALLOWED;
+        perms &= !ovr.deny_permissions;
     }
+
+    // Role overrides, aggregated so the result does not depend on role order.
+    let mut role_allow = GuildPermissions::empty();
+    let mut role_deny = GuildPermissions::empty();
+    for ovr in overrides {
+        if is_everyone(ovr) || !user_roles.iter().any(|r| r.id == ovr.role_id) {
+            continue;
+        }
+        role_allow |= ovr.allow_permissions;
+        role_deny |= ovr.deny_permissions;
+    }
+    perms &= !role_deny;
+    perms |= role_allow;
 
     perms
 }
@@ -202,8 +221,14 @@ mod tests {
     #[test]
     fn test_owner_has_all_permissions() {
         let owner_id = Uuid::new_v4();
-        let perms =
-            compute_guild_permissions(owner_id, owner_id, GuildPermissions::empty(), &[], None);
+        let perms = compute_guild_permissions(
+            owner_id,
+            owner_id,
+            false,
+            GuildPermissions::empty(),
+            &[],
+            None,
+        );
         assert_eq!(perms, GuildPermissions::all());
     }
 
@@ -213,7 +238,7 @@ mod tests {
         let owner_id = Uuid::new_v4();
         let everyone = GuildPermissions::SEND_MESSAGES | GuildPermissions::VOICE_CONNECT;
 
-        let perms = compute_guild_permissions(user_id, owner_id, everyone, &[], None);
+        let perms = compute_guild_permissions(user_id, owner_id, false, everyone, &[], None);
 
         assert!(perms.has(GuildPermissions::SEND_MESSAGES));
         assert!(perms.has(GuildPermissions::VOICE_CONNECT));
@@ -238,7 +263,8 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
 
-        let perms = compute_guild_permissions(user_id, owner_id, everyone, &[mod_role], None);
+        let perms =
+            compute_guild_permissions(user_id, owner_id, false, everyone, &[mod_role], None);
 
         assert!(perms.has(GuildPermissions::SEND_MESSAGES)); // from everyone
         assert!(perms.has(GuildPermissions::MANAGE_MESSAGES)); // from role
@@ -272,11 +298,13 @@ mod tests {
             role_id,
             allow_permissions: GuildPermissions::ATTACH_FILES,
             deny_permissions: GuildPermissions::SEND_MESSAGES,
+            everyone: false,
         };
 
         let perms = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[role],
             Some(&[override_entry]),
@@ -309,12 +337,14 @@ mod tests {
             role_id,
             allow_permissions: GuildPermissions::ATTACH_FILES | GuildPermissions::MANAGE_WEBHOOKS,
             deny_permissions: GuildPermissions::empty(),
+            everyone: false,
         };
         let everyone = GuildPermissions::EVERYONE_DEFAULT;
 
         let masked = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[mk_role(true)],
             Some(std::slice::from_ref(&ovr)),
@@ -325,6 +355,7 @@ mod tests {
         let normal = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[mk_role(false)],
             Some(std::slice::from_ref(&ovr)),
@@ -429,7 +460,8 @@ mod tests {
             updated_at: chrono::Utc::now(),
         };
 
-        let perms = compute_guild_permissions(user_id, owner_id, everyone, &[role1, role2], None);
+        let perms =
+            compute_guild_permissions(user_id, owner_id, false, everyone, &[role1, role2], None);
 
         // Should have permissions from both roles
         assert!(perms.has(GuildPermissions::SEND_MESSAGES));
@@ -529,6 +561,7 @@ mod tests {
             role_id: role1_id,
             allow_permissions: GuildPermissions::ATTACH_FILES,
             deny_permissions: GuildPermissions::empty(),
+            everyone: false,
         };
 
         let override2 = ChannelOverride {
@@ -537,11 +570,13 @@ mod tests {
             role_id: role2_id,
             allow_permissions: GuildPermissions::empty(),
             deny_permissions: GuildPermissions::SEND_MESSAGES,
+            everyone: false,
         };
 
         let perms = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[role1, role2],
             Some(&[override1, override2]),
@@ -557,8 +592,10 @@ mod tests {
         assert!(perms.has(GuildPermissions::EMBED_LINKS));
     }
 
+    /// Role overrides are aggregated: one role's allow beats another role's
+    /// deny of the same bit, independent of the order of the roles.
     #[test]
-    fn test_channel_override_deny_wins_regardless_of_role_order() {
+    fn test_channel_override_role_allow_wins_regardless_of_role_order() {
         let user_id = Uuid::new_v4();
         let owner_id = Uuid::new_v4();
         let guild_id = Uuid::new_v4();
@@ -598,6 +635,7 @@ mod tests {
             role_id: allow_role_id,
             allow_permissions: GuildPermissions::VIEW_CHANNEL,
             deny_permissions: GuildPermissions::empty(),
+            everyone: false,
         };
 
         let deny_override = ChannelOverride {
@@ -606,6 +644,7 @@ mod tests {
             role_id: deny_role_id,
             allow_permissions: GuildPermissions::empty(),
             deny_permissions: GuildPermissions::VIEW_CHANNEL,
+            everyone: false,
         };
 
         let overrides = [allow_override, deny_override];
@@ -614,6 +653,7 @@ mod tests {
         let perms_a = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[allow_role.clone(), deny_role.clone()],
             Some(&overrides),
@@ -623,12 +663,186 @@ mod tests {
         let perms_b = compute_guild_permissions(
             user_id,
             owner_id,
+            false,
             everyone,
             &[deny_role, allow_role],
             Some(&overrides),
         );
 
-        assert!(!perms_a.has(GuildPermissions::VIEW_CHANNEL));
-        assert!(!perms_b.has(GuildPermissions::VIEW_CHANNEL));
+        assert!(perms_a.has(GuildPermissions::VIEW_CHANNEL));
+        assert!(perms_b.has(GuildPermissions::VIEW_CHANNEL));
+    }
+
+    fn role(id: Uuid, permissions: GuildPermissions, is_default: bool) -> GuildRole {
+        GuildRole {
+            id,
+            guild_id: Uuid::nil(),
+            name: "r".to_string(),
+            color: None,
+            permissions,
+            position: 10,
+            is_default,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn ovr(role_id: Uuid, allow: GuildPermissions, deny: GuildPermissions) -> ChannelOverride {
+        ChannelOverride {
+            id: Uuid::new_v4(),
+            channel_id: Uuid::nil(),
+            role_id,
+            allow_permissions: allow,
+            deny_permissions: deny,
+            everyone: false,
+        }
+    }
+
+    /// Override of the @everyone role, flagged as loaded from the database.
+    fn everyone_ovr(allow: GuildPermissions, deny: GuildPermissions) -> ChannelOverride {
+        ChannelOverride {
+            everyone: true,
+            ..ovr(Uuid::new_v4(), allow, deny)
+        }
+    }
+
+    const VIEW: GuildPermissions = GuildPermissions::VIEW_CHANNEL;
+    const NONE: GuildPermissions = GuildPermissions::empty();
+
+    fn channel_perms(
+        everyone: GuildPermissions,
+        roles: &[GuildRole],
+        overrides: &[ChannelOverride],
+    ) -> GuildPermissions {
+        compute_guild_permissions(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            false,
+            everyone,
+            roles,
+            Some(overrides),
+        )
+    }
+
+    #[test]
+    fn role_allow_beats_everyone_deny() {
+        let staff = Uuid::new_v4();
+        let overrides = [everyone_ovr(NONE, VIEW), ovr(staff, VIEW, NONE)];
+
+        let with_role = channel_perms(VIEW, &[role(staff, NONE, false)], &overrides);
+        assert!(with_role.has(VIEW));
+
+        let without_role = channel_perms(VIEW, &[], &overrides);
+        assert!(!without_role.has(VIEW));
+    }
+
+    #[test]
+    fn everyone_deny_without_role_allow_hides() {
+        let other = Uuid::new_v4();
+        let overrides = [everyone_ovr(NONE, VIEW)];
+        let perms = channel_perms(VIEW, &[role(other, VIEW, false)], &overrides);
+        assert!(
+            !perms.has(VIEW),
+            "a guild-level role permission does not lift a channel deny"
+        );
+    }
+
+    #[test]
+    fn everyone_deny_applies_without_any_role_context() {
+        // The member holds no roles and nothing else names the @everyone
+        // role: the flag on the override alone keeps the deny in force.
+        let overrides = [everyone_ovr(NONE, VIEW)];
+        assert!(!channel_perms(VIEW, &[], &overrides).has(VIEW));
+    }
+
+    #[test]
+    fn role_deny_beats_everyone_allow() {
+        let muted = Uuid::new_v4();
+        let overrides = [everyone_ovr(VIEW, NONE), ovr(muted, NONE, VIEW)];
+
+        assert!(!channel_perms(NONE, &[role(muted, NONE, false)], &overrides).has(VIEW));
+        assert!(channel_perms(NONE, &[], &overrides).has(VIEW));
+    }
+
+    #[test]
+    fn everyone_override_allow_is_masked() {
+        let overrides = [everyone_ovr(
+            GuildPermissions::ATTACH_FILES | GuildPermissions::MANAGE_MESSAGES,
+            NONE,
+        )];
+        let perms = channel_perms(GuildPermissions::EVERYONE_DEFAULT, &[], &overrides);
+        assert!(perms.has(GuildPermissions::ATTACH_FILES));
+        assert!(!perms.has(GuildPermissions::MANAGE_MESSAGES));
+    }
+
+    #[test]
+    fn everyone_override_applies_once_when_role_is_also_assigned() {
+        // Some data sets list the @everyone role among the member's roles as
+        // well; its override must still be treated as the @everyone step and
+        // not as a role override (no unmasked allow, deny not lifted by itself).
+        let everyone_id = Uuid::new_v4();
+        let staff = Uuid::new_v4();
+        let roles = [role(everyone_id, VIEW, true), role(staff, NONE, false)];
+        for flagged in [true, false] {
+            let everyone = ChannelOverride {
+                everyone: flagged,
+                ..ovr(everyone_id, GuildPermissions::MANAGE_MESSAGES, VIEW)
+            };
+            let overrides = [everyone, ovr(staff, VIEW, NONE)];
+            let perms = channel_perms(VIEW, &roles, &overrides);
+            assert!(perms.has(VIEW));
+            assert!(!perms.has(GuildPermissions::MANAGE_MESSAGES));
+
+            let perms = channel_perms(VIEW, &roles[..1], &overrides);
+            assert!(!perms.has(VIEW));
+            assert!(!perms.has(GuildPermissions::MANAGE_MESSAGES));
+        }
+    }
+
+    #[test]
+    fn overrides_of_unassigned_roles_are_ignored() {
+        let overrides = [ovr(Uuid::new_v4(), VIEW, NONE)];
+        assert!(!channel_perms(NONE, &[], &overrides).has(VIEW));
+    }
+}
+
+#[cfg(test)]
+mod pending_tests {
+    use super::*;
+
+    #[test]
+    fn pending_member_gets_nothing_even_with_everyone_override_allow() {
+        let everyone = ChannelOverride {
+            id: Uuid::new_v4(),
+            channel_id: Uuid::nil(),
+            role_id: Uuid::new_v4(),
+            allow_permissions: GuildPermissions::VIEW_CHANNEL | GuildPermissions::SEND_MESSAGES,
+            deny_permissions: GuildPermissions::empty(),
+            everyone: true,
+        };
+        let user = Uuid::new_v4();
+        let owner = Uuid::new_v4();
+        let pending = compute_guild_permissions(
+            user,
+            owner,
+            true,
+            GuildPermissions::empty(),
+            &[],
+            Some(std::slice::from_ref(&everyone)),
+        );
+        assert!(pending.is_empty());
+        let active = compute_guild_permissions(
+            user,
+            owner,
+            false,
+            GuildPermissions::empty(),
+            &[],
+            Some(std::slice::from_ref(&everyone)),
+        );
+        assert!(active.has(GuildPermissions::VIEW_CHANNEL));
+        // The owner is never treated as pending.
+        let owner_perms =
+            compute_guild_permissions(owner, owner, true, GuildPermissions::empty(), &[], None);
+        assert_eq!(owner_perms, GuildPermissions::all());
     }
 }

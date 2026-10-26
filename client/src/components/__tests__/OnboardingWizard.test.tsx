@@ -17,6 +17,8 @@ vi.mock("@/lib/tauri", () => ({
 }));
 vi.mock("@/components/ui/Toast", () => ({ showToast: mocks.showToast }));
 vi.mock("@/stores/guilds", () => ({
+  // No server yet, so the join step is shown.
+  guildsState: { guilds: [] },
   joinViaInviteCode: mocks.joinViaInviteCode,
   loadGuilds: vi.fn().mockResolvedValue(undefined),
 }));

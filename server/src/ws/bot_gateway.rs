@@ -340,7 +340,7 @@ async fn handle_bot_socket(
                         if let Err(e) = handle_bot_event(event, &state_clone, bot_user_id).await {
                             error!("Error handling bot event: {}", e);
                             let _ = error_tx.send(BotServerEvent::Error {
-                                code: "handler_error".to_string(),
+                                code: "HANDLER_ERROR".to_string(),
                                 message: e,
                             });
                         }
@@ -348,7 +348,7 @@ async fn handle_bot_socket(
                     Err(e) => {
                         warn!("Failed to parse bot message: {}", e);
                         let _ = error_tx.send(BotServerEvent::Error {
-                            code: "invalid_json".to_string(),
+                            code: "INVALID_JSON".to_string(),
                             message: format!("Failed to parse message: {e}"),
                         });
                     }
@@ -381,6 +381,23 @@ async fn handle_bot_socket(
     bot_receiver.abort();
     subscriber_handle.abort();
     info!(bot_user_id = %bot_user_id, "Bot disconnected from gateway");
+}
+
+/// Refuse bot writes into a channel whose optional feature is off (forum
+/// channels while the forum feature is off).
+async fn ensure_channel_writable(state: &AppState, channel_id: Uuid) -> Result<(), String> {
+    let channel = crate::db::find_channel_by_id(&state.db, channel_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to look up channel: {e}");
+            "Failed to verify channel".to_string()
+        })?
+        .ok_or_else(|| "Channel not found".to_string())?;
+    if crate::features::channel_writable(&state.config.optional_features, &channel.channel_type) {
+        Ok(())
+    } else {
+        Err(crate::features::FEATURE_DISABLED_MESSAGE.to_string())
+    }
 }
 
 /// Handle events from bot.
@@ -458,6 +475,8 @@ async fn handle_bot_event(
                 );
                 return Err("Bot is not a member of this channel".to_string());
             }
+
+            ensure_channel_writable(state, channel_id).await?;
 
             // Create message as bot user
             let message = crate::db::create_message(
@@ -647,6 +666,7 @@ async fn handle_bot_event(
                 })?;
             } else {
                 // Non-ephemeral: insert a real message and broadcast to channel
+                ensure_channel_writable(state, channel_id).await?;
                 let message = crate::db::create_message(
                     &state.db,
                     channel_id,
@@ -668,7 +688,7 @@ async fn handle_bot_event(
                         "username": u.username,
                         "display_name": u.display_name,
                         "avatar_url": u.avatar_url,
-                        "status": format!("{:?}", u.status).to_lowercase(),
+                        "status": crate::chat::types::AUTHOR_STATUS_PLACEHOLDER,
                     })
                 } else {
                     serde_json::json!({
@@ -707,4 +727,147 @@ async fn handle_bot_event(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod feature_gate_tests {
+    use fred::interfaces::KeysInterface;
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::{handle_bot_event, BotClientEvent};
+    use crate::api::{AppState, AppStateConfig};
+    use crate::config::Config;
+    use crate::features::{OptionalFeatures, FEATURE_DISABLED_MESSAGE};
+
+    async fn state_with(pool: PgPool, forum: bool) -> AppState {
+        let mut config = Config::default_for_test();
+        config.optional_features = OptionalFeatures {
+            forum,
+            ..OptionalFeatures::default()
+        };
+        let redis = crate::db::create_redis_client(&config.redis_url)
+            .await
+            .expect("connect test Redis");
+        let sfu = crate::voice::SfuServer::new(std::sync::Arc::new(config.clone()), None)
+            .expect("SfuServer");
+        AppState::new(AppStateConfig {
+            db: pool,
+            redis,
+            config,
+            s3: None,
+            sfu,
+            rate_limiter: None,
+            screen_share_limiter: None,
+            email: None,
+            oidc_manager: None,
+            http_client: reqwest::Client::new(),
+        })
+    }
+
+    /// A bot user that is a member of a forum channel in a fresh guild.
+    async fn bot_in_forum(pool: &PgPool) -> (Uuid, Uuid) {
+        let name = format!("bot_{}", &Uuid::new_v4().simple().to_string()[..8]);
+        let bot = crate::db::create_user(pool, &name, "Bot", None, "hash")
+            .await
+            .expect("bot user");
+        let guild = Uuid::now_v7();
+        sqlx::query("INSERT INTO guilds (id, name, owner_id) VALUES ($1, 'g', $2)")
+            .bind(guild)
+            .bind(bot.id)
+            .execute(pool)
+            .await
+            .unwrap();
+        let forum = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO channels (id, guild_id, name, channel_type) VALUES ($1, $2, 'board', 'forum')",
+        )
+        .bind(forum)
+        .bind(guild)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO channel_members (channel_id, user_id) VALUES ($1, $2)")
+            .bind(forum)
+            .bind(bot.id)
+            .execute(pool)
+            .await
+            .unwrap();
+        (bot.id, forum)
+    }
+
+    async fn message_count(pool: &PgPool, channel: Uuid) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE channel_id = $1")
+            .bind(channel)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[sqlx::test]
+    async fn bot_message_into_disabled_forum_is_rejected(pool: PgPool) {
+        let (bot, forum) = bot_in_forum(&pool).await;
+        let event = || BotClientEvent::MessageCreate {
+            channel_id: forum,
+            content: "hello".to_string(),
+        };
+
+        let off = state_with(pool.clone(), false).await;
+        let err = handle_bot_event(event(), &off, bot).await.unwrap_err();
+        assert_eq!(err, FEATURE_DISABLED_MESSAGE);
+        assert_eq!(message_count(&pool, forum).await, 0);
+
+        let on = state_with(pool.clone(), true).await;
+        handle_bot_event(event(), &on, bot).await.expect("forum on");
+        assert_eq!(message_count(&pool, forum).await, 1);
+    }
+
+    #[sqlx::test]
+    async fn bot_command_response_into_disabled_forum_is_rejected(pool: PgPool) {
+        let (bot, forum) = bot_in_forum(&pool).await;
+        let state = state_with(pool.clone(), false).await;
+
+        let interaction_id = Uuid::new_v4();
+        let owner_key = format!("interaction:{interaction_id}:owner");
+        let context_key = format!("interaction:{interaction_id}:context");
+        let context = serde_json::json!({
+            "user_id": bot,
+            "channel_id": forum,
+            "command_name": "hi",
+        });
+        state
+            .redis
+            .set::<(), _, _>(&owner_key, bot.to_string(), None, None, false)
+            .await
+            .unwrap();
+        state
+            .redis
+            .set::<(), _, _>(&context_key, context.to_string(), None, None, false)
+            .await
+            .unwrap();
+
+        let err = handle_bot_event(
+            BotClientEvent::CommandResponse {
+                interaction_id,
+                content: "visible to all".to_string(),
+                ephemeral: false,
+            },
+            &state,
+            bot,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, FEATURE_DISABLED_MESSAGE);
+        assert_eq!(message_count(&pool, forum).await, 0);
+
+        let _: () = state
+            .redis
+            .del((
+                owner_key,
+                context_key,
+                format!("interaction:{interaction_id}:response"),
+            ))
+            .await
+            .unwrap();
+    }
 }

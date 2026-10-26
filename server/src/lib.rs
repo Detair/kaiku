@@ -15,6 +15,7 @@ pub mod db;
 pub mod discovery;
 pub mod email;
 pub mod favorites;
+pub mod features;
 pub mod governance;
 pub mod guild;
 pub mod incoming_webhooks;
@@ -38,5 +39,7 @@ pub mod webhooks;
 pub mod workspaces;
 pub mod ws;
 
+#[cfg(test)]
+mod error_code_tests;
 #[cfg(test)]
 mod redis_tests;
