@@ -480,6 +480,12 @@ let accessible_channels = all_channels
     .collect();
 ```
 
+### Blocking Users
+
+Blocking hides a user's messages in your message list and threads and stops DMs, calls and presence between you; it does not hide their messages in shared server channels from pins or search.
+
+Hiding channel messages on block is a convenience, not an access control: both users stay members of the shared server, and the server's channel permissions still decide who can read a channel.
+
 ### Attack Vectors Prevented
 
 1. **Channel enumeration:** Generic errors prevent discovering channel existence

@@ -28,10 +28,16 @@ async fn member_entry(app: &TestApp, viewer: Uuid, guild: Uuid, user: Uuid) -> s
         .expect("member listed")
 }
 
-async fn set_online(pool: &PgPool, user: Uuid) {
+/// Mark `user` online: stored status plus one live socket (online means "has a
+/// live socket", see `presence::connections`).
+async fn set_online(app: &TestApp, user: Uuid) {
     sqlx::query("UPDATE users SET status = 'online', last_seen_at = NOW() WHERE id = $1")
         .bind(user)
-        .execute(pool)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    vc_server::presence::connections::socket_online(&app.state.redis, user, Uuid::now_v7(), now_ms)
         .await
         .unwrap();
 }
@@ -54,8 +60,8 @@ async fn setup(pool: &PgPool) -> (TestApp, Uuid, Uuid, Uuid) {
     let (b, _) = create_test_user(pool).await;
     let guild = create_guild(pool, a).await;
     add_guild_member(pool, guild, b).await;
-    set_online(pool, a).await;
-    set_online(pool, b).await;
+    set_online(&app, a).await;
+    set_online(&app, b).await;
     (app, a, b, guild)
 }
 
@@ -72,7 +78,7 @@ async fn block_only_masks_the_blocked_pair(pool: PgPool) {
     let (app, a, b, guild) = setup(&pool).await;
     let (c, _) = create_test_user(&pool).await;
     add_guild_member(&pool, guild, c).await;
-    set_online(&pool, c).await;
+    set_online(&app, c).await;
     block(&pool, a, b).await;
     assert_eq!(member_entry(&app, b, guild, c).await["status"], "online");
     assert_eq!(member_entry(&app, c, guild, a).await["status"], "online");

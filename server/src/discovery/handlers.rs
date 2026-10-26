@@ -176,6 +176,12 @@ pub async fn join_discoverable(
             already_member: true,
         }));
     }
+    crate::presence::connections::notify_guild_audience_changed(
+        &state.redis,
+        guild_id,
+        Some(auth.id),
+    )
+    .await;
 
     // Initialize read state for all text channels
     if let Err(err) =
