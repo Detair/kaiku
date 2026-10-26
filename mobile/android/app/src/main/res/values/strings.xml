@@ -213,6 +213,10 @@
     <string name="notif_sent_photo">Sent a photo</string>
     <string name="notif_sent_file">Sent a file</string>
     <string name="notif_checking_messages">Checking for new messages</string>
+    <string name="notifications_call_incoming">%1$s is calling you – open Kaiku on the PC</string>
+    <string name="notifications_call_incoming_unknown">Someone is calling you – open Kaiku on the PC</string>
+    <string name="notifications_call_missed">Missed call from %1$s</string>
+    <string name="notifications_call_missed_unknown">Missed call</string>
     <string name="voice_participants_you">You</string>
     <string name="push_permission_rationale">So you don\'t miss messages from family, Kaiku needs permission to show notifications.</string>
     <string name="push_permission_continue">Continue</string>

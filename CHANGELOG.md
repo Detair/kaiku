@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: phones without Google services can get notifications through UnifiedPush (for example ntfy), and Settings shows whether notifications are working.
 - Android: after signing in, Kaiku asks once for permission to show notifications.
 - Android: notifications arrive while the app is closed, using Google's push service on phones that have it.
+- Android: incoming DM calls show a notification on your phone, and calls you didn't answer show as missed. Answering still happens on the PC.
 - People signing in with a temporary password are asked to choose their own password first.
 - Admins can create accounts with a temporary password from the admin dashboard, so registration can stay closed.
 - Releases now include a signed Android app (`Kaiku-<version>.apk`) that updates in place over earlier installs.

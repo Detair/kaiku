@@ -40,11 +40,50 @@ class WakeSchedulerTest {
     }
 
     @Test
-    fun `call and unknown signals are ignored`() {
+    fun `call without call info and unknown signals are ignored`() {
         scheduler.onWake(WakeSignal(WakeKind.CALL, "c1", 1))
         scheduler.onWake(WakeSignal(WakeKind.UNKNOWN, "c1", 1))
         assertTrue(enqueuer.enqueued.isEmpty())
+        assertTrue(enqueuer.calls.isEmpty())
         assertTrue(enqueuer.cancelled.isEmpty())
         verify(exactly = 0) { sink.cancel(any()) }
+    }
+
+    private val callId = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"
+    private val callerId = "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
+
+    private fun call(state: CallState, reason: CallEndReason? = null) =
+        WakeSignal(WakeKind.CALL, "c1", 1, CallInfo(callId, callerId, state, reason))
+
+    @Test
+    fun `ringing call goes to the call path, never to a message fetch`() {
+        val signal = call(CallState.RINGING)
+        scheduler.onWake(signal)
+        assertEquals(listOf(signal), enqueuer.calls)
+        assertTrue(enqueuer.enqueued.isEmpty())
+        assertTrue(enqueuer.cancelled.isEmpty())
+        verify(exactly = 0) { sink.cancel(any()) }
+    }
+
+    @Test
+    fun `ended call goes to the call path`() {
+        val signal = call(CallState.ENDED, CallEndReason.NO_ANSWER)
+        scheduler.onWake(signal)
+        assertEquals(listOf(signal), enqueuer.calls)
+        assertTrue(enqueuer.enqueued.isEmpty())
+    }
+
+    @Test
+    fun `call with unknown state is ignored`() {
+        scheduler.onWake(call(CallState.UNKNOWN))
+        assertTrue(enqueuer.calls.isEmpty())
+        assertTrue(enqueuer.enqueued.isEmpty())
+    }
+
+    @Test
+    fun `read wake does not touch call work`() {
+        scheduler.onWake(WakeSignal(WakeKind.READ, "c1", 0))
+        assertTrue(enqueuer.calls.isEmpty())
+        assertEquals(listOf("c1"), enqueuer.cancelled)
     }
 }

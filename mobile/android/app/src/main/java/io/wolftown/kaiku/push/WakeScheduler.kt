@@ -21,10 +21,16 @@ interface WakeWorkEnqueuer {
     /** Schedules a fetch for [signal] on behalf of the signed-in account; no-op when signed out. */
     fun enqueue(signal: WakeSignal)
 
-    /** Drops queued or running fetches of [channelId] (the channel was read). */
+    /**
+     * Schedules the quick call path for a call wake (no message fetch); a
+     * newer call wake of the same channel replaces it. No-op when signed out.
+     */
+    fun enqueueCall(signal: WakeSignal)
+
+    /** Drops queued or running fetches of [channelId] (the channel was read); call work stays. */
     fun cancel(channelId: String)
 
-    /** Drops every queued or running fetch (logout, account change). */
+    /** Drops every queued or running fetch and call work (logout, account change). */
     fun cancelAll()
 }
 
@@ -32,7 +38,9 @@ interface WakeWorkEnqueuer {
  * [WakeWorkEnqueuer] on WorkManager: expedited when quota allows, needs a
  * network, one chain per channel (`wake-<channelId>`) so wakes for the same
  * channel run one after another. Every request carries its account
- * ([WakeOwner]) and the tag [WakeFetchWorker.WORK_TAG].
+ * ([WakeOwner]) and the tag [WakeFetchWorker.WORK_TAG]. Call wakes run in
+ * [CallWakeWorker] (`call-<channelId>`, REPLACE, no network constraint: the
+ * name lookup has an offline fallback).
  */
 class WorkManagerWakeEnqueuer @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -56,6 +64,21 @@ class WorkManagerWakeEnqueuer @Inject constructor(
         workManager.enqueueUniqueWork(
             WakeFetchWorker.uniqueWorkName(signal.channelId),
             ExistingWorkPolicy.APPEND_OR_REPLACE,
+            request,
+        )
+    }
+
+    override fun enqueueCall(signal: WakeSignal) {
+        val userId = tokenStorage.getUserId() ?: return
+        val owner = WakeOwner(userId, tokenStorage.getServerUrl())
+        val request = OneTimeWorkRequestBuilder<CallWakeWorker>()
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            .setInputData(CallWakeWorker.inputData(signal, owner))
+            .addTag(WakeFetchWorker.WORK_TAG)
+            .build()
+        workManager.enqueueUniqueWork(
+            CallWakeWorker.uniqueWorkName(signal.channelId),
+            ExistingWorkPolicy.REPLACE,
             request,
         )
     }
@@ -90,7 +113,12 @@ class WakeScheduler @Inject constructor(
                 enqueuer.cancel(signal.channelId)
                 sink.cancel(signal.channelId)
             }
-            WakeKind.CALL, WakeKind.UNKNOWN -> Unit
+            // DM call: the quick call path (name lookup + notification), never a fetch.
+            WakeKind.CALL -> {
+                val state = signal.call?.state
+                if (state == CallState.RINGING || state == CallState.ENDED) enqueuer.enqueueCall(signal)
+            }
+            WakeKind.UNKNOWN -> Unit
         }
     }
 }
