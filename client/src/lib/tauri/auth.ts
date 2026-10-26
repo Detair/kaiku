@@ -10,6 +10,7 @@ import type {
   ServerSettings,
   SessionListResponse,
   User,
+  UserStatus,
 } from "../types";
 import {
   browserState,
@@ -152,17 +153,16 @@ export async function login(
 }
 
 /**
- * Update the user's presence status (online, idle, dnd, invisible, offline).
+ * Update the user's presence status (online, idle, dnd, offline). The removed "invisible" status is never sent; it falls back to online.
  */
 export async function updateStatus(
-  status: "online" | "idle" | "dnd" | "invisible" | "offline",
+  status: UserStatus,
 ): Promise<void> {
   // Map client status names to server enum values
   const statusMap: Record<string, string> = {
     online: "online",
     idle: "away",
     dnd: "busy",
-    invisible: "offline",
     offline: "offline",
   };
   const message = { type: "set_status", status: statusMap[status] ?? "online" };

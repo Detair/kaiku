@@ -117,6 +117,22 @@ export function cleanupPresence(): void {
 }
 
 /**
+ * Normalise a status received from the server or storage.
+ *
+ * The "invisible" status was removed for v1.0. Another user reported as
+ * invisible renders as offline; the current user's own leftover "invisible"
+ * falls back to online. Other values (including the server's "away"/"busy"
+ * wire names) pass through unchanged. Never throws.
+ */
+export function normalizeStatus(userId: string, raw: unknown): UserStatus {
+  if (typeof raw !== "string") return "offline";
+  if (raw === "invisible") {
+    return userId === currentUser()?.id ? "online" : "offline";
+  }
+  return raw as UserStatus;
+}
+
+/**
  * Update a user's presence status with optional activity.
  */
 export function updateUserPresence(
@@ -124,6 +140,7 @@ export function updateUserPresence(
   status: UserStatus,
   activity?: Activity | null,
 ): void {
+  status = normalizeStatus(userId, status);
   setPresenceState(
     produce((state) => {
       state.users[userId] = {
@@ -183,7 +200,7 @@ export function setInitialPresence(
   setPresenceState(
     produce((state) => {
       for (const user of users) {
-        state.users[user.id] = { status: user.status };
+        state.users[user.id] = { status: normalizeStatus(user.id, user.status) };
       }
     }),
   );
@@ -243,6 +260,7 @@ export async function setMyStatus(status: UserStatus): Promise<void> {
   const user = currentUser();
   if (!user) return;
 
+  status = normalizeStatus(user.id, status);
   try {
     await updateStatus(status);
     updateUserPresence(user.id, status);
@@ -304,7 +322,7 @@ export function updateIdleTimeout(minutes: number): void {
  * Call this when user explicitly changes their status via UI.
  */
 export function markManualStatusChange(status: UserStatus): void {
-  if (status === "idle" || status === "dnd" || status === "invisible") {
+  if (status === "idle" || status === "dnd") {
     wasManuallySetIdle = true;
   } else if (status === "online") {
     // User manually set online, clear the manual flag
@@ -324,7 +342,7 @@ export function patchUser(userId: string, diff: Record<string, unknown>): void {
       produce((state) => {
         if (state.users[userId]) {
           if ("status" in diff) {
-            state.users[userId].status = diff.status as UserStatus;
+            state.users[userId].status = normalizeStatus(userId, diff.status);
           }
           if ("activity" in diff) {
             state.users[userId].activity = diff.activity as

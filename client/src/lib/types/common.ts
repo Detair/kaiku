@@ -17,7 +17,7 @@ export type ThemeName = (typeof THEME_NAMES)[number];
 
 // User Types
 
-export type UserStatus = "online" | "idle" | "dnd" | "invisible" | "offline";
+export type UserStatus = "online" | "idle" | "dnd" | "offline";
 
 // Quality and Status Indicator Types (for accessibility shapes)
 

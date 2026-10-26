@@ -171,6 +171,34 @@ describe("presence store", () => {
     });
   });
 
+  describe("invisible status is not supported", () => {
+    it("renders another user's reported invisible as offline", () => {
+      updateUserPresence("u1", "invisible" as never);
+      setInitialPresence([{ id: "u2", status: "invisible" as never }]);
+      expect(getUserStatus("u1")).toBe("offline");
+      expect(getUserStatus("u2")).toBe("offline");
+      expect(isUserOnline("u2")).toBe(false);
+    });
+
+    it("patches another user's invisible to offline", () => {
+      updateUserPresence("u1", "online");
+      patchUser("u1", { status: "invisible" });
+      expect(getUserStatus("u1")).toBe("offline");
+    });
+
+    it("maps own stored invisible to online", () => {
+      setInitialPresence([{ id: "me", status: "invisible" as never }]);
+      expect(getUserStatus("me")).toBe("online");
+    });
+
+    it("never sends invisible for own status; sends online", async () => {
+      vi.mocked(updateStatus).mockResolvedValue(undefined);
+      await setMyStatus("invisible" as never);
+      expect(updateStatus).toHaveBeenCalledWith("online");
+      expect(presenceState.users["me"].status).toBe("online");
+    });
+  });
+
   describe("getUserStatus", () => {
     it("returns status for known user", () => {
       setPresenceState("users", "user-1", { status: "dnd" });
@@ -336,7 +364,7 @@ describe("presence store", () => {
       expect(() => markManualStatusChange("idle")).not.toThrow();
       expect(() => markManualStatusChange("dnd")).not.toThrow();
       expect(() => markManualStatusChange("online")).not.toThrow();
-      expect(() => markManualStatusChange("invisible")).not.toThrow();
+      expect(() => markManualStatusChange("offline")).not.toThrow();
     });
   });
 });
