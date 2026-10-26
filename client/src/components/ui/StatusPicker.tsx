@@ -21,7 +21,6 @@ const STATUS_OPTIONS: { value: UserStatus; label: MessageKey }[] = [
   { value: "online", label: "home.status.online" },
   { value: "idle", label: "home.status.idle" },
   { value: "dnd", label: "home.status.dnd" },
-  { value: "invisible", label: "home.status.invisible" },
 ];
 
 const StatusPicker: Component<StatusPickerProps> = (props) => {

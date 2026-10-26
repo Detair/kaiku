@@ -19,12 +19,15 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::events::{
-    broadcast_presence_update, broadcast_to_channel, channels, ClientEvent, ClientMessageState,
-    OutboundMsg, ServerEvent,
+    broadcast_to_channel, channels, ClientEvent, ClientMessageState, OutboundMsg, ServerEvent,
+};
+use super::presence_audience::{
+    self as audience_mod, Audience, AudienceCtx, AudiencePending, PresenceState, ReloadMode,
 };
 use crate::api::AppState;
 use crate::auth::jwt;
 use crate::db;
+use crate::presence::connections::stored_presence_sql;
 use crate::social::block_cache;
 
 /// Minimum interval between activity updates (10 seconds).
@@ -80,7 +83,7 @@ const SLOW_CLIENT_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 const SUBSCRIBER_BROADCAST_CAPACITY: usize = 1024;
 
 /// Close reason sent with 1011/1013: the client should reconnect and resync.
-const CLOSE_REASON_RESYNC: &str = "resync";
+const CLOSE_REASON_RESYNC: &str = "RESYNC";
 
 /// Extract JWT token from Sec-WebSocket-Protocol header.
 ///
@@ -489,10 +492,9 @@ async fn handle_socket(
     let admin_subscribed: Arc<tokio::sync::RwLock<bool>> =
         Arc::new(tokio::sync::RwLock::new(false));
 
-    // Update user presence to online
-    if let Err(e) = update_presence(&state, user_id, "online").await {
-        warn!("Failed to update presence: {}", e);
-    }
+    // This socket's member in the user's presence set (registered once the
+    // socket is fully set up, see `presence_socket_up`).
+    let socket_id = Uuid::now_v7();
 
     info!("WebSocket connected: user={}", user_id);
     crate::observability::metrics::record_ws_connect();
@@ -524,18 +526,19 @@ async fn handle_socket(
         }
     });
 
-    // Fetch user's friends for presence subscriptions
-    let friend_ids = match get_user_friends(&state.db, user_id).await {
-        Ok(friends) => {
+    // Presence peers (friends, then members of the user's servers; capped):
+    // the socket subscribes to their presence and gets their snapshot.
+    let presence_peer_ids = match audience_mod::get_presence_peers(&state.db, user_id).await {
+        Ok(peers) => {
             debug!(
-                "User {} has {} friends for presence subscriptions",
+                "User {} has {} presence peers for presence subscriptions",
                 user_id,
-                friends.len()
+                peers.len()
             );
-            friends
+            peers
         }
         Err(e) => {
-            warn!("Failed to fetch friends for user {}: {}", user_id, e);
+            warn!("Failed to fetch presence peers for user {}: {}", user_id, e);
             Vec::new()
         }
     };
@@ -580,9 +583,18 @@ async fn handle_socket(
         }
     };
 
-    let blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>> = Arc::new(
-        tokio::sync::RwLock::new(blocked_ids.union(&blocked_by_ids).copied().collect()),
-    );
+    let blocked_set: HashSet<Uuid> = blocked_ids.union(&blocked_by_ids).copied().collect();
+    let blocked_users: Arc<tokio::sync::RwLock<HashSet<Uuid>>> =
+        Arc::new(tokio::sync::RwLock::new(blocked_set.clone()));
+
+    crate::ws::test_hooks::after_audience_read(user_id).await;
+
+    // Presence audience (authorization and delivery state under one lock;
+    // see `presence_audience`).
+    let presence = PresenceState::new(Audience::new(&presence_peer_ids, blocked_set), &guild_ids);
+    let (audience_tx, mut audience_rx) = mpsc::channel::<()>(1);
+    let audience_wake = audience_tx.clone();
+    let audience_pending: Arc<std::sync::Mutex<AudiencePending>> = Arc::default();
 
     // Spawn task to handle Redis pub/sub. The socket owns the subscriber client
     // so cleanup can `QUIT` it: fred keeps the connection (and its
@@ -599,8 +611,11 @@ async fn handle_socket(
             blocked_users: blocked_users.clone(),
             user_id,
             session_id,
-            friend_ids,
+            presence_peer_ids: presence_peer_ids.clone(),
             guild_ids,
+            presence: presence.clone(),
+            audience_tx,
+            audience_pending: audience_pending.clone(),
         },
         ready_tx,
         start_rx,
@@ -674,12 +689,56 @@ async fn handle_socket(
         }
     }
 
+    // Peers, servers and block sets were read before the subscriptions went
+    // live; a change in between published a notice this socket never saw.
+    // Revalidate them now, before anything is forwarded or the snapshot is
+    // built (a database error closes with 1011 so the client reconnects).
+    let ctx = AudienceCtx {
+        state: &state,
+        user_id,
+        subscriber: &subscriber,
+        presence: &presence,
+        blocked_users: &blocked_users,
+        tx: &tx,
+        pending: &audience_pending,
+    };
+    if exit.is_none() {
+        match audience_mod::refresh_full(&ctx, ReloadMode::Initial).await {
+            Ok(true) => {}
+            Ok(false) => exit = Some(PubsubExit::SubscribeFailed),
+            Err(reason) => exit = Some(reason),
+        }
+    }
+    drop(presence_peer_ids);
+
     // On a setup failure there is no `Ready`; the socket is closed below.
     if exit.is_none() {
-        if let Err(err) = send_ready_and_snapshot(&state, user_id, &tx, start_tx).await {
+        if let Err(err) = send_ready(user_id, &tx, start_tx).await {
             exit = Some(err.into());
         }
     }
+    // The forwarder runs from here on (fences need it): the connect snapshot.
+    if exit.is_none() {
+        let peers: Vec<Uuid> = presence
+            .audience
+            .lock()
+            .await
+            .peers
+            .iter()
+            .copied()
+            .collect();
+        if let Err(reason) = audience_mod::send_states(&ctx, &peers).await {
+            exit = Some(reason);
+        }
+    }
+
+    // Only a fully set up socket counts as a device for presence.
+    let presence_registered = exit.is_none();
+    let mut announce_pending = if presence_registered {
+        presence_socket_up(&state, user_id, socket_id).await
+    } else {
+        false
+    };
 
     if exit.is_none() {
         // Per-connection mutable state for rate limiting and deduplication
@@ -693,6 +752,16 @@ async fn handle_socket(
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ping_interval.tick().await; // consume the immediate first tick
         let mut awaiting_pong = false;
+
+        // Presence backstop, with per-socket jitter.
+        let jitter =
+            Duration::from_millis(u64::try_from(Uuid::new_v4().as_u128() % 10_000).unwrap_or(0));
+        let mut presence_backstop = tokio::time::interval_at(
+            tokio::time::Instant::now() + audience_mod::PRESENCE_BACKSTOP_INTERVAL + jitter,
+            audience_mod::PRESENCE_BACKSTOP_INTERVAL,
+        );
+        let backstop_trigger = crate::ws::test_hooks::backstop_trigger(user_id);
+        presence_backstop.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         // Handle incoming messages with heartbeat
         loop {
@@ -717,7 +786,7 @@ async fn handle_socket(
                                 }
                                 warn!("Error handling message: {}", e);
                                 let reply = OutboundMsg::Event(ServerEvent::Error {
-                                    code: "message_error".to_string(),
+                                    code: "MESSAGE_ERROR".to_string(),
                                     message: e.to_string(),
                                 });
                                 if let Err(err) = send_outbound(&tx, reply).await {
@@ -731,6 +800,18 @@ async fn handle_socket(
                             debug!("Received ping from user={}", user_id);
                         }
                         Some(Ok(Message::Pong(_))) => {
+                            // Heartbeat: keep this device live (90 s TTL).
+                            // Only answers to our own pings count, so a client
+                            // cannot drive Valkey writes with unsolicited pongs.
+                            if awaiting_pong {
+                                presence_socket_refresh(
+                                    &state,
+                                    user_id,
+                                    socket_id,
+                                    &mut announce_pending,
+                                )
+                                .await;
+                            }
                             awaiting_pong = false;
                         }
                         Some(Ok(Message::Close(_))) => {
@@ -747,6 +828,15 @@ async fn handle_socket(
                 }
 
                 _ = ping_interval.tick() => {
+                    // Audience work that failed (database error) is retried
+                    // with the heartbeat.
+                    if audience_pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .has_work()
+                    {
+                        let _ = audience_wake.try_send(());
+                    }
                     if awaiting_pong || sender_handle.is_finished() {
                         info!("WebSocket ping timeout: user={}", user_id);
                         break;
@@ -754,6 +844,35 @@ async fn handle_socket(
                     awaiting_pong = true;
                     if let Err(err) = send_outbound(&tx, OutboundMsg::Ping).await {
                         exit = Some(err.into());
+                        break;
+                    }
+                }
+
+                Some(()) = audience_rx.recv() => {
+                    let pending = std::mem::take(
+                        &mut *audience_pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+                    );
+                    let refreshed = if pending.full {
+                        audience_mod::refresh_full(&ctx, ReloadMode::Update).await.map(|_| ())
+                    } else {
+                        audience_mod::recheck(&ctx, pending.targets).await
+                    };
+                    if let Err(reason) = refreshed {
+                        exit = Some(reason);
+                        break;
+                    }
+                }
+
+                () = backstop_now(backstop_trigger.as_ref()) => {
+                    if let Err(reason) = audience_mod::backstop(&ctx).await {
+                        exit = Some(reason);
+                        break;
+                    }
+                }
+
+                _ = presence_backstop.tick() => {
+                    if let Err(reason) = audience_mod::backstop(&ctx).await {
+                        exit = Some(reason);
                         break;
                     }
                 }
@@ -783,6 +902,12 @@ async fn handle_socket(
     // and setup failures); bounded so a hung Valkey cannot hold the task.
     let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, subscriber.quit()).await;
 
+    // Remove this device from the user's presence first (bounded by the
+    // Valkey command timeout); the last one announces `offline`.
+    if presence_registered {
+        presence_socket_down(&state, user_id, socket_id).await;
+    }
+
     // Free per-peer voice rate-limit buckets in case the socket dropped without
     // an explicit VoiceLeave (ping timeout, TCP drop, app crash). The explicit
     // VoiceLeave path also calls `forget_peer`; calling it here too is idempotent.
@@ -799,9 +924,17 @@ async fn handle_socket(
     )
     .await;
 
-    // Update user presence to offline
-    if let Err(e) = update_presence(&state, user_id, "offline").await {
-        warn!("Failed to update presence on disconnect: {}", e);
+    // A caller whose last socket closed cannot be reached: cancel their
+    // ringing DM calls after a grace period (see `caller_socket_closed`).
+    // Runs after the subscriber quit, so this socket no longer counts as open.
+    if crate::voice::call_service::may_have_ringing_calls(&state.redis, user_id).await {
+        let calls = crate::voice::call_service::CallService::for_state(&state);
+        tokio::spawn(async move {
+            if let Err(e) = crate::voice::call_service::caller_socket_closed(&calls, user_id).await
+            {
+                warn!("Failed to cancel ringing calls on disconnect: {}", e);
+            }
+        });
     }
 
     info!("WebSocket disconnected: user={}", user_id);
@@ -883,11 +1016,9 @@ async fn close_and_flush(
     let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, flush).await;
 }
 
-/// Queue `Ready` as the socket's first frame, release the pub/sub forwarder
-/// (`start`; events published meanwhile wait in its receiver), then send the
-/// friends' presence snapshot.
-async fn send_ready_and_snapshot(
-    state: &AppState,
+/// Queue `Ready` as the socket's first frame and release the pub/sub
+/// forwarder (`start`; events published meanwhile wait in its receiver).
+async fn send_ready(
     user_id: Uuid,
     tx: &mpsc::Sender<OutboundMsg>,
     start: oneshot::Sender<()>,
@@ -901,65 +1032,16 @@ async fn send_ready_and_snapshot(
     )
     .await?;
     let _ = start.send(());
-    send_presence_snapshot(state, user_id, tx).await
+    Ok(())
 }
 
-/// Send the friends' presence snapshot (status, activity, custom status).
-async fn send_presence_snapshot(
-    state: &AppState,
-    user_id: Uuid,
-    tx: &mpsc::Sender<OutboundMsg>,
-) -> Result<(), OutboundSendError> {
-    match get_friends_presence(&state.db, user_id).await {
-        Ok(snapshots) => {
-            for snap in snapshots {
-                // Always send base presence
-                let presence_event = ServerEvent::PresenceUpdate {
-                    user_id: snap.user_id,
-                    status: snap.status.clone(),
-                };
-                send_outbound(tx, OutboundMsg::Event(presence_event)).await?;
-
-                let is_offline = snap.status == "offline";
-
-                // Send activity if present and user is not offline
-                if !is_offline {
-                    if let Some(activity_json) = snap.activity {
-                        if let Ok(activity) =
-                            serde_json::from_value::<crate::presence::Activity>(activity_json)
-                        {
-                            let activity_event = ServerEvent::RichPresenceUpdate {
-                                user_id: snap.user_id,
-                                activity: Some(activity),
-                            };
-                            send_outbound(tx, OutboundMsg::Event(activity_event)).await?;
-                        }
-                    }
-
-                    // Send custom status if present and user is not offline
-                    if let Some(cs_json) = snap.custom_status {
-                        if let Ok(cs) =
-                            serde_json::from_value::<crate::presence::CustomStatus>(cs_json)
-                        {
-                            let cs_event = ServerEvent::CustomStatusUpdate {
-                                user_id: snap.user_id,
-                                custom_status: Some(cs),
-                            };
-                            send_outbound(tx, OutboundMsg::Event(cs_event)).await?;
-                        }
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            warn!(
-                "Failed to fetch initial friend presence for {}: {}",
-                user_id, e
-            );
-        }
+/// Resolves when a test asks this socket to run its presence backstop now
+/// (`test_hooks::run_backstop`); never otherwise.
+async fn backstop_now(trigger: Option<&Arc<tokio::sync::Notify>>) {
+    match trigger {
+        Some(trigger) => trigger.notified().await,
+        None => std::future::pending().await,
     }
-
-    Ok(())
 }
 
 /// Handle a client message.
@@ -1006,7 +1088,7 @@ pub async fn handle_client_message(
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::Error {
-                        code: "channel_not_found".to_string(),
+                        code: "CHANNEL_NOT_FOUND".to_string(),
                         message: "Channel not found".to_string(),
                     }),
                 )
@@ -1022,7 +1104,7 @@ pub async fn handle_client_message(
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::Error {
-                        code: "forbidden".to_string(),
+                        code: "FORBIDDEN".to_string(),
                         message: "You don't have permission to view this channel".to_string(),
                     }),
                 )
@@ -1135,7 +1217,7 @@ pub async fn handle_client_message(
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::VoiceError {
-                        code: "voice_error".to_string(),
+                        code: "VOICE_ERROR".to_string(),
                         message: e.to_string(),
                     }),
                 )
@@ -1184,7 +1266,11 @@ pub async fn handle_client_message(
 
             // Broadcast to user's presence subscribers
             let event = ServerEvent::RichPresenceUpdate { user_id, activity };
-            broadcast_presence_update(state, user_id, &event).await;
+            if let Err(e) =
+                crate::presence::connections::publish_rich(&state.redis, user_id, &event).await
+            {
+                crate::presence::connections::log_unavailable(&e);
+            }
         }
 
         ClientEvent::SetStatus { status } => {
@@ -1192,25 +1278,21 @@ pub async fn handle_client_message(
                 crate::db::UserStatus::Online => "online",
                 crate::db::UserStatus::Away => "away",
                 crate::db::UserStatus::Busy => "busy",
-                crate::db::UserStatus::Offline => "offline",
+                // "Appear offline" (invisible) is not available: presence is
+                // `offline` only while no device is connected.
+                crate::db::UserStatus::Offline => {
+                    send_outbound(
+                        tx,
+                        OutboundMsg::Event(ServerEvent::Error {
+                            code: "VALIDATION_ERROR".to_string(),
+                            message: "Status must be online, away or busy".to_string(),
+                        }),
+                    )
+                    .await?;
+                    return Ok(());
+                }
             };
-            update_presence(state, user_id, status_str).await?;
-
-            let event = ServerEvent::PresenceUpdate {
-                user_id,
-                status: status_str.to_string(),
-            };
-            broadcast_presence_update(state, user_id, &event).await;
-
-            // Hide custom status when going offline/invisible
-            if matches!(status, crate::db::UserStatus::Offline) {
-                let hide_event = ServerEvent::CustomStatusUpdate {
-                    user_id,
-                    custom_status: None,
-                };
-                broadcast_presence_update(state, user_id, &hide_event).await;
-            }
-
+            set_presence_status(state, user_id, status_str).await?;
             debug!("User {} set status to {}", user_id, status_str);
         }
 
@@ -1264,7 +1346,11 @@ pub async fn handle_client_message(
                 user_id,
                 custom_status,
             };
-            broadcast_presence_update(state, user_id, &event).await;
+            if let Err(e) =
+                crate::presence::connections::publish_rich(&state.redis, user_id, &event).await
+            {
+                crate::presence::connections::log_unavailable(&e);
+            }
             debug!("User {} updated custom status", user_id);
         }
 
@@ -1282,7 +1368,7 @@ pub async fn handle_client_message(
                 send_outbound(
                     tx,
                     OutboundMsg::Event(ServerEvent::Error {
-                        code: "admin_not_elevated".to_string(),
+                        code: "ADMIN_NOT_ELEVATED".to_string(),
                         message: "Must be an elevated admin to subscribe to admin events"
                             .to_string(),
                     }),
@@ -1348,21 +1434,21 @@ async fn handle_component_interaction(
             Err(_) => rate_limiter.allow_during_outage(category),
         };
         if !allowed {
-            send_err("rate_limited", "You're interacting too quickly").await?;
+            send_err("RATE_LIMITED", "You're interacting too quickly").await?;
             return Ok(());
         }
     }
 
     // The message must exist and the user must be able to view its channel.
     let Some(message) = db::find_message_by_id(&state.db, message_id).await? else {
-        send_err("message_not_found", "Message not found").await?;
+        send_err("MESSAGE_NOT_FOUND", "Message not found").await?;
         return Ok(());
     };
     if crate::permissions::require_channel_access(&state.db, user_id, message.channel_id)
         .await
         .is_err()
     {
-        send_err("forbidden", "You cannot interact with this message").await?;
+        send_err("FORBIDDEN", "You cannot interact with this message").await?;
         return Ok(());
     }
 
@@ -1373,13 +1459,13 @@ async fn handle_component_interaction(
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
     if !crate::chat::components::custom_id_present(&rows, custom_id) {
-        send_err("component_not_found", "No such component on this message").await?;
+        send_err("COMPONENT_NOT_FOUND", "No such component on this message").await?;
         return Ok(());
     }
 
     // The owning bot is the message author; it must be a bot.
     let Some(bot_id) = message.user_id else {
-        send_err("component_not_found", "Message has no author").await?;
+        send_err("COMPONENT_NOT_FOUND", "Message has no author").await?;
         return Ok(());
     };
     let is_bot = db::find_user_by_id(&state.db, bot_id)
@@ -1387,7 +1473,7 @@ async fn handle_component_interaction(
         .map(|u| u.is_bot)
         .unwrap_or(false);
     if !is_bot {
-        send_err("component_not_found", "Message is not bot-authored").await?;
+        send_err("COMPONENT_NOT_FOUND", "Message is not bot-authored").await?;
         return Ok(());
     }
 
@@ -1454,8 +1540,15 @@ pub(crate) struct HandlePubsubParams {
     user_id: Uuid,
     /// Session of the socket's token; `None` for tokens without a `sid`.
     session_id: Option<Uuid>,
-    friend_ids: Vec<Uuid>,
+    /// Users whose `presence:{id}` channel the socket follows at connect.
+    presence_peer_ids: Vec<Uuid>,
     guild_ids: Vec<Uuid>,
+    /// Presence audience (authorization and delivery state).
+    presence: PresenceState,
+    /// Wakes the socket loop to recompute the audience (coalescing).
+    audience_tx: mpsc::Sender<()>,
+    /// What the woken socket loop has to recompute.
+    audience_pending: Arc<std::sync::Mutex<AudiencePending>>,
 }
 
 /// Why a connection's pub/sub pipeline stopped.
@@ -1505,7 +1598,7 @@ impl PubsubExit {
         }
     }
 
-    /// Close reason sent with [`Self::close_code`] (1011/1013: "resync").
+    /// Close reason sent with [`Self::close_code`] (1011/1013: "RESYNC").
     pub(crate) const fn close_reason(self) -> &'static str {
         match self {
             Self::SessionRevoked => SESSION_REVOKED,
@@ -1580,11 +1673,13 @@ async fn handle_pubsub(
     debug!("Subscribed to user events channel: {}", user_channel);
 
     // Every other subscription is required too: `Ready` promises that the
-    // socket sees all of its events, so any failure ends the pipeline.
-    let other_channels = std::iter::once(channels::ADMIN_EVENTS.to_string())
+    // socket sees all of its events, so any failure ends the pipeline. One
+    // SUBSCRIBE for all of them (up to `PRESENCE_PEER_LIMIT` presence
+    // channels plus the user's servers).
+    let other_channels: Vec<String> = std::iter::once(channels::ADMIN_EVENTS.to_string())
         .chain(
             params
-                .friend_ids
+                .presence_peer_ids
                 .iter()
                 .map(|id| channels::user_presence(*id)),
         )
@@ -1593,14 +1688,14 @@ async fn handle_pubsub(
                 .guild_ids
                 .iter()
                 .map(|id| channels::guild_events(*id)),
-        );
-    for channel in other_channels {
-        if let Err(e) = subscriber.subscribe(&channel).await {
-            error!("Failed to subscribe to {}: {}", channel, e);
-            return PubsubExit::SubscribeFailed;
-        }
-        debug!("Subscribed to {}", channel);
+        )
+        .collect();
+    let channel_count = other_channels.len();
+    if let Err(e) = subscriber.subscribe(other_channels).await {
+        error!("Failed to subscribe to {} channels: {}", channel_count, e);
+        return PubsubExit::SubscribeFailed;
     }
+    debug!("Subscribed to {} channels", channel_count);
 
     // fred resolves `subscribe`/`psubscribe` as soon as the command is queued
     // on the connection, before it is written and long before Valkey has
@@ -1791,18 +1886,65 @@ pub(crate) async fn forward_pubsub_messages(
                     }
                     continue;
                 }
+                if let Ok(notice) =
+                    serde_json::from_str::<crate::presence::connections::PresenceNotice>(&payload)
+                {
+                    use crate::presence::connections::PresenceNotice;
+                    match notice {
+                        PresenceNotice::PresenceFence { id } => {
+                            audience_mod::on_fence(&params.presence, id);
+                        }
+                        PresenceNotice::PresenceAudienceChanged {
+                            user_id,
+                            revoking,
+                            block,
+                            op,
+                        } => {
+                            audience_mod::on_audience_notice(
+                                &params.presence,
+                                &params.audience_pending,
+                                &params.audience_tx,
+                                &params.blocked_users,
+                                params.user_id,
+                                audience_mod::AudienceNotice {
+                                    user: user_id,
+                                    revoking,
+                                    block,
+                                    op,
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                    continue;
+                }
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
+                    // DM call events about a blocked user are not shown.
+                    let from_blocked = match &event {
+                        ServerEvent::CallParticipantJoined { user_id: uid, .. }
+                        | ServerEvent::CallParticipantLeft { user_id: uid, .. }
+                        | ServerEvent::CallDeclined { user_id: uid, .. }
+                        | ServerEvent::IncomingCall { initiator: uid, .. } => {
+                            params.blocked_users.read().await.contains(uid)
+                        }
+                        _ => false,
+                    };
+                    if from_blocked {
+                        continue;
+                    }
                     // Handle block/unblock events to update in-memory set
                     match &event {
                         ServerEvent::UserBlocked {
                             user_id: blocked_id,
                         } => {
                             params.blocked_users.write().await.insert(*blocked_id);
+                            audience_mod::set_blocked(&params.presence, *blocked_id, true).await;
                         }
                         ServerEvent::UserUnblocked {
                             user_id: unblocked_id,
                         } => {
                             params.blocked_users.write().await.remove(unblocked_id);
+                            audience_mod::set_blocked(&params.presence, *unblocked_id, false).await;
                         }
                         // Subscribe before forwarding: Redis keeps publish
                         // order on this connection, so the DM's first
@@ -1839,24 +1981,21 @@ pub(crate) async fn forward_pubsub_messages(
                 }
             }
         }
-        // Handle presence events (presence:{uuid})
-        else if channel_name.starts_with("presence:") {
-            // Forward presence updates from friends (filter blocked users)
-            if let Some(payload) = message.value.as_str() {
-                if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
-                    let should_filter = match &event {
-                        ServerEvent::PresenceUpdate { user_id: uid, .. }
-                        | ServerEvent::RichPresenceUpdate { user_id: uid, .. }
-                        | ServerEvent::CustomStatusUpdate { user_id: uid, .. } => {
-                            params.blocked_users.read().await.contains(uid)
-                        }
-                        _ => false,
-                    };
-
-                    if !should_filter {
-                        try_forward!(event);
-                    }
-                }
+        // Handle presence events (presence:{uuid}): only from current
+        // presence peers that are not blocked either way. Status updates
+        // arrive versioned and are dropped unless newer than what this socket
+        // already sent for that peer (snapshot or live).
+        else if let Some(uid) = channel_name
+            .strip_prefix("presence:")
+            .and_then(|id| Uuid::parse_str(id).ok())
+        {
+            let Some(payload) = message.value.as_str() else {
+                continue;
+            };
+            if let Err(err) =
+                audience_mod::forward_presence(&params.presence, &params.tx, uid, &payload).await
+            {
+                return err.into();
             }
         }
         // Handle user events (user:{uuid}) for cross-device sync
@@ -1872,6 +2011,29 @@ pub(crate) async fn forward_pubsub_messages(
         else if channel_name.starts_with("guild:") {
             // Forward guild/member patch events to all guild members
             if let Some(payload) = message.value.as_str() {
+                if let Ok(crate::presence::connections::PresenceNotice::PresenceAudienceChanged {
+                    user_id,
+                    revoking,
+                    block,
+                    op,
+                }) = serde_json::from_str(&payload)
+                {
+                    audience_mod::on_audience_notice(
+                        &params.presence,
+                        &params.audience_pending,
+                        &params.audience_tx,
+                        &params.blocked_users,
+                        params.user_id,
+                        audience_mod::AudienceNotice {
+                            user: user_id,
+                            revoking,
+                            block,
+                            op,
+                        },
+                    )
+                    .await;
+                    continue;
+                }
                 if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
                     try_forward!(event);
                 }
@@ -1920,15 +2082,28 @@ pub fn spawn_custom_status_sweep(
             let user_ids: Vec<Uuid> = expired.into_iter().map(|(id,)| id).collect();
             debug!(count = user_ids.len(), "Clearing expired custom statuses");
 
-            // Clear in database
-            if let Err(e) = sqlx::query("UPDATE users SET custom_status = NULL WHERE id = ANY($1)")
-                .bind(&user_ids)
-                .execute(&db)
-                .await
+            // Clear in database, repeating the expiry condition: a custom
+            // status set again since the query above is kept.
+            let user_ids: Vec<Uuid> = match sqlx::query_as::<_, (Uuid,)>(
+                r"
+                UPDATE users SET custom_status = NULL
+                WHERE id = ANY($1)
+                  AND custom_status IS NOT NULL
+                  AND custom_status->>'expires_at' IS NOT NULL
+                  AND (custom_status->>'expires_at')::timestamptz <= NOW()
+                RETURNING id
+                ",
+            )
+            .bind(&user_ids)
+            .fetch_all(&db)
+            .await
             {
-                warn!(error = %e, "Custom status sweep: clear failed");
-                continue;
-            }
+                Ok(rows) => rows.into_iter().map(|(id,)| id).collect(),
+                Err(e) => {
+                    warn!(error = %e, "Custom status sweep: clear failed");
+                    continue;
+                }
+            };
 
             // Broadcast to friends
             for uid in &user_ids {
@@ -1936,85 +2111,200 @@ pub fn spawn_custom_status_sweep(
                     user_id: *uid,
                     custom_status: None,
                 };
-                let json = match serde_json::to_string(&event) {
-                    Ok(j) => j,
-                    Err(_) => continue,
-                };
-                let channel = format!("presence:{uid}");
-                let _: Result<(), _> = redis.publish(&channel, &json).await;
+                if let Err(e) =
+                    crate::presence::connections::publish_rich(&redis, *uid, &event).await
+                {
+                    crate::presence::connections::log_unavailable(&e);
+                }
             }
         }
     })
 }
 
-/// Update user presence in the database.
-async fn update_presence(state: &AppState, user_id: Uuid, status: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE users SET status = $1::user_status WHERE id = $2")
-        .bind(status)
-        .bind(user_id)
-        .execute(&state.db)
-        .await?;
+/// Store the status the user chose (`online`, `away`, `busy`). Bumps
+/// `presence_seq` and marks the change dirty (unpublished) until it is
+/// reconciled; returns the stored status and the new sequence.
+async fn set_chosen_status(
+    state: &AppState,
+    user_id: Uuid,
+    status: &str,
+) -> Result<(String, i64), sqlx::Error> {
+    sqlx::query_as(
+        r"
+        UPDATE users u
+        SET status = $1::user_status, presence_seq = u.presence_seq + 1,
+            presence_dirty_since = COALESCE(u.presence_dirty_since, NOW())
+        WHERE u.id = $2
+        RETURNING u.status::text, u.presence_seq
+        ",
+    )
+    .bind(status)
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await
+}
 
+/// `set_status`: store the chosen status and reconcile what observers see in
+/// one atomic Valkey step
+/// ([`connections::reconcile`](crate::presence::connections::reconcile)). A
+/// change that a newer one already overtook (another device) publishes
+/// nothing.
+///
+/// If Valkey cannot be reached the change stays marked dirty in the database
+/// and the presence sweeper (any server) reconciles it, even if this socket
+/// closes.
+async fn set_presence_status(
+    state: &AppState,
+    user_id: Uuid,
+    status: &str,
+) -> Result<(), sqlx::Error> {
+    use crate::presence::connections;
+
+    let (stored, seq) = set_chosen_status(state, user_id, status).await?;
+    let shown = connections::effective_status(&stored, Some(true));
+    match connections::reconcile(&state.redis, user_id, seq, shown, connections::now_ms()).await {
+        // `Ahead`: a newer status change reconciles itself (and clears the
+        // mark then).
+        Ok(_) => connections::clear_dirty(&state.db, user_id, seq).await,
+        Err(e) => connections::log_unavailable(&e),
+    }
     Ok(())
 }
 
-/// Get list of user's accepted friend IDs.
-async fn get_user_friends(db: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<Uuid>, sqlx::Error> {
-    let friends: Vec<(Uuid,)> = sqlx::query_as(
-        r"
-        SELECT CASE
-            WHEN requester_id = $1 THEN addressee_id
-            ELSE requester_id
-        END as friend_id
-        FROM friendships
-        WHERE (requester_id = $1 OR addressee_id = $1)
-        AND status = 'accepted'
-        ",
+/// Bring what observers see in line with the database (late announcement,
+/// recovery, stale registration); see
+/// [`connections::reconcile_from_db`](crate::presence::connections::reconcile_from_db).
+/// An error means "still owed": the caller retries on the next heartbeat.
+async fn reconcile_presence(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<(), crate::presence::connections::ReconcileOwed> {
+    crate::presence::connections::reconcile_from_db(&state.db, &state.redis, user_id).await
+}
+
+/// A fully set up socket becomes one of the user's live devices.
+///
+/// Sets the stored status to `online` only when it is `offline` (a chosen
+/// `away`/`busy` survives a reconnect), then registers the socket. The first
+/// live device shows the user's status in the same atomic Valkey step, unless
+/// a newer status change has been applied since the read.
+///
+/// If this socket was the first live device but could not show the status
+/// (status lookup failed, or the read was stale), it reconciles from a fresh
+/// read. Returns `true` when that is still owed; the socket retries on its
+/// next heartbeat ([`presence_socket_refresh`]). Valkey errors are logged and
+/// the socket carries on; the next heartbeat registers it.
+async fn presence_socket_up(state: &AppState, user_id: Uuid, socket_id: Uuid) -> bool {
+    use crate::presence::connections;
+
+    let stored = match mark_connected(&state.db, user_id).await {
+        Ok(stored) => Some(stored),
+        Err(e) => {
+            warn!("Failed to update presence on connect: {}", e);
+            None
+        }
+    };
+    let status = stored
+        .as_ref()
+        .map(|(s, seq)| (connections::effective_status(s, Some(true)), *seq));
+    let outcome = match connections::socket_online_detailed(
+        &state.redis,
+        user_id,
+        socket_id,
+        connections::now_ms(),
+        status,
     )
-    .bind(user_id)
-    .fetch_all(db)
-    .await?;
-
-    Ok(friends.into_iter().map(|(id,)| id).collect())
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            connections::log_unavailable(&e);
+            return false;
+        }
+    };
+    if outcome.stale || (outcome.first && stored.is_none()) {
+        return reconcile_presence(state, user_id).await.is_err();
+    }
+    false
 }
 
-/// Snapshot of a friend's full presence state for the connect flow.
-#[derive(Debug, sqlx::FromRow)]
-struct FriendPresenceSnapshot {
+/// Heartbeat: extend this socket's expiry. If the socket had dropped out of
+/// the set (e.g. Valkey was unreachable for longer than the TTL) and it is the
+/// user's only live device again, or a reconcile is still owed
+/// (`announce_pending`: failed status lookup at connect, failed `set_status`
+/// publish), reconcile from the database. Publishes only what differs from
+/// what observers last saw.
+async fn presence_socket_refresh(
+    state: &AppState,
     user_id: Uuid,
-    status: String,
-    activity: Option<serde_json::Value>,
-    custom_status: Option<serde_json::Value>,
+    socket_id: Uuid,
+    announce_pending: &mut bool,
+) {
+    use crate::presence::connections;
+
+    match connections::socket_online(&state.redis, user_id, socket_id, connections::now_ms()).await
+    {
+        Ok(first) => *announce_pending |= first,
+        Err(e) => connections::log_unavailable(&e),
+    }
+    if *announce_pending && reconcile_presence(state, user_id).await.is_ok() {
+        *announce_pending = false;
+    }
 }
 
-async fn get_friends_presence(
-    db: &sqlx::PgPool,
-    user_id: Uuid,
-) -> Result<Vec<FriendPresenceSnapshot>, sqlx::Error> {
-    let rows: Vec<FriendPresenceSnapshot> = sqlx::query_as(
+/// The socket closes: remove it from the user's devices. The last live device
+/// announces `offline` in the same atomic Valkey step and resets a stored
+/// `online` to `offline` (a chosen `away`/`busy` is kept). If the Valkey command fails, the
+/// socket's entry expires and the presence sweeper announces `offline` and resets the status
+/// instead.
+async fn presence_socket_down(state: &AppState, user_id: Uuid, socket_id: Uuid) {
+    use crate::presence::connections;
+
+    let last = match connections::socket_offline_announce(
+        &state.redis,
+        user_id,
+        socket_id,
+        connections::now_ms(),
+    )
+    .await
+    {
+        Ok(last) => last,
+        Err(e) => {
+            connections::log_unavailable(&e);
+            false
+        }
+    };
+    if last {
+        if let Err(e) = sqlx::query(
+            "UPDATE users SET status = 'offline'::user_status WHERE id = $1 AND status = 'online'",
+        )
+        .bind(user_id)
+        .execute(&state.db)
+        .await
+        {
+            warn!("Failed to update presence on disconnect: {}", e);
+        }
+    }
+}
+
+/// Connect: stored `offline` becomes `online`. Returns the
+/// stored presence afterwards (see `stored_presence_sql!`).
+async fn mark_connected(db: &sqlx::PgPool, user_id: Uuid) -> Result<(String, i64), sqlx::Error> {
+    sqlx::query_as(concat!(
         r"
-        SELECT
-            CASE
-                WHEN f.requester_id = $1 THEN f.addressee_id
-                ELSE f.requester_id
-            END as user_id,
-            u.status::text as status,
-            u.activity,
-            u.custom_status
-        FROM friendships f
-        JOIN users u ON u.id = CASE
-            WHEN f.requester_id = $1 THEN f.addressee_id
-            ELSE f.requester_id
+        UPDATE users u
+        SET status = CASE
+            WHEN u.status = 'offline' THEN 'online'::user_status
+            ELSE u.status
         END
-        WHERE (f.requester_id = $1 OR f.addressee_id = $1)
-          AND f.status = 'accepted'
-        ",
-    )
+        WHERE u.id = $1
+        RETURNING ",
+        stored_presence_sql!(),
+        ", u.presence_seq"
+    ))
     .bind(user_id)
-    .fetch_all(db)
-    .await?;
-
-    Ok(rows)
+    .fetch_one(db)
+    .await
 }
 
 #[cfg(test)]
@@ -2135,8 +2425,11 @@ mod pubsub_tests {
             blocked_users: Arc::new(tokio::sync::RwLock::new(HashSet::new())),
             user_id: Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00aa),
             session_id: Some(OWN_SESSION),
-            friend_ids: Vec::new(),
+            presence_peer_ids: Vec::new(),
             guild_ids: Vec::new(),
+            presence: PresenceState::new(Audience::default(), &[]),
+            audience_tx: mpsc::channel(1).0,
+            audience_pending: Arc::default(),
         };
         (params, rx)
     }
@@ -2187,6 +2480,185 @@ mod pubsub_tests {
             rx.recv().await,
             Some(OutboundMsg::Event(ServerEvent::TypingStart { .. }))
         ));
+    }
+
+    const PEER: Uuid = Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00cc);
+
+    /// A raw message on `channel` (as published).
+    fn raw_message(channel: String, payload: String) -> PubsubMessage {
+        PubsubMessage {
+            channel: channel.into(),
+            value: PubsubValue::from(payload),
+            kind: MessageKind::Message,
+            server: Server::new("127.0.0.1", 6379),
+        }
+    }
+
+    /// A versioned status update of `PEER`, as the presence scripts publish it.
+    fn versioned_status(v: u64, status: &str) -> PubsubMessage {
+        let event = crate::presence::connections::status_event_json(PEER, status);
+        raw_message(
+            channels::user_presence(PEER),
+            format!(r#"{{"v":{v},"event":{event}}}"#),
+        )
+    }
+
+    /// Forward `messages` and return the statuses the socket received.
+    async fn forwarded_statuses(
+        params: &HandlePubsubParams,
+        rx: &mut mpsc::Receiver<OutboundMsg>,
+        messages: Vec<PubsubMessage>,
+    ) -> Vec<String> {
+        let (btx, brx) = tokio::sync::broadcast::channel(16);
+        for message in messages {
+            btx.send(message).unwrap();
+        }
+        drop(btx);
+        assert!(matches!(
+            forward_pubsub_messages(brx, params).await,
+            PubsubExit::StreamEnded
+        ));
+        let mut statuses = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            if let OutboundMsg::Event(ServerEvent::PresenceUpdate { status, .. }) = msg {
+                statuses.push(status);
+            }
+        }
+        statuses
+    }
+
+    #[tokio::test]
+    async fn presence_updates_older_than_sent_version_are_dropped() {
+        let (params, mut rx) = test_params(16);
+        {
+            let mut audience = params.presence.audience.lock().await;
+            audience.peers.insert(PEER);
+            // The connect snapshot already sent version 2 of this peer.
+            audience.versions.insert(PEER, 2);
+        }
+
+        let statuses = forwarded_statuses(
+            &params,
+            &mut rx,
+            vec![
+                versioned_status(1, "online"),
+                versioned_status(2, "online"),
+                versioned_status(4, "busy"),
+                versioned_status(3, "offline"),
+                versioned_status(5, "offline"),
+            ],
+        )
+        .await;
+
+        assert_eq!(statuses, ["busy", "offline"]);
+        assert_eq!(
+            params.presence.audience.lock().await.versions.get(&PEER),
+            Some(&5)
+        );
+    }
+
+    #[tokio::test]
+    async fn presence_of_non_peers_and_blocked_users_is_dropped() {
+        let (params, mut rx) = test_params(16);
+        // Not a peer: nothing forwarded.
+        let statuses =
+            forwarded_statuses(&params, &mut rx, vec![versioned_status(1, "online")]).await;
+        assert!(statuses.is_empty());
+
+        // A peer, but blocked.
+        {
+            let mut audience = params.presence.audience.lock().await;
+            audience.peers.insert(PEER);
+            audience.blocked.insert(PEER);
+        }
+        let statuses =
+            forwarded_statuses(&params, &mut rx, vec![versioned_status(2, "online")]).await;
+        assert!(statuses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn audience_notice_is_consumed_and_wakes_the_socket() {
+        use crate::presence::connections::PresenceNotice;
+
+        let (mut params, mut rx) = test_params(16);
+        let (audience_tx, mut audience_rx) = mpsc::channel(1);
+        params.audience_tx = audience_tx;
+        let notice = |user_id| {
+            serde_json::to_string(&PresenceNotice::PresenceAudienceChanged {
+                user_id,
+                revoking: false,
+                block: false,
+                op: None,
+            })
+            .unwrap()
+        };
+        let guild = Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00dd);
+
+        // Another member (a current peer) left: suspended at once, so its
+        // next update in the same stream is not forwarded; re-check it.
+        params.presence.audience.lock().await.peers.insert(PEER);
+        let statuses = forwarded_statuses(
+            &params,
+            &mut rx,
+            vec![
+                raw_message(channels::guild_events(guild), notice(Some(PEER))),
+                versioned_status(1, "busy"),
+            ],
+        )
+        .await;
+        assert!(statuses.is_empty(), "suspended before the next message");
+        assert!(params
+            .presence
+            .audience
+            .lock()
+            .await
+            .suspended
+            .contains(&PEER));
+        assert!(rx.try_recv().is_err(), "notice must not be forwarded");
+        assert_eq!(audience_rx.try_recv(), Ok(()));
+        {
+            let pending = params.audience_pending.lock().unwrap();
+            assert!(!pending.full);
+            assert!(pending.targets.contains(&PEER));
+        }
+
+        // Own change (user channel, or a server notice naming this user):
+        // full reload.
+        let own = params.user_id;
+        forwarded_statuses(
+            &params,
+            &mut rx,
+            vec![
+                raw_message(channels::user_events(own), notice(None)),
+                raw_message(channels::guild_events(guild), notice(Some(own))),
+            ],
+        )
+        .await;
+        assert!(rx.try_recv().is_err(), "notice must not be forwarded");
+        assert_eq!(audience_rx.try_recv(), Ok(()));
+        assert!(params.audience_pending.lock().unwrap().full);
+
+        // A pre-commit (revoking) block notice: suspended and treated as
+        // blocked for channel events at once; nothing queued until the
+        // post-commit notice.
+        let other = Uuid::from_u128(0x0192_0000_0000_7000_8000_0000_0000_00ee);
+        params.presence.audience.lock().await.peers.insert(other);
+        let revoking = serde_json::to_string(&PresenceNotice::PresenceAudienceChanged {
+            user_id: Some(other),
+            revoking: true,
+            block: true,
+            op: Some(Uuid::from_u128(0xff)),
+        })
+        .unwrap();
+        forwarded_statuses(
+            &params,
+            &mut rx,
+            vec![raw_message(channels::user_events(own), revoking)],
+        )
+        .await;
+        assert!(audience_rx.try_recv().is_err(), "nothing to re-check yet");
+        assert!(!params.presence.audience.lock().await.allowed(&other));
+        assert!(params.blocked_users.read().await.contains(&other));
     }
 
     #[tokio::test]

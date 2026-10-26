@@ -3,7 +3,7 @@ import type { UserStatus, QualityLevel, StatusShape } from "@/lib/types";
 import { STATUS_COLORS } from "@/lib/types";
 
 interface StatusIndicatorProps {
-  /** For user status: online, idle, dnd, invisible, offline */
+  /** For user status: online, idle, dnd, offline */
   status?: UserStatus;
   /** For quality indicators: good, warning, poor, unknown */
   quality?: QualityLevel;
@@ -32,7 +32,6 @@ function getShapeForStatus(status: UserStatus): StatusShape {
       return "triangle";
     case "dnd":
       return "hexagon";
-    case "invisible":
     case "offline":
       return "empty-circle";
   }
@@ -59,7 +58,6 @@ function getColorForStatus(status: UserStatus): string {
       return STATUS_COLORS.warning;
     case "dnd":
       return STATUS_COLORS.poor;
-    case "invisible":
     case "offline":
       return STATUS_COLORS.unknown;
   }

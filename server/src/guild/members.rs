@@ -42,8 +42,26 @@ pub async fn leave_guild(
         ));
     }
 
-    // Remove membership
-    core_q::delete_guild_member(&state.db, guild_id, auth.id).await?;
+    // Remove membership. The leaver and the remaining members stop seeing
+    // each other's presence: suspended before the commit, re-checked after.
+    let revocation = crate::presence::connections::begin_user_revocation(
+        &state.redis,
+        guild_id,
+        Some(auth.id),
+        &[auth.id],
+    )
+    .await;
+    crate::ws::test_hooks::before_revocation_commit(auth.id).await;
+    let removed = core_q::delete_guild_member(&state.db, guild_id, auth.id).await;
+    crate::ws::test_hooks::after_revocation_commit(auth.id).await;
+    crate::presence::connections::finish_guild_revocation(
+        &state.redis,
+        revocation,
+        guild_id,
+        Some(auth.id),
+    )
+    .await;
+    removed?;
 
     // Dispatch MemberLeft to bot ecosystem (non-blocking)
     {
@@ -88,7 +106,32 @@ pub async fn list_members(
         return Err(GuildError::Forbidden);
     }
 
-    let members = core_q::list_guild_members(&state.db, guild_id).await?;
+    let mut members = core_q::list_guild_members(&state.db, guild_id).await?;
+
+    // Online means "has a live socket" (per device, see presence::connections).
+    // Users blocked in either direction see each other as offline, with no
+    // last-seen time.
+    let ids: Vec<Uuid> = members.iter().map(|m| m.user_id).collect();
+    let live = crate::presence::connections::live_users_or_log(&state.redis, &ids).await;
+    let blocked: Vec<(Uuid,)> = sqlx::query_as(
+        r"SELECT CASE WHEN requester_id = $1 THEN addressee_id ELSE requester_id END
+          FROM friendships
+          WHERE status = 'blocked' AND (requester_id = $1 OR addressee_id = $1)",
+    )
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
+    let blocked: std::collections::HashSet<Uuid> = blocked.into_iter().map(|(id,)| id).collect();
+    for member in &mut members {
+        if blocked.contains(&member.user_id) {
+            member.status = "offline".to_string();
+            member.last_seen_at = None;
+        } else {
+            let is_live = live.as_ref().map(|l| l.contains(&member.user_id));
+            member.status =
+                crate::presence::connections::effective_status(&member.status, is_live).to_string();
+        }
+    }
 
     Ok(Json(members))
 }
@@ -125,8 +168,24 @@ pub async fn kick_member(
         ));
     }
 
-    // Remove membership
-    let rows_affected = core_q::delete_guild_member(&state.db, guild_id, user_id).await?;
+    // Remove membership (presence suspended before the commit, re-checked
+    // after it, whatever the outcome).
+    let revocation = crate::presence::connections::begin_user_revocation(
+        &state.redis,
+        guild_id,
+        Some(user_id),
+        &[user_id],
+    )
+    .await;
+    let rows_affected = core_q::delete_guild_member(&state.db, guild_id, user_id).await;
+    crate::presence::connections::finish_guild_revocation(
+        &state.redis,
+        revocation,
+        guild_id,
+        Some(user_id),
+    )
+    .await;
+    let rows_affected = rows_affected?;
 
     if rows_affected == 0 {
         return Err(GuildError::NotFound);
@@ -154,8 +213,8 @@ pub async fn kick_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Initialize `channel_read_state` for all text channels in a guild.
-/// Sets `last_read_at` to `NOW()` so pre-existing messages don't appear as unread.
+/// Initialize `channel_read_state` for the guild's read-tracked channels the
+/// user may view, so pre-existing messages don't appear as unread.
 ///
 /// Called by the invite-join and discovery-join handlers after a user joins a guild.
 pub(crate) async fn initialize_channel_read_state(

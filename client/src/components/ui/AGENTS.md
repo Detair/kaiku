@@ -56,14 +56,14 @@ Online status dot indicator.
 
 **Expected Props:**
 
-- `status: UserStatus` - "online" | "idle" | "dnd" | "invisible" | "offline"
+- `status: UserStatus` - "online" | "idle" | "dnd" | "offline"
 - `size?: "sm" | "md" | "lg"` - Match avatar size
 
 **Visual Design:**
 
 - Absolute positioned (for avatar overlay)
 - Colored dot with border
-- Colors: green (online), yellow (idle), red (dnd), gray (invisible/offline)
+- Colors: green (online), yellow (idle), red (dnd), gray (offline)
 
 ### CodeBlock.tsx
 

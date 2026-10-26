@@ -30,16 +30,17 @@
 1. Client connects to `GET /ws`, authenticating either with `Sec-WebSocket-Protocol: access_token.<jwt>` (validated *before* the upgrade) or by sending `{"type":"authenticate","token":…}` as the first frame (within 5 s after the upgrade)
 2. Auth refusals (see **Auth refusal signals** below): header auth answers with a plain HTTP status before the upgrade; frame auth answers on the socket
 3. Upgrade to WebSocket protocol
-4. Server updates user presence to `online` and spawns the message sender task (drains the outbound mpsc, writes to the WebSocket)
-5. Load friends, guild IDs and block sets
+4. Server spawns the message sender task (drains the outbound mpsc, writes to the WebSocket)
+5. Load presence peers (friends ∪ members of the user's servers, friends first, capped at 500, one query), guild IDs and block sets
 6. Spawn the Redis pub/sub task (`handle_pubsub`); it fires a `ready` oneshot once `psubscribe("channel:*")` and all per-user `subscribe` calls have returned **and a `PING` on the same subscriber connection has been answered** (fred 10 resolves `subscribe` when the command is queued, not when Valkey acks it; the PING reply is the barrier that proves Valkey executed every subscription) (every subscription is required: a failed `psubscribe` or any `subscribe` — user, admin, friend presence, guild — ends the pipeline with `SubscribeFailed`, so no `Ready` is sent and the socket closes with 1011)
 7. Wait for that `ready` signal (max 5 s; on timeout or early failure the socket is closed with **1011**)
 8. Queue `Ready { user_id, server_time }` (server_time = RFC 3339 UTC, taken when Ready is built; clients use it as the catch-up watermark) — so `Ready` always means "subscriptions are live" — then send the `start` oneshot; only then does the pub/sub task begin forwarding (events published in between wait in its broadcast receiver), so `Ready` is always the first frame. Then the friends' presence snapshot
+   - After `Ready` and the snapshot, the socket registers as one of the user's devices (see **Presence System**)
    - `Ready` guarantees that the socket's **Valkey** subscriptions are live. It does *not* mean the socket receives `channel:{id}` events yet: those are filtered by the socket's `subscribed_channels`, which is empty at `Ready`. A client only gets a channel's messages after its own `subscribe` for that channel was acknowledged with `subscribed`.
 9. Main loop (`select!`): client messages, server heartbeat, and the pub/sub task's exit
-10. On disconnect / any exit: abort background tasks, `QUIT` the socket's own subscriber client (bounded by 1 s; fred keeps the connection and its subscriptions alive if the client is merely dropped), set presence to `offline`
+10. On disconnect / any exit: abort background tasks, `QUIT` the socket's own subscriber client (bounded by 1 s; fred keeps the connection and its subscriptions alive if the client is merely dropped), remove the socket from the user's devices (the last one announces `offline`)
 
-**Pub/sub pipeline failure** (`PubsubExit`): the pub/sub task returns why it stopped. Every reason except `ClientGone` closes the socket with a Close frame (reason `"resync"`), giving the sender task at most 1 s to flush it:
+**Pub/sub pipeline failure** (`PubsubExit`): the pub/sub task returns why it stopped. Every reason except `ClientGone` closes the socket with a Close frame (reason `"RESYNC"`), giving the sender task at most 1 s to flush it:
 - `ConnectFailed`, `SubscribeFailed`, `StreamEnded`, `Lagged` → **1011** (server-side event pipeline failed). A subscriber reconnect counts as `StreamEnded`, because a plain fred client does not restore its subscriptions.
 - `SlowClient` → **1013** (client too slow: the outbound queue stayed full for `SLOW_CLIENT_SEND_TIMEOUT` = 1 s; no silent drops)
 - `ClientGone` → no Close frame (the socket is already going away)
@@ -249,25 +250,76 @@ while let Some(msg) = ws_receiver.next().await {
 
 ### Presence System
 
-**Status Values** (in `db::models::UserStatus`):
-- `online` — User connected to WebSocket
-- `away` — User idle (no activity for 10 minutes, future client-side detection)
-- `busy` — User manually set (future: API endpoint)
-- `offline` — User disconnected
+**Statuses**: `online`, `away`, `busy`, `offline` (`db::UserStatus`). `set_status` accepts `online`, `away` and `busy` (lowercase or capitalized). `offline` is refused with an `error` event `VALIDATION_ERROR`: "appear offline" is not available. A user is `offline` exactly when none of their devices is connected.
 
-**Status Updates**:
-```rust
-// On WebSocket connect
-update_presence(&state, user_id, "online").await?;
+**Per device** (`presence::connections`): Valkey sorted set `presence:sockets:{user_id}`, member = socket id, score = expiry (Unix ms). A socket registers once it is fully set up, refreshes its expiry (90 s TTL) when it answers a server heartbeat ping (unsolicited pongs are ignored), and removes itself on close (before the voice cleanup).
+- Lifecycle steps are single Lua scripts that prune expired members, update the set, decide the transition and publish in the same atomic step. Concurrent connects or disconnects of one user never announce a transition twice or miss one. `socket_offline` reports 1 → 0 when the set is empty afterwards and the call removed its own socket, expired ones or the user's `presence:due` entry (the "offline still owed" marker, which survives the set key's TTL).
+- **Sweeper** (each server, `spawn_presence_sweep`):
+  - every 20 s: expired users (`sweep_expired`: atomic expire step, announces `offline`) and dirty status changes (`sweep_dirty`, see below)
+  - every 60 s: `reconcile_connected` (self-healing, see below)
 
-// On disconnect
-update_presence(&state, user_id, "offline").await?;
-```
+**Published state** `presence:state:{user_id}` (hash): `status` + `v`, `activity` + `av`, `custom` + `cv` (the last published event JSON of each kind with its own version). Every publish writes it in the same Lua step as the `PUBLISH`.
+- Status goes out as `{"v":N,"event":…}` and rich presence (`publish_rich`) as `{"rv":N,"kind":"activity"|"custom","event":…}`; both are internal envelopes.
+- Snapshots and the backstop read only this state, never the database.
 
-**Broadcasting** (future):
-- When user status changes, publish to `presence:{user_id}` Redis channel
-- Friends subscribe to each other's presence updates
-- Reduces DB queries for presence (cache in Redis with 5min TTL)
+**Reconcile** (`connections::reconcile`, Lua) records the status sequence (`users.presence_seq`, bumped by every `set_status`) in `presence:seq:{user_id}` and ignores older ones. It shows `offline` without a live socket, otherwise the status, and publishes only if that differs from the published status.
+- `set_status` marks the change dirty (`users.presence_dirty_since`) in the same UPDATE; a successful reconcile clears it (only if no newer change happened). Changes still dirty after 5 s are reconciled by the sweeper on any server.
+- **Self-healing**: every 60 s each server reconciles the users with registered sockets from a fresh database read (status, then activity and custom status where they differ from the published state).
+  - All of them when they fit the bound (1000); otherwise a rotating window (`reconcile_window`, cursor `presence:reconcile_cursor`) covers everyone within ceil(n / bound) runs.
+  - Each socket's backstop (every 60 s plus up to 10 s of jitter) re-sends whatever advanced past what it sent, status and rich presence.
+  - So any stale status or rich presence heals within about a minute.
+- Socket recovery (a re-registration as the only live device, a failed connect-time lookup, a stale registration read) reconciles from the database too.
+- Fails open: Valkey errors are logged at most once a minute.
+
+**Stored vs. shown status**: `users.status` is the chosen status.
+- Connecting sets `online` only when the stored status is `offline`.
+- The last device closing resets only a stored `online`.
+- REST readers use `effective_status(stored, live)` with `live_users`: the member list (blocked users either way show `offline`) and the friends list. Message, pin, thread and bot-gateway author payloads carry no presence (`AuthorProfile.status` is always `"offline"`, see `chat/AGENTS.md`).
+- `users.invisible` is deprecated (always `false`).
+
+**Audience** (`ws::presence_audience`): presence peers = friends ∪ members of the user's servers, without users blocked either way, capped at 500.
+- **One lock**: `Audience` holds validated `peers` (forwarded), `subscribed` channels, `blocked` (either way), suspensions, invalidation epochs and the status and rich versions sent. **Every** presence event (live, snapshot, backstop, final `offline`) is authorized and queued while holding it.
+- **Notices name the counterpart**: friendship, block and unblock changes notify both users (`notify_pair_changed`); join, leave and kick notify the server channel with the member's id and the member's own channel without one; server deletion has no user.
+- **Revoking changes are durable pending revocations**: block, unfriend, leave, kick and server deletion (owner or admin) each run as an operation with an `op` id.
+  1. **Before** the database change, the operation opens durable keys in Valkey (`begin_pair_revocation` / `begin_user_revocation`), then publishes a pre-commit notice (`revoking: true`, `op`; for a block also `block: true`) as a fast path. The keys are sorted sets of op ids scored by expiry, with a 5 min TTL as a crash safety net only:
+     - `presence:revoking:pair:{viewer}:{peer}`, both directions, for blocks and unfriends
+     - `presence:revoking:user:{u}` for the leaving or kicked member, or every member of a deleted server
+  2. **After** the change, or on its error, it closes exactly its own op in the keys, then publishes the completion notice with the same `op` (`finish_*_revocation`).
+  - A user stays suspended while any operation is pending: announced by a pre-commit notice and not completed (per op, so one completion never ends another), or with an open key.
+  - **Every** validation checks the keys after its database read (`open_revocations`: one call for all peers; the viewer's own user key, and per peer the pair key and the peer's user key). This covers the connect-time validation after the subscription barrier, reloads, re-checks and the periodic revalidation. A key opened before the check is seen; a revocation that begins later publishes its pre-commit notice to the socket's live subscriptions.
+  - A suspension ends only when no operation is pending **and** a fresh read authorizes. Nothing ends it by elapsed time (there is no grace period).
+  - For a block, the pre-commit notice also adds the user to the socket's block sets at once, so channel events (messages, typing) of a user being blocked are dropped like those of a blocked user.
+  - Granting changes (accept, join, unblock) notify only after the commit.
+- **Revalidation**: a reload (`refresh_full`) or re-check (`recheck`, one query per named user; more than 16 fall back to a full reload) remembers the epoch it started at.
+  - Results for users invalidated after that start are discarded and read again; only fresh results authorize and lift suspensions.
+  - New peers are subscribed behind a barrier and stay unauthorized until a read after that barrier confirms them.
+  - A failed read keeps suspensions and retries with the next heartbeat. A failure after installing subscriptions, or no settled read within 4 rounds, closes the socket with 1011.
+  - Dropped peers get a final `offline` only if this socket had sent them anything.
+- **Snapshots** (`send_states`: at connect, for new peers, and the backstop) read the published state, then **fence** the forwarder: the socket publishes a `presence_fence` on its own user channel and waits until the forwarder has seen it, so every notice published before is applied. Then each entry is authorized and version-checked under the lock.
+- **At connect** the audience is revalidated after the subscription barrier and before `Ready`, the snapshot or any forwarding; a database error there closes with 1011.
+- **Periodic revalidation**: each socket's backstop (about every minute) first revalidates the whole audience against the database (`presence_audience::backstop` → `refresh_full`), then re-sends what advanced. This catches an audience notice that was lost after its change committed. Notices are published with a bounded retry (3 attempts).
+- A block or unblock processed by the socket (`set_blocked`) also invalidates the user, so a read started earlier cannot overwrite it. Re-authorized peers (a suspension lifted) are re-sent what advanced, not only new peers.
+- **Block state is freshness-checked**: a reload or re-check applies a block or unblock it read, both to the presence block set and to the `blocked_users` set used for channel events, only if the read is fresh for that user (no invalidation since it began) and no revocation is pending (`apply_block_read`). A stale read never undoes a block the socket already applied.
+- Test hooks (`ws::test_hooks`, `#[doc(hidden)]`):
+  - `pause_after_audience_read`: connect, between the audience read and subscribing
+  - `pause_in_audience_reload`: after a reload's or re-check's read
+  - `pause_after_audience_barrier`: after a round's subscription barrier
+  - `pause_in_snapshot`: after the fence, before queuing
+  - `fail_next_audience_read`: makes the next audience read fail
+  - `run_backstop`: runs the socket backstop on demand
+
+#### Known limits (v1.0)
+
+- **Infrastructure failures:** the pending-revocation keys and notices live in Valkey. If Valkey is unreachable when a revoking change starts (no key, no notice) or a server crashes mid-operation, an observer can keep receiving that user's presence until its next revalidation (about 60 s plus jitter) or reconnect. A key left by a crash expires after 5 min, and until then the pair stays suspended. If only the completion notice is lost, the users stay suspended until the next revalidation sees the key closed.
+- **Concurrency residual (accepted for v1.0):** what remains only occurs with concurrent operations, connects or lock waits in the millisecond-to-second range and affects only status or activity, never message content. Examples: an update published in the instant between a connecting socket's key check and its subscriptions going live, or a reload racing a notice that is still in flight on another server.
+- **Stale but not leaking:**
+  - A status or rich presence can be stale until the next periodic reconcile or backstop (about 60 s). Examples: concurrent rich updates from two devices published out of database order, or a reconcile that briefly publishes the rich value it read just before a newer one.
+  - REST readers (member list, friends) derive status from the database plus live sockets, not from the published state.
+- **Reconcile cursor:** above the bound of 1000 connected users the periodic reconcile walks the due set by rank. Ranks shift as users connect and disconnect, so coverage within ceil(n/bound) runs holds for a stable population; with churn a user can occasionally wait one extra run.
+- **Notice churn:** if a reload or re-check cannot settle within four rounds (the audience keeps changing, or the same user is invalidated again and again), the socket closes with 1011 and the client reconnects with a fresh state.
+- **Pending block at connect (accepted):** a block that is still pending while a socket connects is applied to presence immediately (the durable key). Hiding that user's channel messages starts only with the block's completion notice, or, in a rare case of a concurrent leave and block, only after a reconnect.
+- **Revoking write longer than the key TTL (accepted):** if a revoking database write waits longer than the 5 min TTL of its pending-revocation key, the key expires first and the user's status can be disclosed briefly until the write commits and its completion notice arrives.
+- **Channel-message hiding on block is a UX feature, not a confidentiality boundary.** Blocking filters the blocked user's events from the socket's live stream. Their messages in shared server channels remain reachable through pins and search.
 
 ### Voice Event Delegation
 
@@ -297,7 +349,7 @@ ClientEvent::VoiceJoin { .. }
 **Client Errors** (malformed JSON, invalid channel ID):
 ```rust
 send_outbound(tx, OutboundMsg::Event(ServerEvent::Error {
-    code: "invalid_request".to_string(),
+    code: "INVALID_REQUEST".to_string(),
     message: "Channel not found".to_string(),
 }))
 .await?; // never a raw `tx.send(..).await`: a stalled client would block the socket loop

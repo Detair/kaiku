@@ -306,6 +306,11 @@ pub struct Config {
     /// Unknown names found in `KAIKU_OPTIONAL_FEATURES`; logged as warnings at
     /// startup (config loads before logging is initialised).
     pub unknown_optional_features: Vec<String>,
+
+    /// How long a DM call rings before it ends unanswered. Not an env var:
+    /// always [`crate::voice::call_service::RING_TIMEOUT_SECS`] outside tests,
+    /// which shorten it.
+    pub call_ring_timeout_secs: u64,
 }
 
 /// Origins presented by the Tauri desktop webview (per platform/webview
@@ -558,6 +563,7 @@ impl Config {
             fcm_api_base,
             optional_features,
             unknown_optional_features,
+            call_ring_timeout_secs: crate::voice::call_service::RING_TIMEOUT_SECS,
         };
 
         // SameSite=None requires the Secure flag — browsers reject the cookie otherwise
@@ -699,6 +705,7 @@ impl Config {
             fcm_api_base: crate::push::fcm::FCM_API_BASE.into(),
             optional_features: crate::features::OptionalFeatures::default(),
             unknown_optional_features: Vec::new(),
+            call_ring_timeout_secs: crate::voice::call_service::RING_TIMEOUT_SECS,
         }
     }
 }

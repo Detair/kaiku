@@ -16,7 +16,12 @@ import javax.inject.Singleton
  * Removes the posted message notifications and the queued wake fetches when
  * the signed-in account goes away: on every transition from a signed-in user
  * to signed out or to another user, and at process start when no session is
- * stored at all. Runs without any Activity (started from
+ * stored at all. The departing account's remembered calls are forgotten
+ * with them. Wakes carry no account, so a late call wake meant for a previous
+ * account runs under the account signed in now: it is dropped when the DM is
+ * definitely not that user's ([CallerLookup.NotMember]); only when membership
+ * cannot be checked (offline) may a generic call notification still appear.
+ * Accepted, since logout deletes the FCM token / UnifiedPush registration. Runs without any Activity (started from
  * the Application). The fetch itself also clears notifications when it finds
  * its session ended ([WakeFetchProcessor]).
  */
@@ -26,6 +31,7 @@ class PushSessionObserver @Inject constructor(
     private val tokenStorage: TokenStorage,
     private val sink: NotificationSink,
     private val enqueuer: WakeWorkEnqueuer,
+    private val callStore: CallNotificationStore,
     @ChatCoroutineScope private val scope: CoroutineScope,
 ) {
     companion object {
@@ -49,6 +55,11 @@ class PushSessionObserver @Inject constructor(
                     logger.info("session ended: clearing message notifications and wake work")
                     enqueuer.cancelAll()
                     sink.cancelAll()
+                    // The departed account's remembered calls go too (ids only,
+                    // nothing of it stays). A late `ended` with nothing stored
+                    // still shows a missed call (C20 addendum), see the KDoc.
+                    val departed = previous
+                    if (departed != null) callStore.clearUser(departed) else callStore.clearAll()
                 }
                 previous = current
                 first = false

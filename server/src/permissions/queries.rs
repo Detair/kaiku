@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::guild::GuildPermissions;
-use super::models::{AuditLogEntry, ChannelOverride, ElevatedSession, GuildRole, SystemAdmin};
+use super::models::{AuditLogEntry, ElevatedSession, GuildRole, SystemAdmin};
 
 // ============================================================================
 // System Admin Queries
@@ -463,78 +463,6 @@ pub async fn get_member_highest_role(
     .await?;
 
     Ok(result)
-}
-
-// ============================================================================
-// Channel Override Queries
-// ============================================================================
-
-/// Get all permission overrides for a channel.
-pub async fn get_channel_overrides(
-    pool: &PgPool,
-    channel_id: Uuid,
-) -> sqlx::Result<Vec<ChannelOverride>> {
-    sqlx::query_as::<_, ChannelOverride>(
-        r"
-        SELECT id, channel_id, role_id, allow_permissions, deny_permissions
-        FROM channel_overrides
-        WHERE channel_id = $1
-        ",
-    )
-    .bind(channel_id)
-    .fetch_all(pool)
-    .await
-}
-
-/// Set or update a channel permission override.
-///
-/// Uses ON CONFLICT UPDATE to upsert the override.
-pub async fn set_channel_override(
-    pool: &PgPool,
-    channel_id: Uuid,
-    role_id: Uuid,
-    allow: GuildPermissions,
-    deny: GuildPermissions,
-) -> sqlx::Result<ChannelOverride> {
-    sqlx::query_as::<_, ChannelOverride>(
-        r"
-        INSERT INTO channel_overrides (channel_id, role_id, allow_permissions, deny_permissions)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (channel_id, role_id) DO UPDATE
-        SET allow_permissions = EXCLUDED.allow_permissions,
-            deny_permissions = EXCLUDED.deny_permissions
-        RETURNING id, channel_id, role_id, allow_permissions, deny_permissions
-        ",
-    )
-    .bind(channel_id)
-    .bind(role_id)
-    .bind(allow.to_db())
-    .bind(deny.to_db())
-    .fetch_one(pool)
-    .await
-}
-
-/// Delete a channel permission override.
-///
-/// Returns `true` if an override was deleted, `false` if not found.
-pub async fn delete_channel_override(
-    pool: &PgPool,
-    channel_id: Uuid,
-    role_id: Uuid,
-) -> sqlx::Result<bool> {
-    let result = sqlx::query(
-        r"
-        DELETE FROM channel_overrides
-        WHERE channel_id = $1
-          AND role_id = $2
-        ",
-    )
-    .bind(channel_id)
-    .bind(role_id)
-    .execute(pool)
-    .await?;
-
-    Ok(result.rows_affected() > 0)
 }
 
 // ============================================================================

@@ -11,6 +11,8 @@ import {
 } from "solid-js";
 import { Phone, Check, X } from "lucide-solid";
 import { t, plural } from "@/i18n";
+import { isCallGlareError } from "@/lib/callEnd";
+import { errorText, CALL_START_ERRORS } from "@/i18n/errors";
 import { getSelectedDM, updateDMIconUrl } from "@/stores/dms";
 import { currentUser } from "@/stores/auth";
 import MessageList from "@/components/messages/MessageList";
@@ -18,7 +20,7 @@ import MessageInput from "@/components/messages/MessageInput";
 import TypingIndicator from "@/components/messages/TypingIndicator";
 import { showToast } from "@/components/ui/Toast";
 import { CallBanner } from "@/components/call";
-import { callState, startCall, endCall, isInCallForChannel } from "@/stores/call";
+import { callState, startCall, setChannelCallId, abortOutgoingCall, isInCallForChannel } from "@/stores/call";
 import {
   startDMCall,
   joinVoice,
@@ -45,12 +47,22 @@ const DMConversation: Component = () => {
     // correctly ignored by the call store.
     startCall(currentDM.id);
     try {
-      await startDMCall(currentDM.id);
+      const res = await startDMCall(currentDM.id);
+      setChannelCallId(currentDM.id, res.call_id);
       await joinVoice(currentDM.id);
     } catch (err) {
       console.error("Failed to start call:", err);
-      // Roll back optimistic call state on failure
-      endCall(currentDM.id, "cancelled");
+      showToast({
+        type: "error",
+        title: errorText(err, "voice.call.startFailed", CALL_START_ERRORS.byCode),
+        duration: 5000,
+      });
+      // Roll back optimistic call state on failure. A conflict (glare) goes
+      // back to idle so the other side's incoming call can still ring.
+      abortOutgoingCall(
+        currentDM.id,
+        isCallGlareError(err) ? "conflict" : "failed",
+      );
     } finally {
       setIsStartingCall(false);
     }

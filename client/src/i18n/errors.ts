@@ -42,6 +42,16 @@ export const CHAT_SEND_ERRORS: { byCode: ByCode; byStatus: ByStatus } = {
   byStatus: { 413: "chat.send.fileTooLarge" },
 };
 
+/** Reasons starting a DM call can fail (server answers 403 BLOCKED). */
+export const CALL_START_ERRORS: { byCode: ByCode } = {
+  byCode: {
+    BLOCKED: "voice.call.blocked",
+    CALL_CONFLICT: "voice.call.error.conflict",
+    CALL_ALREADY_EXISTS: "voice.call.error.alreadyExists",
+    call_already_exists: "voice.call.error.alreadyExists",
+  },
+};
+
 /**
  * Turn any thrown value into a sentence for the user (contract C16).
  *
@@ -71,6 +81,7 @@ export function errorText(
     status !== undefined && byStatus && hasOwn(byStatus, status) ? byStatus[status] : undefined;
   if (byStatusKey) return t(byStatusKey);
 
+  if (code === "FEATURE_DISABLED") return t("errors.featureDisabled");
   if (code === "RATE_LIMITED" || status === 429) return t("errors.rateLimited");
   if (code === "INTERNAL_ERROR" || (status !== undefined && status >= 500)) {
     return t("errors.server");

@@ -7,6 +7,8 @@ vi.mock("@/lib/tauri", () => ({
   markAllGuildChannelsRead: vi.fn(),
   reorderGuildChannels: vi.fn(),
   wsStatus: vi.fn(),
+  fetchServerSettings: vi.fn(),
+  getServerUrl: vi.fn(() => "https://chat.example"),
 }));
 
 vi.mock("@/stores/websocket", () => ({
@@ -19,6 +21,7 @@ vi.mock("@/components/ui/Toast", () => ({
 }));
 
 import * as tauri from "@/lib/tauri";
+import { HttpError } from "@/lib/tauri/common";
 import { subscribeChannel, waitForConnection } from "@/stores/websocket";
 import type { Channel, ChannelWithUnread } from "@/lib/types";
 import {
@@ -188,6 +191,28 @@ describe("channels store", () => {
   });
 
   describe("getTotalUnreadCount", () => {
+    it("hidden forum channel with unread does not count", async () => {
+      const { loadServerFeatures, resetServerFeatures } = await import("../serverFeatures");
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValueOnce({
+        features: {
+          forum_channels: false,
+          announcement_channels: true,
+          scheduled_events: false,
+          membership_screening: false,
+        },
+      } as never);
+      await loadServerFeatures();
+      setChannelsState({
+        channels: [
+          createChannelWithUnread({ id: "t1", channel_type: "text", unread_count: 1 }),
+          createChannelWithUnread({ id: "f1", channel_type: "forum", unread_count: 4 }),
+          createChannelWithUnread({ id: "a1", channel_type: "announcement", unread_count: 2 }),
+        ],
+      });
+      expect(getTotalUnreadCount()).toBe(3);
+      resetServerFeatures();
+    });
+
     it("sums unread across text channels only", () => {
       setChannelsState({
         channels: [
@@ -226,11 +251,12 @@ describe("channels store", () => {
   });
 
   describe("isChannelUnread", () => {
-    it("returns true when last_message_id differs from last_read_message_id", () => {
+    it("returns true when unread_count is positive", () => {
       setChannelsState({
         channels: [
           createChannelWithUnread({
             id: "ch-1",
+            unread_count: 2,
             last_message_id: "msg-2",
             last_read_message_id: "msg-1",
           }),
@@ -240,13 +266,14 @@ describe("channels store", () => {
       expect(isChannelUnread("ch-1")).toBe(true);
     });
 
-    it("returns false when IDs match", () => {
+    it("returns false when the cursor sits on an older thread reply but unread_count is 0", () => {
       setChannelsState({
         channels: [
           createChannelWithUnread({
             id: "ch-1",
-            last_message_id: "msg-1",
-            last_read_message_id: "msg-1",
+            unread_count: 0,
+            last_message_id: "top-2",
+            last_read_message_id: "reply-old",
           }),
         ],
       });
@@ -254,14 +281,10 @@ describe("channels store", () => {
       expect(isChannelUnread("ch-1")).toBe(false);
     });
 
-    it("returns false when last_message_id is null", () => {
+    it("returns false when unread_count is 0 and there is no last message", () => {
       setChannelsState({
         channels: [
-          createChannelWithUnread({
-            id: "ch-1",
-            last_message_id: null,
-            last_read_message_id: null,
-          }),
+          createChannelWithUnread({ id: "ch-1", last_message_id: null }),
         ],
       });
 
@@ -270,6 +293,66 @@ describe("channels store", () => {
 
     it("returns false for unknown channel", () => {
       expect(isChannelUnread("unknown")).toBe(false);
+    });
+  });
+
+  describe("forum and announcement channels are text-like for unread", () => {
+    it("counts them in the total unread count", () => {
+      setChannelsState({
+        channels: [
+          createChannelWithUnread({ id: "t", channel_type: "text", unread_count: 1 }),
+          createChannelWithUnread({ id: "f", channel_type: "forum", unread_count: 2 }),
+          createChannelWithUnread({ id: "a", channel_type: "announcement", unread_count: 4 }),
+          createChannelWithUnread({ id: "v", channel_type: "voice", unread_count: 8 }),
+        ],
+      });
+
+      expect(getTotalUnreadCount()).toBe(7);
+    });
+
+    it("markAllGuildChannelsAsRead clears forum and announcement but not voice", async () => {
+      vi.mocked(tauri.markAllGuildChannelsRead).mockResolvedValue(undefined);
+      setChannelsState({
+        channels: [
+          createChannelWithUnread({ id: "f", channel_type: "forum", unread_count: 2, last_message_id: "m1" }),
+          createChannelWithUnread({ id: "a", channel_type: "announcement", unread_count: 4, last_message_id: "m2" }),
+          createChannelWithUnread({ id: "v", channel_type: "voice", unread_count: 8 }),
+        ],
+      });
+
+      await markAllGuildChannelsAsRead("guild-1");
+
+      expect(channelsState.channels[0].unread_count).toBe(0);
+      expect(channelsState.channels[1].unread_count).toBe(0);
+      expect(channelsState.channels[2].unread_count).toBe(8);
+    });
+  });
+
+  describe("markChannelAsRead guards", () => {
+    it("never calls the API for a voice channel", async () => {
+      setChannelsState({
+        channels: [createChannelWithUnread({ id: "v", channel_type: "voice" })],
+      });
+
+      await markChannelAsRead("v", "msg-1");
+
+      expect(tauri.markChannelAsRead).not.toHaveBeenCalled();
+    });
+
+    it("treats 400/403 from the server quietly", async () => {
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      setChannelsState({
+        channels: [createChannelWithUnread({ id: "ch-1", unread_count: 3 })],
+      });
+      vi.mocked(tauri.markChannelAsRead).mockRejectedValue(new HttpError(403, "forbidden"));
+      await markChannelAsRead("ch-1", "msg-3");
+      vi.mocked(tauri.markChannelAsRead).mockRejectedValue(
+        new HttpError(400, "message is a thread reply"),
+      );
+      await markChannelAsRead("ch-1", "msg-4");
+
+      expect(errSpy).not.toHaveBeenCalled();
+      errSpy.mockRestore();
     });
   });
 
@@ -490,5 +573,45 @@ describe("channels store", () => {
       expect(vc).toHaveLength(1);
       expect(vc[0].id).toBe("v1");
     });
+  });
+});
+
+describe("visibleChannels", () => {
+  it("visibleChannels drops disabled types", async () => {
+    const { visibleChannels } = await import("../channels");
+    const { loadServerFeatures, resetServerFeatures } = await import("../serverFeatures");
+    const mk = (id: string, channel_type: string) => ({ id, channel_type }) as unknown as Channel;
+    const all = [mk("t", "text"), mk("v", "voice"), mk("f", "forum"), mk("a", "announcement")];
+
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValueOnce({
+      features: {
+        forum_channels: false,
+        announcement_channels: false,
+        scheduled_events: false,
+        membership_screening: false,
+      },
+    } as never);
+    await loadServerFeatures();
+    expect(visibleChannels(all).map((c) => c.id)).toEqual(["t", "v"]);
+
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue({
+      features: {
+        forum_channels: true,
+        announcement_channels: false,
+        scheduled_events: false,
+        membership_screening: false,
+      },
+    } as never);
+    await loadServerFeatures();
+    expect(visibleChannels(all).map((c) => c.id)).toEqual(["t", "v", "f"]);
+    resetServerFeatures();
+  });
+
+  it("keeps forum/announcement channels while the flags are unknown", async () => {
+    const { visibleChannels } = await import("../channels");
+    const { resetServerFeatures } = await import("../serverFeatures");
+    resetServerFeatures();
+    const mk = (id: string, channel_type: string) => ({ id, channel_type }) as unknown as Channel;
+    expect(visibleChannels([mk("f", "forum"), mk("a", "announcement")]).length).toBe(2);
   });
 });

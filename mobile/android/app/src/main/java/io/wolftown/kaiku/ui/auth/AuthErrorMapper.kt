@@ -17,10 +17,9 @@ object AuthErrorMapper {
     fun login(e: Throwable): Int {
         if (e is ApiException) {
             when {
-                e.code.equals("ACCOUNT_BANNED", ignoreCase = true) ->
-                    return R.string.auth_login_banned
-                e.code == "INVALID_MFA" -> return R.string.auth_login_mfa_invalid
-                e.code == "INVALID_CREDENTIALS" || e.status == HttpStatusCode.Unauthorized ->
+                e.normalizedCode == "ACCOUNT_BANNED" -> return R.string.auth_login_banned
+                e.normalizedCode == "INVALID_MFA" -> return R.string.auth_login_mfa_invalid
+                e.normalizedCode == "INVALID_CREDENTIALS" || e.status == HttpStatusCode.Unauthorized ->
                     return R.string.auth_login_invalid_credentials
             }
         }
@@ -30,7 +29,7 @@ object AuthErrorMapper {
     @StringRes
     fun register(e: Throwable): Int {
         if (e is ApiException) {
-            when (e.code) {
+            when (e.normalizedCode) {
                 "USER_EXISTS" -> return R.string.auth_register_username_taken
                 "EMAIL_TAKEN" -> return R.string.auth_register_email_taken
                 "REGISTRATION_DISABLED" -> return R.string.auth_register_closed
@@ -50,6 +49,8 @@ object AuthErrorMapper {
     @StringRes
     private fun common(e: Throwable): Int? = when {
         e is AlreadySignedInException -> R.string.auth_login_already_signed_in
+        // C22: a feature the server operator turned off (404/400).
+        e is ApiException && e.normalizedCode == "FEATURE_DISABLED" -> R.string.errors_feature_disabled
         e is ApiException && e.status == HttpStatusCode.TooManyRequests -> R.string.errors_rate_limited
         e is ApiException && e.status.value >= 500 -> R.string.errors_server
         e is IOException -> R.string.errors_network

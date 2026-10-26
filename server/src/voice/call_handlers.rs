@@ -15,14 +15,15 @@ use crate::auth::AuthUser;
 use crate::db::{self, ChannelType};
 use crate::social::block_cache;
 use crate::voice::call::CallState;
-use crate::voice::call_service::{CallError, CallService};
+use crate::voice::call_service::{CallError, CallService, Transition};
 use crate::voice::queries;
-use crate::ws::{broadcast_to_channel, ServerEvent};
 
 /// Response for call state
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CallStateResponse {
     pub channel_id: Uuid,
+    /// Id of this call (generation); call events carry the same `call_id`.
+    pub call_id: Uuid,
     #[serde(flatten)]
     #[schema(inline)]
     pub state: CallState,
@@ -39,12 +40,15 @@ pub struct CallApiError {
 impl IntoResponse for CallError {
     fn into_response(self) -> axum::response::Response {
         let (status, code) = match &self {
-            Self::CallNotFound => (StatusCode::NOT_FOUND, "call_not_found"),
-            Self::CallAlreadyExists => (StatusCode::CONFLICT, "call_already_exists"),
-            Self::Redis(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
-            Self::InvalidEvent(_) => (StatusCode::BAD_REQUEST, "invalid_event"),
-            Self::StateTransition(_) => (StatusCode::CONFLICT, "invalid_transition"),
-            Self::Serialization(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
+            Self::CallNotFound => (StatusCode::NOT_FOUND, "CALL_NOT_FOUND"),
+            Self::CallAlreadyExists => (StatusCode::CONFLICT, "CALL_ALREADY_EXISTS"),
+            Self::Contention => (StatusCode::CONFLICT, "CALL_CONFLICT"),
+            Self::Redis(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
+            Self::InvalidEvent(_) => (StatusCode::BAD_REQUEST, "INVALID_EVENT"),
+            Self::StateTransition(_) => (StatusCode::CONFLICT, "INVALID_TRANSITION"),
+            Self::Serialization(_) | Self::Internal(_) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR")
+            }
         };
 
         let body = Json(CallApiError {
@@ -57,6 +61,7 @@ impl IntoResponse for CallError {
 }
 
 /// Custom error type for call handlers that combines `CallError` and database errors
+#[derive(Debug)]
 pub enum CallHandlerError {
     Call(CallError),
     NotFound,
@@ -73,7 +78,7 @@ impl IntoResponse for CallHandlerError {
                 StatusCode::NOT_FOUND,
                 Json(CallApiError {
                     error: "DM channel not found".to_string(),
-                    code: "not_found".to_string(),
+                    code: "NOT_FOUND".to_string(),
                 }),
             )
                 .into_response(),
@@ -81,7 +86,7 @@ impl IntoResponse for CallHandlerError {
                 StatusCode::FORBIDDEN,
                 Json(CallApiError {
                     error: "Not a participant of this DM".to_string(),
-                    code: "forbidden".to_string(),
+                    code: "FORBIDDEN".to_string(),
                 }),
             )
                 .into_response(),
@@ -89,7 +94,7 @@ impl IntoResponse for CallHandlerError {
                 StatusCode::FORBIDDEN,
                 Json(CallApiError {
                     error: "Cannot call this user".to_string(),
-                    code: "blocked".to_string(),
+                    code: "BLOCKED".to_string(),
                 }),
             )
                 .into_response(),
@@ -97,7 +102,7 @@ impl IntoResponse for CallHandlerError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(CallApiError {
                     error: format!("Database error: {e}"),
-                    code: "internal_error".to_string(),
+                    code: "INTERNAL_ERROR".to_string(),
                 }),
             )
                 .into_response(),
@@ -143,6 +148,54 @@ async fn verify_dm_participant(
     Ok(participants)
 }
 
+/// Refuse if `user_id` and any of `others` blocked each other.
+///
+/// Same rule as sending a DM: the block cache answers first, and because a
+/// cache miss allows, Postgres confirms. Lookup failures follow
+/// `block_check_fail_open`.
+async fn ensure_not_blocked(
+    state: &AppState,
+    user_id: Uuid,
+    others: &[Uuid],
+) -> Result<(), CallHandlerError> {
+    for &target_id in others {
+        match block_cache::is_blocked_either_direction(&state.redis, user_id, target_id).await {
+            Ok(true) => return Err(CallHandlerError::Blocked),
+            Ok(false) => {}
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    %user_id,
+                    %target_id,
+                    fail_open = state.config.block_check_fail_open,
+                    "Redis block check failed, using failsafe policy"
+                );
+                if !state.config.block_check_fail_open {
+                    return Err(CallHandlerError::Blocked);
+                }
+            }
+        }
+    }
+
+    match crate::chat::queries::blocked_among(&state.db, user_id, others).await {
+        Ok(blocked) if !blocked.is_empty() => Err(CallHandlerError::Blocked),
+        Ok(_) => Ok(()),
+        Err(e) => {
+            warn!(
+                error = %e,
+                %user_id,
+                fail_open = state.config.block_check_fail_open,
+                "DB block check failed, using failsafe policy"
+            );
+            if state.config.block_check_fail_open {
+                Ok(())
+            } else {
+                Err(CallHandlerError::Blocked)
+            }
+        }
+    }
+}
+
 /// GET /api/dm/{id}/call - Get current call state
 #[utoipa::path(
     get,
@@ -162,17 +215,22 @@ pub async fn get_call(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<Option<CallStateResponse>>, CallHandlerError> {
-    // Verify membership
     verify_dm_participant(&state, channel_id, auth.id).await?;
 
-    let call_service = CallService::new(state.redis.clone());
-    let call_state = call_service.get_call_state(channel_id).await?;
-
-    Ok(Json(call_state.map(|state| CallStateResponse {
-        channel_id,
-        state,
-        capabilities: vec!["audio".to_string()],
+    let calls = CallService::for_state(&state);
+    let call = calls.get_call(channel_id).await?;
+    Ok(Json(call.map(|(state, meta)| {
+        response(channel_id, Transition { state, meta })
     })))
+}
+
+fn response(channel_id: Uuid, t: Transition) -> CallStateResponse {
+    CallStateResponse {
+        channel_id,
+        call_id: t.meta.call_uuid(),
+        state: t.state,
+        capabilities: vec!["audio".to_string()],
+    }
 }
 
 /// Get username for a user ID
@@ -204,7 +262,6 @@ pub async fn start_call(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<CallStateResponse>), CallHandlerError> {
-    // Verify membership and get other participants
     let participants = verify_dm_participant(&state, channel_id, auth.id).await?;
     let target_users: HashSet<Uuid> = participants
         .into_iter()
@@ -215,58 +272,36 @@ pub async fn start_call(
         return Err(CallError::InvalidEvent("No other participants in DM".into()).into());
     }
 
-    // Check if any participant has blocked the other
-    for &target_id in &target_users {
-        match block_cache::is_blocked_either_direction(&state.redis, auth.id, target_id).await {
-            Ok(true) => return Err(CallHandlerError::Blocked),
-            Ok(false) => {}
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    user_id = %auth.id,
-                    %target_id,
-                    fail_open = state.config.block_check_fail_open,
-                    "Redis block check failed, using failsafe policy"
-                );
-                if !state.config.block_check_fail_open {
-                    return Err(CallHandlerError::Blocked);
-                }
-            }
-        }
-    }
+    let others: Vec<Uuid> = target_users.iter().copied().collect();
+    ensure_not_blocked(&state, auth.id, &others).await?;
 
-    let call_service = CallService::new(state.redis.clone());
-    let call_state = call_service
-        .start_call(channel_id, auth.id, target_users)
-        .await?;
-
-    // Broadcast IncomingCall to all participants (they're subscribed to the DM channel)
     let initiator_name = get_username(&state, auth.id).await?;
-    // Default capabilities: audio only for now
-    let capabilities = vec!["audio".to_string()];
-    if let Err(e) = broadcast_to_channel(
-        &state.redis,
-        channel_id,
-        &ServerEvent::IncomingCall {
-            channel_id,
-            initiator: auth.id,
-            initiator_name,
-            capabilities,
-        },
-    )
-    .await
-    {
-        tracing::warn!(error = %e, %channel_id, "Failed to broadcast IncomingCall event");
-    }
+    let room_occupied = match state.sfu.get_room(channel_id).await {
+        Some(room) => !room.is_empty().await,
+        None => false,
+    };
 
-    Ok((
-        StatusCode::CREATED,
-        Json(CallStateResponse {
-            channel_id,
-            state: call_state,
-            capabilities: vec!["audio".to_string()],
-        }),
-    ))
+    // Run the start in its own task: once the call exists, its ring timer and
+    // `incoming_call` must not depend on this request staying alive.
+    let calls = CallService::for_state(&state);
+    let ring_timeout_secs = state.config.call_ring_timeout_secs;
+    let initiator = auth.id;
+    let started = tokio::spawn(async move {
+        calls
+            .start_call(
+                channel_id,
+                initiator,
+                initiator_name,
+                target_users,
+                ring_timeout_secs,
+                room_occupied,
+            )
+            .await
+    })
+    .await
+    .map_err(|e| CallError::Internal(format!("call start task failed: {e}")))??;
+
+    Ok((StatusCode::CREATED, Json(response(channel_id, started))))
 }
 
 /// POST /api/dm/{id}/call/join - Join an active call
@@ -289,57 +324,19 @@ pub async fn join_call(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<CallStateResponse>, CallHandlerError> {
-    // Verify membership
     let participants = verify_dm_participant(&state, channel_id, auth.id).await?;
 
-    // Check block status with other participants
-    for &participant_id in &participants {
-        if participant_id != auth.id {
-            match block_cache::is_blocked_either_direction(&state.redis, auth.id, participant_id)
-                .await
-            {
-                Ok(true) => return Err(CallHandlerError::Blocked),
-                Ok(false) => {}
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        user_id = %auth.id,
-                        target_id = %participant_id,
-                        fail_open = state.config.block_check_fail_open,
-                        "Redis block check failed, using failsafe policy"
-                    );
-                    if !state.config.block_check_fail_open {
-                        return Err(CallHandlerError::Blocked);
-                    }
-                }
-            }
-        }
-    }
+    let others: Vec<Uuid> = participants
+        .iter()
+        .copied()
+        .filter(|&id| id != auth.id)
+        .collect();
+    ensure_not_blocked(&state, auth.id, &others).await?;
 
-    let call_service = CallService::new(state.redis.clone());
-    let call_state = call_service.join_call(channel_id, auth.id).await?;
-
-    // Broadcast ParticipantJoined to all participants
     let username = get_username(&state, auth.id).await?;
-    if let Err(e) = broadcast_to_channel(
-        &state.redis,
-        channel_id,
-        &ServerEvent::CallParticipantJoined {
-            channel_id,
-            user_id: auth.id,
-            username,
-        },
-    )
-    .await
-    {
-        tracing::warn!(error = %e, %channel_id, "Failed to broadcast CallParticipantJoined event");
-    }
-
-    Ok(Json(CallStateResponse {
-        channel_id,
-        state: call_state,
-        capabilities: vec!["audio".to_string()],
-    }))
+    let calls = CallService::for_state(&state);
+    let joined = calls.join_call(channel_id, auth.id, username).await?;
+    Ok(Json(response(channel_id, joined)))
 }
 
 /// POST /api/dm/{id}/call/decline - Decline a call
@@ -362,52 +359,11 @@ pub async fn decline_call(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<CallStateResponse>, CallHandlerError> {
-    // Verify membership
     verify_dm_participant(&state, channel_id, auth.id).await?;
 
-    let call_service = CallService::new(state.redis.clone());
-    let call_state = call_service.decline_call(channel_id, auth.id).await?;
-
-    // Broadcast CallDeclined to all participants
-    if let Err(e) = broadcast_to_channel(
-        &state.redis,
-        channel_id,
-        &ServerEvent::CallDeclined {
-            channel_id,
-            user_id: auth.id,
-        },
-    )
-    .await
-    {
-        tracing::warn!(error = %e, %channel_id, "Failed to broadcast CallDeclined event");
-    }
-
-    // If call ended due to all declining, broadcast CallEnded
-    if let CallState::Ended { reason, .. } = &call_state {
-        let reason_str = serde_json::to_string(&reason)
-            .unwrap_or_default()
-            .trim_matches('"')
-            .to_string();
-        if let Err(e) = broadcast_to_channel(
-            &state.redis,
-            channel_id,
-            &ServerEvent::CallEnded {
-                channel_id,
-                reason: reason_str,
-                duration_secs: None,
-            },
-        )
-        .await
-        {
-            tracing::warn!(error = %e, %channel_id, "Failed to broadcast CallEnded event");
-        }
-    }
-
-    Ok(Json(CallStateResponse {
-        channel_id,
-        state: call_state,
-        capabilities: vec!["audio".to_string()],
-    }))
+    let calls = CallService::for_state(&state);
+    let declined = calls.decline_call(channel_id, auth.id).await?;
+    Ok(Json(response(channel_id, declined)))
 }
 
 /// POST /api/dm/{id}/call/leave - Leave an active call
@@ -430,57 +386,11 @@ pub async fn leave_call(
     auth: AuthUser,
     Path(channel_id): Path<Uuid>,
 ) -> Result<Json<CallStateResponse>, CallHandlerError> {
-    // Verify membership
     verify_dm_participant(&state, channel_id, auth.id).await?;
 
-    let call_service = CallService::new(state.redis.clone());
-    let call_state = call_service.leave_call(channel_id, auth.id).await?;
-
-    // Broadcast ParticipantLeft
-    if let Err(e) = broadcast_to_channel(
-        &state.redis,
-        channel_id,
-        &ServerEvent::CallParticipantLeft {
-            channel_id,
-            user_id: auth.id,
-        },
-    )
-    .await
-    {
-        tracing::warn!(error = %e, %channel_id, "Failed to broadcast CallParticipantLeft event");
-    }
-
-    // If call ended due to last person leaving, broadcast CallEnded
-    if let CallState::Ended {
-        reason,
-        duration_secs,
-        ..
-    } = &call_state
-    {
-        let reason_str = serde_json::to_string(&reason)
-            .unwrap_or_default()
-            .trim_matches('"')
-            .to_string();
-        if let Err(e) = broadcast_to_channel(
-            &state.redis,
-            channel_id,
-            &ServerEvent::CallEnded {
-                channel_id,
-                reason: reason_str,
-                duration_secs: *duration_secs,
-            },
-        )
-        .await
-        {
-            tracing::warn!(error = %e, %channel_id, "Failed to broadcast CallEnded event");
-        }
-    }
-
-    Ok(Json(CallStateResponse {
-        channel_id,
-        state: call_state,
-        capabilities: vec!["audio".to_string()],
-    }))
+    let calls = CallService::for_state(&state);
+    let left = calls.leave_call(channel_id, auth.id).await?;
+    Ok(Json(response(channel_id, left)))
 }
 
 /// Build the call router (to be nested under /api/dm)

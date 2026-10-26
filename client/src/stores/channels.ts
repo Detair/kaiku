@@ -5,8 +5,13 @@
  */
 
 import { createStore } from "solid-js/store";
-import type { ChannelWithUnread } from "@/lib/types";
+import type { Channel, ChannelWithUnread } from "@/lib/types";
+import { isHiddenChannel } from "@/stores/serverFeatures";
+
+export { isHiddenChannel };
 import * as tauri from "@/lib/tauri";
+import { HttpError } from "@/lib/tauri/common";
+import { isTextLikeChannelType } from "@/lib/channelTypes";
 import { subscribeChannel, waitForConnection } from "@/stores/websocket";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
@@ -30,8 +35,18 @@ const [channelsState, setChannelsState] = createStore<ChannelsState>({
 
 // Derived state
 
+/**
+ * Drop channels of a type the server has turned off (forum, announcement).
+ * The server still lists them; the app hides them (contract C22).
+ */
+export function visibleChannels<T extends Channel>(channels: T[]): T[] {
+  return channels.filter((c) => !isHiddenChannel(c));
+}
+
 export const selectedChannel = () =>
-  channelsState.channels.find((c) => c.id === channelsState.selectedChannelId);
+  visibleChannels(channelsState.channels).find(
+    (c) => c.id === channelsState.selectedChannelId,
+  );
 
 export const textChannels = () =>
   channelsState.channels
@@ -208,18 +223,19 @@ export function getUnreadCount(channelId: string): number {
  */
 export function getTotalUnreadCount(): number {
   return channelsState.channels
-    .filter((c) => c.channel_type === "text")
+    .filter((c) => isTextLikeChannelType(c.channel_type) && !isHiddenChannel(c))
     .reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
 }
 
 /**
- * Check if channel has unread messages via ID comparison.
+ * Check if channel has unread messages. The server's `unread_count` (top-level
+ * messages after the read cursor) is authoritative; comparing message ids would
+ * misreport a cursor that sits on a thread reply.
  */
 export function isChannelUnread(channelId: string): boolean {
   const channel = channelsState.channels.find((c) => c.id === channelId);
   if (!channel) return false;
-  return channel.last_message_id != null &&
-    channel.last_message_id !== channel.last_read_message_id;
+  return (channel.unread_count ?? 0) > 0;
 }
 
 /**
@@ -261,6 +277,8 @@ export function incrementUnreadCount(channelId: string): void {
 export async function markChannelAsRead(channelId: string, lastMessageId: string): Promise<void> {
   const idx = channelsState.channels.findIndex((c) => c.id === channelId);
   if (idx !== -1) {
+    // The server rejects voice channels (400); there is nothing to mark.
+    if (!isTextLikeChannelType(channelsState.channels[idx].channel_type)) return;
     // Optimistic update
     setChannelsState("channels", idx, "unread_count", 0);
     setChannelsState("channels", idx, "last_read_message_id", lastMessageId);
@@ -268,6 +286,11 @@ export async function markChannelAsRead(channelId: string, lastMessageId: string
     try {
       await tauri.markChannelAsRead(channelId, lastMessageId);
     } catch (err) {
+      // 400 (reply id, other channel) / 403 (invisible channel) are not
+      // actionable and must not loop or toast; the cursor re-syncs on reload.
+      if (err instanceof HttpError && (err.status === 400 || err.status === 403)) {
+        return;
+      }
       console.error("[Channels] Failed to mark channel as read:", err);
     }
   }
@@ -284,7 +307,7 @@ export async function markAllGuildChannelsAsRead(
   channelsState.channels.forEach((c, idx) => {
     if (
       c.guild_id === guildId &&
-      c.channel_type === "text" &&
+      isTextLikeChannelType(c.channel_type) &&
       c.unread_count > 0
     ) {
       indices.push(idx);

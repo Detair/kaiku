@@ -33,7 +33,7 @@ async fn test_list_reports_requires_admin(pool: PgPool) {
     assert_eq!(resp.status(), 403);
 
     let json = body_to_json(resp).await;
-    assert_eq!(json["error"], "not_admin");
+    assert_eq!(json["error"], "NOT_ADMIN");
 }
 
 #[sqlx::test]
@@ -53,7 +53,7 @@ async fn test_list_reports_requires_elevation(pool: PgPool) {
     assert_eq!(resp.status(), 403);
 
     let json = body_to_json(resp).await;
-    assert_eq!(json["error"], "elevation_required");
+    assert_eq!(json["error"], "ELEVATION_REQUIRED");
 }
 
 // ============================================================================

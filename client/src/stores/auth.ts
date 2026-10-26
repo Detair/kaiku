@@ -4,6 +4,7 @@
  * Manages user authentication state and actions.
  */
 
+import { loadServerFeatures, resetServerFeatures } from "@/stores/serverFeatures";
 import { createStore } from "solid-js/store";
 import { codeIs } from "@/lib/errorCode";
 import type { User } from "@/lib/types";
@@ -244,6 +245,7 @@ let sessionExpiredListenerRegistered = false;
 async function endSession(reason: tauri.SessionEndReason): Promise<void> {
   // Claim the end first so a concurrent expiry report does not repeat it.
   setAuthState({ user: null });
+  resetServerFeatures();
   try {
     await requestStop();
   } catch (err) {
@@ -378,6 +380,7 @@ async function runStart(
   const current = () => myId === ownerId && servicesEligible();
   if (!current()) return;
   activeStartId = myId;
+  void loadServerFeatures();
 
   const started: StartedServices = { websocket: false, presence: false, idle: false };
   // Superseded while a step ran: undo what this job started and stop. The
@@ -598,6 +601,7 @@ export async function login(
   password: string,
   mfaCode?: string,
 ): Promise<User> {
+  resetServerFeatures(); // a different server may be chosen
   setAuthState({ isLoading: true, error: null });
 
   try {
@@ -768,6 +772,7 @@ export async function loginWithOidc(
  * Logout and clear session.
  */
 export async function logout(): Promise<void> {
+  resetServerFeatures();
   pendingTemporaryPassword = null;
   passwordChangeSaved = false;
   setAuthState({ isLoading: true, error: null, passwordChangeRequired: false });

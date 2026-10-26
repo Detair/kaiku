@@ -31,7 +31,7 @@ The channel-level permissions system provides fine-grained access control for Di
 - **Channel overrides**: Per-channel allow/deny rules that override role permissions
 - **Guild owner bypass**: Guild owners have unrestricted access to all channels
 - **DM channel protection**: DM channels are only accessible to participants
-- **Deny-wins logic**: Deny permissions always take precedence over allow permissions
+- **Defined override order**: @everyone override first, then role overrides; a role allow beats an @everyone deny
 - **Backward compatible**: Existing guilds retain full channel access
 
 ### Permission Bit
@@ -212,16 +212,17 @@ for role in user_roles {
 
 **Step 2: Apply Channel Overrides**
 ```rust
-// For each role the user has
-for role in user_roles {
-    if let Some(override) = channel_overrides.get(role.id) {
-        // First apply allow (bitwise OR)
-        perms |= override.allow_permissions;
-
-        // Then apply deny (bitwise AND NOT) - deny wins!
-        perms &= !override.deny_permissions;
-    }
+// a) The @everyone override (its allow can only contain bits @everyone may hold)
+if let Some(ovr) = everyone_override {
+    perms |= ovr.allow_permissions & EVERYONE_ALLOWED;
+    perms &= !ovr.deny_permissions;
 }
+
+// b) The overrides of the user's roles, aggregated over all roles
+let role_allow = OR of allow_permissions of the user's role overrides;
+let role_deny  = OR of deny_permissions  of the user's role overrides;
+perms &= !role_deny;
+perms |= role_allow; // a role allow wins over any deny of the same bit
 ```
 
 **Step 3: Check VIEW_CHANNEL**
@@ -269,7 +270,7 @@ sequenceDiagram
     DB-->>PermSystem: [Member role with VIEW_CHANNEL]
     PermSystem->>DB: Get channel overrides
     DB-->>PermSystem: Override denies VIEW_CHANNEL for Member role
-    PermSystem->>PermSystem: Compute permissions (deny wins)
+    PermSystem->>PermSystem: Compute permissions (role deny applied)
     PermSystem->>PermSystem: Check VIEW_CHANNEL ❌
     PermSystem-->>API: PermissionError::Forbidden
     API-->>User: 403 Forbidden
@@ -283,56 +284,42 @@ Channel overrides allow fine-grained control by allowing or denying specific per
 
 ### Override Logic
 
+Overrides are resolved in a fixed order (the same order Discord uses):
+
 ```mermaid
 graph LR
-    Start[Start with role permissions] --> Apply[Apply channel overrides]
-    Apply --> Allow[Apply Allow: perms OR allow]
-    Allow --> Deny[Apply Deny: perms AND NOT deny]
-    Deny --> Final[Final Permissions]
+    Start[Base: @everyone + role permissions] --> E[@everyone override: allow, then deny]
+    E --> RD[Role overrides: AND NOT all role denies]
+    RD --> RA[Role overrides: OR all role allows]
+    RA --> Final[Final Permissions]
 
     style Start fill:#E0E0E0
-    style Allow fill:#90EE90
-    style Deny fill:#FFB6C1
+    style E fill:#FFE4B5
+    style RD fill:#FFB6C1
+    style RA fill:#90EE90
     style Final fill:#87CEEB
 ```
 
-### Deny Always Wins
+1. **Base permissions:** the @everyone role's permissions OR the permissions of all of the user's roles.
+2. **@everyone override:** its allow bits are added (limited to permissions @everyone may hold), then its deny bits are removed.
+3. **Role overrides:** the deny bits of all of the user's role overrides are combined and removed, then the allow bits of all of them are combined and added.
 
-The deny permission is applied AFTER the allow permission, ensuring deny always takes precedence:
+The guild owner always has every permission. Per-user overrides do not exist.
 
-```rust
-// Step 1: Add allowed permissions
-perms |= override.allow_permissions;
+### What This Means
 
-// Step 2: Remove denied permissions (overrides step 1)
-perms &= !override.deny_permissions;
-```
+| Setup on the channel | Result |
+|---|---|
+| @everyone deny VIEW_CHANNEL, role "Staff" allow VIEW_CHANNEL | Staff members see the channel; everyone else does not (private channel) |
+| @everyone deny VIEW_CHANNEL, no role allow | Nobody but the owner sees the channel |
+| @everyone allow VIEW_CHANNEL, role "Muted" deny VIEW_CHANNEL | Everyone sees it except members of Muted |
+| Role A allow VIEW_CHANNEL, role B deny VIEW_CHANNEL, user has both | The user sees the channel (a role allow wins over a role deny) |
 
-**Example:**
-- User has role A (allows VIEW_CHANNEL) and role B (denies VIEW_CHANNEL)
-- Channel has override for role A: allow = 0, deny = 0
-- Channel has override for role B: allow = 0, deny = VIEW_CHANNEL
-- **Result:** User CANNOT view channel (deny wins)
+To keep a user out of a channel, make sure none of their roles allows the permission on that channel; a deny on one role does not override an allow on another.
 
-### Multiple Overrides
+### Bots and Webhooks
 
-When a user has multiple roles with overrides:
-
-```mermaid
-flowchart TD
-    Start[User's base permissions] --> R1[Apply Role 1 override]
-    R1 --> R1Allow[OR with allow_permissions]
-    R1Allow --> R1Deny[AND NOT with deny_permissions]
-    R1Deny --> R2[Apply Role 2 override]
-    R2 --> R2Allow[OR with allow_permissions]
-    R2Allow --> R2Deny[AND NOT with deny_permissions]
-    R2Deny --> Final[Final Permissions]
-
-    style Start fill:#E0E0E0
-    style Final fill:#87CEEB
-```
-
-**Key Point:** All allows are applied first, then all denies. Any deny from any role will block the permission.
+> **Note:** Bot events and webhooks currently receive all channels of the guild regardless of channel overrides; only install trusted bots.
 
 ---
 
@@ -493,6 +480,12 @@ let accessible_channels = all_channels
     .collect();
 ```
 
+### Blocking Users
+
+Blocking hides a user's messages in your message list and threads and stops DMs, calls and presence between you; it does not hide their messages in shared server channels from pins or search.
+
+Hiding channel messages on block is a convenience, not an access control: both users stay members of the shared server, and the server's channel permissions still decide who can read a channel.
+
 ### Attack Vectors Prevented
 
 1. **Channel enumeration:** Generic errors prevent discovering channel existence
@@ -537,25 +530,27 @@ WHERE guild_id IS NOT NULL;
 
 To create a channel that only certain roles can see:
 
-#### Step 1: Remove VIEW_CHANNEL from @everyone
+#### Step 1: Hide the Channel from @everyone
 
 ```http
-PATCH /api/guilds/{guild_id}/roles/{everyone_role_id}
+PUT /api/channels/{channel_id}/overrides/{everyone_role_id}
 {
-  "permissions": 0  // Remove all permissions including VIEW_CHANNEL
+  "allow": 0,
+  "deny": 16777216  // VIEW_CHANNEL bit (1 << 24)
 }
 ```
 
-#### Step 2: Create Channel Override for Specific Roles
+#### Step 2: Allow the Channel for Specific Roles
 
 ```http
-POST /api/channels/{channel_id}/overrides
+PUT /api/channels/{channel_id}/overrides/{member_role_id}
 {
-  "role_id": "{member_role_id}",
-  "allow_permissions": 16777216,  // VIEW_CHANNEL bit (1 << 24)
-  "deny_permissions": 0
+  "allow": 16777216,  // VIEW_CHANNEL bit (1 << 24)
+  "deny": 0
 }
 ```
+
+Members of that role now see the channel; the role allow takes precedence over the @everyone deny. Everyone else (except the owner) does not.
 
 ### New Guild Defaults
 
@@ -574,7 +569,7 @@ const DEFAULT_EVERYONE_PERMISSIONS: i64 =
 
 ### Integration Tests
 
-Located in: `server/tests/permissions/channel_permissions.rs`
+Located in: `server/tests/integration/channel_permissions.rs` and `server/tests/integration/role_channel_overrides.rs` (override order)
 
 **Test Categories:**
 
@@ -590,7 +585,7 @@ Located in: `server/tests/permissions/channel_permissions.rs`
 3. **Channel Overrides** (3 tests)
    - Deny blocks access
    - Allow grants access
-   - Deny wins over allow
+   - A role allow wins over another role's deny
 
 4. **DM Channels** (2 tests)
    - Participants can access
@@ -607,14 +602,11 @@ Located in: `server/tests/permissions/channel_permissions.rs`
 ### Running Tests
 
 ```bash
-# Run all permission tests
-cargo test --test channel_permissions
+# Run all channel permission tests
+cargo nextest run -p vc-server --test integration -E 'test(channel_permissions::) | test(role_channel_overrides::)'
 
-# Run with output
-cargo test --test channel_permissions -- --nocapture
-
-# Run specific test
-cargo test test_channel_override_deny_wins_over_allow
+# Run a specific test
+cargo nextest run -p vc-server --test integration -E 'test(test_channel_override_role_allow_wins_over_role_deny)'
 ```
 
 ### Manual Testing Checklist

@@ -14,6 +14,7 @@
  * - Nesting categories (2-level max)
  */
 
+import { isTextLikeChannelType } from "@/lib/channelTypes";
 import {
   Component,
   For,
@@ -28,6 +29,8 @@ import {
   selectChannel,
   moveChannel,
   moveChannelToCategory,
+  visibleChannels,
+  isHiddenChannel,
 } from "@/stores/channels";
 import {
   categoriesState,
@@ -127,7 +130,7 @@ const ChannelList: Component<ChannelListProps> = (props) => {
     const result: Record<string, ChannelWithUnread[]> = {};
     const uncategorized: ChannelWithUnread[] = [];
 
-    for (const channel of channelsState.channels) {
+    for (const channel of visibleChannels(channelsState.channels)) {
       if (channel.category_id) {
         if (!result[channel.category_id]) {
           result[channel.category_id] = [];
@@ -159,7 +162,8 @@ const ChannelList: Component<ChannelListProps> = (props) => {
   const categoryHasUnread = (categoryId: string): boolean => {
     const channels = getChannelsForCategory(categoryId);
     return channels.some(
-      (c) => c.channel_type === "text" && c.unread_count > 0,
+      (c) =>
+        isTextLikeChannelType(c.channel_type) && !isHiddenChannel(c) && c.unread_count > 0,
     );
   };
 

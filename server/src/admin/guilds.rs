@@ -438,7 +438,15 @@ pub async fn delete_guild(
         .ok_or_else(|| AdminError::NotFound("Guild".to_string()))?;
 
     // Delete guild (cascades to channels, messages, roles, members, invites, etc.)
-    let deleted = queries::delete_guild(&state.db, guild_id).await?;
+    // Presence: suspended before the commit, re-checked after it.
+    let members = crate::presence::connections::guild_member_ids(&state.db, guild_id).await;
+    let revocation =
+        crate::presence::connections::begin_user_revocation(&state.redis, guild_id, None, &members)
+            .await;
+    let deleted = queries::delete_guild(&state.db, guild_id).await;
+    crate::presence::connections::finish_guild_revocation(&state.redis, revocation, guild_id, None)
+        .await;
+    let deleted = deleted?;
 
     if deleted == 0 {
         return Err(AdminError::NotFound("Guild".to_string()));

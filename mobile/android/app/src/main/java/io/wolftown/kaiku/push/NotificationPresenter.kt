@@ -16,7 +16,6 @@ import androidx.core.app.Person
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.wolftown.kaiku.R
-import io.wolftown.kaiku.navigation.DeepLinks
 import io.wolftown.kaiku.ui.MainActivity
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -27,26 +26,39 @@ import javax.inject.Singleton
  * [MESSAGE_ID]) in the [GROUP] group with a summary (id [SUMMARY_ID]).
  * New messages are appended to an already shown notification, keeping the
  * last [MAX_LINES] lines. The lock screen shows only a generic public version.
+ *
+ * DM call notifications use the same tag (channel id) with id [CALL_ID] and
+ * no group, so they never merge into the conversation and a read (which
+ * cancels [MESSAGE_ID] only) leaves them alone; [cancelAll] removes them too.
  */
 @Singleton
-class AndroidNotificationPresenter @Inject constructor(
-    @ApplicationContext private val context: Context,
-) : NotificationSink {
+class AndroidNotificationPresenter internal constructor(
+    private val context: Context,
+    /** Builds a call notification; replaced in JVM tests, where framework notifications cannot be built. */
+    private val callBuilder: ((CallNotification, CallPostPlan) -> Notification)?,
+) : NotificationSink, CallNotificationSink {
+
+    @Inject
+    constructor(@ApplicationContext context: Context) : this(context, null)
 
     companion object {
         private val logger = Logger.getLogger("NotificationPresenter")
 
         const val GROUP = "io.wolftown.kaiku.MESSAGES"
         const val MESSAGE_ID = 1
+        const val CALL_ID = 2
         const val SUMMARY_ID = 0
         const val MAX_LINES = 7
 
-        /** Account a message notification was posted for. */
+        /** Account a notification was posted for (notification extra and tap intent extra). */
         const val EXTRA_USER_ID = "io.wolftown.kaiku.USER_ID"
     }
 
     private val manager: NotificationManager?
         get() = context.getSystemService(NotificationManager::class.java)
+
+    /** Call notifications posted in this process, by channel (guarded by this). */
+    private val postedCalls = HashMap<String, PostedCall>()
 
     @Synchronized
     override fun show(prepare: () -> ChannelNotification?): ShowResult {
@@ -98,7 +110,7 @@ class AndroidNotificationPresenter @Inject constructor(
             .setGroup(GROUP)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion)
-            .setContentIntent(channelIntent(n.channelId))
+            .setContentIntent(tapIntent(NotificationTaps.message(n.channelId, n.userId)))
             .setWhen(n.lines.maxOfOrNull { it.timestampMs } ?: System.currentTimeMillis())
             .setShowWhen(true)
             .addExtras(Bundle().apply { putString(EXTRA_USER_ID, n.userId) })
@@ -115,9 +127,66 @@ class AndroidNotificationPresenter @Inject constructor(
 
     @Synchronized
     override fun cancelAll() {
+        postedCalls.clear()
         val manager = manager ?: return
         messageNotifications(manager).forEach { manager.cancel(it.tag, MESSAGE_ID) }
         manager.cancel(SUMMARY_ID)
+        manager.activeNotifications
+            .filter { it.id == CALL_ID && it.tag != null }
+            .forEach { manager.cancel(it.tag, CALL_ID) }
+    }
+
+    @Synchronized
+    override fun showCall(prepare: () -> CallNotification?): ShowResult {
+        val n = prepare() ?: return ShowResult.REFUSED
+        val manager = manager
+        if (manager == null || !canPost(manager)) {
+            logger.info("call notification skipped: notifications disabled")
+            return ShowResult.DISABLED
+        }
+        val plan = CallNotificationText.plan(n, postedCalls[n.channelId])
+        // A fresh post: drops the old one's timeout and lets a new call alert again.
+        if (plan.cancelFirst) manager.cancel(n.channelId, CALL_ID)
+        val notification = callBuilder?.invoke(n, plan) ?: buildCall(n, plan)
+        manager.notify(n.channelId, CALL_ID, notification)
+        postedCalls[n.channelId] = PostedCall(n.userId, n.callId, n.kind)
+        return ShowResult.POSTED
+    }
+
+    @Synchronized
+    override fun cancelCall(channelId: String) {
+        postedCalls.remove(channelId)
+        manager?.cancel(channelId, CALL_ID)
+    }
+
+    /** A plain heads-up on the DM channel: no full-screen intent, no actions, no ringtone loop. */
+    private fun buildCall(n: CallNotification, plan: CallPostPlan): Notification {
+        val text = CallNotificationText.of(n)
+        val content = if (text.name != null) context.getString(text.res, text.name) else context.getString(text.res)
+        val category = if (n.kind == CallKind.INCOMING) NotificationCompat.CATEGORY_CALL else NotificationCompat.CATEGORY_MISSED_CALL
+        val icon = if (n.kind == CallKind.INCOMING) android.R.drawable.stat_sys_phone_call else android.R.drawable.stat_notify_missed_call
+        val publicVersion = NotificationCompat.Builder(context, NotificationChannels.DM)
+            .setSmallIcon(icon)
+            .setContentTitle(context.getString(CallNotificationText.of(n.copy(callerName = null)).res))
+            .setCategory(category)
+            .build()
+        val builder = NotificationCompat.Builder(context, NotificationChannels.DM)
+            .setSmallIcon(icon)
+            .setContentTitle(content)
+            .setCategory(category)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(plan.onlyAlertOnce)
+            .setSilent(plan.silent)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion)
+            .setContentIntent(tapIntent(NotificationTaps.call(n)))
+            .setWhen(System.currentTimeMillis())
+            .setShowWhen(true)
+            .addExtras(Bundle().apply { putString(EXTRA_USER_ID, n.userId) })
+        // Only a ringing call times out (its `ended` push may be lost); a missed call stays.
+        plan.timeoutMs?.let { builder.setTimeoutAfter(it) }
+        return builder.build()
     }
 
     private fun messageNotifications(manager: NotificationManager): List<StatusBarNotification> =
@@ -153,16 +222,17 @@ class AndroidNotificationPresenter @Inject constructor(
         is LineText.Res -> context.getString(text.id)
     }
 
-    private fun channelIntent(channelId: String): PendingIntent {
+    /** Opens the channel's deep link, tagged with the notification's account ([EXTRA_USER_ID]). */
+    private fun tapIntent(target: NotificationTapTarget): PendingIntent {
         val intent = Intent(
             Intent.ACTION_VIEW,
-            Uri.parse(DeepLinks.channelUri(channelId)),
+            Uri.parse(target.uri),
             context,
             MainActivity::class.java,
-        )
+        ).putExtra(EXTRA_USER_ID, target.userId)
         return PendingIntent.getActivity(
             context,
-            channelId.hashCode(),
+            target.requestCode,
             intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )

@@ -351,49 +351,6 @@ export function computeMemberPermissions(
 }
 
 /**
- * Compute effective permissions for a member in a specific channel
- * Applies channel overrides on top of guild permissions
- */
-export function computeChannelPermissions(
-  guildId: string,
-  channelId: string,
-  userId: string,
-  isOwner: boolean,
-): number {
-  // Owner bypasses all permission checks
-  if (isOwner) {
-    return 0xffffffff;
-  }
-
-  let permissions = computeMemberPermissions(guildId, userId, isOwner);
-  const overrides = getChannelOverrides(channelId);
-  const memberRoleIds = getMemberRoleIds(guildId, userId);
-
-  // Apply @everyone channel override first
-  const everyoneRole = getEveryoneRole(guildId);
-  if (everyoneRole) {
-    const everyoneOverride = overrides.find(
-      (o) => o.role_id === everyoneRole.id,
-    );
-    if (everyoneOverride) {
-      permissions &= ~everyoneOverride.deny_permissions;
-      permissions |= everyoneOverride.allow_permissions;
-    }
-  }
-
-  // Apply role-specific overrides
-  for (const roleId of memberRoleIds) {
-    const override = overrides.find((o) => o.role_id === roleId);
-    if (override) {
-      permissions &= ~override.deny_permissions;
-      permissions |= override.allow_permissions;
-    }
-  }
-
-  return permissions;
-}
-
-/**
  * Check if a member has a specific permission in a guild
  */
 export function memberHasPermission(

@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.domain.model
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
@@ -27,4 +28,6 @@ data class ChannelUnread(
     val channelId: String,
     val channelName: String = "",
     val unreadCount: Long = 0,
+    /** The server's read cursor for this channel; null when nothing was read yet. */
+    @SerialName("last_read_message_id") val lastReadMessageId: String? = null,
 )

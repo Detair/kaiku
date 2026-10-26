@@ -10,11 +10,9 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use fred::prelude::*;
 use serde::{Deserialize, Serialize};
-use tracing::{error, warn};
 use uuid::Uuid;
 use vc_common::protocol::PcType;
 
-use crate::api::AppState;
 use crate::voice::{Quality, ScreenShareInfo, WebcamInfo};
 
 /// State for activity rate limiting and deduplication.
@@ -699,6 +697,11 @@ pub enum ServerEvent {
     IncomingCall {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// User who initiated the call.
         initiator: Uuid,
         /// Initiator's username.
@@ -711,6 +714,11 @@ pub enum ServerEvent {
     CallStarted {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// User who initiated the call.
         initiator: Uuid,
         /// Initiator's username.
@@ -723,6 +731,11 @@ pub enum ServerEvent {
     CallEnded {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// End reason.
         reason: String,
         /// Call duration in seconds (if call was connected).
@@ -732,6 +745,11 @@ pub enum ServerEvent {
     CallParticipantJoined {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// User who joined.
         user_id: Uuid,
         /// User's username.
@@ -741,6 +759,11 @@ pub enum ServerEvent {
     CallParticipantLeft {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// User who left.
         user_id: Uuid,
     },
@@ -748,6 +771,11 @@ pub enum ServerEvent {
     CallDeclined {
         /// DM channel ID.
         channel_id: Uuid,
+        /// Id of the call (generation) this event belongs to. A new call on
+        /// the same channel has a new id; clients ignore events whose
+        /// `call_id` differs from the call they show. Nil from older servers.
+        #[serde(default)]
+        call_id: Uuid,
         /// User who declined.
         user_id: Uuid,
     },
@@ -1175,36 +1203,6 @@ pub async fn broadcast_to_users(
     pipeline.all::<Vec<Value>>().await?;
 
     Ok(())
-}
-
-/// Broadcast a presence update to all users who should see it.
-pub(super) async fn broadcast_presence_update(
-    state: &AppState,
-    user_id: Uuid,
-    event: &ServerEvent,
-) {
-    let json = match serde_json::to_string(event) {
-        Ok(j) => j,
-        Err(e) => {
-            error!("Failed to serialize presence event: {}", e);
-            return;
-        }
-    };
-
-    // Broadcast on presence channel
-    let channel = format!("presence:{user_id}");
-    let result: Result<(), Error> = state.redis.publish(&channel, &json).await;
-    if let Err(e) = result {
-        // Presence is best effort (fail open); throttled so a Valkey outage
-        // does not log once per status change.
-        static WARN: crate::db::LogThrottle = crate::db::LogThrottle::new();
-        if WARN.allow(std::time::Duration::from_mins(1)) {
-            warn!(
-                "Failed to broadcast presence update (logged at most once a minute): {}",
-                e
-            );
-        }
-    }
 }
 
 /// Broadcast an entity patch to the presence channel.
