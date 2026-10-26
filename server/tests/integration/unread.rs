@@ -595,7 +595,8 @@ async fn insert_reply_returning(
 async fn test_viewable_filter_matches_require_channel_access(pool: PgPool) {
     use vc_server::permissions::{filter_viewable_channels_in_guilds, require_channel_access};
 
-    let app = TestApp::with_pool(pool.clone()).await;
+    // Screening must be enforced for the pending fixture to stay hidden.
+    let app = TestApp::with_all_features(pool.clone()).await;
     let pool = &app.pool;
     let (user, _) = create_test_user(pool).await;
     let (other, _) = create_test_user(pool).await;
