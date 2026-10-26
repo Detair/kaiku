@@ -7,6 +7,8 @@ import dagger.hilt.components.SingletonComponent
 import io.ktor.client.*
 import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.api.KaikuHttpClient
+import io.wolftown.kaiku.data.api.PushApi
+import io.wolftown.kaiku.data.api.PushApiImpl
 import io.wolftown.kaiku.data.auth.TokenRefresher
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
@@ -50,4 +52,8 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideJson(): Json = KaikuJson
+
+    @Provides
+    @Singleton
+    fun providePushApi(httpClient: HttpClient): PushApi = PushApiImpl(httpClient)
 }

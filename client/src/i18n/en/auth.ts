@@ -122,8 +122,6 @@ export const auth = {
   "auth.notFound.heading": "Page not found",
   "auth.notFound.body": "The page you're looking for doesn't exist or has been moved.",
   "auth.sessionExpired.title": "Session Expired",
-  "auth.sessionExpired.body": "Your session has expired. Please log in again to continue.",
-  "auth.sessionExpired.login": "Log in",
   "auth.sessionExpired.toast": "Please log in again.",
   "auth.changePassword.current": "Current Password",
   "auth.changePassword.new": "New Password",

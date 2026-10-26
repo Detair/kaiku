@@ -20,6 +20,7 @@ vi.mock("@/lib/tauri", async () => {
     );
   return {
     expireNativeSession: common.expireNativeSession,
+    endBrowserSession: common.endBrowserSession,
     getAuthContext: common.getAuthContext,
     setNativeAuthInfo: common.setNativeAuthInfo,
     refreshAccessToken: common.refreshAccessToken,
@@ -425,6 +426,36 @@ describe("websocket store", () => {
       vi.mocked(loadDMs).mockRejectedValueOnce(new Error("network"));
 
       await expect(refreshUnreadStateAfterReconnect()).resolves.toBeUndefined();
+    });
+  });
+
+  describe("session revocation (C25)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("SESSION_REVOKED signs out at once: no refresh, no reconnect", async () => {
+      vi.useFakeTimers();
+      vi.mocked(tauri.wsConnect).mockResolvedValue(undefined);
+      await connect();
+      const ended = vi.fn();
+      const listener = (e: Event) => ended((e as CustomEvent).detail);
+      window.addEventListener("kaiku:session-ended", listener);
+
+      await handleServerEvent({
+        type: "error",
+        code: "SESSION_REVOKED",
+        message: "Session revoked",
+      });
+      // The server closes with 1008 right after the event.
+      await vi.advanceTimersByTimeAsync(120_000);
+      window.removeEventListener("kaiku:session-ended", listener);
+
+      expect(ended).toHaveBeenCalledTimes(1);
+      expect(ended).toHaveBeenCalledWith({ reason: "revoked" });
+      expect(tauri.wsDisconnect).toHaveBeenCalled();
+      expect(tauri.ensureFreshAccessToken).not.toHaveBeenCalled();
+      expect(tauri.wsConnect).toHaveBeenCalledTimes(1);
     });
   });
 

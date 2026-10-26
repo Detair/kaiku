@@ -107,8 +107,12 @@ async fn check_execute_rate_limit(
             #[allow(clippy::cast_precision_loss)]
             retry_after: result.retry_after.max(1) as f64,
         }),
-        // Fail-open on limiter errors (same posture as component interactions).
-        _ => Ok(()),
+        Ok(_) => Ok(()),
+        // Fail open (logged, counted) while Valkey is unavailable.
+        Err(_) => {
+            rate_limiter.allow_during_outage(RateLimitCategory::WebhookExecute);
+            Ok(())
+        }
     }
 }
 
