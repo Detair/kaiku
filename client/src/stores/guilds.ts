@@ -4,11 +4,13 @@
  * Manages guild (server) state for multi-server support.
  */
 
+import { isHiddenChannel } from "@/stores/serverFeatures";
 import { isTextLikeChannelType } from "@/lib/channelTypes";
 import { createStore } from "solid-js/store";
 import type { Guild, GuildMember, GuildInvite, Channel } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
 
 /**
  * Guild store state
@@ -365,11 +367,11 @@ export async function joinViaInviteCode(code: string): Promise<void> {
     console.error("Post-join UI setup failed (join succeeded):", err);
     showToast({
       type: "warning",
-      title: "Joined Guild",
+      title: t("onboarding.join.joinedLate.title"),
       message:
-        "Guild joined successfully. Refresh the page if it doesn't appear.",
+        t("onboarding.join.joinedLate.message"),
     });
-    // Don't rethrow — the join worked, guild will appear on next load
+    // Don't rethrow — the join worked, server will appear on next load
   }
 }
 
@@ -480,7 +482,7 @@ async function loadAllGuildUnreadCounts(guilds: Guild[]): Promise<void> {
         }
         // Sum unread counts from text channels
         const total = channels
-          .filter((c) => isTextLikeChannelType(c.channel_type))
+          .filter((c) => isTextLikeChannelType(c.channel_type) && !isHiddenChannel(c))
           .reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
         setGuildsState("guildUnreadCounts", guild.id, total);
       } catch (err) {

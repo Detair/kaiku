@@ -42,6 +42,8 @@ export const onboarding = {
   "onboarding.join.joinedTitle": "Joined!",
   "onboarding.join.joined": "You've joined {{server}}.",
   "onboarding.join.joinedGeneric": "You've joined the server.",
+  "onboarding.join.joinedLate.title": "Joined Server",
+  "onboarding.join.joinedLate.message": "Server joined successfully. Refresh the page if it doesn't appear.",
   "onboarding.join.failedTitle": "Join Failed",
   "onboarding.join.failed": "Could not join this server.",
   "onboarding.join.invalidInviteTitle": "Invalid Invite",

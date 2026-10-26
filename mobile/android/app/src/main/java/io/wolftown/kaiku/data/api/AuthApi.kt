@@ -7,6 +7,7 @@ import io.ktor.http.*
 import io.wolftown.kaiku.domain.model.AuthResponse
 import io.wolftown.kaiku.domain.model.User
 import kotlinx.serialization.Serializable
+import java.util.Locale
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
@@ -127,7 +128,7 @@ class AuthApiImpl @Inject constructor(
 
         if (response.status == HttpStatusCode.Forbidden) {
             val errorBody = response.body<ApiErrorResponse>()
-            if (errorBody.error == "MFA_REQUIRED") {
+            if (normalizeErrorCode(errorBody.error) == "MFA_REQUIRED") {
                 throw MfaRequiredApiException(errorBody.message ?: "MFA required")
             }
             throw ApiException(response.status, errorBody.message ?: "Forbidden", code = errorBody.error)
@@ -315,7 +316,13 @@ open class ApiException(
     override val message: String,
     /** Server error code (`error` field), e.g. `VALIDATION_ERROR`; null if absent. */
     val code: String? = null
-) : Exception(message)
+) : Exception(message) {
+    /** [code] upper-cased, for matching: the server may send lowercase codes. */
+    val normalizedCode: String? get() = normalizeErrorCode(code)
+}
+
+/** Server error codes are UPPER_SNAKE; older responses may be lowercase. */
+fun normalizeErrorCode(code: String?): String? = code?.uppercase(Locale.ROOT)
 
 class MfaRequiredApiException(
     message: String

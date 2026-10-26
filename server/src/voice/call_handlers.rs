@@ -217,7 +217,7 @@ pub async fn get_call(
 ) -> Result<Json<Option<CallStateResponse>>, CallHandlerError> {
     verify_dm_participant(&state, channel_id, auth.id).await?;
 
-    let calls = CallService::new(state.redis.clone(), state.db.clone());
+    let calls = CallService::for_state(&state);
     let call = calls.get_call(channel_id).await?;
     Ok(Json(call.map(|(state, meta)| {
         response(channel_id, Transition { state, meta })
@@ -283,7 +283,7 @@ pub async fn start_call(
 
     // Run the start in its own task: once the call exists, its ring timer and
     // `incoming_call` must not depend on this request staying alive.
-    let calls = CallService::new(state.redis.clone(), state.db.clone());
+    let calls = CallService::for_state(&state);
     let ring_timeout_secs = state.config.call_ring_timeout_secs;
     let initiator = auth.id;
     let started = tokio::spawn(async move {
@@ -334,7 +334,7 @@ pub async fn join_call(
     ensure_not_blocked(&state, auth.id, &others).await?;
 
     let username = get_username(&state, auth.id).await?;
-    let calls = CallService::new(state.redis.clone(), state.db.clone());
+    let calls = CallService::for_state(&state);
     let joined = calls.join_call(channel_id, auth.id, username).await?;
     Ok(Json(response(channel_id, joined)))
 }
@@ -361,7 +361,7 @@ pub async fn decline_call(
 ) -> Result<Json<CallStateResponse>, CallHandlerError> {
     verify_dm_participant(&state, channel_id, auth.id).await?;
 
-    let calls = CallService::new(state.redis.clone(), state.db.clone());
+    let calls = CallService::for_state(&state);
     let declined = calls.decline_call(channel_id, auth.id).await?;
     Ok(Json(response(channel_id, declined)))
 }
@@ -388,7 +388,7 @@ pub async fn leave_call(
 ) -> Result<Json<CallStateResponse>, CallHandlerError> {
     verify_dm_participant(&state, channel_id, auth.id).await?;
 
-    let calls = CallService::new(state.redis.clone(), state.db.clone());
+    let calls = CallService::for_state(&state);
     let left = calls.leave_call(channel_id, auth.id).await?;
     Ok(Json(response(channel_id, left)))
 }

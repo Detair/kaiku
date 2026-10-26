@@ -2,6 +2,7 @@
  * ChannelPermissions - Channel permission override editor
  */
 
+import { isPermissionVisible } from "@/stores/serverFeatures";
 import {
   Component,
   createSignal,
@@ -163,6 +164,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
       pages: [],
     };
     for (const perm of CHANNEL_OVERRIDE_PERMISSIONS) {
+      if (!isPermissionVisible(perm.key)) continue;
       categories[perm.category].push(perm);
     }
     return categories;

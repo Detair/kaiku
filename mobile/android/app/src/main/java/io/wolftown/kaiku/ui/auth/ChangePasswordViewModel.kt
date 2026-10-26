@@ -101,7 +101,7 @@ class ChangePasswordViewModel @Inject constructor(
         // No pending change (e.g. the app was restarted): sign in again.
         e is IllegalStateException -> R.string.auth_password_change_expired
         // The only server-side validation left is "must differ from the temporary password".
-        e is ApiException && e.code == "VALIDATION_ERROR" -> R.string.auth_forced_change_same_as_temporary
+        e is ApiException && e.normalizedCode == "VALIDATION_ERROR" -> R.string.auth_forced_change_same_as_temporary
         e is ApiException && e.status == HttpStatusCode.Unauthorized ->
             R.string.auth_password_change_expired
         else -> R.string.auth_forced_change_failed

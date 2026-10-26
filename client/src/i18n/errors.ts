@@ -95,6 +95,7 @@ export function errorText(
     status !== undefined && byStatus && hasOwn(byStatus, status) ? byStatus[status] : undefined;
   if (byStatusKey) return t(byStatusKey);
 
+  if (code === "FEATURE_DISABLED") return t("errors.featureDisabled");
   if (code === "RATE_LIMITED" || status === 429) return t("errors.rateLimited");
   if (code === "INTERNAL_ERROR" || (status !== undefined && status >= 500)) {
     return t("errors.server");

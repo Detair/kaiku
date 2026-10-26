@@ -7,6 +7,8 @@ vi.mock("@/lib/tauri", () => ({
   markAllGuildChannelsRead: vi.fn(),
   reorderGuildChannels: vi.fn(),
   wsStatus: vi.fn(),
+  fetchServerSettings: vi.fn(),
+  getServerUrl: vi.fn(() => "https://chat.example"),
 }));
 
 vi.mock("@/stores/websocket", () => ({
@@ -189,6 +191,28 @@ describe("channels store", () => {
   });
 
   describe("getTotalUnreadCount", () => {
+    it("hidden forum channel with unread does not count", async () => {
+      const { loadServerFeatures, resetServerFeatures } = await import("../serverFeatures");
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValueOnce({
+        features: {
+          forum_channels: false,
+          announcement_channels: true,
+          scheduled_events: false,
+          membership_screening: false,
+        },
+      } as never);
+      await loadServerFeatures();
+      setChannelsState({
+        channels: [
+          createChannelWithUnread({ id: "t1", channel_type: "text", unread_count: 1 }),
+          createChannelWithUnread({ id: "f1", channel_type: "forum", unread_count: 4 }),
+          createChannelWithUnread({ id: "a1", channel_type: "announcement", unread_count: 2 }),
+        ],
+      });
+      expect(getTotalUnreadCount()).toBe(3);
+      resetServerFeatures();
+    });
+
     it("sums unread across text channels only", () => {
       setChannelsState({
         channels: [
@@ -549,5 +573,45 @@ describe("channels store", () => {
       expect(vc).toHaveLength(1);
       expect(vc[0].id).toBe("v1");
     });
+  });
+});
+
+describe("visibleChannels", () => {
+  it("visibleChannels drops disabled types", async () => {
+    const { visibleChannels } = await import("../channels");
+    const { loadServerFeatures, resetServerFeatures } = await import("../serverFeatures");
+    const mk = (id: string, channel_type: string) => ({ id, channel_type }) as unknown as Channel;
+    const all = [mk("t", "text"), mk("v", "voice"), mk("f", "forum"), mk("a", "announcement")];
+
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValueOnce({
+      features: {
+        forum_channels: false,
+        announcement_channels: false,
+        scheduled_events: false,
+        membership_screening: false,
+      },
+    } as never);
+    await loadServerFeatures();
+    expect(visibleChannels(all).map((c) => c.id)).toEqual(["t", "v"]);
+
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue({
+      features: {
+        forum_channels: true,
+        announcement_channels: false,
+        scheduled_events: false,
+        membership_screening: false,
+      },
+    } as never);
+    await loadServerFeatures();
+    expect(visibleChannels(all).map((c) => c.id)).toEqual(["t", "v", "f"]);
+    resetServerFeatures();
+  });
+
+  it("keeps forum/announcement channels while the flags are unknown", async () => {
+    const { visibleChannels } = await import("../channels");
+    const { resetServerFeatures } = await import("../serverFeatures");
+    resetServerFeatures();
+    const mk = (id: string, channel_type: string) => ({ id, channel_type }) as unknown as Channel;
+    expect(visibleChannels([mk("f", "forum"), mk("a", "announcement")]).length).toBe(2);
   });
 });

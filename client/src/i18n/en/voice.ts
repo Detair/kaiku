@@ -24,6 +24,8 @@ export const voice = {
   "voice.controls.settings": "Voice Settings",
 
   "voice.channel.joinFailed": "Could not join voice channel",
+  "voice.join.micUnavailable": "Kaiku can't use your microphone.",
+  "voice.join.openAudioSettings": "Audio settings",
   "voice.channel.empty": "No one is in this channel yet.",
   "voice.channel.connected.one": "{{count}} person connected",
   "voice.channel.connected.other": "{{count}} people connected",

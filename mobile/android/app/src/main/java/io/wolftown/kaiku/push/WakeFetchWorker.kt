@@ -38,9 +38,6 @@ class WakeFetchWorker @AssistedInject constructor(
         const val WORK_TAG = "wake"
         const val MAX_ATTEMPTS = 3
 
-        /** Id of the silent "checking for new messages" notification (expedited work before API 31). */
-        private const val FOREGROUND_NOTIFICATION_ID = 0x4B41
-
         fun uniqueWorkName(channelId: String) = "wake-$channelId"
 
         fun inputData(signal: WakeSignal, owner: WakeOwner): Data = Data.Builder()
@@ -84,14 +81,20 @@ class WakeFetchWorker @AssistedInject constructor(
         }
     }
 
-    override suspend fun getForegroundInfo(): ForegroundInfo {
-        val notification = NotificationCompat.Builder(applicationContext, NotificationChannels.SYNC)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle(applicationContext.getString(R.string.notif_checking_messages))
-            .setPriority(NotificationCompat.PRIORITY_MIN)
-            .setSilent(true)
-            .setOngoing(true)
-            .build()
-        return ForegroundInfo(FOREGROUND_NOTIFICATION_ID, notification)
-    }
+    override suspend fun getForegroundInfo(): ForegroundInfo = wakeForegroundInfo(applicationContext)
+}
+
+/** Id of the silent "checking for new messages" notification (expedited work before API 31). */
+private const val FOREGROUND_NOTIFICATION_ID = 0x4B41
+
+/** The silent notification expedited wake work runs under before API 31. */
+internal fun wakeForegroundInfo(context: Context): ForegroundInfo {
+    val notification = NotificationCompat.Builder(context, NotificationChannels.SYNC)
+        .setSmallIcon(android.R.drawable.stat_notify_sync)
+        .setContentTitle(context.getString(R.string.notif_checking_messages))
+        .setPriority(NotificationCompat.PRIORITY_MIN)
+        .setSilent(true)
+        .setOngoing(true)
+        .build()
+    return ForegroundInfo(FOREGROUND_NOTIFICATION_ID, notification)
 }

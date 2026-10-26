@@ -106,6 +106,11 @@ vi.mock("@/stores/friends", () => ({
   handleUserUnblocked: vi.fn(),
 }));
 
+vi.mock("@/stores/serverFeatures", () => ({
+  loadServerFeatures: vi.fn(),
+  isHiddenChannel: vi.fn(() => false),
+}));
+
 vi.mock("@/stores/channels", () => ({
   getChannel: vi.fn(),
   channelsState: { selectedChannelId: null, channels: [] as unknown[] },
@@ -665,6 +670,32 @@ describe("websocket store", () => {
 
       expect(incrementUnreadCount).toHaveBeenCalledWith("c2");
       expect(updateChannelLastMessageId).toHaveBeenCalledWith("c2", "p1");
+    });
+
+    it("a message in a hidden channel does not increment channel or guild unread", async () => {
+      const { getChannel, incrementUnreadCount } = await import("@/stores/channels");
+      const { incrementGuildUnread, getGuildIdForChannel } = await import("@/stores/guilds");
+      const { isHiddenChannel } = await import("@/stores/serverFeatures");
+      vi.mocked(getChannel).mockReturnValue({
+        id: "c2",
+        guild_id: "g1",
+        channel_type: "forum",
+      } as never);
+      vi.mocked(getGuildIdForChannel).mockReturnValue("g1");
+      vi.mocked(isHiddenChannel).mockReturnValue(true);
+      vi.mocked(incrementUnreadCount).mockClear();
+      vi.mocked(incrementGuildUnread).mockClear();
+      try {
+        await fire("ws:server_event", {
+          type: "message_new",
+          channel_id: "c2",
+          message: { id: "p9", channel_id: "c2", parent_id: null, author: { id: "other" }, content: "x" },
+        });
+        expect(incrementUnreadCount).not.toHaveBeenCalled();
+        expect(incrementGuildUnread).not.toHaveBeenCalled();
+      } finally {
+        vi.mocked(isHiddenChannel).mockReturnValue(false);
+      }
     });
 
     it("call events are handled without any DM channel subscription", async () => {

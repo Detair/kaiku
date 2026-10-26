@@ -34,6 +34,8 @@ import { t, type MessageKey } from "@/i18n";
 
 interface SettingsModalProps {
   onClose: () => void;
+  /** Tab to open on; defaults to Account. */
+  initialTab?: TabId;
 }
 
 type TabId =
@@ -65,7 +67,7 @@ const tabs: TabDefinition[] = [
 
 const SettingsModal: Component<SettingsModalProps> = (props) => {
   const dialog = createDialog({ onClose: () => props.onClose() });
-  const [activeTab, setActiveTab] = createSignal<TabId>("account");
+  const [activeTab, setActiveTab] = createSignal<TabId>(props.initialTab ?? "account");
   const [showRecoveryKey, setShowRecoveryKey] = createSignal(false);
   const [recoveryKey, setRecoveryKey] = createSignal<{
     fullKey: string;

@@ -26,6 +26,7 @@ import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.navigation.DeepLinks
 import io.wolftown.kaiku.navigation.PendingNavigation
+import io.wolftown.kaiku.push.AndroidNotificationPresenter
 import io.wolftown.kaiku.ui.auth.LoginViewModel
 import io.wolftown.kaiku.ui.auth.OidcHandler
 import io.wolftown.kaiku.ui.shared.KaikuTheme
@@ -100,9 +101,14 @@ class MainActivity : ComponentActivity() {
             return
         }
         DeepLinks.parseChannelId(uri.toString())?.let {
-            pendingNavigation.post(it, authState.currentUserId.value)
+            // A notification tap names the account it was posted for; other links
+            // belong to whoever is signed in now.
+            val tag = intent.getStringExtra(AndroidNotificationPresenter.EXTRA_USER_ID)
+                ?: authState.currentUserId.value
+            pendingNavigation.post(it, tag)
             // Strip the consumed link so it cannot be handled twice.
             intent.data = null
+            intent.removeExtra(AndroidNotificationPresenter.EXTRA_USER_ID)
         }
     }
 

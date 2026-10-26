@@ -235,7 +235,7 @@ class KaikuHttpClient @Inject constructor(
      */
     private suspend fun isPasswordChangeRequired(response: HttpResponse): Boolean =
         try {
-            KaikuJson.decodeFromString<ApiErrorResponse>(response.bodyAsText()).error ==
+            normalizeErrorCode(KaikuJson.decodeFromString<ApiErrorResponse>(response.bodyAsText()).error) ==
                 PASSWORD_CHANGE_REQUIRED
         } catch (e: kotlin.coroutines.cancellation.CancellationException) {
             throw e

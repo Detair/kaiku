@@ -1,7 +1,7 @@
 /**
  * InviteJoin - Handle invite link URLs
  *
- * Accepts invite code from URL, joins guild, redirects to guild.
+ * Accepts invite code from URL, joins the server, redirects to it.
  */
 
 import { Component, createSignal, onMount, Show } from "solid-js";
@@ -24,7 +24,7 @@ const InviteJoin: Component = () => {
     // Check if user is logged in
     if (!authState.user) {
       // Redirect to login with return URL
-      navigate(`/login?redirect=/invite/${params.code}`);
+      navigate(`/login?returnUrl=${encodeURIComponent(`/invite/${params.code}`)}`);
       return;
     }
 

@@ -39,12 +39,22 @@ export interface AuthMethodsConfig {
 }
 
 /** Server settings response (public, unauthenticated). */
+/** Optional features the server has turned on (contract C22). */
+export interface ServerFeatures {
+  forum_channels: boolean;
+  announcement_channels: boolean;
+  scheduled_events: boolean;
+  membership_screening: boolean;
+}
+
 export interface ServerSettings {
   require_e2ee_setup: boolean;
   oidc_enabled: boolean;
   oidc_providers: OidcProvider[];
   auth_methods: AuthMethodsConfig;
   registration_policy: string;
+  /** Absent on older servers: treat every feature as on. */
+  features?: ServerFeatures;
 }
 
 /** Admin auth settings response. */

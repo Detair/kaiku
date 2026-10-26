@@ -10,9 +10,12 @@ import dagger.hilt.components.SingletonComponent
 import dagger.multibindings.IntoSet
 import io.wolftown.kaiku.push.AndroidNotificationPresenter
 import io.wolftown.kaiku.push.AndroidPushPlatform
+import io.wolftown.kaiku.push.CallNotificationSink
+import io.wolftown.kaiku.push.CallNotificationStore
 import io.wolftown.kaiku.push.FcmTransport
 import io.wolftown.kaiku.push.NotificationLedger
 import io.wolftown.kaiku.push.NotificationSink
+import io.wolftown.kaiku.push.PrefsCallNotificationStore
 import io.wolftown.kaiku.push.PrefsNotificationLedger
 import io.wolftown.kaiku.push.PrefsPushRegistrationStore
 import io.wolftown.kaiku.push.PushPlatform
@@ -32,6 +35,11 @@ abstract class PushModule {
     @Binds
     @Singleton
     abstract fun bindNotificationSink(impl: AndroidNotificationPresenter): NotificationSink
+
+    /** Same singleton presenter: calls and messages share one lock and one logout cleanup. */
+    @Binds
+    @Singleton
+    abstract fun bindCallNotificationSink(impl: AndroidNotificationPresenter): CallNotificationSink
 
     @Binds
     @Singleton
@@ -62,6 +70,15 @@ abstract class PushModule {
             @ApplicationContext context: Context,
         ): NotificationLedger = PrefsNotificationLedger(
             context.getSharedPreferences("notif_ledger", Context.MODE_PRIVATE),
+        )
+
+        /** Plain prefs: call ids only, never names. */
+        @Provides
+        @Singleton
+        fun provideCallNotificationStore(
+            @ApplicationContext context: Context,
+        ): CallNotificationStore = PrefsCallNotificationStore(
+            context.getSharedPreferences("notif_calls", Context.MODE_PRIVATE),
         )
 
         /** Plain prefs: provider, account id and an endpoint hash, never the endpoint. */

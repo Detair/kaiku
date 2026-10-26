@@ -11,13 +11,16 @@
 //! - `fcm`: Firebase Cloud Messaging HTTP v1 ([`fcm`]), enabled only when a service account is
 //!   configured ([`service::PushService`]). Its hosts are fixed, so the SSRF guard does not apply.
 //!
-//! Wire format: contract C20 (`dm`, `mention`, `read`; `call` reserved).
+//! Wire format: contract C20 (`dm`, `mention`, `read`) and its "call wake"
+//! addendum (`call`, [`call::CallWake`]).
 //!
 //! Triggers: [`targets::spawn_wake_for_new_message`] resolves recipients of a
 //! new message off the request path; [`PushService::notify`] coalesces per
 //! (recipient, channel) ([`coalesce`]); [`PushService::notify_read`] sends
-//! `read` after a wake. Coalescing state is in memory: **single replica only**.
+//! `read` after a wake; [`call`] wakes callees when a DM call rings and ends.
+//! Coalescing state is in memory: **single replica only**.
 
+pub mod call;
 pub mod coalesce;
 pub mod fcm;
 pub mod service;
@@ -27,6 +30,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+pub use call::CallWake;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 pub use service::PushService;
@@ -69,19 +73,52 @@ impl WakeSignal {
             count: 0,
         }
     }
-    pub const fn call(channel_id: Uuid) -> Self {
-        Self {
-            t: "call",
-            channel_id,
-            count: 1,
-        }
-    }
-
     /// Whether the transport should deliver this signal with high priority
     /// (wake the device immediately). Only `read` is normal priority.
     #[must_use]
     pub fn is_high_priority(&self) -> bool {
         self.t != "read"
+    }
+}
+
+/// What a transport needs from a push: the FCM data map (all values strings),
+/// the `UnifiedPush` body and the FCM delivery options.
+pub trait PushPayload: Send + Sync {
+    /// FCM `data`: every value is a string.
+    fn fcm_data(&self) -> serde_json::Value;
+    /// The `UnifiedPush` request body (JSON).
+    fn unifiedpush_body(&self) -> Vec<u8>;
+    /// Deliver with high priority (wake the device at once).
+    fn high_priority(&self) -> bool;
+    /// FCM `android.collapse_key`.
+    fn collapse_key(&self) -> String;
+    /// FCM `android.ttl`.
+    fn ttl(&self) -> &'static str;
+}
+
+impl PushPayload for WakeSignal {
+    fn fcm_data(&self) -> serde_json::Value {
+        serde_json::json!({
+            "t": self.t,
+            "channel_id": self.channel_id.to_string(),
+            "count": self.count.to_string(),
+        })
+    }
+
+    fn unifiedpush_body(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+
+    fn high_priority(&self) -> bool {
+        self.is_high_priority()
+    }
+
+    fn collapse_key(&self) -> String {
+        self.channel_id.to_string()
+    }
+
+    fn ttl(&self) -> &'static str {
+        "86400s"
     }
 }
 
@@ -145,17 +182,31 @@ pub async fn deliver(
     user_id: Uuid,
     signal: &WakeSignal,
 ) -> Result<(), sqlx::Error> {
+    deliver_with(&state.db, &state.push, user_id, signal).await
+}
+
+/// [`deliver`] for any payload, without an [`AppState`] (call wakes run from
+/// the call service, which holds only the pool and the push service).
+///
+/// # Errors
+/// Loading the user's subscriptions failed.
+pub async fn deliver_with<P: PushPayload>(
+    db: &sqlx::PgPool,
+    push: &PushService,
+    user_id: Uuid,
+    signal: &P,
+) -> Result<(), sqlx::Error> {
     let subs: Vec<PushSubscription> = sqlx::query_as(
         "SELECT id, user_id, provider, endpoint, public_key, auth_key, device_label,
                 created_at, last_used_at, device_id
          FROM push_subscriptions WHERE user_id = $1",
     )
     .bind(user_id)
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await?;
 
     for sub in subs {
-        let delivery = send_one(state, &sub, signal).await;
+        let delivery = send_one(push, &sub, signal).await;
         crate::observability::metrics::record_push_delivery(
             provider_label(&sub.provider),
             match delivery {
@@ -168,14 +219,14 @@ pub async fn deliver(
             Delivery::Gone => {
                 let _ = sqlx::query("DELETE FROM push_subscriptions WHERE id = $1")
                     .bind(sub.id)
-                    .execute(&state.db)
+                    .execute(db)
                     .await;
             }
             Delivery::Sent => {
                 let _ =
                     sqlx::query("UPDATE push_subscriptions SET last_used_at = NOW() WHERE id = $1")
                         .bind(sub.id)
-                        .execute(&state.db)
+                        .execute(db)
                         .await;
             }
             Delivery::Failed => {}
@@ -195,13 +246,17 @@ fn provider_label(provider: &str) -> &'static str {
 
 /// Send to one subscription, dispatching on its provider. New providers (APNs)
 /// add a match arm here.
-async fn send_one(state: &AppState, sub: &PushSubscription, signal: &WakeSignal) -> Delivery {
+async fn send_one<P: PushPayload>(
+    push: &PushService,
+    sub: &PushSubscription,
+    signal: &P,
+) -> Delivery {
     // A user-supplied endpoint (UnifiedPush) must be validated (https only,
     // SSRF guard, pinned client) before sending. FCM talks to fixed hosts.
     match sub.provider.as_str() {
         "unifiedpush" => send_unifiedpush(&sub.endpoint, signal).await,
         "fcm" => {
-            if let Some(client) = state.push.fcm() {
+            if let Some(client) = push.fcm() {
                 client.send(&sub.endpoint, signal).await
             } else {
                 // Keep the row: FCM may be configured again later.
@@ -224,7 +279,7 @@ fn endpoint_is_https(endpoint: &str) -> bool {
 /// `UnifiedPush`: POST the content-free JSON to the distributor endpoint. The
 /// endpoint is user-supplied, so it goes through the SSRF guard (private-IP /
 /// DNS-rebind protection) before the request — identical to webhook delivery.
-async fn send_unifiedpush(endpoint: &str, signal: &WakeSignal) -> Delivery {
+async fn send_unifiedpush<P: PushPayload>(endpoint: &str, signal: &P) -> Delivery {
     // Legacy rows may hold plain-http endpoints; never deliver to them and let
     // the caller prune the subscription.
     if !endpoint_is_https(endpoint) {
@@ -252,10 +307,7 @@ async fn send_unifiedpush(endpoint: &str, signal: &WakeSignal) -> Delivery {
         return Delivery::Failed;
     };
 
-    let body = match serde_json::to_vec(signal) {
-        Ok(b) => b,
-        Err(_) => return Delivery::Failed,
-    };
+    let body = signal.unifiedpush_body();
     match client
         .post(endpoint)
         .header("content-type", "application/json")
@@ -583,6 +635,7 @@ pub fn router() -> axum::Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::voice::call::EndReason;
 
     #[tokio::test]
     async fn non_https_endpoint_is_gone() {
@@ -658,6 +711,38 @@ mod tests {
         assert!(!read.is_high_priority());
         assert!(WakeSignal::dm(Uuid::nil(), 1).is_high_priority());
         assert!(WakeSignal::mention(Uuid::nil(), 1).is_high_priority());
-        assert_eq!(WakeSignal::call(Uuid::nil()).t, "call");
+    }
+
+    #[test]
+    fn unifiedpush_call_body_is_the_contract_json() {
+        let (ch, call, caller) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let ringing: serde_json::Value =
+            serde_json::from_slice(&CallWake::ringing(ch, call, caller).unifiedpush_body())
+                .unwrap();
+        assert_eq!(
+            ringing,
+            serde_json::json!({
+                "t": "call",
+                "channel_id": ch.to_string(),
+                "call_id": call.to_string(),
+                "caller_id": caller.to_string(),
+                "call_state": "ringing",
+            })
+        );
+        let ended: serde_json::Value = serde_json::from_slice(
+            &CallWake::ended(ch, call, caller, EndReason::AllDeclined).unifiedpush_body(),
+        )
+        .unwrap();
+        assert_eq!(ended["call_state"], "ended");
+        assert_eq!(ended["reason"], "all_declined");
+        assert_eq!(ended["caller_id"], caller.to_string());
+        assert_eq!(ended.as_object().unwrap().len(), 6, "{ended}");
+        // Message wakes keep their body (count is a number for UnifiedPush).
+        let dm: serde_json::Value =
+            serde_json::from_slice(&WakeSignal::dm(ch, 2).unifiedpush_body()).unwrap();
+        assert_eq!(
+            dm,
+            serde_json::json!({"t": "dm", "channel_id": ch.to_string(), "count": 2})
+        );
     }
 }
