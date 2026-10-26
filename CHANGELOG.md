@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Mobile push notifications (server side)**: the server can wake the Android app through Firebase Cloud Messaging (when an FCM service account is configured) or UnifiedPush. Phones are now also notified about @mentions, not only DMs (photo and file DMs already pushed before). Bursts of messages are coalesced into one notification, and reading a conversation on another device clears its notification. Wake signals carry only a type, channel and count, never message text, so end-to-end encryption is preserved. Blocked users never trigger a notification, and blocks are enforced for DMs even when cached data has expired. Endpoints are registered per device under `/api/me/push-subscriptions`, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
 - Android: you can send photos and videos from your phone.
+- Android: new messages show as notifications with the sender and text, grouped per conversation; tapping one opens the conversation, and reading it anywhere clears the notification.
+- Android: phones without Google services can get notifications through UnifiedPush (for example ntfy), and Settings shows whether notifications are working.
+- Android: after signing in, Kaiku asks once for permission to show notifications.
+- Android: notifications arrive while the app is closed, using Google's push service on phones that have it.
 - People signing in with a temporary password are asked to choose their own password first.
 - Admins can create accounts with a temporary password from the admin dashboard, so registration can stay closed.
 - Releases now include a signed Android app (`Kaiku-<version>.apk`) that updates in place over earlier installs.
@@ -105,6 +109,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: update `dompurify` 3.4.2 → 3.4.11 (eight HTML-sanitizer XSS advisories — the markdown preview's runtime sanitizer), `vite` 8.0.0 → 8.0.16 (the `server.fs.deny` bypass and `__open-in-editor` NTLM dev-server CVEs), and add transitive overrides for `undici` → 7.28.0 (seven HTTP-client advisories via jsdom) and `@babel/core` → 7.29.6 (via vite-plugin-solid). The remaining flagged instance is the test-only vite 7.3.1 nested under vitest, whose fix is blocked by a JSX-transform incompatibility (documented as a justified, dev-server-only exception); the production bundle is built with the patched vite 8.0.16. This restores the weekly OSV scanner to green.
 
 ### Fixed
+- The server no longer hangs when its cache (Valkey) is unavailable; affected requests fail quickly instead.
 - E-mail addresses and code snippets are no longer treated as @mentions.
 - Android: message times now use your time zone, typing indicators show names and go away again, reactions are visible, buttons are labelled for screen readers, and a damaged sign-in store asks you to sign in again instead of crashing.
 - Android: unread badges now appear for channels you left and clear on the server when you read them, and new direct messages update the list live.

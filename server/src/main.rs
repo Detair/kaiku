@@ -55,8 +55,12 @@ async fn main() -> Result<()> {
 
     // Initialize Redis (two clients: one for the app, one for the webhook
     // delivery worker whose BRPOP blocks the connection)
-    let redis = db::create_redis_client(&config.redis_url).await?;
-    let redis_webhook = db::create_redis_client(&config.redis_url).await?;
+    let redis =
+        db::create_redis_client_with_timeout(&config.redis_url, config.valkey_command_timeout)
+            .await?;
+    let redis_webhook =
+        db::create_redis_client_with_timeout(&config.redis_url, config.valkey_command_timeout)
+            .await?;
 
     // Initialize S3 client (optional - file uploads will be disabled if not configured)
     // Skip initialization if S3 credentials aren't configured (blank = unset)

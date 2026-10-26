@@ -9,6 +9,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -17,6 +20,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import io.wolftown.kaiku.data.local.AuthState
+import io.wolftown.kaiku.navigation.PendingNavigationRules
 import io.wolftown.kaiku.ui.auth.ChangePasswordScreen
 import io.wolftown.kaiku.ui.auth.LoginScreen
 import io.wolftown.kaiku.ui.auth.QrRedeemScreen
@@ -38,8 +42,11 @@ fun KaikuNavGraph(
     navController: NavHostController,
     startDestination: String,
     authState: AuthState,
-    appVersion: String = ""
+    appVersion: String = "",
+    pendingNavigationViewModel: PendingNavigationViewModel = hiltViewModel()
 ) {
+    val pendingNavigation = pendingNavigationViewModel.pendingNavigation
+    val pendingChannelId by pendingNavigation.channelId.collectAsState()
     val currentUserId by authState.currentUserId.collectAsState()
     val isLoggedIn by authState.isLoggedIn.collectAsState()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -53,6 +60,32 @@ fun KaikuNavGraph(
         if (!isLoggedIn && currentRoute != null && currentRoute !in authRoutes) {
             navController.navigate("login") {
                 popUpTo(0) { inclusive = true }
+            }
+        }
+    }
+
+    // Any transition into logged-out clears a pending link, whatever the route.
+    var wasLoggedIn by remember { mutableStateOf(isLoggedIn) }
+    LaunchedEffect(isLoggedIn) {
+        if (!isLoggedIn && wasLoggedIn) pendingNavigation.clear()
+        wasLoggedIn = isLoggedIn
+    }
+
+    // Open a channel from a deep link / notification tap, only while signed in.
+    // The "home" entry must be on the stack first (not during login screens).
+    LaunchedEffect(isLoggedIn, pendingChannelId, currentRoute, currentUserId) {
+        val id = pendingChannelId
+        val tag = pendingNavigation.userTag
+        if (id != null && PendingNavigationRules.shouldDrop(isLoggedIn, tag, currentUserId)) {
+            pendingNavigation.clear()
+        } else if (id != null && PendingNavigationRules.shouldConsume(
+                isLoggedIn, tag, currentUserId, currentRoute, authRoutes
+            )
+        ) {
+            pendingNavigation.consume()
+            navController.navigate("channel/$id") {
+                popUpTo("home")
+                launchSingleTop = true
             }
         }
     }

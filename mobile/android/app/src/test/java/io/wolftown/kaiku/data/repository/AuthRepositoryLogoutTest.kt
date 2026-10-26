@@ -17,6 +17,7 @@ import io.wolftown.kaiku.data.api.KaikuHttpClient
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.data.session.SessionTeardown
 import io.wolftown.kaiku.data.session.SessionTeardownRunner
 import kotlinx.coroutines.CompletableDeferred
@@ -54,6 +55,7 @@ class AuthRepositoryLogoutTest {
         }
     }
 
+    private val pushRegistrar: PushRegistrar = mockk(relaxed = true)
     private val authApi: AuthApi = mockk {
         coEvery { logoutSession(any(), any(), any()) } answers { log += "server-logout" }
     }
@@ -84,7 +86,7 @@ class AuthRepositoryLogoutTest {
             authState,
             appScope(),
         )
-        val repository = AuthRepository(authApi, tokenStorage, authState, runner)
+        val repository = AuthRepository(authApi, tokenStorage, authState, pushRegistrar, runner)
 
         repository.logout()
 
@@ -108,7 +110,7 @@ class AuthRepositoryLogoutTest {
             authState,
             appScope(),
         )
-        val repository = AuthRepository(authApi, tokenStorage, authState, runner)
+        val repository = AuthRepository(authApi, tokenStorage, authState, pushRegistrar, runner)
 
         repository.logout()
 
@@ -138,7 +140,7 @@ class AuthRepositoryLogoutTest {
             authState,
             appScope(),
         )
-        val repository = AuthRepository(authApi, tokenStorage, authState, runner)
+        val repository = AuthRepository(authApi, tokenStorage, authState, pushRegistrar, runner)
 
         // The settings ViewModel's scope dies while the logout is in step 10.
         val caller = launch { repository.logout() }
@@ -169,7 +171,7 @@ class AuthRepositoryLogoutTest {
             authState,
             appScope(),
         )
-        val repository = AuthRepository(authApi, tokenStorage, authState, runner)
+        val repository = AuthRepository(authApi, tokenStorage, authState, pushRegistrar, runner)
 
         repository.logout()
 
@@ -186,7 +188,7 @@ class AuthRepositoryLogoutTest {
         authState.setLoggedIn("user-1")
         coEvery { authApi.logoutSession(any(), any(), any()) } throws java.io.IOException("offline")
         val repository = AuthRepository(
-            authApi, tokenStorage, authState,
+            authApi, tokenStorage, authState, pushRegistrar,
             SessionTeardownRunner(setOf(Step(10, log)), authState, appScope()),
         )
 
@@ -203,7 +205,7 @@ class AuthRepositoryLogoutTest {
         val runner = SessionTeardownRunner(setOf(Step(10, log)), authState, appScope())
         runner.start()
         runCurrent()
-        val repository = AuthRepository(authApi, tokenStorage, authState, runner)
+        val repository = AuthRepository(authApi, tokenStorage, authState, pushRegistrar, runner)
 
         repository.logout()
         advanceUntilIdle()
@@ -228,6 +230,7 @@ class AuthRepositoryLogoutTest {
             AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
             tokenStorage,
             authState,
+            pushRegistrar,
             SessionTeardownRunner(emptySet(), authState, appScope()),
         )
 
@@ -268,6 +271,7 @@ class AuthRepositoryLogoutTest {
             AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
             tokenStorage,
             authState,
+            pushRegistrar,
             SessionTeardownRunner(emptySet(), authState, appScope()),
         )
 
@@ -306,7 +310,7 @@ class AuthRepositoryLogoutTest {
         coEvery { authApi.authenticatedGetMe(any(), any()) } returns
             io.wolftown.kaiku.domain.model.User(id = "user-b", username = "b", displayName = "B")
         every { tokenStorage.saveTokens(any(), any(), any(), any()) } answers { generation++ }
-        val repository = AuthRepository(authApi, tokenStorage, authState, runner)
+        val repository = AuthRepository(authApi, tokenStorage, authState, pushRegistrar, runner)
         runner.start()
 
         // Session a ends at once (forced logout, e.g. a rejected refresh); its

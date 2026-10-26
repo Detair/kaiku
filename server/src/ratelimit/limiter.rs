@@ -47,6 +47,45 @@ impl RateLimiter {
         }
     }
 
+    /// Whether a `category` request may proceed while Valkey is unavailable.
+    ///
+    /// General API and WebSocket limits fail open; authentication limits fail
+    /// closed unless the operator set `RATE_LIMIT_FAIL_OPEN=true`. Logs a
+    /// throttled warning and counts the outcome
+    /// (`kaiku_ratelimit_valkey_unavailable_total`).
+    pub fn allow_during_outage(&self, category: RateLimitCategory) -> bool {
+        // One throttle per outcome, so a fail-open line never hides a
+        // fail-closed one (and vice versa).
+        static WARN_OPEN: crate::db::LogThrottle = crate::db::LogThrottle::new();
+        static WARN_CLOSED: crate::db::LogThrottle = crate::db::LogThrottle::new();
+
+        let allowed = !category.is_auth() || self.config.fail_open;
+        let outcome = if allowed { "fail_open" } else { "fail_closed" };
+        crate::observability::metrics::record_ratelimit_valkey_unavailable(
+            category.as_str(),
+            outcome,
+        );
+        let throttle = if allowed { &WARN_OPEN } else { &WARN_CLOSED };
+        if throttle.allow(std::time::Duration::from_mins(1)) {
+            if allowed {
+                warn!(
+                    category = %category.as_str(),
+                    outcome,
+                    "Valkey unavailable: rate limit not enforced, request allowed. \
+                     Logged at most once a minute."
+                );
+            } else {
+                warn!(
+                    category = %category.as_str(),
+                    outcome,
+                    "Valkey unavailable: authentication rate limit cannot be checked, \
+                     request rejected (503). Logged at most once a minute."
+                );
+            }
+        }
+        allowed
+    }
+
     /// Initializes the rate limiter by loading Lua scripts into Redis.
     ///
     /// Must be called before using `check()` or `record_failed_auth()`.
@@ -198,7 +237,8 @@ impl RateLimiter {
                     })
             }
             Err(e) => {
-                warn!(error = %e, "Redis rate limit check failed");
+                // Logged (throttled) by the caller via `allow_during_outage`.
+                debug!(error = %e, "Redis rate limit check failed");
                 Err(RateLimitError::RedisUnavailable)
             }
         }
@@ -334,7 +374,7 @@ impl RateLimiter {
 
         let key = self.build_key("blocked", ip);
         let exists: bool = self.redis.exists(&key).await.map_err(|e| {
-            warn!(error = %e, "Failed to check IP block status");
+            debug!(error = %e, "Failed to check IP block status");
             RateLimitError::RedisUnavailable
         })?;
 

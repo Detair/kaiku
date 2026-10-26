@@ -18,6 +18,9 @@ import io.wolftown.kaiku.domain.model.DmConversation
 import io.wolftown.kaiku.domain.model.DmParticipant
 import io.wolftown.kaiku.domain.model.Message
 import io.wolftown.kaiku.domain.model.User
+import io.wolftown.kaiku.push.ActiveChannelTracker
+import io.wolftown.kaiku.push.NotificationLedger
+import io.wolftown.kaiku.push.NotificationSink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +41,9 @@ class TextChannelViewModelTest {
     private val statusFlow = MutableStateFlow(RealtimeStatus.Connected)
     private lateinit var viewModel: TextChannelViewModel
     private lateinit var savedStateHandle: SavedStateHandle
+    private val activeChannelTracker = ActiveChannelTracker()
+    private val notificationSink: NotificationSink = mockk(relaxed = true)
+    private val notificationLedger: NotificationLedger = mockk(relaxed = true)
 
     private val testDispatcher = StandardTestDispatcher()
 
@@ -94,7 +100,10 @@ class TextChannelViewModelTest {
     }
 
     private fun createViewModel(): TextChannelViewModel {
-        return TextChannelViewModel(chatRepository, guildRepository, dmRepository, authState, realtimeManager, savedStateHandle)
+        return TextChannelViewModel(
+            chatRepository, guildRepository, dmRepository, authState, realtimeManager,
+            activeChannelTracker, notificationSink, notificationLedger, savedStateHandle
+        )
     }
 
     // ========================================================================
@@ -687,5 +696,26 @@ class TextChannelViewModelTest {
 
         assertEquals("", viewModel.messageInput.value)
         assertNull(viewModel.error.value)
+    }
+
+    // ========================================================================
+    // Notifications: visible screen clears and suppresses
+    // ========================================================================
+
+    @Test
+    fun `visible screen clears notification and marks newest message seen`() = runTest {
+        messagesFlow.value = sampleMessages
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.onVisible()
+        advanceUntilIdle()
+
+        assertEquals("ch-1", activeChannelTracker.visibleChannelId.value)
+        verify { notificationSink.cancel("ch-1") }
+        verify { notificationLedger.markSeen("me", "ch-1", "msg-2", "2026-03-12T10:01:00Z") }
+
+        viewModel.onHidden()
+        assertNull(activeChannelTracker.visibleChannelId.value)
     }
 }

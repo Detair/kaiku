@@ -7,6 +7,7 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.session.SessionTeardownRunner
 import io.wolftown.kaiku.domain.model.User
+import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.ui.auth.MfaRequiredException
 import io.wolftown.kaiku.ui.auth.PasswordChangeRequiredException
 import java.util.logging.Level
@@ -41,6 +42,7 @@ class AuthRepository @Inject constructor(
     private val authApi: AuthApi,
     private val tokenStorage: TokenStorage,
     private val authState: AuthState,
+    private val pushRegistrar: PushRegistrar,
     private val sessionTeardown: SessionTeardownRunner
 ) {
     companion object {
@@ -48,6 +50,9 @@ class AuthRepository @Inject constructor(
 
         /** Upper bound for the best-effort server logout. */
         const val SERVER_LOGOUT_TIMEOUT_MS = 10_000L
+
+        /** Logout never waits longer than this for the push device DELETE. */
+        const val PUSH_UNREGISTER_TIMEOUT_MS = 3_000L
     }
 
     /**
@@ -290,8 +295,11 @@ class AuthRepository @Inject constructor(
      * Signs out the session that is current when it is called (the captured
      * session), on this device and on the server, in this order:
      *
-     * 1. (push plan Task 7: `pushRegistrar.unregisterForLogout()` goes here,
-     *    FIRST, while the session token still works)
+     * 1. push unregister FIRST, while the session token still works
+     *    ([PushRegistrar.unregisterForLogout], C19: the device row is deleted;
+     *    bounded by [PUSH_UNREGISTER_TIMEOUT_MS]). The DELETE is bound to the
+     *    captured session id, so it never goes out with another session's
+     *    token (a new sign-in is refused while this session runs)
      * 2. session teardown ([SessionTeardownRunner]) for the captured session:
      *    leave voice, close the realtime connection, clear caches; shared with
      *    the LoggedOut observer, so it runs once
@@ -320,7 +328,9 @@ class AuthRepository @Inject constructor(
         val capturedAccess = tokenStorage.getAccessToken()
         val capturedRefresh = tokenStorage.getRefreshToken()
 
-        // Push Task 7: pushRegistrar.unregisterForLogout() — keep it the first step.
+        // First step, while the captured session's tokens still authenticate the DELETE.
+        unregisterPush(session?.sessionId)
+
         sessionTeardown.tearDown(session?.sessionId).join()
 
         // The captured session's tokens, rotated if a refresh ran meanwhile.
@@ -352,6 +362,20 @@ class AuthRepository @Inject constructor(
 
         tokenStorage.clearIfGeneration(generation)
         if (session != null) authState.setLoggedOutIf(session.sessionId)
+    }
+
+    /**
+     * Removes this device's push registration for the ending session
+     * [sessionId]; bounded and best effort, never blocks logout.
+     */
+    private suspend fun unregisterPush(sessionId: Long?) {
+        try {
+            withTimeoutOrNull(PUSH_UNREGISTER_TIMEOUT_MS) { pushRegistrar.unregisterForLogout(sessionId) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.warning("Push unregister failed (best-effort): ${e.javaClass.simpleName}")
+        }
     }
 
     suspend fun getCurrentUser(): Result<User> {

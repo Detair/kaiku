@@ -10,7 +10,7 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use fred::prelude::*;
 use serde::{Deserialize, Serialize};
-use tracing::error;
+use tracing::{error, warn};
 use uuid::Uuid;
 use vc_common::protocol::PcType;
 
@@ -1192,7 +1192,15 @@ pub(super) async fn broadcast_presence_update(
     let channel = format!("presence:{user_id}");
     let result: Result<(), Error> = state.redis.publish(&channel, &json).await;
     if let Err(e) = result {
-        error!("Failed to broadcast presence update: {}", e);
+        // Presence is best effort (fail open); throttled so a Valkey outage
+        // does not log once per status change.
+        static WARN: crate::db::LogThrottle = crate::db::LogThrottle::new();
+        if WARN.allow(std::time::Duration::from_mins(1)) {
+            warn!(
+                "Failed to broadcast presence update (logged at most once a minute): {}",
+                e
+            );
+        }
     }
 }
 

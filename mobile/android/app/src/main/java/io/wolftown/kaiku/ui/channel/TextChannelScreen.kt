@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.typingNames
 import io.wolftown.kaiku.ui.shared.ConnectionBanner
@@ -51,6 +52,12 @@ fun TextChannelScreen(
     val messageInput by viewModel.messageInput.collectAsState()
     val editingMessage by viewModel.editingMessage.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
+
+    // Resumed = the user is looking at this chat: suppress and clear its notifications.
+    LifecycleResumeEffect(viewModel) {
+        viewModel.onVisible()
+        onPauseOrDispose { viewModel.onHidden() }
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
