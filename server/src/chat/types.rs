@@ -103,7 +103,16 @@ pub struct MarkChannelAsReadRequest {
 // Messages
 // ============================================================================
 
+/// Constant `status` value carried by message authors.
+///
+/// Live presence is delivered only to the presence audience over the
+/// WebSocket presence store; message payloads never carry it. The field is
+/// kept (always this value) for wire compatibility with existing clients.
+pub const AUTHOR_STATUS_PLACEHOLDER: &str = "offline";
+
 /// Author profile for message responses.
+///
+/// `status` is always [`AUTHOR_STATUS_PLACEHOLDER`]; it is not live presence.
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AuthorProfile {
     pub id: Uuid,
@@ -120,7 +129,7 @@ impl From<db::User> for AuthorProfile {
             username: user.username,
             display_name: user.display_name,
             avatar_url: super::files::maybe_file_url(user.avatar_url),
-            status: format!("{:?}", user.status).to_lowercase(),
+            status: AUTHOR_STATUS_PLACEHOLDER.to_string(),
         }
     }
 }

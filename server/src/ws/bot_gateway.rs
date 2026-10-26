@@ -688,7 +688,7 @@ async fn handle_bot_event(
                         "username": u.username,
                         "display_name": u.display_name,
                         "avatar_url": u.avatar_url,
-                        "status": format!("{:?}", u.status).to_lowercase(),
+                        "status": crate::chat::types::AUTHOR_STATUS_PLACEHOLDER,
                     })
                 } else {
                     serde_json::json!({
