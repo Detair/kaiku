@@ -142,6 +142,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- The emoji picker stays next to its button, no longer closes when you scroll its emoji list, and keeps working when reopened several times (previously later opens could insert no emoji or send no reaction).
 - Signing in with a suspended account says so, and the Create account dialog can unlock admin actions directly.
 - Desktop sign-in and account linking with an identity provider show a clear message when they fail (for example when the app needs an update) instead of an error code.
 - The app says "server" everywhere, invite codes can be copied and pasted reliably, the sign-in screen no longer offers registration when it is closed, and a failed voice join says why.
