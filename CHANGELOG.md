@@ -142,6 +142,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- The chat stays at the newest message when the window gets smaller, when you type a message over several lines, or when an image in the last message finishes loading.
 - Loading older messages no longer shows a "new messages" button for them.
 - Messages no longer overlap or leave gaps while scrolling, and images in the chat no longer flicker or reload when you scroll or a new message arrives.
 - Signing in with a suspended account says so, and the Create account dialog can unlock admin actions directly.

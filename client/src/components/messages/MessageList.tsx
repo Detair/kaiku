@@ -385,6 +385,19 @@ const MessageList: Component<MessageListProps> = (props) => {
     }
   };
 
+  // Stay at the bottom when the list gets shorter (window resized, composer
+  // grown by a multi-line draft) or the content below grows (an image in the
+  // last message finished loading): neither fires a scroll event.
+  const bottomPin = new ResizeObserver(() => {
+    if (containerRef && isAtBottom()) {
+      containerRef.scrollTop = containerRef.scrollHeight;
+    }
+  });
+  onCleanup(() => bottomPin.disconnect());
+  onMount(() => {
+    if (containerRef) bottomPin.observe(containerRef);
+  });
+
   onMount(() => document.addEventListener("keydown", handleKeyDown));
   onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
 
@@ -600,6 +613,7 @@ const MessageList: Component<MessageListProps> = (props) => {
       {/* Virtualized messages */}
       <Show when={messagesWithCompact().length > 0}>
         <div
+          ref={(el) => bottomPin.observe(el)}
           style={{
             height: `${virtualizer.getTotalSize()}px`,
             position: "relative",
