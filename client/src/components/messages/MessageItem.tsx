@@ -667,7 +667,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         </Show>
         <Show when={props.compact}>
           {/* Show timestamp on hover for compact messages */}
-          <span class="text-xs text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity select-none leading-6">
+          <span class="block whitespace-nowrap text-[11px] text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity select-none leading-6">
             {formatTime(props.message.created_at)}
           </span>
         </Show>

@@ -143,6 +143,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- Settings, Join server and Create server fit on smaller screens and at 125–150 % display scaling instead of running off the top of the window.
+- In a narrow browser window the chat scrolls inside its own area again instead of stretching to the full length of the conversation.
+- Follow-up messages from the same person no longer leave a large gap between them when the time is shown with AM/PM.
 - Right-clicking a message, channel or member opens its menu again on Linux and macOS.
 - Code blocks in messages show every line in full instead of cutting off all lines but the last.
 - Bot applications, slash-command suggestions, webhooks and content filters now talk to your Kaiku server; before, they could fail to load in the web and desktop apps.
