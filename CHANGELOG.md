@@ -143,6 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- Opening a channel with unread messages now shows everything up to the newest message, instead of stopping partway with the latest messages missing.
 - Settings, Join server and Create server fit on smaller screens and at 125–150 % display scaling instead of running off the top of the window.
 - In a narrow browser window the chat scrolls inside its own area again instead of stretching to the full length of the conversation.
 - Follow-up messages from the same person no longer leave a large gap between them when the time is shown with AM/PM.
