@@ -265,6 +265,8 @@ const MessageList: Component<MessageListProps> = (props) => {
     if (index !== -1) {
       // Message found in current buffer — scroll to it
       virtualizer.scrollToIndex(index, { align: "center", behavior: "smooth" });
+      // Leaving the bottom: keep the bottom pin from pulling the list back.
+      if (index < msgs.length - 1) setIsAtBottom(false);
 
       // Apply highlight with fade-out
       setHighlightedId(messageId);
@@ -515,6 +517,9 @@ const MessageList: Component<MessageListProps> = (props) => {
           if (readIdx !== -1 && readIdx < msgs.length - 1) {
             requestAnimationFrame(() => {
               virtualizer.scrollToIndex(readIdx + 1, { align: "start", behavior: "auto" });
+              // The scroll event comes a frame later; until then the bottom
+              // pin would still see "at bottom" and undo the jump.
+              setIsAtBottom(checkIfAtBottom());
               scheduleMarkAsRead();
             });
           } else {
