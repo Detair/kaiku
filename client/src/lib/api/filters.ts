@@ -4,9 +4,7 @@
  * Guild content filter configuration, custom patterns, moderation log.
  */
 
-import { getAccessToken } from "../tauri";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
+import { httpRequest } from "../tauri/common";
 
 // ============================================================================
 // Types
@@ -100,16 +98,10 @@ export interface TestFilterResponse {
 export async function listFilterConfigs(
   guildId: string,
 ): Promise<GuildFilterConfig[]> {
-  const token = getAccessToken();
-  const response = await fetch(`${API_BASE}/api/guilds/${guildId}/filters`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to load filter configs");
-  }
-
-  return response.json();
+  return httpRequest<GuildFilterConfig[]>(
+    "GET",
+    `/api/guilds/${guildId}/filters`,
+  );
 }
 
 /**
@@ -119,21 +111,11 @@ export async function updateFilterConfigs(
   guildId: string,
   configs: FilterConfigEntry[],
 ): Promise<GuildFilterConfig[]> {
-  const token = getAccessToken();
-  const response = await fetch(`${API_BASE}/api/guilds/${guildId}/filters`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ configs }),
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to update filter configs");
-  }
-
-  return response.json();
+  return httpRequest<GuildFilterConfig[]>(
+    "PUT",
+    `/api/guilds/${guildId}/filters`,
+    { configs },
+  );
 }
 
 /**
@@ -142,19 +124,10 @@ export async function updateFilterConfigs(
 export async function listCustomPatterns(
   guildId: string,
 ): Promise<GuildFilterPattern[]> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/guilds/${guildId}/filters/patterns`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-    },
+  return httpRequest<GuildFilterPattern[]>(
+    "GET",
+    `/api/guilds/${guildId}/filters/patterns`,
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to load custom patterns");
-  }
-
-  return response.json();
 }
 
 /**
@@ -164,25 +137,11 @@ export async function createCustomPattern(
   guildId: string,
   data: CreatePatternRequest,
 ): Promise<GuildFilterPattern> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/guilds/${guildId}/filters/patterns`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(data),
-    },
+  return httpRequest<GuildFilterPattern>(
+    "POST",
+    `/api/guilds/${guildId}/filters/patterns`,
+    data,
   );
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Failed to create pattern");
-  }
-
-  return response.json();
 }
 
 /**
@@ -193,25 +152,11 @@ export async function updateCustomPattern(
   patternId: string,
   data: UpdatePatternRequest,
 ): Promise<GuildFilterPattern> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/guilds/${guildId}/filters/patterns/${patternId}`,
-    {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(data),
-    },
+  return httpRequest<GuildFilterPattern>(
+    "PUT",
+    `/api/guilds/${guildId}/filters/patterns/${patternId}`,
+    data,
   );
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Failed to update pattern");
-  }
-
-  return response.json();
 }
 
 /**
@@ -221,18 +166,10 @@ export async function deleteCustomPattern(
   guildId: string,
   patternId: string,
 ): Promise<void> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/guilds/${guildId}/filters/patterns/${patternId}`,
-    {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
-    },
+  await httpRequest<void>(
+    "DELETE",
+    `/api/guilds/${guildId}/filters/patterns/${patternId}`,
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to delete pattern");
-  }
 }
 
 /**
@@ -243,19 +180,10 @@ export async function listModerationLog(
   limit = 50,
   offset = 0,
 ): Promise<PaginatedModerationLog> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/guilds/${guildId}/filters/log?limit=${limit}&offset=${offset}`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-    },
+  return httpRequest<PaginatedModerationLog>(
+    "GET",
+    `/api/guilds/${guildId}/filters/log?limit=${limit}&offset=${offset}`,
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to load moderation log");
-  }
-
-  return response.json();
 }
 
 /**
@@ -265,22 +193,9 @@ export async function testFilter(
   guildId: string,
   content: string,
 ): Promise<TestFilterResponse> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/guilds/${guildId}/filters/test`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ content }),
-    },
+  return httpRequest<TestFilterResponse>(
+    "POST",
+    `/api/guilds/${guildId}/filters/test`,
+    { content },
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to test filter");
-  }
-
-  return response.json();
 }
