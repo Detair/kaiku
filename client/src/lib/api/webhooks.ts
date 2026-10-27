@@ -2,9 +2,7 @@
  * Webhook Management API
  */
 
-import { getAccessToken } from "../tauri";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
+import { httpRequest } from "../tauri/common";
 
 export type WebhookEventType =
   | "message.created"
@@ -68,47 +66,21 @@ export async function createWebhook(
   applicationId: string,
   data: CreateWebhookRequest,
 ): Promise<WebhookCreated> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/applications/${applicationId}/webhooks`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(data),
-    },
+  return httpRequest<WebhookCreated>(
+    "POST",
+    `/api/applications/${applicationId}/webhooks`,
+    data,
   );
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Failed to create webhook");
-  }
-
-  return response.json();
 }
 
 /**
  * List webhooks for an application.
  */
 export async function listWebhooks(applicationId: string): Promise<Webhook[]> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/applications/${applicationId}/webhooks`,
-    {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    },
+  return httpRequest<Webhook[]>(
+    "GET",
+    `/api/applications/${applicationId}/webhooks`,
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to list webhooks");
-  }
-
-  return response.json();
 }
 
 /**
@@ -118,22 +90,10 @@ export async function getWebhook(
   applicationId: string,
   webhookId: string,
 ): Promise<Webhook> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/applications/${applicationId}/webhooks/${webhookId}`,
-    {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    },
+  return httpRequest<Webhook>(
+    "GET",
+    `/api/applications/${applicationId}/webhooks/${webhookId}`,
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to get webhook");
-  }
-
-  return response.json();
 }
 
 /**
@@ -144,25 +104,11 @@ export async function updateWebhook(
   webhookId: string,
   data: UpdateWebhookRequest,
 ): Promise<Webhook> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/applications/${applicationId}/webhooks/${webhookId}`,
-    {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(data),
-    },
+  return httpRequest<Webhook>(
+    "PATCH",
+    `/api/applications/${applicationId}/webhooks/${webhookId}`,
+    data,
   );
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Failed to update webhook");
-  }
-
-  return response.json();
 }
 
 /**
@@ -172,20 +118,10 @@ export async function deleteWebhook(
   applicationId: string,
   webhookId: string,
 ): Promise<void> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/applications/${applicationId}/webhooks/${webhookId}`,
-    {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    },
+  await httpRequest<void>(
+    "DELETE",
+    `/api/applications/${applicationId}/webhooks/${webhookId}`,
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to delete webhook");
-  }
 }
 
 /**
@@ -195,23 +131,10 @@ export async function testWebhook(
   applicationId: string,
   webhookId: string,
 ): Promise<TestDeliveryResult> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/applications/${applicationId}/webhooks/${webhookId}/test`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    },
+  return httpRequest<TestDeliveryResult>(
+    "POST",
+    `/api/applications/${applicationId}/webhooks/${webhookId}/test`,
   );
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Failed to test webhook");
-  }
-
-  return response.json();
 }
 
 /**
@@ -221,20 +144,8 @@ export async function listDeliveries(
   applicationId: string,
   webhookId: string,
 ): Promise<DeliveryLogEntry[]> {
-  const token = getAccessToken();
-  const response = await fetch(
-    `${API_BASE}/api/applications/${applicationId}/webhooks/${webhookId}/deliveries`,
-    {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    },
+  return httpRequest<DeliveryLogEntry[]>(
+    "GET",
+    `/api/applications/${applicationId}/webhooks/${webhookId}/deliveries`,
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to list deliveries");
-  }
-
-  return response.json();
 }
