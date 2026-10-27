@@ -11,6 +11,7 @@ import {
   JSX,
   createSignal,
   onMount,
+  onCleanup,
   createEffect,
 } from "solid-js";
 import { Portal } from "solid-js/web";
@@ -49,14 +50,15 @@ interface PopupListProps {
 
 const PopupList: Component<PopupListProps> = (props) => {
   let listRef: HTMLDivElement | undefined;
-  let selectedItemRef: HTMLDivElement | undefined;
   const [position, setPosition] = createSignal({ x: 0, y: 0 });
+  const [positioned, setPositioned] = createSignal(false);
   const [maxHeight, setMaxHeight] = createSignal<number | undefined>(undefined);
 
   const updatePosition = async () => {
     if (!listRef || !props.anchorEl) return;
 
     const { x, y } = await computePosition(props.anchorEl, listRef, {
+      strategy: "fixed",
       placement: "bottom-start",
       middleware: [
         offset(4),
@@ -78,13 +80,14 @@ const PopupList: Component<PopupListProps> = (props) => {
     });
 
     setPosition({ x: Math.round(x), y: Math.round(y) });
+    setPositioned(true);
   };
 
-  // Scroll selected item into view
+  // Scroll selected item into view whenever the selection changes
   createEffect(() => {
-    if (selectedItemRef) {
-      selectedItemRef.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
+    const index = props.selectedIndex;
+    const el = listRef?.querySelector<HTMLElement>(`#suggestion-${index}`);
+    el?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
   });
 
   // Click outside detection
@@ -99,7 +102,11 @@ const PopupList: Component<PopupListProps> = (props) => {
   };
 
   // Close on scroll
-  const handleScroll = () => {
+  const handleScroll = (e: Event) => {
+    // Scrolling inside the list itself must not close it
+    if (listRef && e.target instanceof Node && listRef.contains(e.target)) {
+      return;
+    }
     props.onClose();
   };
 
@@ -133,15 +140,18 @@ const PopupList: Component<PopupListProps> = (props) => {
   };
 
   onMount(() => {
-    // Calculate initial position
-    updatePosition().catch((err) => {
-      console.error("[PopupList] Failed to calculate position:", err);
-    });
-
-    // Set up autoUpdate to continuously track anchor element position
-    let cleanup: (() => void) | undefined;
+    // autoUpdate runs updatePosition immediately and on anchor/list/window changes
     if (listRef && props.anchorEl) {
-      cleanup = autoUpdate(props.anchorEl, listRef, updatePosition);
+      const stopAutoUpdate = autoUpdate(props.anchorEl, listRef, () => {
+        updatePosition().catch((err) => {
+          console.error("[PopupList] Failed to calculate position:", err);
+          // Never leave the list hidden if positioning fails
+          setPositioned(true);
+        });
+      });
+      onCleanup(stopAutoUpdate);
+    } else {
+      setPositioned(true);
     }
 
     // Add event listeners after a small delay to avoid immediate close
@@ -151,17 +161,13 @@ const PopupList: Component<PopupListProps> = (props) => {
       window.addEventListener("scroll", handleScroll, true);
     }, 0);
 
-    return () => {
+    onCleanup(() => {
       clearTimeout(timeoutId);
-      if (cleanup) cleanup();
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("scroll", handleScroll, true);
-    };
+    });
   });
-
-  const pos = position();
-  const height = maxHeight();
 
   return (
     <Portal>
@@ -176,10 +182,11 @@ const PopupList: Component<PopupListProps> = (props) => {
         }
         style={{
           position: "fixed",
-          left: `${pos.x}px`,
-          top: `${pos.y}px`,
+          left: `${position().x}px`,
+          top: `${position().y}px`,
           "z-index": "9999",
-          ...(height ? { "max-height": `${height}px` } : {}),
+          visibility: positioned() ? "visible" : "hidden",
+          ...(maxHeight() ? { "max-height": `${maxHeight()}px` } : {}),
           "background-color": "var(--color-surface-layer2, #2A2A3C)", // Fallback to focused-hybrid color
         }}
         class="bg-surface-layer2 border border-white/10 rounded-lg shadow-xl overflow-y-auto"
@@ -188,9 +195,6 @@ const PopupList: Component<PopupListProps> = (props) => {
           <For each={props.items}>
             {(item, index) => (
               <div
-                ref={
-                  index() === props.selectedIndex ? selectedItemRef : undefined
-                }
                 role="option"
                 id={`suggestion-${index()}`}
                 aria-selected={index() === props.selectedIndex}
