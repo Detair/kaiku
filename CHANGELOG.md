@@ -72,6 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sign-in and sign-up errors now explain what went wrong (wrong password, username taken, sign-ups closed, server unreachable) instead of showing technical messages.
 - Error messages across the app (loading channels and messages, sending and editing messages, creating conversations, uploading an avatar, managing sessions, joining by invite, changing or resetting a password, voice devices) now say what went wrong in plain words instead of showing technical server messages. Messages that cannot be sent explain why (no permission, blocked, file too large, channel gone).
 - Forum and announcement channels, scheduled events and membership screening are turned off by default. Server operators can turn them on with `KAIKU_OPTIONAL_FEATURES`.
+- Role permissions on a channel now take priority over a denial for @everyone, so a private channel opened up for a role becomes visible to members of that role.
+- Messages from someone you have blocked, or who has blocked you, are hidden in channels and threads; they can still appear in pinned messages and search results.
+- Message authors are always reported as offline in message data; live status comes only from the realtime connection.
+- Upgrading the server: back up the database first. Two of this release's database migrations cannot be undone (they remove management rights from @everyone and reset the removed "invisible" status).
 - Android: sign-in errors now say what went wrong instead of showing raw server messages.
 - Dates in the direct-message list and the sessions list are shorter ("Oct 22" instead of "10/22/2026", year only when it differs) and follow your region's format.
 - Each phone now holds one push registration; signing in with another account on the same phone stops notifications for the previous account.
