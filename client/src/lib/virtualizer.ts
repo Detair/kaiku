@@ -79,9 +79,11 @@ export function createVirtualizer(options: VirtualizerOptions) {
     onCleanup(cleanup);
   });
 
+  // The accessors are read inside the caller's tracked scopes (JSX, memos).
   return new Proxy(instance, {
     get(target, prop, receiver) {
       if (prop === "getVirtualItems") return () => items;
+      // eslint-disable-next-line solid/reactivity
       if (prop === "getTotalSize") return () => totalSize();
       return Reflect.get(target, prop, receiver);
     },
