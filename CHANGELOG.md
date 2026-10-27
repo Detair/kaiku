@@ -142,6 +142,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- Loading older messages no longer shows a "new messages" button for them.
 - Messages no longer overlap or leave gaps while scrolling, and images in the chat no longer flicker or reload when you scroll or a new message arrives.
 - Signing in with a suspended account says so, and the Create account dialog can unlock admin actions directly.
 - Desktop sign-in and account linking with an identity provider show a clear message when they fail (for example when the app needs an update) instead of an error code.

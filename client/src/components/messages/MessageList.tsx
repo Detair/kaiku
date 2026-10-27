@@ -21,6 +21,7 @@ import {
 } from "lucide-solid";
 import flokiHappy from "@/assets/emotes/floki_emote_1.webp";
 import MessageItem, { MessageImageLightbox } from "./MessageItem";
+import { countAppended } from "./newMessages";
 import {
   messagesState,
   setMessagesState,
@@ -389,6 +390,8 @@ const MessageList: Component<MessageListProps> = (props) => {
 
   // Track message count for auto-scroll / new-message indicator
   let prevMessageCount = 0;
+  /** Newest message id at the last check; older pages load in front of it. */
+  let prevLastId: string | undefined;
 
   // --- Watch for ?highlight= search param ---
   createEffect(() => {
@@ -418,6 +421,7 @@ const MessageList: Component<MessageListProps> = (props) => {
           setNewMessageCount(0);
           setPaginationError(null);
           prevMessageCount = 0;
+          prevLastId = undefined;
 
           const lastReadId = getChannelLastReadMessageId(channelId);
           const unread = isChannelUnread(channelId);
@@ -440,22 +444,25 @@ const MessageList: Component<MessageListProps> = (props) => {
         if (found) {
           // Highlight handled; skip normal scroll behavior
           prevMessageCount = currentCount;
+          prevLastId = messages()[currentCount - 1]?.id;
           return;
         }
       }
 
-      // Always scroll when the user sends a message (optimistic messages have pending: prefix)
+      // Only messages after the previous newest one are new; a loaded page
+      // of older messages grows the list at the front.
       const msgs = messages();
       const lastMsg = msgs[msgs.length - 1];
+      const appended = countAppended(msgs, prevLastId, prevMessageCount);
+
+      // Always scroll when the user sends a message (optimistic messages have pending: prefix)
       const isOwnSend = lastMsg?.id?.startsWith("pending:");
 
-      if (isOwnSend || isAtBottom()) {
+      if (appended > 0 && (isOwnSend || isAtBottom())) {
         requestAnimationFrame(() => scrollToBottom(true));
-      } else {
+      } else if (appended > 0) {
         setHasNewMessages(true);
-        setNewMessageCount(
-          (count) => count + (currentCount - prevMessageCount),
-        );
+        setNewMessageCount((count) => count + appended);
       }
     } else if (currentCount > 0 && prevMessageCount === 0) {
       // Initial load complete — sticky to absorb measurement reflows
@@ -499,6 +506,7 @@ const MessageList: Component<MessageListProps> = (props) => {
     }
 
     prevMessageCount = currentCount;
+    prevLastId = messages()[currentCount - 1]?.id;
   });
 
   return (
