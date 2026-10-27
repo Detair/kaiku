@@ -112,7 +112,10 @@ const PopupList: Component<PopupListProps> = (props) => {
 
   // Keyboard navigation
   const handleKeyDown = (e: KeyboardEvent) => {
+    // Don't hijack keys during IME composition or when there is nothing to pick
+    if (e.isComposing) return;
     const itemCount = props.items.length;
+    if (itemCount === 0) return;
 
     switch (e.key) {
       case "ArrowDown":

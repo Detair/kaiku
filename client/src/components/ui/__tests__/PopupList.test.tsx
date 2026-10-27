@@ -28,11 +28,15 @@ const items = [
   { id: "b", label: "Bob" },
 ];
 
-function mountList(onClose: () => void, anchor: HTMLElement) {
+function mountList(
+  onClose: () => void,
+  anchor: HTMLElement,
+  list: typeof items = items,
+) {
   return render(() => (
     <PopupList
       anchorEl={anchor}
-      items={items}
+      items={list}
       selectedIndex={0}
       onSelect={() => {}}
       onClose={onClose}
@@ -112,6 +116,38 @@ describe("PopupList", () => {
     document.body.appendChild(outside);
     outside.dispatchEvent(new Event("scroll"));
     expect(onClose).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it("ignores keys when there are no items", async () => {
+    const onClose = vi.fn();
+    const view = mountList(onClose, anchor, []);
+    await flush();
+    const ev = new KeyboardEvent("keydown", {
+      key: "Enter",
+      cancelable: true,
+    });
+    document.dispatchEvent(ev);
+    const down = new KeyboardEvent("keydown", {
+      key: "ArrowDown",
+      cancelable: true,
+    });
+    document.dispatchEvent(down);
+    expect(ev.defaultPrevented).toBe(false);
+    expect(down.defaultPrevented).toBe(false);
+    view.unmount();
+  });
+
+  it("ignores keys during IME composition", async () => {
+    const view = mountList(vi.fn(), anchor);
+    await flush();
+    const ev = new KeyboardEvent("keydown", {
+      key: "Enter",
+      cancelable: true,
+      isComposing: true,
+    });
+    document.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(false);
     view.unmount();
   });
 });

@@ -5,7 +5,13 @@
  * Handles data fetching and formatting for @user, :emoji:, #channel, and /command suggestions.
  */
 
-import { Component, createMemo } from "solid-js";
+import {
+  Component,
+  createEffect,
+  createMemo,
+  onCleanup,
+  Show,
+} from "solid-js";
 import PopupList, { type PopupListItem } from "@/components/ui/PopupList";
 import Avatar from "@/components/ui/Avatar";
 import { Hash, Terminal } from "lucide-solid";
@@ -45,6 +51,8 @@ interface AutocompletePopupProps {
   onClose: () => void;
   /** Callback when selection changes */
   onSelectionChange: (index: number) => void;
+  /** Reports whether the popup currently has items (keys are only captured then) */
+  onActiveChange?: (active: boolean) => void;
 }
 
 const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
@@ -241,15 +249,22 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
     }
   };
 
+  const hasItems = () => (items()?.length ?? 0) > 0;
+
+  createEffect(() => props.onActiveChange?.(hasItems()));
+  onCleanup(() => props.onActiveChange?.(false));
+
   return (
-    <PopupList
-      anchorEl={props.anchorEl}
-      items={items()}
-      selectedIndex={props.selectedIndex}
-      onSelect={handleSelect}
-      onClose={props.onClose}
-      onSelectionChange={props.onSelectionChange}
-    />
+    <Show when={hasItems()}>
+      <PopupList
+        anchorEl={props.anchorEl}
+        items={items()!}
+        selectedIndex={props.selectedIndex}
+        onSelect={handleSelect}
+        onClose={props.onClose}
+        onSelectionChange={props.onSelectionChange}
+      />
+    </Show>
   );
 };
 
