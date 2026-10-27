@@ -176,6 +176,16 @@ const MessageList: Component<MessageListProps> = (props) => {
     overscan: 5,
   });
 
+  let sweepQueued = false;
+  const scheduleElementSweep = () => {
+    if (sweepQueued) return;
+    sweepQueued = true;
+    queueMicrotask(() => {
+      sweepQueued = false;
+      virtualizer.measureElement(null);
+    });
+  };
+
   // --- Check if at bottom ---
   const checkIfAtBottom = () => {
     if (!containerRef) return true;
@@ -438,6 +448,8 @@ const MessageList: Component<MessageListProps> = (props) => {
           setHasNewMessages(false);
           setNewMessageCount(0);
           setPaginationError(null);
+          // Sizes are keyed by message id; drop the previous channel's.
+          virtualizer.measure();
           prevMessageCount = 0;
           prevLastId = undefined;
 
@@ -615,81 +627,85 @@ const MessageList: Component<MessageListProps> = (props) => {
         </div>
       </Show>
 
-      {/* Virtualized messages */}
-      <Show when={messagesWithCompact().length > 0}>
-        <div
-          ref={(el) => bottomPin.observe(el)}
-          style={{
-            height: `${virtualizer.getTotalSize()}px`,
-            position: "relative",
+      {/* Virtualized messages. Always mounted: the rows are disposed by
+          <For> alone (an outer <Show> on the count disposed them a second
+          time in the same update when a channel emptied). */}
+      <div
+        ref={(el) => bottomPin.observe(el)}
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          position: "relative",
+        }}
+      >
+        <For each={virtualizer.getVirtualItems()}>
+          {(virtualItem) => {
+            // One row per message id: the element, its measured size and the
+            // MessageItem stay with the message while rows shift around it.
+            // Looked up by key, not index: while a page is prepended the
+            // index can lag behind the data. Keeps the last value while the
+            // row is being removed, so MessageItem's cleanup never reads a
+            // disposed <Show> accessor.
+            const item = createMemo<CompactItem | undefined>(
+              (prev) => itemsById().get(String(virtualItem.key)) ?? prev,
+              undefined,
+              {
+                // messagesWithCompact() rebuilds its wrappers on every list
+                // change; only a different message or flag is an update.
+                equals: (a, b) =>
+                  a?.message === b?.message &&
+                  a?.isCompact === b?.isCompact &&
+                  a?.isFirstUnread === b?.isFirstUnread,
+              },
+            );
+            // virtual-core caches each measured element by key and only
+            // drops detached ones on measureElement(null), which Solid never
+            // calls by itself. Sweep once this row's element is removed.
+            onCleanup(scheduleElementSweep);
+            const isHighlighted = () =>
+              item()?.message.id != null &&
+              highlightedId() === item()?.message.id;
+            return (
+              <div
+                role="listitem"
+                data-index={virtualItem.index}
+                ref={(el) => {
+                  queueMicrotask(() => virtualizer.measureElement(el));
+                }}
+                class={isHighlighted() ? "message-highlight" : undefined}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  transform: `translateY(${virtualItem.start}px)`,
+                }}
+              >
+                <Show when={item()}>
+                  {(data) => (
+                    <>
+                      <Show when={data().isFirstUnread}>
+                        <div class="flex items-center gap-2 px-4 py-1 my-1">
+                          <div class="flex-1 h-px bg-accent-danger" />
+                          <span class="text-xs font-semibold text-accent-danger uppercase tracking-wide">
+                            {t("chat.list.newMessages")}
+                          </span>
+                          <div class="flex-1 h-px bg-accent-danger" />
+                        </div>
+                      </Show>
+                      <MessageItem
+                        message={data().message}
+                        compact={data().isCompact}
+                        guildId={props.guildId}
+                        threadsEnabled={areThreadsEnabled(props.guildId)}
+                      />
+                    </>
+                  )}
+                </Show>
+              </div>
+            );
           }}
-        >
-          <For each={virtualizer.getVirtualItems()}>
-            {(virtualItem) => {
-              // One row per message id: the element, its measured size and the
-              // MessageItem stay with the message while rows shift around it.
-              // Looked up by key, not index: while a page is prepended the
-              // index can lag behind the data. Keeps the last value while the
-              // row is being removed, so MessageItem's cleanup never reads a
-              // disposed <Show> accessor.
-              const item = createMemo<CompactItem | undefined>(
-                (prev) => itemsById().get(String(virtualItem.key)) ?? prev,
-                undefined,
-                {
-                  // messagesWithCompact() rebuilds its wrappers on every list
-                  // change; only a different message or flag is an update.
-                  equals: (a, b) =>
-                    a?.message === b?.message &&
-                    a?.isCompact === b?.isCompact &&
-                    a?.isFirstUnread === b?.isFirstUnread,
-                },
-              );
-              const isHighlighted = () =>
-                item()?.message.id != null &&
-                highlightedId() === item()?.message.id;
-              return (
-                <div
-                  role="listitem"
-                  data-index={virtualItem.index}
-                  ref={(el) => {
-                    queueMicrotask(() => virtualizer.measureElement(el));
-                  }}
-                  class={isHighlighted() ? "message-highlight" : undefined}
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    width: "100%",
-                    transform: `translateY(${virtualItem.start}px)`,
-                  }}
-                >
-                  <Show when={item()}>
-                    {(data) => (
-                      <>
-                        <Show when={data().isFirstUnread}>
-                          <div class="flex items-center gap-2 px-4 py-1 my-1">
-                            <div class="flex-1 h-px bg-accent-danger" />
-                            <span class="text-xs font-semibold text-accent-danger uppercase tracking-wide">
-                              {t("chat.list.newMessages")}
-                            </span>
-                            <div class="flex-1 h-px bg-accent-danger" />
-                          </div>
-                        </Show>
-                        <MessageItem
-                          message={data().message}
-                          compact={data().isCompact}
-                          guildId={props.guildId}
-                          threadsEnabled={areThreadsEnabled(props.guildId)}
-                        />
-                      </>
-                    )}
-                  </Show>
-                </div>
-              );
-            }}
-          </For>
-        </div>
-      </Show>
+        </For>
+      </div>
 
       {/* New messages indicator */}
       <Show when={hasNewMessages()}>
