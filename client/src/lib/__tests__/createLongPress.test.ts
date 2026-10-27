@@ -21,6 +21,14 @@ describe("createLongPress", () => {
     expect(e.defaultPrevented).toBe(false);
   });
 
+  it("lets a pen barrel-button click open the context menu", () => {
+    const lp = createLongPress(vi.fn());
+    lp.onPointerDown(pointer("pen", 2));
+    const e = contextMenu();
+    lp.onContextMenu(e);
+    expect(e.defaultPrevented).toBe(false);
+  });
+
   it("never fires a long press for a mouse", () => {
     vi.useFakeTimers();
     const onLongPress = vi.fn();
