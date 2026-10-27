@@ -143,6 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- Right-clicking a message, channel or member opens its menu again on Linux and macOS.
 - Code blocks in messages show every line in full instead of cutting off all lines but the last.
 - Bot applications, slash-command suggestions, webhooks and content filters now talk to your Kaiku server; before, they could fail to load in the web and desktop apps.
 - Signing in with a suspended account says so, and the Create account dialog can unlock admin actions directly.
