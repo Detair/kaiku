@@ -355,6 +355,38 @@ describe("messages store", () => {
 
       expect(ids()).toEqual(["m1", "m2", "m3", "m9"]);
     });
+
+    it("commits the initial around-load in a single byChannel write", async () => {
+      const seen: string[][] = [];
+      const snap = () =>
+        seen.push((messagesState.byChannel["ch-1"] ?? []).map((m) => m.id));
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce(
+        page([at("m1", 1), at("m2", 2)], true),
+      );
+      vi.mocked(tauri.getMessagesAfter).mockImplementation(async () => {
+        snap();
+        expect(messagesState.loadingChannels["ch-1"]).toBe(true);
+        return page([at("m3", 3)], false);
+      });
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(seen).toEqual([[]]);
+      expect(ids()).toEqual(["m1", "m2", "m3"]);
+    });
+
+    it("keeps the around window when the forward fetch fails with a non-400 error", async () => {
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce(
+        page([at("m1", 1), at("m2", 2)], true),
+      );
+      vi.mocked(tauri.getMessagesAfter).mockRejectedValue(new Error("network"));
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(ids()).toEqual(["m1", "m2"]);
+      expect(tauri.getMessages).toHaveBeenCalledTimes(1);
+      expect(messagesState.loadingChannels["ch-1"]).toBe(false);
+    });
   });
 
   describe("sendMessage", () => {
@@ -640,6 +672,7 @@ describe("messages store", () => {
     it("does not throw", () => {
       expect(() => clearCurve25519KeyCache()).not.toThrow();
     });
+
   });
 });
 
