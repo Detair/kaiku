@@ -101,9 +101,13 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
             "[PositionedEmojiPicker] Failed to calculate position:",
             err,
           );
+          // Never leave the picker hidden if positioning fails
+          setPositioned(true);
         });
       });
       onCleanup(stopAutoUpdate);
+    } else {
+      setPositioned(true);
     }
 
     // Add event listeners after a small delay to avoid immediate close

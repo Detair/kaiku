@@ -2,10 +2,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, cleanup, screen } from "@solidjs/testing-library";
 
 const autoUpdateCleanup = vi.fn();
-const autoUpdateMock = vi.fn((..._args: unknown[]) => autoUpdateCleanup);
+const autoUpdateMock = vi.fn((...args: unknown[]) => {
+  (args[2] as () => void)();
+  return autoUpdateCleanup;
+});
+const computePositionMock = vi.fn(async (..._args: unknown[]) => ({
+  x: 10,
+  y: 20,
+}));
 
 vi.mock("@floating-ui/dom", () => ({
-  computePosition: vi.fn(async () => ({ x: 10, y: 20 })),
+  computePosition: (...args: unknown[]) => computePositionMock(...args),
   autoUpdate: (...args: unknown[]) => autoUpdateMock(...args),
   flip: vi.fn(() => ({})),
   shift: vi.fn(() => ({})),
@@ -42,6 +49,8 @@ describe("PositionedEmojiPicker lifecycle", () => {
     cleanup();
     autoUpdateCleanup.mockClear();
     autoUpdateMock.mockClear();
+    computePositionMock.mockReset();
+    computePositionMock.mockResolvedValue({ x: 10, y: 20 });
     anchor?.remove();
     anchor = document.createElement("button");
     document.body.appendChild(anchor);
@@ -106,5 +115,25 @@ describe("PositionedEmojiPicker lifecycle", () => {
     expect(autoUpdateCleanup).not.toHaveBeenCalled();
     view.unmount();
     expect(autoUpdateCleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("becomes visible after position resolves", async () => {
+    const view = mountPicker(vi.fn(), anchor);
+    await flush();
+    expect(computePositionMock).toHaveBeenCalled();
+    const wrapper = screen.getByTestId("picker").parentElement as HTMLElement;
+    expect(wrapper.style.visibility).toBe("visible");
+    view.unmount();
+  });
+
+  it("becomes visible even if computePosition rejects", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    computePositionMock.mockRejectedValue(new Error("boom"));
+    const view = mountPicker(vi.fn(), anchor);
+    await flush();
+    const wrapper = screen.getByTestId("picker").parentElement as HTMLElement;
+    expect(wrapper.style.visibility).toBe("visible");
+    err.mockRestore();
+    view.unmount();
   });
 });
