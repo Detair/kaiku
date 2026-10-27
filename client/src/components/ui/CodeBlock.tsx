@@ -41,7 +41,7 @@ const CodeBlock: Component<CodeBlockProps> = (props) => {
   });
 
   return (
-    <pre class="bg-surface-layer2 rounded-xl p-4 overflow-x-auto border border-white/5 my-3">
+    <pre class="code-block bg-surface-layer2 rounded-xl p-4 overflow-x-auto border border-white/5 my-3">
       <code
         ref={codeRef}
         class={props.language ? `language-${props.language}` : ""}

@@ -6,12 +6,12 @@
  */
 
 /* Base styles for all themes */
+/* highlight.js puts .hljs on the inline <code>; the box (background, padding,
+   radius, scrolling) belongs to the surrounding <pre> (CodeBlock). Box styles
+   here would repeat on every line of the inline element and paint over the
+   line above. */
 .hljs {
-  background: var(--color-surface-layer2);
   color: var(--color-text-primary);
-  padding: 1rem;
-  border-radius: 0.75rem;
-  overflow-x: auto;
 }
 
 /* Keywords - blue */
