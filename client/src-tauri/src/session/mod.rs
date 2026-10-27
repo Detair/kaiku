@@ -612,6 +612,38 @@ impl SessionManager {
         self.adopt_tokens(&base, tokens).await
     }
 
+    /// Redeem a desktop SSO hand-off code with the flow's verifier
+    /// (`POST /auth/oidc/desktop/exchange`) and take over the token pair.
+    /// The code is single use; a refused code is `OIDC_HANDOFF_INVALID`.
+    pub async fn exchange_oidc_code(
+        &self,
+        server_url: &str,
+        code: &str,
+        verifier: &str,
+    ) -> Result<AuthResult, SessionError> {
+        let base = normalize_server_url(server_url)?;
+        let response = self
+            .http
+            .post(format!("{base}/auth/oidc/desktop/exchange"))
+            .json(&json!({ "code": code, "verifier": verifier }))
+            .send()
+            .await
+            .map_err(|e| network(&e))?;
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(match error_code(&text) {
+                Some(code) => SessionError::Server(status, code),
+                None => server_error(status, &text),
+            });
+        }
+        let tokens: TokenResponse = response
+            .json()
+            .await
+            .map_err(|e| invalid_response(status, &e))?;
+        self.adopt_tokens(&base, tokens).await
+    }
+
     /// Take over a fresh token pair (login, registration, OIDC): fetch the
     /// profile, store the refresh token, publish the session.
     pub async fn adopt_tokens(
@@ -1147,6 +1179,57 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, SessionError::MfaRequired));
+    }
+
+    #[tokio::test]
+    async fn oidc_exchange_posts_code_and_verifier() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/oidc/desktop/exchange"))
+            .and(body_json(json!({"code": "c-1", "verifier": "v-1"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("at-1", "rt-1")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/auth/me"))
+            .and(header("authorization", "Bearer at-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(me()))
+            .mount(&server)
+            .await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = manager(&store);
+
+        let result = m
+            .exchange_oidc_code(&server.uri(), "c-1", "v-1")
+            .await
+            .unwrap();
+
+        assert!(result.persisted);
+        assert_eq!(store.get().unwrap().refresh_token, "rt-1");
+        assert_eq!(m.auth_info().unwrap().access_token, "at-1");
+        assert!(!serde_json::to_string(&result).unwrap().contains("rt-1"));
+    }
+
+    #[tokio::test]
+    async fn oidc_exchange_reports_the_error_code() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/oidc/desktop/exchange"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(
+                json!({"error": "OIDC_HANDOFF_INVALID", "message": "Sign-in could not be completed."}),
+            ))
+            .mount(&server)
+            .await;
+        let store = Arc::new(MemoryTokenStore::new());
+
+        let err = manager(&store)
+            .exchange_oidc_code(&server.uri(), "c-1", "v-1")
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "OIDC_HANDOFF_INVALID");
+        assert!(store.get().is_none());
     }
 
     #[tokio::test]

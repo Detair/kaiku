@@ -473,6 +473,7 @@ pub async fn oidc_reauth_authorize(
         &state,
         &provider,
         body.redirect_uri.as_deref(),
+        None,
         OidcFlowPurpose::Reauth(binding),
         // Always `{"url"}`: a bearer-authenticated call is never a navigation.
         true,

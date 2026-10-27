@@ -10,9 +10,10 @@
 
 use sqlx::PgPool;
 use vc_server::auth::oidc::{
-    append_collision_suffix, client_return_url, generate_username_from_claims,
-    is_loopback_client_redirect, resolve_flow_redirects, FlowRedirectError, OidcFlowPurpose,
-    OidcFlowState, OidcProviderManager, OidcReauthBinding, OidcUserInfo,
+    append_collision_suffix, client_challenge_matches, client_return_url,
+    generate_username_from_claims, is_loopback_client_redirect, is_valid_client_challenge,
+    resolve_flow_redirects, FlowRedirectError, OidcFlowPurpose, OidcFlowState, OidcProviderManager,
+    OidcReauthBinding, OidcUserInfo,
 };
 
 // ============================================================================
@@ -326,6 +327,7 @@ fn test_flow_state_serialization_roundtrip() {
             session_id: None,
         },
         client_redirect_uri: Some("http://127.0.0.1:12345/callback".to_string()),
+        client_challenge: None,
     };
 
     let json = serde_json::to_string(&state).expect("Serialization should succeed");
@@ -395,6 +397,7 @@ fn test_flow_state_purpose_is_exclusive() {
         created_at: 0,
         purpose: OidcFlowPurpose::Reauth(binding.clone()),
         client_redirect_uri: None,
+        client_challenge: None,
     };
     let json = serde_json::to_value(&state).unwrap();
     assert_eq!(json["purpose"]["kind"], "reauth");
@@ -413,6 +416,7 @@ fn test_flow_state_json_format() {
         created_at: 0,
         purpose: OidcFlowPurpose::Login,
         client_redirect_uri: None,
+        client_challenge: None,
     };
 
     let json: serde_json::Value = serde_json::to_value(&state).unwrap();
@@ -859,6 +863,7 @@ fn flow_state_with_client(client: Option<&str>) -> OidcFlowState {
         created_at: 0,
         purpose: OidcFlowPurpose::Login,
         client_redirect_uri: client.map(str::to_string),
+        client_challenge: None,
     }
 }
 
@@ -1166,4 +1171,91 @@ async fn test_system_seeded_provider_without_creator(pool: PgPool) {
     vc_server::db::set_auth_methods_allowed(&pool, &methods, None)
         .await
         .expect("auth methods update without updater must succeed");
+}
+
+// ============================================================================
+// Desktop hand-back: per-flow value and client challenge (no database)
+// ============================================================================
+
+/// The desktop may add one per-flow value (`?flow=`, base64url, 22–128
+/// characters) to its return address; the server hands it back unchanged.
+#[test]
+fn test_loopback_client_redirect_accepts_only_a_flow_value() {
+    let flow = "Zm9vYmFyYmF6cXV4cXV1eHh5ejEyMzQ1Ng";
+    for ok in [
+        format!("http://127.0.0.1:54321/callback?flow={flow}"),
+        format!("http://localhost:1/callback?flow={}", "a".repeat(22)),
+        format!("http://localhost:1/callback?flow={}", "_-".repeat(64)),
+    ] {
+        let u = openidconnect::url::Url::parse(&ok).unwrap();
+        assert!(is_loopback_client_redirect(&u), "{ok} must be accepted");
+    }
+    for bad in [
+        "http://127.0.0.1:1/callback?flow=".to_string(),
+        format!("http://127.0.0.1:1/callback?flow={}", "a".repeat(21)),
+        format!("http://127.0.0.1:1/callback?flow={}", "a".repeat(129)),
+        format!("http://127.0.0.1:1/callback?flow={flow}&flow={flow}"),
+        format!("http://127.0.0.1:1/callback?flow={flow}&x=1"),
+        format!("http://127.0.0.1:1/callback?x=1&flow={flow}"),
+        format!("http://127.0.0.1:1/callback?flow={flow}%21"),
+        format!("http://127.0.0.1:1/callback?flow={flow}.~"),
+        format!("http://127.0.0.1:1/callback?state={flow}"),
+        format!("http://127.0.0.1:1/callback?flow={flow}#f"),
+        format!("http://127.0.0.1:1/other?flow={flow}"),
+    ] {
+        let u = openidconnect::url::Url::parse(&bad).unwrap();
+        assert!(!is_loopback_client_redirect(&u), "{bad} must be rejected");
+    }
+}
+
+/// `client_challenge` is an unpadded base64url SHA-256 digest (43 characters).
+#[test]
+fn test_client_challenge_format() {
+    assert!(is_valid_client_challenge(
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+    ));
+    for bad in [
+        "",
+        "E9Melhoa2OwvFrEMTJguCHaoeKt8R5Ce4fZUZkQ0Pl",
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM=",
+        "E9Melhoa2OwvFrEMTJguCHaoeKt8R5Ce4fZUZkQ0Pl=",
+        "E9Melhoa2OwvFrEMTJguCHaoeKt8R5Ce4fZUZkQ0P+/",
+        "plain",
+    ] {
+        assert!(!is_valid_client_challenge(bad), "{bad:?} must be rejected");
+    }
+}
+
+/// S256 as in RFC 7636 appendix B; anything else does not match.
+#[test]
+fn test_client_challenge_matches_s256_only() {
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+    assert!(client_challenge_matches(verifier, challenge));
+    // "plain" (verifier == challenge) is not accepted.
+    assert!(!client_challenge_matches(challenge, challenge));
+    assert!(!client_challenge_matches(
+        "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXK",
+        challenge
+    ));
+    // Verifier outside the RFC 7636 length range.
+    assert!(!client_challenge_matches("short", challenge));
+    assert!(!client_challenge_matches(&"a".repeat(129), challenge));
+    assert!(!client_challenge_matches("", ""));
+}
+
+/// States stored before the challenge existed deserialize without one.
+#[test]
+fn test_flow_state_without_challenge_deserializes() {
+    let json = serde_json::json!({
+        "slug": "google",
+        "pkce_verifier": "v",
+        "nonce": "n",
+        "redirect_uri": "https://chat.example.com/auth/oidc/callback",
+        "created_at": 0,
+        "purpose": { "kind": "login" },
+        "client_redirect_uri": "http://127.0.0.1:1/callback",
+    });
+    let state: OidcFlowState = serde_json::from_value(json).unwrap();
+    assert_eq!(state.client_challenge, None);
 }

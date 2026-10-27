@@ -61,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Desktop sign-in with an identity provider needs a server of the same version: update the server and the desktop app together.
 - The desktop app hides forum, announcement, event and screening features when the server has them turned off.
 - The "invisible" status is no longer offered.
 - API error codes are now consistently written in upper case (for example `VALIDATION_ERROR`).
@@ -90,6 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Signing in with an identity provider in the desktop app no longer passes your session tokens through the browser: the browser only receives a one-time code that expires after 60 seconds and that only the app that started the sign-in can redeem. The app also ignores any other requests to its temporary sign-in address. Older desktop apps must be updated to sign in with an identity provider.
 - In server member lists, someone you have blocked or who has blocked you now always appears offline, without a last-seen time.
 - Message lists no longer reveal whether the author is currently online.
 - The desktop app no longer bundles an unused embedded database and compression stack that came in with the credential-storage library and had newly published memory-safety advisories; stored sign-in data is unaffected and still lives in the system keychain.
@@ -137,6 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Signing in with a suspended account says so, and the Create account dialog can unlock admin actions directly.
+- Desktop sign-in and account linking with an identity provider show a clear message when they fail (for example when the app needs an update) instead of an error code.
 - The app says "server" everywhere, invite codes can be copied and pasted reliably, the sign-in screen no longer offers registration when it is closed, and a failed voice join says why.
 - Android: a notification no longer reappears for a message you already read on another device.
 - Channels no longer stay marked as unread after replies in a thread, and notifications skip messages you have already read.

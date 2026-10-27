@@ -474,7 +474,7 @@ pub async fn qr_create(
 ///
 /// The token is consumed atomically via `GETDEL` so it cannot be reused.
 /// Returns an access/refresh token pair identical to the login endpoint.
-#[tracing::instrument(skip(state, body))]
+#[tracing::instrument(skip(state, jar, headers, body))]
 pub async fn qr_redeem(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,

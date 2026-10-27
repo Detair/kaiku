@@ -3,15 +3,16 @@
 //! Thin wrappers around [`crate::session::SessionManager`], which owns the
 //! tokens. No command returns the refresh token to the webview.
 
-use std::collections::HashMap;
+use std::time::Duration;
 
 use serde::Deserialize;
 use tauri::{command, State};
+use tokio::net::TcpListener;
 use tracing::{debug, info};
+use url::Url;
 
-use crate::session::{
-    AuthInfo, AuthResult, RegisterRequest, SessionError, SessionRestoreResult, TokenResponse,
-};
+use super::oidc_loopback::{self, LinkCallback, LoginCallback};
+use crate::session::{AuthInfo, AuthResult, RegisterRequest, SessionError, SessionRestoreResult};
 use crate::AppState;
 
 /// Login request from frontend.
@@ -114,13 +115,129 @@ pub async fn session_request(
         .map_err(|e| e.to_string())
 }
 
+/// How an SSO start authenticates to the server.
+#[derive(Clone, Copy)]
+enum Start<'a> {
+    /// Public desktop sign-in: `X-Kaiku-Client: desktop`, JSON `{"url"}` only.
+    DesktopLogin,
+    /// Signed-in start (identity link) with a bearer token.
+    Bearer(&'a str),
+}
+
+/// Header the server requires on desktop sign-in starts.
+const DESKTOP_CLIENT_HEADER: (&str, &str) = ("x-kaiku-client", "desktop");
+
+/// Ask the server for the provider URL. A desktop sign-in gets `{"url"}`; a
+/// bearer start may also answer with a redirect we don't follow. A refused
+/// start that names a server code (e.g. `OIDC_CLIENT_OUTDATED`) fails with
+/// that bare code, so the webview can show a matching message.
+async fn provider_url(authorize_url: &Url, start: Start<'_>, what: &str) -> Result<String, String> {
+    let no_redirect_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+    let mut request = no_redirect_client.get(authorize_url.as_str());
+    request = match start {
+        Start::DesktopLogin => request.header(DESKTOP_CLIENT_HEADER.0, DESKTOP_CLIENT_HEADER.1),
+        Start::Bearer(token) => request.bearer_auth(token),
+    };
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Failed to get authorize URL: {e}"))?;
+
+    if response.status().is_redirection() && matches!(start, Start::Bearer(_)) {
+        Ok(response
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .ok_or("Server did not return a redirect URL")?
+            .to_string())
+    } else if response.status().is_success() {
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse authorize response: {e}"))?;
+        Ok(body["url"]
+            .as_str()
+            .ok_or("No authorize URL in response")?
+            .to_string())
+    } else {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let code = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        Err(code.unwrap_or_else(|| format!("{what} failed ({status})")))
+    }
+}
+
+/// Open `url` in the system browser.
+fn open_browser(app_handle: &tauri::AppHandle, url: &str) -> Result<(), String> {
+    #[allow(deprecated)] // tauri-plugin-shell::open is deprecated in favor of tauri-plugin-opener
+    {
+        use tauri_plugin_shell::ShellExt;
+        app_handle
+            .shell()
+            .open(url, None)
+            .map_err(|e| format!("Failed to open browser: {e}"))
+    }
+}
+
+/// Bind the loopback listener and build its return address with a fresh
+/// per-flow value; returns `(listener, flow, redirect_uri)`.
+async fn bind_loopback() -> Result<(TcpListener, String, String), String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("Failed to bind localhost listener: {e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to get local address: {e}"))?
+        .port();
+    let flow = oidc_loopback::new_secret();
+    let redirect_uri = oidc_loopback::return_address(port, &flow);
+    Ok((listener, flow, redirect_uri))
+}
+
+/// `{server}/auth/.../{slug}?redirect_uri=...` with `extra` query pairs.
+fn authorize_endpoint(
+    server_url: &str,
+    segments: &[&str],
+    redirect_uri: &str,
+    extra: &[(&str, &str)],
+) -> Result<Url, String> {
+    let mut url = Url::parse(server_url).map_err(|e| format!("Invalid server URL: {e}"))?;
+    // Path segment mutation encodes the provider slug safely.
+    url.path_segments_mut()
+        .map_err(|()| "Invalid server URL: cannot be a base")?
+        .extend(segments);
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("redirect_uri", redirect_uri);
+        for (k, v) in extra {
+            query.append_pair(k, v);
+        }
+    }
+    Ok(url)
+}
+
+const LOGIN_OK_PAGE: &str = "<html><body><h2>Signed in</h2><p>You can close this window and return to the app.</p></body></html>";
+const LOGIN_FAILED_PAGE: &str =
+    "<html><body><h2>Login failed</h2><p>An error occurred. Please try again.</p></body></html>";
+const LINK_OK_PAGE: &str = "<html><body><h2>Account linked!</h2><p>You can close this window and return to the app.</p></body></html>";
+const LINK_FAILED_PAGE: &str = "<html><body><h2>Linking failed</h2><p>You can close this window and return to the app.</p></body></html>";
+
 /// Start OIDC login flow for Tauri desktop.
 ///
-/// 1. Binds a temporary TCP listener on localhost
-/// 2. Requests the authorize URL from the server (with localhost `redirect_uri`)
-/// 3. Opens the authorize URL in the default browser
-/// 4. Waits for the OIDC callback on the localhost listener
-/// 5. Hands the tokens from the callback to the session manager (they never reach the webview)
+/// 1. Binds a loopback listener and creates a per-flow value and a verifier
+/// 2. Requests the provider URL from the server with the loopback return address (carrying the
+///    per-flow value) and the verifier's S256 challenge
+/// 3. Opens the provider URL in the default browser
+/// 4. Waits for the server's hand-back on the loopback: only a one-time code, accepted only on
+///    `/callback` with the per-flow value
+/// 5. Redeems the code with the verifier; the tokens go to the session manager (they never reach
+///    the webview or the browser)
 #[command]
 pub async fn oidc_authorize(
     state: State<'_, AppState>,
@@ -128,183 +245,49 @@ pub async fn oidc_authorize(
     server_url: String,
     provider_slug: String,
 ) -> Result<AuthResult, String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    use url::Url;
-
     info!("Starting OIDC flow for provider: {}", provider_slug);
 
     let server_url = server_url.trim_end_matches('/');
+    let (listener, flow, redirect_uri) = bind_loopback().await?;
+    let verifier = oidc_loopback::new_secret();
+    let challenge = oidc_loopback::s256_challenge(&verifier);
+    debug!("OIDC loopback listener bound");
 
-    // 1. Bind a temporary TCP listener on localhost
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|e| format!("Failed to bind localhost listener: {e}"))?;
+    let authorize_url = authorize_endpoint(
+        server_url,
+        &["auth", "oidc", "authorize", &provider_slug],
+        &redirect_uri,
+        &[("client_challenge", &challenge)],
+    )?;
+    let auth_url = provider_url(&authorize_url, Start::DesktopLogin, "OIDC authorize").await?;
 
-    let local_addr = listener
-        .local_addr()
-        .map_err(|e| format!("Failed to get local address: {e}"))?;
-
-    let redirect_uri = format!("http://127.0.0.1:{}/callback", local_addr.port());
-    debug!("OIDC redirect URI: {}", redirect_uri);
-
-    // 2. Get the authorize URL from the server
-    let mut authorize_parsed =
-        Url::parse(server_url).map_err(|e| format!("Invalid server URL: {e}"))?;
-    // Use Url path segment mutation to safely encode the provider slug
-    authorize_parsed
-        .path_segments_mut()
-        .map_err(|()| "Invalid server URL: cannot be a base")?
-        .extend(&["auth", "oidc", "authorize", &provider_slug]);
-    authorize_parsed
-        .query_pairs_mut()
-        .append_pair("redirect_uri", &redirect_uri);
-    let authorize_url = authorize_parsed.to_string();
-
-    // The server returns a 302 redirect to the OIDC provider.
-    // Use a no-redirect client to capture the Location header.
-    let no_redirect_client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
-
-    let redirect_response = no_redirect_client
-        .get(&authorize_url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to get authorize URL: {e}"))?;
-
-    let auth_url = if redirect_response.status().is_redirection() {
-        redirect_response
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .ok_or("Server did not return a redirect URL")?
-            .to_string()
-    } else if redirect_response.status().is_success() {
-        // Some implementations return the URL in JSON body
-        let body: serde_json::Value = redirect_response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse authorize response: {e}"))?;
-        body["url"]
-            .as_str()
-            .ok_or("No authorize URL in response")?
-            .to_string()
-    } else {
-        let status = redirect_response.status();
-        let body = redirect_response.text().await.unwrap_or_default();
-        return Err(format!("OIDC authorize failed ({status}): {body}"));
-    };
-
-    // 3. Open the authorize URL in the default browser
-    #[allow(deprecated)] // tauri-plugin-shell::open is deprecated in favor of tauri-plugin-opener
-    {
-        use tauri_plugin_shell::ShellExt;
-        app_handle
-            .shell()
-            .open(&auth_url, None)
-            .map_err(|e| format!("Failed to open browser: {e}"))?;
-    }
-
+    open_browser(&app_handle, &auth_url)?;
     info!("Opened browser for OIDC login, waiting for callback...");
 
-    // 4. Wait for the OIDC callback (with timeout)
-    // Accept in a loop to handle favicon requests and other non-callback connections
-    let accept_future = async {
-        loop {
-            let (mut stream, _addr) = listener.accept().await?;
+    let callback = oidc_loopback::wait_for_callback(
+        &listener,
+        &flow,
+        oidc_loopback::CALLBACK_TIMEOUT,
+        oidc_loopback::READ_DEADLINE,
+        oidc_loopback::parse_login_callback,
+        |result| match result {
+            LoginCallback::Code(_) => LOGIN_OK_PAGE,
+            LoginCallback::Error(_) => LOGIN_FAILED_PAGE,
+        },
+    )
+    .await
+    .map_err(|_| "OIDC login timed out (60s). Please try again.".to_string())?;
+    drop(listener);
 
-            // Read the HTTP request
-            let mut buf = vec![0u8; 8192];
-            let n = stream.read(&mut buf).await?;
-            let request = String::from_utf8_lossy(&buf[..n]);
-
-            // Extract the request path from the first line (GET /callback?... HTTP/1.1)
-            let first_line = request.lines().next().unwrap_or("");
-            let path = first_line.split_whitespace().nth(1).unwrap_or("/");
-
-            // Check if this is the actual callback (not favicon, preflight, etc.)
-            if !path.starts_with("/callback") {
-                let response = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
-                let _ = stream.write_all(response.as_bytes()).await;
-                let _ = stream.flush().await;
-                continue;
-            }
-
-            // Parse query parameters
-            let full_url = format!("http://localhost{path}");
-            let parsed = Url::parse(&full_url)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-
-            let params: HashMap<String, String> = parsed
-                .query_pairs()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect();
-
-            // Send a response to the browser
-            let html = if params.contains_key("access_token") {
-                "<html><body><h2>Login successful!</h2><p>You can close this window and return to the app.</p><script>window.close()</script></body></html>"
-            } else if params.contains_key("error") {
-                "<html><body><h2>Login failed</h2><p>An error occurred. Please try again.</p></body></html>"
-            } else {
-                "<html><body><h2>Processing...</h2></body></html>"
-            };
-
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                html.len(),
-                html
-            );
-            stream.write_all(response.as_bytes()).await?;
-            stream.flush().await?;
-
-            return Ok::<HashMap<String, String>, std::io::Error>(params);
-        }
-    };
-
-    // 60 second timeout for the user to complete the OIDC flow
-    let params = tokio::time::timeout(std::time::Duration::from_mins(1), accept_future)
-        .await
-        .map_err(|_| "OIDC login timed out (60s). Please try again.".to_string())?
-        .map_err(|e| format!("Failed to receive OIDC callback: {e}"))?;
-
-    // 5. Extract tokens from callback params
-    if let Some(error) = params.get("error") {
-        let desc = params
-            .get("error_description")
-            .map(|s| s.as_str())
-            .unwrap_or("Unknown error");
-        return Err(format!("OIDC login failed: {error} — {desc}"));
-    }
-
-    let token = |key: &str| {
-        params
-            .get(key)
-            .cloned()
-            .ok_or_else(|| format!("No {key} in OIDC callback"))
-    };
-    let flag = |key: &str| {
-        params
-            .get(key)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(false)
-    };
-    let tokens = TokenResponse {
-        access_token: token("access_token")?,
-        refresh_token: token("refresh_token")?,
-        expires_in: params
-            .get("expires_in")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(900),
-        setup_required: flag("setup_required"),
-        password_change_required: flag("password_change_required"),
+    let code = match callback {
+        LoginCallback::Code(code) => code,
+        // Bare server code (`OIDC_PROVIDER_ERROR`, ...), mapped by the webview.
+        LoginCallback::Error(error) => return Err(error),
     };
 
     let result = state
         .session
-        .adopt_tokens(server_url, tokens)
+        .exchange_oidc_code(server_url, &code, &verifier)
         .await
         .map_err(|e| e.to_string())?;
     info!("OIDC login successful");
@@ -315,7 +298,7 @@ pub async fn oidc_authorize(
 ///
 /// Mirrors `oidc_authorize`, but: (1) it sends the user's Bearer token to the
 /// authenticated link-authorize endpoint, and (2) the localhost callback carries
-/// `linked` / `link_error` instead of tokens. Returns `Ok(())` on success; an
+/// `linked` / `link_error` instead of a code. Returns `Ok(())` on success; an
 /// `Err(message)` (e.g. already-linked) is surfaced to the user.
 #[command]
 pub async fn oidc_link_identity(
@@ -324,10 +307,6 @@ pub async fn oidc_link_identity(
     server_url: String,
     provider_slug: String,
 ) -> Result<(), String> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-    use url::Url;
-
     info!(
         "Starting OIDC identity link for provider: {}",
         provider_slug
@@ -342,151 +321,108 @@ pub async fn oidc_link_identity(
     }
     .ok_or("Not signed in")?;
 
-    // 1. Bind a temporary TCP listener on localhost for the callback
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|e| format!("Failed to bind localhost listener: {e}"))?;
-    let local_addr = listener
-        .local_addr()
-        .map_err(|e| format!("Failed to get local address: {e}"))?;
-    let redirect_uri = format!("http://127.0.0.1:{}/callback", local_addr.port());
+    let (listener, flow, redirect_uri) = bind_loopback().await?;
+    let authorize_url = authorize_endpoint(
+        server_url,
+        &["auth", "me", "identities", "authorize", &provider_slug],
+        &redirect_uri,
+        &[],
+    )?;
+    let auth_url = provider_url(
+        &authorize_url,
+        Start::Bearer(&access_token),
+        "Link authorize",
+    )
+    .await?;
 
-    // 2. Ask the server (authenticated) for the provider authorization URL. The server replies with
-    //    a 302 to the provider; capture the Location.
-    let mut authorize_parsed =
-        Url::parse(server_url).map_err(|e| format!("Invalid server URL: {e}"))?;
-    authorize_parsed
-        .path_segments_mut()
-        .map_err(|()| "Invalid server URL: cannot be a base")?
-        .extend(&["auth", "me", "identities", "authorize", &provider_slug]);
-    authorize_parsed
-        .query_pairs_mut()
-        .append_pair("redirect_uri", &redirect_uri);
-    let authorize_url = authorize_parsed.to_string();
-
-    let no_redirect_client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
-
-    let redirect_response = no_redirect_client
-        .get(&authorize_url)
-        .header("Authorization", format!("Bearer {access_token}"))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to get authorize URL: {e}"))?;
-
-    let auth_url = if redirect_response.status().is_redirection() {
-        redirect_response
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .ok_or("Server did not return a redirect URL")?
-            .to_string()
-    } else {
-        let status = redirect_response.status();
-        let body = redirect_response.text().await.unwrap_or_default();
-        return Err(format!("Link authorize failed ({status}): {body}"));
-    };
-
-    // 3. Open the authorize URL in the default browser
-    #[allow(deprecated)] // tauri-plugin-shell::open is deprecated in favor of tauri-plugin-opener
-    {
-        use tauri_plugin_shell::ShellExt;
-        app_handle
-            .shell()
-            .open(&auth_url, None)
-            .map_err(|e| format!("Failed to open browser: {e}"))?;
-    }
-
+    open_browser(&app_handle, &auth_url)?;
     info!("Opened browser for OIDC link, waiting for callback...");
 
-    // 4. Wait for the callback (with timeout), ignoring favicon/other requests
-    let accept_future = async {
-        loop {
-            let (mut stream, _addr) = listener.accept().await?;
-            let mut buf = vec![0u8; 8192];
-            let n = stream.read(&mut buf).await?;
-            let request = String::from_utf8_lossy(&buf[..n]);
-            let first_line = request.lines().next().unwrap_or("");
-            let path = first_line.split_whitespace().nth(1).unwrap_or("/");
-            if !path.starts_with("/callback") {
-                let response = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
-                let _ = stream.write_all(response.as_bytes()).await;
-                let _ = stream.flush().await;
-                continue;
-            }
-            let full_url = format!("http://localhost{path}");
-            let parsed = Url::parse(&full_url)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-            let params: HashMap<String, String> = parsed
-                .query_pairs()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect();
-            let html = if params.contains_key("linked") {
-                "<html><body><h2>Account linked!</h2><p>You can close this window and return to the app.</p><script>window.close()</script></body></html>"
-            } else {
-                "<html><body><h2>Linking failed</h2><p>You can close this window and return to the app.</p></body></html>"
-            };
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                html.len(),
-                html
-            );
-            stream.write_all(response.as_bytes()).await?;
-            stream.flush().await?;
-            return Ok::<HashMap<String, String>, std::io::Error>(params);
+    let callback = oidc_loopback::wait_for_callback(
+        &listener,
+        &flow,
+        oidc_loopback::CALLBACK_TIMEOUT,
+        oidc_loopback::READ_DEADLINE,
+        oidc_loopback::parse_link_callback,
+        |result| match result {
+            LinkCallback::Linked => LINK_OK_PAGE,
+            LinkCallback::Error(_) => LINK_FAILED_PAGE,
+        },
+    )
+    .await
+    .map_err(|_| "Linking timed out (60s). Please try again.".to_string())?;
+
+    match callback {
+        LinkCallback::Linked => {
+            info!("OIDC identity linked: {}", provider_slug);
+            Ok(())
         }
-    };
-
-    let params = tokio::time::timeout(std::time::Duration::from_mins(1), accept_future)
-        .await
-        .map_err(|_| "Linking timed out (60s). Please try again.".to_string())?
-        .map_err(|e| format!("Failed to receive link callback: {e}"))?;
-
-    // 5. Interpret the callback result
-    if params.contains_key("linked") {
-        info!("OIDC identity linked: {}", provider_slug);
-        Ok(())
-    } else if let Some(code) = params.get("link_error") {
-        Err(link_error_message(code))
-    } else if let Some(error) = params.get("error") {
-        Err(format!("Linking failed: {error}"))
-    } else {
-        Err("Linking failed: no result in callback".to_string())
-    }
-}
-
-/// Text for a failed link callback (`link_error` query value). The code is
-/// matched case-insensitively (the server is moving codes to `UPPER_SNAKE`).
-fn link_error_message(code: &str) -> String {
-    if code.trim().eq_ignore_ascii_case("IDENTITY_ALREADY_LINKED") {
-        "This account is already linked to another Kaiku account.".to_string()
-    } else {
-        format!("Linking failed: {code}")
+        // Bare server code (`IDENTITY_ALREADY_LINKED`, ...), mapped by the webview.
+        LinkCallback::Error(code) => Err(code),
     }
 }
 
 #[cfg(test)]
-mod link_error_tests {
-    use super::link_error_message;
+mod tests {
+    use wiremock::matchers::{header, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    #[test]
-    fn already_linked_in_either_case() {
-        for code in ["IDENTITY_ALREADY_LINKED", "identity_already_linked"] {
-            assert_eq!(
-                link_error_message(code),
-                "This account is already linked to another Kaiku account."
-            );
-        }
+    use super::*;
+
+    #[tokio::test]
+    async fn desktop_start_sends_the_client_header_and_reads_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/auth/oidc/authorize/g"))
+            .and(header("x-kaiku-client", "desktop"))
+            .and(query_param("client_challenge", "ch"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"url": "https://idp/auth"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let url = authorize_endpoint(
+            &server.uri(),
+            &["auth", "oidc", "authorize", "g"],
+            "http://127.0.0.1:1/callback?flow=f",
+            &[("client_challenge", "ch")],
+        )
+        .unwrap();
+        assert_eq!(
+            provider_url(&url, Start::DesktopLogin, "OIDC authorize").await,
+            Ok("https://idp/auth".to_string())
+        );
     }
 
-    #[test]
-    fn other_codes_pass_through() {
+    #[tokio::test]
+    async fn desktop_start_does_not_follow_or_accept_a_redirect() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "https://idp/auth"))
+            .mount(&server)
+            .await;
+        let url = Url::parse(&format!("{}/auth/oidc/authorize/g", server.uri())).unwrap();
+        assert!(provider_url(&url, Start::DesktopLogin, "OIDC authorize")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn refused_start_reports_the_bare_server_code() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "OIDC_CLIENT_OUTDATED",
+                "message": "Update the app to sign in with this provider"
+            })))
+            .mount(&server)
+            .await;
+        let url = Url::parse(&format!("{}/auth/oidc/authorize/g", server.uri())).unwrap();
         assert_eq!(
-            link_error_message("ACCOUNT_BANNED"),
-            "Linking failed: ACCOUNT_BANNED"
+            provider_url(&url, Start::DesktopLogin, "OIDC authorize").await,
+            Err("OIDC_CLIENT_OUTDATED".to_string())
         );
     }
 }

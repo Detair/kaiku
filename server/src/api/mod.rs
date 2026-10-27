@@ -473,10 +473,14 @@ async fn security_headers(request: Request<axum::body::Body>, next: Next) -> Res
         axum::http::header::X_FRAME_OPTIONS,
         axum::http::HeaderValue::from_static("DENY"),
     );
-    headers.insert(
-        axum::http::HeaderName::from_static("referrer-policy"),
-        axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
-    );
+    // Default policy; a handler that set its own (e.g. `no-referrer` on the
+    // desktop SSO hand-back) keeps it.
+    if !headers.contains_key(axum::http::header::REFERRER_POLICY) {
+        headers.insert(
+            axum::http::header::REFERRER_POLICY,
+            axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
+        );
+    }
     headers.insert(
         axum::http::HeaderName::from_static("strict-transport-security"),
         axum::http::HeaderValue::from_static("max-age=63072000; includeSubDomains; preload"),

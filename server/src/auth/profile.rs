@@ -303,7 +303,7 @@ pub async fn update_profile(
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, body, headers), fields(user_id = %auth_user.id))]
+#[tracing::instrument(skip(state, jar, body, headers), fields(user_id = %auth_user.id))]
 pub async fn update_password(
     State(state): State<AppState>,
     auth_user: AuthUser,

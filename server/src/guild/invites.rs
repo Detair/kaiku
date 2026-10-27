@@ -128,7 +128,8 @@ pub async fn create_invite(
     responses((status = 204, description = "Invite deleted")),
     security(("bearer_auth" = []))
 )]
-#[tracing::instrument(skip(state))]
+// Invite codes grant admission; keep them out of spans.
+#[tracing::instrument(skip(state, code))]
 pub async fn delete_invite(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -159,7 +160,7 @@ pub async fn delete_invite(
     responses((status = 200, body = InviteResponse)),
     security(("bearer_auth" = []))
 )]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, code))]
 pub async fn join_via_invite(
     State(state): State<AppState>,
     auth: AuthUser,

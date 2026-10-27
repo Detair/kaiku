@@ -29,6 +29,14 @@ Voice and Video traffic routed through WebRTC is automatically secured by **DTLS
 
 ---
 
+## <span style="color: #88C0D0;">Desktop Sign-in with an Identity Provider</span>
+
+- The desktop app starts SSO itself (it identifies as the desktop app and sends a one-time challenge), opens the provider in the system browser and receives only a one-time code on a temporary local address. It redeems the code with a secret that never leaves the app; tokens never pass through the browser.
+- The code is valid for 60 seconds, works once and only for the app that started the sign-in. The app ignores any other request to its temporary address.
+- **Accepted boundary:** software already running on the same computer (malware, another local user's process listening on loopback) is outside what this flow can protect against, as for any loopback sign-in (RFC 8252).
+
+---
+
 ## <span style="color: #88C0D0;">Data Sovereignty Defaults</span>
 
 - **No Telemetry**: The Kaiku client ships with exactly zero analytics trackers, telemetry daemons, or "opt-out" data harvesting.
