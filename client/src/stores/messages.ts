@@ -289,6 +289,33 @@ async function fetchAroundWindow(
 const initialLoadInProgress: Record<string, boolean> = {};
 
 /**
+ * Live (WebSocket) changes that arrive while a channel's initial load is in
+ * flight. They are held back so `byChannel` is written once, by the commit,
+ * rather than showing a lone live message as if it were the initial load.
+ */
+interface LiveBuffer {
+  added: Message[];
+  updated: Map<string, Message>;
+  removed: Set<string>;
+}
+const liveBuffers: Record<string, LiveBuffer | undefined> = {};
+
+/** Merge buffered live changes into `messages` and drop the buffer. */
+function applyLiveBuffer(channelId: string, messages: Message[]): Message[] {
+  const buf = liveBuffers[channelId];
+  delete liveBuffers[channelId];
+  if (!buf) return messages;
+  let result = mergeAscending(messages, buf.added);
+  if (buf.updated.size > 0) {
+    result = result.map((m) => buf.updated.get(m.id) ?? m);
+  }
+  if (buf.removed.size > 0) {
+    result = result.filter((m) => !buf.removed.has(m.id));
+  }
+  return result;
+}
+
+/**
  * Load initial messages for a channel (clears existing).
  * When lastReadMessageId is provided and the channel has unreads,
  * loads messages centered around the read cursor so the "New Messages"
@@ -305,6 +332,7 @@ export async function loadInitialMessages(
   }
 
   initialLoadInProgress[channelId] = true;
+  liveBuffers[channelId] = { added: [], updated: new Map(), removed: new Set() };
 
   try {
     setMessagesState("byChannel", channelId, []);
@@ -318,6 +346,14 @@ export async function loadInitialMessages(
     }
   } finally {
     initialLoadInProgress[channelId] = false;
+    // Anything not consumed by a commit (fallback or error paths).
+    if (liveBuffers[channelId]) {
+      const current = messagesState.byChannel[channelId] ?? [];
+      const merged = applyLiveBuffer(channelId, current);
+      if (merged.length > 0 || current.length > 0) {
+        setMessagesState("byChannel", channelId, merged);
+      }
+    }
   }
 }
 
@@ -464,7 +500,7 @@ async function loadInitialAround(
   setMessagesState(
     "byChannel",
     channelId,
-    mergeAscending(current, [...window.items, ...forward]),
+    applyLiveBuffer(channelId, mergeAscending(current, [...window.items, ...forward])),
   );
   setMessagesState("hasMore", channelId, window.hasMore);
   setMessagesState("loadingChannels", channelId, false);
@@ -624,6 +660,14 @@ export async function addMessage(message: Message): Promise<void> {
   if (existing.some((m) => m.id === processedMessage.id)) {
     return;
   }
+  // Initial load in flight: hold the message back for the commit.
+  if (initialLoadInProgress[channelId]) {
+    const buf = liveBuffers[channelId];
+    if (buf && !buf.added.some((m) => m.id === processedMessage.id)) {
+      buf.added.push(processedMessage);
+    }
+    return;
+  }
   // If this is a confirmed echo of our own message, replace the matching pending placeholder by nonce
   const me = currentUser();
   if (me && processedMessage.author.id === me.id && processedMessage.nonce) {
@@ -645,6 +689,12 @@ export async function addMessage(message: Message): Promise<void> {
  */
 export function updateMessage(message: Message): void {
   const channelId = message.channel_id;
+  const buf = initialLoadInProgress[channelId] ? liveBuffers[channelId] : undefined;
+  if (buf) {
+    const i = buf.added.findIndex((m) => m.id === message.id);
+    if (i !== -1) buf.added[i] = message;
+    else buf.updated.set(message.id, message);
+  }
   const messages = messagesState.byChannel[channelId];
 
   if (messages) {
@@ -660,6 +710,12 @@ export function updateMessage(message: Message): void {
  * Remove a message (for deletes).
  */
 export function removeMessage(channelId: string, messageId: string): void {
+  const buf = initialLoadInProgress[channelId] ? liveBuffers[channelId] : undefined;
+  if (buf) {
+    buf.added = buf.added.filter((m) => m.id !== messageId);
+    buf.updated.delete(messageId);
+    buf.removed.add(messageId);
+  }
   const existing = messagesState.byChannel[channelId];
   if (existing) {
     setMessagesState("byChannel", channelId, existing.filter((m) => m.id !== messageId));

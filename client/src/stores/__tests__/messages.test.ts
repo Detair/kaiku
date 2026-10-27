@@ -387,6 +387,51 @@ describe("messages store", () => {
       expect(tauri.getMessages).toHaveBeenCalledTimes(1);
       expect(messagesState.loadingChannels["ch-1"]).toBe(false);
     });
+
+    it("buffers a live message during the around-load until the single commit", async () => {
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce(
+        page([at("m1", 1), at("m2", 2)], true),
+      );
+      vi.mocked(tauri.getMessagesAfter).mockImplementationOnce(async () => {
+        await addMessage(at("m9", 9));
+        expect(messagesState.byChannel["ch-1"] ?? []).toEqual([]);
+        return page([at("m3", 3)], false);
+      });
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(ids()).toEqual(["m1", "m2", "m3", "m9"]);
+    });
+
+    it("buffers a live message during the fallback and keeps it last", async () => {
+      vi.mocked(tauri.getMessages)
+        .mockResolvedValueOnce(page([at("m1", 1)], true))
+        .mockImplementationOnce(async () => {
+          await addMessage(at("m9", 59));
+          expect(messagesState.byChannel["ch-1"] ?? []).toEqual([]);
+          return page([at("z2", 51), at("z1", 50)], true);
+        });
+      vi.mocked(tauri.getMessagesAfter).mockRejectedValue(
+        Object.assign(new Error("Unknown cursor"), { status: 400 }),
+      );
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(ids()).toEqual(["z1", "z2", "m9"]);
+    });
+
+    it("does not leak the live buffer into the next load", async () => {
+      vi.mocked(tauri.getMessages).mockResolvedValue(page([at("a", 1)], false));
+      vi.mocked(tauri.getMessagesAfter).mockImplementationOnce(async () => {
+        await addMessage(at("m9", 9));
+        return page([], false);
+      });
+      await loadInitialMessages("ch-1", "a", 5);
+      vi.mocked(tauri.getMessages).mockResolvedValue(page([at("b", 2)], false));
+      await loadInitialMessages("ch-1");
+
+      expect(ids()).toEqual(["b"]);
+    });
   });
 
   describe("sendMessage", () => {
