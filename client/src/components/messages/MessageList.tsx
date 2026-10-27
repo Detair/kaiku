@@ -1,7 +1,7 @@
 import { lastMarkableMessage as lastMarkableMessageOf } from "@/lib/readCursor";
 import {
   Component,
-  Index,
+  For,
   Show,
   createEffect,
   on,
@@ -21,6 +21,7 @@ import {
 } from "lucide-solid";
 import flokiHappy from "@/assets/emotes/floki_emote_1.webp";
 import MessageItem, { MessageImageLightbox } from "./MessageItem";
+import { countAppended } from "./newMessages";
 import {
   messagesState,
   setMessagesState,
@@ -112,10 +113,27 @@ const MessageList: Component<MessageListProps> = (props) => {
     () => !!messagesState.loadingChannels[props.channelId],
   );
 
+  type CompactItem = ReturnType<typeof messagesWithCompact>[number];
+  const itemsById = createMemo(
+    () => new Map(messagesWithCompact().map((item) => [item.message.id, item])),
+  );
+
+  // Message ids by index. A new array (and so a new getItemKey) only when the
+  // ids change, e.g. a pending message confirmed, not on every edit or reaction.
+  const messageKeys = createMemo(
+    () => messagesWithCompact().map((item) => item.message.id),
+    undefined,
+    { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) },
+  );
+
   // --- Virtualizer ---
   const virtualizer = createVirtualizer({
     get count() {
-      return messagesWithCompact().length;
+      return messageKeys().length;
+    },
+    get getItemKey() {
+      const keys = messageKeys();
+      return (index: number) => keys[index] ?? index;
     },
     getScrollElement: () => containerRef ?? null,
     estimateSize: (index: number) => {
@@ -157,6 +175,16 @@ const MessageList: Component<MessageListProps> = (props) => {
     },
     overscan: 5,
   });
+
+  let sweepQueued = false;
+  const scheduleElementSweep = () => {
+    if (sweepQueued) return;
+    sweepQueued = true;
+    queueMicrotask(() => {
+      sweepQueued = false;
+      virtualizer.measureElement(null);
+    });
+  };
 
   // --- Check if at bottom ---
   const checkIfAtBottom = () => {
@@ -237,6 +265,8 @@ const MessageList: Component<MessageListProps> = (props) => {
     if (index !== -1) {
       // Message found in current buffer — scroll to it
       virtualizer.scrollToIndex(index, { align: "center", behavior: "smooth" });
+      // Leaving the bottom: keep the bottom pin from pulling the list back.
+      if (index < msgs.length - 1) setIsAtBottom(false);
 
       // Apply highlight with fade-out
       setHighlightedId(messageId);
@@ -372,11 +402,26 @@ const MessageList: Component<MessageListProps> = (props) => {
     }
   };
 
+  // Stay at the bottom when the list gets shorter (window resized, composer
+  // grown by a multi-line draft) or the content below grows (an image in the
+  // last message finished loading): neither fires a scroll event.
+  const bottomPin = new ResizeObserver(() => {
+    if (containerRef && isAtBottom()) {
+      containerRef.scrollTop = containerRef.scrollHeight;
+    }
+  });
+  onCleanup(() => bottomPin.disconnect());
+  onMount(() => {
+    if (containerRef) bottomPin.observe(containerRef);
+  });
+
   onMount(() => document.addEventListener("keydown", handleKeyDown));
   onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
 
   // Track message count for auto-scroll / new-message indicator
   let prevMessageCount = 0;
+  /** Newest message id at the last check; older pages load in front of it. */
+  let prevLastId: string | undefined;
 
   // --- Watch for ?highlight= search param ---
   createEffect(() => {
@@ -405,7 +450,10 @@ const MessageList: Component<MessageListProps> = (props) => {
           setHasNewMessages(false);
           setNewMessageCount(0);
           setPaginationError(null);
+          // Sizes are keyed by message id; drop the previous channel's.
+          virtualizer.measure();
           prevMessageCount = 0;
+          prevLastId = undefined;
 
           const lastReadId = getChannelLastReadMessageId(channelId);
           const unread = isChannelUnread(channelId);
@@ -428,22 +476,25 @@ const MessageList: Component<MessageListProps> = (props) => {
         if (found) {
           // Highlight handled; skip normal scroll behavior
           prevMessageCount = currentCount;
+          prevLastId = messages()[currentCount - 1]?.id;
           return;
         }
       }
 
-      // Always scroll when the user sends a message (optimistic messages have pending: prefix)
+      // Only messages after the previous newest one are new; a loaded page
+      // of older messages grows the list at the front.
       const msgs = messages();
       const lastMsg = msgs[msgs.length - 1];
+      const appended = countAppended(msgs, prevLastId, prevMessageCount);
+
+      // Always scroll when the user sends a message (optimistic messages have pending: prefix)
       const isOwnSend = lastMsg?.id?.startsWith("pending:");
 
-      if (isOwnSend || isAtBottom()) {
+      if (appended > 0 && (isOwnSend || isAtBottom())) {
         requestAnimationFrame(() => scrollToBottom(true));
-      } else {
+      } else if (appended > 0) {
         setHasNewMessages(true);
-        setNewMessageCount(
-          (count) => count + (currentCount - prevMessageCount),
-        );
+        setNewMessageCount((count) => count + appended);
       }
     } else if (currentCount > 0 && prevMessageCount === 0) {
       // Initial load complete — sticky to absorb measurement reflows
@@ -466,6 +517,9 @@ const MessageList: Component<MessageListProps> = (props) => {
           if (readIdx !== -1 && readIdx < msgs.length - 1) {
             requestAnimationFrame(() => {
               virtualizer.scrollToIndex(readIdx + 1, { align: "start", behavior: "auto" });
+              // The scroll event comes a frame later; until then the bottom
+              // pin would still see "at bottom" and undo the jump.
+              setIsAtBottom(checkIfAtBottom());
               scheduleMarkAsRead();
             });
           } else {
@@ -487,6 +541,7 @@ const MessageList: Component<MessageListProps> = (props) => {
     }
 
     prevMessageCount = currentCount;
+    prevLastId = messages()[currentCount - 1]?.id;
   });
 
   return (
@@ -577,62 +632,85 @@ const MessageList: Component<MessageListProps> = (props) => {
         </div>
       </Show>
 
-      {/* Virtualized messages */}
-      <Show when={messagesWithCompact().length > 0}>
-        <div
-          style={{
-            height: `${virtualizer.getTotalSize()}px`,
-            position: "relative",
+      {/* Virtualized messages. Always mounted: the rows are disposed by
+          <For> alone (an outer <Show> on the count disposed them a second
+          time in the same update when a channel emptied). */}
+      <div
+        ref={(el) => bottomPin.observe(el)}
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          position: "relative",
+        }}
+      >
+        <For each={virtualizer.getVirtualItems()}>
+          {(virtualItem) => {
+            // One row per message id: the element, its measured size and the
+            // MessageItem stay with the message while rows shift around it.
+            // Looked up by key, not index: while a page is prepended the
+            // index can lag behind the data. Keeps the last value while the
+            // row is being removed, so MessageItem's cleanup never reads a
+            // disposed <Show> accessor.
+            const item = createMemo<CompactItem | undefined>(
+              (prev) => itemsById().get(String(virtualItem.key)) ?? prev,
+              undefined,
+              {
+                // messagesWithCompact() rebuilds its wrappers on every list
+                // change; only a different message or flag is an update.
+                equals: (a, b) =>
+                  a?.message === b?.message &&
+                  a?.isCompact === b?.isCompact &&
+                  a?.isFirstUnread === b?.isFirstUnread,
+              },
+            );
+            // virtual-core caches each measured element by key and only
+            // drops detached ones on measureElement(null), which Solid never
+            // calls by itself. Sweep once this row's element is removed.
+            onCleanup(scheduleElementSweep);
+            const isHighlighted = () =>
+              item()?.message.id != null &&
+              highlightedId() === item()?.message.id;
+            return (
+              <div
+                role="listitem"
+                data-index={virtualItem.index}
+                ref={(el) => {
+                  queueMicrotask(() => virtualizer.measureElement(el));
+                }}
+                class={isHighlighted() ? "message-highlight" : undefined}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  width: "100%",
+                  transform: `translateY(${virtualItem.start}px)`,
+                }}
+              >
+                <Show when={item()}>
+                  {(data) => (
+                    <>
+                      <Show when={data().isFirstUnread}>
+                        <div class="flex items-center gap-2 px-4 py-1 my-1">
+                          <div class="flex-1 h-px bg-accent-danger" />
+                          <span class="text-xs font-semibold text-accent-danger uppercase tracking-wide">
+                            {t("chat.list.newMessages")}
+                          </span>
+                          <div class="flex-1 h-px bg-accent-danger" />
+                        </div>
+                      </Show>
+                      <MessageItem
+                        message={data().message}
+                        compact={data().isCompact}
+                        guildId={props.guildId}
+                        threadsEnabled={areThreadsEnabled(props.guildId)}
+                      />
+                    </>
+                  )}
+                </Show>
+              </div>
+            );
           }}
-        >
-          <Index each={virtualizer.getVirtualItems()}>
-            {(virtualItem) => {
-              const item = () => messagesWithCompact()[virtualItem().index];
-              const isHighlighted = () =>
-                item()?.message.id != null &&
-                highlightedId() === item()?.message.id;
-              return (
-                <div
-                  role="listitem"
-                  data-index={virtualItem().index}
-                  ref={(el) => {
-                    queueMicrotask(() => virtualizer.measureElement(el));
-                  }}
-                  class={isHighlighted() ? "message-highlight" : undefined}
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    width: "100%",
-                    transform: `translateY(${virtualItem().start}px)`,
-                  }}
-                >
-                  {(() => {
-                    const data = item();
-                    return <Show when={data}><>
-                        <Show when={data.isFirstUnread}>
-                          <div class="flex items-center gap-2 px-4 py-1 my-1">
-                            <div class="flex-1 h-px bg-accent-danger" />
-                            <span class="text-xs font-semibold text-accent-danger uppercase tracking-wide">
-                              {t("chat.list.newMessages")}
-                            </span>
-                            <div class="flex-1 h-px bg-accent-danger" />
-                          </div>
-                        </Show>
-                        <MessageItem
-                          message={data.message}
-                          compact={data.isCompact}
-                          guildId={props.guildId}
-                          threadsEnabled={areThreadsEnabled(props.guildId)}
-                        />
-                      </></Show>;
-                  })()}
-                </div>
-              );
-            }}
-          </Index>
-        </div>
-      </Show>
+        </For>
+      </div>
 
       {/* New messages indicator */}
       <Show when={hasNewMessages()}>

@@ -94,12 +94,21 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     resizeFrame = requestAnimationFrame(() => {
       if (!textareaRef) return;
 
+      // Hold the wrapper's height while the textarea collapses to "auto" for
+      // the measurement. Otherwise the message list grows for that layout,
+      // the browser clamps its scroll position, and the list ends up above
+      // the newest message once the textarea is back at the same height.
+      const box = textareaRef.parentElement;
+      const boxHeight = box?.style.height ?? "";
+      if (box) box.style.height = `${box.offsetHeight}px`;
+
       // Reset height to auto to get correct scrollHeight
       textareaRef.style.height = 'auto';
 
       // Calculate new height (min 24px = 1 line, max 192px = 8 lines)
       const newHeight = Math.min(Math.max(textareaRef.scrollHeight, 24), 192);
       textareaRef.style.height = `${newHeight}px`;
+      if (box) box.style.height = boxHeight;
     });
   };
 
