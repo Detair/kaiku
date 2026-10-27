@@ -660,10 +660,12 @@ export async function addMessage(message: Message): Promise<void> {
   if (existing.some((m) => m.id === processedMessage.id)) {
     return;
   }
-  // Initial load in flight: hold the message back for the commit.
-  if (initialLoadInProgress[channelId]) {
-    const buf = liveBuffers[channelId];
-    if (buf && !buf.added.some((m) => m.id === processedMessage.id)) {
+  // Initial load in flight: hold the message back for the commit. Once the
+  // commit has consumed the buffer (flag still set until the finally), fall
+  // through to the normal append instead of dropping the message.
+  const buf = initialLoadInProgress[channelId] ? liveBuffers[channelId] : undefined;
+  if (buf) {
+    if (!buf.added.some((m) => m.id === processedMessage.id)) {
       buf.added.push(processedMessage);
     }
     return;
