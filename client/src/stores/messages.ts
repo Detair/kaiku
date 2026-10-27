@@ -305,6 +305,8 @@ export async function loadInitialMessages(
       const loaded = messagesState.byChannel[channelId] || [];
       if (loaded.length === 0) {
         await loadMessages(channelId);
+      } else {
+        await fillForwardAfterAround(channelId);
       }
     } else {
       await loadMessages(channelId);
@@ -370,24 +372,15 @@ function isAnchorRejected(err: unknown): boolean {
 }
 
 /**
- * Fetch the messages missed while disconnected (C1 `?after=`) and merge them
- * into the cache, deduplicated by id. Falls back to a fresh load
- * (`"reloaded"`) when the cache is empty, the server rejects the anchor (400:
- * unknown or deleted from the channel), or more than `maxPages` pages are
- * missing. Other errors propagate.
- *
- * @param afterId anchor; defaults to the newest confirmed cached message.
+ * Fetch every message after `afterId` (C1 `?after=`), ascending. Returns
+ * `null` when the server rejects the anchor (400) or more than `maxPages`
+ * pages are missing; other errors propagate.
  */
-export async function catchUpChannel(
+async function fetchMessagesAfter(
   channelId: string,
-  maxPages = 5,
-  afterId: string | undefined = catchUpAnchor(channelId),
-): Promise<"caught_up" | "reloaded"> {
-  if (!afterId) {
-    await loadInitialMessages(channelId);
-    return "reloaded";
-  }
-
+  afterId: string,
+  maxPages: number,
+): Promise<Message[] | null> {
   const missed: Message[] = [];
   let cursor = afterId;
   let pages = 0;
@@ -409,11 +402,64 @@ export async function catchUpChannel(
     }
   } catch (err) {
     if (!isAnchorRejected(err)) throw err;
+    return null;
+  }
+  return hasMore ? null : missed;
+}
+
+/**
+ * After an around-load the window ends near the read cursor; load everything
+ * newer so the list reaches the channel's newest message. Falls back to the
+ * latest page when that is not possible. Runs inside `loadInitialMessages`,
+ * so it must not call it again.
+ */
+async function fillForwardAfterAround(channelId: string): Promise<void> {
+  const anchor = catchUpAnchor(channelId);
+  if (!anchor) return;
+
+  // Keep the spinner on so the list does not paginate upward mid-fill.
+  setMessagesState("loadingChannels", channelId, true);
+  let missed: Message[] | null = null;
+  try {
+    missed = await fetchMessagesAfter(channelId, anchor, 5);
+  } catch (err) {
+    console.error("Failed to load messages after unread window:", err);
+  }
+
+  if (missed) {
+    const current = messagesState.byChannel[channelId] ?? [];
+    setMessagesState("byChannel", channelId, mergeAscending(current, missed));
+    setMessagesState("loadingChannels", channelId, false);
+    return;
+  }
+
+  setMessagesState("loadingChannels", channelId, false);
+  setMessagesState("byChannel", channelId, []);
+  setMessagesState("hasMore", channelId, true);
+  await loadMessages(channelId);
+}
+
+/**
+ * Fetch the messages missed while disconnected (C1 `?after=`) and merge them
+ * into the cache, deduplicated by id. Falls back to a fresh load
+ * (`"reloaded"`) when the cache is empty, the server rejects the anchor (400:
+ * unknown or deleted from the channel), or more than `maxPages` pages are
+ * missing. Other errors propagate.
+ *
+ * @param afterId anchor; defaults to the newest confirmed cached message.
+ */
+export async function catchUpChannel(
+  channelId: string,
+  maxPages = 5,
+  afterId: string | undefined = catchUpAnchor(channelId),
+): Promise<"caught_up" | "reloaded"> {
+  if (!afterId) {
     await loadInitialMessages(channelId);
     return "reloaded";
   }
 
-  if (hasMore) {
+  const missed = await fetchMessagesAfter(channelId, afterId, maxPages);
+  if (!missed) {
     await loadInitialMessages(channelId);
     return "reloaded";
   }
