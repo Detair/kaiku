@@ -19,14 +19,16 @@ use super::jwt::{generate_token_pair, generate_token_pair_for_session, validate_
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
 use super::oidc::{
-    append_collision_suffix, client_return_url, generate_username_from_claims,
-    resolve_flow_redirects, FlowRedirectError, OidcFlowPurpose, OidcFlowState, OidcUserInfo,
+    append_collision_suffix, client_challenge_matches, client_return_url,
+    generate_username_from_claims, handoff_key, is_valid_client_challenge, new_handoff_code,
+    resolve_flow_redirects, FlowRedirectError, OidcFlowPurpose, OidcFlowState, OidcHandoffGrant,
+    OidcUserInfo, OIDC_HANDOFF_TTL_SECS,
 };
 use super::password::{hash_password, verify_password};
 use super::queries::{self, InsertSessionParams};
 use super::types::{
     AuthResponse, ForgotPasswordRequest, LoginRequest, LogoutRequest, OidcAuthorizeQuery,
-    OidcCallbackQuery, RefreshRequest, ResetPasswordRequest,
+    OidcCallbackQuery, OidcHandoffExchangeRequest, RefreshRequest, ResetPasswordRequest,
 };
 use super::{cookies, geoip, hash_token};
 use crate::api::AppState;
@@ -53,7 +55,7 @@ use crate::ratelimit::NormalizedIp;
     ),
     security(()),
 )]
-#[tracing::instrument(skip(state, jar, body, normalized_ip), fields(username = %body.username))]
+#[tracing::instrument(skip(state, jar, headers, body, normalized_ip), fields(username = %body.username))]
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -232,7 +234,7 @@ pub async fn login(
     ),
     security(()),
 )]
-#[tracing::instrument(skip(state, jar, body))]
+#[tracing::instrument(skip(state, jar, headers, body))]
 pub async fn refresh_token(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -465,29 +467,57 @@ pub async fn oidc_providers(State(state): State<AppState>) -> AuthResult<Json<se
     tag = "auth",
     params(
         ("provider" = String, Path, description = "OIDC provider name"),
-        ("redirect_uri" = Option<String>, Query, description = "Optional desktop loopback return address (Tauri); the provider always returns to the server callback"),
+        ("redirect_uri" = Option<String>, Query, description = "Optional desktop loopback return address (Tauri): `http://{127.0.0.1|localhost}[:port]/callback`, optionally with one per-flow value `?flow=<base64url, 22-128 chars>` that is handed back unchanged; the provider always returns to the server callback"),
+        ("client_challenge" = Option<String>, Query, description = "Required with `redirect_uri`, refused without it: S256 challenge (unpadded base64url SHA-256, 43 chars) of the desktop's verifier. The loopback then receives `?code=` (one-time, 60 s), redeemed at `POST /auth/oidc/desktop/exchange`"),
+        ("response" = Option<String>, Query, description = "`json` returns `{\"url\": ...}` instead of a 307 (always JSON for a desktop start)"),
+        ("X-Kaiku-Client" = Option<String>, Header, description = "Must be `desktop` for a desktop start (`redirect_uri` or `client_challenge` given); otherwise 400 `OIDC_CLIENT_OUTDATED`"),
     ),
     responses(
-        (status = 307, description = "Redirect to provider authorization URL"),
-        (status = 400, description = "OIDC not configured or auth method disabled"),
+        (status = 200, description = "Desktop start: `{\"url\": provider authorization URL}`"),
+        (status = 307, description = "Browser: redirect to provider authorization URL"),
+        (status = 400, description = "Invalid redirect_uri or client_challenge (`VALIDATION_ERROR`), or a desktop start without the desktop header or client_challenge (`OIDC_CLIENT_OUTDATED`)"),
+        (status = 403, description = "Auth method disabled"),
     ),
     security(()),
 )]
-#[tracing::instrument(skip(state, query), fields(provider = %provider))]
+#[tracing::instrument(
+    skip(state, headers, query),
+    fields(provider = %provider, has_client_header = is_desktop_client(&headers))
+)]
 pub async fn oidc_authorize(
     State(state): State<AppState>,
     Path(provider): Path<String>,
+    headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<OidcAuthorizeQuery>,
 ) -> Result<Response, AuthError> {
-    let want_json = query.response.as_deref() == Some("json");
+    // A desktop start must come from the app itself: browsers cannot send the
+    // header cross-site (not allowed by CORS) and a clicked link cannot set
+    // it, so a crafted start link never reaches the provider. The app reads
+    // the provider URL from JSON instead of following a redirect.
+    let is_desktop_start = query.redirect_uri.is_some() || query.client_challenge.is_some();
+    if is_desktop_start && !is_desktop_client(&headers) {
+        return Err(AuthError::OidcClientOutdated);
+    }
+    let want_json = is_desktop_start || query.response.as_deref() == Some("json");
     start_oidc_flow(
         &state,
         &provider,
         query.redirect_uri.as_deref(),
+        query.client_challenge.as_deref(),
         OidcFlowPurpose::Login,
         want_json,
     )
     .await
+}
+
+/// Header (`X-Kaiku-Client: desktop`) the desktop app sends on SSO starts.
+pub const DESKTOP_CLIENT_HEADER: &str = "x-kaiku-client";
+
+/// Whether the request carries `X-Kaiku-Client: desktop`.
+fn is_desktop_client(headers: &HeaderMap) -> bool {
+    headers
+        .get(DESKTOP_CLIENT_HEADER)
+        .is_some_and(|v| v.as_bytes() == b"desktop")
 }
 
 /// Flow-state TTL of a login or link flow.
@@ -505,10 +535,14 @@ const OIDC_REAUTH_STATE_TTL_SECS: i64 = 300;
 /// When `want_json` is set, the provider authorization URL is returned as a JSON
 /// body (`{"url": ...}`) instead of a 307 redirect — for the browser link flow,
 /// which fetches this as an authenticated XHR and opens the URL itself.
+///
+/// `client_challenge` is required for a desktop login (`redirect_uri` set) and
+/// refused for every other flow; see [`OidcFlowState::client_challenge`].
 pub async fn start_oidc_flow(
     state: &AppState,
     provider: &str,
     redirect_uri: Option<&str>,
+    client_challenge: Option<&str>,
     purpose: OidcFlowPurpose,
     want_json: bool,
 ) -> Result<Response, AuthError> {
@@ -544,6 +578,28 @@ pub async fn start_oidc_flow(
             }
         })?;
 
+    // Desktop login hands back a one-time code bound to this challenge; an app
+    // that sends none would expect tokens in the loopback URL and is refused.
+    let is_desktop_login =
+        matches!(purpose, OidcFlowPurpose::Login) && redirects.client_redirect_uri.is_some();
+    let client_challenge = match (is_desktop_login, client_challenge) {
+        (true, Some(challenge)) if is_valid_client_challenge(challenge) => {
+            Some(challenge.to_string())
+        }
+        (true, Some(_)) => {
+            return Err(AuthError::Validation(
+                "client_challenge must be an unpadded base64url SHA-256 digest".to_string(),
+            ))
+        }
+        (true, None) => return Err(AuthError::OidcClientOutdated),
+        (false, Some(_)) => {
+            return Err(AuthError::Validation(
+                "client_challenge is only accepted for desktop sign-in".to_string(),
+            ))
+        }
+        (false, None) => None,
+    };
+
     let (auth_url, csrf_state, nonce, pkce_verifier) = oidc_manager
         .generate_auth_url_with(provider, &redirects.provider_redirect_uri, is_reauth)
         .await
@@ -563,6 +619,7 @@ pub async fn start_oidc_flow(
         created_at: Utc::now().timestamp(),
         purpose,
         client_redirect_uri: redirects.client_redirect_uri,
+        client_challenge,
     };
     let ttl = if is_reauth {
         OIDC_REAUTH_STATE_TTL_SECS
@@ -915,60 +972,33 @@ pub async fn oidc_callback(
         tracing::warn!(error = %e, provider = %flow_state.slug, "Failed to update identity last_used_at");
     }
 
-    // Generate JWT token pair
-    let tokens = generate_token_pair(
-        user.id,
-        &state.config.jwt_private_key,
-        state.config.jwt_access_expiry,
-        state.config.jwt_refresh_expiry,
-    )?;
+    if let Some(redirect_url) = client_return_url(&flow_state) {
+        // Desktop: hand back only a one-time code; the desktop redeems it with
+        // its verifier at `POST /auth/oidc/desktop/exchange`.
+        return Ok(desktop_login_hand_back(&state, &flow_state, redirect_url, user.id).await);
+    }
 
-    // Store session
-    let token_hash = hash_token(&tokens.refresh_token);
-    let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
-    create_session(
-        &state.db,
-        tokens.refresh_token_id,
-        user.id,
-        &token_hash,
-        expires_at,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await?;
-
-    let setup_complete = is_setup_complete(&state.db).await?;
+    let (tokens, setup_complete) =
+        issue_oidc_session(&state, user.id, &SessionClient::default()).await?;
 
     tracing::info!(user_id = %user.id, provider = %flow_state.slug, "User logged in via OIDC");
 
-    if let Some(mut redirect_url) = client_return_url(&flow_state) {
-        // Tauri flow: redirect to the desktop loopback with tokens in query params
-        redirect_url
-            .query_pairs_mut()
-            .append_pair("access_token", &tokens.access_token)
-            .append_pair("refresh_token", &tokens.refresh_token)
-            .append_pair("expires_in", &tokens.access_expires_in.to_string())
-            .append_pair("setup_required", &(!setup_complete).to_string());
-        Ok(Redirect::temporary(redirect_url.as_str()).into_response())
-    } else {
-        // Browser flow: set HttpOnly refresh cookie + return HTML with postMessage
-        let jar = jar.add(cookies::build_refresh_cookie(
-            &tokens.refresh_token,
-            state.config.jwt_refresh_expiry,
-            &state.config,
-        ));
+    // Browser flow: set HttpOnly refresh cookie + return HTML with postMessage
+    let jar = jar.add(cookies::build_refresh_cookie(
+        &tokens.refresh_token,
+        state.config.jwt_refresh_expiry,
+        &state.config,
+    ));
 
-        // JSON-encode tokens to prevent any injection via token values
-        let payload = serde_json::json!({
-            "type": "oidc-callback",
-            "access_token": tokens.access_token,
-            "expires_in": tokens.access_expires_in,
-            "setup_required": !setup_complete,
-        });
-        let html = format!(
-            r#"<!DOCTYPE html>
+    // JSON-encode tokens to prevent any injection via token values
+    let payload = serde_json::json!({
+        "type": "oidc-callback",
+        "access_token": tokens.access_token,
+        "expires_in": tokens.access_expires_in,
+        "setup_required": !setup_complete,
+    });
+    let html = format!(
+        r#"<!DOCTYPE html>
 <html><body><script>
 if (window.opener) {{
     window.opener.postMessage({payload}, window.location.origin);
@@ -977,9 +1007,183 @@ if (window.opener) {{
     document.body.innerText = "Login successful. You can close this window.";
 }}
 </script></body></html>"#,
-        );
-        Ok((jar, axum::response::Html(html)).into_response())
+    );
+    Ok((jar, axum::response::Html(html)).into_response())
+}
+
+/// Client address and user agent recorded with a new session.
+#[derive(Default)]
+struct SessionClient {
+    ip: Option<String>,
+    user_agent: Option<String>,
+}
+
+/// Start a session for an OIDC login; returns the token pair and whether
+/// server setup is complete.
+async fn issue_oidc_session(
+    state: &AppState,
+    user_id: Uuid,
+    client: &SessionClient,
+) -> AuthResult<(super::jwt::TokenPair, bool)> {
+    let tokens = generate_token_pair(
+        user_id,
+        &state.config.jwt_private_key,
+        state.config.jwt_access_expiry,
+        state.config.jwt_refresh_expiry,
+    )?;
+    let token_hash = hash_token(&tokens.refresh_token);
+    let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
+    create_session(
+        &state.db,
+        tokens.refresh_token_id,
+        user_id,
+        &token_hash,
+        expires_at,
+        client.ip.as_deref(),
+        client.user_agent.as_deref(),
+        None,
+        None,
+    )
+    .await?;
+    let setup_complete = is_setup_complete(&state.db).await?;
+    Ok((tokens, setup_complete))
+}
+
+/// Generic code: a desktop login state without a client challenge (started by
+/// an older app or before the upgrade) cannot be handed back.
+const OIDC_CLIENT_OUTDATED: &str = "OIDC_CLIENT_OUTDATED";
+
+/// Finish a desktop login: store a one-time hand-off grant (60 s, no tokens)
+/// and redirect the browser to the loopback with only `code` added to the
+/// stored return address (which may carry the desktop's per-flow value).
+async fn desktop_login_hand_back(
+    state: &AppState,
+    flow_state: &OidcFlowState,
+    mut redirect_url: openidconnect::url::Url,
+    user_id: Uuid,
+) -> Response {
+    let Some(client_challenge) = flow_state.client_challenge.clone() else {
+        tracing::info!(provider = %flow_state.slug, "Desktop OIDC state without client challenge");
+        return flow_failure_response(flow_state, OIDC_CLIENT_OUTDATED);
+    };
+    let code = new_handoff_code();
+    let grant = OidcHandoffGrant {
+        user_id,
+        slug: flow_state.slug.clone(),
+        client_challenge,
+        created_at: Utc::now().timestamp(),
+    };
+    let stored = match serde_json::to_string(&grant) {
+        Ok(json) => state
+            .redis
+            .set::<(), _, _>(
+                handoff_key(&code),
+                json.as_str(),
+                Some(Expiration::EX(OIDC_HANDOFF_TTL_SECS)),
+                None,
+                false,
+            )
+            .await
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    if let Err(e) = stored {
+        tracing::error!(error = %e, "Failed to store OIDC hand-off code");
+        return flow_failure_response(flow_state, "SERVICE_UNAVAILABLE");
     }
+    tracing::info!(user_id = %user_id, provider = %flow_state.slug, "OIDC desktop login handed off");
+    redirect_url.query_pairs_mut().append_pair("code", &code);
+    loopback_redirect(&redirect_url)
+}
+
+/// 307 to the desktop loopback: never cached, never sent on as a referrer.
+fn loopback_redirect(url: &openidconnect::url::Url) -> Response {
+    let mut response = Redirect::temporary(url.as_str()).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    headers.insert(
+        axum::http::header::REFERRER_POLICY,
+        axum::http::HeaderValue::from_static("no-referrer"),
+    );
+    response
+}
+
+/// Redeem a desktop hand-off code.
+///
+/// POST /auth/oidc/desktop/exchange
+///
+/// The code is single use (consumed by the first attempt, also a failed one)
+/// and valid for 60 s; `verifier` must hash (S256) to the `client_challenge`
+/// of the authorize request. Returns the login token response with the
+/// refresh token in the body (no cookie).
+#[utoipa::path(
+    post,
+    path = "/auth/oidc/desktop/exchange",
+    tag = "auth",
+    request_body = OidcHandoffExchangeRequest,
+    responses(
+        (status = 200, description = "Signed in", body = AuthResponse),
+        (status = 400, description = "Unknown, expired, used or wrongly verified code (`OIDC_HANDOFF_INVALID`)"),
+        (status = 403, description = "Account banned (`ACCOUNT_BANNED`)"),
+        (status = 429, description = "Rate limited"),
+        (status = 503, description = "Valkey unavailable (`SERVICE_UNAVAILABLE`)"),
+    ),
+    security(()),
+)]
+#[tracing::instrument(skip(state, headers, body))]
+pub async fn oidc_desktop_exchange(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<OidcHandoffExchangeRequest>,
+) -> AuthResult<Json<AuthResponse>> {
+    if body.code.is_empty() || body.code.len() > 128 {
+        return Err(AuthError::OidcHandoffInvalid);
+    }
+    let raw: Option<String> = state
+        .redis
+        .getdel(handoff_key(&body.code))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to read OIDC hand-off code");
+            AuthError::ServiceUnavailable
+        })?;
+    let grant: OidcHandoffGrant = raw
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .ok_or(AuthError::OidcHandoffInvalid)?;
+    let age = Utc::now().timestamp() - grant.created_at;
+    if !(0..=OIDC_HANDOFF_TTL_SECS).contains(&age)
+        || !client_challenge_matches(&body.verifier, &grant.client_challenge)
+    {
+        tracing::info!(provider = %grant.slug, "OIDC hand-off code refused (expired or verifier mismatch)");
+        return Err(AuthError::OidcHandoffInvalid);
+    }
+
+    let user = find_user_by_id(&state.db, grant.user_id)
+        .await?
+        .ok_or(AuthError::OidcHandoffInvalid)?;
+    if queries::is_user_globally_banned(&state.db, user.id).await? {
+        return Err(AuthError::AccountBanned);
+    }
+
+    let client = SessionClient {
+        ip: Some(addr.ip().to_string()),
+        user_agent: extract_user_agent(&headers),
+    };
+    let (tokens, setup_complete) = issue_oidc_session(&state, user.id, &client).await?;
+    tracing::info!(user_id = %user.id, provider = %grant.slug, "User logged in via OIDC (desktop)");
+
+    Ok(Json(AuthResponse {
+        access_token: tokens.access_token,
+        refresh_token: Some(tokens.refresh_token),
+        expires_in: tokens.access_expires_in,
+        token_type: "Bearer".to_string(),
+        setup_required: !setup_complete,
+        password_change_required: user.must_change_password,
+    }))
 }
 
 /// Attach a freshly-authenticated external identity to an existing account
@@ -1077,7 +1281,7 @@ async fn handle_identity_link(
         redirect_url
             .query_pairs_mut()
             .append_pair("linked", &flow_state.slug);
-        Ok(Redirect::temporary(redirect_url.as_str()).into_response())
+        Ok(loopback_redirect(&redirect_url))
     } else {
         let payload = serde_json::json!({
             "type": "oidc-link-callback",
@@ -1114,7 +1318,7 @@ fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Resp
     if let Some(mut redirect_url) = client_return_url(flow_state) {
         let key = if is_link { "link_error" } else { "error" };
         redirect_url.query_pairs_mut().append_pair(key, code);
-        return Redirect::temporary(redirect_url.as_str()).into_response();
+        return loopback_redirect(&redirect_url);
     }
     let payload = if is_link {
         serde_json::json!({
@@ -1172,7 +1376,7 @@ pub(super) fn oidc_hand_back(
                 pairs.append_pair(key, value);
             }
         }
-        Redirect::temporary(redirect_url.as_str()).into_response()
+        loopback_redirect(&redirect_url)
     } else {
         axum::response::Html(popup_result_page(payload, true)).into_response()
     }

@@ -42,7 +42,7 @@ use crate::db::{self, email_exists, get_auth_methods_allowed, is_setup_complete,
     ),
     security(()),
 )]
-#[tracing::instrument(skip(state, jar, body), fields(username = %body.username))]
+#[tracing::instrument(skip(state, jar, headers, body), fields(username = %body.username))]
 pub async fn register(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,

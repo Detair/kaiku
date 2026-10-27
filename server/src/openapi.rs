@@ -69,6 +69,7 @@ use utoipa::{Modify, OpenApi};
         crate::auth::login::oidc_providers,
         crate::auth::login::oidc_authorize,
         crate::auth::login::oidc_callback,
+        crate::auth::login::oidc_desktop_exchange,
         // Auth - protected
         crate::auth::login::logout,
         crate::auth::profile::get_profile,
@@ -360,6 +361,7 @@ use utoipa::{Modify, OpenApi};
         crate::auth::types::RefreshRequest,
         crate::auth::types::LogoutRequest,
         crate::auth::types::AuthResponse,
+        crate::auth::types::OidcHandoffExchangeRequest,
         crate::auth::types::UserProfile,
         crate::auth::types::MfaSetupResponse,
         crate::auth::types::MfaBackupCodesResponse,

@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use base64::Engine as _;
 use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType};
 use openidconnect::{
     AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, EndpointMaybeSet,
@@ -14,6 +15,7 @@ use openidconnect::{
 };
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -80,6 +82,11 @@ pub struct OidcFlowState {
     /// restarted; the states expire after 10 minutes, so no migration is needed.
     #[serde(default)]
     pub client_redirect_uri: Option<String>,
+    /// Desktop login only: S256 challenge (unpadded base64url SHA-256 of the
+    /// desktop's verifier) the hand-off code is bound to. `None` for every
+    /// other flow; a desktop login state without one cannot complete.
+    #[serde(default)]
+    pub client_challenge: Option<String>,
 }
 
 /// What an OIDC flow is for; persisted in the encrypted flow state so the
@@ -129,6 +136,8 @@ struct OidcFlowStateWire {
     link_user_id: Option<Uuid>,
     #[serde(default)]
     client_redirect_uri: Option<String>,
+    #[serde(default)]
+    client_challenge: Option<String>,
 }
 
 impl From<OidcFlowStateWire> for OidcFlowState {
@@ -149,6 +158,7 @@ impl From<OidcFlowStateWire> for OidcFlowState {
             created_at: wire.created_at,
             purpose,
             client_redirect_uri: wire.client_redirect_uri,
+            client_challenge: wire.client_challenge,
         }
     }
 }
@@ -195,9 +205,10 @@ pub enum FlowRedirectError {
     MissingPublicUrl,
 }
 
-/// Whether `url` matches the desktop return-address contract:
-/// `http://{localhost|127.0.0.1}[:port]/callback` — no userinfo, no query,
-/// no fragment, path exactly `/callback`, any port.
+/// Whether `url` matches the desktop return-address contract.
+///
+/// `http://{localhost|127.0.0.1}[:port]/callback[?flow=<per-flow value>]`:
+/// no userinfo, no fragment, no other query, path exactly `/callback`, any port.
 pub fn is_loopback_client_redirect(url: &openidconnect::url::Url) -> bool {
     matches!(
         (url.scheme(), url.host_str()),
@@ -205,7 +216,7 @@ pub fn is_loopback_client_redirect(url: &openidconnect::url::Url) -> bool {
     ) && url.username().is_empty()
         && url.password().is_none()
         && url.path() == "/callback"
-        && url.query().is_none()
+        && url.query().is_none_or(is_client_flow_query)
         && url.fragment().is_none()
 }
 
@@ -246,6 +257,83 @@ pub fn client_return_url(flow_state: &OidcFlowState) -> Option<openidconnect::ur
         .as_deref()
         .and_then(|uri| openidconnect::url::Url::parse(uri).ok())
         .filter(is_loopback_client_redirect)
+}
+
+/// Whether every byte of `s` is base64url (`A-Z a-z 0-9 - _`) and its length
+/// is within `min..=max`.
+fn is_base64url(s: &str, min: usize, max: usize) -> bool {
+    (min..=max).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Query the desktop may carry in its return address: exactly one per-flow
+/// value `flow=<base64url, 22–128 chars>`, handed back unchanged so the
+/// desktop listener can tell its own flow from stray requests.
+fn is_client_flow_query(query: &str) -> bool {
+    query
+        .strip_prefix("flow=")
+        .is_some_and(|v| is_base64url(v, 22, 128))
+}
+
+/// Whether `challenge` has the form of an S256 client challenge: an unpadded
+/// base64url SHA-256 digest (43 characters).
+pub fn is_valid_client_challenge(challenge: &str) -> bool {
+    is_base64url(challenge, 43, 43)
+}
+
+/// Whether `verifier` (RFC 7636 charset and length, 43–128) hashes to
+/// `challenge` with S256. Compared in constant time.
+pub fn client_challenge_matches(verifier: &str, challenge: &str) -> bool {
+    let verifier_ok = (43..=128).contains(&verifier.len())
+        && verifier
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'));
+    if !verifier_ok || !is_valid_client_challenge(challenge) {
+        return false;
+    }
+    let computed = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(verifier.as_bytes()));
+    // Length-fixed XOR fold (both sides are 43 bytes), no early exit. Not a
+    // vetted primitive, but the code is consumed before this check, so a
+    // timing difference could not be retried against the same grant.
+    computed
+        .bytes()
+        .zip(challenge.bytes())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
+/// Lifetime of a desktop hand-off code.
+pub const OIDC_HANDOFF_TTL_SECS: i64 = 60;
+
+/// What a desktop hand-off code grants once redeemed with the verifier
+/// (`POST /auth/oidc/desktop/exchange`). Stored in Valkey under
+/// [`handoff_key`] for at most [`OIDC_HANDOFF_TTL_SECS`]; holds no token.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OidcHandoffGrant {
+    /// The account the provider login resolved to.
+    pub user_id: Uuid,
+    /// Provider slug (logs).
+    pub slug: String,
+    /// S256 challenge from the authorize request.
+    pub client_challenge: String,
+    /// Unix seconds when the code was issued.
+    pub created_at: i64,
+}
+
+/// Valkey key of a hand-off code (only its SHA-256 is stored).
+pub fn handoff_key(code: &str) -> String {
+    format!(
+        "oidc:handoff:{}",
+        hex::encode(sha2::Sha256::digest(code.as_bytes()))
+    )
+}
+
+/// A fresh hand-off code: 32 random bytes, unpadded base64url.
+pub fn new_handoff_code() -> String {
+    let bytes: [u8; 32] = rand::thread_rng().gen();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// Cached provider configuration with pre-built client.

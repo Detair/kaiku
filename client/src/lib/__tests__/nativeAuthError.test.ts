@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { nativeAuthError } from "../tauri/auth";
+import { nativeAuthError, nativeSsoError } from "../tauri/auth";
+import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { HttpError } from "../tauri/common";
 
 describe("nativeAuthError", () => {
@@ -25,5 +26,43 @@ describe("nativeAuthError", () => {
     const other = new Error("boom");
     expect(nativeAuthError(other)).toBe(other);
     expect(nativeAuthError("something else")).toBe("something else");
+  });
+});
+
+describe("nativeSsoError", () => {
+  it("gives the SSO codes from the native flows an HttpError code", () => {
+    for (const code of [
+      "OIDC_CLIENT_OUTDATED",
+      "OIDC_HANDOFF_INVALID",
+      "OIDC_PROVIDER_ERROR",
+      "OIDC_EXCHANGE_FAILED",
+      "IDENTITY_ALREADY_LINKED",
+    ]) {
+      const err = nativeSsoError(code) as HttpError;
+      expect(err).toBeInstanceOf(HttpError);
+      expect(err.code).toBe(code);
+    }
+  });
+
+  it("leaves other errors to nativeAuthError", () => {
+    expect(nativeSsoError("MFA_REQUIRED")).toBe("MFA_REQUIRED");
+    expect(nativeSsoError("Connection failed: refused")).toBeInstanceOf(TypeError);
+    expect(nativeSsoError("OIDC login timed out (60s). Please try again.")).toBe(
+      "OIDC login timed out (60s). Please try again.",
+    );
+  });
+
+  it("maps to readable texts via SSO_ERRORS", () => {
+    const text = (code: string) =>
+      errorText(nativeSsoError(code), "auth.login.ssoFailed", SSO_ERRORS.byCode);
+    expect(text("OIDC_CLIENT_OUTDATED")).toBe("Update Kaiku to sign in with this server.");
+    expect(text("OIDC_HANDOFF_INVALID")).toBe(
+      "Sign-in could not be completed. Please try again.",
+    );
+    expect(text("OIDC_PROVIDER_ERROR")).not.toContain("OIDC_");
+    expect(text("OIDC_EXCHANGE_FAILED")).not.toContain("OIDC_");
+    expect(text("IDENTITY_ALREADY_LINKED")).toBe(
+      "That account is already linked to another Kaiku account.",
+    );
   });
 });

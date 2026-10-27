@@ -35,7 +35,7 @@ const KEY_ID: &str = "test-key";
 const PASSWORD: &str = "Admin-Pass-42";
 /// Desktop loopback return address (nothing listens; the test reads the
 /// redirect that points here).
-const DESKTOP_RETURN: &str = "http://127.0.0.1:9/callback";
+pub(super) const DESKTOP_RETURN: &str = "http://127.0.0.1:9/callback";
 
 /// An RSA signing key: (PKCS#1 PEM, n, e) base64url.
 fn rsa_key() -> (String, String, String) {
@@ -58,7 +58,7 @@ static OTHER_KEY: LazyLock<(String, String, String)> = LazyLock::new(rsa_key);
 /// Claims of the next ID token. `iss`, `aud`, `iat`, `exp` and (unless
 /// overridden) the nonce from the authorize request are filled in by the mock.
 #[derive(Clone, Default)]
-struct NextToken {
+pub(super) struct NextToken {
     sub: String,
     auth_time: Option<i64>,
     nonce_override: Option<String>,
@@ -166,20 +166,20 @@ async fn userinfo(State(mock): State<MockState>) -> Json<Value> {
     Json(json!({ "sub": next_token(&mock).sub }))
 }
 
-struct Ctx {
-    server: TestServer,
-    config: Arc<Config>,
-    pool: PgPool,
-    slug: String,
+pub(super) struct Ctx {
+    pub(super) server: TestServer,
+    pub(super) config: Arc<Config>,
+    pub(super) pool: PgPool,
+    pub(super) slug: String,
     next: Arc<Mutex<Option<NextToken>>>,
 }
 
 /// Start the mock provider and a Kaiku server that has it configured.
-async fn setup(pool: &PgPool) -> Ctx {
+pub(super) async fn setup(pool: &PgPool) -> Ctx {
     setup_with(pool, false).await
 }
 
-async fn setup_with(pool: &PgPool, rate_limited: bool) -> Ctx {
+pub(super) async fn setup_with(pool: &PgPool, rate_limited: bool) -> Ctx {
     // Mock provider
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -295,7 +295,7 @@ async fn setup_with(pool: &PgPool, rate_limited: bool) -> Ctx {
 }
 
 /// Create a user (with [`PASSWORD`] unless `password` is false).
-async fn create_user(pool: &PgPool, password: bool) -> Uuid {
+pub(super) async fn create_user(pool: &PgPool, password: bool) -> Uuid {
     let username = format!("oidcre_{}", &Uuid::new_v4().simple().to_string()[..10]);
     let hash = if password {
         vc_server::auth::hash_password(PASSWORD).expect("hash")
@@ -342,7 +342,7 @@ async fn enable_mfa(ctx: &Ctx, user_id: Uuid) -> TOTP {
     .expect("totp")
 }
 
-async fn link(ctx: &Ctx, user_id: Uuid, sub: &str) {
+pub(super) async fn link(ctx: &Ctx, user_id: Uuid, sub: &str) {
     vc_server::db::insert_user_identity(&ctx.pool, user_id, &ctx.slug, sub, None)
         .await
         .expect("link identity");
@@ -359,14 +359,14 @@ async fn admin_with_two_sessions(ctx: &Ctx, sub: &str) -> (Uuid, (Uuid, String),
     (admin, a, b)
 }
 
-fn client() -> reqwest::Client {
+pub(super) fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client")
 }
 
-fn query_of(url: &str) -> HashMap<String, String> {
+pub(super) fn query_of(url: &str) -> HashMap<String, String> {
     openidconnect::url::Url::parse(url)
         .expect("url")
         .query_pairs()
@@ -419,16 +419,16 @@ async fn start_reauth(ctx: &Ctx, token: &str, mfa_code: Option<&str>) -> String 
 }
 
 /// Result of following a flow's redirect chain.
-struct Chain {
+pub(super) struct Chain {
     /// The Kaiku callback URL the provider sent the browser to.
-    callback: String,
+    pub(super) callback: String,
     /// Query of the final redirect to the desktop return address.
-    result: HashMap<String, String>,
+    pub(super) result: HashMap<String, String>,
 }
 
 /// Follow the redirects from the provider URL until the desktop return
 /// address (the server callback is never called by hand).
-async fn follow(provider_url: &str) -> Chain {
+pub(super) async fn follow(provider_url: &str) -> Chain {
     let mut url = provider_url.to_string();
     let mut callback = None;
     for _ in 0..5 {
@@ -457,11 +457,11 @@ async fn follow(provider_url: &str) -> Chain {
     panic!("redirect chain did not reach the desktop return address");
 }
 
-fn issue(ctx: &Ctx, next: NextToken) {
+pub(super) fn issue(ctx: &Ctx, next: NextToken) {
     *ctx.next.lock().expect("lock") = Some(next);
 }
 
-fn fresh(sub: &str) -> NextToken {
+pub(super) fn fresh(sub: &str) -> NextToken {
     NextToken {
         sub: sub.to_string(),
         auth_time: Some(now() - 5),
@@ -565,7 +565,15 @@ async fn test_login_flow_does_not_force_a_fresh_login(pool: PgPool) {
             "{}/auth/oidc/authorize/{}",
             ctx.server.url, ctx.slug
         ))
-        .query(&[("redirect_uri", DESKTOP_RETURN), ("response", "json")])
+        .query(&[
+            ("redirect_uri", DESKTOP_RETURN),
+            ("response", "json"),
+            (
+                "client_challenge",
+                "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+            ),
+        ])
+        .header("x-kaiku-client", "desktop")
         .send()
         .await
         .expect("authorize");

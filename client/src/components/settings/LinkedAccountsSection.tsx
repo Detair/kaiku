@@ -2,6 +2,8 @@ import { Component, createSignal, onCleanup, onMount, For, Show } from "solid-js
 import { codeIs, messageHasCode } from "@/lib/errorCode";
 import { KeyRound, Unlink, Plus } from "lucide-solid";
 import * as tauri from "@/lib/tauri";
+import { HttpError } from "@/lib/tauri/common";
+import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { formatRelativeTimeShort } from "@/lib/utils";
 import type { IdentityInfo, OidcProvider } from "@/lib/types";
 import ElevateDialog from "@/components/admin/ElevateDialog";
@@ -216,8 +218,13 @@ const LinkedAccountsSection: Component = () => {
       }, LINK_TIMEOUT_MS);
     } catch (err) {
       popup?.close();
-      const text = err instanceof Error ? err.message : String(err);
-      setError(linkErrorText(text) ?? text);
+      if (err instanceof HttpError && err.code && err.code in SSO_ERRORS.byCode) {
+        // Desktop: a named SSO code (e.g. OIDC_CLIENT_OUTDATED) gets its message.
+        setError(errorText(err, "auth.sso.linkFailed", SSO_ERRORS.byCode));
+      } else {
+        const text = err instanceof Error ? err.message : String(err);
+        setError(linkErrorText(text) ?? text);
+      }
       setLinking(null);
     }
   };

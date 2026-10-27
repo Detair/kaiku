@@ -50,6 +50,7 @@ use crate::ratelimit::{
 /// - GET /oidc/providers - List OIDC providers
 /// - GET /oidc/authorize/{provider} - Initiate OIDC flow
 /// - GET /oidc/callback - OIDC callback
+/// - POST /oidc/desktop/exchange - Redeem a desktop hand-off code (rate limited)
 ///
 /// Protected routes that stay usable while an admin-issued temporary password
 /// has not been replaced yet (`require_auth_allow_password_change`):
@@ -131,11 +132,28 @@ pub fn router(state: AppState) -> Router<AppState> {
             RateLimitCategory::AuthOther,
         )));
 
+    // Desktop hand-off code exchange: IP block check and rate limiting like
+    // the other public sign-in routes.
+    let oidc_exchange_route = Router::new()
+        .route("/oidc/desktop/exchange", post(login::oidc_desktop_exchange))
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_by_ip,
+        ))
+        .layer(axum_middleware::from_fn(with_category(
+            RateLimitCategory::AuthOther,
+        )))
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            check_ip_not_blocked,
+        ));
+
     // OIDC providers list (no rate limiting needed)
     let oidc_providers_route = Router::new().route("/oidc/providers", get(login::oidc_providers));
 
     let oidc_routes = oidc_authorize_route
         .merge(oidc_callback_route)
+        .merge(oidc_exchange_route)
         .merge(oidc_providers_route);
 
     // Password reset routes with rate limiting

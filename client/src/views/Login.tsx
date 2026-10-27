@@ -16,7 +16,7 @@ import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
 import { t } from "@/i18n";
 import { safeReturnUrl } from "@/lib/returnUrl";
-import { errorText } from "@/i18n/errors";
+import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { LOGIN_ERRORS } from "@/lib/authErrors";
 
 /** Map icon_hint to a Lucide icon component. */
@@ -171,7 +171,7 @@ const Login: Component = () => {
         }
       }, 500);
     } catch (err) {
-      setLocalError(errorText(err, "auth.login.ssoFailed"));
+      setLocalError(errorText(err, "auth.login.ssoFailed", SSO_ERRORS.byCode));
       setOidcLoading(null);
     }
   };

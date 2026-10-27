@@ -70,6 +70,27 @@ export function nativeAuthError(error: unknown): unknown {
   return error;
 }
 
+/** Server codes the native SSO commands report as bare strings. */
+const NATIVE_SSO_CODES = new Set([
+  "OIDC_CLIENT_OUTDATED",
+  "OIDC_HANDOFF_INVALID",
+  "OIDC_PROVIDER_ERROR",
+  "OIDC_EXCHANGE_FAILED",
+  "IDENTITY_ALREADY_LINKED",
+]);
+
+/**
+ * Native mode: the SSO commands (`oidc_authorize`, `oidc_link_identity`)
+ * fail with a bare server code; give it an `HttpError` code for `errorText()`
+ * with `SSO_ERRORS`. Anything else goes through `nativeAuthError`.
+ */
+export function nativeSsoError(error: unknown): unknown {
+  if (typeof error === "string" && NATIVE_SSO_CODES.has(error)) {
+    return new HttpError(400, error, error);
+  }
+  return nativeAuthError(error);
+}
+
 /** Native mode: session-management request sent by Rust with the refresh token. */
 async function nativeSessionRequest<T>(
   method: string,
@@ -465,7 +486,11 @@ export async function linkIdentity(
   const baseUrl = getServerUrl().replace(/\/+$/, "");
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("oidc_link_identity", { serverUrl: baseUrl, providerSlug });
+    try {
+      await invoke("oidc_link_identity", { serverUrl: baseUrl, providerSlug });
+    } catch (error) {
+      throw nativeSsoError(error);
+    }
     return { mode: "tauri" };
   }
   const resp = await fetchApi<{ url: string }>(
@@ -735,13 +760,17 @@ export async function oidcAuthorize(
   const baseUrl = serverUrl.replace(/\/+$/, "");
 
   if (isTauri()) {
-    const result = await invokeNativeAuth((invoke) =>
-      invoke<AuthResult>("oidc_authorize", {
-        serverUrl: baseUrl,
-        providerSlug,
-      }),
-    );
-    return { mode: "tauri", result };
+    try {
+      const result = await invokeNativeAuth((invoke) =>
+        invoke<AuthResult>("oidc_authorize", {
+          serverUrl: baseUrl,
+          providerSlug,
+        }),
+      );
+      return { mode: "tauri", result };
+    } catch (error) {
+      throw nativeSsoError(error);
+    }
   }
 
   // Browser: return the authorize endpoint URL for popup flow

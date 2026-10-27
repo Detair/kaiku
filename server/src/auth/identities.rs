@@ -104,6 +104,7 @@ pub async fn link_authorize(
         &state,
         &provider,
         query.redirect_uri.as_deref(),
+        None,
         OidcFlowPurpose::Link {
             user_id: auth_user.id,
             session_id: auth_user.session_id,
