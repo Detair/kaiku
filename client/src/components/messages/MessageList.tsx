@@ -113,6 +113,11 @@ const MessageList: Component<MessageListProps> = (props) => {
     () => !!messagesState.loadingChannels[props.channelId],
   );
 
+  type CompactItem = ReturnType<typeof messagesWithCompact>[number];
+  const itemsById = createMemo(
+    () => new Map(messagesWithCompact().map((item) => [item.message.id, item])),
+  );
+
   // Message ids by index. A new array (and so a new getItemKey) only when the
   // ids change, e.g. a pending message confirmed, not on every edit or reaction.
   const messageKeys = createMemo(
@@ -623,8 +628,12 @@ const MessageList: Component<MessageListProps> = (props) => {
             {(virtualItem) => {
               // One row per message id: the element, its measured size and the
               // MessageItem stay with the message while rows shift around it.
-              const item = createMemo(
-                () => messagesWithCompact()[virtualItem.index],
+              // Looked up by key, not index: while a page is prepended the
+              // index can lag behind the data. Keeps the last value while the
+              // row is being removed, so MessageItem's cleanup never reads a
+              // disposed <Show> accessor.
+              const item = createMemo<CompactItem | undefined>(
+                (prev) => itemsById().get(String(virtualItem.key)) ?? prev,
                 undefined,
                 {
                   // messagesWithCompact() rebuilds its wrappers on every list
