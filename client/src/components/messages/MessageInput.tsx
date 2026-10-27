@@ -42,6 +42,8 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   const [isComposing, setIsComposing] = createSignal(false);
   // Autocomplete state
   const [autocompleteType, setAutocompleteType] = createSignal<"user" | "emoji" | "channel" | "command" | null>(null);
+  // True only while the autocomplete popup has suggestions to navigate
+  const [autocompleteActive, setAutocompleteActive] = createSignal(false);
   const [autocompleteQuery, setAutocompleteQuery] = createSignal("");
   const [autocompleteIndex, setAutocompleteIndex] = createSignal(0);
   const [autocompleteStart, setAutocompleteStart] = createSignal(0);
@@ -406,15 +408,17 @@ const MessageInput: Component<MessageInputProps> = (props) => {
 
     // Handle autocomplete keyboard navigation
     if (autocompleteType()) {
-      // Let AutocompletePopup handle these keys
-      if (["ArrowDown", "ArrowUp", "Escape"].includes(e.key)) {
-        return; // Handled by PopupList
+      if (autocompleteActive()) {
+        // Popup has suggestions: PopupList handles navigation/accept/close
+        if (["ArrowDown", "ArrowUp", "Escape", "Enter", "Tab"].includes(e.key)) {
+          return;
+        }
+      } else if (e.key === "Escape") {
+        // No suggestions (no popup mounted): Escape just dismisses the trigger
+        setAutocompleteType(null);
+        return;
       }
-
-      // Enter or Tab to accept suggestion (handled by PopupList via onSelect)
-      if (e.key === "Enter" || e.key === "Tab") {
-        return; // Handled by PopupList
-      }
+      // No suggestions: Enter/Tab/Arrows behave normally (Enter sends)
     }
 
     // Formatting shortcuts
@@ -707,6 +711,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
           onSelect={handleAutocompleteSelect}
           onClose={() => setAutocompleteType(null)}
           onSelectionChange={setAutocompleteIndex}
+          onActiveChange={setAutocompleteActive}
         />
       </Show>
     </form>

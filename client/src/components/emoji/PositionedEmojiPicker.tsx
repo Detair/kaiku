@@ -5,9 +5,16 @@
  * Handles viewport boundaries, automatic flipping, and click-outside detection.
  */
 
-import { Component, onMount, createSignal } from "solid-js";
+import { Component, onMount, onCleanup, createSignal } from "solid-js";
 import { Portal } from "solid-js/web";
-import { computePosition, flip, shift, offset, size } from "@floating-ui/dom";
+import {
+  computePosition,
+  autoUpdate,
+  flip,
+  shift,
+  offset,
+  size,
+} from "@floating-ui/dom";
 import EmojiPicker from "./EmojiPicker";
 
 interface PositionedEmojiPickerProps {
@@ -26,12 +33,14 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
 ) => {
   let pickerRef: HTMLDivElement | undefined;
   const [position, setPosition] = createSignal({ x: 0, y: 0 });
+  const [positioned, setPositioned] = createSignal(false);
   const [maxHeight, setMaxHeight] = createSignal<number | undefined>(undefined);
 
   const updatePosition = async () => {
     if (!pickerRef || !props.anchorEl) return;
 
     const { x, y } = await computePosition(props.anchorEl, pickerRef, {
+      strategy: "fixed",
       placement: "bottom-start",
       middleware: [
         offset(4), // Smaller gap for closer positioning
@@ -53,6 +62,7 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
     });
 
     setPosition({ x: Math.round(x), y: Math.round(y) });
+    setPositioned(true);
   };
 
   // Click outside detection
@@ -67,7 +77,11 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
   };
 
   // Close on scroll
-  const handleScroll = () => {
+  const handleScroll = (e: Event) => {
+    // Scrolling inside the picker itself (e.g. the emoji grid) must not close it
+    if (pickerRef && e.target instanceof Node && pickerRef.contains(e.target)) {
+      return;
+    }
     props.onClose();
   };
 
@@ -79,13 +93,22 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
   };
 
   onMount(() => {
-    // Calculate initial position
-    updatePosition().catch((err) => {
-      console.error(
-        "[PositionedEmojiPicker] Failed to calculate position:",
-        err,
-      );
-    });
+    // Keep the picker anchored when it or the anchor resizes, or the window resizes
+    if (pickerRef && props.anchorEl) {
+      const stopAutoUpdate = autoUpdate(props.anchorEl, pickerRef, () => {
+        updatePosition().catch((err) => {
+          console.error(
+            "[PositionedEmojiPicker] Failed to calculate position:",
+            err,
+          );
+          // Never leave the picker hidden if positioning fails
+          setPositioned(true);
+        });
+      });
+      onCleanup(stopAutoUpdate);
+    } else {
+      setPositioned(true);
+    }
 
     // Add event listeners after a small delay to avoid immediate close
     const timeoutId = setTimeout(() => {
@@ -94,12 +117,12 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
       window.addEventListener("scroll", handleScroll, true); // capture phase for all scrollable elements
     }, 0);
 
-    return () => {
+    onCleanup(() => {
       clearTimeout(timeoutId);
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("scroll", handleScroll, true);
-    };
+    });
   });
 
   return (
@@ -111,6 +134,7 @@ const PositionedEmojiPicker: Component<PositionedEmojiPickerProps> = (
           left: `${position().x}px`,
           top: `${position().y}px`,
           "z-index": "9999",
+          visibility: positioned() ? "visible" : "hidden",
           ...(maxHeight() ? { "max-height": `${maxHeight()}px` } : {}),
         }}
       >

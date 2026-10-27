@@ -143,6 +143,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- Picking someone from the @ suggestions now mentions them (and notifies them) even when their display name differs from their username.
+- Pressing Enter sends your message again when the suggestion list has no matches (for example after typing "@" or ":" text that matches nothing).
+- The @mention, emoji and command suggestion list appears next to the message box instead of the top-left corner, and no longer causes errors after it closes.
+- The emoji picker stays next to its button, no longer closes when you scroll its emoji list, and keeps working when reopened several times (previously later opens could insert no emoji or send no reaction).
 - The chat stays at the newest message when the window gets smaller, when you type a message over several lines, or when an image in the last message finishes loading.
 - Loading older messages no longer shows a "new messages" button for them.
 - Messages no longer overlap or leave gaps while scrolling, and images in the chat no longer flicker or reload when you scroll or a new message arrives.

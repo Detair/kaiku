@@ -83,4 +83,14 @@ describe("MessageInput", () => {
     dropFiles(container.querySelector("form")!, [new File(["a"], "a.txt")]);
     expect(await screen.findByLabelText("Send 1 file")).toBeTruthy();
   });
+
+  it("Enter with an autocomplete trigger and no matches sends the message", async () => {
+    render(() => <MessageInput channelId="c1" channelName="general" guildId="g1" />);
+    const ta = screen.getByPlaceholderText("Message #general") as HTMLTextAreaElement;
+    ta.value = "hello @zzzq";
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    fireEvent.input(ta);
+    fireEvent.keyDown(ta, { key: "Enter" });
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
 });

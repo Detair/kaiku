@@ -5,7 +5,13 @@
  * Handles data fetching and formatting for @user, :emoji:, #channel, and /command suggestions.
  */
 
-import { Component, createMemo } from "solid-js";
+import {
+  Component,
+  createEffect,
+  createMemo,
+  onCleanup,
+  Show,
+} from "solid-js";
 import PopupList, { type PopupListItem } from "@/components/ui/PopupList";
 import Avatar from "@/components/ui/Avatar";
 import { Hash, Terminal } from "lucide-solid";
@@ -45,9 +51,14 @@ interface AutocompletePopupProps {
   onClose: () => void;
   /** Callback when selection changes */
   onSelectionChange: (index: number) => void;
+  /** Reports whether the popup currently has items (keys are only captured then) */
+  onActiveChange?: (active: boolean) => void;
 }
 
 const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
+  /** Username per user id of the current suggestions; mentions are written as @username. */
+  const usernames = new Map<string, string>();
+
   // Get user suggestions
   const userItems = createMemo((): PopupListItem[] => {
     if (props.type !== "user") return [];
@@ -100,6 +111,9 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
 
     // Limit to 8 results
     const limited = filtered.slice(0, 8);
+
+    usernames.clear();
+    for (const u of limited) usernames.set(u.user_id, u.username);
 
     return limited.map((u) => ({
       id: u.user_id,
@@ -223,8 +237,9 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
   const handleSelect = (item: PopupListItem) => {
     switch (props.type) {
       case "user":
-        // For users, return the display name with @ prefix and trailing space
-        props.onSelect(`@${item.label} `);
+        // The server resolves mentions by username ([A-Za-z0-9_]); a display
+        // name like "Oma Erna" would mention nobody (or the wrong "@oma").
+        props.onSelect(`@${usernames.get(item.id) ?? item.label} `);
         break;
       case "emoji":
         // For emojis, return the emoji character or :name: for custom
@@ -241,15 +256,22 @@ const AutocompletePopup: Component<AutocompletePopupProps> = (props) => {
     }
   };
 
+  const hasItems = () => (items()?.length ?? 0) > 0;
+
+  createEffect(() => props.onActiveChange?.(hasItems()));
+  onCleanup(() => props.onActiveChange?.(false));
+
   return (
-    <PopupList
-      anchorEl={props.anchorEl}
-      items={items()}
-      selectedIndex={props.selectedIndex}
-      onSelect={handleSelect}
-      onClose={props.onClose}
-      onSelectionChange={props.onSelectionChange}
-    />
+    <Show when={hasItems()}>
+      <PopupList
+        anchorEl={props.anchorEl}
+        items={items()!}
+        selectedIndex={props.selectedIndex}
+        onSelect={handleSelect}
+        onClose={props.onClose}
+        onSelectionChange={props.onSelectionChange}
+      />
+    </Show>
   );
 };
 
