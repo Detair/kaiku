@@ -1,7 +1,7 @@
 import { lastMarkableMessage as lastMarkableMessageOf } from "@/lib/readCursor";
 import {
   Component,
-  Index,
+  For,
   Show,
   createEffect,
   on,
@@ -112,10 +112,22 @@ const MessageList: Component<MessageListProps> = (props) => {
     () => !!messagesState.loadingChannels[props.channelId],
   );
 
+  // Message ids by index. A new array (and so a new getItemKey) only when the
+  // ids change, e.g. a pending message confirmed, not on every edit or reaction.
+  const messageKeys = createMemo(
+    () => messagesWithCompact().map((item) => item.message.id),
+    undefined,
+    { equals: (a, b) => a.length === b.length && a.every((id, i) => id === b[i]) },
+  );
+
   // --- Virtualizer ---
   const virtualizer = createVirtualizer({
     get count() {
-      return messagesWithCompact().length;
+      return messageKeys().length;
+    },
+    get getItemKey() {
+      const keys = messageKeys();
+      return (index: number) => keys[index] ?? index;
     },
     getScrollElement: () => containerRef ?? null,
     estimateSize: (index: number) => {
@@ -585,16 +597,29 @@ const MessageList: Component<MessageListProps> = (props) => {
             position: "relative",
           }}
         >
-          <Index each={virtualizer.getVirtualItems()}>
+          <For each={virtualizer.getVirtualItems()}>
             {(virtualItem) => {
-              const item = () => messagesWithCompact()[virtualItem().index];
+              // One row per message id: the element, its measured size and the
+              // MessageItem stay with the message while rows shift around it.
+              const item = createMemo(
+                () => messagesWithCompact()[virtualItem.index],
+                undefined,
+                {
+                  // messagesWithCompact() rebuilds its wrappers on every list
+                  // change; only a different message or flag is an update.
+                  equals: (a, b) =>
+                    a?.message === b?.message &&
+                    a?.isCompact === b?.isCompact &&
+                    a?.isFirstUnread === b?.isFirstUnread,
+                },
+              );
               const isHighlighted = () =>
                 item()?.message.id != null &&
                 highlightedId() === item()?.message.id;
               return (
                 <div
                   role="listitem"
-                  data-index={virtualItem().index}
+                  data-index={virtualItem.index}
                   ref={(el) => {
                     queueMicrotask(() => virtualizer.measureElement(el));
                   }}
@@ -604,13 +629,13 @@ const MessageList: Component<MessageListProps> = (props) => {
                     top: 0,
                     left: 0,
                     width: "100%",
-                    transform: `translateY(${virtualItem().start}px)`,
+                    transform: `translateY(${virtualItem.start}px)`,
                   }}
                 >
-                  {(() => {
-                    const data = item();
-                    return <Show when={data}><>
-                        <Show when={data.isFirstUnread}>
+                  <Show when={item()}>
+                    {(data) => (
+                      <>
+                        <Show when={data().isFirstUnread}>
                           <div class="flex items-center gap-2 px-4 py-1 my-1">
                             <div class="flex-1 h-px bg-accent-danger" />
                             <span class="text-xs font-semibold text-accent-danger uppercase tracking-wide">
@@ -620,17 +645,18 @@ const MessageList: Component<MessageListProps> = (props) => {
                           </div>
                         </Show>
                         <MessageItem
-                          message={data.message}
-                          compact={data.isCompact}
+                          message={data().message}
+                          compact={data().isCompact}
                           guildId={props.guildId}
                           threadsEnabled={areThreadsEnabled(props.guildId)}
                         />
-                      </></Show>;
-                  })()}
+                      </>
+                    )}
+                  </Show>
                 </div>
               );
             }}
-          </Index>
+          </For>
         </div>
       </Show>
 

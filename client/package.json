@@ -23,7 +23,7 @@
     "@floating-ui/dom": "^1.7.6",
     "@solid-primitives/i18n": "^2",
     "@solidjs/router": "^0.16.1",
-    "@tanstack/solid-virtual": "^3.13.24",
+    "@tanstack/virtual-core": "^3.14.0",
     "@tauri-apps/api": "^2.11.0",
     "@tauri-apps/plugin-global-shortcut": "^2.3.1",
     "@tauri-apps/plugin-notification": "^2.3.3",
