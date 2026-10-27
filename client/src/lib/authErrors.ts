@@ -4,6 +4,7 @@ import type { MessageKey } from "@/i18n";
 export const LOGIN_ERRORS: Partial<Record<string, MessageKey>> = {
   INVALID_CREDENTIALS: "auth.login.invalidCredentials",
   INVALID_MFA: "auth.login.mfaInvalid",
+  ACCOUNT_BANNED: "auth.login.banned",
 };
 
 /** Server codes the sign-up form words specifically (used with `errorText`). */

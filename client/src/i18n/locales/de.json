@@ -99,6 +99,7 @@
   "auth.invite.success": "",
   "auth.invite.wait": "",
   "auth.login.backToLogin": "",
+  "auth.login.banned": "",
   "auth.login.continueWith": "",
   "auth.login.failed": "",
   "auth.login.forgotPassword": "",

@@ -17,6 +17,7 @@ object AuthErrorMapper {
     fun login(e: Throwable): Int {
         if (e is ApiException) {
             when {
+                e.normalizedCode == "ACCOUNT_BANNED" -> return R.string.auth_login_banned
                 e.normalizedCode == "INVALID_MFA" -> return R.string.auth_login_mfa_invalid
                 e.normalizedCode == "INVALID_CREDENTIALS" || e.status == HttpStatusCode.Unauthorized ->
                     return R.string.auth_login_invalid_credentials

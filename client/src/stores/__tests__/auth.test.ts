@@ -466,6 +466,17 @@ describe("auth store", () => {
     });
   });
 
+  describe("login with a suspended account", () => {
+    it("says the account is suspended", async () => {
+      vi.mocked(tauri.login).mockRejectedValue(
+        new HttpError(403, "Account is banned", "ACCOUNT_BANNED"),
+      );
+
+      await expect(login("https://server.com", "alice", "pw")).rejects.toThrow();
+      expect(authState.error).toBe("This account has been suspended. Ask the server admin.");
+    });
+  });
+
   describe("register", () => {
     it("registers and inits subsystems", async () => {
       const user = createUser();

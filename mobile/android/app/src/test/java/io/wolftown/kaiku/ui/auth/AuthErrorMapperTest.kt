@@ -48,6 +48,18 @@ class AuthErrorMapperTest {
     }
 
     @Test
+    fun `banned account maps to suspended copy`() {
+        val e = ApiException(HttpStatusCode.Forbidden, "server text", "ACCOUNT_BANNED")
+        assertEquals(R.string.auth_login_banned, AuthErrorMapper.login(e))
+    }
+
+    @Test
+    fun `banned account code is matched case-insensitively`() {
+        val e = ApiException(HttpStatusCode.Forbidden, "server text", "account_banned")
+        assertEquals(R.string.auth_login_banned, AuthErrorMapper.login(e))
+    }
+
+    @Test
     fun `registration disabled maps to closed`() {
         val e = ApiException(HttpStatusCode.Forbidden, "server text", "REGISTRATION_DISABLED")
         assertEquals(R.string.auth_register_closed, AuthErrorMapper.register(e))
