@@ -7,7 +7,7 @@
  */
 
 /* Code block shape */
-[data-theme^="pixel-"] .hljs {
+[data-theme^="pixel-"] .code-block {
   border-radius: var(--radius-lg);
   border: var(--border-width) solid var(--color-border-default);
 }
