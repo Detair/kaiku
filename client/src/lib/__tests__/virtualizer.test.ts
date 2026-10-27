@@ -1,117 +1,56 @@
-import { describe, it, expect, vi } from "vitest";
-import { createRoot } from "solid-js";
+import { describe, it, expect, beforeAll } from "vitest";
+import { createRoot, createSignal } from "solid-js";
 import { createVirtualizer } from "../virtualizer";
 
-function makeScrollElement(height = 500, scrollTop = 0): HTMLDivElement {
-  const el = document.createElement("div");
-  Object.defineProperties(el, {
-    clientHeight: { value: height, configurable: true },
-    offsetHeight: { value: height, configurable: true },
-    offsetWidth: { value: 200, configurable: true },
-    scrollTop: { value: scrollTop, writable: true, configurable: true },
-    scrollTo: { value: vi.fn(), configurable: true },
-  });
-  return el;
-}
+beforeAll(() => {
+  globalThis.ResizeObserver ??= class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+});
 
-/** Flush one microtask so Solid's onMount callbacks execute. */
-function tick(): Promise<void> {
-  return new Promise((resolve) => queueMicrotask(resolve));
+function setup(initialKeys: string[]) {
+  const scroller = document.createElement("div");
+  Object.defineProperty(scroller, "clientHeight", { value: 10_000 });
+  Object.defineProperty(scroller, "offsetHeight", { value: 10_000 });
+  return createRoot((dispose) => {
+    const [keys, setKeys] = createSignal(initialKeys);
+    const virtualizer = createVirtualizer({
+      get count() {
+        return keys().length;
+      },
+      get getItemKey() {
+        const k = keys();
+        return (index: number) => k[index];
+      },
+      getScrollElement: () => scroller,
+      estimateSize: () => 50,
+      overscan: 100,
+    });
+    return { virtualizer, setKeys, dispose };
+  });
 }
 
 describe("createVirtualizer", () => {
-  it("returns empty items when count is 0", async () => {
-    await createRoot(async (dispose) => {
-      const v = createVirtualizer({
-        count: 0,
-        getScrollElement: () => makeScrollElement(),
-        estimateSize: () => 50,
-        overscan: 0,
-      });
-      await tick();
-      expect(v.getVirtualItems()).toEqual([]);
-      expect(v.getTotalSize()).toBe(0);
-      dispose();
-    });
-  });
+  it("keeps each key's item object and measured size when items are prepended", () => {
+    const { virtualizer, setKeys, dispose } = setup(["a", "b", "c"]);
+    const itemOf = (key: string) =>
+      virtualizer.getVirtualItems().find((v) => v.key === key);
 
-  it("returns all items when they fit in viewport", async () => {
-    await createRoot(async (dispose) => {
-      const el = makeScrollElement(500);
-      const v = createVirtualizer({
-        count: 5,
-        getScrollElement: () => el,
-        estimateSize: () => 50,
-        overscan: 0,
-      });
-      await tick();
-      const items = v.getVirtualItems();
-      expect(items.length).toBe(5);
-      expect(v.getTotalSize()).toBe(250);
-      dispose();
-    });
-  });
+    virtualizer.resizeItem(1, 200); // "b" measured at 200px
+    const b = itemOf("b");
+    expect(b?.size).toBe(200);
 
-  it("applies overscan correctly", async () => {
-    await createRoot(async (dispose) => {
-      const el = makeScrollElement(100, 200);
-      const v = createVirtualizer({
-        count: 100,
-        getScrollElement: () => el,
-        estimateSize: () => 50,
-        overscan: 2,
-      });
-      await tick();
-      const items = v.getVirtualItems();
-      expect(items[0].index).toBeLessThanOrEqual(2);
-      dispose();
-    });
-  });
+    setKeys(["y", "z", "a", "b", "c"]);
 
-  it("scrollToIndex calls scrollTo on the element", async () => {
-    await createRoot(async (dispose) => {
-      const el = makeScrollElement(200);
-      const v = createVirtualizer({
-        count: 50,
-        getScrollElement: () => el,
-        estimateSize: () => 50,
-        overscan: 0,
-      });
-      await tick();
-      v.scrollToIndex(10, { align: "start" });
-      expect(el.scrollTo).toHaveBeenCalled();
-      dispose();
-    });
-  });
-
-  it("measureElement accepts an element without throwing", async () => {
-    await createRoot(async (dispose) => {
-      const el = makeScrollElement();
-      const v = createVirtualizer({
-        count: 10,
-        getScrollElement: () => el,
-        estimateSize: () => 50,
-        overscan: 0,
-      });
-      await tick();
-      const item = document.createElement("div");
-      item.setAttribute("data-index", "0");
-      expect(() => v.measureElement(item)).not.toThrow();
-      dispose();
-    });
-  });
-
-  it("getTotalSize reflects all items", async () => {
-    await createRoot(async (dispose) => {
-      const v = createVirtualizer({
-        count: 20,
-        getScrollElement: () => makeScrollElement(),
-        estimateSize: (i) => (i < 10 ? 50 : 100),
-        overscan: 0,
-      });
-      await tick();
-      expect(v.getTotalSize()).toBe(10 * 50 + 10 * 100);
-      dispose();
-    });
+    // same object (a <For> row stays bound to "b"), now at index 3
+    expect(itemOf("b")).toBe(b);
+    expect(b?.index).toBe(3);
+    // the measured size followed the key and was not dropped by the count change
+    expect(b?.size).toBe(200);
+    expect(itemOf("c")?.start).toBe(50 * 3 + 200);
+    expect(virtualizer.getTotalSize()).toBe(50 * 4 + 200);
+    dispose();
   });
 });

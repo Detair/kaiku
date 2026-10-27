@@ -352,37 +352,6 @@ const MessageItem: Component<MessageItemProps> = (props) => {
   // Register the singleton keydown listener once
   onMount(() => ensureReactionShortcutListener());
 
-  // Setup spoiler click-to-reveal functionality.
-  // Uses createEffect so listeners are re-attached when the content div
-  // remounts after exiting edit mode (Show unmounts/remounts children).
-  createEffect(() => {
-    // Only attach when NOT editing (content div is mounted)
-    if (isBeingEdited()) return;
-
-    // Wait for next frame so contentRef is populated after Show remount
-    requestAnimationFrame(() => {
-      if (!contentRef) return;
-
-      const messageId = props.message.id;
-      const spoilerEls = contentRef.querySelectorAll(
-        '.spoiler[data-spoiler="true"]',
-      );
-
-      spoilerEls.forEach((spoiler, index) => {
-        // Restore previously revealed state
-        if (isSpoilerRevealed(messageId, index)) {
-          (spoiler as HTMLElement).classList.add("revealed");
-        }
-
-        const handler: EventListener = function (this: HTMLElement) {
-          this.classList.add("revealed");
-          revealSpoiler(messageId, index);
-        };
-        spoiler.addEventListener("click", handler);
-      });
-    });
-  });
-
   const handleAddReaction = async (emoji: string) => {
     try {
       await addReaction(props.message.channel_id, props.message.id, emoji);
@@ -481,6 +450,39 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       }) as string;
       return [{ type: "text", html: safeText }];
     }
+  });
+
+  // Setup spoiler click-to-reveal functionality.
+  // Uses createEffect so listeners are re-attached when the content div
+  // remounts after exiting edit mode (Show unmounts/remounts children) and
+  // when the content is re-rendered after an edit.
+  createEffect(() => {
+    contentBlocks();
+    // Only attach when NOT editing (content div is mounted)
+    if (isBeingEdited()) return;
+
+    // Wait for next frame so contentRef is populated after Show remount
+    requestAnimationFrame(() => {
+      if (!contentRef) return;
+
+      const messageId = props.message.id;
+      const spoilerEls = contentRef.querySelectorAll(
+        '.spoiler[data-spoiler="true"]',
+      );
+
+      spoilerEls.forEach((spoiler, index) => {
+        // Restore previously revealed state
+        if (isSpoilerRevealed(messageId, index)) {
+          (spoiler as HTMLElement).classList.add("revealed");
+        }
+
+        const handler: EventListener = function (this: HTMLElement) {
+          this.classList.add("revealed");
+          revealSpoiler(messageId, index);
+        };
+        spoiler.addEventListener("click", handler);
+      });
+    });
   });
 
   const buildContextMenuItems = (): ContextMenuEntry[] => {
@@ -667,7 +669,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         </Show>
         <Show when={props.compact}>
           {/* Show timestamp on hover for compact messages */}
-          <span class="text-xs text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity select-none leading-6">
+          <span class="block whitespace-nowrap text-[11px] text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity select-none leading-6">
             {formatTime(props.message.created_at)}
           </span>
         </Show>

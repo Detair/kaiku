@@ -142,7 +142,7 @@ const SettingsModal: Component<SettingsModalProps> = (props) => {
         <div
           {...dialog.dialogProps}
           ref={dialog.ref}
-          class="border border-white/10 rounded-2xl w-[700px] max-h-[600px] flex flex-col shadow-2xl animate-[fadeIn_0.15s_ease-out]"
+          class="border border-white/10 rounded-2xl w-[700px] max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100vh-2rem))] flex flex-col shadow-2xl animate-[fadeIn_0.15s_ease-out]"
           style={{"background-color":"var(--color-surface-layer1)"}}
         >
           {/* Header */}

@@ -259,22 +259,61 @@ export async function loadMessagesAround(channelId: string, aroundMessageId: str
   setMessagesState("loadError", null);
 
   try {
-    const response = await tauri.getMessages(channelId, undefined, MESSAGE_LIMIT, aroundMessageId);
-    const decryptedMessages = await decryptMessages(response.items);
-    // Around-mode returns messages in ASC order (oldest-first) from server
-    setMessagesState("byChannel", channelId, decryptedMessages);
-    setMessagesState("hasMore", channelId, response.has_more);
+    const window = await fetchAroundWindow(channelId, aroundMessageId);
+    setMessagesState("byChannel", channelId, window.items);
+    setMessagesState("hasMore", channelId, window.hasMore);
     setMessagesState("loadingChannels", channelId, false);
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    console.error("Failed to load messages around:", error);
-    setMessagesState("loadingChannels", channelId, false);
-    setMessagesState("loadError", errorText(err, "chat.list.loadFailed"));
+    reportLoadError(channelId, "Failed to load messages around:", err);
   }
+}
+
+function reportLoadError(channelId: string, label: string, err: unknown): void {
+  const error = err instanceof Error ? err.message : String(err);
+  console.error(label, error);
+  setMessagesState("loadingChannels", channelId, false);
+  setMessagesState("loadError", errorText(err, "chat.list.loadFailed"));
+}
+
+/** Fetch (without committing to the store) one page centred on a message. */
+async function fetchAroundWindow(
+  channelId: string,
+  aroundMessageId: string,
+): Promise<{ items: Message[]; hasMore: boolean }> {
+  const response = await tauri.getMessages(channelId, undefined, MESSAGE_LIMIT, aroundMessageId);
+  // Around-mode returns messages in ASC order (oldest-first) from server
+  return { items: await decryptMessages(response.items), hasMore: response.has_more };
 }
 
 // Track ongoing initial loads to prevent duplicates
 const initialLoadInProgress: Record<string, boolean> = {};
+
+/**
+ * Live (WebSocket) changes that arrive while a channel's initial load is in
+ * flight. They are held back so `byChannel` is written once, by the commit,
+ * rather than showing a lone live message as if it were the initial load.
+ */
+interface LiveBuffer {
+  added: Message[];
+  updated: Map<string, Message>;
+  removed: Set<string>;
+}
+const liveBuffers: Record<string, LiveBuffer | undefined> = {};
+
+/** Merge buffered live changes into `messages` and drop the buffer. */
+function applyLiveBuffer(channelId: string, messages: Message[]): Message[] {
+  const buf = liveBuffers[channelId];
+  delete liveBuffers[channelId];
+  if (!buf) return messages;
+  let result = mergeAscending(messages, buf.added);
+  if (buf.updated.size > 0) {
+    result = result.map((m) => buf.updated.get(m.id) ?? m);
+  }
+  if (buf.removed.size > 0) {
+    result = result.filter((m) => !buf.removed.has(m.id));
+  }
+  return result;
+}
 
 /**
  * Load initial messages for a channel (clears existing).
@@ -293,6 +332,7 @@ export async function loadInitialMessages(
   }
 
   initialLoadInProgress[channelId] = true;
+  liveBuffers[channelId] = { added: [], updated: new Map(), removed: new Set() };
 
   try {
     setMessagesState("byChannel", channelId, []);
@@ -300,17 +340,20 @@ export async function loadInitialMessages(
 
     // Only use around-mode if unreads exist AND count <= 200 threshold
     if (lastReadMessageId && (unreadCount == null || unreadCount <= 200)) {
-      await loadMessagesAround(channelId, lastReadMessageId);
-      // Fallback if around returned empty (deleted anchor or other edge case)
-      const loaded = messagesState.byChannel[channelId] || [];
-      if (loaded.length === 0) {
-        await loadMessages(channelId);
-      }
+      await loadInitialAround(channelId, lastReadMessageId);
     } else {
       await loadMessages(channelId);
     }
   } finally {
     initialLoadInProgress[channelId] = false;
+    // Anything not consumed by a commit (fallback or error paths).
+    if (liveBuffers[channelId]) {
+      const current = messagesState.byChannel[channelId] ?? [];
+      const merged = applyLiveBuffer(channelId, current);
+      if (merged.length > 0 || current.length > 0) {
+        setMessagesState("byChannel", channelId, merged);
+      }
+    }
   }
 }
 
@@ -370,24 +413,15 @@ function isAnchorRejected(err: unknown): boolean {
 }
 
 /**
- * Fetch the messages missed while disconnected (C1 `?after=`) and merge them
- * into the cache, deduplicated by id. Falls back to a fresh load
- * (`"reloaded"`) when the cache is empty, the server rejects the anchor (400:
- * unknown or deleted from the channel), or more than `maxPages` pages are
- * missing. Other errors propagate.
- *
- * @param afterId anchor; defaults to the newest confirmed cached message.
+ * Fetch every message after `afterId` (C1 `?after=`), ascending. Returns
+ * `null` when the server rejects the anchor (400) or more than `maxPages`
+ * pages are missing; other errors propagate.
  */
-export async function catchUpChannel(
+async function fetchMessagesAfter(
   channelId: string,
-  maxPages = 5,
-  afterId: string | undefined = catchUpAnchor(channelId),
-): Promise<"caught_up" | "reloaded"> {
-  if (!afterId) {
-    await loadInitialMessages(channelId);
-    return "reloaded";
-  }
-
+  afterId: string,
+  maxPages: number,
+): Promise<Message[] | null> {
   const missed: Message[] = [];
   let cursor = afterId;
   let pages = 0;
@@ -409,11 +443,90 @@ export async function catchUpChannel(
     }
   } catch (err) {
     if (!isAnchorRejected(err)) throw err;
+    return null;
+  }
+  return hasMore ? null : missed;
+}
+
+/**
+ * Around-mode initial load: fetch the window around the read cursor plus every
+ * newer page, then commit `byChannel` ONCE so the list sees a single initial
+ * load (no window-then-live-append sequence). `loadingChannels` stays true
+ * until that write. Messages that arrived live meanwhile stay after the loaded
+ * ones. A rejected anchor (400) or an exceeded page bound falls back to the
+ * latest page; other forward errors commit the window alone. Runs inside
+ * `loadInitialMessages`, so it must not call it again.
+ */
+async function loadInitialAround(
+  channelId: string,
+  lastReadMessageId: string,
+): Promise<void> {
+  if (messagesState.loadingChannels[channelId]) return;
+  setMessagesState("loadingChannels", channelId, true);
+  setMessagesState("loadError", null);
+
+  let window: { items: Message[]; hasMore: boolean };
+  try {
+    window = await fetchAroundWindow(channelId, lastReadMessageId);
+  } catch (err) {
+    reportLoadError(channelId, "Failed to load messages around:", err);
+    await loadMessages(channelId);
+    return;
+  }
+  if (window.items.length === 0) {
+    // Deleted anchor or other edge case.
+    setMessagesState("loadingChannels", channelId, false);
+    await loadMessages(channelId);
+    return;
+  }
+
+  let forward: Message[] = [];
+  const anchor = window.items[window.items.length - 1].id;
+  try {
+    const missed = await fetchMessagesAfter(channelId, anchor, 5);
+    if (!missed) {
+      setMessagesState("loadingChannels", channelId, false);
+      setMessagesState("byChannel", channelId, []);
+      setMessagesState("hasMore", channelId, true);
+      await loadMessages(channelId);
+      return;
+    }
+    forward = missed;
+  } catch (err) {
+    console.error("Failed to load messages after unread window:", err);
+  }
+
+  const current = messagesState.byChannel[channelId] ?? [];
+  setMessagesState(
+    "byChannel",
+    channelId,
+    applyLiveBuffer(channelId, mergeAscending(current, [...window.items, ...forward])),
+  );
+  setMessagesState("hasMore", channelId, window.hasMore);
+  setMessagesState("loadingChannels", channelId, false);
+}
+
+/**
+ * Fetch the messages missed while disconnected (C1 `?after=`) and merge them
+ * into the cache, deduplicated by id. Falls back to a fresh load
+ * (`"reloaded"`) when the cache is empty, the server rejects the anchor (400:
+ * unknown or deleted from the channel), or more than `maxPages` pages are
+ * missing. Other errors propagate.
+ *
+ * @param afterId anchor; defaults to the newest confirmed cached message.
+ */
+export async function catchUpChannel(
+  channelId: string,
+  maxPages = 5,
+  afterId: string | undefined = catchUpAnchor(channelId),
+): Promise<"caught_up" | "reloaded"> {
+  if (!afterId) {
     await loadInitialMessages(channelId);
     return "reloaded";
   }
 
-  if (hasMore) {
+  const missed = await fetchMessagesAfter(channelId, afterId, maxPages);
+  if (!missed) {
     await loadInitialMessages(channelId);
     return "reloaded";
   }
@@ -547,6 +660,16 @@ export async function addMessage(message: Message): Promise<void> {
   if (existing.some((m) => m.id === processedMessage.id)) {
     return;
   }
+  // Initial load in flight: hold the message back for the commit. Once the
+  // commit has consumed the buffer (flag still set until the finally), fall
+  // through to the normal append instead of dropping the message.
+  const buf = initialLoadInProgress[channelId] ? liveBuffers[channelId] : undefined;
+  if (buf) {
+    if (!buf.added.some((m) => m.id === processedMessage.id)) {
+      buf.added.push(processedMessage);
+    }
+    return;
+  }
   // If this is a confirmed echo of our own message, replace the matching pending placeholder by nonce
   const me = currentUser();
   if (me && processedMessage.author.id === me.id && processedMessage.nonce) {
@@ -568,6 +691,12 @@ export async function addMessage(message: Message): Promise<void> {
  */
 export function updateMessage(message: Message): void {
   const channelId = message.channel_id;
+  const buf = initialLoadInProgress[channelId] ? liveBuffers[channelId] : undefined;
+  if (buf) {
+    const i = buf.added.findIndex((m) => m.id === message.id);
+    if (i !== -1) buf.added[i] = message;
+    else buf.updated.set(message.id, message);
+  }
   const messages = messagesState.byChannel[channelId];
 
   if (messages) {
@@ -583,6 +712,12 @@ export function updateMessage(message: Message): void {
  * Remove a message (for deletes).
  */
 export function removeMessage(channelId: string, messageId: string): void {
+  const buf = initialLoadInProgress[channelId] ? liveBuffers[channelId] : undefined;
+  if (buf) {
+    buf.added = buf.added.filter((m) => m.id !== messageId);
+    buf.updated.delete(messageId);
+    buf.removed.add(messageId);
+  }
   const existing = messagesState.byChannel[channelId];
   if (existing) {
     setMessagesState("byChannel", channelId, existing.filter((m) => m.id !== messageId));

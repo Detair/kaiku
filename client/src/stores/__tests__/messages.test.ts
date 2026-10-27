@@ -287,6 +287,153 @@ describe("messages store", () => {
     });
   });
 
+  describe("loadInitialMessages around-mode forward fill", () => {
+    const page = (items: Message[], has_more: boolean): PaginatedMessages =>
+      ({ items, has_more, next_cursor: null }) as PaginatedMessages;
+    const at = (id: string, sec: number) => ({
+      ...createMessage(id),
+      created_at: `2026-11-01T10:00:${String(sec).padStart(2, "0")}Z`,
+    });
+    const ids = () => messagesState.byChannel["ch-1"].map((m) => m.id);
+
+    it("loads the messages after the around window, in order and deduplicated", async () => {
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce(
+        page([at("m1", 1), at("m2", 2)], true),
+      );
+      vi.mocked(tauri.getMessagesAfter)
+        .mockResolvedValueOnce(page([at("m2", 2), at("m3", 3)], true))
+        .mockResolvedValueOnce(page([at("m4", 4)], false));
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(ids()).toEqual(["m1", "m2", "m3", "m4"]);
+      expect(vi.mocked(tauri.getMessagesAfter).mock.calls[0][1]).toBe("m2");
+      expect(messagesState.loadingChannels["ch-1"]).toBe(false);
+      expect(messagesState.hasMore["ch-1"]).toBe(true);
+    });
+
+    it("falls back to the latest page when the bound is exceeded", async () => {
+      vi.mocked(tauri.getMessages)
+        .mockResolvedValueOnce(page([at("m1", 1)], true))
+        .mockResolvedValueOnce(page([at("z2", 51), at("z1", 50)], true));
+      let n = 0;
+      vi.mocked(tauri.getMessagesAfter).mockImplementation(async () =>
+        page([at(`p${++n}`, 10 + n)], true),
+      );
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(ids()).toEqual(["z1", "z2"]);
+      expect(messagesState.loadingChannels["ch-1"]).toBe(false);
+      expect(tauri.getMessages).toHaveBeenLastCalledWith("ch-1", undefined, 50);
+    });
+
+    it("falls back to the latest page when the anchor is rejected (400)", async () => {
+      vi.mocked(tauri.getMessages)
+        .mockResolvedValueOnce(page([at("m1", 1)], true))
+        .mockResolvedValueOnce(page([at("z1", 50)], false));
+      vi.mocked(tauri.getMessagesAfter).mockRejectedValue(
+        Object.assign(new Error("Unknown cursor"), { status: 400 }),
+      );
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(ids()).toEqual(["z1"]);
+      expect(messagesState.loadingChannels["ch-1"]).toBe(false);
+    });
+
+    it("keeps a message that arrived live during the fetch last", async () => {
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce(
+        page([at("m1", 1)], true),
+      );
+      vi.mocked(tauri.getMessagesAfter).mockImplementationOnce(async () => {
+        addMessage(at("m9", 9));
+        return page([at("m2", 2), at("m3", 3)], false);
+      });
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(ids()).toEqual(["m1", "m2", "m3", "m9"]);
+    });
+
+    it("commits the initial around-load in a single byChannel write", async () => {
+      const seen: string[][] = [];
+      const snap = () =>
+        seen.push((messagesState.byChannel["ch-1"] ?? []).map((m) => m.id));
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce(
+        page([at("m1", 1), at("m2", 2)], true),
+      );
+      vi.mocked(tauri.getMessagesAfter).mockImplementation(async () => {
+        snap();
+        expect(messagesState.loadingChannels["ch-1"]).toBe(true);
+        return page([at("m3", 3)], false);
+      });
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(seen).toEqual([[]]);
+      expect(ids()).toEqual(["m1", "m2", "m3"]);
+    });
+
+    it("keeps the around window when the forward fetch fails with a non-400 error", async () => {
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce(
+        page([at("m1", 1), at("m2", 2)], true),
+      );
+      vi.mocked(tauri.getMessagesAfter).mockRejectedValue(new Error("network"));
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(ids()).toEqual(["m1", "m2"]);
+      expect(tauri.getMessages).toHaveBeenCalledTimes(1);
+      expect(messagesState.loadingChannels["ch-1"]).toBe(false);
+    });
+
+    it("buffers a live message during the around-load until the single commit", async () => {
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce(
+        page([at("m1", 1), at("m2", 2)], true),
+      );
+      vi.mocked(tauri.getMessagesAfter).mockImplementationOnce(async () => {
+        await addMessage(at("m9", 9));
+        expect(messagesState.byChannel["ch-1"] ?? []).toEqual([]);
+        return page([at("m3", 3)], false);
+      });
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(ids()).toEqual(["m1", "m2", "m3", "m9"]);
+    });
+
+    it("buffers a live message during the fallback and keeps it last", async () => {
+      vi.mocked(tauri.getMessages)
+        .mockResolvedValueOnce(page([at("m1", 1)], true))
+        .mockImplementationOnce(async () => {
+          await addMessage(at("m9", 59));
+          expect(messagesState.byChannel["ch-1"] ?? []).toEqual([]);
+          return page([at("z2", 51), at("z1", 50)], true);
+        });
+      vi.mocked(tauri.getMessagesAfter).mockRejectedValue(
+        Object.assign(new Error("Unknown cursor"), { status: 400 }),
+      );
+
+      await loadInitialMessages("ch-1", "m1", 120);
+
+      expect(ids()).toEqual(["z1", "z2", "m9"]);
+    });
+
+    it("does not leak the live buffer into the next load", async () => {
+      vi.mocked(tauri.getMessages).mockResolvedValue(page([at("a", 1)], false));
+      vi.mocked(tauri.getMessagesAfter).mockImplementationOnce(async () => {
+        await addMessage(at("m9", 9));
+        return page([], false);
+      });
+      await loadInitialMessages("ch-1", "a", 5);
+      vi.mocked(tauri.getMessages).mockResolvedValue(page([at("b", 2)], false));
+      await loadInitialMessages("ch-1");
+
+      expect(ids()).toEqual(["b"]);
+    });
+  });
+
   describe("sendMessage", () => {
     it("sends message and adds to store", async () => {
       const sent = createMessage("sent-1");
@@ -570,6 +717,7 @@ describe("messages store", () => {
     it("does not throw", () => {
       expect(() => clearCurve25519KeyCache()).not.toThrow();
     });
+
   });
 });
 

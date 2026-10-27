@@ -9,6 +9,11 @@ export function createLongPress(
 
   const onPointerDown = (e: PointerEvent) => {
     consumed = false;
+    // Long press is the touch (and pen tip) stand-in for a right-click. A
+    // mouse or a pen's barrel button has a real one: Linux and macOS fire
+    // contextmenu on pointerdown, and a pending timer here made
+    // onContextMenu suppress it.
+    if (e.pointerType === "mouse" || e.button !== 0) return;
     startX = e.clientX;
     startY = e.clientY;
     timer = setTimeout(() => {

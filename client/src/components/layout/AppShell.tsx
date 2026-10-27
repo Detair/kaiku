@@ -107,7 +107,7 @@ const AppShell: Component<AppShellProps> = (props) => {
       </Show>
 
       {/* Main Stage */}
-      <main class="flex-1 flex flex-col min-w-0 bg-surface-layer1 relative border-l border-border-solid">
+      <main class="flex-1 flex flex-col min-w-0 min-h-0 bg-surface-layer1 relative border-l border-border-solid">
         {props.children}
       </main>
 

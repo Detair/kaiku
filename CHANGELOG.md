@@ -95,6 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Bot, webhook and content-filter requests no longer send your sign-in token to a program listening on your own computer; they go only to your Kaiku server.
 - Signing in with an identity provider in the desktop app no longer passes your session tokens through the browser: the browser only receives a one-time code that expires after 60 seconds and that only the app that started the sign-in can redeem. The app also ignores any other requests to its temporary sign-in address. Older desktop apps must be updated to sign in with an identity provider.
 - In server member lists, someone you have blocked or who has blocked you now always appears offline, without a last-seen time.
 - Message lists no longer reveal whether the author is currently online.
@@ -146,6 +147,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pressing Enter sends your message again when the suggestion list has no matches (for example after typing "@" or ":" text that matches nothing).
 - The @mention, emoji and command suggestion list appears next to the message box instead of the top-left corner, and no longer causes errors after it closes.
 - The emoji picker stays next to its button, no longer closes when you scroll its emoji list, and keeps working when reopened several times (previously later opens could insert no emoji or send no reaction).
+- The chat stays at the newest message when the window gets smaller, when you type a message over several lines, or when an image in the last message finishes loading.
+- Loading older messages no longer shows a "new messages" button for them.
+- Messages no longer overlap or leave gaps while scrolling, and images in the chat no longer flicker or reload when you scroll or a new message arrives.
+- Opening a channel with unread messages now shows everything up to the newest message, instead of stopping partway with the latest messages missing.
+- Settings, Join server and Create server fit on smaller screens and at 125–150 % display scaling instead of running off the top of the window.
+- In a narrow browser window the chat scrolls inside its own area again instead of stretching to the full length of the conversation.
+- Follow-up messages from the same person no longer leave a large gap between them when the time is shown with AM/PM.
+- Right-clicking a message, channel or member opens its menu again on Linux and macOS.
+- Code blocks in messages show every line in full instead of cutting off all lines but the last.
+- Bot applications, slash-command suggestions, webhooks and content filters now talk to your Kaiku server; before, they could fail to load in the web and desktop apps.
 - Signing in with a suspended account says so, and the Create account dialog can unlock admin actions directly.
 - Desktop sign-in and account linking with an identity provider show a clear message when they fail (for example when the app needs an update) instead of an error code.
 - The app says "server" everywhere, invite codes can be copied and pasted reliably, the sign-in screen no longer offers registration when it is closed, and a failed voice join says why.
