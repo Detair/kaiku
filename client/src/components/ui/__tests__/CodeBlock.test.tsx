@@ -36,10 +36,16 @@ describe("CodeBlock", () => {
     ["highlight-theme.css", highlightCss],
     ["themes-pixel-highlight.css", pixelHighlightCss],
   ])("%s gives .hljs no box styles", (_name, css) => {
-    const bodies = hljsRuleBodies(css);
     expect(css.length).toBeGreaterThan(0);
-    for (const body of bodies) {
-      expect(body).not.toMatch(/\b(padding|background|border|border-radius)\s*:/);
+    for (const body of hljsRuleBodies(css)) {
+      // shorthands and longhands (padding-top, background-color, border-*)
+      expect(body).not.toMatch(/(^|[;\s])(padding|background|border|margin)(-[a-z-]+)?\s*:/);
     }
+  });
+
+  it("gives the pixel theme's code block shape to the <pre>", () => {
+    expect(pixelHighlightCss).toMatch(
+      /\[data-theme\^="pixel-"\] \.code-block\s*\{[^}]*border-radius:[^}]*border:/,
+    );
   });
 });
