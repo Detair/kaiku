@@ -165,6 +165,10 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         this.localStream = await this.getMicStream(null);
       }
       console.log("[BrowserVoiceAdapter] Got local stream");
+      // The adapter is reused across calls and keeps its mute state (and
+      // push-to-talk rests muted); a fresh track starts enabled, so apply the
+      // gating before the track is published.
+      this.updateTrackEnabled();
 
       this.setState("connecting");
 

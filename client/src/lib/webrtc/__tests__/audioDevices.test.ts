@@ -201,6 +201,20 @@ describe("BrowserVoiceAdapter stored device preferences", () => {
     expect(audio.deviceId).toEqual({ exact: "usb" });
   });
 
+  it("join keeps a muted user muted on the new microphone track", async () => {
+    const track = { enabled: true, stop: vi.fn() };
+    const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+    vi.stubGlobal("navigator", {
+      mediaDevices: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    });
+    // Stop the join right after the microphone (ICE config request fails).
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("stop here")));
+    const adapter = new BrowserVoiceAdapter();
+    await adapter.setMute(true);
+    await adapter.join("ch");
+    expect(track.enabled).toBe(false);
+  });
+
   it("join falls back to the default mic and forgets a gone device", async () => {
     const gone = Object.assign(new Error("gone"), { name: "OverconstrainedError" });
     const getUserMedia = vi
