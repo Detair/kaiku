@@ -3,6 +3,7 @@ import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import {
   register,
   loginWithOidc,
+  restoreSessionAfterPopup,
   completeNativeOidcLogin,
   authState,
   clearError,
@@ -14,6 +15,8 @@ import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
 import { t } from "@/i18n";
+import { isTauri } from "@/lib/tauri/common";
+import { openBlankSsoPopup, watchSsoPopup } from "@/lib/oidcPopup";
 import { safeReturnUrl } from "@/lib/returnUrl";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "@/lib/authErrors";
@@ -118,7 +121,16 @@ const Register: Component = () => {
   const handleOidcRegister = async (provider: OidcProvider) => {
     setLocalError("");
     clearError();
+
+    // Browser: open the popup inside the click, before any await, or popup
+    // blockers reject it. It is pointed at the provider once the server answers.
+    const popup = isTauri() ? null : openBlankSsoPopup("oidc-register");
+    if (!isTauri() && !popup) {
+      setLocalError(t("auth.register.popupBlocked"));
+      return;
+    }
     setOidcLoading(provider.slug);
+    let stopWatching: (() => void) | undefined;
 
     try {
       const result = await oidcAuthorize(serverUrl(), provider.slug);
@@ -131,19 +143,18 @@ const Register: Component = () => {
         return;
       }
 
-      // Browser: open popup and listen for postMessage callback
+      // Browser: send the popup to the provider and wait for its callback
       const expectedOrigin = new URL(serverUrl()).origin;
-      const messageHandler = (event: MessageEvent) => {
-        // Validate origin to prevent cross-origin token theft
-        if (event.origin !== expectedOrigin) return;
-        if (event.data?.type === "oidc-callback" && event.data.access_token) {
-          window.removeEventListener("message", messageHandler);
+      stopWatching = watchSsoPopup({
+        popup: popup!,
+        expectedOrigin,
+        onResult: (data) => {
           loginWithOidc(
             serverUrl(),
-            event.data.access_token,
-            event.data.refresh_token,
-            event.data.expires_in || 900,
-            event.data.setup_required ?? false,
+            data.access_token,
+            data.refresh_token,
+            data.expires_in || 900,
+            data.setup_required ?? false,
           )
             .then(() => {
               navigate(afterRegister(), { replace: true });
@@ -156,24 +167,20 @@ const Register: Component = () => {
             .finally(() => {
               setOidcLoading(null);
             });
-        }
-      };
-      window.addEventListener("message", messageHandler);
-
-      const popup = window.open(
-        result.authUrl,
-        "oidc-register",
-        "width=600,height=700",
-      );
-
-      const checkClosed = setInterval(() => {
-        if (popup?.closed) {
-          clearInterval(checkClosed);
-          window.removeEventListener("message", messageHandler);
-          setOidcLoading(null);
-        }
-      }, 500);
+        },
+        onClosedWithoutResult: () => {
+          // The callback may have lost its opener; the refresh cookie is set
+          // anyway, so try to resume the session once.
+          void restoreSessionAfterPopup(serverUrl()).then((restored) => {
+            if (restored) navigate(afterRegister(), { replace: true });
+            setOidcLoading(null);
+          });
+        },
+      });
+      popup!.location.href = result.authUrl;
     } catch (err) {
+      stopWatching?.();
+      popup?.close();
       setLocalError(errorText(err, "auth.register.ssoFailed", SSO_ERRORS.byCode));
       setOidcLoading(null);
     }

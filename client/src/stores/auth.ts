@@ -769,6 +769,32 @@ export async function loginWithOidc(
 }
 
 /**
+ * Resume the session from the refresh cookie after the SSO popup closed
+ * without delivering a result (an IdP may sever `window.opener`, yet the
+ * server has already set the cookie). Returns false, quietly, when there is
+ * no session to resume.
+ */
+export async function restoreSessionAfterPopup(serverUrl: string): Promise<boolean> {
+  try {
+    const result = await tauri.getCurrentUser();
+    if (!result.user) return false;
+    setAuthState({
+      user: result.user,
+      serverUrl,
+      isLoading: false,
+      isInitialized: true,
+      error: null,
+      sessionExpired: false,
+      passwordChangeRequired: result.password_change_required === true,
+    });
+    if (!authState.passwordChangeRequired) await startSessionServices();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Logout and clear session.
  */
 export async function logout(): Promise<void> {
