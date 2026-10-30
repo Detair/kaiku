@@ -24,6 +24,7 @@ import {
 import { Portal } from "solid-js/web";
 import { X, Mic, Headphones, Loader2 } from "lucide-solid";
 import { createVoiceAdapter } from "@/lib/webrtc";
+import { canSelectOutputDevice } from "@/lib/browserCapabilities";
 import type { AudioDeviceList, VoiceError, VoiceAdapter } from "@/lib/webrtc";
 import { setSpeaking } from "@/stores/voice";
 import { updateAudioSetting } from "@/stores/settings";
@@ -57,10 +58,11 @@ function getDeviceErrorMessage(error: VoiceError): string {
 /** Device label with the fallback name and the "(Default)" marker applied. */
 function deviceOptionLabel(
   device: { deviceId: string; label?: string; isDefault?: boolean },
+  index: number,
   fallbackKey: MessageKey,
 ): string {
-  const label =
-    device.label || t(fallbackKey, { id: device.deviceId.slice(0, 8) });
+  // Unlabeled devices (no mic permission yet) get a generic numbered name.
+  const label = device.label || t(fallbackKey, { id: index + 1 });
   return device.isDefault ? t("voice.audio.deviceDefault", { label }) : label;
 }
 
@@ -154,6 +156,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
     if (voiceAdapter) {
       await voiceAdapter.setNoiseSuppression(newVal);
     }
+    await updateAudioSetting("noise_suppression", newVal);
   };
 
   // ESC key handler
@@ -567,9 +570,9 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 class="w-full px-3 py-2.5 bg-surface-base rounded-xl text-sm text-text-primary border border-white/10 outline-none focus:ring-2 focus:ring-accent-primary/30 transition-all"
               >
                 <For each={devices().inputs}>
-                  {(device) => (
+                  {(device, i) => (
                     <option value={device.deviceId}>
-                      {deviceOptionLabel(device, "voice.audio.microphoneFallback")}
+                      {deviceOptionLabel(device, i(), "voice.audio.microphoneFallback")}
                     </option>
                   )}
                 </For>
@@ -648,6 +651,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
 
             {/* Output Device */}
             <div>
+              <Show when={canSelectOutputDevice()}>
               <label class="flex items-center gap-2 text-sm font-medium text-text-primary mb-2">
                 <div class="w-5 h-5 text-text-secondary">
                   <Headphones />
@@ -660,13 +664,14 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 class="w-full px-3 py-2.5 bg-surface-base rounded-xl text-sm text-text-primary border border-white/10 outline-none focus:ring-2 focus:ring-accent-primary/30 transition-all"
               >
                 <For each={devices().outputs}>
-                  {(device) => (
+                  {(device, i) => (
                     <option value={device.deviceId}>
-                      {deviceOptionLabel(device, "voice.audio.speakerFallback")}
+                      {deviceOptionLabel(device, i(), "voice.audio.speakerFallback")}
                     </option>
                   )}
                 </For>
               </select>
+              </Show>
 
               {/* Speaker Test */}
               <div class="mt-3">

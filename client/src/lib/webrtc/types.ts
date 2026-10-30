@@ -102,6 +102,11 @@ export interface AudioDevice {
 export interface AudioDeviceList {
   inputs: AudioDevice[]; // Microphones
   outputs: AudioDevice[]; // Speakers/Headphones
+  /**
+   * False when the browser hides device names until microphone permission
+   * is granted. Absent means labels are available (native).
+   */
+  labelsAvailable?: boolean;
 }
 
 /**
@@ -319,6 +324,11 @@ export interface VoiceAdapter {
 
   // Device enumeration
   getAudioDevices(): Promise<VoiceResult<AudioDeviceList>>;
+  /**
+   * Browser only: ask for microphone permission (explicit user action) so
+   * device names become visible, then re-enumerate.
+   */
+  requestDeviceLabels?(): Promise<VoiceResult<AudioDeviceList>>;
   setInputDevice(deviceId: string): Promise<VoiceResult<void>>;
   setOutputDevice(deviceId: string): Promise<VoiceResult<void>>;
   /**

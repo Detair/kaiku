@@ -19,6 +19,7 @@ import {
   type VoiceError,
 } from "@/lib/webrtc";
 import { t } from "@/i18n";
+import { canSelectOutputDevice } from "@/lib/browserCapabilities";
 import { voiceErrorText } from "@/lib/webrtc/voiceErrorText";
 
 // Errors raised by the panel itself get their own types so the message is
@@ -172,13 +173,16 @@ function MicTestPanel(props: MicTestPanelProps) {
           class="w-full px-3 py-2 bg-surface-layer2 border border-white/10 rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 disabled:opacity-50 text-sm"
         >
           <For each={inputDevices()}>
-            {(device) => (
-              <option value={device.deviceId}>{device.label}</option>
+            {(device, i) => (
+              <option value={device.deviceId}>
+                {device.label || t("voice.audio.microphoneFallback", { id: i() + 1 })}
+              </option>
             )}
           </For>
         </select>
       </div>
 
+      <Show when={canSelectOutputDevice()}>
       <div>
         <label
           for={outputId}
@@ -193,12 +197,15 @@ function MicTestPanel(props: MicTestPanelProps) {
           class="w-full px-3 py-2 bg-surface-layer2 border border-white/10 rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 text-sm"
         >
           <For each={outputDevices()}>
-            {(device) => (
-              <option value={device.deviceId}>{device.label}</option>
+            {(device, i) => (
+              <option value={device.deviceId}>
+                {device.label || t("voice.audio.speakerFallback", { id: i() + 1 })}
+              </option>
             )}
           </For>
         </select>
       </div>
+      </Show>
 
       {/* Level Meter — empty track that fills left-to-right with the current
           mic level (like Discord/TeamSpeak). The green→yellow→red gradient is

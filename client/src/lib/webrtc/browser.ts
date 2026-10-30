@@ -776,34 +776,52 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   // Device enumeration
 
+  /**
+   * Enumerate devices WITHOUT prompting for the microphone. Until the user
+   * has granted permission browsers return empty labels; `labelsAvailable`
+   * is then false and the UI offers an explicit "show device names" action
+   * ({@link requestDeviceLabels}).
+   */
   async getAudioDevices(): Promise<VoiceResult<AudioDeviceList>> {
     try {
-      // Need to request permission first to get device labels
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((t) => t.stop());
-
       const devices = await navigator.mediaDevices.enumerateDevices();
-
-      const inputs = devices
-        .filter((d) => d.kind === "audioinput")
-        .map((d) => ({
-          deviceId: d.deviceId,
-          label: d.label || `Microphone ${d.deviceId.slice(0, 8)}`,
-          isDefault: d.deviceId === "default",
-        }));
-
-      const outputs = devices
-        .filter((d) => d.kind === "audiooutput")
-        .map((d) => ({
-          deviceId: d.deviceId,
-          label: d.label || `Speaker ${d.deviceId.slice(0, 8)}`,
-          isDefault: d.deviceId === "default",
-        }));
-
-      return { ok: true, value: { inputs, outputs } };
+      return { ok: true, value: this.toDeviceList(devices) };
     } catch (err) {
       return { ok: false, error: this.mapMediaError(err) };
     }
+  }
+
+  /** Request mic permission once (explicit user action) to unlock labels. */
+  async requestDeviceLabels(): Promise<VoiceResult<AudioDeviceList>> {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      return this.getAudioDevices();
+    } catch (err) {
+      return { ok: false, error: this.mapMediaError(err) };
+    }
+  }
+
+  private toDeviceList(devices: MediaDeviceInfo[]): AudioDeviceList {
+    const toDevice = (d: MediaDeviceInfo) => ({
+      deviceId: d.deviceId,
+      // Empty when permission is missing; the UI substitutes a generic name.
+      label: d.label,
+      isDefault: d.deviceId === "default",
+    });
+    const audio = devices.filter(
+      (d) => d.kind === "audioinput" || d.kind === "audiooutput",
+    );
+    const labelsAvailable = audio.every((d) => d.label !== "");
+    // Without permission browsers expose placeholder entries with an empty
+    // id that can't be selected; leave those out.
+    const usable = (kind: string) =>
+      devices.filter((d) => d.kind === kind && d.deviceId !== "").map(toDevice);
+    return {
+      inputs: usable("audioinput"),
+      outputs: usable("audiooutput"),
+      labelsAvailable,
+    };
   }
 
   async setInputDevice(deviceId: string): Promise<VoiceResult<void>> {

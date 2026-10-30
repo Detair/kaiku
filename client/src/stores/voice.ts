@@ -300,6 +300,16 @@ export async function applyStoredAudioDevices(
   const audio = appSettings()?.audio;
   if (!audio) return;
 
+  // Browser mode keeps this setting only in app settings; the native
+  // backend owns its own copy.
+  if (
+    !isTauri() &&
+    typeof adapter.isNoiseSuppressionEnabled === "function" &&
+    adapter.isNoiseSuppressionEnabled() !== audio.noise_suppression
+  ) {
+    await adapter.setNoiseSuppression(audio.noise_suppression);
+  }
+
   if (audio.input_device) {
     const result = await adapter.setInputDevice(audio.input_device);
     if (!result.ok) {

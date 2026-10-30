@@ -394,3 +394,27 @@ describe("createTauriPttListeners", () => {
     controller.deactivate();
   });
 });
+
+describe("createTauriPttListeners in the browser", () => {
+  beforeEach(() => {
+    hoisted.native = false;
+    resetPttFallbackNotice();
+  });
+  afterEach(() => vi.clearAllMocks());
+
+  it("tells the user once that PTT works only while the tab is focused", async () => {
+    const controller = new PttController(mockSetMute);
+    const config = pttConfig("Ctrl+KeyV");
+    controller.activate(config);
+    const cleanup = await createTauriPttListeners(controller, config);
+    expect(hoisted.showToast).toHaveBeenCalledTimes(1);
+    expect(hoisted.showToast.mock.calls[0][0].message).toMatch(/tab is focused/);
+    expect(hoisted.showToast.mock.calls[0][0].message).not.toMatch(/global/i);
+    expect(hoisted.register).not.toHaveBeenCalled();
+    await cleanup();
+    const again = await createTauriPttListeners(controller, config);
+    expect(hoisted.showToast).toHaveBeenCalledTimes(1);
+    await again();
+    controller.deactivate();
+  });
+});

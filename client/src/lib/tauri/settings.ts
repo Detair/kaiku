@@ -15,13 +15,14 @@ export async function getDefaultServerUrl(): Promise<string | null> {
   return invoke<string | null>("get_default_server_url");
 }
 
-export async function getSettings(): Promise<AppSettings> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("get_settings");
-  }
+// ============================================================================
+// Browser-mode persistence (localStorage)
+// ============================================================================
 
-  // Browser mode - return defaults
+/** localStorage key for browser-mode app settings (same shape as native). */
+export const BROWSER_SETTINGS_KEY = "kaiku:app-settings";
+
+export function defaultSettings(): AppSettings {
   return {
     audio: {
       input_device: null,
@@ -46,12 +47,70 @@ export async function getSettings(): Promise<AppSettings> {
   };
 }
 
+/**
+ * Copy only the keys of `defaults` from `stored`, keeping a stored value
+ * only when its type matches the default's (null defaults accept string or
+ * null). A stale, partial or corrupt value can't break startup.
+ */
+function mergeKnown<T extends object>(defaults: T, stored: unknown): T {
+  const out = { ...defaults } as Record<string, unknown>;
+  if (!stored || typeof stored !== "object") return out as T;
+  const src = stored as Record<string, unknown>;
+  for (const [key, def] of Object.entries(defaults)) {
+    const val = src[key];
+    if (val === undefined) continue;
+    if (def === null) {
+      if (val === null || typeof val === "string") out[key] = val;
+    } else if (typeof val === typeof def && !(typeof val === "number" && !Number.isFinite(val))) {
+      out[key] = val;
+    }
+  }
+  return out as T;
+}
+
+function loadBrowserSettings(): AppSettings {
+  const defaults = defaultSettings();
+  try {
+    const raw = localStorage.getItem(BROWSER_SETTINGS_KEY);
+    if (!raw) return defaults;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return defaults;
+    const p = parsed as Record<string, unknown>;
+    const merged = mergeKnown(defaults, p);
+    merged.audio = mergeKnown(defaults.audio, p.audio);
+    merged.voice = mergeKnown(defaults.voice, p.voice);
+    if (merged.theme !== "dark" && merged.theme !== "light") merged.theme = defaults.theme;
+    return merged;
+  } catch {
+    // Unreadable storage (private mode) or corrupt JSON: use defaults.
+    return defaults;
+  }
+}
+
+function saveBrowserSettings(settings: AppSettings): void {
+  try {
+    localStorage.setItem(BROWSER_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // Storage unavailable or full: settings stay in-memory for this session.
+  }
+}
+
+export async function getSettings(): Promise<AppSettings> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("get_settings");
+  }
+
+  // Browser mode - stored settings merged over the defaults
+  return loadBrowserSettings();
+}
+
 export async function updateSettings(settings: AppSettings): Promise<void> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke("update_settings", { settings });
   }
-  // Browser mode - no-op
+  saveBrowserSettings(settings);
 }
 
 export async function getUiState(): Promise<UiState> {
