@@ -425,9 +425,11 @@ reach the model, which could apply it to a different pending action. So:
    - **Anti-fatigue limits:** pending requests and notifications are rate limited per token,
      per owner and per device, including unanswered ones and requests created via direct
      REST. At most 3 open approvals per owner.
-8. **Elevation windows** for agent tokens last **10 minutes** (maintainer). Elevation and every
-   destructive action each need their own approval. An approval never covers more than the
-   one stored request, or the one elevation window.
+8. **Elevation windows** for agent tokens last **10 minutes** (maintainer). They cover the
+   `elevated` tier only. A destructive action needs exactly **one** approval of its own and no
+   prior window, because an approved execution counts as elevated for that single request
+   (coordinator call: one simple confirmation per ban, not two). An approval never covers more
+   than the one stored request, or the one elevation window.
 9. The `elevated` and `destructive` tiers need at least one registered device or TOTP. Admin
    accounts with neither cannot use these tiers through the MCP.
 
