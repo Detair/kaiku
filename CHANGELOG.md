@@ -61,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Desktop auto-updates are signed with a new updater key. Builds from before 1.0.0-rc.1 never shipped the previous key in a release, so no installed app is affected.
 - Desktop sign-in with an identity provider needs a server of the same version: update the server and the desktop app together.
 - The desktop app hides forum, announcement, event and screening features when the server has them turned off.
 - The "invisible" status is no longer offered.
