@@ -503,3 +503,42 @@ async fn test_list_messages_after_created_at_tie_broken_by_id(pool: PgPool) {
         vec![m[1].to_string(), m[2].to_string()]
     );
 }
+
+// ============================================================================
+// Jump to a message (`around` cursor)
+// ============================================================================
+
+#[sqlx::test]
+async fn test_list_messages_around_reports_older_history(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_id, token, channel_id) = catchup_setup(&app, "around-older").await;
+    let mut msgs = Vec::new();
+    for i in 0..60 {
+        let at = format!("2026-01-01T00:{i:02}:00Z");
+        msgs.push(insert_message_at(&app.pool, channel_id, user_id, &format!("m{i}"), &at).await);
+    }
+    let around = |anchor: Uuid| format!("around={anchor}&limit=50");
+
+    // Few newer messages after the anchor (the usual "a few unread" case):
+    // older history exists, so the client must be able to page back.
+    let page = list_messages(&app, channel_id, &token, &around(msgs[56])).await;
+    assert_eq!(page["has_more"], true);
+    let got = ids(&page["items"]);
+    assert_eq!(got.len(), 26 + 3, "half + 1 up to the anchor, then the 3 newer ones");
+    assert_eq!(got.first().unwrap(), &msgs[31].to_string());
+    assert_eq!(got.last().unwrap(), &msgs[59].to_string());
+
+    // Exactly half + 1 messages up to the anchor: nothing older.
+    let page = list_messages(&app, channel_id, &token, &around(msgs[25])).await;
+    assert_eq!(page["has_more"], false);
+    assert_eq!(ids(&page["items"]).first().unwrap(), &msgs[0].to_string());
+
+    // One more: the oldest message is outside the window.
+    let page = list_messages(&app, channel_id, &token, &around(msgs[26])).await;
+    assert_eq!(page["has_more"], true);
+    assert_eq!(ids(&page["items"]).first().unwrap(), &msgs[1].to_string());
+
+    // Near the start of the channel.
+    let page = list_messages(&app, channel_id, &token, &around(msgs[3])).await;
+    assert_eq!(page["has_more"], false);
+}

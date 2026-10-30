@@ -100,8 +100,19 @@ pub async fn list(
         }
         (msgs, has_more)
     } else if let Some(around_id) = query.around {
-        let msgs = db::list_messages_around(&state.db, channel_id, around_id, limit).await?;
-        let has_more = msgs.len() as i64 >= limit;
+        // `has_more` means older history exists before the window (the
+        // client pages back from its oldest message). The query returns one
+        // extra older message for that; the old `len >= limit` check said
+        // "no more" whenever few messages follow the anchor.
+        let mut msgs = db::list_messages_around(&state.db, channel_id, around_id, limit).await?;
+        let up_to_anchor = msgs
+            .iter()
+            .position(|m| m.id == around_id)
+            .map_or(0, |i| i + 1);
+        let has_more = up_to_anchor as i64 > limit / 2 + 1;
+        if has_more {
+            msgs.remove(0);
+        }
         (msgs, has_more)
     } else {
         // Fetch one extra message to determine if there are more
@@ -113,11 +124,16 @@ pub async fn list(
         (msgs, has_more)
     };
 
-    // Cursor for the next page: the last row of the fetched window, taken
-    // *before* block filtering so the cursor advances even when every row of
-    // the page is filtered out (oldest for `before`, newest for `after`).
+    // Cursor for the next page, taken *before* block filtering so the cursor
+    // advances even when every row of the page is filtered out: the last row
+    // (oldest for `before`, newest for `after`), or for `around` (ascending,
+    // `has_more` = older history) the first row.
     let next_cursor = if has_more {
-        messages.last().map(|m| m.id)
+        if query.around.is_some() {
+            messages.first().map(|m| m.id)
+        } else {
+            messages.last().map(|m| m.id)
+        }
     } else {
         None
     };
