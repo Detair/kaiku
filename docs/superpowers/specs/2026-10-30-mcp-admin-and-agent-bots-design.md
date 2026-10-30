@@ -241,7 +241,8 @@ A new credential type for the admin MCP. Agent bots keep using their existing bo
   approval id is never accepted on the original route, so arguments cannot be swapped
   between approval and execution.
 - **Revocation is durable and checked on every request.** It uses its own `agent_tokens`
-  table with `revoked_at`, cached in Valkey with immediate invalidation. The C25 denylist is
+  table with `revoked_at`, looked up by primary key on **every** request (no validity cache; only the
+  elevation status is mirrored in Valkey, and it is re-checked in Postgres). The C25 denylist is
   not used, because its entries expire with the access-token lifetime. Revocation is
   triggered from:
   - the owner's settings;
@@ -381,8 +382,9 @@ reach the model, which could apply it to a different pending action. So:
      stays available for the `elevated` tier (elevation windows). The owner can switch the
      setting off, which needs a fresh re-authentication and is audit-logged. If no phone is
      enrolled, destructive actions fall back to the TOTP page.
-6. **Fallback:** if no device is reachable, the tool result and a URL elicitation point to
-   `https://<server>/approve/<approval_id>`.
+6. **Fallback:** if no device is reachable, the approval page
+   `https://<server>/approve/<approval_id>` is offered through URL elicitation where the
+   client supports it; otherwise the link in the tool result (which always carries it).
    - **Access:** the page is served by Kaiku, needs a signed-in owner session (never an agent
      token) and a **current TOTP code**.
    - **Protection:** CSRF protection, attempt limits and the existing TOTP replay protection.
