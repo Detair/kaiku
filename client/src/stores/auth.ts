@@ -771,28 +771,41 @@ export async function loginWithOidc(
 
 /** What a popup restore found; applied only if the attempt is still current. */
 interface PopupSession {
+  session: tauri.DetachedSession;
   user: User;
   serverUrl: string;
   passwordChangeRequired: boolean;
   setupRequired: boolean;
 }
 
+/** Whether a popup restore may still apply: not cancelled, nobody signed in. */
+const popupRestoreCurrent = (signal: AbortSignal) => !signal.aborted && !authState.user;
+
 /**
- * Ask the server for the session behind the refresh cookie. Touches no auth
- * store state (the token helper may keep a refreshed access token in memory,
- * as any restore does). Null when there is no session or a request failed.
+ * Read the session behind the refresh cookie without installing anything:
+ * the token stays local until `restoreSessionAfterPopup` applies it. Null
+ * when there is no session yet or the attempt went stale meanwhile.
  */
-async function fetchPopupSession(): Promise<PopupSession | null> {
+async function fetchPopupSession(signal: AbortSignal): Promise<PopupSession | null> {
   const serverUrl = tauri.getServerUrl();
-  const result = await tauri.getCurrentUser();
-  if (!result.user) return null;
+  const session = await tauri.refreshDetached();
+  if (!session) return null;
+  if (!popupRestoreCurrent(signal)) {
+    // Someone signed in while this refresh was out. Its response arrived
+    // after theirs, so its rotated cookie replaced theirs: end this session,
+    // or their next refresh would quietly continue as this account.
+    if (authState.user) void tauri.revokeDetachedSession(session.accessToken);
+    return null;
+  }
+  const me = await tauri.getCurrentUserWithToken(session.accessToken);
   // The callback page carries `setup_required`; without its message, ask the
   // public setup status, so a first admin still gets the setup wizard.
   const { setup_complete } = await tauri.getSetupStatus();
   return {
-    user: result.user,
+    session,
+    user: me.user,
     serverUrl,
-    passwordChangeRequired: result.password_change_required === true,
+    passwordChangeRequired: me.password_change_required,
     setupRequired: setup_complete !== true,
   };
 }
@@ -808,19 +821,23 @@ async function fetchPopupSession(): Promise<PopupSession | null> {
  * clears the cookie, so the cookie found here comes from this sign-in), and
  * lifts that block only once the restore is applied.
  *
- * Nothing is applied once `signal` is aborted (Cancel, unmount, a newer
- * attempt) or another sign-in finished meanwhile.
+ * Nothing (token, auth state, services) is applied once `signal` is aborted
+ * (Cancel, unmount, a newer attempt) or another sign-in finished meanwhile.
  */
 export async function restoreSessionAfterPopup(signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return false;
   let found: PopupSession | null;
   try {
-    found = await fetchPopupSession();
+    found = await fetchPopupSession(signal);
   } catch {
     return false;
   }
-  if (!found || signal.aborted || authState.user) return false;
+  if (!found || !popupRestoreCurrent(signal)) return false;
 
+  // Apply with no await until the auth state is set, so no other sign-in can
+  // land in between. oidcCompleteLogin installs the token and schedules its
+  // refresh synchronously (its promise only reports completion).
+  void tauri.oidcCompleteLogin(found.serverUrl, found.session.accessToken, found.session.expiresIn);
   setSessionRestoreBlocked(false);
   stopRestoreRetry();
   setAuthState({

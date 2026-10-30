@@ -395,9 +395,80 @@ export async function getCurrentUser(): Promise<SessionRestoreResult> {
   }
 }
 
+// ----------------------------------------------------------------------------
+// Detached session (browser SSO popup restore)
+//
+// The SSO popup restore reads the session behind the refresh cookie without
+// touching the active in-memory session: nothing here installs a token or
+// schedules a refresh. The auth store installs the token (via
+// `oidcCompleteLogin`) only once it decided to apply the restore.
+// ----------------------------------------------------------------------------
+
+/** An access token obtained from the refresh cookie but not installed. */
+export interface DetachedSession {
+  accessToken: string;
+  expiresIn: number;
+}
+
+const apiBase = () => getServerUrl().replace(/\/+$/, "");
+
+/**
+ * `POST /auth/refresh` with the cookie, returning the token instead of
+ * installing it. Null when the server has no session for the cookie (or the
+ * answer is unusable); rejects on a network error. Note the server rotates
+ * the refresh cookie on this call.
+ */
+export async function refreshDetached(): Promise<DetachedSession | null> {
+  if (isTauri()) return null;
+  const response = await fetch(`${apiBase()}/auth/refresh`, {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) return null;
+  const data = (await response.json()) as Partial<AuthResponse>;
+  if (!data.access_token || typeof data.expires_in !== "number") return null;
+  return { accessToken: data.access_token, expiresIn: data.expires_in };
+}
+
+/** `GET /auth/me` with an explicit (detached) access token. Rejects on failure. */
+export async function getCurrentUserWithToken(
+  accessToken: string,
+): Promise<{ user: User; password_change_required: boolean }> {
+  const response = await fetch(`${apiBase()}/auth/me`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}` },
+    credentials: "include",
+  });
+  if (!response.ok) {
+    throw new HttpError(response.status, `HTTP ${response.status}: ${response.statusText}`);
+  }
+  const user = (await response.json()) as CurrentUserResponse;
+  return { user, password_change_required: user.password_change_required === true };
+}
+
+/**
+ * End a detached session that will not be used (best effort, never throws).
+ * The logout response also clears the refresh cookie.
+ */
+export async function revokeDetachedSession(accessToken: string): Promise<void> {
+  try {
+    await fetch(`${apiBase()}/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      credentials: "include",
+    });
+  } catch (error) {
+    console.warn("[Auth] Could not revoke a discarded session:", error);
+  }
+}
+
 /** `GET /api/setup/status` (public): whether the first-run setup is done. */
 export async function getSetupStatus(): Promise<{ setup_complete: boolean }> {
-  return httpRequest<{ setup_complete: boolean }>("GET", "/api/setup/status");
+  const response = await fetch(`${apiBase()}/api/setup/status`, { method: "GET" });
+  if (!response.ok) {
+    throw new HttpError(response.status, `HTTP ${response.status}: ${response.statusText}`);
+  }
+  return (await response.json()) as { setup_complete: boolean };
 }
 
 /** Update the current user's password. */

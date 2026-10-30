@@ -9,6 +9,9 @@ vi.mock("@/lib/tauri", () => ({
   logout: vi.fn(),
   oidcCompleteLogin: vi.fn(),
   getSetupStatus: vi.fn(),
+  refreshDetached: vi.fn(),
+  getCurrentUserWithToken: vi.fn(),
+  revokeDetachedSession: vi.fn(),
   refreshAccessToken: vi.fn(),
   updatePassword: vi.fn(),
   // A live session has a token unless a test says otherwise.
@@ -558,17 +561,34 @@ describe("auth store", () => {
       vi.mocked(wsConnect).mockResolvedValue(undefined);
       vi.mocked(initPreferences).mockResolvedValue(undefined);
     };
-    afterEach(() => setSessionRestoreBlocked(false));
+    const sessionA = { accessToken: "token-a", expiresIn: 900 };
+    const meA = () => ({ user: createUser(), password_change_required: false });
+    function deferred<T>() {
+      let resolve!: (v: T) => void;
+      const promise = new Promise<T>((r) => (resolve = r));
+      return { promise, resolve };
+    }
+    beforeEach(() => {
+      localStorage.setItem("serverUrl", "https://kaiku.example");
+      vi.mocked(tauri.refreshDetached).mockResolvedValue(sessionA);
+      vi.mocked(tauri.getCurrentUserWithToken).mockResolvedValue(meA());
+      vi.mocked(tauri.getSetupStatus).mockResolvedValue({ setup_complete: true });
+      vi.mocked(tauri.oidcCompleteLogin).mockResolvedValue(undefined);
+      vi.mocked(tauri.revokeDetachedSession).mockResolvedValue(undefined);
+    });
+    afterEach(() => {
+      setSessionRestoreBlocked(false);
+      localStorage.removeItem("serverUrl");
+    });
 
     it("restores an explicit SSO sign-in despite the logout block, then clears it", async () => {
       setSessionRestoreBlocked(true);
       servicesOk();
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
-      vi.mocked(tauri.getSetupStatus).mockResolvedValue({ setup_complete: true });
 
       await expect(restoreSessionAfterPopup(new AbortController().signal)).resolves.toBe(true);
 
-      expect(tauri.getCurrentUser).toHaveBeenCalledTimes(1);
+      expect(tauri.getCurrentUserWithToken).toHaveBeenCalledWith("token-a");
+      expect(tauri.oidcCompleteLogin).toHaveBeenCalledWith("https://kaiku.example", "token-a", 900);
       expect(authState.user?.id).toBe("user-1");
       expect(authState.setupRequired).toBe(false);
       expect(isSessionRestoreBlocked()).toBe(false);
@@ -577,17 +597,17 @@ describe("auth store", () => {
 
     it("keeps the logout block when there is no session yet", async () => {
       setSessionRestoreBlocked(true);
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: null, error_reason: null });
+      vi.mocked(tauri.refreshDetached).mockResolvedValue(null);
 
       await expect(restoreSessionAfterPopup(new AbortController().signal)).resolves.toBe(false);
 
       expect(isSessionRestoreBlocked()).toBe(true);
       expect(authState.user).toBeNull();
+      expect(tauri.oidcCompleteLogin).not.toHaveBeenCalled();
     });
 
     it("shows the setup wizard when the server is not set up yet", async () => {
       servicesOk();
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
       vi.mocked(tauri.getSetupStatus).mockResolvedValue({ setup_complete: false });
 
       await expect(restoreSessionAfterPopup(new AbortController().signal)).resolves.toBe(true);
@@ -596,67 +616,88 @@ describe("auth store", () => {
     });
 
     it("applies nothing when the setup status cannot be read (retried later)", async () => {
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
       vi.mocked(tauri.getSetupStatus).mockRejectedValue(new Error("offline"));
 
       await expect(restoreSessionAfterPopup(new AbortController().signal)).resolves.toBe(false);
 
       expect(authState.user).toBeNull();
+      expect(tauri.oidcCompleteLogin).not.toHaveBeenCalled();
     });
 
-    it("applies nothing when cancelled while the request is in flight", async () => {
+    it("cancel during the refresh installs no token and applies nothing", async () => {
       setSessionRestoreBlocked(true);
-      let resolveUser!: (v: Awaited<ReturnType<typeof tauri.getCurrentUser>>) => void;
-      vi.mocked(tauri.getCurrentUser).mockReturnValue(new Promise((r) => (resolveUser = r)));
-      vi.mocked(tauri.getSetupStatus).mockResolvedValue({ setup_complete: false });
+      const refresh = deferred<typeof sessionA | null>();
+      vi.mocked(tauri.refreshDetached).mockReturnValue(refresh.promise);
       const ctrl = new AbortController();
 
       const pending = restoreSessionAfterPopup(ctrl.signal);
       ctrl.abort();
-      resolveUser({ user: createUser(), error_reason: null });
+      refresh.resolve(sessionA);
 
       await expect(pending).resolves.toBe(false);
+      expect(tauri.oidcCompleteLogin).not.toHaveBeenCalled();
+      expect(tauri.revokeDetachedSession).not.toHaveBeenCalled();
       expect(authState.user).toBeNull();
-      expect(authState.setupRequired).toBe(false);
       expect(isSessionRestoreBlocked()).toBe(true);
       expect(initWebSocket).not.toHaveBeenCalled();
     });
 
+    it("cancel, sign in as B, late refresh for A: B keeps its session, A's is revoked", async () => {
+      const refresh = deferred<typeof sessionA | null>();
+      vi.mocked(tauri.refreshDetached).mockReturnValue(refresh.promise);
+      const ctrl = new AbortController();
+
+      const pending = restoreSessionAfterPopup(ctrl.signal);
+      ctrl.abort();
+      const bob = createUser({ id: "user-2", username: "bob" });
+      setAuthState({ user: bob });
+      refresh.resolve(sessionA);
+
+      await expect(pending).resolves.toBe(false);
+      expect(tauri.oidcCompleteLogin).not.toHaveBeenCalled();
+      expect(tauri.getCurrentUserWithToken).not.toHaveBeenCalled();
+      // A's late response replaced B's refresh cookie: end A's session
+      // rather than let B's next refresh silently switch to A.
+      expect(tauri.revokeDetachedSession).toHaveBeenCalledWith("token-a");
+      expect(authState.user?.id).toBe("user-2");
+    });
+
+    it("a sign-in after the refresh answered is not overwritten and keeps its cookie", async () => {
+      const me = deferred<ReturnType<typeof meA>>();
+      vi.mocked(tauri.getCurrentUserWithToken).mockReturnValue(me.promise);
+
+      const pending = restoreSessionAfterPopup(new AbortController().signal);
+      await tick();
+      setAuthState({ user: createUser({ id: "user-2", username: "bob" }) });
+      me.resolve(meA());
+
+      await expect(pending).resolves.toBe(false);
+      expect(authState.user?.id).toBe("user-2");
+      expect(tauri.oidcCompleteLogin).not.toHaveBeenCalled();
+      expect(tauri.revokeDetachedSession).not.toHaveBeenCalled();
+      expect(initWebSocket).not.toHaveBeenCalled();
+    });
+
     it("applies nothing when cancelled while the setup status is in flight", async () => {
-      let resolveStatus!: (v: { setup_complete: boolean }) => void;
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: createUser(), error_reason: null });
-      vi.mocked(tauri.getSetupStatus).mockReturnValue(new Promise((r) => (resolveStatus = r)));
+      const status = deferred<{ setup_complete: boolean }>();
+      vi.mocked(tauri.getSetupStatus).mockReturnValue(status.promise);
       const ctrl = new AbortController();
 
       const pending = restoreSessionAfterPopup(ctrl.signal);
       await tick();
       ctrl.abort();
-      resolveStatus({ setup_complete: true });
+      status.resolve({ setup_complete: true });
 
       await expect(pending).resolves.toBe(false);
       expect(authState.user).toBeNull();
-    });
-
-    it("does not overwrite a sign-in that finished meanwhile", async () => {
-      let resolveUser!: (v: Awaited<ReturnType<typeof tauri.getCurrentUser>>) => void;
-      vi.mocked(tauri.getCurrentUser).mockReturnValue(new Promise((r) => (resolveUser = r)));
-      vi.mocked(tauri.getSetupStatus).mockResolvedValue({ setup_complete: true });
-
-      const pending = restoreSessionAfterPopup(new AbortController().signal);
-      const other = createUser({ id: "user-2", username: "bob" });
-      setAuthState({ user: other });
-      resolveUser({ user: createUser(), error_reason: null });
-
-      await expect(pending).resolves.toBe(false);
-      expect(authState.user?.id).toBe("user-2");
-      expect(initWebSocket).not.toHaveBeenCalled();
+      expect(tauri.oidcCompleteLogin).not.toHaveBeenCalled();
     });
 
     it("does not even ask the server when already cancelled", async () => {
       const ctrl = new AbortController();
       ctrl.abort();
       await expect(restoreSessionAfterPopup(ctrl.signal)).resolves.toBe(false);
-      expect(tauri.getCurrentUser).not.toHaveBeenCalled();
+      expect(tauri.refreshDetached).not.toHaveBeenCalled();
     });
   });
 
