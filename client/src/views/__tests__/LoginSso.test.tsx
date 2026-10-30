@@ -3,7 +3,6 @@ import { render, screen, fireEvent, cleanup, waitFor } from "@solidjs/testing-li
 import { Router, Route } from "@solidjs/router";
 
 const authorizeMock = vi.hoisted(() => vi.fn());
-const restoreMock = vi.hoisted(() => vi.fn());
 const loginWithOidcMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/tauri", () => ({
@@ -20,10 +19,10 @@ vi.mock("@/lib/tauri", () => ({
 
 vi.mock("@/stores/auth", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/stores/auth")>()),
-  restoreSessionAfterPopup: restoreMock,
   loginWithOidc: loginWithOidcMock,
 }));
 
+import { isSessionRestoreBlocked, setSessionRestoreBlocked } from "@/lib/tauri/common";
 import Login from "../Login";
 import Register from "../Register";
 
@@ -45,7 +44,6 @@ for (const [name, View, path] of [
       vi.useRealTimers();
       openSpy?.mockRestore();
       authorizeMock.mockReset();
-      restoreMock.mockReset();
       loginWithOidcMock.mockReset();
       window.history.pushState({}, "", "/");
     });
@@ -90,84 +88,90 @@ for (const [name, View, path] of [
       await waitFor(() => expect(popup.close).toHaveBeenCalled());
     });
 
-    it("tries to restore the session when the popup closes without a result", async () => {
+    async function openedPopup() {
       const popup = fakePopup();
       openSpy = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
       authorizeMock.mockResolvedValue({ mode: "browser", authUrl: "http://localhost:3000/auth/x" });
-      restoreMock.mockResolvedValue(true);
-      await clickSso();
+      const btn = await clickSso();
       await waitFor(() => expect(popup.location.href).not.toBe(""));
+      return { popup, btn: btn as HTMLButtonElement };
+    }
+    const callback = (source: unknown) =>
+      new MessageEvent("message", {
+        origin: window.location.origin,
+        source: source as MessageEventSource,
+        data: { type: "oidc-callback", access_token: "tok", expires_in: 900 },
+      });
+
+    it("shows the reload hint when the popup closes without a result", async () => {
+      const { popup, btn } = await openedPopup();
       popup.closed = true;
       await vi.advanceTimersByTimeAsync(2000);
-      await waitFor(() => expect(restoreMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.getByText(/Reload this page to continue/)).toBeTruthy());
+      expect(btn.disabled).toBe(true);
+      expect(loginWithOidcMock).not.toHaveBeenCalled();
+    });
+
+    it("Reload lifts the logout's restore block, then reloads the page", async () => {
+      const { popup } = await openedPopup();
+      popup.closed = true;
+      await vi.advanceTimersByTimeAsync(2000);
+      await waitFor(() => expect(screen.getByText("Reload")).toBeTruthy());
+      setSessionRestoreBlocked(true);
+      const reload = vi.fn(() => expect(isSessionRestoreBlocked()).toBe(false));
+      const original = window.location;
+      Object.defineProperty(window, "location", { configurable: true, value: { ...original, reload } });
+      try {
+        fireEvent.click(screen.getByText("Reload"));
+      } finally {
+        Object.defineProperty(window, "location", { configurable: true, value: original });
+        setSessionRestoreBlocked(false);
+      }
+      expect(reload).toHaveBeenCalledTimes(1);
+    });
+
+    it("Cancel hides the hint and re-enables the button, flag untouched", async () => {
+      const { popup, btn } = await openedPopup();
+      popup.closed = true;
+      await vi.advanceTimersByTimeAsync(2000);
+      await waitFor(() => expect(screen.getByText("Cancel")).toBeTruthy());
+      setSessionRestoreBlocked(true);
+      try {
+        fireEvent.click(screen.getByText("Cancel"));
+        expect(isSessionRestoreBlocked()).toBe(true);
+      } finally {
+        setSessionRestoreBlocked(false);
+      }
+      expect(screen.queryByText(/Reload this page/)).toBeNull();
+      expect(btn.disabled).toBe(false);
+    });
+
+    it("a callback message within the close grace still signs in", async () => {
+      loginWithOidcMock.mockResolvedValue(undefined);
+      const { popup } = await openedPopup();
+      popup.closed = true;
+      await vi.advanceTimersByTimeAsync(600);
+      window.dispatchEvent(callback(popup));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(loginWithOidcMock).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText(/Reload this page/)).toBeNull();
+    });
+
+    it("ignores a callback message from another window", async () => {
+      await openedPopup();
+      window.dispatchEvent(callback({}));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(loginWithOidcMock).not.toHaveBeenCalled();
     });
 
     it("stops watching and closes the popup when the view unmounts", async () => {
-      const popup = fakePopup();
-      openSpy = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
-      authorizeMock.mockResolvedValue({ mode: "browser", authUrl: "http://localhost:3000/auth/x" });
-      await clickSso();
-      await waitFor(() => expect(popup.location.href).not.toBe(""));
+      const { popup } = await openedPopup();
       cleanup();
       expect(popup.close).toHaveBeenCalled();
+      window.dispatchEvent(callback(popup));
       popup.closed = true;
       await vi.advanceTimersByTimeAsync(3000);
-      expect(restoreMock).not.toHaveBeenCalled();
-    });
-
-    it("keeps waiting after a failed restore, signs in on a later focus", async () => {
-      const popup = fakePopup();
-      openSpy = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
-      authorizeMock.mockResolvedValue({ mode: "browser", authUrl: "http://localhost:3000/auth/x" });
-      restoreMock.mockResolvedValueOnce(false).mockResolvedValue(true);
-      const btn = await clickSso();
-      await waitFor(() => expect(popup.location.href).not.toBe(""));
-      popup.closed = true;
-      await vi.advanceTimersByTimeAsync(2000);
-      await waitFor(() => expect(screen.getByText(/Finish signing in in the other window/)).toBeTruthy());
-      expect((btn as HTMLButtonElement).disabled).toBe(true);
-      expect(restoreMock).toHaveBeenCalledTimes(1);
-      window.dispatchEvent(new Event("focus"));
-      await waitFor(() => expect(restoreMock).toHaveBeenCalledTimes(2));
-      await waitFor(() => expect(screen.queryByText(/Finish signing in/)).toBeNull());
-    });
-
-    it("cancel stops the retries and re-enables the button", async () => {
-      const popup = fakePopup();
-      openSpy = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
-      authorizeMock.mockResolvedValue({ mode: "browser", authUrl: "http://localhost:3000/auth/x" });
-      restoreMock.mockResolvedValue(false);
-      const btn = await clickSso();
-      await waitFor(() => expect(popup.location.href).not.toBe(""));
-      popup.closed = true;
-      await vi.advanceTimersByTimeAsync(2000);
-      await waitFor(() => expect(screen.getByText("Cancel")).toBeTruthy());
-      fireEvent.click(screen.getByText("Cancel"));
-      const calls = restoreMock.mock.calls.length;
-      window.dispatchEvent(new Event("focus"));
-      await vi.advanceTimersByTimeAsync(10000);
-      expect(restoreMock.mock.calls.length).toBe(calls);
-      expect((btn as HTMLButtonElement).disabled).toBe(false);
-      expect(screen.queryByText(/Finish signing in/)).toBeNull();
-    });
-
-    it("cancel aborts the restore that is still in flight", async () => {
-      const popup = fakePopup();
-      openSpy = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
-      authorizeMock.mockResolvedValue({ mode: "browser", authUrl: "http://localhost:3000/auth/x" });
-      const signals: AbortSignal[] = [];
-      restoreMock.mockImplementation((signal: AbortSignal) => {
-        signals.push(signal);
-        return new Promise(() => {});
-      });
-      await clickSso();
-      await waitFor(() => expect(popup.location.href).not.toBe(""));
-      popup.closed = true;
-      await vi.advanceTimersByTimeAsync(2000);
-      await waitFor(() => expect(screen.getByText("Cancel")).toBeTruthy());
-      expect(signals).toHaveLength(1);
-      fireEvent.click(screen.getByText("Cancel"));
-      expect(signals[0].aborted).toBe(true);
+      expect(loginWithOidcMock).not.toHaveBeenCalled();
     });
 
     it("unmount while the authorize request is pending never starts watching", async () => {
@@ -180,26 +184,9 @@ for (const [name, View, path] of [
       resolveAuthorize({ mode: "browser", authUrl: "http://localhost:3000/auth/x" });
       await vi.advanceTimersByTimeAsync(0);
       expect(popup.location.href).toBe("");
-      popup.closed = true;
-      await vi.advanceTimersByTimeAsync(5000);
-      expect(restoreMock).not.toHaveBeenCalled();
-    });
-
-    it("unmount while waiting stops the retries", async () => {
-      const popup = fakePopup();
-      openSpy = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
-      authorizeMock.mockResolvedValue({ mode: "browser", authUrl: "http://localhost:3000/auth/x" });
-      restoreMock.mockResolvedValue(false);
-      await clickSso();
-      await waitFor(() => expect(popup.location.href).not.toBe(""));
-      popup.closed = true;
-      await vi.advanceTimersByTimeAsync(2000);
-      await waitFor(() => expect(screen.getByText("Cancel")).toBeTruthy());
-      cleanup();
-      const calls = restoreMock.mock.calls.length;
-      window.dispatchEvent(new Event("focus"));
-      await vi.advanceTimersByTimeAsync(10000);
-      expect(restoreMock.mock.calls.length).toBe(calls);
+      window.dispatchEvent(callback(popup));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(loginWithOidcMock).not.toHaveBeenCalled();
     });
   });
 }

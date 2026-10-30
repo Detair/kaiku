@@ -6,6 +6,8 @@
  * at the authorize URL once the server has answered.
  */
 
+import { setSessionRestoreBlocked } from "@/lib/tauri/common";
+
 let popupAttempt = 0;
 
 /** Open the blank SSO window. Returns null when the browser blocked it. */
@@ -68,59 +70,14 @@ export function watchSsoPopup(opts: {
   return stop;
 }
 
-/** Retry interval and overall cap while waiting for a sign-in finished elsewhere. */
-export const RESTORE_POLL_MS = 2500;
-export const RESTORE_WAIT_CAP_MS = 5 * 60 * 1000;
-
 /**
- * After the popup was reported closed without a result (an IdP with COOP can
- * make it look closed while the user is still signing in), keep trying to
- * resume the session: now, on window focus / tab visible, and on an interval,
- * until it works, the cap passes, or the returned disposer runs.
- * `onDone(true)` = session restored; `onDone(false)` = gave up at the cap.
- * Disposing never calls `onDone`. Attempts never overlap; each gets a signal
- * that is aborted when the wait ends (dispose, cap, success), so a late
- * response is not applied.
+ * Reload after an SSO popup closed without a result (an IdP with COOP severs
+ * `window.opener`, so the callback could not report back). The sign-in may
+ * still have set the refresh cookie; the page-load session restore picks it
+ * up. Clicking this is an explicit sign-in step, so it lifts the logout's
+ * block on automatic restore first.
  */
-export function waitForSessionRestore(opts: {
-  restore: (signal: AbortSignal) => Promise<boolean>;
-  onDone: (restored: boolean) => void;
-}): () => void {
-  let settled = false;
-  let inFlight = false;
-  const abort = new AbortController();
-  const stop = () => {
-    settled = true;
-    abort.abort();
-    clearInterval(poll);
-    clearTimeout(cap);
-    window.removeEventListener("focus", attempt);
-    document.removeEventListener("visibilitychange", onVisible);
-  };
-  const attempt = () => {
-    if (settled || inFlight) return;
-    inFlight = true;
-    void opts
-      .restore(abort.signal)
-      .catch(() => false)
-      .then((ok) => {
-        inFlight = false;
-        if (settled || !ok) return;
-        stop();
-        opts.onDone(true);
-      });
-  };
-  const onVisible = () => {
-    if (document.visibilityState === "visible") attempt();
-  };
-  const poll = setInterval(attempt, RESTORE_POLL_MS);
-  const cap = setTimeout(() => {
-    if (settled) return;
-    stop();
-    opts.onDone(false);
-  }, RESTORE_WAIT_CAP_MS);
-  window.addEventListener("focus", attempt);
-  document.addEventListener("visibilitychange", onVisible);
-  attempt();
-  return stop;
+export function reloadAfterSsoPopup(): void {
+  setSessionRestoreBlocked(false);
+  window.location.reload();
 }

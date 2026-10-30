@@ -3,7 +3,6 @@ import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import {
   login,
   loginWithOidc,
-  restoreSessionAfterPopup,
   completeNativeOidcLogin,
   authState,
   clearError,
@@ -17,7 +16,7 @@ import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
 import { t } from "@/i18n";
 import { isTauri } from "@/lib/tauri/common";
-import { openBlankSsoPopup, watchSsoPopup, waitForSessionRestore } from "@/lib/oidcPopup";
+import { openBlankSsoPopup, reloadAfterSsoPopup, watchSsoPopup } from "@/lib/oidcPopup";
 import { safeReturnUrl } from "@/lib/returnUrl";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { LOGIN_ERRORS } from "@/lib/authErrors";
@@ -42,14 +41,12 @@ const Login: Component = () => {
   // SSO popup watcher: ends with the view so a late result cannot act on a dead page.
   let stopWatching: (() => void) | undefined;
   let ssoPopup: Window | null = null;
-  const [waitingForSignIn, setWaitingForSignIn] = createSignal(false);
+  // The popup closed without reporting back: offer a reload (see reloadAfterSsoPopup).
+  const [popupClosed, setPopupClosed] = createSignal(false);
   let disposed = false;
-  const cancelWaiting = () => {
-    stopWatching?.();
-    setWaitingForSignIn(false);
+  const dismissPopupClosed = () => {
+    setPopupClosed(false);
     setOidcLoading(null);
-    // A restore applied just before the click still signed the user in.
-    if (authState.user) navigate("/", { replace: true });
   };
   onCleanup(() => {
     disposed = true;
@@ -189,18 +186,9 @@ const Login: Component = () => {
             });
         },
         onClosedWithoutResult: () => {
-          // The callback may have lost its opener, or the popup only looks
-          // closed while the user is still signing in. The refresh cookie is
-          // set once they finish, so keep trying to resume the session.
-          setWaitingForSignIn(true);
-          stopWatching = waitForSessionRestore({
-            restore: restoreSessionAfterPopup,
-            onDone: (restored) => {
-              setWaitingForSignIn(false);
-              setOidcLoading(null);
-              if (restored) navigate("/", { replace: true });
-            },
-          });
+          // Closed by the user, or the callback lost its opener (IdP with
+          // COOP) after the sign-in already set the refresh cookie.
+          setPopupClosed(true);
         },
       });
       popup!.location.href = result.authUrl;
@@ -357,12 +345,17 @@ const Login: Component = () => {
                 }}
               </For>
             </div>
-            <Show when={waitingForSignIn()}>
+            <Show when={popupClosed()}>
               <div class="mb-4 flex items-center justify-between gap-3 text-sm text-text-secondary" role="status">
-                <span>{t("auth.login.waitingForSignIn")}</span>
-                <button type="button" class="underline" onClick={cancelWaiting}>
-                  {t("common.cancel")}
-                </button>
+                <span>{t("auth.login.popupClosed")}</span>
+                <span class="flex shrink-0 gap-3">
+                  <button type="button" class="underline" onClick={reloadAfterSsoPopup}>
+                    {t("auth.login.reload")}
+                  </button>
+                  <button type="button" class="underline" onClick={dismissPopupClosed}>
+                    {t("common.cancel")}
+                  </button>
+                </span>
               </div>
             </Show>
 
