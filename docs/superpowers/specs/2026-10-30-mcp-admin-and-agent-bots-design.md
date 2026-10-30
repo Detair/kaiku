@@ -33,8 +33,8 @@ Agent bots follow from the same habit: an agent the family can ask questions in 
 - G2 — Parity stays true over time: a new admin route without an MCP tool fails CI.
 - G3 — Elevated and destructive actions need an explicit approval by the owner outside the
   agent's conversation, on one of the owner's enrolled devices. An approval from a desktop on
-  the same host as the agent is weaker, accepted by the maintainer and optional to forbid
-  (4.4 step 5).
+  the same host as the agent is weaker. It is therefore accepted only for elevation windows
+  by default; destructive actions need the phone (maintainer, 4.4 step 5).
 - G4 — Agents get their own revocable, scoped credentials; nothing runs on a user's
   password or a copied session token.
 - G5 — An agent bot can be addressed in a channel (mention, reply, slash command) and
@@ -273,9 +273,11 @@ reach the model, which could apply it to a different pending action. So:
    - **Accepted (maintainer):** simple confirmation on desktop or mobile.
    - **Hardening:** the dialog ignores synthetic input where the OS allows detecting it and
      never auto-focuses Approve.
-   - **Owner setting "Destructive actions only from my phone":** off by default. When on, the
-     server rejects desktop signatures for the `destructive` tier. The admin guide recommends
-     it.
+   - **Owner setting "Destructive actions only from my phone": on by default (maintainer).**
+     The server rejects desktop signatures for the `destructive` tier. Desktop approval
+     stays available for the `elevated` tier (elevation windows). The owner can switch the
+     setting off, which needs a fresh re-authentication and is audit-logged. If no phone is
+     enrolled, destructive actions fall back to the TOTP page.
 6. **Fallback:** if no device is reachable, the tool result and a URL elicitation point to
    `https://<server>/approve/<approval_id>`.
    - **Access:** the page is served by Kaiku, needs a signed-in owner session (never an agent
@@ -413,3 +415,5 @@ Both paths use the same server-side additions (5.3) and the same bot identity.
    counts. **(maintainer; replaces the earlier "TOTP only" answer the same evening)**
 3. v1.1 ships the admin MCP for **system admins first**; guild owners managing their own
    guilds through the MCP is a later step. **(maintainer)**
+4. **Destructive actions only from the phone**, on by default; desktop approvals cover
+   elevation windows only. **(maintainer)**
