@@ -30,6 +30,7 @@ import { errorText } from "@/i18n/errors";
 import { LOGIN_ERRORS, REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "@/lib/authErrors";
 import {
   isTauri,
+  isSessionRestoreBlocked,
   PASSWORD_CHANGE_REQUIRED_EVENT,
   SESSION_ENDED_EVENT,
 } from "@/lib/tauri/common";
@@ -774,8 +775,10 @@ export async function loginWithOidc(
  * server has already set the cookie). Returns false, quietly, when there is
  * no session to resume.
  */
-export async function restoreSessionAfterPopup(serverUrl: string): Promise<boolean> {
+export async function restoreSessionAfterPopup(): Promise<boolean> {
+  if (isSessionRestoreBlocked()) return false;
   try {
+    const serverUrl = tauri.getServerUrl();
     const result = await tauri.getCurrentUser();
     if (!result.user) return false;
     setAuthState({

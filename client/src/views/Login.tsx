@@ -39,6 +39,13 @@ const Login: Component = () => {
   document.title = `${t("common.login")} | Kaiku`;
   onCleanup(() => { document.title = "Kaiku"; });
   const navigate = useNavigate();
+  // SSO popup watcher: ends with the view so a late result cannot act on a dead page.
+  let stopWatching: (() => void) | undefined;
+  let ssoPopup: Window | null = null;
+  onCleanup(() => {
+    stopWatching?.();
+    ssoPopup?.close();
+  });
   const [searchParams] = useSearchParams();
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const [serverUrl, setServerUrl] = createSignal(defaultServerUrl);
@@ -120,13 +127,14 @@ const Login: Component = () => {
 
     // Browser: open the popup inside the click, before any await, or popup
     // blockers reject it. It is pointed at the provider once the server answers.
+    stopWatching?.();
     const popup = isTauri() ? null : openBlankSsoPopup("oidc-login");
+    ssoPopup = popup;
     if (!isTauri() && !popup) {
       setLocalError(t("auth.login.popupBlocked"));
       return;
     }
     setOidcLoading(provider.slug);
-    let stopWatching: (() => void) | undefined;
 
     try {
       const result = await oidcAuthorize(serverUrl(), provider.slug);
@@ -167,7 +175,7 @@ const Login: Component = () => {
         onClosedWithoutResult: () => {
           // The callback may have lost its opener; the refresh cookie is set
           // anyway, so try to resume the session once.
-          void restoreSessionAfterPopup(serverUrl()).then((restored) => {
+          void restoreSessionAfterPopup().then((restored) => {
             if (restored) navigate("/", { replace: true });
             setOidcLoading(null);
           });

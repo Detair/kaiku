@@ -256,7 +256,8 @@ export function isSessionRestoreBlocked(): boolean {
  * Pick the server URL to restore. The browser app is served from the server's
  * own origin, so a stored URL for another origin (an earlier visit on another
  * host) is stale and ignored. `VITE_SERVER_URL` (dev/test) and Tauri keep
- * using the stored value.
+ * using the stored value. The web image builds with `VITE_SERVER_URL` empty,
+ * so the guard is active there.
  */
 export function resolveStoredServerUrl(stored: string | null, fallback: string): string {
   if (!stored) return fallback;

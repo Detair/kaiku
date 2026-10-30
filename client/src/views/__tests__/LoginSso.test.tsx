@@ -98,8 +98,21 @@ for (const [name, View, path] of [
       await clickSso();
       await waitFor(() => expect(popup.location.href).not.toBe(""));
       popup.closed = true;
-      await vi.advanceTimersByTimeAsync(600);
+      await vi.advanceTimersByTimeAsync(2000);
       await waitFor(() => expect(restoreMock).toHaveBeenCalledTimes(1));
+    });
+
+    it("stops watching and closes the popup when the view unmounts", async () => {
+      const popup = fakePopup();
+      openSpy = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+      authorizeMock.mockResolvedValue({ mode: "browser", authUrl: "http://localhost:3000/auth/x" });
+      await clickSso();
+      await waitFor(() => expect(popup.location.href).not.toBe(""));
+      cleanup();
+      expect(popup.close).toHaveBeenCalled();
+      popup.closed = true;
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(restoreMock).not.toHaveBeenCalled();
     });
 
     it("resets quietly when the popup closes and there is no session", async () => {
@@ -110,7 +123,7 @@ for (const [name, View, path] of [
       const btn = await clickSso();
       await waitFor(() => expect(popup.location.href).not.toBe(""));
       popup.closed = true;
-      await vi.advanceTimersByTimeAsync(600);
+      await vi.advanceTimersByTimeAsync(2000);
       await waitFor(() => expect((btn as HTMLButtonElement).disabled).toBe(false));
       expect(screen.queryByText(/failed/i)).toBeNull();
     });
