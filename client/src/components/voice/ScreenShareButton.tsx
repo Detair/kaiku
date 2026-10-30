@@ -1,8 +1,9 @@
-import { Component, createMemo } from "solid-js";
+import { Component, createMemo, Show } from "solid-js";
 import { MonitorUp, MonitorOff } from "lucide-solid";
 import { voiceState } from "@/stores/voice";
 import { currentUser } from "@/stores/auth";
 import { t } from "@/i18n";
+import { canShareScreen } from "@/lib/browserCapabilities";
 
 /** Maximum concurrent screen shares per user. */
 const MAX_SCREEN_SHARES = 3;
@@ -45,7 +46,10 @@ const ScreenShareButton: Component<ScreenShareButtonProps> = (props) => {
     return t("voice.screenShare.start");
   };
 
+  // Browsers without getDisplayMedia (most mobile ones) can't capture a
+  // screen at all; hide the button instead of offering a dead action.
   return (
+    <Show when={canShareScreen()}>
     <button
       type="button"
       aria-label={buttonTitle()}
@@ -64,6 +68,7 @@ const ScreenShareButton: Component<ScreenShareButtonProps> = (props) => {
         <MonitorUp class="w-5 h-5" />
       )}
     </button>
+    </Show>
   );
 };
 

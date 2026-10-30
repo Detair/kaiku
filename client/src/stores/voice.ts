@@ -23,7 +23,7 @@ import type {
 } from "@/lib/webrtc/types";
 import type { VoiceParticipant, WebcamServerInfo } from "@/lib/types";
 import { channelsState } from "@/stores/channels";
-import { appSettings } from "@/stores/settings";
+import { appSettings, updateAudioSetting } from "@/stores/settings";
 import { currentUser } from "@/stores/auth";
 import * as tauri from "@/lib/tauri";
 import { showToast, dismissToast } from "@/components/ui/Toast";
@@ -287,11 +287,45 @@ export async function cleanupVoice(): Promise<void> {
 }
 
 /**
- * Join a voice channel.
+ * Browser mode: a stored device that no longer exists (unplugged, or the
+ * browser rotated its id) is cleared so the next join starts clean
+ * on the system default. Transient failures (mic busy, permission denied)
+ * keep the saved choice. Native keeps its own device bookkeeping.
  */
+async function forgetStoredDevice(
+  key: "input_device" | "output_device",
+): Promise<void> {
+  if (isTauri()) return;
+  try {
+    await updateAudioSetting(key, null);
+  } catch (err) {
+    console.warn("[Voice] Failed to clear stale device setting:", err);
+  }
+}
+
+/**
+ * Browser mode keeps the noise-suppression preference only in app settings
+ * (the native backend owns its own copy). Applied BEFORE joining so the
+ * microphone is opened with the stored value after a page reload.
+ */
+export async function applyStoredNoiseSuppression(
+  adapter: VoiceAdapter,
+): Promise<void> {
+  const stored = appSettings()?.audio?.noise_suppression;
+  if (isTauri() || typeof stored !== "boolean") return;
+  if (
+    typeof adapter.isNoiseSuppressionEnabled === "function" &&
+    adapter.isNoiseSuppressionEnabled() === stored
+  ) {
+    return;
+  }
+  await adapter.setNoiseSuppression(stored);
+}
+
 /**
  * Apply the input/output devices stored in settings to the voice adapter.
- * Called on every voice join; failures are non-fatal (the system default
+ * Called on every voice join (browser: before joining, so the adapter only
+ * records them; native: after joining). Failures are non-fatal (the system default
  * device keeps working) but are logged for diagnosis. Exported for tests.
  */
 export async function applyStoredAudioDevices(
@@ -307,6 +341,9 @@ export async function applyStoredAudioDevices(
         "[Voice] Failed to apply stored input device:",
         result.error,
       );
+      if (result.error.type === "device_not_found") {
+        await forgetStoredDevice("input_device");
+      }
     }
   }
   if (audio.output_device) {
@@ -316,10 +353,16 @@ export async function applyStoredAudioDevices(
         "[Voice] Failed to apply stored output device:",
         result.error,
       );
+      if (result.error.type === "device_not_found") {
+        await forgetStoredDevice("output_device");
+      }
     }
   }
 }
 
+/**
+ * Join a voice channel.
+ */
 export async function joinVoice(channelId: string): Promise<void> {
   if (isJoining) {
     console.warn("[Voice] Join already in progress, ignoring duplicate call");
@@ -377,15 +420,13 @@ export async function joinVoice(channelId: string): Promise<void> {
         audio.dataset.streamId = remoteTrack.stream.id;
         audio.style.display = "none";
         document.body.appendChild(audio);
-        // Route to the configured output device (default sink otherwise)
-        const outputDevice = appSettings()?.audio.output_device;
-        if (outputDevice && "setSinkId" in audio) {
-          (audio as HTMLAudioElement & { setSinkId(id: string): Promise<void> })
-            .setSinkId(outputDevice)
-            .catch((err) => {
-              console.warn("[Voice] Failed to set audio sink:", err);
-            });
-        }
+        // Route to the speaker the adapter remembers (default otherwise);
+        // a speaker that no longer exists is forgotten in settings too.
+        void adapter.applyOutputDeviceTo?.(audio).then(async (result) => {
+          if (!result.ok && result.error.type === "device_not_found") {
+            await forgetStoredDevice("output_device");
+          }
+        });
         // Remove old element for this user if exists
         const old = remoteAudioElements.get(remoteTrack.userId);
         if (old) {
@@ -475,6 +516,17 @@ export async function joinVoice(channelId: string): Promise<void> {
       },
     });
 
+    await applyStoredNoiseSuppression(adapter);
+
+    // Browser mode: hand the stored devices over BEFORE joining. Outside a
+    // call the adapter only records them, so join opens the stored mic
+    // directly (falling back to the default mic if it is gone) and remote
+    // audio arriving later uses the stored speaker.
+    const storedInput = isTauri() ? null : (appSettings()?.audio?.input_device ?? null);
+    if (!isTauri()) {
+      await applyStoredAudioDevices(adapter);
+    }
+
     const result = await adapter.join(channelId);
     if (!result.ok) {
       setVoiceState({
@@ -485,10 +537,19 @@ export async function joinVoice(channelId: string): Promise<void> {
       throw new Error(getErrorMessage(result.error));
     }
 
-    // Apply the audio devices configured in settings — without this the
-    // stored selection never reaches the adapter and voice always uses
-    // the system default devices.
-    await applyStoredAudioDevices(adapter);
+    if (isTauri()) {
+      // Native: apply the audio devices configured in settings — without
+      // this the stored selection never reaches the adapter and voice
+      // always uses the system default devices.
+      await applyStoredAudioDevices(adapter);
+    } else if (
+      storedInput &&
+      typeof adapter.getInputDevice === "function" &&
+      adapter.getInputDevice() === null
+    ) {
+      // Join found the stored mic gone and used the default instead.
+      await forgetStoredDevice("input_device");
+    }
 
     // Start session tracking and metrics collection
     setVoiceState("sessionId", crypto.randomUUID());

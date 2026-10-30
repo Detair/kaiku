@@ -102,6 +102,11 @@ export interface AudioDevice {
 export interface AudioDeviceList {
   inputs: AudioDevice[]; // Microphones
   outputs: AudioDevice[]; // Speakers/Headphones
+  /**
+   * False when the browser hides device names until microphone permission
+   * is granted. Absent means labels are available (native).
+   */
+  labelsAvailable?: boolean;
 }
 
 /**
@@ -319,8 +324,24 @@ export interface VoiceAdapter {
 
   // Device enumeration
   getAudioDevices(): Promise<VoiceResult<AudioDeviceList>>;
+  /**
+   * Browser only: ask for microphone permission (explicit user action) so
+   * device names become visible, then re-enumerate.
+   */
+  requestDeviceLabels?(): Promise<VoiceResult<AudioDeviceList>>;
   setInputDevice(deviceId: string): Promise<VoiceResult<void>>;
   setOutputDevice(deviceId: string): Promise<VoiceResult<void>>;
+  /**
+   * Browser only: microphone id the next join / running call uses
+   * (null = system default, also after a join fell back from a gone device).
+   */
+  getInputDevice?(): string | null;
+  /**
+   * Browser only: route a remote audio element created after
+   * setOutputDevice() to the remembered speaker. device_not_found means the
+   * speaker is gone (the adapter already fell back to the default output).
+   */
+  applyOutputDeviceTo?(audio: HTMLAudioElement): Promise<VoiceResult<void>>;
   /**
    * Per-person playback volume (0 = muted, 1 = unchanged, up to 2).
    * Native only; the browser plays remote audio through elements it owns.

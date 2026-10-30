@@ -19,6 +19,7 @@ import {
   type VoiceError,
 } from "@/lib/webrtc";
 import { t } from "@/i18n";
+import { canSelectOutputDevice } from "@/lib/browserCapabilities";
 import { voiceErrorText } from "@/lib/webrtc/voiceErrorText";
 
 // Errors raised by the panel itself get their own types so the message is
@@ -45,20 +46,28 @@ function MicTestPanel(props: MicTestPanelProps) {
   let levelInterval: number | undefined;
   let adapter: Awaited<ReturnType<typeof createVoiceAdapter>> | null = null;
 
+  // Fill the device lists; keeps an existing selection on re-enumeration.
+  const loadDevices = async (): Promise<void> => {
+    if (!adapter) return;
+    const result = await adapter.getAudioDevices();
+    if (result.ok) {
+      setInputDevices(result.value.inputs);
+      setOutputDevices(result.value.outputs);
+      const defaultInput =
+        result.value.inputs.find((d) => d.isDefault) ?? result.value.inputs[0];
+      const defaultOutput =
+        result.value.outputs.find((d) => d.isDefault) ?? result.value.outputs[0];
+      if (defaultInput && !selectedInput()) setSelectedInput(defaultInput.deviceId);
+      if (defaultOutput && !selectedOutput()) setSelectedOutput(defaultOutput.deviceId);
+    } else {
+      setError(result.error);
+    }
+  };
+
   onMount(async () => {
     try {
       adapter = await createVoiceAdapter();
-      const result = await adapter.getAudioDevices();
-      if (result.ok) {
-        setInputDevices(result.value.inputs);
-        setOutputDevices(result.value.outputs);
-        const defaultInput = result.value.inputs.find((d) => d.isDefault);
-        const defaultOutput = result.value.outputs.find((d) => d.isDefault);
-        if (defaultInput) setSelectedInput(defaultInput.deviceId);
-        if (defaultOutput) setSelectedOutput(defaultOutput.deviceId);
-      } else {
-        setError(result.error);
-      }
+      await loadDevices();
     } catch (err) {
       console.error("Failed to initialize mic test:", err);
       setError({ type: "init_failed" });
@@ -82,6 +91,12 @@ function MicTestPanel(props: MicTestPanelProps) {
     }
 
     setIsTesting(true);
+
+    // Without permission browsers list no usable devices; the test just
+    // obtained it, so refresh the lists now.
+    void loadDevices().catch((err) =>
+      console.warn("Failed to refresh devices after mic test start:", err),
+    );
 
     levelInterval = window.setInterval(() => {
       const level = adapter!.getMicTestLevel();
@@ -172,13 +187,16 @@ function MicTestPanel(props: MicTestPanelProps) {
           class="w-full px-3 py-2 bg-surface-layer2 border border-white/10 rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 disabled:opacity-50 text-sm"
         >
           <For each={inputDevices()}>
-            {(device) => (
-              <option value={device.deviceId}>{device.label}</option>
+            {(device, i) => (
+              <option value={device.deviceId}>
+                {device.label || t("voice.audio.microphoneFallback", { id: i() + 1 })}
+              </option>
             )}
           </For>
         </select>
       </div>
 
+      <Show when={canSelectOutputDevice()}>
       <div>
         <label
           for={outputId}
@@ -193,12 +211,15 @@ function MicTestPanel(props: MicTestPanelProps) {
           class="w-full px-3 py-2 bg-surface-layer2 border border-white/10 rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 text-sm"
         >
           <For each={outputDevices()}>
-            {(device) => (
-              <option value={device.deviceId}>{device.label}</option>
+            {(device, i) => (
+              <option value={device.deviceId}>
+                {device.label || t("voice.audio.speakerFallback", { id: i() + 1 })}
+              </option>
             )}
           </For>
         </select>
       </div>
+      </Show>
 
       {/* Level Meter — empty track that fills left-to-right with the current
           mic level (like Discord/TeamSpeak). The green→yellow→red gradient is
