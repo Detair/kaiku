@@ -31,7 +31,10 @@ Agent bots follow from the same habit: an agent the family can ask questions in 
 - G1 — **Full admin parity (maintainer):** every admin action available in the UI or the
   REST API is available as an MCP tool, with the same permission checks and audit trail.
 - G2 — Parity stays true over time: a new admin route without an MCP tool fails CI.
-- G3 — Destructive actions keep a human in the loop, equivalent to today's elevation (C24).
+- G3 — Elevated and destructive actions need an explicit approval by the owner outside the
+  agent's conversation, on one of the owner's enrolled devices. An approval from a desktop on
+  the same host as the agent is weaker, accepted by the maintainer and optional to forbid
+  (4.4 step 5).
 - G4 — Agents get their own revocable, scoped credentials; nothing runs on a user's
   password or a copied session token.
 - G5 — An agent bot can be addressed in a channel (mention, reply, slash command) and
@@ -186,8 +189,10 @@ A new credential type, also used by agent bots (section 5):
   - the admin panel (system admins can revoke anyone's token);
   - an MCP tool;
   - banning or deleting the owner, which revokes all their tokens and closes their streams.
-- **Elevation storage:** `elevated_sessions` gains a nullable `agent_token_id`, with a check
-  constraint that exactly one of `session_id` and `agent_token_id` is set. An agent-token
+- **Elevation storage:** `elevated_sessions.session_id` becomes nullable, and a nullable
+  `agent_token_id` (FK `agent_tokens(id) ON DELETE CASCADE`) is added.
+  - A check constraint requires exactly one of the two.
+  - Two partial unique indexes allow one active elevation per session and one per token. An agent-token
   elevation is shown in the admin panel next to session elevations.
 - **Audit:** every entry made through an agent token records `via: "agent_token"` and the
   token id, which are authenticated. It also records the MCP client name, which is
@@ -219,38 +224,81 @@ reach the model, which could apply it to a different pending action. So:
    It returns an approval id. The tool result tells the agent "waiting for approval on your
    devices".
 2. **Notification to the owner's devices.**
-   - **Android:** a high-priority push using the C20 wake path, kind `approval`, with no
-     content in the payload. The app fetches the pending request and shows "*Claude Code on
-     my PC* wants to: ban user *max* from the whole server – Approve / Deny".
+   - **Android:** a high-priority push using the C20 wake path.
+     - **Payload:** new kind `t=approval` with only the approval id. C20 and the Android
+       parser are extended, since `channel_id` is not required for this kind.
+     - **Delivery:** TTL 5 minutes, collapse key `approval-<id>`.
+     - **Display:** the app fetches the pending request **only from its configured server**,
+       authenticated, and shows "*Claude Code on my PC* wants to: ban user *max* from the
+       whole server – Approve / Deny". A forged push can at most cause one authenticated
+       fetch that returns nothing.
    - **Desktop app:** a system notification plus an in-app dialog with the same text.
-   - The text always comes from the **server-stored** request, never from the agent.
-3. **One tap approves.** The approval is signed with a **per-install device key**. The key
-   pair is created at sign-in, the public key is registered with the session, and it is
-   revoked with the session. The server accepts the approval only:
-   - from a non-revoked device of the token's owner;
-   - with a valid signature over approval id, request hash and expiry.
-4. **Android adds user presence.** Approving requires the phone to be unlocked
-   (`BiometricPrompt` with device credential: fingerprint, face or PIN). A notification on a
-   locked screen cannot be approved by someone holding the phone.
-5. **Desktop is the convenient path, not the strongest.** If the agent runs on the same PC,
-   local automation could in principle click the desktop dialog. This is accepted
-   (maintainer: simple confirmation on desktop or mobile) and documented in the admin guide
-   with the advice to approve destructive actions on the phone. The dialog ignores synthetic
-   input where the OS allows detecting it, and it never auto-focuses the Approve button.
-6. **Fallback:** if no device is reachable, the tool result and a URL elicitation point to
-   `https://<server>/approve/<approval_id>`. That is a Kaiku page that needs a signed-in
-   owner and a **current TOTP code**.
-7. **Execution.** The agent calls `get_approval { approval_id }`, or retries the original
-   tool. The server:
-   - consumes the approval **atomically** (single use);
-   - re-checks token validity, scopes, permissions and elevation at execution time;
-   - verifies the precondition snapshot: if the target changed, it refuses and asks for a new
-     approval;
-   - executes exactly the stored request.
+   - The text is built from the **server-stored** request with **fixed wording per
+     action**:
+     - immutable identifiers next to display names ("user *max* · id 7f3…");
+     - the server's own name and origin;
+     - the token's name and creation date.
 
-   If execution fails, the approval stays consumed and the error is returned; a retry needs a
-   new approval. Deny is final for that approval id, and repeated denied requests from one
-   token are rate limited.
+     Free-text labels (agent token names, usernames, guild names) are escaped, length-capped
+     and visibly marked as labels. Agent-supplied free text (for example a ban reason) is
+     shown as a quoted "reason given by the agent", never as the action description.
+3. **One tap approves.** The approval is signed with a **per-install device key**.
+   - **Signature:** over approval id, request hash, decision (approve/deny), expiry, server
+     origin and owner id, so a signature is never valid for another request, server or
+     decision.
+   - **Acceptance:** the server accepts only signatures from a non-revoked enrolled device of
+     the token's owner.
+   - **Enrollment:** only from an interactive user session, never with an agent token. It
+     needs a fresh re-authentication (C24: password+TOTP or a fresh OIDC login) and proof of
+     key possession (the device signs a server challenge).
+   - **What agent tokens can never do:** enroll, replace or revoke devices, open the TOTP
+     approval page, or answer approvals. These endpoints reject the `AgentToken` credential
+     kind outright.
+   - **Visibility and lifecycle:** enrolled devices are listed under Security with last use,
+     and enrolling a new device sends a notification to all existing ones. A device key is
+     revoked with its session.
+4. **Android: fresh user authentication for every approval.**
+   - **Key:** a non-exportable Android Keystore key (StrongBox where available) created with
+     *auth-per-use* (`setUserAuthenticationParameters(0, BIOMETRIC_STRONG | DEVICE_CREDENTIAL)`).
+   - **Approval:** each signature needs its own `BiometricPrompt` with a `CryptoObject`
+     (fingerprint, face or device PIN), even on an already unlocked phone. That one touch is
+     the "simple confirmation".
+   - **Fallback:** devices that cannot create such a key cannot enroll for approvals (they
+     fail closed) and use the TOTP page instead.
+   - **Result:** a stolen phone, unlocked or not, cannot approve without the owner's
+     biometric or PIN.
+5. **Desktop is the convenient path, not the strongest.**
+   - **Weakness:** if the agent runs on the same PC, local malware or automation could click
+     the dialog or misuse the desktop's key, which is stored in the OS keychain.
+   - **Accepted (maintainer):** simple confirmation on desktop or mobile.
+   - **Hardening:** the dialog ignores synthetic input where the OS allows detecting it and
+     never auto-focuses Approve.
+   - **Owner setting "Destructive actions only from my phone":** off by default. When on, the
+     server rejects desktop signatures for the `destructive` tier. The admin guide recommends
+     it.
+6. **Fallback:** if no device is reachable, the tool result and a URL elicitation point to
+   `https://<server>/approve/<approval_id>`.
+   - **Access:** the page is served by Kaiku, needs a signed-in owner session (never an agent
+     token) and a **current TOTP code**.
+   - **Protection:** CSRF protection, attempt limits and the existing TOTP replay protection.
+   - **Remaining risk:** like any web login, it stays exposed to real-time phishing and a
+     compromised browser. Device approval is therefore the primary path.
+7. **Execution.** The agent calls `get_approval { approval_id }`, or retries the original
+   tool.
+   - **Caller:** must be the same agent token that created the request.
+   - **States:** approvals are a state machine `pending → approved | denied | expired →
+     consumed`, with conditional `UPDATE … WHERE state = …` transitions, so approve, deny,
+     expiry and consumption cannot race.
+   - **Execution:** the server re-checks token validity, scopes, permissions and elevation,
+     then executes exactly the stored request.
+   - **Precondition:** checked inside the same database transaction as the mutation, with a
+     row lock or a conditional update on the target's version. If the target changed, the
+     request is refused and a new approval is needed.
+   - **Failure:** the approval stays consumed and the error is returned; a retry needs a new
+     approval. Deny is final for that approval id.
+   - **Anti-fatigue limits:** pending requests and notifications are rate limited per token,
+     per owner and per device, including unanswered ones and requests created via direct
+     REST. At most 3 open approvals per owner.
 8. **Elevation windows** for agent tokens last **10 minutes** (maintainer). Elevation and every
    destructive action each need their own approval. An approval never covers more than the
    one stored request, or the one elevation window.
@@ -263,10 +311,13 @@ reach the model, which could apply it to a different pending action. So:
   names, message excerpts. Tool results mark these fields as untrusted, and a fixed note in
   the tool description says so. Combined with 4.4, a malicious report text cannot cause a ban
   without the operator approving it on the Kaiku page.
-- Audit entries for MCP-driven mutations are written **in the same transaction** as the
-  mutation where possible. Where not, an audit failure is logged as an error and surfaced in
-  the tool result, never silently dropped. Existing best-effort audit sites (content filters)
-  are brought in line as part of v1.1-a.
+- **Audit durability**, for MCP and direct REST alike:
+  - Database mutations write their audit entry **in the same transaction**.
+  - Side effects outside the database (session revocation in Valkey, emails, pushes) first
+    persist an audit/outbox row "intent" in the transaction. A worker then completes the
+    entry or marks it failed.
+  - No path may report success without a durable audit record.
+  - Existing best-effort sites (content filters) move to this pattern in v1.1-a.
 
 ### 4.6 Resources and prompts
 
