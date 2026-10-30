@@ -46,7 +46,7 @@ const PageViewRoute: Component = () => {
   };
 
   return (
-    <div class="h-screen bg-zinc-900 flex flex-col">
+    <div class="h-dvh bg-zinc-900 flex flex-col">
       <Show
         when={!page.loading}
         fallback={

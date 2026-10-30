@@ -151,6 +151,10 @@ export default defineConfig({
     },
   ],
   rules: [
+    // Full-page heights follow the visible viewport (100dvh: phone address
+    // bars), with 100vh first for webviews that predate dvh.
+    ["h-dvh", [["height", "100vh"], ["height", "100dvh"]]],
+    ["min-h-dvh", [["min-height", "100vh"], ["min-height", "100dvh"]]],
     [/^animate-\[slideUp/, () => ({
       animation: "slideUp 0.2s ease-out",
     })],

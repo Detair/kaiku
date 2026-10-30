@@ -111,7 +111,7 @@ const AdminDashboard: Component = () => {
   };
 
   return (
-    <div class="h-screen flex flex-col bg-surface-base">
+    <div class="h-dvh flex flex-col bg-surface-base">
       {/* Header */}
       <header class="h-14 flex-shrink-0 flex items-center justify-between px-4 border-b border-white/10 bg-surface-layer1">
         {/* Left: Back button and title */}
