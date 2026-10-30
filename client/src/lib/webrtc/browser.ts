@@ -871,6 +871,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         this.localStream.getTracks().forEach((track) => track.stop());
         this.localStream = newStream;
         this.inputDeviceId = deviceId;
+        // New tracks start enabled: apply mute/VAD gating before the track
+        // reaches the peer, or a muted user would be audible after switching.
+        this.updateTrackEnabled();
 
         // Replace tracks in publisher peer connection
         const sender = this.publisherState.pc

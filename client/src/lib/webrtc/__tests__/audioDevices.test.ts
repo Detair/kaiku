@@ -109,6 +109,21 @@ describe("BrowserVoiceAdapter stale device handling", () => {
     expect(replaceTrack).toHaveBeenCalled();
   });
 
+  it("keeps a muted user muted after switching the microphone", async () => {
+    const { adapter, priv, replaceTrack } = inCall();
+    priv.muted = true;
+    const newTrack = { id: "new", enabled: true };
+    const newStream = { getTracks: () => [], getAudioTracks: () => [newTrack] };
+    vi.stubGlobal("navigator", {
+      mediaDevices: { getUserMedia: vi.fn().mockResolvedValue(newStream) },
+    });
+    const r = await adapter.setInputDevice("fresh");
+    expect(r.ok).toBe(true);
+    expect(replaceTrack).toHaveBeenCalledWith(newTrack);
+    // The track handed to the peer is already gated off.
+    expect(newTrack.enabled).toBe(false);
+  });
+
   it("reports a stale speaker so it can be forgotten", async () => {
     const adapter = new BrowserVoiceAdapter();
     const el = document.createElement("audio");
