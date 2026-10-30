@@ -148,7 +148,9 @@ services:
   # Kaiku Web — the web client (static files, nginx, port 8080)
   # ==========================================================================
   web:
-    image: ghcr.io/detair/kaiku-web:latest
+    # latest = newest final release; set KAIKU_VERSION (e.g. 1.0.0-rc.2) to
+    # run a release candidate, which is published under its version only.
+    image: ghcr.io/detair/kaiku-web:${KAIKU_VERSION:-latest}
     build:
       context: ../..
       dockerfile: infra/docker/web/Dockerfile

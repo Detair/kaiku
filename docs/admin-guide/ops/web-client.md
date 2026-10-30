@@ -5,7 +5,7 @@ image. The server image serves no frontend.
 
 | | |
 |---|---|
-| Image | `ghcr.io/detair/kaiku-web:<version>` (same version as `kaiku-server`) |
+| Image | `ghcr.io/detair/kaiku-web:<version>`, published with every release next to `kaiku-server` (same version; `latest` = newest final release, release candidates only under their version) |
 | Port | `8080` (HTTP; TLS terminates at your reverse proxy) |
 | User | UID `101`, no capabilities needed |
 | Filesystem | read-only root works; mount a tmpfs on `/tmp` |

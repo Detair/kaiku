@@ -395,7 +395,11 @@ def check_release_hygiene(release_text: str, release: dict, errors: list[str]) -
         errors.append(f"{label}: publish-release must run only if {PUBLISH_GATE}")
 
 
-IMAGE_PUSH_NEEDS = ("prepare-release", "build-tauri", "build-docker", "build-android", "publish-release")
+IMAGE_PUSH_NEEDS = (
+    "prepare-release", "build-tauri", "build-docker", "build-docker-web", "build-android", "publish-release",
+)
+# Jobs that build a published image: smoke-test and export only, push later.
+IMAGE_BUILD_JOBS = ("build-docker", "build-docker-web")
 
 
 def check_release_publish_order(release: dict, errors: list[str]) -> None:
@@ -410,16 +414,20 @@ def check_release_publish_order(release: dict, errors: list[str]) -> None:
     elif concurrency.get("cancel-in-progress") is not False:
         errors.append(f"{label}: concurrency.cancel-in-progress must be false (never cancel a publish run)")
 
-    docker = jobs.get("build-docker")
-    docker_steps = _job_steps(docker)
-    for step in docker_steps:
-        uses = str(step.get("uses", ""))
-        if uses.startswith("docker/login-action@"):
-            errors.append(f"{label}: build-docker must not log in to a registry (push happens in a later job)")
-        if uses.startswith("docker/build-push-action@") and (step.get("with") or {}).get("push") not in (None, False):
-            errors.append(f"{label}: build-docker must build with push: false (push only after all builds)")
-    if isinstance(docker, dict) and not any("docker save" in str(s.get("run", "")) for s in docker_steps):
-        errors.append(f"{label}: build-docker must export the smoke-tested image with docker save")
+    for build_job in IMAGE_BUILD_JOBS:
+        docker = jobs.get(build_job)
+        if not isinstance(docker, dict):
+            errors.append(f"{label}: missing image build job '{build_job}'")
+            continue
+        docker_steps = _job_steps(docker)
+        for step in docker_steps:
+            uses = str(step.get("uses", ""))
+            if uses.startswith("docker/login-action@"):
+                errors.append(f"{label}: {build_job} must not log in to a registry (push happens in a later job)")
+            if uses.startswith("docker/build-push-action@") and (step.get("with") or {}).get("push") not in (None, False):
+                errors.append(f"{label}: {build_job} must build with push: false (push only after all builds)")
+        if not any("docker save" in str(s.get("run", "")) for s in docker_steps):
+            errors.append(f"{label}: {build_job} must export the smoke-tested image with docker save")
 
     pushers = [
         name for name, job in jobs.items()
