@@ -32,6 +32,8 @@ MACOS_USAGE_KEYS = ["NSMicrophoneUsageDescription", "NSCameraUsageDescription"]
 CONFIG_RS = ROOT / "server/src/config.rs"
 ENV_DOC = ROOT / "docs/admin-guide/configuration/environment.md"
 SERVER_IMAGE = "ghcr.io/detair/kaiku-server"
+WEB_IMAGE = "ghcr.io/detair/kaiku-web"
+PUBLISHED_IMAGES = (SERVER_IMAGE, WEB_IMAGE)
 
 WINDOWS_LIBVPX_TOKENS = [
     "vcpkg install libvpx:x64-windows-static-md",
@@ -461,9 +463,11 @@ def check_env_doc(config_rs: str, doc: str, errors: list[str]) -> None:
 
 
 def check_server_image(workflow: dict, label: str, errors: list[str]) -> None:
-    """docker/metadata-action must target the GHCR server image; release latest needs is_prerelease."""
+    """docker/metadata-action must target a published GHCR image (server or web), the
+    server image among them; release latest needs is_prerelease."""
     env = workflow.get("env") or {}
     found = False
+    seen: set[str] = set()
     for job in (workflow.get("jobs") or {}).values():
         for step in _job_steps(job):
             if not str(step.get("uses", "")).startswith("docker/metadata-action"):
@@ -474,12 +478,15 @@ def check_server_image(workflow: dict, label: str, errors: list[str]) -> None:
             images = re.sub(
                 r"\$\{\{\s*env\.(\w+)\s*\}\}", lambda m: str(env.get(m.group(1), m.group(0))), images
             )
-            if images.strip() != SERVER_IMAGE:
-                errors.append(f"{label}: metadata images must be {SERVER_IMAGE}, got {images.strip()!r}")
+            seen.add(images.strip())
+            if images.strip() not in PUBLISHED_IMAGES:
+                errors.append(
+                    f"{label}: metadata images must be one of {', '.join(PUBLISHED_IMAGES)}, got {images.strip()!r}"
+                )
             for line in str(with_.get("tags", "")).splitlines():
                 if "value=latest" in line and "is_prerelease" not in line:
                     errors.append(f"{label}: latest tag must be enabled only when is_prerelease == 'false': {line.strip()}")
-    if not found:
+    if not found or SERVER_IMAGE not in seen:
         errors.append(f"{label}: no docker/metadata-action step found for the server image")
 
 

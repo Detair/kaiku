@@ -519,6 +519,18 @@ class ServerImageTest(unittest.TestCase):
     def test_literal_name_passes(self):
         self.assertEqual(self.check("ghcr.io/detair/kaiku-server"), [])
 
+    def test_web_image_is_allowed_next_to_the_server_image(self):
+        wf = yaml.safe_load(IMAGE_WORKFLOW % "${{ env.SERVER_IMAGE }}")
+        web = yaml.safe_load(IMAGE_WORKFLOW % "ghcr.io/detair/kaiku-web")["jobs"]["build-docker"]
+        wf["jobs"]["build-docker-web"] = web
+        errors: list[str] = []
+        check_server_image(wf, "release.yml", errors)
+        self.assertEqual(errors, [])
+
+    def test_web_image_alone_is_not_enough(self):
+        errors = self.check("ghcr.io/detair/kaiku-web")
+        self.assertTrue(any("server image" in e for e in errors), errors)
+
     def test_no_metadata_step_is_an_error(self):
         errors: list[str] = []
         check_server_image({"jobs": {"a": {"steps": [{"run": "true"}]}}}, "release.yml", errors)
