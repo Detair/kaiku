@@ -5,7 +5,7 @@
  * Desktop notification settings with OS notification toggles and test button.
  */
 
-import { Component, For, Show, createSignal, createMemo } from "solid-js";
+import { Component, For, Show, createSignal, createMemo, onCleanup, onMount } from "solid-js";
 import { Check, Volume2, Play, Moon, Clock, Bell } from "lucide-solid";
 import {
   soundSettings,
@@ -25,6 +25,7 @@ import {
   sendOsNotification,
   getBrowserNotificationPermission,
   requestBrowserNotificationPermission,
+  onBrowserNotificationStateChange,
   type BrowserNotificationPermission,
 } from "@/lib/notifications";
 import { isTauri } from "@/lib/tauri/common";
@@ -35,6 +36,32 @@ const NotificationSettings: Component = () => {
   const [permission, setPermission] = createSignal<BrowserNotificationPermission>(
     isTauri() ? "granted" : getBrowserNotificationPermission(),
   );
+  const refreshPermission = () => {
+    if (!isTauri()) setPermission(getBrowserNotificationPermission());
+  };
+  onMount(() => {
+    if (isTauri()) return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshPermission();
+    };
+    window.addEventListener("focus", refreshPermission);
+    document.addEventListener("visibilitychange", onVisible);
+    const unsubscribe = onBrowserNotificationStateChange(refreshPermission);
+    let status: PermissionStatus | undefined;
+    navigator.permissions
+      ?.query({ name: "notifications" })
+      .then((s) => {
+        status = s;
+        s.onchange = refreshPermission;
+      })
+      .catch(() => {});
+    onCleanup(() => {
+      window.removeEventListener("focus", refreshPermission);
+      document.removeEventListener("visibilitychange", onVisible);
+      unsubscribe();
+      if (status) status.onchange = null;
+    });
+  });
   const [showTestHint, setShowTestHint] = createSignal(false);
   const permissionText = () => {
     switch (permission()) {

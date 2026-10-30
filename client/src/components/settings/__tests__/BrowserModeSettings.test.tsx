@@ -12,7 +12,11 @@ vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: vi.fn() }));
 import NotificationSettings from "../NotificationSettings";
 import PrivacySettings from "../PrivacySettings";
 import FocusSettings from "../FocusSettings";
-import { initNotifications, cleanupNotifications } from "@/lib/notifications";
+import {
+  initNotifications,
+  cleanupNotifications,
+  sendOsNotification,
+} from "@/lib/notifications";
 
 type Perm = "default" | "granted" | "denied";
 const requestPermission = vi.fn();
@@ -89,6 +93,62 @@ describe("browser notification permission", () => {
     render(() => <NotificationSettings />);
     fireEvent.click(screen.getByRole("button", { name: /Send test notification/ }));
     expect(screen.getByText("Allow notifications first to send a test.")).toBeTruthy();
+  });
+});
+
+describe("live permission and constructor failures", () => {
+  const ev = { type: "message_dm", channelId: "c", isDm: true } as const;
+  const ctx = { username: "u", content: "hi", guildName: null, channelName: null };
+
+  it("sends once permission is granted after init (no reload)", async () => {
+    stubNotification("default");
+    await initNotifications();
+    await sendOsNotification(ev, ctx, true, true);
+    expect(Notification).not.toHaveBeenCalled();
+    (Notification as unknown as { permission: Perm }).permission = "granted";
+    await sendOsNotification(ev, ctx, true, true);
+    expect(Notification).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send after permission is revoked", async () => {
+    stubNotification("granted");
+    await initNotifications();
+    (Notification as unknown as { permission: Perm }).permission = "denied";
+    await sendOsNotification(ev, ctx, true, true);
+    expect(Notification).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the settings row when the window regains focus", async () => {
+    stubNotification("default");
+    render(() => <NotificationSettings />);
+    expect(screen.getByText("Kaiku is not yet allowed to show notifications.")).toBeTruthy();
+    (Notification as unknown as { permission: Perm }).permission = "granted";
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() =>
+      expect(screen.getByText("Notifications are allowed in this browser.")).toBeTruthy(),
+    );
+  });
+
+  it("remembers an illegal constructor and shows not supported", async () => {
+    stubNotification("granted");
+    (Notification as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      throw new TypeError("Illegal constructor");
+    });
+    render(() => <NotificationSettings />);
+    expect(screen.getByText("Notifications are allowed in this browser.")).toBeTruthy();
+    await sendOsNotification(ev, ctx, true, true);
+    await waitFor(() =>
+      expect(screen.getByText("This browser cannot show notifications from Kaiku.")).toBeTruthy(),
+    );
+    await sendOsNotification(ev, ctx, true, true);
+    expect(Notification).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats mobile userAgentData as unsupported", () => {
+    stubNotification("granted");
+    vi.stubGlobal("navigator", { userAgent: "Mozilla/5.0 (X11; Linux) Chrome/130", userAgentData: { mobile: true } });
+    render(() => <NotificationSettings />);
+    expect(screen.getByText("This browser cannot show notifications from Kaiku.")).toBeTruthy();
   });
 });
 
