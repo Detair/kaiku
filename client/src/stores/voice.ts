@@ -318,7 +318,7 @@ async function forgetStoredDevice(
 export async function applyStoredNoiseSuppression(
   adapter: VoiceAdapter,
 ): Promise<void> {
-  const stored = appSettings()?.audio.noise_suppression;
+  const stored = appSettings()?.audio?.noise_suppression;
   if (isTauri() || typeof stored !== "boolean") return;
   if (
     typeof adapter.isNoiseSuppressionEnabled === "function" &&
