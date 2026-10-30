@@ -59,7 +59,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM5MkRFNDUyOTU3NTEwNjgKUldSb0VIV1ZVdVF0T1E5UllyYU4vak1BeU13dTR4SHpSVlp5WWNJVERNMFFKRmRqaENlcmttZlEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQzQ0NGRkY4OTAxNEZEMzgKUldRNC9SU1ErUC9NUTUvaks2SEI5WWFmMVlDYjhLV3BnbUJ0NzFZbGV1YmJtLzV6SytOWWVYeG8K",
       "endpoints": [
         "https://github.com/Detair/kaiku/releases/latest/download/latest.json"
       ]
