@@ -96,6 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Update `pulldown-cmark` 0.13.1 → 0.13.6 (RUSTSEC-2026-0414, exponential output with the wikilinks option; Kaiku does not enable that option).
 - Bot, webhook and content-filter requests no longer send your sign-in token to a program listening on your own computer; they go only to your Kaiku server.
 - Signing in with an identity provider in the desktop app no longer passes your session tokens through the browser: the browser only receives a one-time code that expires after 60 seconds and that only the app that started the sign-in can redeem. The app also ignores any other requests to its temporary sign-in address. Older desktop apps must be updated to sign in with an identity provider.
 - In server member lists, someone you have blocked or who has blocked you now always appears offline, without a last-seen time.
