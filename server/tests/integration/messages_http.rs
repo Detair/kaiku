@@ -546,3 +546,31 @@ async fn test_list_messages_around_reports_older_history(pool: PgPool) {
     let page = list_messages(&app, channel_id, &token, &around(msgs[3])).await;
     assert_eq!(page["has_more"], false);
 }
+
+#[sqlx::test]
+async fn test_list_messages_around_thread_reply_anchor_is_empty(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user_id, token, channel_id) = catchup_setup(&app, "around-reply").await;
+    let mut msgs = Vec::new();
+    for i in 0..10 {
+        let at = format!("2026-01-01T00:{i:02}:00Z");
+        msgs.push(insert_message_at(&app.pool, channel_id, user_id, &format!("m{i}"), &at).await);
+    }
+    let reply = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO messages (id, channel_id, user_id, content, parent_id, created_at) VALUES ($1, $2, $3, 'reply', $4, '2026-01-01T00:05:30Z'::timestamptz)",
+    )
+    .bind(reply)
+    .bind(channel_id)
+    .bind(user_id)
+    .bind(msgs[5])
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    // The window would not contain the anchor (thread replies are excluded);
+    // an empty page makes the client fall back to the latest page.
+    let page = list_messages(&app, channel_id, &token, &format!("around={reply}&limit=4")).await;
+    assert_eq!(ids(&page["items"]), Vec::<String>::new());
+    assert_eq!(page["has_more"], false);
+}

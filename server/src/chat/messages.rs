@@ -36,6 +36,10 @@ use crate::ws::{broadcast_to_channel, broadcast_to_user, ServerEvent};
 /// Use the `next_cursor` value as `before` parameter to fetch the next page.
 /// With `after=<message_id>` the page is returned oldest first (catch-up); pass
 /// `next_cursor` as the next `after`. `after` cannot be combined with `before`/`around`.
+/// With `around=<message_id>` the page is the window around that message,
+/// oldest first; `has_more` says older history exists before it and
+/// `next_cursor` is the window's oldest message (use it as `before`). An
+/// anchor that is not a top-level message of this channel yields an empty page.
 #[utoipa::path(
     get,
     path = "/api/messages/channel/{channel_id}",
@@ -105,15 +109,19 @@ pub async fn list(
         // extra older message for that; the old `len >= limit` check said
         // "no more" whenever few messages follow the anchor.
         let mut msgs = db::list_messages_around(&state.db, channel_id, around_id, limit).await?;
-        let up_to_anchor = msgs
-            .iter()
-            .position(|m| m.id == around_id)
-            .map_or(0, |i| i + 1);
-        let has_more = up_to_anchor as i64 > limit / 2 + 1;
-        if has_more {
-            msgs.remove(0);
+        match msgs.iter().position(|m| m.id == around_id) {
+            Some(anchor_index) => {
+                let has_more = (anchor_index + 1) as i64 > limit / 2 + 1;
+                if has_more {
+                    msgs.remove(0);
+                }
+                (msgs, has_more)
+            }
+            // A thread reply or another channel's message as anchor: the
+            // window would not contain it (and could exceed `limit`). Empty
+            // makes the client fall back to the latest page.
+            None => (Vec::new(), false),
         }
-        (msgs, has_more)
     } else {
         // Fetch one extra message to determine if there are more
         let mut msgs = db::list_messages(&state.db, channel_id, query.before, limit + 1).await?;
