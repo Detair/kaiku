@@ -102,22 +102,32 @@ as unused permission bits must first get an API (they are useful for the UI too)
 These are ordinary API features with their own tests and UI; the MCP picks them up
 automatically (section 4.2).
 
+**v1.1 scope (coordinator call after the Fable review):** rows 1–3 (system admins, server
+settings, optional features) and audit coverage ship in v1.1, because they are admin actions.
+Rows 4–8 (guild ban, timeout, transfer, permission-bit kick/invites, guild audit view) are
+new guild features that exist in neither the UI nor the API today. They follow in a later
+step together with guild owners getting the MCP. When they land, they get MCP tools in the
+same PR (G2).
+
 ## 4. Part 1 — Admin MCP
 
 ### 4.1 Shape and transport (coordinator call)
 
 - The MCP endpoint is **built into the server** at `/mcp`, same host as the API. There is no
   sidecar to deploy or version separately.
-- Transport: MCP **Streamable HTTP, protocol revision 2026-07-28** (no GET stream, no protocol
-  sessions; every request carries its own `Authorization`, protocol-version and client
-  metadata). Requests with an unexpected `Origin` are rejected, the protocol version is
-  validated, and SSE responses set proxy-friendly headers (no buffering, keep-alive) with
-  timeouts below the reverse proxy's. Older revisions are supported only if a mainstream
-  client still needs them; that compatibility is listed explicitly, not implied.
+- Transport: MCP **Streamable HTTP**.
+  - **Revisions:** the newest published revision at build time (2026-07-28 when written:
+    no GET stream, no protocol sessions), **plus** the 2025-06-18/2025-11-25 revisions with
+    `Mcp-Session-Id`. Mainstream clients still negotiate those, so this compatibility is
+    planned, not optional. Re-check the revision strings when building.
+  - **Per request:** every request is authenticated on its own; requests with an unexpected
+    `Origin` are rejected and the protocol version is validated.
+  - **SSE:** responses set proxy-friendly headers (no buffering, keep-alive), with timeouts
+    below the reverse proxy's.
 - Local stdio clients use a small shim (`kaiku-mcp`) that forwards stdio to `/mcp` with the
   agent token. Clients that speak HTTP connect directly.
-- Implementation: the official MCP Rust SDK (`rmcp`, license checked against the allow-list
-  first) or a minimal JSON-RPC layer if the SDK does not fit axum. The builder decides after a
+- Implementation: the official MCP Rust SDK (`rmcp`, Apache-2.0 upstream; confirm with
+  `cargo deny`) or a minimal JSON-RPC layer if the SDK does not fit axum. The builder decides after a
   spike.
 
 ### 4.2 Parity by construction (coordinator call)
@@ -130,8 +140,25 @@ on the same `Router` the listener serves, not on a sub-router), carrying:
   permission checks run unchanged. An `AuthUser` extension inserted by hand would bypass them.
 - the outer request's trusted connection context (`ConnectInfo`, proxy-derived client IP),
   because elevation and rate limiting read it;
-- a child request id linked to the MCP request id, so logs and audit entries correlate;
+- a child request id linked to the MCP request id (`x-request-id: <mcp-id>/<n>`;
+  `SetRequestIdLayer` keeps an existing id), so logs and audit entries correlate. HTTP
+  metrics and tracing count child requests as well, which is accepted;
 - body-size limits on the outer MCP request **and** on each generated request.
+
+Implementation notes (verified against `api/mod.rs` and `main.rs`):
+- **`ConnectInfo` is not a layer.** It is inserted per connection by
+  `into_make_service_with_connect_info`, so the MCP handler must copy the outer
+  `ConnectInfo<SocketAddr>` extension **and** the forwarding headers (`X-Forwarded-For`,
+  `X-Real-IP`) into the child request. Otherwise `ban_user`, rate limiting and
+  `extract_client_ip` fail.
+- **Router handle:** the finished `Router` is stored in `AppState` through a `OnceLock` (or
+  `ArcSwap`) after `create_router`.
+- **No recursion:** child requests carry a marker extension. A child request to `/mcp`, or a
+  depth greater than 1, is refused.
+- **Compression:** `Accept-Encoding` is stripped from child requests, so the handler never
+  has to parse gzip.
+- **Rate limits:** per-user route rate limits also apply to child requests (keyed by the
+  owner); this is intended.
 
 **Rate limits:** most admin routes have no general limiter today. The MCP gets its own
 per-token limit (calls per minute, plus a lower one for `elevated`/`destructive` tiers),
@@ -143,18 +170,19 @@ parameters plus the request body, with `$ref`s resolved and parameter serialisat
 enums) matching what the handler expects. Non-JSON bodies use explicit adapters. For example,
 emoji upload is multipart, and its tool takes base64 content plus a filename.
 
-**Completeness guard (G2):** walking the OpenAPI document is not enough, because paths are
-registered by hand and a route left out of it would go unnoticed. Admin and management routes
-are therefore mounted through a **route/policy registry**: a single table that declares
-method, path, handler, required permission (system admin, guild bit or owner-only), MCP tier
-and tool name, and is used to build the router. CI checks that:
+**Completeness guard (G2) (coordinator call after the Fable review):** walking the OpenAPI
+document is not enough, because paths are registered by hand (`openapi.rs`). Rebuilding every
+router from one table would be a large refactor right after the family release. So:
 
-- every registry entry has an OpenAPI operation and either an MCP tool or an explicit
-  `exclude` with a reason;
-- tool names are unique;
-- owner-only and permission-bit routes are included, not only `/api/admin/*`.
+- **Source-scanning CI test** in the style of `server/src/error_code_tests.rs`: every
+  `.route("…")` literal in the management modules must appear in `ApiDoc::openapi()` with an
+  `x-mcp` extension or with an entry in an explicit exclusion list that gives a reason. The
+  management modules are `admin/`, and the guild, channel, category, role, override, invite,
+  emoji, webhook, filter, bot-install, screening, event, reaction-role and page modules.
+- **Same test, two more checks:** tool names must be unique, and the tier must be set.
+- **New guild-management features** fail CI until they declare their MCP tool.
 
-A route added without the registry does not reach the management surface at all.
+`x-mcp` uses utoipa's path `extensions(...)`, which utoipa-gen 5.4 supports.
 
 **Composite tools** exist where one API call is not the natural unit (for example
 `server_overview`: stats, diagnostics, pending reports and recent audit entries). Composite
@@ -162,25 +190,53 @@ tools only call routes that other tools already cover.
 
 ### 4.3 Agent tokens (shared foundation)
 
-A new credential type, also used by agent bots (section 5):
+A new credential type for the admin MCP. Agent bots keep using their existing bot tokens
+(section 5), so admin and bot credentials are separate by construction.
 
 - **Owned by a user.** The user creates it in User Settings → Security → *Agent tokens*. The
   MCP never creates one silently.
-- **Storage:** format `kaiku_at_<id>_<secret>`; the secret is Argon2id-hashed like bot tokens
-  and shown once.
+- **Storage:** format `kaiku_at_<id>_<secret>`, where the secret is 256 bits of CSPRNG output.
+  - **Hash:** only `SHA-256(secret)` is stored, looked up by id and compared in constant
+    time. A slow hash protects low-entropy passwords; for random tokens it would only turn
+    per-request verification into a CPU DoS (each MCP tool call authenticates twice).
+  - **Display:** the token is shown once.
+  - **Last-used updates:** `last_used_at` and IP are written at most once per minute per
+    token.
 - **Fields:** name ("Claude Code on my PC"), scopes, expiry (default 90 days, maximum 1 year),
   created and last-used timestamps, last-used IP.
-- **Scopes (coordinator call):** `admin:read`, `admin:write`, `admin:elevated`,
-  `guild:manage` (acts with the owner's guild permissions; enabled for system admins only in
-  v1.1, see section 8), and `bot:<application_id>` (section 5). A token never exceeds its
-  owner's rights; scopes only narrow them.
-- **Scope enforcement covers REST, not just MCP.** `require_auth` accepts
-  `Authorization: Bearer kaiku_at_…` and puts a credential kind into `AuthUser`
-  (`Session { sid }` or `AgentToken { id, scopes }`). Scope and tier checks live in shared
-  extractors and middleware used by the routes themselves, so calling REST directly with an
-  agent token cannot bypass what the MCP enforces. Confirmation for the `destructive` tier
-  (4.4) is enforced in the same place: a destructive route called with an agent token and
-  no consumed confirmation is refused.
+- **Scopes (coordinator call):** `admin:read`, `admin:write`, `admin:elevated`, and
+  `guild:manage` (acts with the owner's guild permissions; agent tokens are issued to system
+  admins only in v1.1, see section 8). A token never exceeds its owner's rights; scopes only
+  narrow them.
+- **Default deny.** `require_auth` accepts `Authorization: Bearer kaiku_at_…` and puts a
+  credential kind into `AuthUser` (`Session { sid }` or `AgentToken { id, scopes }`). A
+  middleware that runs directly after `require_auth` then **rejects the `AgentToken` kind with
+  403 on every route that does not declare a scope requirement**. Only these accept agent
+  tokens:
+  - the management routes carrying `x-mcp` (4.2);
+  - `/mcp`;
+  - `GET /api/admin/status`;
+  - the approval execute/status endpoints (4.4).
+
+  Agent tokens can therefore never reach:
+  - user routes (sending messages, DMs, profile);
+  - `/auth/*` (password, MFA, sessions);
+  - the user WebSocket `/ws`;
+  - push subscriptions;
+  - agent-token management;
+  - device enrollment;
+  - approvals answering;
+  - `POST`/`DELETE /api/admin/elevate`.
+
+  A CI test calls a sample of non-management routes with an agent token and expects 403.
+- **Scope enforcement covers REST, not just MCP.** Scope and tier checks live in the same
+  shared middleware, so calling REST directly cannot bypass what the MCP enforces.
+- **Single execution path for `destructive`.** A destructive route called with an agent token
+  (REST or MCP) **always** answers `202 Accepted` with an `approval_id` and stores the
+  request. Execution happens **only** server-side, from the stored request, via
+  `POST /api/approvals/{id}/execute`, which is what the `get_approval` tool calls. An
+  approval id is never accepted on the original route, so arguments cannot be swapped
+  between approval and execution.
 - **Revocation is durable and checked on every request.** It uses its own `agent_tokens`
   table with `revoked_at`, cached in Valkey with immediate invalidation. The C25 denylist is
   not used, because its entries expire with the access-token lifetime. Revocation is
@@ -189,11 +245,17 @@ A new credential type, also used by agent bots (section 5):
   - the admin panel (system admins can revoke anyone's token);
   - an MCP tool;
   - banning or deleting the owner, which revokes all their tokens and closes their streams.
+
+  Revoking a token deletes its elevation window (FK cascade, below).
 - **Elevation storage:** `elevated_sessions.session_id` becomes nullable, and a nullable
   `agent_token_id` (FK `agent_tokens(id) ON DELETE CASCADE`) is added.
   - A check constraint requires exactly one of the two.
-  - Two partial unique indexes allow one active elevation per session and one per token. An agent-token
-  elevation is shown in the admin panel next to session elevations.
+  - Two partial unique indexes allow one active elevation per session and one per token.
+  - `require_elevated` branches on the credential kind. For `AgentToken` it looks up
+    `elevated_sessions.agent_token_id`; the cache key becomes `admin:elevated:at:{token_id}`.
+  - Token elevations come **only** from an approved elevation request (4.4). They appear in
+    the admin panel next to session elevations, and the owner can end one early there or in
+    the token list.
 - **Audit:** every entry made through an agent token records `via: "agent_token"` and the
   token id, which are authenticated. It also records the MCP client name, which is
   self-reported and labelled as such.
@@ -203,12 +265,17 @@ A new credential type, also used by agent bots (section 5):
 | Tier | Examples | Behaviour |
 |---|---|---|
 | `read` | list users and guilds, stats, diagnostics, audit log, observability | runs directly |
-| `write` | create a channel, category or role; edit settings; manage invites, emojis, webhooks, filters | runs directly (same as an admin clicking in the UI) |
-| `elevated` | reports (including reads), auth settings and OIDC provider list (including reads), page limits, create account, announcements, guild suspend | needs an **elevation window** for this token |
+| `write` | create/edit channels and categories, create roles without new permissions, edit guild settings, emojis, reaction roles, pages | runs directly (same as an admin clicking in the UI) |
+| `elevated` | reports (including reads), auth settings and OIDC provider list (including reads), page limits, create account, announcements, guild suspend, **create/update webhooks, create invites, change role permissions or channel overrides, edit content filters** | needs an **elevation window** for this token |
 | `destructive` | ban/unban, bulk ban, delete user or guild, grant/revoke system admin, transfer ownership, delete an OIDC provider | needs a **per-action approval**, even inside an elevation window |
 
 Routes that require elevation today keep requiring it. The tier never weakens an existing
 check.
+
+- **Highest tier wins.** A route's tier is the highest of its own tier and the tier of
+  anything it can create. Webhooks, invites and permission changes are `elevated` because
+  they let data or people out: a prompt-injected report text must not be able to create
+  them without an approval.
 
 **Approval happens outside the chat, on the owner's own Kaiku device (maintainer: a notification
 on mobile or desktop that is simply confirmed; coordinator call on the mechanism).** MCP forbids
@@ -227,12 +294,21 @@ reach the model, which could apply it to a different pending action. So:
    - **Android:** a high-priority push using the C20 wake path.
      - **Payload:** new kind `t=approval` with only the approval id. C20 and the Android
        parser are extended, since `channel_id` is not required for this kind.
-     - **Delivery:** TTL 5 minutes, collapse key `approval-<id>`.
+     - **Delivery:** TTL 5 minutes, collapse key `approval-<id>`. Approval wakes get their
+       **own budget** like `ringing` (capped by the anti-fatigue limits in step 7). They
+       bypass the message coalescer and read gate, so they can never be dropped under
+       message load. They go only to the push subscriptions of enrolled approval devices.
+     - **Parsers:** both Android parsers change: `WakeSignalParser.build()`, which drops
+       payloads without `channel_id` today, and the UnifiedPush body path.
      - **Display:** the app fetches the pending request **only from its configured server**,
        authenticated, and shows "*Claude Code on my PC* wants to: ban user *max* from the
        whole server – Approve / Deny". A forged push can at most cause one authenticated
        fetch that returns nothing.
-   - **Desktop app:** a system notification plus an in-app dialog with the same text.
+   - **Desktop app:** a system notification (`tauri-plugin-notification`, already a
+     dependency) plus an in-app dialog with the same text.
+     - **Trigger:** an internal message on `user:{id}` (the pattern from
+       `auth/revocation.rs`) becomes a WebSocket event `approval_pending { approval_id }`.
+     - **Fetch:** the app fetches the request authenticated, the same way as Android.
    - The text is built from the **server-stored** request with **fixed wording per
      action**:
      - immutable identifiers next to display names ("user *max* · id 7f3…");
@@ -243,9 +319,16 @@ reach the model, which could apply it to a different pending action. So:
      and visibly marked as labels. Agent-supplied free text (for example a ban reason) is
      shown as a quoted "reason given by the agent", never as the action description.
 3. **One tap approves.** The approval is signed with a **per-install device key**.
-   - **Signature:** over approval id, request hash, decision (approve/deny), expiry, server
-     origin and owner id, so a signature is never valid for another request, server or
-     decision.
+   - **Signature:** **ECDSA P-256 / SHA-256 on every platform.** Android Keystore and
+     StrongBox support P-256, not Ed25519.
+     - **Signing input:** the **server** builds the exact bytes:
+       `"kaiku-approval-v1" ‖ approval_id ‖ request_hash ‖ decision ‖ expires_at ‖ origin ‖
+       owner_id ‖ device_id`, fixed-length or length-prefixed fields.
+     - **Device side:** the device receives these bytes together with the display text and
+       signs them after showing the text. It never canonicalises JSON.
+     - **Request hash:** `request_hash` is computed server-side over the stored request.
+     - **Origin:** comes from `config.public_url`. Approvals and the TOTP page **fail
+       closed** when it is unset.
    - **Acceptance:** the server accepts only signatures from a non-revoked enrolled device of
      the token's owner.
    - **Enrollment:** only from an interactive user session, never with an agent token. It
@@ -254,19 +337,30 @@ reach the model, which could apply it to a different pending action. So:
    - **What agent tokens can never do:** enroll, replace or revoke devices, open the TOTP
      approval page, or answer approvals. These endpoints reject the `AgentToken` credential
      kind outright.
-   - **Visibility and lifecycle:** enrolled devices are listed under Security with last use,
-     and enrolling a new device sends a notification to all existing ones. A device key is
-     revoked with its session.
-4. **Android: fresh user authentication for every approval.**
-   - **Key:** a non-exportable Android Keystore key (StrongBox where available) created with
-     *auth-per-use* (`setUserAuthenticationParameters(0, BIOMETRIC_STRONG | DEVICE_CREDENTIAL)`).
-   - **Approval:** each signature needs its own `BiometricPrompt` with a `CryptoObject`
-     (fingerprint, face or device PIN), even on an already unlocked phone. That one touch is
-     the "simple confirmation".
-   - **Fallback:** devices that cannot create such a key cannot enroll for approvals (they
-     fail closed) and use the TOTP page instead.
-   - **Result:** a stolen phone, unlocked or not, cannot approve without the owner's
-     biometric or PIN.
+   - **Enrollment request:** reauth factors go inline, like `/elevate` (password +
+     `mfa_code`), or through a new OIDC reauth purpose `OidcFlowPurpose::EnrollDevice`.
+   - **Device table:** `approval_devices(id, user_id, device_id, session_id, public_key,
+     platform, enrolled_at, last_used_at, revoked_at)`. `device_id` is the same per-install
+     id as `push_subscriptions.device_id`, so approval pushes go to enrolled devices only.
+   - **Visibility:** enrolled devices are listed under Security with last use, and enrolling
+     a new device notifies all existing ones.
+   - **Lifecycle:** a device key is revoked when its session ends (logout or expiry). The app
+     then shows a visible "re-enable approvals on this device" prompt at the next sign-in, so
+     the owner never finds out only when an approval has no approver.
+4. **Android: fresh user authentication for every approval.** This is new work: there is no
+   biometric or Keystore code in the app yet, and it adds `androidx.biometric`. The app's
+   `minSdk` is 26.
+   - **Key:** a non-exportable Android Keystore key (StrongBox where available), required to
+     authenticate on every use.
+   - **API 30+:** `setUserAuthenticationParameters(0, BIOMETRIC_STRONG | DEVICE_CREDENTIAL)`.
+     Fingerprint, face or device PIN.
+   - **API 26–29:** `setUserAuthenticationValidityDurationSeconds(-1)`, which allows
+     **strong biometrics only**. A `CryptoObject` cannot use the PIN there. Devices without
+     strong biometrics cannot enroll (they fail closed) and use the TOTP page.
+   - **Approval:** each signature needs its own `BiometricPrompt` with a `CryptoObject`, even
+     on an already unlocked phone. That one touch is the "simple confirmation".
+   - **Result:** a stolen phone cannot approve without the owner's biometric or PIN. A phone
+     whose PIN was shoulder-surfed can, which is the same limit as the phone itself.
 5. **Desktop is the convenient path, not the strongest.**
    - **Weakness:** if the agent runs on the same PC, local malware or automation could click
      the dialog or misuse the desktop's key, which is stored in the OS keychain.
@@ -285,17 +379,30 @@ reach the model, which could apply it to a different pending action. So:
    - **Protection:** CSRF protection, attempt limits and the existing TOTP replay protection.
    - **Remaining risk:** like any web login, it stays exposed to real-time phishing and a
      compromised browser. Device approval is therefore the primary path.
-7. **Execution.** The agent calls `get_approval { approval_id }`, or retries the original
-   tool.
+7. **Execution.** The agent calls `get_approval { approval_id }`, which polls the status and,
+   once approved, calls `POST /api/approvals/{id}/execute`. That is the only execution path.
    - **Caller:** must be the same agent token that created the request.
-   - **States:** approvals are a state machine `pending → approved | denied | expired →
-     consumed`, with conditional `UPDATE … WHERE state = …` transitions, so approve, deny,
-     expiry and consumption cannot race.
+   - **States:** approvals follow `pending → approved → consumed`, `pending → denied` and
+     `pending → expired`.
+     - **Transitions:** each one is a single conditional
+       `UPDATE … WHERE state = <from> AND expires_at > now()`; expiry is applied lazily by
+       that predicate, so no sweeper is needed.
+     - **No races:** approve, deny, expiry and consumption cannot overlap.
+     - **Elevation:** consuming an elevation approval creates the 10-minute window.
+     - **Audit:** every transition is audited, with the device id for approve/deny.
    - **Execution:** the server re-checks token validity, scopes, permissions and elevation,
      then executes exactly the stored request.
-   - **Precondition:** checked inside the same database transaction as the mutation, with a
-     row lock or a conditional update on the target's version. If the target changed, the
-     request is refused and a new approval is needed.
+   - **Precondition:** declared per route next to its `x-mcp` entry.
+     - **Default `None`:** the request hash alone binds the arguments.
+     - **Named checks** for the few routes where state matters:
+       - ban: user not already banned;
+       - grant admin: not already admin;
+       - revoke admin: still admin and not the last one;
+       - transfer ownership: current owner id unchanged;
+       - delete guild/user: target still exists.
+     - **Transaction:** the check runs inside the same database transaction as the mutation,
+       with a row lock or a conditional update. If it fails, the request is refused and a new
+       approval is needed.
    - **Failure:** the approval stays consumed and the error is returned; a retry needs a new
      approval. Deny is final for that approval id.
    - **Anti-fatigue limits:** pending requests and notifications are rate limited per token,
@@ -313,13 +420,14 @@ reach the model, which could apply it to a different pending action. So:
   names, message excerpts. Tool results mark these fields as untrusted, and a fixed note in
   the tool description says so. Combined with 4.4, a malicious report text cannot cause a ban
   without the operator approving it on the Kaiku page.
-- **Audit durability**, for MCP and direct REST alike:
-  - Database mutations write their audit entry **in the same transaction**.
-  - Side effects outside the database (session revocation in Valkey, emails, pushes) first
-    persist an audit/outbox row "intent" in the transaction. A worker then completes the
-    entry or marks it failed.
-  - No path may report success without a durable audit record.
-  - Existing best-effort sites (content filters) move to this pattern in v1.1-a.
+- **Audit durability** (coordinator call after the Fable review: no outbox worker), for MCP
+  and direct REST alike:
+  - Every admin mutation writes its audit row **in the same transaction as the mutation,
+    before commit**. Today `ban_user` writes it after commit, and content filters discard
+    audit errors; both change in v1.1-a.
+  - Side effects after commit (Valkey session revocation, pushes) that fail return an error,
+    as they do now, and add a second audit row `<action>.failed`.
+  - No path reports success without a committed audit record.
 
 ### 4.6 Resources and prompts
 
@@ -348,7 +456,8 @@ an out-of-tree plugin; if Hermes only supports built-in platforms, path A uses a
 generic bridge service instead (bot gateway ↔ the agent's HTTP/API entry point).
 
 **B — Agent-driven via a Bot MCP (fallback for agents without adapters).** The `/mcp` endpoint
-offers bot tools when called with a `bot:<application_id>` token:
+offers bot tools when called with the bot's **existing bot token** (`Authorization: Bot …`),
+never with an agent token:
 `bot_wait_for_events { timeout_s, types }` (long-poll, max 60 s, server buffers up to N events
 per bot), `bot_send_message`, `bot_reply`, `bot_respond_to_command`, `bot_update_response`,
 `bot_set_typing`, `bot_get_context { channel_id, around, limit }`. The agent runs a loop. Works
@@ -370,18 +479,24 @@ Both paths use the same server-side additions (5.3) and the same bot identity.
   a *deferred* mode ("Hermes is thinking…") plus one or more follow-ups/edits within 15 min,
   because agent answers take longer than the current single immediate response.
 - **DMs to bots:** a user can DM an agent bot; gated by a per-bot setting (default off).
-- **REST for bots:** the same actions over REST with `Authorization: Bot …` for runtimes that
+- **REST for bots:** the same actions over REST with `Authorization: Bot …` (bot tokens get
+  the same fast-hash verification or an in-memory verified-token cache, since Argon2 per
+  request would be a CPU DoS) for runtimes that
   cannot hold a WebSocket. Rate limits per bot as today.
 - **Visible identity:** bots show a *Bot* badge (exists), agent bots additionally an *AI*
   badge and the owner's name; a channel shows which bots can read it.
 
 ### 5.4 Safety rules for agent bots
 
-- A token with a `bot:*` scope never also carries `admin:*` or `guild:manage`. The admin MCP
-  and chat bots are **separate identities with separate tokens**; the server refuses such
-  combinations at creation and at use. Bot tools authorise **as the bot user**, never as the
-  bot's owner. (Anti-goal: prompt injection from chat reaching admin or guild-management
-  powers.)
+- Admin and bot access are **separate identities by construction**:
+  - agent tokens carry only admin and guild-management scopes;
+  - bots authenticate with bot tokens, and bot tools authorise **as the bot user**, never as
+    its owner.
+
+  No token can combine both. (Anti-goal: prompt injection from chat reaching admin or
+  guild-management powers.)
+- The server cannot see what runs inside an agent process. The admin guide therefore says:
+  never connect the admin MCP and a chat bot in the same agent context.
 - Everything a bot receives from chat is untrusted input.
 - Bots are installed per guild by someone with `MANAGE_GUILD` and see only the channels they
   are allowed in (5.3).
