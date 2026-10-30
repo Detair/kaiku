@@ -115,7 +115,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   // Selected devices
   private inputDeviceId: string | null = null;
-  // Output device selection implemented via setSinkId API (no need to store deviceId)
+  // Speaker for remote audio (setSinkId); null = browser default output.
+  // Remembered so elements created after the choice (later peers) use it.
+  private outputDeviceId: string | null = null;
 
   // Metrics tracking for delta calculation
   private prevStats: {
@@ -905,6 +907,40 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return { ok: true, value: undefined };
   }
 
+  /**
+   * Device id the next join (or the running call) uses for the microphone;
+   * null = system default. A join resets it to null when the remembered
+   * device is gone and it had to fall back to the default.
+   */
+  getInputDevice(): string | null {
+    return this.inputDeviceId;
+  }
+
+  /**
+   * Route a remote audio element created after {@link setOutputDevice} to
+   * the remembered speaker. No-op without a remembered speaker or where
+   * setSinkId is unsupported. A speaker that no longer exists is forgotten
+   * here (later elements use the default output) and reported as
+   * device_not_found; other failures keep the remembered speaker.
+   */
+  async applyOutputDeviceTo(audio: HTMLAudioElement): Promise<VoiceResult<void>> {
+    const deviceId = this.outputDeviceId;
+    if (!deviceId || !("setSinkId" in audio)) return { ok: true, value: undefined };
+    try {
+      await (audio as AudioElementWithSinkId).setSinkId(deviceId);
+      return { ok: true, value: undefined };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if ((err as { name?: string } | null)?.name === "NotFoundError") {
+        console.warn("[BrowserVoiceAdapter] Output device unavailable, using default:", err);
+        if (this.outputDeviceId === deviceId) this.outputDeviceId = null;
+        return { ok: false, error: { type: "device_not_found", message } };
+      }
+      console.warn("[BrowserVoiceAdapter] Failed to set sink on element:", err);
+      return { ok: false, error: { type: "unknown", message } };
+    }
+  }
+
   async setOutputDevice(deviceId: string): Promise<VoiceResult<void>> {
     console.log(`[BrowserVoiceAdapter] Setting output device: ${deviceId}`);
 
@@ -936,15 +972,17 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       }
       // Only a speaker that no longer exists is "not found" (the caller
       // forgets it); other failures must not erase the saved choice.
-      if (applied === 0 && (notFound || failed)) {
-        const err = notFound ?? failed;
-        const message = err instanceof Error ? err.message : String(err);
-        return {
-          ok: false,
-          error: notFound
-            ? { type: "device_not_found", message }
-            : { type: "unknown", message },
-        };
+      if (applied === 0 && notFound) {
+        // Gone: keep routing later streams to the previous speaker.
+        const message = notFound instanceof Error ? notFound.message : String(notFound);
+        return { ok: false, error: { type: "device_not_found", message } };
+      }
+      // Remember it for remote audio created later (applyOutputDeviceTo);
+      // with no streams yet this only records the choice.
+      this.outputDeviceId = deviceId;
+      if (applied === 0 && failed) {
+        const message = failed instanceof Error ? failed.message : String(failed);
+        return { ok: false, error: { type: "unknown", message } };
       }
       return { ok: true, value: undefined };
     } catch (err) {

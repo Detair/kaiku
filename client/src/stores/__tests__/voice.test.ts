@@ -559,16 +559,109 @@ describe("voice store", () => {
       expect(setNs).toHaveBeenCalledWith(false);
     });
 
-    it("joinVoice applies stored devices after a successful join", async () => {
-      mockAdapter.join.mockResolvedValue({ ok: true });
+    it("joinVoice hands stored devices to the adapter before joining (browser)", async () => {
+      const order: string[] = [];
+      mockAdapter.setInputDevice.mockImplementationOnce(async (id: string) => {
+        order.push(`input:${id}`);
+        return { ok: true };
+      });
+      mockAdapter.setOutputDevice.mockImplementationOnce(async (id: string) => {
+        order.push(`output:${id}`);
+        return { ok: true };
+      });
+      mockAdapter.join.mockImplementationOnce(async () => {
+        order.push("join");
+        return { ok: true };
+      });
       vi.mocked(appSettings).mockReturnValue({
         voice: voiceSettings,
-        audio: { input_device: null, output_device: "Headset" },
+        audio: { input_device: "USB Mic", output_device: "Headset" },
       } as unknown as ReturnType<typeof appSettings>);
 
       await joinVoice("ch-1");
 
-      expect(mockAdapter.setOutputDevice).toHaveBeenCalledWith("Headset");
+      expect(order).toEqual(["input:USB Mic", "output:Headset", "join"]);
+      expect(mockAdapter.setInputDevice).toHaveBeenCalledTimes(1);
+    });
+
+    it("joinVoice forgets a stored mic the join had to replace with the default", async () => {
+      const { updateAudioSetting } = await import("@/stores/settings");
+      vi.mocked(updateAudioSetting).mockClear();
+      const fake = mockAdapter as unknown as { getInputDevice?: () => string | null };
+      fake.getInputDevice = vi.fn(() => null);
+      mockAdapter.join.mockResolvedValueOnce({ ok: true });
+      vi.mocked(appSettings).mockReturnValue({
+        voice: voiceSettings,
+        audio: { input_device: "Stale Mic", output_device: null },
+      } as unknown as ReturnType<typeof appSettings>);
+
+      try {
+        await joinVoice("ch-1");
+      } finally {
+        delete fake.getInputDevice;
+      }
+
+      expect(updateAudioSetting).toHaveBeenCalledWith("input_device", null);
+    });
+
+    it("joinVoice keeps a stored mic the join opened", async () => {
+      const { updateAudioSetting } = await import("@/stores/settings");
+      vi.mocked(updateAudioSetting).mockClear();
+      const fake = mockAdapter as unknown as { getInputDevice?: () => string | null };
+      fake.getInputDevice = vi.fn(() => "USB Mic");
+      mockAdapter.join.mockResolvedValueOnce({ ok: true });
+      vi.mocked(appSettings).mockReturnValue({
+        voice: voiceSettings,
+        audio: { input_device: "USB Mic", output_device: null },
+      } as unknown as ReturnType<typeof appSettings>);
+
+      try {
+        await joinVoice("ch-1");
+      } finally {
+        delete fake.getInputDevice;
+      }
+
+      expect(updateAudioSetting).not.toHaveBeenCalled();
+    });
+
+    it("routes later remote audio through the adapter and forgets a gone speaker", async () => {
+      const { updateAudioSetting } = await import("@/stores/settings");
+      vi.mocked(updateAudioSetting).mockClear();
+      const applyOutputDeviceTo = vi.fn().mockResolvedValue({
+        ok: false,
+        error: { type: "device_not_found", message: "gone" },
+      });
+      const fake = mockAdapter as unknown as { applyOutputDeviceTo?: unknown };
+      fake.applyOutputDeviceTo = applyOutputDeviceTo;
+      mockAdapter.join.mockResolvedValueOnce({ ok: true });
+      vi.mocked(appSettings).mockReturnValue({
+        voice: voiceSettings,
+        audio: { input_device: null, output_device: "Stale Speaker" },
+      } as unknown as ReturnType<typeof appSettings>);
+
+      try {
+        await joinVoice("ch-1");
+        const calls = mockAdapter.setEventHandlers.mock.calls;
+        const handlers = calls[calls.length - 1][0];
+        const playSpy = vi
+          .spyOn(HTMLMediaElement.prototype, "play")
+          .mockResolvedValue(undefined);
+        handlers.onRemoteTrack({
+          trackId: "t",
+          userId: "u-late",
+          stream: { id: "s-late" } as unknown as MediaStream,
+          muted: false,
+        });
+        await vi.waitFor(() =>
+          expect(updateAudioSetting).toHaveBeenCalledWith("output_device", null),
+        );
+        playSpy.mockRestore();
+        expect(applyOutputDeviceTo).toHaveBeenCalledTimes(1);
+        expect(applyOutputDeviceTo.mock.calls[0][0].dataset.streamId).toBe("s-late");
+        handlers.onRemoteTrackRemoved("u-late");
+      } finally {
+        delete fake.applyOutputDeviceTo;
+      }
     });
   });
   describe("tray voice sync", () => {

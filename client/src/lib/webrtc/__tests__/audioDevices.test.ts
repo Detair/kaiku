@@ -156,3 +156,110 @@ describe("BrowserVoiceAdapter stale device handling", () => {
     expect(!r.ok && r.error.type).toBe("device_not_found");
   });
 });
+
+describe("BrowserVoiceAdapter stored device preferences", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function sinkEl(setSinkId: ReturnType<typeof vi.fn>): HTMLAudioElement {
+    const el = document.createElement("audio");
+    (el as unknown as { setSinkId: unknown }).setSinkId = setSinkId;
+    return el;
+  }
+
+  it("records the input device before join without opening the microphone", async () => {
+    const getUserMedia = vi.fn();
+    vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
+    const adapter = new BrowserVoiceAdapter();
+    const r = await adapter.setInputDevice("usb");
+    expect(r.ok).toBe(true);
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(adapter.getInputDevice()).toBe("usb");
+  });
+
+  it("join opens the preselected microphone directly", async () => {
+    const getUserMedia = vi.fn().mockRejectedValue(new Error("stop here"));
+    vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
+    const adapter = new BrowserVoiceAdapter();
+    await adapter.setInputDevice("usb");
+    await adapter.join("ch");
+    const audio = getUserMedia.mock.calls[0][0].audio as MediaTrackConstraints;
+    expect(audio.deviceId).toEqual({ exact: "usb" });
+  });
+
+  it("join falls back to the default mic and forgets a gone device", async () => {
+    const gone = Object.assign(new Error("gone"), { name: "OverconstrainedError" });
+    const getUserMedia = vi
+      .fn()
+      .mockRejectedValueOnce(gone)
+      .mockRejectedValueOnce(new Error("stop here"));
+    vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
+    const adapter = new BrowserVoiceAdapter();
+    await adapter.setInputDevice("stale");
+    await adapter.join("ch");
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    expect((getUserMedia.mock.calls[1][0].audio as MediaTrackConstraints).deviceId).toBeUndefined();
+    expect(adapter.getInputDevice()).toBeNull();
+  });
+
+  it("join keeps the preselected device on a transient failure", async () => {
+    const busy = Object.assign(new Error("busy"), { name: "NotReadableError" });
+    vi.stubGlobal("navigator", {
+      mediaDevices: { getUserMedia: vi.fn().mockRejectedValue(busy) },
+    });
+    const adapter = new BrowserVoiceAdapter();
+    await adapter.setInputDevice("usb");
+    const r = await adapter.join("ch");
+    expect(r.ok).toBe(false);
+    expect(adapter.getInputDevice()).toBe("usb");
+  });
+
+  it("remembers the speaker and applies it to later remote audio", async () => {
+    const adapter = new BrowserVoiceAdapter();
+    expect((await adapter.setOutputDevice("headset")).ok).toBe(true);
+    const setSinkId = vi.fn().mockResolvedValue(undefined);
+    const r = await adapter.applyOutputDeviceTo(sinkEl(setSinkId));
+    expect(r.ok).toBe(true);
+    expect(setSinkId).toHaveBeenCalledWith("headset");
+  });
+
+  it("leaves later remote audio on the default output when no speaker is set", async () => {
+    const setSinkId = vi.fn();
+    const r = await new BrowserVoiceAdapter().applyOutputDeviceTo(sinkEl(setSinkId));
+    expect(r.ok).toBe(true);
+    expect(setSinkId).not.toHaveBeenCalled();
+  });
+
+  it("reports a stale remembered speaker once and then uses the default", async () => {
+    const adapter = new BrowserVoiceAdapter();
+    await adapter.setOutputDevice("stale");
+    const notFound = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("gone"), { name: "NotFoundError" }));
+    const r = await adapter.applyOutputDeviceTo(sinkEl(notFound));
+    expect(!r.ok && r.error.type).toBe("device_not_found");
+
+    const next = vi.fn().mockResolvedValue(undefined);
+    expect((await adapter.applyOutputDeviceTo(sinkEl(next))).ok).toBe(true);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("keeps the remembered speaker on a transient setSinkId failure", async () => {
+    const adapter = new BrowserVoiceAdapter();
+    await adapter.setOutputDevice("headset");
+    const denied = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("denied"), { name: "NotAllowedError" }));
+    const r = await adapter.applyOutputDeviceTo(sinkEl(denied));
+    expect(!r.ok && r.error.type).not.toBe("device_not_found");
+    const next = vi.fn().mockResolvedValue(undefined);
+    await adapter.applyOutputDeviceTo(sinkEl(next));
+    expect(next).toHaveBeenCalledWith("headset");
+  });
+
+  it("is a no-op where setSinkId is unsupported", async () => {
+    const adapter = new BrowserVoiceAdapter();
+    await adapter.setOutputDevice("headset");
+    const r = await adapter.applyOutputDeviceTo(document.createElement("audio"));
+    expect(r.ok).toBe(true);
+  });
+});

@@ -126,7 +126,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       setDevices(result.value);
       // Browser mode keeps this preference in app settings only; native
       // reports its own state through the adapter.
-      const stored = appSettings()?.audio.noise_suppression;
+      const stored = appSettings()?.audio?.noise_suppression;
       setNoiseSuppression(
         !isTauri() && typeof stored === "boolean"
           ? stored

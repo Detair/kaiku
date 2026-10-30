@@ -143,7 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
-- Web app: audio and voice settings (devices, volumes, noise suppression, push-to-talk) are now remembered after a reload, opening Audio settings no longer asks for microphone access until you choose "Show device names", push-to-talk shows that it only works while the Kaiku tab is focused, and the screen share button and speaker picker are hidden in browsers that do not support them.
+- Web app: audio and voice settings (devices, volumes, noise suppression, push-to-talk) are now remembered after a reload, the chosen microphone and speaker are used from the start of a call (also for people who join later), opening Audio settings no longer asks for microphone access until you choose "Show device names", push-to-talk shows that it only works while the Kaiku tab is focused, and the screen share button and speaker picker are hidden in browsers that do not support them.
 - Picking someone from the @ suggestions now mentions them (and notifies them) even when their display name differs from their username.
 - Pressing Enter sends your message again when the suggestion list has no matches (for example after typing "@" or ":" text that matches nothing).
 - The @mention, emoji and command suggestion list appears next to the message box instead of the top-left corner, and no longer causes errors after it closes.
