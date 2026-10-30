@@ -27,7 +27,8 @@ import { createVoiceAdapter } from "@/lib/webrtc";
 import { canSelectOutputDevice } from "@/lib/browserCapabilities";
 import type { AudioDeviceList, VoiceError, VoiceAdapter } from "@/lib/webrtc";
 import { setSpeaking } from "@/stores/voice";
-import { updateAudioSetting } from "@/stores/settings";
+import { appSettings, updateAudioSetting } from "@/stores/settings";
+import { isTauri } from "@/lib/tauri/common";
 import { showToast } from "@/components/ui/Toast";
 import { t, type MessageKey } from "@/i18n";
 
@@ -123,7 +124,14 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       }
 
       setDevices(result.value);
-      setNoiseSuppression(voiceAdapter.isNoiseSuppressionEnabled());
+      // Browser mode keeps this preference in app settings only; native
+      // reports its own state through the adapter.
+      const stored = appSettings()?.audio.noise_suppression;
+      setNoiseSuppression(
+        !isTauri() && typeof stored === "boolean"
+          ? stored
+          : voiceAdapter.isNoiseSuppressionEnabled(),
+      );
 
       // Set default selections (first device or default device)
       if (result.value.inputs.length > 0) {
@@ -328,6 +336,22 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       }
 
       setIsTesting(true);
+
+      // Permission is granted now: names and ids missing before appear.
+      void voiceAdapter.getAudioDevices().then((list) => {
+        if (!list.ok) return;
+        setDevices(list.value);
+        if (!selectedInput() && list.value.inputs[0]) {
+          setSelectedInput(
+            (list.value.inputs.find((d) => d.isDefault) ?? list.value.inputs[0]).deviceId,
+          );
+        }
+        if (!selectedOutput() && list.value.outputs[0]) {
+          setSelectedOutput(
+            (list.value.outputs.find((d) => d.isDefault) ?? list.value.outputs[0]).deviceId,
+          );
+        }
+      });
 
       // Poll for mic level every 50ms
       testInterval = window.setInterval(() => {

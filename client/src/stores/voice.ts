@@ -23,7 +23,7 @@ import type {
 } from "@/lib/webrtc/types";
 import type { VoiceParticipant, WebcamServerInfo } from "@/lib/types";
 import { channelsState } from "@/stores/channels";
-import { appSettings } from "@/stores/settings";
+import { appSettings, updateAudioSetting } from "@/stores/settings";
 import { currentUser } from "@/stores/auth";
 import * as tauri from "@/lib/tauri";
 import { showToast, dismissToast } from "@/components/ui/Toast";
@@ -294,21 +294,46 @@ export async function cleanupVoice(): Promise<void> {
  * Called on every voice join; failures are non-fatal (the system default
  * device keeps working) but are logged for diagnosis. Exported for tests.
  */
+/**
+ * Browser mode: a stored device that can no longer be opened (unplugged,
+ * or the browser rotated its id) is cleared so the next join starts clean
+ * on the system default. Native keeps its own device bookkeeping.
+ */
+async function forgetStoredDevice(
+  key: "input_device" | "output_device",
+): Promise<void> {
+  if (isTauri()) return;
+  try {
+    await updateAudioSetting(key, null);
+  } catch (err) {
+    console.warn("[Voice] Failed to clear stale device setting:", err);
+  }
+}
+
+/**
+ * Browser mode keeps the noise-suppression preference only in app settings
+ * (the native backend owns its own copy). Applied BEFORE joining so the
+ * microphone is opened with the stored value after a page reload.
+ */
+export async function applyStoredNoiseSuppression(
+  adapter: VoiceAdapter,
+): Promise<void> {
+  const stored = appSettings()?.audio.noise_suppression;
+  if (isTauri() || typeof stored !== "boolean") return;
+  if (
+    typeof adapter.isNoiseSuppressionEnabled === "function" &&
+    adapter.isNoiseSuppressionEnabled() === stored
+  ) {
+    return;
+  }
+  await adapter.setNoiseSuppression(stored);
+}
+
 export async function applyStoredAudioDevices(
   adapter: VoiceAdapter,
 ): Promise<void> {
   const audio = appSettings()?.audio;
   if (!audio) return;
-
-  // Browser mode keeps this setting only in app settings; the native
-  // backend owns its own copy.
-  if (
-    !isTauri() &&
-    typeof adapter.isNoiseSuppressionEnabled === "function" &&
-    adapter.isNoiseSuppressionEnabled() !== audio.noise_suppression
-  ) {
-    await adapter.setNoiseSuppression(audio.noise_suppression);
-  }
 
   if (audio.input_device) {
     const result = await adapter.setInputDevice(audio.input_device);
@@ -317,6 +342,7 @@ export async function applyStoredAudioDevices(
         "[Voice] Failed to apply stored input device:",
         result.error,
       );
+      await forgetStoredDevice("input_device");
     }
   }
   if (audio.output_device) {
@@ -326,6 +352,7 @@ export async function applyStoredAudioDevices(
         "[Voice] Failed to apply stored output device:",
         result.error,
       );
+      await forgetStoredDevice("output_device");
     }
   }
 }
@@ -484,6 +511,8 @@ export async function joinVoice(channelId: string): Promise<void> {
         });
       },
     });
+
+    await applyStoredNoiseSuppression(adapter);
 
     const result = await adapter.join(channelId);
     if (!result.ok) {

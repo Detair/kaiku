@@ -152,18 +152,16 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       this.setState("requesting_media");
 
       // Get microphone access
-      const constraints: MediaStreamConstraints = {
-        audio: {
-          deviceId: this.inputDeviceId
-            ? { exact: this.inputDeviceId }
-            : undefined,
-          noiseSuppression: this.noiseSuppression,
-          echoCancellation: true,
-          autoGainControl: true,
-        },
-      };
-
-      this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+      try {
+        this.localStream = await this.getMicStream(this.inputDeviceId);
+      } catch (err) {
+        if (!this.inputDeviceId || !this.isDeviceGoneError(err)) throw err;
+        // The remembered device is unplugged or its id rotated: forget it
+        // and use the system default so the call still has a microphone.
+        console.warn("[BrowserVoiceAdapter] Input device unavailable, using default:", err);
+        this.inputDeviceId = null;
+        this.localStream = await this.getMicStream(null);
+      }
       console.log("[BrowserVoiceAdapter] Got local stream");
 
       this.setState("connecting");
@@ -795,8 +793,13 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   async requestDeviceLabels(): Promise<VoiceResult<AudioDeviceList>> {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((t) => t.stop());
-      return this.getAudioDevices();
+      try {
+        // Enumerate while the tracks are live: a one-time grant (Firefox)
+        // is tied to them and labels vanish again once they are stopped.
+        return await this.getAudioDevices();
+      } finally {
+        stream.getTracks().forEach((t) => t.stop());
+      }
     } catch (err) {
       return { ok: false, error: this.mapMediaError(err) };
     }
@@ -824,13 +827,39 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     };
   }
 
+  /** getUserMedia for the microphone, optionally pinned to one device. */
+  private getMicStream(deviceId: string | null): Promise<MediaStream> {
+    return navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: deviceId ? { exact: deviceId } : undefined,
+        noiseSuppression: this.noiseSuppression,
+        echoCancellation: true,
+        autoGainControl: true,
+      },
+    });
+  }
+
+  /** True when a pinned device can't be opened (unplugged / id rotated). */
+  private isDeviceGoneError(err: unknown): boolean {
+    const name = (err as { name?: string } | null)?.name;
+    return (
+      name === "OverconstrainedError" ||
+      name === "NotFoundError" ||
+      name === "DevicesNotFoundError"
+    );
+  }
+
   async setInputDevice(deviceId: string): Promise<VoiceResult<void>> {
     console.log(`[BrowserVoiceAdapter] Setting input device: ${deviceId}`);
-    this.inputDeviceId = deviceId;
 
     // If already in a call, restart the stream with the new device
     if (this.localStream && this.publisherState) {
       try {
+        // Open the new microphone BEFORE touching the current one, so a
+        // stale device id leaves the working microphone (and the remembered
+        // id) untouched.
+        const newStream = await this.getMicStream(deviceId);
+
         // Stop VAD before replacing the stream — the cloned monitor track
         // references the old mic and would go stale (deliver silence).
         const vadWasRunning = this.vadInterval !== null;
@@ -838,18 +867,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
         // Stop old tracks
         this.localStream.getTracks().forEach((track) => track.stop());
-
-        // Get new stream
-        const constraints: MediaStreamConstraints = {
-          audio: {
-            deviceId: { exact: deviceId },
-            noiseSuppression: this.noiseSuppression,
-            echoCancellation: true,
-            autoGainControl: true,
-          },
-        };
-        this.localStream =
-          await navigator.mediaDevices.getUserMedia(constraints);
+        this.localStream = newStream;
+        this.inputDeviceId = deviceId;
 
         // Replace tracks in publisher peer connection
         const sender = this.publisherState.pc
@@ -871,6 +890,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       }
     }
 
+    // Not in a call: remember it for the next join (which falls back to the
+    // default microphone if it is gone by then).
+    this.inputDeviceId = deviceId;
     return { ok: true, value: undefined };
   }
 
@@ -880,6 +902,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     // Set output device for all remote audio elements
     // Uses setSinkId API (supported in modern browsers)
     try {
+      let applied = 0;
+      let failed: unknown = null;
       for (const stream of this.remoteStreams.values()) {
         const audioElements = document.querySelectorAll(
           `audio[data-stream-id="${stream.id}"]`,
@@ -888,11 +912,23 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           if ("setSinkId" in audio) {
             try {
               await (audio as AudioElementWithSinkId).setSinkId(deviceId);
+              applied++;
             } catch (err) {
               console.warn("[BrowserVoiceAdapter] Failed to set sink on element:", err);
+              failed = err;
             }
           }
         }
+      }
+      // Report a stale/unplugged speaker so the caller can forget it.
+      if (failed && applied === 0) {
+        return {
+          ok: false,
+          error: {
+            type: "device_not_found",
+            message: failed instanceof Error ? failed.message : String(failed),
+          },
+        };
       }
       return { ok: true, value: undefined };
     } catch (err) {

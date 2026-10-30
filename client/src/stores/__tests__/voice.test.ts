@@ -46,6 +46,7 @@ vi.mock("@/stores/channels", () => ({
 }));
 
 vi.mock("@/stores/settings", () => ({
+  updateAudioSetting: vi.fn().mockResolvedValue(undefined),
   appSettings: vi.fn(() => ({
     voice: {
       push_to_talk: false,
@@ -92,6 +93,7 @@ import {
   updateVadFromSettings,
   isPttActive,
   applyStoredAudioDevices,
+  applyStoredNoiseSuppression,
   trayVoiceReport,
   handleTrayVoiceAction,
 } from "../voice";
@@ -507,6 +509,35 @@ describe("voice store", () => {
       await expect(
         applyStoredAudioDevices(mockAdapter as unknown as VoiceAdapter),
       ).resolves.toBeUndefined();
+    });
+
+    it("clears a stored device the adapter could not apply (browser)", async () => {
+      const { updateAudioSetting } = await import("@/stores/settings");
+      vi.mocked(updateAudioSetting).mockClear();
+      vi.mocked(appSettings).mockReturnValueOnce({
+        voice: voiceSettings,
+        audio: { input_device: "Stale", output_device: "Speakers" },
+      } as unknown as ReturnType<typeof appSettings>);
+      mockAdapter.setInputDevice.mockResolvedValueOnce({
+        ok: false,
+        error: { type: "device_not_found", message: "gone" },
+      });
+
+      await applyStoredAudioDevices(mockAdapter as unknown as VoiceAdapter);
+
+      expect(updateAudioSetting).toHaveBeenCalledTimes(1);
+      expect(updateAudioSetting).toHaveBeenCalledWith("input_device", null);
+    });
+
+    it("applies the stored noise-suppression preference before joining (browser)", async () => {
+      const setNs = vi.fn().mockResolvedValue({ ok: true });
+      const fake = { isNoiseSuppressionEnabled: () => true, setNoiseSuppression: setNs };
+      vi.mocked(appSettings).mockReturnValueOnce({
+        voice: voiceSettings,
+        audio: { noise_suppression: false },
+      } as unknown as ReturnType<typeof appSettings>);
+      await applyStoredNoiseSuppression(fake as unknown as VoiceAdapter);
+      expect(setNs).toHaveBeenCalledWith(false);
     });
 
     it("joinVoice applies stored devices after a successful join", async () => {

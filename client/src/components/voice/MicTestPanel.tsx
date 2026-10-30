@@ -46,20 +46,28 @@ function MicTestPanel(props: MicTestPanelProps) {
   let levelInterval: number | undefined;
   let adapter: Awaited<ReturnType<typeof createVoiceAdapter>> | null = null;
 
+  // Fill the device lists; keeps an existing selection on re-enumeration.
+  const loadDevices = async (): Promise<void> => {
+    if (!adapter) return;
+    const result = await adapter.getAudioDevices();
+    if (result.ok) {
+      setInputDevices(result.value.inputs);
+      setOutputDevices(result.value.outputs);
+      const defaultInput =
+        result.value.inputs.find((d) => d.isDefault) ?? result.value.inputs[0];
+      const defaultOutput =
+        result.value.outputs.find((d) => d.isDefault) ?? result.value.outputs[0];
+      if (defaultInput && !selectedInput()) setSelectedInput(defaultInput.deviceId);
+      if (defaultOutput && !selectedOutput()) setSelectedOutput(defaultOutput.deviceId);
+    } else {
+      setError(result.error);
+    }
+  };
+
   onMount(async () => {
     try {
       adapter = await createVoiceAdapter();
-      const result = await adapter.getAudioDevices();
-      if (result.ok) {
-        setInputDevices(result.value.inputs);
-        setOutputDevices(result.value.outputs);
-        const defaultInput = result.value.inputs.find((d) => d.isDefault);
-        const defaultOutput = result.value.outputs.find((d) => d.isDefault);
-        if (defaultInput) setSelectedInput(defaultInput.deviceId);
-        if (defaultOutput) setSelectedOutput(defaultOutput.deviceId);
-      } else {
-        setError(result.error);
-      }
+      await loadDevices();
     } catch (err) {
       console.error("Failed to initialize mic test:", err);
       setError({ type: "init_failed" });
@@ -83,6 +91,12 @@ function MicTestPanel(props: MicTestPanelProps) {
     }
 
     setIsTesting(true);
+
+    // Without permission browsers list no usable devices; the test just
+    // obtained it, so refresh the lists now.
+    void loadDevices().catch((err) =>
+      console.warn("Failed to refresh devices after mic test start:", err),
+    );
 
     levelInterval = window.setInterval(() => {
       const level = adapter!.getMicTestLevel();
