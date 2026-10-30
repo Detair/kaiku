@@ -218,14 +218,15 @@ A new credential type for the admin MCP. Agent bots keep using their existing bo
   - the management routes carrying `x-mcp` (4.2);
   - `/mcp`;
   - `GET /api/admin/status`;
-  - the approval execute/status endpoints (4.4).
+  - the approval execute/status endpoints (4.4);
+  - `DELETE /api/agent-tokens/self` (self-revocation, see below).
 
   Agent tokens can therefore never reach:
   - user routes (sending messages, DMs, profile);
   - `/auth/*` (password, MFA, sessions);
   - the user WebSocket `/ws`;
   - push subscriptions;
-  - agent-token management;
+  - agent-token management other than revoking **their own** token;
   - device enrollment;
   - approvals answering;
   - `POST`/`DELETE /api/admin/elevate`.
@@ -245,13 +246,14 @@ A new credential type for the admin MCP. Agent bots keep using their existing bo
   triggered from:
   - the owner's settings;
   - the admin panel (system admins can revoke anyone's token);
-  - the MCP tool `agent_token_revoke_self`. This is the **only** agent-token-management
+  - the MCP tool `agent_token_revoke_self` (`DELETE /api/agent-tokens/self`). This is the **only** agent-token-management
     action an agent token may call, and only for its own token; it is an explicit exception
     to the default deny;
   - banning or deleting the owner, which revokes all their tokens and closes their streams.
 
   Revocation sets `revoked_at`, so the FK cascade does not fire. The revocation transaction
-  therefore **explicitly deletes the token's `elevated_sessions` row and pending approvals**
+  therefore **explicitly deletes the token's `elevated_sessions` row and moves its pending and
+  approved-but-unconsumed approvals to `expired`** (audited)
   and invalidates the cached elevation (`admin:elevated:at:{token_id}`) and token entries. The
   cascade only covers hard deletion of the token row.
 - **Elevation storage:** `elevated_sessions.session_id` becomes nullable, and a nullable
@@ -399,8 +401,9 @@ reach the model, which could apply it to a different pending action. So:
          ('pending','approved') AND expires_at <= now()`);
        - through a small periodic sweep (every minute, the same statement), so abandoned
          requests are audited as `expired` and release their slot.
-     - **Open-approval limit:** only `pending` and unexpired `approved` requests count
-       toward the limit of 3 open approvals, so abandoned ones cannot exhaust it.
+     - **Open-approval limit:** only unexpired requests in either `pending` or `approved`
+       state count toward the limit of 3 open approvals, so abandoned ones cannot exhaust
+       it.
      - **No races:** approve, deny, expiry and consumption cannot overlap.
      - **Elevation:** consuming an elevation approval creates the 10-minute window.
      - **Audit:** every transition is audited, with the device id for approve/deny.
