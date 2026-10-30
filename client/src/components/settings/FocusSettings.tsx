@@ -6,6 +6,7 @@
  */
 
 import { Component, For, Show, createSignal, createMemo } from "solid-js";
+import { isTauri } from "@/lib/tauri/common";
 import { Crosshair, Plus, Trash2, ChevronDown, ChevronUp } from "lucide-solid";
 import type {
   FocusMode,
@@ -255,6 +256,7 @@ const FocusSettings: Component = () => {
         </p>
       </div>
 
+      <Show when={isTauri()}>
       {/* Global auto-activate toggle */}
       <div class="p-4 rounded-xl border border-white/10 bg-surface-layer2">
         <label class="flex items-center gap-3 cursor-pointer">
@@ -348,6 +350,7 @@ const FocusSettings: Component = () => {
           </button>
         </div>
       </div>
+      </Show>
 
       {/* Active mode indicator */}
       <Show when={focusState().active_mode_id}>
@@ -492,6 +495,7 @@ const FocusSettings: Component = () => {
                       </div>
                     </div>
 
+                    <Show when={isTauri()}>
                     {/* Trigger categories */}
                     <div>
                       <label class="text-sm text-text-secondary mb-2 block">
@@ -544,6 +548,7 @@ const FocusSettings: Component = () => {
                         </span>
                       </label>
                     </div>
+                    </Show>
 
                     {/* Emergency keywords */}
                     <div>
