@@ -35,7 +35,8 @@ RUN bun run build \
  && baked="$(sed -n 's/^VITE_SERVER_URL=//p' .env.production 2>/dev/null | tr -d '\r')" \
  && if [ -n "$baked" ] && grep -rqF "$baked" dist; then \
         echo "VITE_SERVER_URL from .env.production ended up in the web build" >&2; exit 1; \
-    fi
+    fi \
+ && find dist -name '*.md' -delete
 
 # ----------------------------------------------------------------------------
 # Runtime stage: unprivileged nginx (UID 101), port 8080

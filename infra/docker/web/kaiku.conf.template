@@ -1,6 +1,7 @@
 # Site config for the Kaiku web image. The entrypoint renders this with
-# envsubst (only ${KAIKU_MEDIA_ORIGINS} is substituted; nginx variables such
-# as $host stay as they are) into /tmp/nginx/kaiku.conf.
+# envsubst (only ${KAIKU_MEDIA_ORIGINS} and ${KAIKU_LISTEN_V6} are
+# substituted; nginx variables such as $host stay as they are) into
+# /tmp/nginx/kaiku.conf.
 
 # Vite fingerprints everything under /assets/, so those never change. Other
 # public files (fonts, theme images, sounds) keep stable names; index.html
@@ -13,8 +14,10 @@ map $uri $kaiku_cache_control {
 
 server {
     listen 8080;
-    listen [::]:8080;
+    ${KAIKU_LISTEN_V6}
     server_name _;
+    # Redirects (e.g. /fonts -> /fonts/) stay relative to the public origin.
+    absolute_redirect off;
 
     root /usr/share/nginx/html;
     index index.html;
@@ -50,6 +53,11 @@ server {
     }
 
     location /assets/ {
+        try_files $uri =404;
+    }
+
+    # Other static folders: a missing file is a 404, not the app.
+    location ~ ^/(fonts|themes|sounds|wallpapers)/ {
         try_files $uri =404;
     }
 

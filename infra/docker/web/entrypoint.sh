@@ -16,8 +16,17 @@ done
 KAIKU_MEDIA_ORIGINS="$(printf '%s' "$media" | tr -s ' \t\n' ' ' | sed 's/^ //; s/ $//')"
 export KAIKU_MEDIA_ORIGINS
 
+# Listen on IPv6 too, unless the host has it disabled (nginx would refuse
+# to start on [::]:8080).
+if [ -e /proc/net/if_inet6 ]; then
+    KAIKU_LISTEN_V6="listen [::]:8080;"
+else
+    KAIKU_LISTEN_V6=""
+fi
+export KAIKU_LISTEN_V6
+
 mkdir -p /tmp/nginx
-envsubst '${KAIKU_MEDIA_ORIGINS}' \
+envsubst '${KAIKU_MEDIA_ORIGINS} ${KAIKU_LISTEN_V6}' \
     < /etc/nginx/kaiku/kaiku.conf.template \
     > /tmp/nginx/kaiku.conf
 

@@ -18,9 +18,9 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; "$docker" logs "$name" >&2 || true; exit 1; }
 
 # A bad media origin must stop the container instead of reaching the CSP.
-if "$docker" run --rm -e KAIKU_MEDIA_ORIGINS="https://x.example.com; script-src *" "$image" >/dev/null 2>&1; then
-    fail "container started with an invalid KAIKU_MEDIA_ORIGINS"
-fi
+bad="$("$docker" run --rm -e KAIKU_MEDIA_ORIGINS="https://x.example.com; script-src *" "$image" 2>&1 || true)"
+echo "$bad" | grep -q "kaiku-web: KAIKU_MEDIA_ORIGINS entry" \
+    || fail "container did not reject an invalid KAIKU_MEDIA_ORIGINS: $bad"
 
 "$docker" run -d --name "$name" -p "127.0.0.1:${port}:8080" \
     --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
@@ -50,6 +50,8 @@ asset="$(curl -fsS "$base/" | grep -oE '/assets/[^"]+\.js' | head -1)"
 header "$asset" Cache-Control | grep -q immutable || fail "$asset Cache-Control: $(header "$asset" Cache-Control)"
 [ "$(status /assets/does-not-exist.js)" = 404 ] || fail "missing asset not 404"
 [ "$(status /theme-preload.js)" = 200 ] || fail "/theme-preload.js not served"
+[ "$(status /sounds/does-not-exist.wav)" = 404 ] || fail "missing static file not 404"
+[ -z "$("$docker" run --rm --entrypoint find "$image" /usr/share/nginx/html -name "*.md")" ] || fail "markdown notes shipped in the image"
 
 # Server paths must not be answered with the app
 for path in /api/settings /auth/login /ws /health; do
