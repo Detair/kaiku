@@ -1024,8 +1024,11 @@ pub async fn list_messages_after(
     Ok(Some(rows))
 }
 
-/// Fetch messages around a specific message ID.
-/// Returns up to `limit` messages centered on `around_id`.
+/// Fetch messages around a specific message ID, ascending.
+///
+/// Returns up to `limit / 2 + 2` messages up to and including `around_id` and
+/// up to `limit / 2` after it. One message beyond `limit / 2 + 1` on the older
+/// side only signals that older history exists; the caller drops it.
 /// If `around_id` is deleted or doesn't exist, returns empty vec (caller should fallback).
 pub async fn list_messages_around(
     pool: &PgPool,
@@ -1059,7 +1062,7 @@ pub async fn list_messages_around(
     )
     .bind(channel_id)
     .bind(around_id)
-    .bind(half + 1) // +1 to include anchor itself
+    .bind(half + 2) // +1 to include the anchor itself, +1 to detect older history
     .bind(half)
     .fetch_all(pool)
     .await
