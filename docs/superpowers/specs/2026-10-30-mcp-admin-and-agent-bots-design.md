@@ -54,9 +54,12 @@ Agent bots follow from the same habit: an agent the family can ask questions in 
 
 ## 3. Current state (v1.0, verified on main 2026-10-30)
 
-- System-admin API: `/api/admin/*` behind `require_auth` + `require_system_admin`
-  (`server/src/admin/mod.rs`). Mutating routes additionally need `require_elevated`
-  (elevation: 15 min, bound to the session `sid`, password + TOTP or fresh OIDC login, C24).
+- System-admin API: `/api/admin/*` behind `require_auth`; everything except `/status` (own
+  admin/elevation status, any authenticated user) also behind `require_system_admin`
+  (`server/src/admin/mod.rs`). Mutations **and some reads** (reports, auth settings, OIDC
+  provider list, page limits) additionally need `require_elevated`. Elevation lasts 15 min,
+  is bound to a live `sessions` row via the JWT `sid` (`elevated_sessions.session_id` FK), and
+  needs the password plus TOTP if MFA is enabled, or a fresh OIDC login (C24).
 - Guild management lives in `/api/guilds/*`, `/api/channels/*` and feature routers, gated by
   guild permission bits (`server/src/permissions/guild.rs`) or by guild ownership.
 - Tokens: user JWT (access 15 min / refresh 7 d) and bot tokens (`Bot <id>.<secret>`,
@@ -69,7 +72,11 @@ Agent bots follow from the same habit: an agent the family can ask questions in 
   Rate limit 120/60 s per bot.
 - Audit log: `system_audit_log`, covering elevation, announcements, user and guild admin
   actions, content filters. Not covered: OIDC provider and auth-settings changes,
-  page limits, report resolution, most guild actions.
+  page limits, report resolution, most guild actions. Some audit writes are best-effort
+  after the mutation (content filters discard audit failures).
+- Bot delivery ignores channel visibility: `MessageCreated` goes to every installed bot with
+  the `messages` intent (`ws/bot_events.rs`, `ws/bot_gateway.rs`), without a `VIEW_CHANNEL`
+  check (verified in review).
 - No MCP code exists.
 
 ### 3.1 Gaps that block full parity (G1)
@@ -79,8 +86,8 @@ as unused permission bits must first get an API (they are useful for the UI too)
 
 | Gap | Today | v1.1 |
 |---|---|---|
-| Grant / revoke system admin | only the first-user setup insert | `POST/DELETE /api/admin/system-admins/{user_id}` (elevated, destructive tier) |
-| Server name, terms URL, privacy URL | seeded, no write route | extend `PUT /api/admin/auth-settings` → `PUT /api/admin/server-settings` |
+| Grant / revoke system admin | helpers exist (`permissions/queries.rs`), no exposed route; only the first-user setup grants | `POST/DELETE /api/admin/system-admins/{user_id}` (elevated, destructive tier) |
+| Server name, terms URL, privacy URL | written once by first-user setup, no post-setup update route | extend `PUT /api/admin/auth-settings` → `PUT /api/admin/server-settings` |
 | Optional features (forum, announcements, events, screening) | env `KAIKU_OPTIONAL_FEATURES` only | runtime setting in `server_config`, env stays as the operator's upper bound |
 | Guild ban / unban | `BAN_MEMBERS` bit unused, no route | `PUT/DELETE /api/guilds/{id}/bans/{user_id}` + list |
 | Member timeout | `TIMEOUT_MEMBERS` unused | `PUT/DELETE /api/guilds/{id}/members/{user_id}/timeout` |
@@ -94,115 +101,182 @@ automatically (section 4.2).
 
 ## 4. Part 1 — Admin MCP
 
-### 4.1 Shape (coordinator call)
+### 4.1 Shape and transport (coordinator call)
 
-- The MCP endpoint is **built into the server**: `POST/GET /mcp` (MCP "Streamable HTTP"
-  transport), same host as the API. No sidecar to deploy or version separately.
-- Local stdio clients use a tiny shim (`kaiku-mcp`, part of the CLI/desktop bundle) that
-  forwards stdio ↔ `/mcp` with the agent token. Claude Code can also connect to the HTTP
-  endpoint directly.
-- Rust implementation with the official MCP Rust SDK (`rmcp`, license to be checked against
-  the allow-list before adoption) or a minimal hand-written JSON-RPC layer if the SDK does not
-  fit axum cleanly — builder's choice after a spike.
-- Behind a reverse proxy / MCP gateway the endpoint is just another path; no special
-  routing.
+- The MCP endpoint is **built into the server** at `/mcp`, same host as the API. There is no
+  sidecar to deploy or version separately.
+- Transport: MCP **Streamable HTTP, protocol revision 2026-07-28** (no GET stream, no protocol
+  sessions; every request carries its own `Authorization`, protocol-version and client
+  metadata). Requests with an unexpected `Origin` are rejected, the protocol version is
+  validated, and SSE responses set proxy-friendly headers (no buffering, keep-alive) with
+  timeouts below the reverse proxy's. Older revisions are supported only if a mainstream
+  client still needs them; that compatibility is listed explicitly, not implied.
+- Local stdio clients use a small shim (`kaiku-mcp`) that forwards stdio to `/mcp` with the
+  agent token. Clients that speak HTTP connect directly.
+- Implementation: the official MCP Rust SDK (`rmcp`, license checked against the allow-list
+  first) or a minimal JSON-RPC layer if the SDK does not fit axum. The builder decides after a
+  spike.
 
 ### 4.2 Parity by construction (coordinator call)
 
-An MCP tool **does not re-implement** an admin action. Each tool call is turned into an
-internal request to the **same axum router** (`tower::ServiceExt::oneshot`) with the agent's
-credential attached. Consequences:
+An MCP tool **does not re-implement** an admin action. A tool call becomes an internal HTTP
+request dispatched through the **fully layered API service** (`tower::ServiceExt::oneshot`
+on the same `Router` the listener serves, not on a sub-router), carrying:
 
-- identical validation, permission checks, elevation checks, rate limits and audit logging;
-- a bug fixed in a handler is fixed for the MCP too;
-- tool definitions can be **derived from the OpenAPI spec** (utoipa), which already
-  describes path, parameters and request schemas.
+- the agent's own `Authorization` header, so `require_auth`, scopes (4.3), elevation and
+  permission checks run unchanged. An `AuthUser` extension inserted by hand would bypass them.
+- the outer request's trusted connection context (`ConnectInfo`, proxy-derived client IP),
+  because elevation and rate limiting read it;
+- a child request id linked to the MCP request id, so logs and audit entries correlate;
+- body-size limits on the outer MCP request **and** on each generated request.
 
-Mechanics:
-- Admin-relevant operations carry an OpenAPI extension `x-mcp` with
-  `{ tool, tier, summary }` (tier: `read` | `write` | `elevated` | `destructive`, section 4.4).
-- At startup the server builds the tool list from the spec: tool name from `x-mcp.tool`
-  (for example `admin_users_ban`), input schema = path params + query + JSON body schema,
-  description = `summary` + the operation's doc comment.
-- **CI guard (G2):** a test walks the OpenAPI spec; every operation under `/api/admin/*` and
-  every operation guarded by a management permission bit (MANAGE_*, KICK/BAN/TIMEOUT,
-  VIEW_AUDIT_LOG, TRANSFER_OWNERSHIP) must have `x-mcp` or an explicit
-  `x-mcp: { exclude: "<reason>" }`. Missing → test fails. The same test checks that every
-  `x-mcp.tool` name is unique and every tier is set.
-- A handful of **composite tools** exist where one API call is not the natural unit
-  (for example `server_overview`: stats + diagnostics + pending reports + recent audit
-  entries in one call). Composites only call other tools' routes.
+**Rate limits:** most admin routes have no general limiter today. The MCP gets its own
+per-token limit (calls per minute, plus a lower one for `elevated`/`destructive` tiers),
+independent of the routes.
+
+**Tool definitions** come from the OpenAPI spec (utoipa). Each admin-relevant operation carries
+an `x-mcp` extension `{ tool, tier, summary }`. The input schema is built from path and query
+parameters plus the request body, with `$ref`s resolved and parameter serialisation (arrays,
+enums) matching what the handler expects. Non-JSON bodies use explicit adapters. For example,
+emoji upload is multipart, and its tool takes base64 content plus a filename.
+
+**Completeness guard (G2):** walking the OpenAPI document is not enough, because paths are
+registered by hand and a route left out of it would go unnoticed. Admin and management routes
+are therefore mounted through a **route/policy registry**: a single table that declares
+method, path, handler, required permission (system admin, guild bit or owner-only), MCP tier
+and tool name, and is used to build the router. CI checks that:
+
+- every registry entry has an OpenAPI operation and either an MCP tool or an explicit
+  `exclude` with a reason;
+- tool names are unique;
+- owner-only and permission-bit routes are included, not only `/api/admin/*`.
+
+A route added without the registry does not reach the management surface at all.
+
+**Composite tools** exist where one API call is not the natural unit (for example
+`server_overview`: stats, diagnostics, pending reports and recent audit entries). Composite
+tools only call routes that other tools already cover.
 
 ### 4.3 Agent tokens (shared foundation)
 
 A new credential type, also used by agent bots (section 5):
 
-- **Owned by a user**, created by that user in User Settings → Security → *Agent tokens*
-  (and by the MCP itself only with elevation, never silently).
-- Format `kaiku_at_<id>_<secret>`, secret Argon2id-hashed like bot tokens, shown once.
-- Fields: name ("Claude Code on my PC"), scopes, optional expiry (default 90 days, maximum
-  1 year), created/last-used timestamps, last-used IP.
+- **Owned by a user.** The user creates it in User Settings → Security → *Agent tokens*. The
+  MCP never creates one silently.
+- **Storage:** format `kaiku_at_<id>_<secret>`; the secret is Argon2id-hashed like bot tokens
+  and shown once.
+- **Fields:** name ("Claude Code on my PC"), scopes, expiry (default 90 days, maximum 1 year),
+  created and last-used timestamps, last-used IP.
 - **Scopes (coordinator call):** `admin:read`, `admin:write`, `admin:elevated`,
-  `guild:manage` (acts with the owner's guild permissions), `bot:<application_id>`
-  (section 5). A token never exceeds its owner's rights; scopes only narrow them.
-- Accepted by `require_auth` as `Authorization: Bearer kaiku_at_…`; it produces an
-  `AuthUser` with a synthetic session id (`sid = token id`) so revocation, banned-user checks
-  and the session denylist (C25) apply unchanged. Banning or deleting the owner revokes
-  their tokens.
-- Revocable instantly from the UI, the admin panel (system admins can revoke anyone's) and
-  via an MCP tool.
-- Every audit entry made through an agent token records `via: "agent_token"`, the token id
-  and the MCP client name (from the MCP `initialize` handshake).
+  `guild:manage` (acts with the owner's guild permissions; enabled for system admins only in
+  v1.1, see section 8), and `bot:<application_id>` (section 5). A token never exceeds its
+  owner's rights; scopes only narrow them.
+- **Scope enforcement covers REST, not just MCP.** `require_auth` accepts
+  `Authorization: Bearer kaiku_at_…` and puts a credential kind into `AuthUser`
+  (`Session { sid }` or `AgentToken { id, scopes }`). Scope and tier checks live in shared
+  extractors and middleware used by the routes themselves, so calling REST directly with an
+  agent token cannot bypass what the MCP enforces. Confirmation for the `destructive` tier
+  (4.4) is enforced in the same place: a destructive route called with an agent token and
+  no consumed confirmation is refused.
+- **Revocation is durable and checked on every request.** It uses its own `agent_tokens`
+  table with `revoked_at`, cached in Valkey with immediate invalidation. The C25 denylist is
+  not used, because its entries expire with the access-token lifetime. Revocation is
+  triggered from:
+  - the owner's settings;
+  - the admin panel (system admins can revoke anyone's token);
+  - an MCP tool;
+  - banning or deleting the owner, which revokes all their tokens and closes their streams.
+- **Elevation storage:** `elevated_sessions` gains a nullable `agent_token_id`, with a check
+  constraint that exactly one of `session_id` and `agent_token_id` is set. An agent-token
+  elevation is shown in the admin panel next to session elevations.
+- **Audit:** every entry made through an agent token records `via: "agent_token"` and the
+  token id, which are authenticated. It also records the MCP client name, which is
+  self-reported and labelled as such.
 
-### 4.4 Tiers and the human in the loop (G3)
+### 4.4 Tiers and human approval (G3)
 
 | Tier | Examples | Behaviour |
 |---|---|---|
-| `read` | list users/guilds, stats, diagnostics, audit log, reports, observability | runs directly |
-| `write` | create channel/category/role, edit settings, manage invites, emojis, webhooks, filters | runs directly (same as an admin clicking in the UI) |
-| `elevated` | create account, auth settings, OIDC providers, page limits, announcements, guild suspend | needs an **elevation window** for this token |
-| `destructive` | ban/unban, bulk ban, delete user/guild, revoke/grant system admin, transfer ownership, delete OIDC provider | needs a **per-call confirmation**, even inside an elevation window |
+| `read` | list users and guilds, stats, diagnostics, audit log, observability | runs directly |
+| `write` | create a channel, category or role; edit settings; manage invites, emojis, webhooks, filters | runs directly (same as an admin clicking in the UI) |
+| `elevated` | reports (including reads), auth settings and OIDC provider list (including reads), page limits, create account, announcements, guild suspend | needs an **elevation window** for this token |
+| `destructive` | ban/unban, bulk ban, delete user or guild, grant/revoke system admin, transfer ownership, delete an OIDC provider | needs a **per-action approval**, even inside an elevation window |
 
-**Elevation for agent tokens (maintainer: 10 min, TOTP only):** the token cannot elevate with a stored
-secret. The MCP asks the human for a **current TOTP code**:
+Routes that require elevation today keep requiring it. The tier never weakens an existing
+check.
 
-1. The tool call returns a structured "elevation required" result, or, if the client supports
-   MCP *elicitation*, the server sends an elicitation request "Enter your authenticator code
-   to unlock admin actions for 10 minutes".
-2. The code is verified with the existing C24 re-auth path (TOTP replay protection included).
-   The resulting elevation is bound to the **token id** for 10 minutes and shown in the admin
-   panel next to session elevations.
-3. Admin accounts without TOTP cannot use `elevated`/`destructive` tools through the MCP
-   (the MCP tells them to enable MFA). This deliberately makes TOTP a prerequisite for
-   AI-driven administration.
+**Approval happens outside the chat, on the owner's own Kaiku device (maintainer: a notification
+on mobile or desktop that is simply confirmed; coordinator call on the mechanism).** MCP forbids
+collecting credentials through form elicitation. A code typed into the conversation would also
+reach the model, which could apply it to a different pending action. So:
 
-**Per-call confirmation for `destructive` (coordinator call):** a two-step pattern that works
-in every MCP client, with elicitation as nicer UX when available:
+1. For an elevation or a destructive action, the server stores the **exact pending request**:
+   - token;
+   - route and arguments;
+   - a precondition snapshot (for example the target's `updated_at` or version);
+   - a 5-minute expiry.
 
-1. The tool call returns `confirmation_required` with a human-readable summary
-   ("Ban user *max* (id …) from the whole server and end all their sessions") and a
-   short-lived `confirmation_id` (2 min, single use, bound to token + exact arguments).
-2. The agent calls `confirm_action { confirmation_id, totp }`; the server re-verifies the
-   TOTP and executes exactly the stored request.
+   It returns an approval id. The tool result tells the agent "waiting for approval on your
+   devices".
+2. **Notification to the owner's devices.**
+   - **Android:** a high-priority push using the C20 wake path, kind `approval`, with no
+     content in the payload. The app fetches the pending request and shows "*Claude Code on
+     my PC* wants to: ban user *max* from the whole server – Approve / Deny".
+   - **Desktop app:** a system notification plus an in-app dialog with the same text.
+   - The text always comes from the **server-stored** request, never from the agent.
+3. **One tap approves.** The approval is signed with a **per-install device key**. The key
+   pair is created at sign-in, the public key is registered with the session, and it is
+   revoked with the session. The server accepts the approval only:
+   - from a non-revoked device of the token's owner;
+   - with a valid signature over approval id, request hash and expiry.
+4. **Android adds user presence.** Approving requires the phone to be unlocked
+   (`BiometricPrompt` with device credential: fingerprint, face or PIN). A notification on a
+   locked screen cannot be approved by someone holding the phone.
+5. **Desktop is the convenient path, not the strongest.** If the agent runs on the same PC,
+   local automation could in principle click the desktop dialog. This is accepted
+   (maintainer: simple confirmation on desktop or mobile) and documented in the admin guide
+   with the advice to approve destructive actions on the phone. The dialog ignores synthetic
+   input where the OS allows detecting it, and it never auto-focuses the Approve button.
+6. **Fallback:** if no device is reachable, the tool result and a URL elicitation point to
+   `https://<server>/approve/<approval_id>`. That is a Kaiku page that needs a signed-in
+   owner and a **current TOTP code**.
+7. **Execution.** The agent calls `get_approval { approval_id }`, or retries the original
+   tool. The server:
+   - consumes the approval **atomically** (single use);
+   - re-checks token validity, scopes, permissions and elevation at execution time;
+   - verifies the precondition snapshot: if the target changed, it refuses and asks for a new
+     approval;
+   - executes exactly the stored request.
 
-This keeps the property the maintainer relies on today: nothing irreversible happens without
-them typing a fresh code.
+   If execution fails, the approval stays consumed and the error is returned; a retry needs a
+   new approval. Deny is final for that approval id, and repeated denied requests from one
+   token are rate limited.
+8. **Elevation windows** for agent tokens last **10 minutes** (maintainer). Elevation and every
+   destructive action each need their own approval. An approval never covers more than the
+   one stored request, or the one elevation window.
+9. The `elevated` and `destructive` tiers need at least one registered device or TOTP. Admin
+   accounts with neither cannot use these tiers through the MCP.
 
-### 4.5 Untrusted content
+### 4.5 Untrusted content and audit durability
 
-Some admin tools return text written by other users (report contents, usernames, guild
-names, message excerpts in reports). Tool results mark these fields as untrusted
-(`"untrusted": true` per field, plus a fixed note in the tool description) so the agent
-treats them as data. Combined with 4.4, a malicious report text cannot cause a ban without
-the operator's TOTP.
+- Some admin tools return text written by other users: report contents, usernames, guild
+  names, message excerpts. Tool results mark these fields as untrusted, and a fixed note in
+  the tool description says so. Combined with 4.4, a malicious report text cannot cause a ban
+  without the operator approving it on the Kaiku page.
+- Audit entries for MCP-driven mutations are written **in the same transaction** as the
+  mutation where possible. Where not, an audit failure is logged as an error and surfaced in
+  the tool result, never silently dropped. Existing best-effort audit sites (content filters)
+  are brought in line as part of v1.1-a.
 
 ### 4.6 Resources and prompts
 
-- MCP *resources* for read-mostly context: `kaiku://server/overview`,
-  `kaiku://admin/audit-log/recent`, `kaiku://docs/admin-guide/<page>` (bundled admin guide
-  pages, so the agent can answer "how do I…" from the shipped docs).
-- MCP *prompts* for frequent workflows: "onboard a family member" (create account with a
-  temporary password, add to guilds), "weekly health check".
+- MCP *resources* for read-mostly context:
+  - `kaiku://server/overview`
+  - `kaiku://admin/audit-log/recent`
+  - `kaiku://docs/admin-guide/<page>`: bundled admin guide pages, so the agent can answer
+    "how do I…" from the shipped docs.
+- MCP *prompts* for frequent workflows: "onboard a family member" (create an account with a
+  temporary password and add it to guilds), "weekly health check".
 
 ## 5. Part 2 — Agent bots (Hermes and others)
 
@@ -250,9 +324,11 @@ Both paths use the same server-side additions (5.3) and the same bot identity.
 
 ### 5.4 Safety rules for agent bots
 
-- An agent bot token never carries `admin:*` scopes. The admin MCP and chat bots are
-  **separate identities with separate tokens**; the server refuses a token that combines
-  `bot:*` with `admin:*`. (Anti-goal: prompt injection reaching admin tools.)
+- A token with a `bot:*` scope never also carries `admin:*` or `guild:manage`. The admin MCP
+  and chat bots are **separate identities with separate tokens**; the server refuses such
+  combinations at creation and at use. Bot tools authorise **as the bot user**, never as the
+  bot's owner. (Anti-goal: prompt injection from chat reaching admin or guild-management
+  powers.)
 - Everything a bot receives from chat is untrusted input.
 - Bots are installed per guild by someone with `MANAGE_GUILD` and see only the channels they
   are allowed in (5.3).
@@ -265,7 +341,7 @@ Both paths use the same server-side additions (5.3) and the same bot identity.
 |---|---|---|
 | v1.1-a | Parity gaps API (3.1), audit coverage, agent tokens (4.3) | — |
 | v1.1-b | `/mcp` endpoint, OpenAPI-derived tools, `read` + `write` tiers, CI parity guard | a |
-| v1.1-c | `elevated` + `destructive` tiers (TOTP elevation, confirmations), resources/prompts | b |
+| v1.1-c | `elevated` + `destructive` tiers: device approvals (push to Android, desktop dialog, device keys), TOTP approval page as fallback, resources/prompts | b, web client (RC2) |
 | v1.1-d | Bot additions (5.3) incl. channel-visibility fix — the visibility fix may be pulled into a 1.0.x patch | a |
 | v1.1-e | Agent bot path A (Hermes adapter or bridge, after spike) and path B (bot MCP tools) | b, d |
 
@@ -280,8 +356,9 @@ Both paths use the same server-side additions (5.3) and the same bot identity.
 ## 8. Maintainer decisions (2026-10-30)
 
 1. Elevation window for agent tokens: **10 minutes**. **(maintainer)**
-2. `elevated` and `destructive` MCP tools require **TOTP only**; a password entered via
-   elicitation does not count, and admin accounts without TOTP cannot use these tiers.
-   **(maintainer)**
+2. Approval for `elevated` and `destructive` MCP tools: **a notification on mobile or
+   desktop that is simply confirmed** (signed by the owner's device; Android also needs the
+   phone unlocked). TOTP on the Kaiku approval page is the fallback. A password never
+   counts. **(maintainer; replaces the earlier "TOTP only" answer the same evening)**
 3. v1.1 ships the admin MCP for **system admins first**; guild owners managing their own
    guilds through the MCP is a later step. **(maintainer)**
