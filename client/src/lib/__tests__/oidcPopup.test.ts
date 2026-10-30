@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { watchSsoPopup, CLOSE_GRACE_MS } from "../oidcPopup";
+import { watchSsoPopup, waitForSessionRestore, CLOSE_GRACE_MS, RESTORE_POLL_MS, RESTORE_WAIT_CAP_MS } from "../oidcPopup";
 
 const ORIGIN = window.location.origin;
 const msg = (source: unknown) =>
@@ -67,5 +67,50 @@ describe("watchSsoPopup", () => {
     window.dispatchEvent(msg(popup));
     expect(onClosed).not.toHaveBeenCalled();
     expect(onResult).not.toHaveBeenCalled();
+  });
+});
+
+describe("waitForSessionRestore", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("retries on interval and focus until it works, then stops", async () => {
+    const restore = vi.fn<() => Promise<boolean>>().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true);
+    const onDone = vi.fn();
+    waitForSessionRestore({ restore, onDone });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(restore).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(restore).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(RESTORE_POLL_MS);
+    expect(onDone).toHaveBeenCalledWith(true);
+    const calls = restore.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(RESTORE_POLL_MS * 3);
+    expect(restore.mock.calls.length).toBe(calls);
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives up at the cap", async () => {
+    const restore = vi.fn<() => Promise<boolean>>().mockResolvedValue(false);
+    const onDone = vi.fn();
+    waitForSessionRestore({ restore, onDone });
+    await vi.advanceTimersByTimeAsync(RESTORE_WAIT_CAP_MS + 10);
+    expect(onDone).toHaveBeenCalledExactlyOnceWith(false);
+    const calls = restore.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(RESTORE_POLL_MS * 3);
+    expect(restore.mock.calls.length).toBe(calls);
+  });
+
+  it("dispose stops retries without calling onDone", async () => {
+    const restore = vi.fn<() => Promise<boolean>>().mockResolvedValue(false);
+    const onDone = vi.fn();
+    const stop = waitForSessionRestore({ restore, onDone });
+    stop();
+    const calls = restore.mock.calls.length;
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(RESTORE_WAIT_CAP_MS + 10);
+    expect(restore.mock.calls.length).toBe(calls);
+    expect(onDone).not.toHaveBeenCalled();
   });
 });

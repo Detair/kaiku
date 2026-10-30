@@ -67,3 +67,56 @@ export function watchSsoPopup(opts: {
   window.addEventListener("message", handler);
   return stop;
 }
+
+/** Retry interval and overall cap while waiting for a sign-in finished elsewhere. */
+export const RESTORE_POLL_MS = 2500;
+export const RESTORE_WAIT_CAP_MS = 5 * 60 * 1000;
+
+/**
+ * After the popup was reported closed without a result (an IdP with COOP can
+ * make it look closed while the user is still signing in), keep trying to
+ * resume the session: now, on window focus / tab visible, and on an interval,
+ * until it works, the cap passes, or the returned disposer runs.
+ * `onDone(true)` = session restored; `onDone(false)` = gave up at the cap.
+ * Disposing never calls `onDone`.
+ */
+export function waitForSessionRestore(opts: {
+  restore: () => Promise<boolean>;
+  onDone: (restored: boolean) => void;
+}): () => void {
+  let settled = false;
+  let inFlight = false;
+  const stop = () => {
+    settled = true;
+    clearInterval(poll);
+    clearTimeout(cap);
+    window.removeEventListener("focus", attempt);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
+  const attempt = () => {
+    if (settled || inFlight) return;
+    inFlight = true;
+    void opts
+      .restore()
+      .catch(() => false)
+      .then((ok) => {
+        inFlight = false;
+        if (settled || !ok) return;
+        stop();
+        opts.onDone(true);
+      });
+  };
+  const onVisible = () => {
+    if (document.visibilityState === "visible") attempt();
+  };
+  const poll = setInterval(attempt, RESTORE_POLL_MS);
+  const cap = setTimeout(() => {
+    if (settled) return;
+    stop();
+    opts.onDone(false);
+  }, RESTORE_WAIT_CAP_MS);
+  window.addEventListener("focus", attempt);
+  document.addEventListener("visibilitychange", onVisible);
+  attempt();
+  return stop;
+}

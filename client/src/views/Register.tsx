@@ -16,7 +16,7 @@ import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
 import { t } from "@/i18n";
 import { isTauri } from "@/lib/tauri/common";
-import { openBlankSsoPopup, watchSsoPopup } from "@/lib/oidcPopup";
+import { openBlankSsoPopup, watchSsoPopup, waitForSessionRestore } from "@/lib/oidcPopup";
 import { safeReturnUrl } from "@/lib/returnUrl";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "@/lib/authErrors";
@@ -41,6 +41,12 @@ const Register: Component = () => {
   // SSO popup watcher: ends with the view so a late result cannot act on a dead page.
   let stopWatching: (() => void) | undefined;
   let ssoPopup: Window | null = null;
+  const [waitingForSignIn, setWaitingForSignIn] = createSignal(false);
+  const cancelWaiting = () => {
+    stopWatching?.();
+    setWaitingForSignIn(false);
+    setOidcLoading(null);
+  };
   onCleanup(() => {
     stopWatching?.();
     ssoPopup?.close();
@@ -177,11 +183,17 @@ const Register: Component = () => {
             });
         },
         onClosedWithoutResult: () => {
-          // The callback may have lost its opener; the refresh cookie is set
-          // anyway, so try to resume the session once.
-          void restoreSessionAfterPopup().then((restored) => {
-            if (restored) navigate(afterRegister(), { replace: true });
-            setOidcLoading(null);
+          // The callback may have lost its opener, or the popup only looks
+          // closed while the user is still signing in. The refresh cookie is
+          // set once they finish, so keep trying to resume the session.
+          setWaitingForSignIn(true);
+          stopWatching = waitForSessionRestore({
+            restore: restoreSessionAfterPopup,
+            onDone: (restored) => {
+              setWaitingForSignIn(false);
+              setOidcLoading(null);
+              if (restored) navigate(afterRegister(), { replace: true });
+            },
           });
         },
       });
@@ -273,6 +285,14 @@ const Register: Component = () => {
               }}
             </For>
           </div>
+            <Show when={waitingForSignIn()}>
+              <div class="mb-4 flex items-center justify-between gap-3 text-sm text-text-secondary" role="status">
+                <span>{t("auth.register.waitingForSignIn")}</span>
+                <button type="button" class="underline" onClick={cancelWaiting}>
+                  {t("common.cancel")}
+                </button>
+              </div>
+            </Show>
 
           <Show when={showLocalRegister()}>
             <div class="relative my-5">
