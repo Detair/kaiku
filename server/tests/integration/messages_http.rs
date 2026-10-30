@@ -531,10 +531,14 @@ async fn test_list_messages_around_reports_older_history(pool: PgPool) {
     );
     assert_eq!(got.first().unwrap(), &msgs[31].to_string());
     assert_eq!(got.last().unwrap(), &msgs[59].to_string());
+    // The cursor is the oldest returned message, to be used as `before`.
+    assert_eq!(page["next_cursor"], msgs[31].to_string());
 
     // Exactly half + 1 messages up to the anchor: nothing older.
     let page = list_messages(&app, channel_id, &token, &around(msgs[25])).await;
     assert_eq!(page["has_more"], false);
+    // No older history: no cursor (omitted, as for `before`/`after` pages).
+    assert!(page["next_cursor"].is_null(), "{page}");
     assert_eq!(ids(&page["items"]).first().unwrap(), &msgs[0].to_string());
 
     // One more: the oldest message is outside the window.
