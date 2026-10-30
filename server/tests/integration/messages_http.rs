@@ -524,7 +524,11 @@ async fn test_list_messages_around_reports_older_history(pool: PgPool) {
     let page = list_messages(&app, channel_id, &token, &around(msgs[56])).await;
     assert_eq!(page["has_more"], true);
     let got = ids(&page["items"]);
-    assert_eq!(got.len(), 26 + 3, "half + 1 up to the anchor, then the 3 newer ones");
+    assert_eq!(
+        got.len(),
+        26 + 3,
+        "half + 1 up to the anchor, then the 3 newer ones"
+    );
     assert_eq!(got.first().unwrap(), &msgs[31].to_string());
     assert_eq!(got.last().unwrap(), &msgs[59].to_string());
 

@@ -1025,6 +1025,7 @@ pub async fn list_messages_after(
 }
 
 /// Fetch messages around a specific message ID, ascending.
+///
 /// Returns up to `limit / 2 + 2` messages up to and including `around_id` and
 /// up to `limit / 2` after it. One message beyond `limit / 2 + 1` on the older
 /// side only signals that older history exists; the caller drops it.
