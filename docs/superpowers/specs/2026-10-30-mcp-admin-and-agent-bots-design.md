@@ -174,9 +174,11 @@ emoji upload is multipart, and its tool takes base64 content plus a filename.
 document is not enough, because paths are registered by hand (`openapi.rs`). Rebuilding every
 router from one table would be a large refactor right after the family release. So:
 
-- **Source-scanning CI test** in the style of `server/src/error_code_tests.rs`: every
-  `.route("…")` literal in the management modules must appear in `ApiDoc::openapi()` with an
-  `x-mcp` extension or with an entry in an explicit exclusion list that gives a reason. The
+- **Source-scanning CI test** in the style of `server/src/error_code_tests.rs`: every mounted
+  **HTTP method + full path** in the management modules (including chained methods such as
+  `get(..).post(..)` and nested router prefixes) must match an OpenAPI **operation** with an
+  `x-mcp` extension, or an entry in an explicit exclusion list that gives a reason. A new POST
+  or DELETE on an already documented path therefore fails CI too. The
   management modules are `admin/`, and the guild, channel, category, role, override, invite,
   emoji, webhook, filter, bot-install, screening, event, reaction-role and page modules.
 - **Same test, two more checks:** tool names must be unique, and the tier must be set.
@@ -243,10 +245,15 @@ A new credential type for the admin MCP. Agent bots keep using their existing bo
   triggered from:
   - the owner's settings;
   - the admin panel (system admins can revoke anyone's token);
-  - an MCP tool;
+  - the MCP tool `agent_token_revoke_self`. This is the **only** agent-token-management
+    action an agent token may call, and only for its own token; it is an explicit exception
+    to the default deny;
   - banning or deleting the owner, which revokes all their tokens and closes their streams.
 
-  Revoking a token deletes its elevation window (FK cascade, below).
+  Revocation sets `revoked_at`, so the FK cascade does not fire. The revocation transaction
+  therefore **explicitly deletes the token's `elevated_sessions` row and pending approvals**
+  and invalidates the cached elevation (`admin:elevated:at:{token_id}`) and token entries. The
+  cascade only covers hard deletion of the token row.
 - **Elevation storage:** `elevated_sessions.session_id` becomes nullable, and a nullable
   `agent_token_id` (FK `agent_tokens(id) ON DELETE CASCADE`) is added.
   - A check constraint requires exactly one of the two.
@@ -385,8 +392,15 @@ reach the model, which could apply it to a different pending action. So:
    - **States:** approvals follow `pending → approved → consumed`, `pending → denied` and
      `pending → expired`.
      - **Transitions:** each one is a single conditional
-       `UPDATE … WHERE state = <from> AND expires_at > now()`; expiry is applied lazily by
-       that predicate, so no sweeper is needed.
+       `UPDATE … WHERE state = <from> AND expires_at > now()`.
+     - **Expiry:** `pending` and `approved` requests both have `expires_at` (5 minutes from
+       creation; approving does not extend it). Both move to `expired` in one of two ways:
+       - when touched after `expires_at` (`UPDATE … SET state='expired' WHERE state IN
+         ('pending','approved') AND expires_at <= now()`);
+       - through a small periodic sweep (every minute, the same statement), so abandoned
+         requests are audited as `expired` and release their slot.
+     - **Open-approval limit:** only `pending` and unexpired `approved` requests count
+       toward the limit of 3 open approvals, so abandoned ones cannot exhaust it.
      - **No races:** approve, deny, expiry and consumption cannot overlap.
      - **Elevation:** consuming an elevation approval creates the 10-minute window.
      - **Audit:** every transition is audited, with the device id for approve/deny.
