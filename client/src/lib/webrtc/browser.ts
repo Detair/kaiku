@@ -886,6 +886,15 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
         return { ok: true, value: undefined };
       } catch (err) {
+        if (this.isDeviceGoneError(err)) {
+          return {
+            ok: false,
+            error: {
+              type: "device_not_found",
+              message: err instanceof Error ? err.message : String(err),
+            },
+          };
+        }
         return { ok: false, error: this.mapMediaError(err) };
       }
     }
@@ -903,7 +912,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     // Uses setSinkId API (supported in modern browsers)
     try {
       let applied = 0;
-      let failed: unknown = null;
+      let failed: unknown = null; // transient (e.g. NotAllowedError)
+      let notFound: unknown = null; // the speaker no longer exists
       for (const stream of this.remoteStreams.values()) {
         const audioElements = document.querySelectorAll(
           `audio[data-stream-id="${stream.id}"]`,
@@ -915,19 +925,25 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
               applied++;
             } catch (err) {
               console.warn("[BrowserVoiceAdapter] Failed to set sink on element:", err);
-              failed = err;
+              if ((err as { name?: string } | null)?.name === "NotFoundError") {
+                notFound = err;
+              } else {
+                failed = err;
+              }
             }
           }
         }
       }
-      // Report a stale/unplugged speaker so the caller can forget it.
-      if (failed && applied === 0) {
+      // Only a speaker that no longer exists is "not found" (the caller
+      // forgets it); other failures must not erase the saved choice.
+      if (applied === 0 && (notFound || failed)) {
+        const err = notFound ?? failed;
+        const message = err instanceof Error ? err.message : String(err);
         return {
           ok: false,
-          error: {
-            type: "device_not_found",
-            message: failed instanceof Error ? failed.message : String(failed),
-          },
+          error: notFound
+            ? { type: "device_not_found", message }
+            : { type: "unknown", message },
         };
       }
       return { ok: true, value: undefined };

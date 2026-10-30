@@ -529,6 +529,25 @@ describe("voice store", () => {
       expect(updateAudioSetting).toHaveBeenCalledWith("input_device", null);
     });
 
+    it("keeps the stored device on a transient failure", async () => {
+      const { updateAudioSetting } = await import("@/stores/settings");
+      vi.mocked(updateAudioSetting).mockClear();
+      vi.mocked(appSettings).mockReturnValueOnce({
+        voice: voiceSettings,
+        audio: { input_device: "Busy", output_device: "Spk" },
+      } as unknown as ReturnType<typeof appSettings>);
+      mockAdapter.setInputDevice.mockResolvedValueOnce({
+        ok: false,
+        error: { type: "device_in_use", message: "busy" },
+      });
+      mockAdapter.setOutputDevice.mockResolvedValueOnce({
+        ok: false,
+        error: { type: "permission_denied", message: "no" },
+      });
+      await applyStoredAudioDevices(mockAdapter as unknown as VoiceAdapter);
+      expect(updateAudioSetting).not.toHaveBeenCalled();
+    });
+
     it("applies the stored noise-suppression preference before joining (browser)", async () => {
       const setNs = vi.fn().mockResolvedValue({ ok: true });
       const fake = { isNoiseSuppressionEnabled: () => true, setNoiseSuppression: setNs };

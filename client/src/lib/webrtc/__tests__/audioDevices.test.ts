@@ -115,7 +115,7 @@ describe("BrowserVoiceAdapter stale device handling", () => {
     el.dataset.streamId = "s1";
     (el as unknown as { setSinkId: unknown }).setSinkId = vi
       .fn()
-      .mockRejectedValue(new Error("NotFoundError"));
+      .mockRejectedValue(Object.assign(new Error("gone"), { name: "NotFoundError" }));
     document.body.appendChild(el);
     (adapter as unknown as { remoteStreams: Map<string, unknown> }).remoteStreams.set("u", {
       id: "s1",
@@ -123,5 +123,36 @@ describe("BrowserVoiceAdapter stale device handling", () => {
     const r = await adapter.setOutputDevice("stale");
     el.remove();
     expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.type).toBe("device_not_found");
+  });
+
+  it("does not call a transient setSinkId failure device_not_found", async () => {
+    const adapter = new BrowserVoiceAdapter();
+    const el = document.createElement("audio");
+    el.dataset.streamId = "s2";
+    (el as unknown as { setSinkId: unknown }).setSinkId = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("denied"), { name: "NotAllowedError" }));
+    document.body.appendChild(el);
+    (adapter as unknown as { remoteStreams: Map<string, unknown> }).remoteStreams.set("u", {
+      id: "s2",
+    });
+    const r = await adapter.setOutputDevice("x");
+    el.remove();
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.type).not.toBe("device_not_found");
+  });
+
+  it("maps an in-call OverconstrainedError to device_not_found", async () => {
+    const { adapter } = inCall();
+    vi.stubGlobal("navigator", {
+      mediaDevices: {
+        getUserMedia: vi
+          .fn()
+          .mockRejectedValue(Object.assign(new Error("x"), { name: "OverconstrainedError" })),
+      },
+    });
+    const r = await adapter.setInputDevice("stale");
+    expect(!r.ok && r.error.type).toBe("device_not_found");
   });
 });

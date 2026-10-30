@@ -287,17 +287,10 @@ export async function cleanupVoice(): Promise<void> {
 }
 
 /**
- * Join a voice channel.
- */
-/**
- * Apply the input/output devices stored in settings to the voice adapter.
- * Called on every voice join; failures are non-fatal (the system default
- * device keeps working) but are logged for diagnosis. Exported for tests.
- */
-/**
- * Browser mode: a stored device that can no longer be opened (unplugged,
- * or the browser rotated its id) is cleared so the next join starts clean
- * on the system default. Native keeps its own device bookkeeping.
+ * Browser mode: a stored device that no longer exists (unplugged, or the
+ * browser rotated its id) is cleared so the next join starts clean
+ * on the system default. Transient failures (mic busy, permission denied)
+ * keep the saved choice. Native keeps its own device bookkeeping.
  */
 async function forgetStoredDevice(
   key: "input_device" | "output_device",
@@ -329,6 +322,11 @@ export async function applyStoredNoiseSuppression(
   await adapter.setNoiseSuppression(stored);
 }
 
+/**
+ * Apply the input/output devices stored in settings to the voice adapter.
+ * Called on every voice join; failures are non-fatal (the system default
+ * device keeps working) but are logged for diagnosis. Exported for tests.
+ */
 export async function applyStoredAudioDevices(
   adapter: VoiceAdapter,
 ): Promise<void> {
@@ -342,7 +340,9 @@ export async function applyStoredAudioDevices(
         "[Voice] Failed to apply stored input device:",
         result.error,
       );
-      await forgetStoredDevice("input_device");
+      if (result.error.type === "device_not_found") {
+        await forgetStoredDevice("input_device");
+      }
     }
   }
   if (audio.output_device) {
@@ -352,11 +352,16 @@ export async function applyStoredAudioDevices(
         "[Voice] Failed to apply stored output device:",
         result.error,
       );
-      await forgetStoredDevice("output_device");
+      if (result.error.type === "device_not_found") {
+        await forgetStoredDevice("output_device");
+      }
     }
   }
 }
 
+/**
+ * Join a voice channel.
+ */
 export async function joinVoice(channelId: string): Promise<void> {
   if (isJoining) {
     console.warn("[Voice] Join already in progress, ignoring duplicate call");
