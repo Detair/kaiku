@@ -48,14 +48,17 @@ const NotificationSettings: Component = () => {
     document.addEventListener("visibilitychange", onVisible);
     const unsubscribe = onBrowserNotificationStateChange(refreshPermission);
     let status: PermissionStatus | undefined;
+    let disposed = false;
     navigator.permissions
       ?.query({ name: "notifications" })
       .then((s) => {
+        if (disposed) return;
         status = s;
         s.onchange = refreshPermission;
       })
       .catch(() => {});
     onCleanup(() => {
+      disposed = true;
       window.removeEventListener("focus", refreshPermission);
       document.removeEventListener("visibilitychange", onVisible);
       unsubscribe();
