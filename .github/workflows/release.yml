@@ -30,6 +30,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   SERVER_IMAGE: ghcr.io/detair/kaiku-server
+  WEB_IMAGE: ghcr.io/detair/kaiku-web
 
 jobs:
   # ===========================================================================
@@ -413,6 +414,72 @@ jobs:
           retention-days: 1
 
   # ===========================================================================
+  # Build Web Client Image
+  # ===========================================================================
+  # Same contract as build-docker: build and smoke-test with the release
+  # version, export the image, push nothing here.
+  build-docker-web:
+    name: Build and Smoke-test Web Image
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.WEB_IMAGE }}
+          # latest only for final releases (R-08); release candidates get only their version.
+          tags: |
+            type=raw,value=${{ needs.prepare-release.outputs.version }}
+            type=raw,value=latest,enable=${{ needs.prepare-release.outputs.is_prerelease == 'false' }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.prepare-release.outputs.version }}
+            org.opencontainers.image.source=https://github.com/Detair/kaiku
+
+      - name: Build image for smoke test
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: infra/docker/web/Dockerfile
+          build-args: |
+            KAIKU_VERSION=${{ needs.prepare-release.outputs.version }}
+          load: true
+          push: false
+          tags: kaiku-web:smoke
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+      - name: Smoke test
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: infra/docker/web/smoke-test.sh kaiku-web:smoke "$VERSION"
+
+      # Dry runs export too, so the hand-off to push-image is exercised.
+      - name: Export smoke-tested image
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/web-image"
+          docker save kaiku-web:smoke | gzip > "$RUNNER_TEMP/web-image/kaiku-web.tar.gz"
+          ls -lh "$RUNNER_TEMP/web-image"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-image
+          path: ${{ runner.temp }}/web-image/kaiku-web.tar.gz
+          retention-days: 1
+
+  # ===========================================================================
   # Build Android APK
   # ===========================================================================
   # Same secret scoping as build-tauri: the release environment (and so the
@@ -565,7 +632,7 @@ jobs:
   # ===========================================================================
   publish-release:
     name: Publish GitHub Release
-    needs: [prepare-release, build-tauri, build-docker, build-android]
+    needs: [prepare-release, build-tauri, build-docker, build-docker-web, build-android]
     # Only publish runs (tag push, or dispatch with dry_run unticked) publish.
     if: needs.prepare-release.outputs.publish == 'true'
     runs-on: ubuntu-latest
@@ -673,6 +740,7 @@ jobs:
 
             ## Server Deployment
             Server image: `${{ env.SERVER_IMAGE }}:${{ needs.prepare-release.outputs.version }}`
+            Web client image: `${{ env.WEB_IMAGE }}:${{ needs.prepare-release.outputs.version }}` (see `docs/admin-guide/ops/web-client.md`)
           draft: true
           prerelease: ${{ needs.prepare-release.outputs.is_prerelease == 'true' }}
           files: |
@@ -687,9 +755,15 @@ jobs:
   # builds succeeded and the draft release exists, so a failed platform never
   # leaves a published image without a release.
   push-image:
-    name: Push Server Image
-    needs: [prepare-release, build-tauri, build-docker, build-android, publish-release]
+    name: Push Server and Web Images
+    needs: [prepare-release, build-tauri, build-docker, build-docker-web, build-android, publish-release]
     if: needs.prepare-release.outputs.publish == 'true'
+    # One push at a time across all releases: the latest check below reads
+    # the current tag and then moves it, which two overlapping release runs
+    # could otherwise interleave (moving latest backwards).
+    concurrency:
+      group: release-push-image
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -697,11 +771,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Download image artifact
+      - name: Download server image artifact
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: server-image
           path: ${{ runner.temp }}/server-image
+
+      - name: Download web image artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-image
+          path: ${{ runner.temp }}/web-image
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -710,51 +790,66 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Load, check and push image
+      - name: Load, check and push images
         env:
-          TAGS: ${{ needs.build-docker.outputs.tags }}
+          SERVER_TAGS: ${{ needs.build-docker.outputs.tags }}
+          WEB_TAGS: ${{ needs.build-docker-web.outputs.tags }}
           VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           set -euo pipefail
-          gunzip -c "$RUNNER_TEMP/server-image/kaiku-server.tar.gz" | docker load
-          label="$(docker image inspect kaiku-server:smoke \
-            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
-          if [ "$label" != "$VERSION" ]; then
-            echo "::error::Image version label '$label' does not match release version '$VERSION'"
-            exit 1
-          fi
-          pushed=0
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-            case "$tag" in
-              "$SERVER_IMAGE":*) ;;
-              *) echo "::error::Refusing to push unexpected tag $tag"; exit 1 ;;
-            esac
-            if [ "$tag" = "$SERVER_IMAGE:latest" ]; then
-              # `latest` must never move backwards (e.g. a late 1.0.0 run
-              # after 1.1.0 was published). The version tag is always pushed.
-              if docker pull "$tag" >/dev/null 2>"$RUNNER_TEMP/pull.err"; then
-                current="$(docker image inspect "$tag" \
-                  --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
-                decision="$(python3 scripts/latest_tag_decision.py decide --new "$VERSION" --current "$current")"
-              elif [ "$(python3 scripts/latest_tag_decision.py classify "$RUNNER_TEMP/pull.err")" = "absent" ]; then
-                decision="$(python3 scripts/latest_tag_decision.py decide --new "$VERSION" --absent)"
-              else
-                cat "$RUNNER_TEMP/pull.err"
-                echo "::error::Cannot determine current latest (pull failed for a reason other than 'manifest unknown')"
-                exit 1
-              fi
-              if [ "$decision" != "push" ]; then
-                echo "::warning::Not moving latest (decision: $decision); see reason above"
-                continue
-              fi
+          # load_image ARCHIVE LOCAL_TAG IMAGE: load the smoke-tested image
+          # and check its version label. Both images are loaded and checked
+          # before anything is pushed.
+          load_image() {
+            local archive="$1" local_tag="$2" image="$3"
+            gunzip -c "$archive" | docker load
+            label="$(docker image inspect "$local_tag" \
+              --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+            if [ "$label" != "$VERSION" ]; then
+              echo "::error::$image version label '$label' does not match release version '$VERSION'"
+              exit 1
             fi
-            docker tag kaiku-server:smoke "$tag"
-            docker push "$tag"
-            echo "pushed $tag"
-            pushed=$((pushed + 1))
-          done <<< "$TAGS"
-          if [ "$pushed" -eq 0 ]; then
-            echo "::error::No image tags to push"
-            exit 1
-          fi
+          }
+          # push_image LOCAL_TAG IMAGE TAGS: push each expected tag.
+          push_image() {
+            local local_tag="$1" image="$2" tags="$3"
+            pushed=0
+            while IFS= read -r tag; do
+              [ -n "$tag" ] || continue
+              case "$tag" in
+                "$image":*) ;;
+                *) echo "::error::Refusing to push unexpected tag $tag"; exit 1 ;;
+              esac
+              if [ "$tag" = "$image:latest" ]; then
+                # `latest` must never move backwards (e.g. a late 1.0.0 run
+                # after 1.1.0 was published). The version tag is always pushed.
+                if docker pull "$tag" >/dev/null 2>"$RUNNER_TEMP/pull.err"; then
+                  current="$(docker image inspect "$tag" \
+                    --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+                  decision="$(python3 scripts/latest_tag_decision.py decide --new "$VERSION" --current "$current")"
+                elif [ "$(python3 scripts/latest_tag_decision.py classify "$RUNNER_TEMP/pull.err")" = "absent" ]; then
+                  decision="$(python3 scripts/latest_tag_decision.py decide --new "$VERSION" --absent)"
+                else
+                  cat "$RUNNER_TEMP/pull.err"
+                  echo "::error::Cannot determine current latest of $image (pull failed for a reason other than 'manifest unknown')"
+                  exit 1
+                fi
+                if [ "$decision" != "push" ]; then
+                  echo "::warning::Not moving $image latest (decision: $decision); see reason above"
+                  continue
+                fi
+              fi
+              docker tag "$local_tag" "$tag"
+              docker push "$tag"
+              echo "pushed $tag"
+              pushed=$((pushed + 1))
+            done <<< "$tags"
+            if [ "$pushed" -eq 0 ]; then
+              echo "::error::No $image tags to push"
+              exit 1
+            fi
+          }
+          load_image "$RUNNER_TEMP/server-image/kaiku-server.tar.gz" kaiku-server:smoke "$SERVER_IMAGE"
+          load_image "$RUNNER_TEMP/web-image/kaiku-web.tar.gz" kaiku-web:smoke "$WEB_IMAGE"
+          push_image kaiku-server:smoke "$SERVER_IMAGE" "$SERVER_TAGS"
+          push_image kaiku-web:smoke "$WEB_IMAGE" "$WEB_TAGS"

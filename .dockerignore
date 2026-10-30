@@ -1,0 +1,11 @@
+# Build context for infra/docker/Dockerfile (server) and
+# infra/docker/web/Dockerfile (web client). Both copy only what they need;
+# this keeps local build artifacts out of the context.
+.git
+.claude
+**/target
+**/node_modules
+client/dist
+client/src-tauri/gen
+mobile/android/**/build
+mobile/android/.gradle

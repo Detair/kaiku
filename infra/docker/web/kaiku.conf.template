@@ -1,0 +1,68 @@
+# Site config for the Kaiku web image. The entrypoint renders this with
+# envsubst (only ${KAIKU_MEDIA_ORIGINS} and ${KAIKU_LISTEN_V6} are
+# substituted; nginx variables such as $host stay as they are) into
+# /tmp/nginx/kaiku.conf.
+
+# Vite fingerprints everything under /assets/, so those never change. Other
+# public files (fonts, theme images, sounds) keep stable names; index.html
+# and the files it loads by name must always be revalidated.
+map $uri $kaiku_cache_control {
+    ~^/assets/                                  "public, max-age=31536000, immutable";
+    ~^/(fonts|themes|sounds|wallpapers)/        "public, max-age=86400";
+    default                                     "no-cache";
+}
+
+server {
+    listen 8080;
+    ${KAIKU_LISTEN_V6}
+    server_name _;
+    # Redirects (e.g. /fonts -> /fonts/) stay relative to the public origin.
+    absolute_redirect off;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Every response gets the same headers; locations below must not use
+    # add_header themselves (that would drop these).
+    add_header Cache-Control $kaiku_cache_control always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: ${KAIKU_MEDIA_ORIGINS}; media-src 'self' blob: ${KAIKU_MEDIA_ORIGINS}; font-src 'self' data:; connect-src 'self' wss://$host ${KAIKU_MEDIA_ORIGINS}; worker-src 'self' blob:; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "microphone=(self), camera=(self), display-capture=(self), autoplay=(self), fullscreen=(self), geolocation=(), payment=(), usb=(), serial=()" always;
+    # same-origin-allow-popups keeps window.opener for the sign-in popup.
+    add_header Cross-Origin-Opener-Policy "same-origin-allow-popups" always;
+
+    # Container health check (the server's own is /health).
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Server paths that reach this container only through a proxy
+    # misconfiguration: answer 404 instead of the app's index.html.
+    location ~ ^/(api|auth)(/|$) {
+        return 404;
+    }
+    location = /ws {
+        return 404;
+    }
+    location = /health {
+        return 404;
+    }
+
+    location /assets/ {
+        try_files $uri =404;
+    }
+
+    # Other static folders: a missing file is a 404, not the app.
+    location ~ ^/(fonts|themes|sounds|wallpapers)/ {
+        try_files $uri =404;
+    }
+
+    # Client-side routes fall back to the app.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
