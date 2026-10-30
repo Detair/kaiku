@@ -76,7 +76,7 @@ const AppShell: Component<AppShellProps> = (props) => {
 
   return (
     <div
-      class="flex h-screen w-full bg-surface-base overflow-hidden selection:bg-accent-primary/30"
+      class="flex h-dvh w-full bg-surface-base overflow-hidden selection:bg-accent-primary/30"
       classList={{ "flex-col": isMobile() }}
       onPointerDown={onEdgePointerDown}
       onPointerUp={onEdgePointerUp}
