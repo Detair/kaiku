@@ -17,6 +17,7 @@ export const settings = {
   "settings.tabs.audio": "Audio",
   "settings.tabs.voice": "Voice",
   "settings.tabs.privacy": "Privacy",
+  "settings.privacy.browserNone": "Activity sharing is only available in the desktop app.",
   "settings.tabs.security": "Security",
   "settings.recoveryKey.generateFailed": "Failed to generate recovery key. Please try again.",
   "settings.recoveryKey.backupFailed": "Failed to create backup. Please try again.",

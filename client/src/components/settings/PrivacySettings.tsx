@@ -4,7 +4,8 @@
  * Controls for activity sharing and other privacy-related preferences.
  */
 
-import { Component, createSignal, onMount } from "solid-js";
+import { Component, Show, createSignal, onMount } from "solid-js";
+import { t } from "@/i18n";
 import { isTauri } from "@/lib/tauri/common";
 
 const PrivacySettings: Component = () => {
@@ -50,7 +51,8 @@ const PrivacySettings: Component = () => {
     <div class="space-y-6">
       <h3 class="text-lg font-semibold text-text-primary">Privacy</h3>
 
-      {/* Activity Status Section */}
+      {/* Activity detection is native-only (process scanning) */}
+      <Show when={isTauri()} fallback={<p class="text-sm text-text-secondary">{t("settings.privacy.browserNone")}</p>}>
       <div class="bg-surface-base rounded-xl p-4">
         <h4 class="font-medium text-text-primary mb-4">Activity Status</h4>
 
@@ -82,6 +84,7 @@ const PrivacySettings: Component = () => {
           can still see the activity status of your friends.
         </p>
       </div>
+      </Show>
     </div>
   );
 };

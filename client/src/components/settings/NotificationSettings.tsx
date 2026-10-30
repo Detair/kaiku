@@ -5,7 +5,7 @@
  * Desktop notification settings with OS notification toggles and test button.
  */
 
-import { Component, For, createSignal, createMemo } from "solid-js";
+import { Component, For, Show, createSignal, createMemo, onCleanup, onMount } from "solid-js";
 import { Check, Volume2, Play, Moon, Clock, Bell } from "lucide-solid";
 import {
   soundSettings,
@@ -21,11 +21,68 @@ import {
 import { AVAILABLE_SOUNDS, type SoundInfo } from "@/lib/sound/types";
 import { testSound } from "@/lib/sound";
 import { preferences, updatePreference } from "@/stores/preferences";
-import { sendOsNotification } from "@/lib/notifications";
+import {
+  sendOsNotification,
+  getBrowserNotificationPermission,
+  requestBrowserNotificationPermission,
+  onBrowserNotificationStateChange,
+  type BrowserNotificationPermission,
+} from "@/lib/notifications";
+import { isTauri } from "@/lib/tauri/common";
 import { t } from "@/i18n";
 
 const NotificationSettings: Component = () => {
   const [isTesting, setIsTesting] = createSignal(false);
+  const [permission, setPermission] = createSignal<BrowserNotificationPermission>(
+    isTauri() ? "granted" : getBrowserNotificationPermission(),
+  );
+  const refreshPermission = () => {
+    if (!isTauri()) setPermission(getBrowserNotificationPermission());
+  };
+  onMount(() => {
+    if (isTauri()) return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshPermission();
+    };
+    window.addEventListener("focus", refreshPermission);
+    document.addEventListener("visibilitychange", onVisible);
+    const unsubscribe = onBrowserNotificationStateChange(refreshPermission);
+    let status: PermissionStatus | undefined;
+    let disposed = false;
+    navigator.permissions
+      ?.query({ name: "notifications" })
+      .then((s) => {
+        if (disposed) return;
+        status = s;
+        s.onchange = refreshPermission;
+      })
+      .catch(() => {});
+    onCleanup(() => {
+      disposed = true;
+      window.removeEventListener("focus", refreshPermission);
+      document.removeEventListener("visibilitychange", onVisible);
+      unsubscribe();
+      if (status) status.onchange = null;
+    });
+  });
+  const [showTestHint, setShowTestHint] = createSignal(false);
+  const permissionText = () => {
+    switch (permission()) {
+      case "granted":
+        return t("notifications.permission.granted");
+      case "default":
+        return t("notifications.permission.default");
+      case "denied":
+        return t("notifications.permission.denied");
+      default:
+        return t("notifications.permission.unsupported");
+    }
+  };
+  const permissionMissing = () => !isTauri() && permission() !== "granted";
+
+  const handleAllowNotifications = async () => {
+    setPermission(await requestBrowserNotificationPermission());
+  };
 
   // Quiet hours status preview
   const quietHoursStatus = createMemo(() => {
@@ -272,6 +329,25 @@ const NotificationSettings: Component = () => {
           {t("notifications.desktop.hint")}
         </p>
 
+        <Show when={!isTauri()}>
+          <div class="mb-4 p-3 rounded-lg bg-surface-highlight space-y-2" data-testid="notification-permission">
+            <div class="text-sm font-medium text-text-primary">
+              {t("notifications.permission.title")}
+            </div>
+            <p class="text-sm text-text-secondary">
+              {permissionText()}
+            </p>
+            <Show when={permission() === "default"}>
+              <button
+                onClick={handleAllowNotifications}
+                class="px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-sm font-medium transition-colors hover:opacity-90"
+              >
+                {t("notifications.permission.allow")}
+              </button>
+            </Show>
+          </div>
+        </Show>
+
         <div class="space-y-3">
           <label class="flex items-center gap-3 cursor-pointer">
             <input
@@ -308,6 +384,7 @@ const NotificationSettings: Component = () => {
             <span class="text-text-primary">{t("notifications.desktop.showContent")}</span>
           </label>
 
+          <Show when={isTauri()}>
           <label
             class="flex items-center gap-3 cursor-pointer"
             classList={{
@@ -327,10 +404,16 @@ const NotificationSettings: Component = () => {
             />
             <span class="text-text-primary">{t("notifications.desktop.flashTaskbar")}</span>
           </label>
+          </Show>
         </div>
 
         <button
           onClick={() => {
+            if (permissionMissing()) {
+              setShowTestHint(true);
+              return;
+            }
+            setShowTestHint(false);
             sendOsNotification(
               { type: "message_dm", channelId: "test", isDm: true },
               { username: "Kaiku", content: t("notifications.desktop.testBody"), guildName: null, channelName: null },
@@ -345,6 +428,13 @@ const NotificationSettings: Component = () => {
           <Bell class="w-4 h-4" />
           {t("notifications.desktop.sendTest")}
         </button>
+        <Show when={showTestHint() && permissionMissing()}>
+          <p class="mt-2 text-sm text-text-secondary" role="status">
+            {permission() === "default"
+              ? t("notifications.permission.testNeeded")
+              : permissionText()}
+          </p>
+        </Show>
       </div>
 
       {/* Info text */}

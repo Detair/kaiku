@@ -143,6 +143,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- Web app: Kaiku no longer asks for notification permission by itself at login. Notification settings now show whether notifications are allowed, blocked or not supported in your browser and have an "Allow notifications" button; the test button explains when permission is missing.
+- Web app: settings that only work in the desktop app (flash taskbar, activity sharing, auto-activating focus modes) are no longer shown in the browser.
 - Picking someone from the @ suggestions now mentions them (and notifies them) even when their display name differs from their username.
 - Pressing Enter sends your message again when the suggestion list has no matches (for example after typing "@" or ":" text that matches nothing).
 - The @mention, emoji and command suggestion list appears next to the message box instead of the top-left corner, and no longer causes errors after it closes.
