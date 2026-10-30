@@ -1,6 +1,6 @@
 # v1.1: Admin MCP and Agent Bots — Design
 
-**Status:** draft, 2026-10-30
+**Status:** draft, 2026-10-30 — open questions answered by the maintainer the same day
 **Target:** v1.1, after the v1.0 family release
 **Scope:** two features that share one foundation (agent tokens)
 
@@ -163,7 +163,7 @@ A new credential type, also used by agent bots (section 5):
 | `elevated` | create account, auth settings, OIDC providers, page limits, announcements, guild suspend | needs an **elevation window** for this token |
 | `destructive` | ban/unban, bulk ban, delete user/guild, revoke/grant system admin, transfer ownership, delete OIDC provider | needs a **per-call confirmation**, even inside an elevation window |
 
-**Elevation for agent tokens (coordinator call):** the token cannot elevate with a stored
+**Elevation for agent tokens (maintainer: 10 min, TOTP only):** the token cannot elevate with a stored
 secret. The MCP asks the human for a **current TOTP code**:
 
 1. The tool call returns a structured "elevation required" result, or, if the client supports
@@ -277,10 +277,11 @@ Both paths use the same server-side additions (5.3) and the same bot identity.
 - How the stdio shim is shipped (desktop bundle, separate CLI, or both).
 - UI layout of the Agent tokens page (follow existing Security settings patterns).
 
-## 8. Open questions for the maintainer
+## 8. Maintainer decisions (2026-10-30)
 
-1. Elevation window length for agent tokens: 10 min proposed (sessions use 15 min).
-2. Is "admin accounts without TOTP cannot use elevated MCP tools" acceptable, or should a
-   fresh password entry via elicitation also count?
-3. Should guild owners (not only system admins) get the admin MCP for their own guilds in
-   v1.1, or system admins first?
+1. Elevation window for agent tokens: **10 minutes**. **(maintainer)**
+2. `elevated` and `destructive` MCP tools require **TOTP only**; a password entered via
+   elicitation does not count, and admin accounts without TOTP cannot use these tiers.
+   **(maintainer)**
+3. v1.1 ships the admin MCP for **system admins first**; guild owners managing their own
+   guilds through the MCP is a later step. **(maintainer)**
