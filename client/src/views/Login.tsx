@@ -15,6 +15,8 @@ import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
 import { t } from "@/i18n";
+import { isTauri } from "@/lib/tauri/common";
+import { openBlankSsoPopup, reloadAfterSsoPopup, watchSsoPopup } from "@/lib/oidcPopup";
 import { safeReturnUrl } from "@/lib/returnUrl";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { LOGIN_ERRORS } from "@/lib/authErrors";
@@ -36,6 +38,21 @@ const Login: Component = () => {
   document.title = `${t("common.login")} | Kaiku`;
   onCleanup(() => { document.title = "Kaiku"; });
   const navigate = useNavigate();
+  // SSO popup watcher: ends with the view so a late result cannot act on a dead page.
+  let stopWatching: (() => void) | undefined;
+  let ssoPopup: Window | null = null;
+  // The popup closed without reporting back: offer a reload (see reloadAfterSsoPopup).
+  const [popupClosed, setPopupClosed] = createSignal(false);
+  let disposed = false;
+  const dismissPopupClosed = () => {
+    setPopupClosed(false);
+    setOidcLoading(null);
+  };
+  onCleanup(() => {
+    disposed = true;
+    stopWatching?.();
+    ssoPopup?.close();
+  });
   const [searchParams] = useSearchParams();
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const [serverUrl, setServerUrl] = createSignal(defaultServerUrl);
@@ -114,6 +131,16 @@ const Login: Component = () => {
   const handleOidcLogin = async (provider: OidcProvider) => {
     setLocalError("");
     clearError();
+
+    // Browser: open the popup inside the click, before any await, or popup
+    // blockers reject it. It is pointed at the provider once the server answers.
+    stopWatching?.();
+    const popup = isTauri() ? null : openBlankSsoPopup("oidc-login");
+    ssoPopup = popup;
+    if (!isTauri() && !popup) {
+      setLocalError(t("auth.login.popupBlocked"));
+      return;
+    }
     setOidcLoading(provider.slug);
 
     try {
@@ -127,19 +154,24 @@ const Login: Component = () => {
         return;
       }
 
-      // Browser: open popup and listen for postMessage callback
+      // The view went away while the server answered: start nothing.
+      if (disposed) {
+        popup?.close();
+        return;
+      }
+
+      // Browser: send the popup to the provider and wait for its callback
       const expectedOrigin = new URL(serverUrl()).origin;
-      const messageHandler = (event: MessageEvent) => {
-        // Validate origin to prevent cross-origin token theft
-        if (event.origin !== expectedOrigin) return;
-        if (event.data?.type === "oidc-callback" && event.data.access_token) {
-          window.removeEventListener("message", messageHandler);
+      stopWatching = watchSsoPopup({
+        popup: popup!,
+        expectedOrigin,
+        onResult: (data) => {
           loginWithOidc(
             serverUrl(),
-            event.data.access_token,
-            event.data.refresh_token,
-            event.data.expires_in || 900,
-            event.data.setup_required ?? false,
+            data.access_token,
+            data.refresh_token,
+            data.expires_in || 900,
+            data.setup_required ?? false,
           )
             .then(() => {
               navigate("/", { replace: true });
@@ -152,25 +184,17 @@ const Login: Component = () => {
             .finally(() => {
               setOidcLoading(null);
             });
-        }
-      };
-      window.addEventListener("message", messageHandler);
-
-      const popup = window.open(
-        result.authUrl,
-        "oidc-login",
-        "width=600,height=700",
-      );
-
-      // Cleanup if popup is closed without completing
-      const checkClosed = setInterval(() => {
-        if (popup?.closed) {
-          clearInterval(checkClosed);
-          window.removeEventListener("message", messageHandler);
-          setOidcLoading(null);
-        }
-      }, 500);
+        },
+        onClosedWithoutResult: () => {
+          // Closed by the user, or the callback lost its opener (IdP with
+          // COOP) after the sign-in already set the refresh cookie.
+          setPopupClosed(true);
+        },
+      });
+      popup!.location.href = result.authUrl;
     } catch (err) {
+      stopWatching?.();
+      popup?.close();
       setLocalError(errorText(err, "auth.login.ssoFailed", SSO_ERRORS.byCode));
       setOidcLoading(null);
     }
@@ -321,6 +345,19 @@ const Login: Component = () => {
                 }}
               </For>
             </div>
+            <Show when={popupClosed()}>
+              <div class="mb-4 flex items-center justify-between gap-3 text-sm text-text-secondary" role="status">
+                <span>{t("auth.login.popupClosed")}</span>
+                <span class="flex shrink-0 gap-3">
+                  <button type="button" class="underline" onClick={reloadAfterSsoPopup}>
+                    {t("auth.login.reload")}
+                  </button>
+                  <button type="button" class="underline" onClick={dismissPopupClosed}>
+                    {t("common.cancel")}
+                  </button>
+                </span>
+              </div>
+            </Show>
 
             <Show when={showLocalLogin()}>
               <div class="relative my-5">

@@ -143,6 +143,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- Signing in or registering with SSO in the browser now says so when the pop-up is blocked instead of spinning forever. If the pop-up closes without reporting back (some sign-in providers cut its link to the app), you get a Reload button that picks up the finished sign-in.
+- The browser app no longer talks to a server address remembered from an earlier visit on another host.
 - Picking someone from the @ suggestions now mentions them (and notifies them) even when their display name differs from their username.
 - Pressing Enter sends your message again when the suggestion list has no matches (for example after typing "@" or ":" text that matches nothing).
 - The @mention, emoji and command suggestion list appears next to the message box instead of the top-left corner, and no longer causes errors after it closes.

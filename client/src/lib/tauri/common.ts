@@ -252,10 +252,30 @@ export function isSessionRestoreBlocked(): boolean {
   return localStorage.getItem(SESSION_RESTORE_BLOCK_KEY) === "1";
 }
 
+/**
+ * Pick the server URL to restore. The browser app is served from the server's
+ * own origin, so a stored URL for another origin (an earlier visit on another
+ * host) is stale and ignored. `VITE_SERVER_URL` (dev/test) and Tauri keep
+ * using the stored value. The web image builds with `VITE_SERVER_URL` empty,
+ * so the guard is active there.
+ */
+export function resolveStoredServerUrl(stored: string | null, fallback: string): string {
+  if (!stored) return fallback;
+  if (isTauri() || import.meta.env.VITE_SERVER_URL) return stored;
+  try {
+    if (new URL(stored).origin !== window.location.origin) return fallback;
+  } catch {
+    return fallback;
+  }
+  return stored;
+}
+
 // Initialize server URL from localStorage (tokens are in-memory only)
 if (typeof localStorage !== "undefined") {
-  browserState.serverUrl =
-    localStorage.getItem("serverUrl") || browserState.serverUrl;
+  browserState.serverUrl = resolveStoredServerUrl(
+    localStorage.getItem("serverUrl"),
+    browserState.serverUrl,
+  );
 }
 
 /** Window event: the session ended for good (no silent refresh retry). */
