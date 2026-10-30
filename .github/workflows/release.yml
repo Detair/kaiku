@@ -758,6 +758,12 @@ jobs:
     name: Push Server and Web Images
     needs: [prepare-release, build-tauri, build-docker, build-docker-web, build-android, publish-release]
     if: needs.prepare-release.outputs.publish == 'true'
+    # One push at a time across all releases: the latest check below reads
+    # the current tag and then moves it, which two overlapping release runs
+    # could otherwise interleave (moving latest backwards).
+    concurrency:
+      group: release-push-image
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -791,10 +797,11 @@ jobs:
           VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           set -euo pipefail
-          # push_image ARCHIVE LOCAL_TAG IMAGE TAGS: load the smoke-tested
-          # image, check its version label and push each expected tag.
-          push_image() {
-            local archive="$1" local_tag="$2" image="$3" tags="$4"
+          # load_image ARCHIVE LOCAL_TAG IMAGE: load the smoke-tested image
+          # and check its version label. Both images are loaded and checked
+          # before anything is pushed.
+          load_image() {
+            local archive="$1" local_tag="$2" image="$3"
             gunzip -c "$archive" | docker load
             label="$(docker image inspect "$local_tag" \
               --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
@@ -802,6 +809,10 @@ jobs:
               echo "::error::$image version label '$label' does not match release version '$VERSION'"
               exit 1
             fi
+          }
+          # push_image LOCAL_TAG IMAGE TAGS: push each expected tag.
+          push_image() {
+            local local_tag="$1" image="$2" tags="$3"
             pushed=0
             while IFS= read -r tag; do
               [ -n "$tag" ] || continue
@@ -838,5 +849,7 @@ jobs:
               exit 1
             fi
           }
-          push_image "$RUNNER_TEMP/server-image/kaiku-server.tar.gz" kaiku-server:smoke "$SERVER_IMAGE" "$SERVER_TAGS"
-          push_image "$RUNNER_TEMP/web-image/kaiku-web.tar.gz" kaiku-web:smoke "$WEB_IMAGE" "$WEB_TAGS"
+          load_image "$RUNNER_TEMP/server-image/kaiku-server.tar.gz" kaiku-server:smoke "$SERVER_IMAGE"
+          load_image "$RUNNER_TEMP/web-image/kaiku-web.tar.gz" kaiku-web:smoke "$WEB_IMAGE"
+          push_image kaiku-server:smoke "$SERVER_IMAGE" "$SERVER_TAGS"
+          push_image kaiku-web:smoke "$WEB_IMAGE" "$WEB_TAGS"
