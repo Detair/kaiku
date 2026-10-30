@@ -102,6 +102,36 @@ describe("waitForSessionRestore", () => {
     expect(restore.mock.calls.length).toBe(calls);
   });
 
+  it("aborts the in-flight attempt on dispose and never overlaps attempts", async () => {
+    const signals: AbortSignal[] = [];
+    const restore = vi.fn((signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise<boolean>(() => {});
+    });
+    const onDone = vi.fn();
+    const stop = waitForSessionRestore({ restore, onDone });
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(RESTORE_POLL_MS * 2);
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(signals[0].aborted).toBe(false);
+    stop();
+    expect(signals[0].aborted).toBe(true);
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("aborts the in-flight attempt when the cap passes", async () => {
+    const signals: AbortSignal[] = [];
+    const restore = vi.fn((signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise<boolean>(() => {});
+    });
+    const onDone = vi.fn();
+    waitForSessionRestore({ restore, onDone });
+    await vi.advanceTimersByTimeAsync(RESTORE_WAIT_CAP_MS + 10);
+    expect(signals[0].aborted).toBe(true);
+    expect(onDone).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
   it("dispose stops retries without calling onDone", async () => {
     const restore = vi.fn<() => Promise<boolean>>().mockResolvedValue(false);
     const onDone = vi.fn();

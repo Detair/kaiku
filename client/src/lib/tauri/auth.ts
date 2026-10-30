@@ -395,6 +395,11 @@ export async function getCurrentUser(): Promise<SessionRestoreResult> {
   }
 }
 
+/** `GET /api/setup/status` (public): whether the first-run setup is done. */
+export async function getSetupStatus(): Promise<{ setup_complete: boolean }> {
+  return httpRequest<{ setup_complete: boolean }>("GET", "/api/setup/status");
+}
+
 /** Update the current user's password. */
 export async function updatePassword(
   current_password: string,

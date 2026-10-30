@@ -151,6 +151,40 @@ for (const [name, View, path] of [
       expect(screen.queryByText(/Finish signing in/)).toBeNull();
     });
 
+    it("cancel aborts the restore that is still in flight", async () => {
+      const popup = fakePopup();
+      openSpy = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+      authorizeMock.mockResolvedValue({ mode: "browser", authUrl: "http://localhost:3000/auth/x" });
+      const signals: AbortSignal[] = [];
+      restoreMock.mockImplementation((signal: AbortSignal) => {
+        signals.push(signal);
+        return new Promise(() => {});
+      });
+      await clickSso();
+      await waitFor(() => expect(popup.location.href).not.toBe(""));
+      popup.closed = true;
+      await vi.advanceTimersByTimeAsync(2000);
+      await waitFor(() => expect(screen.getByText("Cancel")).toBeTruthy());
+      expect(signals).toHaveLength(1);
+      fireEvent.click(screen.getByText("Cancel"));
+      expect(signals[0].aborted).toBe(true);
+    });
+
+    it("unmount while the authorize request is pending never starts watching", async () => {
+      const popup = fakePopup();
+      openSpy = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+      let resolveAuthorize!: (v: unknown) => void;
+      authorizeMock.mockReturnValue(new Promise((r) => (resolveAuthorize = r)));
+      await clickSso();
+      cleanup();
+      resolveAuthorize({ mode: "browser", authUrl: "http://localhost:3000/auth/x" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(popup.location.href).toBe("");
+      popup.closed = true;
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(restoreMock).not.toHaveBeenCalled();
+    });
+
     it("unmount while waiting stops the retries", async () => {
       const popup = fakePopup();
       openSpy = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);

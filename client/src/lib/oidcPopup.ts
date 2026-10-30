@@ -78,16 +78,20 @@ export const RESTORE_WAIT_CAP_MS = 5 * 60 * 1000;
  * resume the session: now, on window focus / tab visible, and on an interval,
  * until it works, the cap passes, or the returned disposer runs.
  * `onDone(true)` = session restored; `onDone(false)` = gave up at the cap.
- * Disposing never calls `onDone`.
+ * Disposing never calls `onDone`. Attempts never overlap; each gets a signal
+ * that is aborted when the wait ends (dispose, cap, success), so a late
+ * response is not applied.
  */
 export function waitForSessionRestore(opts: {
-  restore: () => Promise<boolean>;
+  restore: (signal: AbortSignal) => Promise<boolean>;
   onDone: (restored: boolean) => void;
 }): () => void {
   let settled = false;
   let inFlight = false;
+  const abort = new AbortController();
   const stop = () => {
     settled = true;
+    abort.abort();
     clearInterval(poll);
     clearTimeout(cap);
     window.removeEventListener("focus", attempt);
@@ -97,7 +101,7 @@ export function waitForSessionRestore(opts: {
     if (settled || inFlight) return;
     inFlight = true;
     void opts
-      .restore()
+      .restore(abort.signal)
       .catch(() => false)
       .then((ok) => {
         inFlight = false;

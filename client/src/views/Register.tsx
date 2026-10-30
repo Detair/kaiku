@@ -42,12 +42,16 @@ const Register: Component = () => {
   let stopWatching: (() => void) | undefined;
   let ssoPopup: Window | null = null;
   const [waitingForSignIn, setWaitingForSignIn] = createSignal(false);
+  let disposed = false;
   const cancelWaiting = () => {
     stopWatching?.();
     setWaitingForSignIn(false);
     setOidcLoading(null);
+    // A restore applied just before the click still signed the user in.
+    if (authState.user) navigate(afterRegister(), { replace: true });
   };
   onCleanup(() => {
+    disposed = true;
     stopWatching?.();
     ssoPopup?.close();
   });
@@ -154,6 +158,12 @@ const Register: Component = () => {
         await completeNativeOidcLogin(serverUrl(), result.result);
         navigate(afterRegister(), { replace: true });
         setOidcLoading(null);
+        return;
+      }
+
+      // The view went away while the server answered: start nothing.
+      if (disposed) {
+        popup?.close();
         return;
       }
 
