@@ -109,7 +109,6 @@ jobs:
         with:
           name: voicechat-${{ matrix.artifact }}
           path: |
-            target/${{ matrix.target }}/release/bundle/msi/*.msi
             target/${{ matrix.target }}/release/bundle/nsis/*.exe
 
       - name: Upload macOS artifacts

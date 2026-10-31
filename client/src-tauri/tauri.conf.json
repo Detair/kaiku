@@ -38,7 +38,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "targets": "all",
+    "targets": ["deb", "rpm", "appimage", "nsis", "app", "dmg"],
     "category": "SocialNetworking",
     "shortDescription": "Self-hosted voice and text chat",
     "longDescription": "A self-hosted voice and text chat platform for gaming communities",

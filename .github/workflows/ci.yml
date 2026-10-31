@@ -474,7 +474,6 @@ jobs:
         with:
           name: tauri-windows
           path: |
-            target/release/bundle/msi/*.msi
             target/release/bundle/nsis/*.exe
 
       - name: Upload artifacts (macOS)
