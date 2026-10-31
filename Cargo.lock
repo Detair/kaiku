@@ -4594,7 +4594,7 @@ dependencies = [
 
 [[package]]
 name = "kaiku-vp8-decoder"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "bytes",
  "env-libvpx-sys",
@@ -10662,7 +10662,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vc-client"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -10725,7 +10725,7 @@ dependencies = [
 
 [[package]]
 name = "vc-common"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "chrono",
  "serde",
@@ -10736,7 +10736,7 @@ dependencies = [
 
 [[package]]
 name = "vc-crypto"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -10754,7 +10754,7 @@ dependencies = [
 
 [[package]]
 name = "vc-server"
-version = "0.1.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
