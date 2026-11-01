@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { hasHiddenDevices, visibleDevices } from "../audioDevices";
+import {
+  findSelectedDevice,
+  hasHiddenDevices,
+  isSystemDefaultAlias,
+  pickerDeviceValue,
+  systemDefaultAlias,
+  preselectedDeviceId,
+  systemDefaultDevice,
+  visibleDevices,
+} from "../audioDevices";
 import type { AudioDevice } from "../webrtc/types";
 
 const devices: AudioDevice[] = [
@@ -44,5 +53,90 @@ describe("visibleDevices", () => {
 
   it("detects hidden devices", () => {
     expect(hasHiddenDevices(devices)).toBe(true);
+  });
+});
+
+describe("preselectedDeviceId", () => {
+  it("prefers the saved device, matched by id", () => {
+    expect(preselectedDeviceId(devices, "alsa:sysdefault:CARD=USB")).toBe("alsa:sysdefault:CARD=USB");
+  });
+
+  it("does not match a saved value by label", () => {
+    expect(preselectedDeviceId(devices, "Scarlett 2i2 USB")).toBe("alsa:default");
+  });
+
+  it("falls back to the system default entry, then the first device", () => {
+    expect(preselectedDeviceId(devices, null)).toBe("alsa:default");
+    expect(preselectedDeviceId(devices, "gone")).toBe("alsa:default");
+    const noDefault = devices.filter((d) => !d.isDefault);
+    expect(preselectedDeviceId(noDefault, undefined)).toBe("alsa:sysdefault:CARD=USB");
+    expect(preselectedDeviceId([], "x")).toBe("");
+  });
+
+  it("finds the system default entry", () => {
+    expect(systemDefaultDevice(devices)?.deviceId).toBe("alsa:default");
+    expect(systemDefaultDevice(devices.slice(1))).toBeUndefined();
+  });
+});
+
+describe("legacy device names", () => {
+  const legacy: AudioDevice[] = [
+    { deviceId: "alsa:default", label: "System default (PipeWire)", isDefault: true, curated: true, legacyName: "Default ALSA Output (currently PipeWire Media Server)" },
+    { deviceId: "alsa:sysdefault:CARD=A", label: "USB Mic", isDefault: false, curated: true, legacyName: "USB Audio, USB Audio" },
+    { deviceId: "alsa:sysdefault:CARD=B", label: "USB Mic", isDefault: false, curated: true, legacyName: "Webcam, USB Audio" },
+    { deviceId: "alsa:front:CARD=B,DEV=0", label: "Webcam, USB Audio [front:CARD=B,DEV=0]", isDefault: false, curated: false, legacyName: "Webcam, USB Audio" },
+    { deviceId: "alsa:eq", label: "Equalizer [eq]", isDefault: false, curated: false, legacyName: "Equalizer" },
+  ];
+
+  it("resolves a legacy saved name to the matching device", () => {
+    expect(preselectedDeviceId(legacy, "Webcam, USB Audio")).toBe("alsa:sysdefault:CARD=B");
+  });
+
+  it("prefers a curated device for a legacy name, then any device", () => {
+    expect(findSelectedDevice(legacy, "Webcam, USB Audio")?.deviceId).toBe("alsa:sysdefault:CARD=B");
+    expect(preselectedDeviceId(legacy, "Equalizer")).toBe("alsa:eq");
+  });
+
+  it("an id match wins over a legacy name match", () => {
+    const tricky: AudioDevice[] = [
+      { deviceId: "x", label: "X", isDefault: false, legacyName: "y" },
+      { deviceId: "y", label: "Y", isDefault: false, legacyName: "z" },
+    ];
+    expect(preselectedDeviceId(tricky, "y")).toBe("y");
+  });
+
+  it("never matches browser devices (no legacy name) by label", () => {
+    const browser: AudioDevice[] = [
+      { deviceId: "default", label: "Default - Mic", isDefault: true },
+      { deviceId: "m1", label: "Mic", isDefault: false },
+    ];
+    expect(preselectedDeviceId(browser, "Mic")).toBe("default");
+  });
+});
+
+describe("system default alias", () => {
+  const windows: AudioDevice[] = [
+    { deviceId: "wasapi:{0.0.0.00000000}.{a1}", label: "Speakers", isDefault: true, curated: true },
+    { deviceId: "wasapi:{0.0.0.00000000}.{b2}", label: "Headphones", isDefault: false, curated: true },
+  ];
+
+  it("is the Linux System default entry or Chrome's default, not a flagged physical device", () => {
+    expect(isSystemDefaultAlias(devices[0])).toBe(true);
+    expect(isSystemDefaultAlias(devices[1])).toBe(false);
+    expect(isSystemDefaultAlias(windows[0])).toBe(false);
+    expect(isSystemDefaultAlias({ deviceId: "default", label: "Default - Mic", isDefault: true })).toBe(true);
+    expect(
+      isSystemDefaultAlias({ deviceId: "alsa:pipewire", label: "System default (PipeWire)", isDefault: true, curated: true }),
+    ).toBe(true);
+    // The PipeWire entry next to an ALSA default is a plain choice.
+    expect(isSystemDefaultAlias({ deviceId: "alsa:pipewire", label: "PipeWire", isDefault: false, curated: true })).toBe(false);
+    expect(systemDefaultAlias(windows)).toBeUndefined();
+  });
+
+  it("a null setting shows the alias, else the follow-default value, never the flagged device", () => {
+    expect(pickerDeviceValue(devices, null)).toBe("alsa:default");
+    expect(pickerDeviceValue(windows, null)).toBe("default");
+    expect(pickerDeviceValue(windows, "wasapi:{0.0.0.00000000}.{a1}")).toBe("wasapi:{0.0.0.00000000}.{a1}");
+    expect(pickerDeviceValue(windows, "gone")).toBe("default");
   });
 });

@@ -13,6 +13,9 @@ export const voice = {
   "voice.screenShare.limit": "Screen share limit reached ({{count}}/{{max}})",
   "voice.ptt.plainKeyRefused": "Choose a key with Ctrl, Alt or ⌘, or F13–F24, so your game still gets the key.",
   "voice.ptt.conflict": "PTT and PTM keys must be different",
+  "voice.ptt.browserFocusOnlyTitle": "Push-to-talk works only in this tab",
+  "voice.ptt.browserFocusOnly": "In the browser, push-to-talk and push-to-mute only work while the Kaiku tab is focused. Use the desktop app to use them while playing.",
+  "voice.ptt.browserFocusOnlyHint": "Works only while the Kaiku tab is focused.",
   "voice.ptt.focusOnlyTitle": "Push-to-talk works only in Kaiku",
   "voice.ptt.focusOnly": "Your push-to-talk key has no Ctrl, Alt or ⌘, so it works only while Kaiku is focused. Choose a new key in Voice settings to use it in games.",
 

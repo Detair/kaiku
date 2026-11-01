@@ -1038,6 +1038,7 @@ impl AudioHandle {
                     curated: d.curated,
                     device_id: d.id,
                     label: d.label,
+                    legacy_name: d.legacy_name,
                 })
                 .collect())
         };

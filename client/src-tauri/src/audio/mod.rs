@@ -118,6 +118,10 @@ pub struct AudioDevice {
     /// Offered by default. `false` for ALSA PCMs the curated list hides
     /// (shown with "Show all ALSA devices"); always `true` off Linux.
     pub curated: bool,
+    /// Name older client versions stored as the selection (the device
+    /// description). The UI matches a stored selection by `device_id` first
+    /// and then by this name, like `devices::find_selection`.
+    pub legacy_name: String,
 }
 
 /// List of audio devices

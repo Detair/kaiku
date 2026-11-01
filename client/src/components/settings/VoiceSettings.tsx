@@ -78,6 +78,9 @@ const VoiceSettings: Component = () => {
                                             }}
                                             autoCapture={!settings().voice.push_to_talk_key}
                                         />
+                                        <Show when={!isTauri()}>
+                                            <p class="text-xs text-text-secondary">{t("voice.ptt.browserFocusOnlyHint")}</p>
+                                        </Show>
                                         <DelaySlider
                                             label={t("settings.voice.releaseDelay")}
                                             value={settings().voice.push_to_talk_release_delay}
@@ -108,6 +111,9 @@ const VoiceSettings: Component = () => {
                                             }}
                                             autoCapture={!settings().voice.push_to_mute_key}
                                         />
+                                        <Show when={!isTauri()}>
+                                            <p class="text-xs text-text-secondary">{t("voice.ptt.browserFocusOnlyHint")}</p>
+                                        </Show>
                                         <DelaySlider
                                             label={t("settings.voice.releaseDelay")}
                                             value={settings().voice.push_to_mute_release_delay}

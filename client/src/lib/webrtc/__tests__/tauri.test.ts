@@ -164,7 +164,13 @@ describe("TauriVoiceAdapter native events", () => {
     vi.mocked(invoke).mockResolvedValueOnce({
       inputs: [
         { device_id: "alsa:default", label: "System default (PipeWire)", is_default: true, curated: true },
-        { device_id: "alsa:eq", label: "Equalizer [eq]", is_default: false, curated: false },
+        {
+          device_id: "alsa:eq",
+          label: "Equalizer [eq]",
+          is_default: false,
+          curated: false,
+          legacy_name: "Equalizer",
+        },
       ],
       outputs: [],
     });
@@ -178,7 +184,13 @@ describe("TauriVoiceAdapter native events", () => {
       value: {
         inputs: [
           { deviceId: "alsa:default", label: "System default (PipeWire)", isDefault: true, curated: true },
-          { deviceId: "alsa:eq", label: "Equalizer [eq]", isDefault: false, curated: false },
+          {
+            deviceId: "alsa:eq",
+            label: "Equalizer [eq]",
+            isDefault: false,
+            curated: false,
+            legacyName: "Equalizer",
+          },
         ],
         outputs: [],
       },

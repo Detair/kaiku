@@ -148,6 +148,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- In the browser, joining a call while muted (or with push-to-talk) and switching to another microphone while muted no longer make you audible.
+- Web app: audio and voice settings (devices, volumes, noise suppression, push-to-talk) are now remembered after a reload, the chosen microphone and speaker are used from the start of a call (also for people who join later), opening Audio settings no longer asks for microphone access until you choose "Show device names", push-to-talk shows that it only works while the Kaiku tab is focused, and the screen share button and speaker picker are hidden in browsers that do not support them.
 - Web app: Kaiku no longer asks for notification permission by itself at login. Notification settings now show whether notifications are allowed, blocked or not supported in your browser and have an "Allow notifications" button; the test button explains when permission is missing.
 - Web app: settings that only work in the desktop app (flash taskbar, activity sharing, auto-activating focus modes) are no longer shown in the browser.
 - In phone browsers the message box and the bottom of the app are no longer hidden behind the browser's address bar.
