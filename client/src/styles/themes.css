@@ -35,11 +35,33 @@
  * --color-error-border       Error banner/toast border
  * --color-error-text         Error message text color
  *
+ * STATE TOKENS (contrast pairs are enforced by styles/__tests__/contrast.test.ts):
+ * --color-text-placeholder   Placeholder text in inputs. >=3:1 on every surface,
+ *                            >=2:1 away from --color-text-input and always dimmer.
+ *                            Why not 4.5:1: a placeholder that reaches body-text
+ *                            contrast is exactly what made empty fields look filled
+ *                            in. Placeholders here only carry examples ("e.g. …");
+ *                            the field's label and helper text carry the meaning, so
+ *                            3:1 (the non-text/large-text floor) keeps them legible
+ *                            while staying clearly a hint.
+ * --color-disabled-bg        Fill of a disabled solid button (replaces opacity-50)
+ * --color-disabled-text      Label of any disabled control, >=3:1 on its fill and
+ *                            on every surface (WCAG exempts disabled controls, but
+ *                            people still need to read what it would do)
+ * --color-disabled-border    Dashed outline of a disabled control, >=3:1
+ * --color-toggle-track-off   Switch track when off (inset, darker than the card)
+ * --color-toggle-border-off  Switch outline when off, >=3:1 on every surface
+ * --color-toggle-knob-off    Switch knob when off, >=3:1 on the off track
+ * --color-toggle-track-on    Switch track when on, >=3:1 on every surface
+ * --color-toggle-knob-on     Switch knob when on, >=3:1 on the on track
+ * --color-focus-ring         Keyboard focus outline, >=3:1 on every surface
+ *
  * ACCESSIBILITY:
  * Ensure text-primary achieves >=7:1 contrast on surface-base (AAA).
  * Ensure text-secondary achieves >=4.5:1 contrast on surface-layer1 (AA).
  * Ensure text-muted achieves >=3:1 contrast on surface-layer1 (AA for UI components).
- * Use https://webaim.org/resources/contrastchecker/ to verify.
+ * These and the state pairs above are checked per theme by
+ * styles/__tests__/contrast.test.ts (bun run test:run).
  */
 
 /* Focused Hybrid - Nordic dark theme aligned with CachyOS */
@@ -89,6 +111,19 @@
   --icon-mute: url('../assets/icons/mute_icon.png');
   --icon-deafen: url('../assets/icons/deafen_icon.png');
 
+  /* States — placeholder, disabled controls, toggles, focus (see header) */
+  --color-text-placeholder: #99a3b8;
+  --color-text-placeholder-rgb: 153 163 184;
+  --color-disabled-bg: #434C5E;
+  --color-disabled-text: #a3adbf;
+  --color-disabled-border: #8a94a8;
+  --color-toggle-track-off: #242933;
+  --color-toggle-border-off: #8a94a8;
+  --color-toggle-knob-off: #c0c8d6;
+  --color-toggle-track-on: var(--color-accent-primary);
+  --color-toggle-knob-on: #2E3440;
+  --color-focus-ring: var(--color-accent-primary);
+
   color-scheme: dark;
 }
 
@@ -102,18 +137,18 @@
   --color-surface-layer2-rgb: 14 76 90;
   --color-surface-highlight: #145766;
   --color-surface-highlight-rgb: 20 87 102;
-  --color-text-primary: #93a1a1;
-  --color-text-primary-rgb: 147 161 161;
-  --color-text-secondary: #657b83;
-  --color-text-secondary-rgb: 101 123 131;
-  --color-text-muted: #4f6068;
-  --color-text-muted-rgb: 79 96 104;
+  --color-text-primary: #acb9b9;
+  --color-text-primary-rgb: 172 185 185;
+  --color-text-secondary: #8ba0a5;
+  --color-text-secondary-rgb: 139 160 165;
+  --color-text-muted: #6e8489;
+  --color-text-muted-rgb: 110 132 137;
   --color-text-input: #fdf6e3;
   --color-text-input-rgb: 253 246 227;
-  --color-accent-primary: #268bd2;
-  --color-accent-primary-rgb: 38 139 210;
-  --color-accent-primary-hover: #1a7dc4;
-  --color-text-on-accent: #fdf6e3;
+  --color-accent-primary: #4fa6ea;
+  --color-accent-primary-rgb: 79 166 234;
+  --color-accent-primary-hover: #6bb4ee;
+  --color-text-on-accent: #002b36;
   --color-accent-danger: #dc322f;
   --color-accent-danger-rgb: 220 50 47;
   --color-accent-success: #859900;
@@ -131,6 +166,19 @@
   --color-error-border: rgba(220, 50, 47, 0.4);
   --color-error-text: #fdf6e3;
 
+  /* States — placeholder, disabled controls, toggles, focus (see header) */
+  --color-text-placeholder: #7f979c;
+  --color-text-placeholder-rgb: 127 151 156;
+  --color-disabled-bg: #145766;
+  --color-disabled-text: #9cb0b4;
+  --color-disabled-border: #8ba0a5;
+  --color-toggle-track-off: #002b36;
+  --color-toggle-border-off: #8ba0a5;
+  --color-toggle-knob-off: #acb9b9;
+  --color-toggle-track-on: var(--color-accent-primary);
+  --color-toggle-knob-on: #002b36;
+  --color-focus-ring: var(--color-accent-primary);
+
   color-scheme: dark;
 }
 
@@ -144,17 +192,17 @@
   --color-surface-layer2-rgb: 232 226 207;
   --color-surface-highlight: #ddd6c1;
   --color-surface-highlight-rgb: 221 214 193;
-  --color-text-primary: #586e75;
-  --color-text-primary-rgb: 88 110 117;
-  --color-text-secondary: #93a1a1;
-  --color-text-secondary-rgb: 147 161 161;
-  --color-text-muted: #b0b8b8;
-  --color-text-muted-rgb: 176 184 184;
+  --color-text-primary: #3d555c;
+  --color-text-primary-rgb: 61 85 92;
+  --color-text-secondary: #52666c;
+  --color-text-secondary-rgb: 82 102 108;
+  --color-text-muted: #6f8084;
+  --color-text-muted-rgb: 111 128 132;
   --color-text-input: #073642;
   --color-text-input-rgb: 7 54 66;
-  --color-accent-primary: #268bd2;
-  --color-accent-primary-rgb: 38 139 210;
-  --color-accent-primary-hover: #1a7dc4;
+  --color-accent-primary: #1f6fa8;
+  --color-accent-primary-rgb: 31 111 168;
+  --color-accent-primary-hover: #1a5f91;
   --color-text-on-accent: #fdf6e3;
   --color-accent-danger: #dc322f;
   --color-accent-danger-rgb: 220 50 47;
@@ -172,6 +220,19 @@
   --color-error-bg: rgba(220, 50, 47, 0.12);
   --color-error-border: rgba(220, 50, 47, 0.35);
   --color-error-text: #a01a18;
+
+  /* States — placeholder, disabled controls, toggles, focus (see header) */
+  --color-text-placeholder: #6a7c80;
+  --color-text-placeholder-rgb: 106 124 128;
+  --color-disabled-bg: #ddd6c1;
+  --color-disabled-text: #5f7175;
+  --color-disabled-border: #6f8084;
+  --color-toggle-track-off: #fdf6e3;
+  --color-toggle-border-off: #6f8084;
+  --color-toggle-knob-off: #52666c;
+  --color-toggle-track-on: var(--color-accent-primary);
+  --color-toggle-knob-on: #fdf6e3;
+  --color-focus-ring: var(--color-accent-primary);
 
   color-scheme: light;
 }
@@ -233,6 +294,19 @@
   --color-error-border: rgba(192, 96, 80, 0.4);
   --color-error-text: #e8a090;
 
+  /* States — placeholder, disabled controls, toggles, focus (see header) */
+  --color-text-placeholder: #a89c88;
+  --color-text-placeholder-rgb: 168 156 136;
+  --color-disabled-bg: #5c4e3e;
+  --color-disabled-text: #b3a690;
+  --color-disabled-border: #9a8d78;
+  --color-toggle-track-off: #2c2418;
+  --color-toggle-border-off: #9a8d78;
+  --color-toggle-knob-off: #d8c8b2;
+  --color-toggle-track-on: var(--color-accent-primary);
+  --color-toggle-knob-on: #2c2418;
+  --color-focus-ring: var(--color-accent-primary);
+
   color-scheme: dark;
 }
 
@@ -282,6 +356,19 @@
   --icon-leave: url('../assets/icons/end_call_icon.png');
   --icon-mute: url('../assets/icons/mute_icon.png');
   --icon-deafen: url('../assets/icons/deafen_icon.png');
+
+  /* States — placeholder, disabled controls, toggles, focus (see header) */
+  --color-text-placeholder: #99a3b8;
+  --color-text-placeholder-rgb: 153 163 184;
+  --color-disabled-bg: #434C5E;
+  --color-disabled-text: #a3adbf;
+  --color-disabled-border: #8a94a8;
+  --color-toggle-track-off: #242933;
+  --color-toggle-border-off: #8a94a8;
+  --color-toggle-knob-off: #c0c8d6;
+  --color-toggle-track-on: var(--color-accent-primary);
+  --color-toggle-knob-on: #2E3440;
+  --color-focus-ring: var(--color-accent-primary);
 
   color-scheme: dark;
 }
