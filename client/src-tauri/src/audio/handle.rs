@@ -497,13 +497,16 @@ pub struct AudioHandle {
     /// when the selected one was busy).
     active_output: ActiveLabel,
 
-    /// Set by the current playback task when it fell back to the system
-    /// default because the selected speaker was busy, even after
-    /// `start_*playback` stopped waiting. Read via
-    /// [`Self::sync_output_fallback`] / [`Self::effective_output_id`].
-    /// A new `Arc` per playback start, so a stale task cannot mark a later
-    /// selection.
-    output_fell_back: Arc<AtomicBool>,
+    /// Generation of the output selection, bumped by every
+    /// `set_output_device` and playback start.
+    output_generation: u64,
+
+    /// Generation for which a playback task fell back to the system default
+    /// because the selected speaker was busy (0 = none). Written by the
+    /// task, also after `start_*playback` stopped waiting; it only applies
+    /// while that generation is current, so a late fallback of an old task
+    /// cannot clear a newer selection. See [`Self::sync_output_fallback`].
+    output_fallback_mark: Arc<AtomicU64>,
 
     /// VAD + noise suppression configuration
     vad_config: VadConfig,
@@ -776,14 +779,27 @@ enum PlaybackStart {
     Failed,
 }
 
+/// Where a playback task records that it fell back, tagged with the
+/// output selection generation it was started for.
+struct FallbackMark {
+    mark: Arc<AtomicU64>,
+    generation: u64,
+}
+
+impl FallbackMark {
+    fn set(&self) {
+        self.mark.store(self.generation, Ordering::SeqCst);
+    }
+}
+
 /// What a playback task needs to open its stream.
 struct PlaybackOpen {
     device: LabelledDevice,
     /// System default to use when `device` is busy.
     fallback: Option<LabelledDevice>,
     active: ActiveLabel,
-    /// Set when playback fell back to `fallback` (outlives `ready`).
-    fell_back: Arc<AtomicBool>,
+    /// Marked when playback fell back to `fallback` (outlives `ready`).
+    fell_back: FallbackMark,
     /// Told how opening went, once.
     ready: tokio::sync::oneshot::Sender<PlaybackStart>,
 }
@@ -996,7 +1012,8 @@ impl AudioHandle {
             input_device_id: None,
             output_device_id: None,
             active_output: ActiveLabel::default(),
-            output_fell_back: Arc::new(AtomicBool::new(false)),
+            output_generation: 0,
+            output_fallback_mark: Arc::new(AtomicU64::new(0)),
             vad_config: VadConfig::new(),
             app_handle: None,
         })
@@ -1094,10 +1111,15 @@ impl AudioHandle {
         // A late fallback means the default plays now: a failed switch must
         // restore that, not the busy speaker.
         self.sync_output_fallback();
+        let previous_generation = self.output_generation;
         let previous = std::mem::replace(&mut self.output_device_id, device_id);
+        self.output_generation += 1;
         let result = self.switch_running_playback().await;
         if result.is_err() {
+            // Back to the previous selection, including a fallback that its
+            // playback task may still report.
             self.output_device_id = previous;
+            self.output_generation = previous_generation;
         }
         result
     }
@@ -1169,8 +1191,8 @@ impl AudioHandle {
     /// keeps running and reports on its own if it still fails).
     ///
     /// A fallback that happens after the timeout is still applied: the task
-    /// marks it in `output_fell_back`, which every later use of the
-    /// selection reads.
+    /// marks it in `output_fallback_mark`, which every later use of the
+    /// selection reads (unless the selection changed meanwhile).
     async fn await_playback_ready(&mut self, ready: tokio::sync::oneshot::Receiver<PlaybackStart>) {
         if tokio::time::timeout(PLAYBACK_READY_TIMEOUT, ready)
             .await
@@ -1183,19 +1205,38 @@ impl AudioHandle {
 
     /// Apply a playback fallback to the stored selection: the busy speaker
     /// is no longer selected, the system default is.
+    /// Only a fallback for the current generation applies.
     fn sync_output_fallback(&mut self) {
-        if self.output_fell_back.swap(false, Ordering::SeqCst) {
+        let current = self.output_generation;
+        if current != 0
+            && self
+                .output_fallback_mark
+                .compare_exchange(current, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
             self.output_device_id = None;
         }
     }
 
     /// The selected output id as it currently applies (`None` after a
-    /// fallback that has not been synced yet).
+    /// fallback for the current selection that has not been synced yet).
     fn effective_output_id(&self) -> Option<&str> {
-        if self.output_fell_back.load(Ordering::SeqCst) {
+        let current = self.output_generation;
+        if current != 0 && self.output_fallback_mark.load(Ordering::SeqCst) == current {
             None
         } else {
             self.output_device_id.as_deref()
+        }
+    }
+
+    /// Start a new output generation for a playback start; the task marks
+    /// a fallback with it.
+    fn begin_playback_generation(&mut self) -> FallbackMark {
+        self.sync_output_fallback();
+        self.output_generation += 1;
+        FallbackMark {
+            mark: self.output_fallback_mark.clone(),
+            generation: self.output_generation,
         }
     }
 
@@ -1305,9 +1346,7 @@ impl AudioHandle {
         // Stop existing playback if running
         self.stop_playback().await;
 
-        self.sync_output_fallback();
-        self.output_fell_back = Arc::new(AtomicBool::new(false));
-        let fell_back = self.output_fell_back.clone();
+        let fell_back = self.begin_playback_generation();
         let device = self.get_device_or_default(self.output_device_id.as_deref(), false)?;
         let fallback = self.playback_fallback(&device);
         let device = LabelledDevice::new(&self.host, device, false);
@@ -1353,9 +1392,7 @@ impl AudioHandle {
         // Stop existing playback if running
         self.stop_playback().await;
 
-        self.sync_output_fallback();
-        self.output_fell_back = Arc::new(AtomicBool::new(false));
-        let fell_back = self.output_fell_back.clone();
+        let fell_back = self.begin_playback_generation();
         let device = self.get_device_or_default(self.output_device_id.as_deref(), false)?;
         let fallback = self.playback_fallback(&device);
         let device = LabelledDevice::new(&self.host, device, false);
@@ -1855,7 +1892,7 @@ fn run_playback_task(
         sink.as_ref(),
     );
     if start == PlaybackStart::FellBack {
-        fell_back.store(true, Ordering::SeqCst);
+        fell_back.set();
     }
     let _ = ready.send(start);
 
@@ -2080,7 +2117,7 @@ fn run_pcm_playback_task(
         sink.as_ref(),
     );
     if start == PlaybackStart::FellBack {
-        fell_back.store(true, Ordering::SeqCst);
+        fell_back.set();
     }
     let _ = ready.send(start);
 
@@ -2179,24 +2216,43 @@ mod tests {
     #[tokio::test]
     async fn late_playback_fallback_clears_the_busy_selection() {
         let mut handle = AudioHandle::new().unwrap();
-        // No playback running: only stored.
+        let a = "alsa:sysdefault:CARD=USB";
+        handle.set_output_device(Some(a.into())).await.unwrap();
+
+        // start(A); the wait times out; the task falls back afterwards.
+        let mark = handle.begin_playback_generation();
+        assert_eq!(handle.output_device_id(), Some(a));
+        mark.set();
+        assert_eq!(handle.output_device_id(), None, "the default plays now");
+
+        // The next change starts from the default, not the busy speaker.
+        let b = "alsa:hdmi:CARD=HDMI,DEV=0";
+        handle.set_output_device(Some(b.into())).await.unwrap();
+        assert_eq!(handle.output_device_id(), Some(b));
+        handle.sync_output_fallback();
+        assert_eq!(handle.output_device_id(), Some(b));
+    }
+
+    #[tokio::test]
+    async fn late_fallback_of_an_old_start_keeps_a_newer_selection() {
+        let mut handle = AudioHandle::new().unwrap();
         handle
             .set_output_device(Some("alsa:sysdefault:CARD=USB".into()))
             .await
             .unwrap();
-        assert_eq!(handle.output_device_id(), Some("alsa:sysdefault:CARD=USB"));
 
-        // The playback task fell back after `start_*playback` gave up waiting.
-        handle.output_fell_back.store(true, Ordering::SeqCst);
-        assert_eq!(handle.output_device_id(), None, "the default plays now");
+        // start(A), timeout, set(B), then the fallback for A arrives.
+        let mark_a = handle.begin_playback_generation();
+        let b = "alsa:hdmi:CARD=HDMI,DEV=0";
+        handle.set_output_device(Some(b.into())).await.unwrap();
+        mark_a.set();
 
-        // The next change starts from the default, not the busy speaker.
-        handle
-            .set_output_device(Some("alsa:hdmi:CARD=HDMI,DEV=0".into()))
-            .await
-            .unwrap();
-        assert_eq!(handle.output_device_id(), Some("alsa:hdmi:CARD=HDMI,DEV=0"));
-        assert!(!handle.output_fell_back.load(Ordering::SeqCst));
+        assert_eq!(handle.output_device_id(), Some(b));
+        handle.sync_output_fallback();
+        assert_eq!(handle.output_device_id(), Some(b), "B stays selected");
+        // A later start for B is not affected by A's mark either.
+        let _mark_b = handle.begin_playback_generation();
+        assert_eq!(handle.output_device_id(), Some(b));
     }
 
     #[test]
