@@ -9,6 +9,7 @@ import * as tauri from "@/lib/tauri";
 import {
   isFeatureEnabled,
   isFeatureOff,
+  isGuildDiscoveryOff,
   isPermissionVisible,
   loadServerFeatures,
   resetServerFeatures,
@@ -129,5 +130,34 @@ describe("serverFeatures", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe("guild discovery", () => {
+    it("is not reported off before the settings load", () => {
+      expect(isGuildDiscoveryOff()).toBe(false);
+    });
+
+    it("is off when the server says guild_discovery: false", async () => {
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValue(
+        { ...(settings(allOff) as object), guild_discovery: false } as never,
+      );
+      await loadServerFeatures();
+      expect(isGuildDiscoveryOff()).toBe(true);
+    });
+
+    it("an older server without the field keeps discovery on", async () => {
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValue(settings());
+      await loadServerFeatures();
+      expect(isGuildDiscoveryOff()).toBe(false);
+    });
+
+    it("reset forgets the flag", async () => {
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValue(
+        { ...(settings(allOff) as object), guild_discovery: false } as never,
+      );
+      await loadServerFeatures();
+      resetServerFeatures();
+      expect(isGuildDiscoveryOff()).toBe(false);
+    });
   });
 });
