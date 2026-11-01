@@ -32,6 +32,15 @@ interface FormattedNotification {
 
 let permissionGranted = false;
 let permissionChecked = false;
+/** Set once `new Notification()` throws (e.g. Android Chrome, desktop mode). */
+let webConstructorBroken = false;
+const stateListeners = new Set<() => void>();
+
+/** Subscribe to browser notification state changes. Returns an unsubscribe fn. */
+export function onBrowserNotificationStateChange(cb: () => void): () => void {
+  stateListeners.add(cb);
+  return () => stateListeners.delete(cb);
+}
 
 // ============================================================================
 // Focus
@@ -58,8 +67,8 @@ export async function isAppFocused(): Promise<boolean> {
 // ============================================================================
 
 /**
- * Check and request notification permission.
- * Call once after user login.
+ * Check notification permission. Tauri asks the OS; browsers are never asked
+ * here (see below). Call once after user login.
  */
 export async function initNotifications(): Promise<void> {
   if (permissionChecked) return;
@@ -78,13 +87,58 @@ export async function initNotifications(): Promise<void> {
     } catch (error) {
       console.warn("[Notifications] Failed to initialize Tauri notifications:", error);
     }
-  } else if (typeof Notification !== "undefined") {
-    if (Notification.permission === "granted") {
-      permissionGranted = true;
-    } else if (Notification.permission !== "denied") {
-      const result = await Notification.requestPermission();
-      permissionGranted = result === "granted";
-    }
+  } else if (getBrowserNotificationSupport() === "supported") {
+    // Browsers only honour a permission request made from a user gesture
+    // (Chrome shows an unsolicited prompt, Safari/Firefox ignore it), so never
+    // ask here. Settings offers an "Allow notifications" button instead.
+    permissionGranted = Notification.permission === "granted";
+  }
+}
+
+export type BrowserNotificationPermission =
+  | "granted"
+  | "default"
+  | "denied"
+  | "unsupported";
+
+/**
+ * Whether this browser can show notifications via `new Notification()`.
+ * iOS Safari outside a PWA has no `Notification` object, and Android Chrome
+ * only allows notifications through a service worker (the constructor throws).
+ * The mobile check is a cheap upfront guess; a throwing constructor is
+ * remembered for the session and is authoritative.
+ */
+export function getBrowserNotificationSupport(): "supported" | "unsupported" {
+  if (typeof Notification === "undefined" || webConstructorBroken) return "unsupported";
+  if (typeof navigator !== "undefined") {
+    const uaData = (navigator as Navigator & { userAgentData?: { mobile?: boolean } })
+      .userAgentData;
+    const ua = navigator.userAgent ?? "";
+    if (uaData?.mobile === true && !/Firefox/i.test(ua)) return "unsupported";
+    if (/Android/i.test(ua) && !/Firefox/i.test(ua)) return "unsupported";
+  }
+  return "supported";
+}
+
+/** Current browser notification permission (browser mode only). */
+export function getBrowserNotificationPermission(): BrowserNotificationPermission {
+  if (getBrowserNotificationSupport() === "unsupported") return "unsupported";
+  return Notification.permission;
+}
+
+/**
+ * Ask the browser for notification permission. Must be called from a user
+ * gesture (e.g. a click handler).
+ */
+export async function requestBrowserNotificationPermission(): Promise<BrowserNotificationPermission> {
+  if (getBrowserNotificationSupport() === "unsupported") return "unsupported";
+  try {
+    const result = await Notification.requestPermission();
+    permissionGranted = result === "granted";
+    return result;
+  } catch (error) {
+    console.warn("[Notifications] Permission request failed:", error);
+    return getBrowserNotificationPermission();
   }
 }
 
@@ -94,6 +148,7 @@ export async function initNotifications(): Promise<void> {
 export function cleanupNotifications(): void {
   permissionChecked = false;
   permissionGranted = false;
+  webConstructorBroken = false;
 }
 
 // ============================================================================
@@ -200,7 +255,9 @@ export async function sendOsNotification(
   if (!force && (await isAppFocused())) return;
 
   // Permission not granted
-  if (!permissionGranted) return;
+  // Browser permission is read live in the browser path below, so changes in
+  // site settings or another tab apply without a reload.
+  if (isTauri() && !permissionGranted) return;
 
   const { title, body } = formatNotificationContent(event, ctx, showContent);
 
@@ -211,11 +268,18 @@ export async function sendOsNotification(
     } catch (error) {
       console.warn("[Notifications] Failed to send Tauri notification:", error);
     }
-  } else if (typeof Notification !== "undefined") {
+  } else if (
+    getBrowserNotificationSupport() === "supported" &&
+    Notification.permission === "granted"
+  ) {
     try {
       new Notification(title, { body, tag: `kaiku-${event.channelId}` });
     } catch (error) {
       console.warn("[Notifications] Failed to send web notification:", error);
+      if (error instanceof TypeError) {
+        webConstructorBroken = true;
+        stateListeners.forEach((cb) => cb());
+      }
     }
   }
 }

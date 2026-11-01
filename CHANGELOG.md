@@ -148,6 +148,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- Web app: Kaiku no longer asks for notification permission by itself at login. Notification settings now show whether notifications are allowed, blocked or not supported in your browser and have an "Allow notifications" button; the test button explains when permission is missing.
+- Web app: settings that only work in the desktop app (flash taskbar, activity sharing, auto-activating focus modes) are no longer shown in the browser.
 - In phone browsers the message box and the bottom of the app are no longer hidden behind the browser's address bar.
 - Desktop app on Linux: the microphone and speaker lists show the system default (e.g. "System default (PipeWire)") and each sound card once, instead of a dozen ALSA variants per card, plugins and unused HDMI ports. The chosen device is now remembered by a unique id, so picking one opens exactly that device; a device chosen in an older version is still found. If the chosen microphone or speaker is busy when you join a call, the system default is used instead; choosing a busy device says it is in use.
 - Desktop app: choosing a microphone or speaker in the voice settings and mic test applies the selected device again, and the system default is preselected.
@@ -156,6 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Admin Command Center: the Process Memory chart labels its axis in MiB/GiB without clipping, charts with no data (e.g. Voice Sessions) show a "No data" hint instead of an empty box, and 7d/30d charts of memory, connections and sessions show daily averages instead of daily sums.
 - Admin Command Center: the empty Traces list explains that traces are only captured with `OBSERVABILITY_ENABLED=true`.
 - Switching the theme during first-login onboarding no longer restarts the wizard or overwrites the display name you typed.
+- The desktop app and system tray now show the Kaiku logo instead of a plain turquoise square on Windows, macOS and Linux.
 - The mascot illustrations in the empty states (Friends, direct messages, Discovery, search, unread) no longer show a white box on dark themes.
 - When the server browser is turned off on the instance (`ENABLE_GUILD_DISCOVERY=false`), Create Server no longer offers discovery options (it becomes a single step with a short note), server settings explain why discovery is unavailable, and the Explore button is hidden. `GET /api/settings` now reports `guild_discovery`.
 - Opening a channel with a few unread messages no longer stops scrolling back after about 25 messages: older history loads again.

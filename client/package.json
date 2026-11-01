@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "icons": "node scripts/generate-icons.mjs",
     "lint": "eslint src",
     "lint:handlers": "bash scripts/check-dead-handlers.sh",
     "lint:tauri-commands": "bun scripts/check-tauri-commands.ts",
