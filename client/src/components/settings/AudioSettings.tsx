@@ -11,6 +11,7 @@ import {
     pickerDeviceValue,
     showAllAlsaDevices,
     systemDefaultAlias,
+    systemDefaultDevice,
     visibleDevices,
 } from "@/lib/audioDevices";
 import Button from "@/components/ui/Button";
@@ -76,14 +77,19 @@ const AudioSettings: Component = () => {
             kind === "input" ? "input_device" : "output_device",
             deviceId,
         );
-        // Live-apply only for concrete devices; "default" takes effect on
-        // the next voice join (the adapter API has no "reset to default").
+        // Live-apply to a running call. "Default Device" switches it to the
+        // device that is the system default now (as the voice audio modal
+        // does); with no default listed (e.g. Firefox) it takes effect on
+        // the next voice join, the adapter has no "reset to default".
+        const liveId =
+            deviceId ??
+            systemDefaultDevice(kind === "input" ? inputDevices() : outputDevices())?.deviceId;
         const adapter = getVoiceAdapter();
-        if (adapter && deviceId) {
+        if (adapter && liveId) {
             const result =
                 kind === "input"
-                    ? await adapter.setInputDevice(deviceId)
-                    : await adapter.setOutputDevice(deviceId);
+                    ? await adapter.setInputDevice(liveId)
+                    : await adapter.setOutputDevice(liveId);
             if (!result.ok) {
                 console.warn(`Failed to apply ${kind} device:`, result.error);
                 showToast({

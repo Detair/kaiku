@@ -14,9 +14,10 @@ const audio = vi.hoisted(() => ({
   output_volume: 100,
 }));
 
+const inCall = vi.hoisted(() => ({ active: false }));
 vi.mock("@/lib/webrtc", () => ({
   createVoiceAdapter: async () => adapter,
-  getVoiceAdapter: () => null,
+  getVoiceAdapter: () => (inCall.active ? adapter : null),
 }));
 vi.mock("@/lib/browserCapabilities", () => ({ canSelectOutputDevice: () => true }));
 const updateAudioSetting = vi.hoisted(() => vi.fn());
@@ -50,6 +51,9 @@ beforeEach(() => {
   audio.input_device = null;
   audio.output_device = null;
   updateAudioSetting.mockClear();
+  adapter.setInputDevice.mockReset();
+  adapter.setOutputDevice.mockReset();
+  inCall.active = false;
 });
 afterEach(cleanup);
 
@@ -154,5 +158,44 @@ describe("AudioSettings device pickers", () => {
 
     fireEvent.change(output, { target: { value: "default" } });
     await waitFor(() => expect(updateAudioSetting).toHaveBeenLastCalledWith("output_device", null));
+  });
+
+  it("choosing Default Device during a call moves the call to the current default", async () => {
+    const speakers = "wasapi:{0.0.0.00000000}.{speakers}";
+    const headset = "wasapi:{0.0.0.00000000}.{headset}";
+    audio.output_device = headset;
+    inCall.active = true;
+    adapter.setOutputDevice.mockResolvedValue({ ok: true });
+    adapter.getAudioDevices.mockResolvedValue({
+      ok: true,
+      value: {
+        inputs: [],
+        outputs: [
+          { deviceId: speakers, label: "Speakers", isDefault: true, curated: true },
+          { deviceId: headset, label: "Headset", isDefault: false, curated: true },
+        ],
+      },
+    });
+    render(() => <AudioSettings />);
+    await waitFor(() => expect(screen.getByText("Speakers")).toBeTruthy());
+
+    fireEvent.change(selects()[1], { target: { value: "default" } });
+    await waitFor(() => expect(adapter.setOutputDevice).toHaveBeenCalledWith(speakers));
+    expect(updateAudioSetting).toHaveBeenLastCalledWith("output_device", null);
+  });
+
+  it("without a listed default, Default Device only changes the setting", async () => {
+    audio.input_device = "m1";
+    inCall.active = true;
+    adapter.getAudioDevices.mockResolvedValue({
+      ok: true,
+      value: { inputs: [{ deviceId: "m1", label: "Headset", isDefault: false }], outputs: [], labelsAvailable: true },
+    });
+    render(() => <AudioSettings />);
+    await waitFor(() => expect(screen.getByText("Headset")).toBeTruthy());
+
+    fireEvent.change(selects()[0], { target: { value: "default" } });
+    await waitFor(() => expect(updateAudioSetting).toHaveBeenLastCalledWith("input_device", null));
+    expect(adapter.setInputDevice).not.toHaveBeenCalled();
   });
 });
