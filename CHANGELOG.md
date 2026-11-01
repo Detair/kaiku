@@ -146,6 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Switching the theme during first-login onboarding no longer restarts the wizard or overwrites the display name you typed.
+- The mascot illustrations in the empty states (Friends, direct messages, Discovery, search, unread) no longer show a white box on dark themes.
 - Opening a channel with a few unread messages no longer stops scrolling back after about 25 messages: older history loads again.
 - Picking someone from the @ suggestions now mentions them (and notifies them) even when their display name differs from their username.
 - Pressing Enter sends your message again when the suggestion list has no matches (for example after typing "@" or ":" text that matches nothing).
