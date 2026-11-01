@@ -4,6 +4,8 @@
  * Optional features (forum, announcement channels, scheduled events,
  * membership screening) are turned on per server (contract C22). The desktop
  * app hides every entry point of a feature the server has turned off.
+ * The same settings response says whether the public server browser
+ * (guild discovery) is on.
  */
 
 import { createSignal } from "solid-js";
@@ -19,6 +21,8 @@ export type OptionalFeatureKey =
 // null until loaded. A settings response without `features` (older server)
 // means every feature is on.
 const [features, setFeatures] = createSignal<ServerFeatures | "all" | null>(null);
+// null until loaded; an older server without the field has discovery on.
+const [guildDiscovery, setGuildDiscovery] = createSignal<boolean | null>(null);
 
 const RETRY_DELAYS_MS = [2000, 5000, 15000];
 let generation = 0;
@@ -29,6 +33,7 @@ async function attempt(gen: number, retry: number): Promise<void> {
     const settings = await fetchServerSettings(getServerUrl());
     if (gen !== generation) return; // reset while in flight
     setFeatures(settings.features ?? "all");
+    setGuildDiscovery(settings.guild_discovery ?? true);
   } catch (err) {
     if (gen !== generation) return;
     if (retry < RETRY_DELAYS_MS.length) {
@@ -76,6 +81,16 @@ export function resetServerFeatures(): void {
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
   setFeatures(null);
+  setGuildDiscovery(null);
+}
+
+/**
+ * True only when the settings are loaded and the server turned the public
+ * server browser off. Discovery options (discoverable toggle, tags, banner)
+ * are then replaced by a short note.
+ */
+export function isGuildDiscoveryOff(): boolean {
+  return guildDiscovery() === false;
 }
 
 /** Feature that gates a permission bit, if any. */

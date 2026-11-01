@@ -33,7 +33,7 @@ const MessageComponents: Component<{
   };
 
   const renderButton = (c: Extract<MessageComponent, { type: "button" }>) => {
-    const cls = `px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+    const cls = `px-3 py-1.5 rounded-md text-sm font-medium transition-colors state-disabled ${
       BUTTON_STYLES[c.style] ?? BUTTON_STYLES.secondary
     }`;
     if (c.style === "link" && c.url) {
@@ -43,7 +43,8 @@ const MessageComponents: Component<{
           target="_blank"
           rel="noopener noreferrer nofollow"
           class={`inline-block ${cls}`}
-          classList={{ "pointer-events-none opacity-50": c.disabled }}
+          classList={{ "pointer-events-none": c.disabled }}
+          aria-disabled={c.disabled ? "true" : undefined}
         >
           {c.label ?? "Open"}
         </a>
@@ -65,7 +66,7 @@ const MessageComponents: Component<{
     c: Extract<MessageComponent, { type: "select_menu" }>,
   ) => (
     <select
-      class="px-3 py-1.5 rounded-md text-sm text-text-primary bg-[var(--color-surface-layer2)] border border-white/10 outline-none disabled:opacity-50"
+      class="px-3 py-1.5 rounded-md text-sm text-text-primary bg-[var(--color-surface-layer2)] border border-white/10 outline-none state-disabled"
       disabled={c.disabled}
       onChange={(e) => dispatch(c.custom_id, [e.currentTarget.value])}
     >

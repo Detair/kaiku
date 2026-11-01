@@ -87,7 +87,7 @@ const NotificationSettings: Component = () => {
       {/* Sound selection */}
       <div
         classList={{
-          "opacity-50 pointer-events-none": !soundSettings().enabled,
+          "state-unavailable pointer-events-none": !soundSettings().enabled,
         }}
       >
         <h4 class="text-base font-medium mb-3 text-text-primary">
@@ -104,7 +104,7 @@ const NotificationSettings: Component = () => {
                 onClick={() => handleSoundSelect(sound.id)}
                 class="w-full text-left p-4 rounded-xl border-2 transition-all duration-200"
                 classList={{
-                  "border-accent-primary bg-accent-primary/10":
+                  "border-accent-primary bg-accent-primary/20":
                     soundSettings().selectedSound === sound.id,
                   "border-white/10 hover:border-accent-primary/50 hover:bg-white/5":
                     soundSettings().selectedSound !== sound.id,
@@ -145,7 +145,7 @@ const NotificationSettings: Component = () => {
       {/* Volume control */}
       <div
         classList={{
-          "opacity-50 pointer-events-none": !soundSettings().enabled,
+          "state-unavailable pointer-events-none": !soundSettings().enabled,
         }}
       >
         <h4 class="text-base font-medium mb-3 text-text-primary">{t("notifications.sound.volume")}</h4>
@@ -176,7 +176,7 @@ const NotificationSettings: Component = () => {
             onClick={handleTestSound}
             disabled={isTesting()}
             class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-highlight hover:bg-white/10
-                   text-text-primary text-sm font-medium transition-colors disabled:opacity-50"
+                   text-text-primary text-sm font-medium transition-colors state-disabled"
           >
             <Play class="w-4 h-4" />
             {t("notifications.sound.test")}
@@ -207,7 +207,7 @@ const NotificationSettings: Component = () => {
 
         <div
           classList={{
-            "opacity-50 pointer-events-none": !getQuietHours().enabled,
+            "state-unavailable pointer-events-none": !getQuietHours().enabled,
           }}
         >
           <div class="flex items-center gap-4 mb-4">
@@ -248,7 +248,7 @@ const NotificationSettings: Component = () => {
             <div
               class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm"
               classList={{
-                "bg-accent-primary/10 text-accent-primary":
+                "bg-accent-primary/20 text-text-primary":
                   quietHoursStatus()?.active,
                 "bg-surface-highlight text-text-secondary":
                   !quietHoursStatus()?.active,
@@ -291,7 +291,7 @@ const NotificationSettings: Component = () => {
           <label
             class="flex items-center gap-3 cursor-pointer"
             classList={{
-              "opacity-50 pointer-events-none": !(preferences().notifications?.os_enabled ?? true),
+              "state-unavailable pointer-events-none": !(preferences().notifications?.os_enabled ?? true),
             }}
           >
             <input
@@ -311,7 +311,7 @@ const NotificationSettings: Component = () => {
           <label
             class="flex items-center gap-3 cursor-pointer"
             classList={{
-              "opacity-50 pointer-events-none": !(preferences().notifications?.os_enabled ?? true),
+              "state-unavailable pointer-events-none": !(preferences().notifications?.os_enabled ?? true),
             }}
           >
             <input
@@ -340,7 +340,7 @@ const NotificationSettings: Component = () => {
           }}
           disabled={!(preferences().notifications?.os_enabled ?? true)}
           class="mt-4 flex items-center gap-2 px-4 py-2 rounded-lg bg-surface-highlight hover:bg-white/10
-                 text-text-primary text-sm font-medium transition-colors disabled:opacity-50"
+                 text-text-primary text-sm font-medium transition-colors state-disabled"
         >
           <Bell class="w-4 h-4" />
           {t("notifications.desktop.sendTest")}

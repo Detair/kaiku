@@ -167,7 +167,7 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
               canAccept()
                 ? "bg-emerald-600 hover:bg-emerald-500 text-white"
                 : "bg-zinc-600 text-zinc-400 cursor-not-allowed"
-            }`}
+            } state-disabled`}
           >
             <Check class="w-4 h-4" />
             {isAccepting() ? "Accepting..." : "I Accept"}

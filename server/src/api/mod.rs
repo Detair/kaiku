@@ -448,17 +448,35 @@ pub(crate) async fn health_check(
     )
 }
 
-/// Middleware that counts HTTP error responses (4xx/5xx).
-async fn http_metrics(
-    request: Request<axum::body::Body>,
-    next: axum::middleware::Next,
-) -> Response {
+/// Middleware that records request count, latency and 4xx/5xx errors.
+///
+/// Labels each request with its matched route template (`MatchedPath`, e.g.
+/// `/auth/login` or `/api/guilds/{id}`) so the admin Top Routes / Top Errors
+/// lists have data. Requests that matched no route get a fixed placeholder.
+/// Rejections from inner layers (auth 401/403, rate limit 429) still carry the
+/// route because route matching happens before this layer runs.
+async fn http_metrics(request: Request<axum::body::Body>, next: Next) -> Response {
+    let route = http_route_label(&request);
     let start = std::time::Instant::now();
     let response = next.run(request).await;
     let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
     let status = response.status().as_u16();
-    crate::observability::metrics::record_http_request(status, duration_ms);
+    crate::observability::metrics::record_http_request(status, duration_ms, &route);
     response
+}
+
+/// Route template for metric labels: the `MatchedPath` (ids stay as
+/// `{placeholders}`), or [`UNMATCHED_ROUTE`] when no route matched.
+///
+/// [`UNMATCHED_ROUTE`]: crate::observability::metrics::UNMATCHED_ROUTE
+fn http_route_label<B>(request: &Request<B>) -> String {
+    request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map_or_else(
+            || crate::observability::metrics::UNMATCHED_ROUTE.to_owned(),
+            |p| p.as_str().to_owned(),
+        )
 }
 
 /// Middleware that adds security headers to all responses.
@@ -500,4 +518,94 @@ fn api_docs(enable: bool) -> Router<AppState> {
         SwaggerUi::new("/api/docs")
             .url("/api/docs/openapi.json", crate::openapi::ApiDoc::openapi()),
     )
+}
+
+#[cfg(test)]
+mod http_metrics_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::middleware::{from_fn, Next};
+    use axum::response::{IntoResponse, Response};
+    use axum::routing::{get, post};
+    use axum::Router;
+    use tower::ServiceExt as _;
+
+    use super::http_route_label;
+
+    /// Mirrors `http_metrics`' placement (outermost `Router::layer`) and
+    /// reports the label it would record in a response header.
+    async fn capture_route(request: Request<Body>, next: Next) -> Response {
+        let route = http_route_label(&request);
+        let mut response = next.run(request).await;
+        response
+            .headers_mut()
+            .insert("x-test-route", route.parse().expect("header value"));
+        response
+    }
+
+    /// Stands in for `require_auth` / rate limiting: rejects before the handler.
+    async fn reject_unauthorized(_request: Request<Body>, _next: Next) -> Response {
+        StatusCode::UNAUTHORIZED.into_response()
+    }
+
+    fn app() -> Router {
+        let protected = Router::new()
+            .nest(
+                "/api/guilds",
+                Router::new().route("/{id}/channels", get(|| async { "ok" })),
+            )
+            .layer(from_fn(reject_unauthorized));
+        let public = Router::new().nest(
+            "/auth",
+            Router::new().route("/login", post(|| async { StatusCode::TOO_MANY_REQUESTS })),
+        );
+        Router::new()
+            .merge(Router::new().merge(protected).merge(public))
+            .layer(from_fn(capture_route))
+    }
+
+    async fn label_for(method: &str, uri: &str) -> (StatusCode, String) {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        let route = response
+            .headers()
+            .get("x-test-route")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        (response.status(), route)
+    }
+
+    #[tokio::test]
+    async fn auth_rejection_is_labelled_with_route_template_not_raw_uri() {
+        let (status, route) = label_for(
+            "GET",
+            "/api/guilds/3f1c2a7e-0000-4000-8000-000000000001/channels",
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(route, "/api/guilds/{id}/channels");
+    }
+
+    #[tokio::test]
+    async fn nested_public_route_is_labelled() {
+        let (status, route) = label_for("POST", "/auth/login").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(route, "/auth/login");
+    }
+
+    #[tokio::test]
+    async fn unmatched_request_gets_placeholder() {
+        let (status, route) = label_for("GET", "/nope/12345").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(route, crate::observability::metrics::UNMATCHED_ROUTE);
+    }
 }
