@@ -124,7 +124,7 @@ const PinsModule: Component = () => {
                 placeholder={t("home.pins.titlePlaceholder")}
                 value={newTitle()}
                 onInput={(e) => setNewTitle(e.currentTarget.value)}
-                class="w-full px-3 py-1.5 rounded bg-surface-base border border-white/10 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-primary"
+                class="w-full px-3 py-1.5 rounded bg-surface-base border border-white/10 text-sm text-text-primary placeholder:text-text-placeholder focus:outline-none focus:border-accent-primary"
               />
             </Show>
             <textarea
@@ -132,7 +132,7 @@ const PinsModule: Component = () => {
               value={newContent()}
               onInput={(e) => setNewContent(e.currentTarget.value)}
               rows={addType() === "note" ? 3 : 1}
-              class="w-full px-3 py-1.5 rounded bg-surface-base border border-white/10 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-primary resize-none"
+              class="w-full px-3 py-1.5 rounded bg-surface-base border border-white/10 text-sm text-text-primary placeholder:text-text-placeholder focus:outline-none focus:border-accent-primary resize-none"
             />
             <div class="flex justify-end gap-2">
               <button
@@ -144,7 +144,7 @@ const PinsModule: Component = () => {
               <button
                 onClick={handleCreate}
                 disabled={!newContent().trim()}
-                class="px-3 py-1.5 rounded text-sm bg-accent-primary text-on-accent hover:bg-accent-primary/80 disabled:opacity-50 disabled:cursor-not-allowed"
+                class="px-3 py-1.5 rounded text-sm bg-accent-primary text-on-accent hover:bg-accent-primary/80 state-disabled"
               >
                 {t("common.save")}
               </button>

@@ -99,8 +99,11 @@ static LAST_CPU_PCT: AtomicU64 = AtomicU64::new(0x7ff8_0000_0000_0000); // NaN b
 /// the first call (establishes a baseline) and caches every computed value for
 /// [`last_cpu_percent`].
 ///
-/// Intended to be called on a fixed cadence (the metric-export interval), where
-/// the delta window equals the export interval and the result is a true rate.
+/// The single caller in production is the background sampler started by
+/// [`spawn_cpu_sampler`], so the delta window equals the sampler interval.
+/// Everything else (the admin summary, the `kaiku_process_cpu_percent` gauge
+/// callback) reads the cached value via [`last_cpu_percent`] and never samples,
+/// so several readers cannot shrink each other's delta window.
 pub fn process_cpu_percent() -> Option<f64> {
     static PREV: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
 
@@ -137,9 +140,51 @@ pub fn last_cpu_percent() -> Option<f64> {
     }
 }
 
+/// Cadence of the background CPU sampler. Each tick is one `/proc/self/stat` read.
+pub const CPU_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Spawn the background task that samples process CPU every `interval`.
+///
+/// This is the only source of truth for CPU percent: it runs independently of
+/// the metric exporters (so the admin panel gets values whether or not the
+/// OTLP exporter is enabled), and the gauge callback only reads the cached
+/// value. The first tick fires immediately and establishes the baseline, so a
+/// value is available after one `interval`.
+pub fn spawn_cpu_sampler(interval: std::time::Duration) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            let _ = process_cpu_percent();
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn cpu_sampler_populates_value_without_any_exporter() {
+        // No meter provider / OTLP exporter involved: the sampler alone must
+        // produce a value the admin summary can read.
+        let handle = spawn_cpu_sampler(std::time::Duration::from_millis(20));
+        let mut got = None;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            got = last_cpu_percent();
+            if got.is_some() {
+                break;
+            }
+        }
+        handle.abort();
+        assert!(
+            got.is_some_and(|p| p >= 0.0),
+            "sampler produced no CPU value"
+        );
+    }
 
     #[test]
     #[cfg(target_os = "linux")]

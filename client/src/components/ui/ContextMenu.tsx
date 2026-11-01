@@ -192,7 +192,7 @@ const ContextMenuItemButton: Component<{
         transition-colors cursor-default
         ${
           props.item.disabled
-            ? "opacity-40 cursor-not-allowed"
+            ? "text-text-primary state-disabled-quiet"
             : props.item.danger
               ? "text-accent-danger hover:bg-accent-danger/10"
               : "text-text-primary hover:bg-white/5"

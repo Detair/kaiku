@@ -290,7 +290,7 @@ const GuildsPanel: Component = () => {
             <button
               onClick={handleExport}
               disabled={adminState.isExporting}
-              class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-text-secondary hover:text-text-primary hover:bg-white/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+              class="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-text-secondary hover:text-text-primary hover:bg-white/20 transition-colors text-sm state-disabled"
             >
               <Show
                 when={!adminState.isExporting}
@@ -309,7 +309,7 @@ const GuildsPanel: Component = () => {
                 placeholder="Search guilds..."
                 value={searchQuery()}
                 onInput={(e) => handleSearchInput(e.currentTarget.value)}
-                class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm"
+                class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm"
               />
               <Show when={adminState.isGuildsLoading && searchQuery()}>
                 <div class="absolute right-3 top-1/2 -translate-y-1/2">
@@ -348,7 +348,7 @@ const GuildsPanel: Component = () => {
                   disabled={
                     !adminState.isElevated || adminState.isBulkActionLoading
                   }
-                  class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-status-error text-on-danger text-sm font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-status-error text-on-danger text-sm font-medium transition-colors hover:bg-status-error/90 state-disabled"
                 >
                   <Ban class="w-4 h-4" />
                   Bulk Suspend
@@ -497,7 +497,7 @@ const GuildsPanel: Component = () => {
             <button
               onClick={() => goToPage(adminState.guildsPagination.page - 1)}
               disabled={adminState.guildsPagination.page <= 1}
-              class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors state-disabled-quiet"
             >
               <ChevronLeft class="w-4 h-4" />
             </button>
@@ -507,7 +507,7 @@ const GuildsPanel: Component = () => {
             <button
               onClick={() => goToPage(adminState.guildsPagination.page + 1)}
               disabled={adminState.guildsPagination.page >= totalPages()}
-              class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors state-disabled-quiet"
             >
               <ChevronRight class="w-4 h-4" />
             </button>
@@ -751,7 +751,7 @@ const GuildsPanel: Component = () => {
                     <button
                       onClick={() => setShowSuspendDialog(true)}
                       disabled={!adminState.isElevated || actionLoading()}
-                      class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 state-disabled"
                     >
                       <Ban class="w-4 h-4" />
                       Suspend Guild
@@ -761,7 +761,7 @@ const GuildsPanel: Component = () => {
                   <button
                     onClick={handleUnsuspend}
                     disabled={!adminState.isElevated || actionLoading()}
-                    class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-status-success text-on-success font-medium transition-colors hover:bg-status-success/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-status-success text-on-success font-medium transition-colors hover:bg-status-success/90 state-disabled"
                   >
                     <CheckCircle class="w-4 h-4" />
                     {actionLoading() ? "Processing..." : "Unsuspend Guild"}
@@ -771,7 +771,7 @@ const GuildsPanel: Component = () => {
                 <button
                   onClick={() => setShowDeleteDialog(true)}
                   disabled={!adminState.isElevated || actionLoading()}
-                  class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-status-error/50 text-status-error font-medium transition-colors hover:bg-status-error/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-status-error/50 text-status-error font-medium transition-colors hover:bg-status-error/10 state-disabled-quiet"
                 >
                   <Trash2 class="w-4 h-4" />
                   Delete Guild
@@ -816,7 +816,7 @@ const GuildsPanel: Component = () => {
                   onInput={(e) => setSuspendReason(e.currentTarget.value)}
                   placeholder="Enter reason..."
                   rows={3}
-                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm resize-none"
+                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm resize-none"
                 />
               </div>
 
@@ -833,7 +833,7 @@ const GuildsPanel: Component = () => {
                 <button
                   onClick={handleSuspend}
                   disabled={!suspendReason().trim() || actionLoading()}
-                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 state-disabled"
                 >
                   {actionLoading() ? "Suspending..." : "Confirm Suspend"}
                 </button>
@@ -880,7 +880,7 @@ const GuildsPanel: Component = () => {
                   onInput={(e) => setBulkSuspendReason(e.currentTarget.value)}
                   placeholder="Enter reason..."
                   rows={3}
-                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm resize-none"
+                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm resize-none"
                 />
               </div>
 
@@ -897,7 +897,7 @@ const GuildsPanel: Component = () => {
                 <button
                   onClick={handleBulkSuspend}
                   disabled={!bulkSuspendReason().trim() || actionLoading()}
-                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 state-disabled"
                 >
                   {actionLoading()
                     ? "Suspending..."
@@ -952,7 +952,7 @@ const GuildsPanel: Component = () => {
                   value={deleteConfirmText()}
                   onInput={(e) => setDeleteConfirmText(e.currentTarget.value)}
                   placeholder={selectedGuild()?.name}
-                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-status-error text-sm"
+                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-status-error text-sm"
                 />
               </div>
 
@@ -972,7 +972,7 @@ const GuildsPanel: Component = () => {
                     deleteConfirmText() !== selectedGuild()?.name ||
                     actionLoading()
                   }
-                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="flex-1 px-4 py-2 rounded-lg bg-status-error text-on-danger font-medium transition-colors hover:bg-status-error/90 state-disabled"
                 >
                   {actionLoading() ? "Deleting..." : "Delete Permanently"}
                 </button>

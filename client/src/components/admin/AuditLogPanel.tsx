@@ -194,7 +194,7 @@ const AuditLogPanel: Component = () => {
                     applyFilter();
                   }
                 }}
-                class="pl-9 pr-4 py-2 w-48 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary text-sm"
+                class="pl-9 pr-4 py-2 w-48 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm"
               />
             </div>
 
@@ -411,7 +411,7 @@ const AuditLogPanel: Component = () => {
             <button
               onClick={() => goToPage(adminState.auditLogPagination.page - 1)}
               disabled={adminState.auditLogPagination.page <= 1}
-              class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors state-disabled-quiet"
             >
               <ChevronLeft class="w-4 h-4" />
             </button>
@@ -421,7 +421,7 @@ const AuditLogPanel: Component = () => {
             <button
               onClick={() => goToPage(adminState.auditLogPagination.page + 1)}
               disabled={adminState.auditLogPagination.page >= totalPages()}
-              class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors state-disabled-quiet"
             >
               <ChevronRight class="w-4 h-4" />
             </button>
