@@ -9,7 +9,7 @@
 //!
 //! Devices are identified by their CPAL device id (`alsa:sysdefault:CARD=USB`,
 //! `wasapi:{endpoint}`, ...), never by their human-readable name, which is
-//! not unique. [`find_by_id_or_legacy_name`] still accepts the description
+//! not unique. [`find_selection`] still accepts the description
 //! that older client versions stored as the selection.
 
 use std::collections::HashSet;
@@ -240,16 +240,52 @@ pub fn curate_alsa_pcms(pcms: &[AlsaPcm], input: bool) -> Vec<CuratedPcm> {
 /// human-readable name older client versions stored (first match). A
 /// selection matching neither returns `None` (the caller falls back to the
 /// system default or reports the device as gone).
-pub fn find_by_id_or_legacy_name<'a, T>(
-    entries: &'a [T],
+fn position_by_id_or_legacy_name<T>(
+    entries: &[T],
     selection: &str,
     id: impl Fn(&T) -> &str,
     legacy_name: impl Fn(&T) -> &str,
-) -> Option<&'a T> {
+) -> Option<usize> {
     entries
         .iter()
-        .find(|entry| id(entry) == selection)
-        .or_else(|| entries.iter().find(|entry| legacy_name(entry) == selection))
+        .position(|entry| id(entry) == selection)
+        .or_else(|| {
+            entries
+                .iter()
+                .position(|entry| legacy_name(entry) == selection)
+        })
+}
+
+/// Where a stored selection was found; the index is into the full list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Found {
+    /// One of the offered (curated) devices.
+    Listed(usize),
+    /// A device that exists but is not offered (filtered out by curation).
+    Unlisted(usize),
+}
+
+/// Resolve a stored selection against the offered devices first (`listed`
+/// holds their indices into `all`), then against every device.
+///
+/// The second step keeps selections working that point at a device the
+/// curated list hides: an older version stored the description of e.g. an
+/// `iec958` output or a custom PCM from `~/.asoundrc`, and opened that PCM.
+/// Opening it again preserves what the person chose and what worked before;
+/// silently switching them to the system default would not.
+pub fn find_selection<T>(
+    all: &[T],
+    listed: &[usize],
+    selection: &str,
+    id: impl Fn(&T) -> &str,
+    legacy_name: impl Fn(&T) -> &str,
+) -> Option<Found> {
+    let offered: Vec<&T> = listed.iter().map(|&i| &all[i]).collect();
+    position_by_id_or_legacy_name(&offered, selection, |e| id(e), |e| legacy_name(e))
+        .map(|pos| Found::Listed(listed[pos]))
+        .or_else(|| {
+            position_by_id_or_legacy_name(all, selection, &id, &legacy_name).map(Found::Unlisted)
+        })
 }
 
 #[cfg(test)]
@@ -460,8 +496,8 @@ mod tests {
     }
 
     fn find_curated<'a>(curated: &'a [CuratedPcm], selection: &str) -> Option<&'a str> {
-        find_by_id_or_legacy_name(curated, selection, |c| &c.pcm_id, |c| &c.description)
-            .map(|c| c.pcm_id.as_str())
+        position_by_id_or_legacy_name(curated, selection, |c| &c.pcm_id, |c| &c.description)
+            .map(|i| curated[i].pcm_id.as_str())
     }
 
     #[test]
@@ -493,10 +529,58 @@ mod tests {
         assert_eq!(find_curated(&curated, "Scarlett 2i2 USB"), None);
     }
 
+    /// `pipewire_desktop()` plus a custom PCM, with the indices of the
+    /// curated output entries.
+    fn outputs_with_custom_pcm() -> (Vec<AlsaPcm>, Vec<usize>) {
+        let mut all = pipewire_desktop();
+        all.push(pcm("eq", "Equalizer", DeviceDirection::Output));
+        let listed = curate_alsa_pcms(&all, false)
+            .iter()
+            .map(|c| all.iter().position(|p| p.pcm_id == c.pcm_id).unwrap())
+            .collect();
+        (all, listed)
+    }
+
+    fn resolve<'a>(
+        all: &'a [AlsaPcm],
+        listed: &[usize],
+        selection: &str,
+    ) -> Option<(bool, &'a str)> {
+        find_selection(all, listed, selection, |p| &p.pcm_id, |p| &p.description).map(|found| {
+            match found {
+                Found::Listed(i) => (true, all[i].pcm_id.as_str()),
+                Found::Unlisted(i) => (false, all[i].pcm_id.as_str()),
+            }
+        })
+    }
+
+    #[test]
+    fn selection_prefers_the_offered_entry() {
+        let (all, listed) = outputs_with_custom_pcm();
+        // Shared by all Scarlett variants: the curated one wins.
+        assert_eq!(
+            resolve(&all, &listed, SCARLETT),
+            Some((true, "sysdefault:CARD=USB"))
+        );
+        assert_eq!(resolve(&all, &listed, "default"), Some((true, "default")));
+    }
+
+    #[test]
+    fn selection_of_a_hidden_pcm_still_resolves_to_it() {
+        let (all, listed) = outputs_with_custom_pcm();
+        // Old description of a custom PCM, and an id of a filtered variant.
+        assert_eq!(resolve(&all, &listed, "Equalizer"), Some((false, "eq")));
+        assert_eq!(
+            resolve(&all, &listed, "iec958:CARD=USB,DEV=0"),
+            Some((false, "iec958:CARD=USB,DEV=0"))
+        );
+        assert_eq!(resolve(&all, &listed, "Unplugged Headset"), None);
+    }
+
     #[test]
     fn id_match_wins_over_legacy_name() {
         let entries = [("a", "b"), ("b", "c")];
-        let found = find_by_id_or_legacy_name(&entries, "b", |e| e.0, |e| e.1);
-        assert_eq!(found, Some(&("b", "c")));
+        let found = position_by_id_or_legacy_name(&entries, "b", |e| e.0, |e| e.1);
+        assert_eq!(found, Some(1));
     }
 }

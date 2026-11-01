@@ -86,7 +86,9 @@ pub enum AudioError {
     NoOutputDevice,
     #[error("Device not found: {0}")]
     DeviceNotFound(String),
-    #[error("Device is in use by another application")]
+    #[error(
+        "Audio device is busy: another program or the sound server is using it. Choose the system default instead."
+    )]
     DeviceInUse,
     #[error("Failed to get device config: {0}")]
     ConfigError(String),
