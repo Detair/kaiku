@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Desktop app on Linux: an advanced "Show all ALSA devices" option in the audio settings also lists surround, S/PDIF, raw hardware and plugin devices that the short device list hides. It is off by default, and a device you picked stays listed when you turn it off.
 - Admins can add a new account to servers while creating it.
 - API: `GET /api/me/unread` now includes `last_read_message_id` for every channel and DM entry (`null` if it was never read), so apps can notify only for messages newer than the read position.
 - **Mobile push notifications (server side)**: the server can wake the Android app through Firebase Cloud Messaging (when an FCM service account is configured) or UnifiedPush. Phones are now also notified about @mentions, not only DMs (photo and file DMs already pushed before). Bursts of messages are coalesced into one notification, and reading a conversation on another device clears its notification. Wake signals carry only a type, channel and count, never message text, so end-to-end encryption is preserved. Blocked users never trigger a notification, and blocks are enforced for DMs even when cached data has expired. Endpoints are registered per device under `/api/me/push-subscriptions`, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
@@ -145,6 +146,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- Desktop app on Linux: the microphone and speaker lists show the system default (e.g. "System default (PipeWire)") and each sound card once, instead of a dozen ALSA variants per card, plugins and unused HDMI ports. The chosen device is now remembered by a unique id, so picking one opens exactly that device; a device chosen in an older version is still found. If the chosen microphone or speaker is busy when you join a call, the system default is used instead; choosing a busy device says it is in use.
+- Desktop app: choosing a microphone or speaker in the voice settings and mic test applies the selected device again, and the system default is preselected.
 - Admin Command Center: the CPU value and CPU chart now show data when the server runs without an OTLP exporter (`OBSERVABILITY_ENABLED=false`); CPU is sampled every 15 s by the server itself.
 - Admin Command Center: Top Routes and Top Errors now list the requests behind the error rate (including 401/403/429 from login and other auth endpoints), grouped by route template such as `/api/guilds/{id}/members`; Top Errors also shows the route. Errors count 4xx and 5xx consistently with the error rate.
 - Admin Command Center: the Process Memory chart labels its axis in MiB/GiB without clipping, charts with no data (e.g. Voice Sessions) show a "No data" hint instead of an empty box, and 7d/30d charts of memory, connections and sessions show daily averages instead of daily sums.

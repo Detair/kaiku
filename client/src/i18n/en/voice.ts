@@ -94,6 +94,8 @@ export const voice = {
   "voice.audio.loading": "Loading audio devices...",
   "voice.audio.inputDevice": "Input Device",
   "voice.audio.outputDevice": "Output Device",
+  "voice.audio.showAllAlsaDevices": "Show all ALSA devices",
+  "voice.audio.showAllAlsaDevicesHint": "Also list surround, S/PDIF, raw hardware and plugin devices. For special setups; the system default works for most people.",
   "voice.audio.microphoneFallback": "Microphone {{id}}",
   "voice.audio.speakerFallback": "Speaker {{id}}",
   "voice.audio.deviceDefault": "{{label}} (Default)",
