@@ -497,9 +497,13 @@ pub struct AudioHandle {
     /// when the selected one was busy).
     active_output: ActiveLabel,
 
-    /// Generation of the output selection, bumped by every
+    /// Generation of the output selection, renewed by every
     /// `set_output_device` and playback start.
     output_generation: u64,
+
+    /// Last generation handed out; only grows (a failed switch restores
+    /// `output_generation`, but new generations stay unique).
+    generation_counter: u64,
 
     /// Generation for which a playback task fell back to the system default
     /// because the selected speaker was busy (0 = none). Written by the
@@ -787,8 +791,10 @@ struct FallbackMark {
 }
 
 impl FallbackMark {
+    /// `fetch_max`: generations only grow, so a stale task can never
+    /// overwrite the pending mark of a newer one.
     fn set(&self) {
-        self.mark.store(self.generation, Ordering::SeqCst);
+        self.mark.fetch_max(self.generation, Ordering::SeqCst);
     }
 }
 
@@ -1013,6 +1019,7 @@ impl AudioHandle {
             output_device_id: None,
             active_output: ActiveLabel::default(),
             output_generation: 0,
+            generation_counter: 0,
             output_fallback_mark: Arc::new(AtomicU64::new(0)),
             vad_config: VadConfig::new(),
             app_handle: None,
@@ -1113,7 +1120,7 @@ impl AudioHandle {
         self.sync_output_fallback();
         let previous_generation = self.output_generation;
         let previous = std::mem::replace(&mut self.output_device_id, device_id);
-        self.output_generation += 1;
+        self.output_generation = self.next_generation();
         let result = self.switch_running_playback().await;
         if result.is_err() {
             // Back to the previous selection, including a fallback that its
@@ -1205,7 +1212,11 @@ impl AudioHandle {
 
     /// Apply a playback fallback to the stored selection: the busy speaker
     /// is no longer selected, the system default is.
-    /// Only a fallback for the current generation applies.
+    /// Only a fallback for the current generation applies. A pending mark
+    /// is never newer than the current generation (each start makes its
+    /// generation current), so resetting the matching mark to 0 loses
+    /// nothing; a stale task's later `fetch_max` lands below the current
+    /// generation and is ignored.
     fn sync_output_fallback(&mut self) {
         let current = self.output_generation;
         if current != 0
@@ -1229,11 +1240,16 @@ impl AudioHandle {
         }
     }
 
+    const fn next_generation(&mut self) -> u64 {
+        self.generation_counter += 1;
+        self.generation_counter
+    }
+
     /// Start a new output generation for a playback start; the task marks
     /// a fallback with it.
     fn begin_playback_generation(&mut self) -> FallbackMark {
         self.sync_output_fallback();
-        self.output_generation += 1;
+        self.output_generation = self.next_generation();
         FallbackMark {
             mark: self.output_fallback_mark.clone(),
             generation: self.output_generation,
@@ -2231,6 +2247,32 @@ mod tests {
         assert_eq!(handle.output_device_id(), Some(b));
         handle.sync_output_fallback();
         assert_eq!(handle.output_device_id(), Some(b));
+    }
+
+    #[tokio::test]
+    async fn stale_fallback_does_not_overwrite_a_newer_one() {
+        let mut handle = AudioHandle::new().unwrap();
+        handle
+            .set_output_device(Some("alsa:sysdefault:CARD=USB".into()))
+            .await
+            .unwrap();
+
+        // start(A) times out, playback restarts (B) on the same choice.
+        let mark_a = handle.begin_playback_generation();
+        let mark_b = handle.begin_playback_generation();
+        // B falls back first, then the stale A.
+        mark_b.set();
+        mark_a.set();
+
+        assert_eq!(handle.output_device_id(), None, "B's fallback survives");
+        handle.sync_output_fallback();
+        assert_eq!(handle.output_device_id(), None);
+        // Consumed: a new choice is not cleared by anything pending.
+        handle
+            .set_output_device(Some("alsa:hdmi:CARD=HDMI,DEV=0".into()))
+            .await
+            .unwrap();
+        assert_eq!(handle.output_device_id(), Some("alsa:hdmi:CARD=HDMI,DEV=0"));
     }
 
     #[tokio::test]
