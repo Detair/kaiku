@@ -196,6 +196,10 @@ pub struct ServerMetadata {
     pub environment: String,
     pub active_user_count: i64,
     pub guild_count: i64,
+    /// Whether the OTLP exporter is enabled (`OBSERVABILITY_ENABLED`). Metrics
+    /// and logs are captured natively either way; trace capture currently
+    /// needs the tracer provider that only exists when this is `true`.
+    pub otlp_export_enabled: bool,
 }
 
 /// Trends response — metric time series.
@@ -234,6 +238,9 @@ pub struct TopErrorsResponse {
 #[derive(Debug, Serialize)]
 pub struct ErrorCategoryEntry {
     pub error_type: Option<String>,
+    /// Matched route template the errors came from (`None` for older samples
+    /// recorded before routes were labelled).
+    pub route: Option<String>,
     pub count: i64,
     pub avg_p95_ms: Option<f64>,
 }
@@ -342,6 +349,7 @@ pub async fn summary(
             environment: state.config.environment.clone(),
             active_user_count: user_count,
             guild_count,
+            otlp_export_enabled: state.config.observability.enabled,
         },
         system,
         voice_health_score,
@@ -458,7 +466,8 @@ pub async fn top_errors(
     let error_categories = raw
         .into_iter()
         .map(|r| ErrorCategoryEntry {
-            error_type: r.route, // query_top_errors aliases error.type into route field
+            error_type: r.error_type,
+            route: r.route,
             count: r.error_count.unwrap_or(0),
             avg_p95_ms: r.avg_p95,
         })
