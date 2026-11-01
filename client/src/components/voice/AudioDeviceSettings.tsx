@@ -31,8 +31,11 @@ import { appSettings, updateAudioSetting } from "@/stores/settings";
 import { isTauri } from "@/lib/tauri/common";
 import { showToast } from "@/components/ui/Toast";
 import {
-  labelNamesSystemDefault,
-  preselectedDeviceId,
+  FOLLOW_SYSTEM_DEFAULT,
+  isSystemDefaultAlias,
+  pickerDeviceValue,
+  systemDefaultAlias,
+  systemDefaultDevice,
   showAllAlsaDevices,
   visibleDevices,
 } from "@/lib/audioDevices";
@@ -72,7 +75,9 @@ function deviceOptionLabel(
 ): string {
   // Unlabeled devices (no mic permission yet) get a generic numbered name.
   const label = device.label || t(fallbackKey, { id: index + 1 });
-  return device.isDefault && !labelNamesSystemDefault(device)
+  // An alias entry ("System default (PipeWire)", Chrome's "Default - …")
+  // already says so in its label.
+  return device.isDefault && !isSystemDefaultAlias(device)
     ? t("voice.audio.deviceDefault", { label })
     : label;
 }
@@ -146,8 +151,8 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       // Preselect the saved device (by id), else the system default entry,
       // else the first device.
       const audio = appSettings()?.audio;
-      setSelectedInput(preselectedDeviceId(result.value.inputs, audio?.input_device));
-      setSelectedOutput(preselectedDeviceId(result.value.outputs, audio?.output_device));
+      setSelectedInput(pickerDeviceValue(result.value.inputs, audio?.input_device));
+      setSelectedOutput(pickerDeviceValue(result.value.outputs, audio?.output_device));
 
       setIsLoading(false);
     } catch (err) {
@@ -261,6 +266,20 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
     const voiceAdapter = adapter();
     if (!voiceAdapter) return;
 
+    // "Default Device" is stored as null (follow the system default); the
+    // running session switches to the device that is the default now.
+    if (deviceId === FOLLOW_SYSTEM_DEFAULT) {
+      const current = systemDefaultDevice(devices().inputs);
+      try {
+        const result = current ? await voiceAdapter.setInputDevice(current.deviceId) : null;
+        if (result && !result.ok) console.warn("Switch to the default input failed:", result.error);
+      } catch (err) {
+        console.warn("Switch to the default input failed:", err);
+      }
+      await updateAudioSetting("input_device", null);
+      return;
+    }
+
     try {
       const result = await voiceAdapter.setInputDevice(deviceId);
 
@@ -293,6 +312,20 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
     const voiceAdapter = adapter();
     if (!voiceAdapter) return;
 
+    // "Default Device" is stored as null (follow the system default); the
+    // running session switches to the device that is the default now.
+    if (deviceId === FOLLOW_SYSTEM_DEFAULT) {
+      const current = systemDefaultDevice(devices().outputs);
+      try {
+        const result = current ? await voiceAdapter.setOutputDevice(current.deviceId) : null;
+        if (result && !result.ok) console.warn("Switch to the default output failed:", result.error);
+      } catch (err) {
+        console.warn("Switch to the default output failed:", err);
+      }
+      await updateAudioSetting("output_device", null);
+      return;
+    }
+
     try {
       const result = await voiceAdapter.setOutputDevice(deviceId);
 
@@ -324,7 +357,11 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
     if (!voiceAdapter) return;
 
     try {
-      const result = await voiceAdapter.startMicTest(selectedInput());
+      const result = await voiceAdapter.startMicTest(
+        selectedInput() === FOLLOW_SYSTEM_DEFAULT
+          ? systemDefaultDevice(devices().inputs)?.deviceId
+          : selectedInput(),
+      );
 
       if (!result.ok) {
         showToast({
@@ -343,11 +380,11 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
         if (!list.ok) return;
         setDevices(list.value);
         const audio = appSettings()?.audio;
-        if (!selectedInput()) {
-          setSelectedInput(preselectedDeviceId(list.value.inputs, audio?.input_device));
+        if (!selectedInput() || selectedInput() === FOLLOW_SYSTEM_DEFAULT) {
+          setSelectedInput(pickerDeviceValue(list.value.inputs, audio?.input_device));
         }
-        if (!selectedOutput()) {
-          setSelectedOutput(preselectedDeviceId(list.value.outputs, audio?.output_device));
+        if (!selectedOutput() || selectedOutput() === FOLLOW_SYSTEM_DEFAULT) {
+          setSelectedOutput(pickerDeviceValue(list.value.outputs, audio?.output_device));
         }
       });
 
@@ -591,6 +628,9 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 onChange={(e) => handleInputChange(e.currentTarget.value)}
                 class="w-full px-3 py-2.5 bg-surface-base rounded-xl text-sm text-text-primary border border-white/10 outline-none focus:ring-2 focus:ring-accent-primary/30 transition-all"
               >
+                <Show when={!systemDefaultAlias(devices().inputs)}>
+                  <option value={FOLLOW_SYSTEM_DEFAULT}>{t("settings.audio.defaultDevice")}</option>
+                </Show>
                 <For each={visibleDevices(devices().inputs, showAllAlsaDevices(), selectedInput())}>
                   {(device, i) => (
                     <option value={device.deviceId}>
@@ -676,6 +716,9 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 onChange={(e) => handleOutputChange(e.currentTarget.value)}
                 class="w-full px-3 py-2.5 bg-surface-base rounded-xl text-sm text-text-primary border border-white/10 outline-none focus:ring-2 focus:ring-accent-primary/30 transition-all"
               >
+                <Show when={!systemDefaultAlias(devices().outputs)}>
+                  <option value={FOLLOW_SYSTEM_DEFAULT}>{t("settings.audio.defaultDevice")}</option>
+                </Show>
                 <For each={visibleDevices(devices().outputs, showAllAlsaDevices(), selectedOutput())}>
                   {(device, i) => (
                     <option value={device.deviceId}>

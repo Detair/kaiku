@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor } from "@solidjs/testing-library";
+import { render, screen, cleanup, waitFor, fireEvent } from "@solidjs/testing-library";
 
 const adapter = vi.hoisted(() => ({
   getAudioDevices: vi.fn(),
+  setInputDevice: vi.fn(),
+  setOutputDevice: vi.fn(),
   isNoiseSuppressionEnabled: vi.fn(() => true),
 }));
 const audio = vi.hoisted(() => ({
@@ -14,9 +16,10 @@ vi.mock("@/lib/webrtc", () => ({ createVoiceAdapter: async () => adapter }));
 vi.mock("@/lib/browserCapabilities", () => ({ canSelectOutputDevice: () => true }));
 vi.mock("@/lib/tauri/common", () => ({ isTauri: () => true }));
 vi.mock("@/stores/voice", () => ({ setSpeaking: vi.fn() }));
+const updateAudioSetting = vi.hoisted(() => vi.fn());
 vi.mock("@/stores/settings", () => ({
   appSettings: () => ({ audio }),
-  updateAudioSetting: vi.fn(),
+  updateAudioSetting,
 }));
 
 import AudioDeviceSettings from "../AudioDeviceSettings";
@@ -62,7 +65,7 @@ describe("AudioDeviceSettings device pickers", () => {
     render(() => <AudioDeviceSettings onClose={() => {}} />);
 
     const [input] = await pickers();
-    expect(input.options.length).toBe(3);
+    expect(input.options.length).toBe(3); // no "Default Device" next to the alias
     expect([...input.options].filter((o) => o.value === "alsa:default").length).toBe(1);
     expect(input.value).toBe("alsa:default");
   });
@@ -87,6 +90,45 @@ describe("AudioDeviceSettings device pickers", () => {
     });
     render(() => <AudioDeviceSettings onClose={() => {}} />);
     const [browserInput] = await pickers();
-    expect(browserInput.options[0].textContent).toBe("Headset (Default)");
+    // No alias entry: the follow-default option comes first.
+    expect(browserInput.options[0].textContent).toBe("Default Device");
+    expect(browserInput.options[1].textContent).toBe("Headset (Default)");
+  });
+
+  it("Windows/macOS: offers follow-default next to a physical default device", async () => {
+    const speakers = "wasapi:{0.0.0.00000000}.{speakers}";
+    adapter.getAudioDevices.mockResolvedValue({
+      ok: true,
+      value: {
+        inputs: [
+          { deviceId: "wasapi:mic", label: "Microphone", isDefault: true, curated: true },
+          { deviceId: "wasapi:a", label: "USB Mic", isDefault: false, curated: true },
+          { deviceId: "wasapi:b", label: "USB Mic", isDefault: false, curated: true },
+        ],
+        outputs: [
+          { deviceId: speakers, label: "Speakers", isDefault: true, curated: true },
+          { deviceId: "wasapi:headset", label: "Headset", isDefault: false, curated: true },
+        ],
+      },
+    });
+    adapter.setOutputDevice.mockResolvedValue({ ok: true });
+    updateAudioSetting.mockClear();
+    render(() => <AudioDeviceSettings onClose={() => {}} />);
+
+    const [, output] = await pickers();
+    expect([...output.options].map((o) => o.textContent)).toEqual([
+      "Default Device",
+      "Speakers (Default)",
+      "Headset",
+    ]);
+    expect(output.value).toBe("default");
+
+    fireEvent.change(output, { target: { value: speakers } });
+    await waitFor(() => expect(updateAudioSetting).toHaveBeenLastCalledWith("output_device", speakers));
+
+    fireEvent.change(output, { target: { value: "default" } });
+    await waitFor(() => expect(updateAudioSetting).toHaveBeenLastCalledWith("output_device", null));
+    // The running session moves to the current default device.
+    expect(adapter.setOutputDevice).toHaveBeenLastCalledWith(speakers);
   });
 });

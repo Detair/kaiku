@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, cleanup, waitFor } from "@solidjs/testing-library";
+import { render, screen, cleanup, waitFor, fireEvent } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 
 const adapter = vi.hoisted(() => ({
@@ -49,6 +49,7 @@ const optionTexts = (el: HTMLSelectElement) => [...el.options].map((o) => o.text
 beforeEach(() => {
   audio.input_device = null;
   audio.output_device = null;
+  updateAudioSetting.mockClear();
 });
 afterEach(cleanup);
 
@@ -124,5 +125,34 @@ describe("AudioSettings device pickers", () => {
     const [input] = selects();
     expect(optionTexts(input)).toEqual(["Default Device", "Headset"]);
     expect(input.value).toBe("default");
+  });
+
+  it("Windows/macOS: a physical default device keeps the follow-default option", async () => {
+    const speakers = "wasapi:{0.0.0.00000000}.{speakers}";
+    const headset = "wasapi:{0.0.0.00000000}.{headset}";
+    adapter.getAudioDevices.mockResolvedValue({
+      ok: true,
+      value: {
+        inputs: [{ deviceId: "wasapi:{0.0.1.00000000}.{mic}", label: "Microphone", isDefault: true, curated: true }],
+        outputs: [
+          { deviceId: speakers, label: "Speakers", isDefault: true, curated: true },
+          { deviceId: headset, label: "Headset", isDefault: false, curated: true },
+        ],
+      },
+    });
+    adapter.setOutputDevice.mockResolvedValue({ ok: true });
+    render(() => <AudioSettings />);
+    await waitFor(() => expect(screen.getByText("Speakers")).toBeTruthy());
+
+    const output = selects()[1];
+    expect(optionTexts(output)).toEqual(["Default Device", "Speakers", "Headset"]);
+    // Nothing saved: follow the system default, not the flagged hardware.
+    expect(output.value).toBe("default");
+
+    fireEvent.change(output, { target: { value: speakers } });
+    await waitFor(() => expect(updateAudioSetting).toHaveBeenLastCalledWith("output_device", speakers));
+
+    fireEvent.change(output, { target: { value: "default" } });
+    await waitFor(() => expect(updateAudioSetting).toHaveBeenLastCalledWith("output_device", null));
   });
 });

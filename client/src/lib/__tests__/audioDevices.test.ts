@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   findSelectedDevice,
   hasHiddenDevices,
-  labelNamesSystemDefault,
+  isSystemDefaultAlias,
+  pickerDeviceValue,
+  systemDefaultAlias,
   preselectedDeviceId,
   systemDefaultDevice,
   visibleDevices,
@@ -112,12 +114,29 @@ describe("legacy device names", () => {
   });
 });
 
-describe("labelNamesSystemDefault", () => {
-  it("is true only for the desktop app's own system default entry", () => {
-    expect(labelNamesSystemDefault(devices[0])).toBe(true);
-    expect(labelNamesSystemDefault(devices[1])).toBe(false);
-    // A real device flagged as default (Windows/macOS) or a browser entry.
-    expect(labelNamesSystemDefault({ deviceId: "wasapi:1", label: "Speakers", isDefault: true, curated: true })).toBe(false);
-    expect(labelNamesSystemDefault({ deviceId: "default", label: "System default", isDefault: true })).toBe(false);
+describe("system default alias", () => {
+  const windows: AudioDevice[] = [
+    { deviceId: "wasapi:{0.0.0.00000000}.{a1}", label: "Speakers", isDefault: true, curated: true },
+    { deviceId: "wasapi:{0.0.0.00000000}.{b2}", label: "Headphones", isDefault: false, curated: true },
+  ];
+
+  it("is the Linux System default entry or Chrome's default, not a flagged physical device", () => {
+    expect(isSystemDefaultAlias(devices[0])).toBe(true);
+    expect(isSystemDefaultAlias(devices[1])).toBe(false);
+    expect(isSystemDefaultAlias(windows[0])).toBe(false);
+    expect(isSystemDefaultAlias({ deviceId: "default", label: "Default - Mic", isDefault: true })).toBe(true);
+    expect(
+      isSystemDefaultAlias({ deviceId: "alsa:pipewire", label: "System default (PipeWire)", isDefault: true, curated: true }),
+    ).toBe(true);
+    // The PipeWire entry next to an ALSA default is a plain choice.
+    expect(isSystemDefaultAlias({ deviceId: "alsa:pipewire", label: "PipeWire", isDefault: false, curated: true })).toBe(false);
+    expect(systemDefaultAlias(windows)).toBeUndefined();
+  });
+
+  it("a null setting shows the alias, else the follow-default value, never the flagged device", () => {
+    expect(pickerDeviceValue(devices, null)).toBe("alsa:default");
+    expect(pickerDeviceValue(windows, null)).toBe("default");
+    expect(pickerDeviceValue(windows, "wasapi:{0.0.0.00000000}.{a1}")).toBe("wasapi:{0.0.0.00000000}.{a1}");
+    expect(pickerDeviceValue(windows, "gone")).toBe("default");
   });
 });

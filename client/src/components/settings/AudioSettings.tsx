@@ -7,9 +7,10 @@ import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 import { canSelectOutputDevice } from "@/lib/browserCapabilities";
 import {
-    findSelectedDevice,
+    FOLLOW_SYSTEM_DEFAULT,
+    pickerDeviceValue,
     showAllAlsaDevices,
-    systemDefaultDevice,
+    systemDefaultAlias,
     visibleDevices,
 } from "@/lib/audioDevices";
 import Button from "@/components/ui/Button";
@@ -68,16 +69,9 @@ const AudioSettings: Component = () => {
         }
     });
 
-    // The value shown in a picker: the saved device (by id, else by the
-    // legacy name older desktop versions stored), else the list's own
-    // system default entry (desktop list, Chrome's "default"), else the
-    // synthetic "default" option. The saved setting is left as it is.
-    const pickerValue = (devices: AudioDevice[], saved: string | null | undefined) =>
-        (findSelectedDevice(devices, saved) ?? systemDefaultDevice(devices))?.deviceId ?? "default";
-
     // Persist the selection and live-apply it to an active voice session.
     const changeDevice = async (kind: "input" | "output", value: string) => {
-        const deviceId = value === "default" ? null : value;
+        const deviceId = value === FOLLOW_SYSTEM_DEFAULT ? null : value;
         await updateAudioSetting(
             kind === "input" ? "input_device" : "output_device",
             deviceId,
@@ -125,14 +119,15 @@ const AudioSettings: Component = () => {
                                 </label>
                                 <select
                                     class="w-full px-4 py-2 bg-surface-base border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors appearance-none cursor-pointer"
-                                    value={pickerValue(inputDevices(), settings().audio.input_device)}
+                                    value={pickerDeviceValue(inputDevices(), settings().audio.input_device)}
                                     onChange={(e) => changeDevice("input", e.currentTarget.value)}
                                 >
-                                    {/* Only when the list has no system default entry of its own. */}
-                                    <Show when={!systemDefaultDevice(inputDevices())}>
-                                        <option value="default">{t("settings.audio.defaultDevice")}</option>
+                                    {/* Unless the list has its own alias entry that follows the
+                                        system default (Linux "System default", Chrome). */}
+                                    <Show when={!systemDefaultAlias(inputDevices())}>
+                                        <option value={FOLLOW_SYSTEM_DEFAULT}>{t("settings.audio.defaultDevice")}</option>
                                     </Show>
-                                    <For each={visibleDevices(inputDevices(), showAllAlsaDevices(), pickerValue(inputDevices(), settings().audio.input_device))}>
+                                    <For each={visibleDevices(inputDevices(), showAllAlsaDevices(), pickerDeviceValue(inputDevices(), settings().audio.input_device))}>
                                         {(device, i) => (
                                             <option value={device.deviceId}>
                                                 {device.label || t("settings.audio.microphoneFallback", { id: i() + 1 })}
@@ -179,14 +174,15 @@ const AudioSettings: Component = () => {
                                 </label>
                                 <select
                                     class="w-full px-4 py-2 bg-surface-base border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors appearance-none cursor-pointer"
-                                    value={pickerValue(outputDevices(), settings().audio.output_device)}
+                                    value={pickerDeviceValue(outputDevices(), settings().audio.output_device)}
                                     onChange={(e) => changeDevice("output", e.currentTarget.value)}
                                 >
-                                    {/* Only when the list has no system default entry of its own. */}
-                                    <Show when={!systemDefaultDevice(outputDevices())}>
-                                        <option value="default">{t("settings.audio.defaultDevice")}</option>
+                                    {/* Unless the list has its own alias entry that follows the
+                                        system default (Linux "System default", Chrome). */}
+                                    <Show when={!systemDefaultAlias(outputDevices())}>
+                                        <option value={FOLLOW_SYSTEM_DEFAULT}>{t("settings.audio.defaultDevice")}</option>
                                     </Show>
-                                    <For each={visibleDevices(outputDevices(), showAllAlsaDevices(), pickerValue(outputDevices(), settings().audio.output_device))}>
+                                    <For each={visibleDevices(outputDevices(), showAllAlsaDevices(), pickerDeviceValue(outputDevices(), settings().audio.output_device))}>
                                         {(device, i) => (
                                             <option value={device.deviceId}>
                                                 {device.label || t("settings.audio.speakerFallback", { id: i() + 1 })}
