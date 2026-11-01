@@ -148,6 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Desktop app on Linux: the microphone and speaker lists show the system default (e.g. "System default (PipeWire)") and each sound card once, instead of a dozen ALSA variants per card, plugins and unused HDMI ports. The chosen device is now remembered by a unique id, so picking one opens exactly that device; a device chosen in an older version is still found. If the chosen microphone or speaker is busy when you join a call, the system default is used instead; choosing a busy device says it is in use.
 - Desktop app: choosing a microphone or speaker in the voice settings and mic test applies the selected device again, and the system default is preselected.
+- The mascot illustrations in the empty states (Friends, direct messages, Discovery, search, unread) no longer show a white box on dark themes.
 - Opening a channel with a few unread messages no longer stops scrolling back after about 25 messages: older history loads again.
 - Picking someone from the @ suggestions now mentions them (and notifies them) even when their display name differs from their username.
 - Pressing Enter sends your message again when the suggestion list has no matches (for example after typing "@" or ":" text that matches nothing).
