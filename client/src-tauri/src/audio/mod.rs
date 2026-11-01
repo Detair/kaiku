@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+mod devices;
 pub mod format;
 mod handle;
 
@@ -130,6 +131,33 @@ mod tests {
         let devices = handle.enumerate_devices();
         // May fail on CI without audio hardware, so just check it returns a result
         let _ = devices;
+    }
+
+    /// Manual check on real hardware:
+    /// `cargo test -p vc-client --lib audio::tests::print_devices -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs audio hardware; prints the device list"]
+    fn print_devices() {
+        let handle = AudioHandle::new().unwrap();
+        let devices = handle.enumerate_devices().unwrap();
+        for (kind, list) in [("input", &devices.inputs), ("output", &devices.outputs)] {
+            for d in list {
+                println!(
+                    "{kind}: {:<40} {} default={}",
+                    d.label, d.device_id, d.is_default
+                );
+            }
+        }
+        let ids: std::collections::HashSet<_> =
+            devices.inputs.iter().map(|d| &d.device_id).collect();
+        assert_eq!(ids.len(), devices.inputs.len(), "input ids must be unique");
+        let ids: std::collections::HashSet<_> =
+            devices.outputs.iter().map(|d| &d.device_id).collect();
+        assert_eq!(
+            ids.len(),
+            devices.outputs.len(),
+            "output ids must be unique"
+        );
     }
 
     #[test]

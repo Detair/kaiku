@@ -13,6 +13,7 @@ import type {
   VoiceError,
   VoiceResult,
   VoiceAdapterEvents,
+  AudioDevice,
   AudioDeviceList,
   ScreenShareOptions,
   WebcamOptions,
@@ -22,6 +23,19 @@ import type {
 } from "./types";
 import { buildConnectionMetrics, deltaLossPercent } from "./types";
 import * as Sentry from "@sentry/browser";
+
+/** Audio device as returned by the `get_audio_devices` command. */
+interface NativeAudioDevice {
+  /** Stable device id (CPAL device id); pass back to the device commands. */
+  device_id: string;
+  label: string;
+  is_default: boolean;
+}
+
+interface NativeAudioDeviceList {
+  inputs: NativeAudioDevice[];
+  outputs: NativeAudioDevice[];
+}
 
 export class TauriVoiceAdapter implements VoiceAdapter {
   private state: VoiceConnectionState = "disconnected";
@@ -302,8 +316,21 @@ export class TauriVoiceAdapter implements VoiceAdapter {
 
   async getAudioDevices(): Promise<VoiceResult<AudioDeviceList>> {
     try {
-      const devices = await invoke<AudioDeviceList>("get_audio_devices");
-      return { ok: true, value: devices };
+      // The native list uses the snake_case wire format; map it to the
+      // shared AudioDevice shape (same as the browser adapter's).
+      const devices = await invoke<NativeAudioDeviceList>("get_audio_devices");
+      const toDevice = (d: NativeAudioDevice): AudioDevice => ({
+        deviceId: d.device_id,
+        label: d.label,
+        isDefault: d.is_default,
+      });
+      return {
+        ok: true,
+        value: {
+          inputs: devices.inputs.map(toDevice),
+          outputs: devices.outputs.map(toDevice),
+        },
+      };
     } catch (err) {
       return { ok: false, error: this.mapTauriError(err) };
     }

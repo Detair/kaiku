@@ -139,4 +139,31 @@ describe("TauriVoiceAdapter native events", () => {
     expect(invoke).toHaveBeenCalledWith("set_user_volume", { userId: "u-1", volume: 0.5 });
     adapter.dispose();
   });
+
+  it("maps the native device list to device ids, not names", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce({
+      inputs: [
+        { device_id: "alsa:default", label: "System default (PipeWire)", is_default: true },
+        { device_id: "alsa:sysdefault:CARD=USB", label: "Scarlett 2i2 USB", is_default: false },
+      ],
+      outputs: [],
+    });
+    const adapter = new TauriVoiceAdapter();
+    await flushListen();
+
+    const result = await adapter.getAudioDevices();
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        inputs: [
+          { deviceId: "alsa:default", label: "System default (PipeWire)", isDefault: true },
+          { deviceId: "alsa:sysdefault:CARD=USB", label: "Scarlett 2i2 USB", isDefault: false },
+        ],
+        outputs: [],
+      },
+    });
+    adapter.dispose();
+  });
 });

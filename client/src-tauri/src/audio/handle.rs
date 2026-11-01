@@ -15,6 +15,7 @@ use tauri::Emitter;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+use super::devices;
 use super::format::{
     negotiate_capture_format, push_chunk_len, CaptureFormat, CaptureFrontEnd, MAX_PUSH_SAMPLES,
 };
@@ -57,7 +58,8 @@ pub enum AudioErrorKind {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct AudioErrorEvent {
     pub kind: AudioErrorKind,
-    /// Device name as shown in the device list.
+    /// Device label as shown in the device list (or the stored selection
+    /// when the device is no longer listed).
     pub device: String,
 }
 
@@ -459,10 +461,10 @@ pub struct AudioHandle {
     /// Running mic test stream, if any
     mic_test: Option<StreamOwner>,
 
-    /// Selected input device name
+    /// Selected input device id
     input_device_name: Option<String>,
 
-    /// Selected output device name
+    /// Selected output device id
     output_device_name: Option<String>,
 
     /// VAD + noise suppression configuration
@@ -520,32 +522,154 @@ fn resolve_device<D>(
     }
 }
 
-/// Find a device by name (`None` = system default); see [`resolve_device`]
-/// for `fallback`.
+/// A device as offered to the frontend.
+struct ListedDevice {
+    device: Device,
+    /// Stable unique id (CPAL device id, e.g. `alsa:sysdefault:CARD=USB`).
+    id: String,
+    label: String,
+    /// Name older client versions stored as the selection (the description).
+    legacy_name: String,
+}
+
+/// Whether `host` is ALSA (Linux/BSD), whose raw PCM list needs curating.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
+fn is_alsa(host: &Host) -> bool {
+    host.id() == cpal::HostId::Alsa
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd"
+)))]
+const fn is_alsa(_host: &Host) -> bool {
+    false
+}
+
+/// CPAL device id as a string; the description name if the backend has none.
+fn device_id_string(device: &Device) -> String {
+    device
+        .id()
+        .map_or_else(|_| device_label(device), |id| id.to_string())
+}
+
+/// The devices offered for one direction (`is_input` = capture).
+///
+/// On ALSA the raw PCM list is curated (see [`devices::curate_alsa_pcms`]);
+/// other hosts list every device CPAL reports, labelled by its name.
+fn list_devices(host: &Host, is_input: bool) -> Result<Vec<ListedDevice>, AudioError> {
+    let all: Vec<Device> = if is_input {
+        host.input_devices()
+    } else {
+        host.output_devices()
+    }
+    .map_err(|e| AudioError::ConfigError(e.to_string()))?
+    .collect();
+
+    if !is_alsa(host) {
+        return Ok(all
+            .into_iter()
+            .filter_map(|device| {
+                let name = device.description().ok()?.name().to_string();
+                Some(ListedDevice {
+                    id: device_id_string(&device),
+                    device,
+                    label: name.clone(),
+                    legacy_name: name,
+                })
+            })
+            .collect());
+    }
+
+    let mut pcms: Vec<(devices::AlsaPcm, Device)> = all
+        .into_iter()
+        .filter_map(|device| {
+            // The ALSA device id is `alsa:<PCM name>`.
+            let pcm_id = device.id().ok()?.1;
+            let desc = device.description().ok()?;
+            Some((
+                devices::AlsaPcm {
+                    pcm_id,
+                    description: desc.name().to_string(),
+                    direction: desc.direction(),
+                },
+                device,
+            ))
+        })
+        .collect();
+    let raw: Vec<devices::AlsaPcm> = pcms.iter().map(|(pcm, _)| pcm.clone()).collect();
+    Ok(devices::curate_alsa_pcms(&raw, is_input)
+        .into_iter()
+        .filter_map(|curated| {
+            let index = pcms
+                .iter()
+                .position(|(pcm, _)| pcm.pcm_id == curated.pcm_id)?;
+            let (_, device) = pcms.swap_remove(index);
+            Some(ListedDevice {
+                id: device_id_string(&device),
+                device,
+                label: curated.label,
+                legacy_name: curated.description,
+            })
+        })
+        .collect())
+}
+
+/// Label of the selected device for messages; the selection itself when the
+/// device is no longer listed (e.g. unplugged).
+fn display_name(host: &Host, selection: &str, is_input: bool) -> String {
+    list_devices(host, is_input)
+        .ok()
+        .and_then(|listed| {
+            devices::find_by_id_or_legacy_name(
+                &listed,
+                selection,
+                |d| d.id.as_str(),
+                |d| d.legacy_name.as_str(),
+            )
+            .map(|d| d.label.clone())
+        })
+        .unwrap_or_else(|| selection.to_string())
+}
+
+/// Find a device by id (`None` = system default); a description stored by
+/// older client versions is still accepted. See [`resolve_device`] for
+/// `fallback`.
 fn find_device(
     host: &Host,
-    device_name: Option<&str>,
+    device_id: Option<&str>,
     is_input: bool,
     fallback: bool,
 ) -> Result<Device, AudioError> {
-    let named = match device_name {
-        Some(name) => {
-            let mut devices = if is_input {
-                host.input_devices()
-            } else {
-                host.output_devices()
-            }
-            .map_err(|e| AudioError::ConfigError(e.to_string()))?;
-            devices.find(|d| {
-                d.description()
-                    .map(|desc| desc.name() == name)
-                    .unwrap_or(false)
+    let named = match device_id {
+        Some(selection) => {
+            let mut listed = list_devices(host, is_input)?;
+            let found = devices::find_by_id_or_legacy_name(
+                &listed,
+                selection,
+                |d| d.id.as_str(),
+                |d| d.legacy_name.as_str(),
+            )
+            .map(|d| d.id.clone());
+            found.and_then(|id| {
+                if id != selection {
+                    info!("Audio device {selection:?} resolved by its old name to {id:?}");
+                }
+                let index = listed.iter().position(|d| d.id == id)?;
+                Some(listed.swap_remove(index).device)
             })
         }
         None => None,
     };
     resolve_device(
-        device_name,
+        device_id,
         named,
         || {
             if is_input {
@@ -591,7 +715,10 @@ impl CaptureSpawner {
                 notice,
                 &AudioErrorEvent {
                     kind,
-                    device: device.unwrap_or("default").to_string(),
+                    device: device.map_or_else(
+                        || "default".to_string(),
+                        |id| display_name(&self.host, id, true),
+                    ),
                 },
             );
         }
@@ -667,56 +794,34 @@ impl AudioHandle {
         })
     }
 
-    /// Enumerate all audio devices
+    /// Enumerate the audio devices to offer (curated on Linux, see
+    /// [`list_devices`]). `device_id` is the stable id to pass back to
+    /// `set_input_device`/`set_output_device`/`start_mic_test`.
     pub fn enumerate_devices(&self) -> Result<AudioDeviceList, AudioError> {
-        let default_input = self.host.default_input_device();
-        let default_output = self.host.default_output_device();
-
-        let default_input_name = default_input
-            .as_ref()
-            .and_then(|d| d.description().ok())
-            .map(|desc| desc.name().to_string());
-        let default_output_name = default_output
-            .as_ref()
-            .and_then(|d| d.description().ok())
-            .map(|desc| desc.name().to_string());
-
-        let inputs: Vec<AudioDevice> = self
-            .host
-            .input_devices()
-            .map_err(|e| AudioError::ConfigError(e.to_string()))?
-            .filter_map(|d| {
-                d.description().ok().map(|desc| {
-                    let name = desc.name().to_string();
-                    AudioDevice {
-                        device_id: name.clone(),
-                        label: name.clone(),
-                        is_default: Some(&name) == default_input_name.as_ref(),
-                    }
+        let to_frontend = |is_input: bool| -> Result<Vec<AudioDevice>, AudioError> {
+            let default = if is_input {
+                self.host.default_input_device()
+            } else {
+                self.host.default_output_device()
+            };
+            let default_id = default.as_ref().map(device_id_string);
+            Ok(list_devices(&self.host, is_input)?
+                .into_iter()
+                .map(|d| AudioDevice {
+                    is_default: default_id.as_deref() == Some(d.id.as_str()),
+                    device_id: d.id,
+                    label: d.label,
                 })
-            })
-            .collect();
+                .collect())
+        };
 
-        let outputs: Vec<AudioDevice> = self
-            .host
-            .output_devices()
-            .map_err(|e| AudioError::ConfigError(e.to_string()))?
-            .filter_map(|d| {
-                d.description().ok().map(|desc| {
-                    let name = desc.name().to_string();
-                    AudioDevice {
-                        device_id: name.clone(),
-                        label: name.clone(),
-                        is_default: Some(&name) == default_output_name.as_ref(),
-                    }
-                })
-            })
-            .collect();
-
-        Ok(AudioDeviceList { inputs, outputs })
+        Ok(AudioDeviceList {
+            inputs: to_frontend(true)?,
+            outputs: to_frontend(false)?,
+        })
     }
 
-    /// Set the input device by name (`None` = system default).
+    /// Set the input device by id (`None` = system default).
     ///
     /// Outside a call this only stores the choice. During a call the capture
     /// stream moves to the new device (see [`Self::switch_capture_device`]);
@@ -769,7 +874,7 @@ impl AudioHandle {
         Ok(())
     }
 
-    /// Set the output device by name.
+    /// Set the output device by id (`None` = system default).
     ///
     /// Stores the name for future playback starts AND live-switches any
     /// running playback task: the task rebuilds its CPAL stream on the new
@@ -817,7 +922,7 @@ impl AudioHandle {
         Ok(())
     }
 
-    /// Get device by name
+    /// Get device by id
     fn get_device(&self, device_name: Option<&str>, is_input: bool) -> Result<Device, AudioError> {
         find_device(&self.host, device_name, is_input, false)
     }
@@ -853,7 +958,7 @@ impl AudioHandle {
         }
     }
 
-    /// Selected output device name (`None` = system default).
+    /// Selected output device id (`None` = system default).
     pub fn output_device_name(&self) -> Option<&str> {
         self.output_device_name.as_deref()
     }
@@ -885,7 +990,7 @@ impl AudioHandle {
         Ok(())
     }
 
-    /// Selected input device name (`None` = system default).
+    /// Selected input device id (`None` = system default).
     pub fn input_device_name(&self) -> Option<&str> {
         self.input_device_name.as_deref()
     }
