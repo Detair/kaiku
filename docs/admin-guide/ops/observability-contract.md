@@ -192,9 +192,9 @@ These follow [OTel DB semantic conventions](https://opentelemetry.io/docs/specs/
 
 | Metric name | Type | Unit | Description |
 |-------------|------|------|-------------|
-| `kaiku_http_request_duration_ms` | Histogram | ms | Latency of HTTP handler execution. Buckets: `[5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000]`. |
+| `kaiku_http_request_duration_ms` | Histogram | ms | Latency of HTTP handler execution, by `http.route` (matched route template, `unmatched` when no route matched) and `http.response.status_code`. Buckets: `[5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000]`. |
 | `kaiku_http_requests_total` | Counter | requests | Total HTTP requests, by method, route, and status code. |
-| `kaiku_http_errors_total` | Counter | requests | HTTP 4xx/5xx responses. |
+| `kaiku_http_errors_total` | Counter | requests | HTTP 4xx/5xx responses, by `http.route`, `http.response.status_code` and `error.type` (the status code). |
 | `kaiku_ws_connections_active` | UpDownCounter | connections | Current open WebSocket connections. |
 | `kaiku_ws_reconnects_total` | Counter | reconnects | WebSocket reconnection attempts. |
 | `kaiku_ws_messages_total` | Counter | messages | WebSocket messages dispatched, by event type. |

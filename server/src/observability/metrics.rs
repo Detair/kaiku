@@ -325,10 +325,12 @@ pub fn register_process_memory_metric() {
 
 /// Register host/process system-statistic gauges.
 ///
-/// CPU, memory, load, open FDs, and thread count. Each reads `/proc` on the
-/// metric-export cadence and feeds the native telemetry pipeline, so they
-/// appear as time series in the admin Command Center. No-ops silently on
-/// non-Linux hosts.
+/// CPU, memory, load, open FDs, and thread count. Memory/load/FDs/threads read
+/// `/proc` on the metric-export cadence; CPU reports the value cached by the
+/// background sampler ([`super::sysinfo::spawn_cpu_sampler`]), because a CPU
+/// percent needs two spaced samples. All feed the native telemetry pipeline,
+/// so they appear as time series in the admin Command Center regardless of
+/// whether the OTLP exporter is enabled. No-ops silently on non-Linux hosts.
 pub fn register_system_metrics() {
     use super::sysinfo;
     let meter = meter("vc-server");
@@ -338,8 +340,10 @@ pub fn register_system_metrics() {
         .with_description("Process CPU usage percent (delta of utime+stime)")
         .with_unit("percent")
         .with_callback(|observer| {
-            // Samples and caches for the admin summary's point-in-time read.
-            if let Some(pct) = sysinfo::process_cpu_percent() {
+            // Read-only: the value is sampled by `sysinfo::spawn_cpu_sampler`.
+            // Sampling here would run once per metric reader (native + OTLP)
+            // and only when an export happens, shrinking/skewing the window.
+            if let Some(pct) = sysinfo::last_cpu_percent() {
                 observer.observe(pct, &[]);
             }
         })
@@ -446,34 +450,72 @@ pub fn record_auth_login_attempt(success: bool) {
     }
 }
 
+/// Metrics whose samples are levels (gauges, up/down counters), not
+/// per-interval increments. Aggregations over time must average them rather
+/// than sum them.
+const LEVEL_METRICS: &[&str] = &[
+    "kaiku_process_memory_bytes",
+    "kaiku_process_cpu_percent",
+    "kaiku_system_memory_used_bytes",
+    "kaiku_system_memory_total_bytes",
+    "kaiku_load_average_1m",
+    "kaiku_process_open_fds",
+    "kaiku_process_threads",
+    "kaiku_db_pool_connections_active",
+    "kaiku_db_pool_connections_idle",
+    "kaiku_ws_connections_active",
+    "kaiku_voice_sessions_active",
+];
+
+/// Whether `metric_name` is a level metric (see [`LEVEL_METRICS`]).
+#[must_use]
+pub fn is_level_metric(metric_name: &str) -> bool {
+    LEVEL_METRICS.contains(&metric_name)
+}
+
+/// Route label used when a request matched no route (404 fallback, static
+/// file services). Never the raw URI, which would explode label cardinality.
+pub const UNMATCHED_ROUTE: &str = "unmatched";
+
 /// Record a completed HTTP request (count, latency, and error if >= 400).
 ///
-/// Called for every request by the `http_metrics` middleware. Without this the
-/// `kaiku_http_requests_total` counter and `kaiku_http_request_duration_ms`
-/// histogram were declared but never fed, so the admin Command Center's
-/// latency-p95 and error-rate vital signs stayed empty even though the
-/// telemetry pipeline was running.
-pub fn record_http_request(status: u16, duration_ms: f64) {
+/// Called for every request by the `http_metrics` middleware with the matched
+/// route template (e.g. `/api/guilds/{id}`, never the raw URI). The latency
+/// histogram carries `http.route` + `http.response.status_code`, which is what
+/// the admin Command Center's Top Routes list groups by; the error counter
+/// additionally carries `error.type` for the Top Errors list. Both lists and
+/// the error-rate vital sign therefore read the same samples.
+pub fn record_http_request(status: u16, duration_ms: f64, route: &str) {
     if let Some(counter) = HTTP_REQUESTS_TOTAL.get() {
         counter.add(1, &[]);
     }
     if let Some(hist) = HTTP_REQUEST_DURATION_MS.get() {
-        hist.record(duration_ms, &[]);
+        hist.record(
+            duration_ms,
+            &[
+                KeyValue::new("http.route", route.to_owned()),
+                KeyValue::new("http.response.status_code", i64::from(status)),
+            ],
+        );
     }
     if status >= 400 {
-        record_http_error(status);
+        record_http_error(status, route);
     }
 }
 
 /// Record an HTTP error response (status >= 400).
-pub fn record_http_error(status: u16) {
+///
+/// `error.type` follows the `OTel` HTTP semantic convention: the status code
+/// as a string when no more specific error class is known.
+pub fn record_http_error(status: u16, route: &str) {
     if let Some(counter) = HTTP_ERRORS_TOTAL.get() {
         counter.add(
             1,
-            &[KeyValue::new(
-                "http.response.status_code",
-                i64::from(status),
-            )],
+            &[
+                KeyValue::new("http.route", route.to_owned()),
+                KeyValue::new("http.response.status_code", i64::from(status)),
+                KeyValue::new("error.type", status.to_string()),
+            ],
         );
     }
 }
@@ -641,7 +683,8 @@ mod tests {
         record_voice_join(false);
         record_auth_login_attempt(true);
         record_auth_login_attempt(false);
-        record_http_error(500);
+        record_http_error(500, "/api/test");
+        record_http_request(401, 1.0, UNMATCHED_ROUTE);
         record_ws_connect();
         record_ws_disconnect();
         record_ws_message("ping");
@@ -668,6 +711,49 @@ mod tests {
         // Flush resets to 0
         flush_rtp_counter();
         assert_eq!(VOICE_RTP_PACKETS_FORWARDED.load(Ordering::Relaxed), 0);
+    }
+
+    /// With the OTLP exporter disabled, the native exporter must still export
+    /// the CPU gauge (from the sampler's cached value) into the panel history.
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn cpu_gauge_is_exported_without_otlp_from_sampler_cache() {
+        let (tx, mut rx) = super::super::ingestion::metric_channel();
+        let provider = init(
+            &ObservabilityConfig {
+                enabled: false,
+                otlp_endpoint: String::new(),
+                service_name: "vc-server-test".into(),
+                trace_sample_ratio: 0.0,
+                log_level: String::new(),
+            },
+            tx,
+        )
+        .expect("native provider");
+        register_system_metrics();
+
+        // Populate the cache the way the background sampler does.
+        let sampler =
+            super::super::sysinfo::spawn_cpu_sampler(std::time::Duration::from_millis(10));
+        for _ in 0..100 {
+            if super::super::sysinfo::last_cpu_percent().is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        sampler.abort();
+
+        provider.force_flush().expect("flush");
+        let mut cpu = None;
+        while let Ok(sample) = rx.try_recv() {
+            if sample.metric_name == "kaiku_process_cpu_percent" {
+                cpu = sample.value_sum;
+            }
+        }
+        assert!(
+            cpu.is_some_and(|p| p >= 0.0),
+            "kaiku_process_cpu_percent must be exported (as value_sum) without OTLP"
+        );
     }
 
     #[test]

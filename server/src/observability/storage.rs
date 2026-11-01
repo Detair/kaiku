@@ -108,6 +108,17 @@ pub struct TopRouteEntry {
     pub max_p95: Option<f64>,
 }
 
+/// Error ranking entry for the top-errors query.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct TopErrorEntry {
+    /// `error.type` label (the HTTP status code for HTTP errors).
+    pub error_type: Option<String>,
+    /// Matched route template; `None` for samples recorded without a route.
+    pub route: Option<String>,
+    pub error_count: Option<i64>,
+    pub avg_p95: Option<f64>,
+}
+
 /// Log query filters.
 #[derive(Debug, Clone, Default)]
 pub struct LogFilter {
@@ -279,10 +290,19 @@ pub async fn query_trends(
 
     if range.num_days() <= 1 {
         // Live query — fine-grained data, capped to prevent unbounded results
+        // One export cycle writes one row per label set (e.g. per route and
+        // status code) with a shared `ts`; collapse them into one point per
+        // cycle so labelled metrics chart as a single series.
         sqlx::query_as::<_, TrendDataPoint>(
-            "SELECT ts, metric_name, value_count, value_sum, value_p50, value_p95, value_p99 \
+            "SELECT ts, metric_name, \
+                 SUM(value_count)::bigint AS value_count, \
+                 SUM(value_sum) AS value_sum, \
+                 AVG(value_p50) AS value_p50, \
+                 AVG(value_p95) AS value_p95, \
+                 AVG(value_p99) AS value_p99 \
              FROM telemetry_metric_samples \
              WHERE metric_name = $1 AND ts >= $2 AND ts <= $3 \
+             GROUP BY ts, metric_name \
              ORDER BY ts ASC \
              LIMIT $4",
         )
@@ -293,23 +313,32 @@ pub async fn query_trends(
         .fetch_all(pool)
         .await
     } else {
-        // Rollup query — daily aggregates (p99 not available at this granularity)
+        // Rollup query — daily aggregates (p99 not available at this granularity).
+        // The rollup view has one row per (day, scope, route); collapse to one
+        // point per day. For level metrics (gauges, up/down counters) a daily
+        // SUM of samples is meaningless (1440 × 300 MiB), so report the daily
+        // mean instead; counters keep the daily total.
         sqlx::query_as::<_, TrendDataPoint>(
             "SELECT \
                  day AS ts, \
                  metric_name, \
-                 total_count AS value_count, \
+                 CASE WHEN $4 \
+                     THEN ROUND(SUM(total_count)::numeric / NULLIF(SUM(sample_count), 0))::bigint \
+                     ELSE SUM(total_count)::bigint \
+                 END AS value_count, \
                  NULL::double precision AS value_sum, \
                  NULL::double precision AS value_p50, \
-                 avg_p95 AS value_p95, \
+                 AVG(avg_p95) AS value_p95, \
                  NULL::double precision AS value_p99 \
              FROM telemetry_trend_rollups \
              WHERE metric_name = $1 AND day >= $2 AND day <= $3 \
+             GROUP BY day, metric_name \
              ORDER BY day ASC",
         )
         .bind(metric_name)
         .bind(from)
         .bind(to)
+        .bind(super::metrics::is_level_metric(metric_name))
         .fetch_all(pool)
         .await
     }
@@ -408,13 +437,15 @@ pub async fn query_top_routes(
 
     // Two separate query strings to avoid format! SQL injection pattern.
     // Safe status_code cast: only cast values matching digit-only pattern.
+    // Errors are status >= 400, the same definition as the error-rate vital
+    // sign (`kaiku_http_errors_total`), so the two never disagree.
     const BASE: &str = "\
         SELECT \
              labels->>'http.route' AS route, \
              SUM(value_count)::bigint AS request_count, \
              SUM(CASE \
                  WHEN labels->>'http.response.status_code' ~ '^\\d+$' \
-                      AND (labels->>'http.response.status_code')::int >= 500 \
+                      AND (labels->>'http.response.status_code')::int >= 400 \
                  THEN value_count ELSE 0 END)::bigint AS error_count, \
              AVG(value_p95) AS avg_p95, \
              MAX(value_p95) AS max_p95 \
@@ -443,30 +474,50 @@ pub async fn query_top_routes(
         .await
 }
 
-/// Query top error categories grouped by `error.type` label.
+/// Query top error categories grouped by `error.type` and `http.route`.
+///
+/// Reads the same `kaiku_http_errors_total` samples as the error-rate vital
+/// sign. Samples written before the counter carried `error.type` fall back to
+/// their `http.response.status_code` (and a `NULL` route), so older data still
+/// shows up instead of an empty list. The p95 comes from the latency histogram
+/// rows with the same route and status code.
 #[tracing::instrument(skip(pool))]
 pub async fn query_top_errors(
     pool: &PgPool,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
     limit: i64,
-) -> Result<Vec<TopRouteEntry>, sqlx::Error> {
+) -> Result<Vec<TopErrorEntry>, sqlx::Error> {
     let limit = limit.min(MAX_PAGE_SIZE);
     let from = clamp_from_time(from, to);
 
-    sqlx::query_as::<_, TopRouteEntry>(
-        "SELECT \
-             labels->>'error.type' AS route, \
-             SUM(value_count)::bigint AS request_count, \
-             SUM(value_count)::bigint AS error_count, \
-             AVG(value_p95) AS avg_p95, \
-             MAX(value_p95) AS max_p95 \
-         FROM telemetry_metric_samples \
-         WHERE metric_name = 'kaiku_http_errors_total' \
-           AND ts >= $1 AND ts <= $2 \
-           AND labels->>'error.type' IS NOT NULL \
-         GROUP BY labels->>'error.type' \
-         ORDER BY error_count DESC NULLS LAST \
+    sqlx::query_as::<_, TopErrorEntry>(
+        "SELECT e.error_type, e.route, e.error_count, l.avg_p95 \
+         FROM ( \
+             SELECT \
+                 COALESCE(labels->>'error.type', labels->>'http.response.status_code') \
+                     AS error_type, \
+                 labels->>'http.route' AS route, \
+                 SUM(value_count)::bigint AS error_count \
+             FROM telemetry_metric_samples \
+             WHERE metric_name = 'kaiku_http_errors_total' \
+               AND ts >= $1 AND ts <= $2 \
+               AND COALESCE(labels->>'error.type', labels->>'http.response.status_code') \
+                   IS NOT NULL \
+             GROUP BY 1, 2 \
+         ) e \
+         LEFT JOIN ( \
+             SELECT \
+                 labels->>'http.response.status_code' AS status_code, \
+                 labels->>'http.route' AS route, \
+                 AVG(value_p95) AS avg_p95 \
+             FROM telemetry_metric_samples \
+             WHERE metric_name = 'kaiku_http_request_duration_ms' \
+               AND ts >= $1 AND ts <= $2 \
+               AND labels->>'http.route' IS NOT NULL \
+             GROUP BY 1, 2 \
+         ) l ON l.status_code = e.error_type AND l.route = e.route \
+         ORDER BY e.error_count DESC NULLS LAST \
          LIMIT $3",
     )
     .bind(from)

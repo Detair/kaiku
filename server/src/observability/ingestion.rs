@@ -324,6 +324,7 @@ impl NativeMetricExporter {
         &self,
         metric_name: &str,
         data: &opentelemetry_sdk::metrics::data::AggregatedMetrics,
+        ts: DateTime<Utc>,
         cardinality: &mut HashMap<String, usize>,
     ) {
         use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
@@ -335,7 +336,7 @@ impl NativeMetricExporter {
                         let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
                         self.emit_sample(metric_name, &attrs, cardinality, |labels| {
                             CapturedMetricSample {
-                                ts: Utc::now(),
+                                ts,
                                 metric_name: metric_name.to_owned(),
                                 scope: "cluster".to_owned(),
                                 labels,
@@ -353,7 +354,7 @@ impl NativeMetricExporter {
                         let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
                         self.emit_sample(metric_name, &attrs, cardinality, |labels| {
                             CapturedMetricSample {
-                                ts: Utc::now(),
+                                ts,
                                 metric_name: metric_name.to_owned(),
                                 scope: "cluster".to_owned(),
                                 labels,
@@ -367,7 +368,7 @@ impl NativeMetricExporter {
                     }
                 }
                 MetricData::Histogram(hist) => {
-                    self.process_histogram(metric_name, hist, cardinality);
+                    self.process_histogram(metric_name, hist, ts, cardinality);
                 }
                 MetricData::ExponentialHistogram(_) => {}
             },
@@ -377,7 +378,7 @@ impl NativeMetricExporter {
                         let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
                         self.emit_sample(metric_name, &attrs, cardinality, |labels| {
                             CapturedMetricSample {
-                                ts: Utc::now(),
+                                ts,
                                 metric_name: metric_name.to_owned(),
                                 scope: "cluster".to_owned(),
                                 labels,
@@ -395,7 +396,7 @@ impl NativeMetricExporter {
                         let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
                         self.emit_sample(metric_name, &attrs, cardinality, |labels| {
                             CapturedMetricSample {
-                                ts: Utc::now(),
+                                ts,
                                 metric_name: metric_name.to_owned(),
                                 scope: "cluster".to_owned(),
                                 labels,
@@ -409,7 +410,7 @@ impl NativeMetricExporter {
                     }
                 }
                 MetricData::Histogram(hist) => {
-                    self.process_histogram(metric_name, hist, cardinality);
+                    self.process_histogram(metric_name, hist, ts, cardinality);
                 }
                 MetricData::ExponentialHistogram(_) => {}
             },
@@ -419,7 +420,7 @@ impl NativeMetricExporter {
                         let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
                         self.emit_sample(metric_name, &attrs, cardinality, |labels| {
                             CapturedMetricSample {
-                                ts: Utc::now(),
+                                ts,
                                 metric_name: metric_name.to_owned(),
                                 scope: "cluster".to_owned(),
                                 labels,
@@ -437,7 +438,7 @@ impl NativeMetricExporter {
                         let attrs: Vec<KeyValue> = dp.attributes().cloned().collect();
                         self.emit_sample(metric_name, &attrs, cardinality, |labels| {
                             CapturedMetricSample {
-                                ts: Utc::now(),
+                                ts,
                                 metric_name: metric_name.to_owned(),
                                 scope: "cluster".to_owned(),
                                 labels,
@@ -465,7 +466,7 @@ impl NativeMetricExporter {
                                 percentile_from_histogram(&bounds, &bucket_counts, count, 0.99);
 
                             CapturedMetricSample {
-                                ts: Utc::now(),
+                                ts,
                                 metric_name: metric_name.to_owned(),
                                 scope: "cluster".to_owned(),
                                 labels,
@@ -488,6 +489,7 @@ impl NativeMetricExporter {
         &self,
         metric_name: &str,
         hist: &opentelemetry_sdk::metrics::data::Histogram<T>,
+        ts: DateTime<Utc>,
         cardinality: &mut HashMap<String, usize>,
     ) {
         for dp in hist.data_points() {
@@ -501,7 +503,7 @@ impl NativeMetricExporter {
                 let p99 = percentile_from_histogram(&bounds, &bucket_counts, count, 0.99);
 
                 CapturedMetricSample {
-                    ts: Utc::now(),
+                    ts,
                     metric_name: metric_name.to_owned(),
                     scope: "cluster".to_owned(),
                     labels,
@@ -547,10 +549,14 @@ impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for NativeMetricEx
         metrics: &opentelemetry_sdk::metrics::data::ResourceMetrics,
     ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send {
         let mut cardinality: HashMap<String, usize> = HashMap::new();
+        // One timestamp per export cycle so all data points of a cycle (e.g.
+        // one per route/status label set) share a `ts` and trend queries can
+        // aggregate them per cycle.
+        let ts = Utc::now();
 
         for scope_metrics in metrics.scope_metrics() {
             for metric in scope_metrics.metrics() {
-                self.process_metric(metric.name(), metric.data(), &mut cardinality);
+                self.process_metric(metric.name(), metric.data(), ts, &mut cardinality);
             }
         }
 
