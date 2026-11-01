@@ -122,15 +122,14 @@ fn card_pcm_rank(plugin: &str, dev: Option<&str>) -> Option<u8> {
 /// Curate the ALSA PCM list for one direction (`input` = capture).
 ///
 /// The result is, in order:
-/// 1. The system default (`default`), labelled with the sound server it
-///    routes to, e.g. "System default (`PipeWire`)". If `default` does not
-///    route to a sound server but `pipewire`/`pulse` exist, that server is
-///    listed right after it (only the preferred one: `pulse` on a `PipeWire`
+/// 1. The system default (`default`), labelled with the sound server it routes to, e.g. "System
+///    default (`PipeWire`)". If `default` does not route to a sound server but `pipewire`/`pulse`
+///    exist, that server is listed right after it (only the preferred one: `pulse` on a `PipeWire`
 ///    system is `PipeWire` again).
-/// 2. One entry per sound card for its plain device (`sysdefault:CARD=…`,
-///    else `front:CARD=…,DEV=0`), labelled with the card name once.
-/// 3. Outputs only: one entry per HDMI/DisplayPort device with a monitor
-///    connected, labelled with the monitor name.
+/// 2. One entry per sound card for its plain device (`sysdefault:CARD=…`, else
+///    `front:CARD=…,DEV=0`), labelled with the card name once.
+/// 3. Outputs only: one entry per HDMI/DisplayPort device with a monitor connected, labelled with
+///    the monitor name.
 ///
 /// Everything else is dropped: channel-layout variants (`surround*`),
 /// digital passthrough (`iec958`), sharing plugins (`dmix`, `dsnoop`), raw

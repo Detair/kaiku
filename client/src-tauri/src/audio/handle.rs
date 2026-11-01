@@ -15,13 +15,12 @@ use tauri::Emitter;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use super::devices;
 use super::format::{
     negotiate_capture_format, push_chunk_len, CaptureFormat, CaptureFrontEnd, MAX_PUSH_SAMPLES,
 };
 use super::{
-    AudioDevice, AudioDeviceList, AudioError, VadConfig, CHANNELS, FRAME_SIZE, RNNOISE_FRAME_SIZE,
-    SAMPLE_RATE,
+    devices, AudioDevice, AudioDeviceList, AudioError, VadConfig, CHANNELS, FRAME_SIZE,
+    RNNOISE_FRAME_SIZE, SAMPLE_RATE,
 };
 
 /// Tauri event emitted when an audio stream dies at runtime; payload is an
