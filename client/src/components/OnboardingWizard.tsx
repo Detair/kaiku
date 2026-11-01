@@ -49,6 +49,7 @@ import { showToast } from "@/components/ui/Toast";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds, joinDiscoverable } from "@/lib/tauri";
 import { createDialog } from "@/lib/a11y/dialog";
+import { isGuildDiscoveryOff } from "@/stores/serverFeatures";
 import { t } from "@/i18n";
 import { formatNumber } from "@/i18n/format";
 
@@ -192,6 +193,15 @@ const OnboardingDialog: Component = () => {
   };
 
   const loadDiscoveryGuilds = async () => {
+    // The instance has the server browser off: show the same "discovery is
+    // turned off" note as the server's DISCOVERY_DISABLED error, no request.
+    if (isGuildDiscoveryOff()) {
+      setDiscoveryGuilds([]);
+      setDiscoveryLoading(false);
+      setDiscoveryPermanent(true);
+      setDiscoveryError(true);
+      return;
+    }
     setDiscoveryLoading(true);
     setDiscoveryError(false);
     setDiscoveryPermanent(false);

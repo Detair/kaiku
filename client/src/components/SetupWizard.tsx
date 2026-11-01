@@ -377,7 +377,7 @@ const SetupWizard: Component = () => {
                 type="submit"
                 data-testid="setup-complete"
                 disabled={isLoading() || !serverName().trim()}
-                class="flex items-center gap-2 px-6 py-2.5 bg-accent-primary hover:bg-primary-hover text-on-accent font-medium rounded-lg transition-colors disabled:hover:bg-accent-primary state-disabled"
+                class="flex items-center gap-2 px-6 py-2.5 bg-accent-primary hover:bg-primary-hover text-on-accent font-medium rounded-lg transition-colors state-disabled"
               >
                 <Show
                   when={!isLoading()}

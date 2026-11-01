@@ -77,6 +77,16 @@ describe("state styling", () => {
     expect(hits).toEqual([]);
   });
 
+  it("no ad-hoc disabled colours (disabled:bg-/text-/border-; use state-disabled)", () => {
+    const hits: string[] = [];
+    for (const f of files) {
+      for (const m of f.text.matchAll(/\b(?:peer-|group-)?disabled:(?:hover:)?(?:bg|text|border)-[\w/[\]().-]+/g)) {
+        hits.push(`${f.path}: ${m[0]}`);
+      }
+    }
+    expect(hits).toEqual([]);
+  });
+
   it("every switch is the shared Toggle component", () => {
     const hits: string[] = [];
     for (const f of files) {

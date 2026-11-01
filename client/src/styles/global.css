@@ -39,10 +39,13 @@ body {
 }
 
 /* Visible focus indicators for buttons, links, selects and ARIA widgets
-   (inputs use focus:ring via input-field shortcut). The :root prefix lifts the
-   rule above `focus:outline-none` utilities, which otherwise left many
-   buttons without any keyboard focus indicator. */
-:root :is(button, a, select, summary, [role="switch"], [role="tab"], [role="radio"], [role="checkbox"], [role="option"]):focus-visible {
+   (inputs use focus:ring via input-field shortcut). Specificity 0,4,0: above
+   `focus:outline-none` utilities (which otherwise left many buttons without
+   any keyboard focus indicator) and above the dashed outline of
+   .state-disabled (0,3,0), so a focusable aria-disabled control keeps its
+   ring. Elements that draw their own focus ring (`focus:ring-*` /
+   `focus-visible:ring-*`) are left alone to avoid a doubled indicator. */
+:root :is(button, a, select, summary, [role="switch"], [role="tab"], [role="radio"], [role="checkbox"], [role="option"]):not([class*="focus:ring"], [class*="focus-visible:ring"]):focus-visible {
   outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
 }
