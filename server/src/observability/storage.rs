@@ -94,6 +94,7 @@ pub struct TrendRollup {
     pub sample_count: Option<i64>,
     pub avg_p95: Option<f64>,
     pub max_p95: Option<f64>,
+    pub avg_sum: Option<f64>,
     pub total_count: Option<i64>,
     pub error_count: Option<i64>,
 }
@@ -326,7 +327,7 @@ pub async fn query_trends(
                      THEN ROUND(SUM(total_count)::numeric / NULLIF(SUM(sample_count), 0))::bigint \
                      ELSE SUM(total_count)::bigint \
                  END AS value_count, \
-                 NULL::double precision AS value_sum, \
+                 AVG(avg_sum) AS value_sum, \
                  NULL::double precision AS value_p50, \
                  AVG(avg_p95) AS value_p95, \
                  NULL::double precision AS value_p99 \
@@ -450,7 +451,7 @@ pub async fn query_top_routes(
              AVG(value_p95) AS avg_p95, \
              MAX(value_p95) AS max_p95 \
          FROM telemetry_metric_samples \
-         WHERE metric_name = 'kaiku_http_request_duration_ms' \
+         WHERE metric_name = 'kaiku_http_route_request_duration_ms' \
            AND ts >= $1 AND ts <= $2 \
            AND labels->>'http.route' IS NOT NULL \
          GROUP BY labels->>'http.route'";
@@ -474,13 +475,14 @@ pub async fn query_top_routes(
         .await
 }
 
-/// Query top error categories grouped by `error.type` and `http.route`.
+/// Query top error categories grouped by status code and `http.route`.
 ///
-/// Reads the same `kaiku_http_errors_total` samples as the error-rate vital
-/// sign. Samples written before the counter carried `error.type` fall back to
-/// their `http.response.status_code` (and a `NULL` route), so older data still
-/// shows up instead of an empty list. The p95 comes from the latency histogram
-/// rows with the same route and status code.
+/// Errors per route come from the per-route latency histogram rows with status
+/// >= 400 (same requests as the error-rate counter, plus their p95). Samples of
+/// `kaiku_http_errors_total` written before it carried `error.type` (status code
+/// only, no route) are added with a `NULL` route, so older data still shows up
+/// instead of an empty list. Newer error-counter rows are not added: they are
+/// the same requests as the histogram rows.
 #[tracing::instrument(skip(pool))]
 pub async fn query_top_errors(
     pool: &PgPool,
@@ -492,32 +494,32 @@ pub async fn query_top_errors(
     let from = clamp_from_time(from, to);
 
     sqlx::query_as::<_, TopErrorEntry>(
-        "SELECT e.error_type, e.route, e.error_count, l.avg_p95 \
-         FROM ( \
+        "SELECT error_type, route, error_count, avg_p95 FROM ( \
              SELECT \
-                 COALESCE(labels->>'error.type', labels->>'http.response.status_code') \
-                     AS error_type, \
+                 labels->>'http.response.status_code' AS error_type, \
                  labels->>'http.route' AS route, \
-                 SUM(value_count)::bigint AS error_count \
+                 SUM(value_count)::bigint AS error_count, \
+                 AVG(value_p95) AS avg_p95 \
+             FROM telemetry_metric_samples \
+             WHERE metric_name = 'kaiku_http_route_request_duration_ms' \
+               AND ts >= $1 AND ts <= $2 \
+               AND labels->>'http.response.status_code' ~ '^\\d+$' \
+               AND (labels->>'http.response.status_code')::int >= 400 \
+             GROUP BY 1, 2 \
+             UNION ALL \
+             SELECT \
+                 labels->>'http.response.status_code' AS error_type, \
+                 NULL::text AS route, \
+                 SUM(value_count)::bigint AS error_count, \
+                 NULL::double precision AS avg_p95 \
              FROM telemetry_metric_samples \
              WHERE metric_name = 'kaiku_http_errors_total' \
                AND ts >= $1 AND ts <= $2 \
-               AND COALESCE(labels->>'error.type', labels->>'http.response.status_code') \
-                   IS NOT NULL \
-             GROUP BY 1, 2 \
-         ) e \
-         LEFT JOIN ( \
-             SELECT \
-                 labels->>'http.response.status_code' AS status_code, \
-                 labels->>'http.route' AS route, \
-                 AVG(value_p95) AS avg_p95 \
-             FROM telemetry_metric_samples \
-             WHERE metric_name = 'kaiku_http_request_duration_ms' \
-               AND ts >= $1 AND ts <= $2 \
-               AND labels->>'http.route' IS NOT NULL \
-             GROUP BY 1, 2 \
-         ) l ON l.status_code = e.error_type AND l.route = e.route \
-         ORDER BY e.error_count DESC NULLS LAST \
+               AND labels->>'error.type' IS NULL \
+               AND labels->>'http.response.status_code' IS NOT NULL \
+             GROUP BY 1 \
+         ) errors \
+         ORDER BY error_count DESC NULLS LAST \
          LIMIT $3",
     )
     .bind(from)

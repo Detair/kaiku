@@ -304,6 +304,52 @@ impl opentelemetry_sdk::trace::SpanProcessor for NativeSpanProcessor {
 /// Max unique label combinations stored per metric per export cycle.
 const MAX_CARDINALITY_PER_METRIC: usize = 100;
 
+/// Budget for the per-route latency histogram (`http.route` ×
+/// `http.response.status_code`). A few hundred route templates times a handful
+/// of status codes can exceed the default within one cycle. Overall request
+/// totals and p95 never depend on it: they come from the unlabelled
+/// `kaiku_http_request_duration_ms` series.
+const ROUTE_METRIC_CARDINALITY: usize = 1000;
+
+/// Budget for `kaiku_http_errors_total` (labelled by status code only): one
+/// slot per possible HTTP status code (100–599), so the error-rate source is
+/// never truncated.
+const STATUS_METRIC_CARDINALITY: usize = 500;
+
+/// Per-cycle label-set budget for `metric_name`.
+fn cardinality_budget(metric_name: &str) -> usize {
+    match metric_name {
+        super::metrics::HTTP_ROUTE_DURATION_METRIC => ROUTE_METRIC_CARDINALITY,
+        super::metrics::HTTP_ERRORS_METRIC => STATUS_METRIC_CARDINALITY,
+        _ => MAX_CARDINALITY_PER_METRIC,
+    }
+}
+
+/// Metrics whose label sets exceeded their budget this cycle, with the number
+/// of dropped data points, sorted by name.
+fn overflowed_metrics(cardinality: &HashMap<String, usize>) -> Vec<(&str, usize)> {
+    let mut over: Vec<(&str, usize)> = cardinality
+        .iter()
+        .filter_map(|(name, &n)| {
+            let budget = cardinality_budget(name);
+            (n > budget).then(|| (name.as_str(), n - budget))
+        })
+        .collect();
+    over.sort_unstable();
+    over
+}
+
+/// Log one warning per export cycle if any metric dropped data points.
+fn warn_on_overflow(cardinality: &HashMap<String, usize>) {
+    let over = overflowed_metrics(cardinality);
+    if !over.is_empty() {
+        tracing::warn!(
+            dropped = ?over,
+            "Metric cardinality budget exceeded this export cycle; extra label sets were not stored"
+        );
+    }
+}
+
 /// An OpenTelemetry `PushMetricExporter` that converts metric data points
 /// into native storage samples and sends them through a channel.
 ///
@@ -525,19 +571,16 @@ impl NativeMetricExporter {
         cardinality: &mut HashMap<String, usize>,
         build: impl FnOnce(serde_json::Value) -> CapturedMetricSample,
     ) {
-        let labels = attributes_to_filtered_labels(attributes);
-
-        // Cardinality budget check
+        // Cardinality budget check. The counter keeps counting past the budget
+        // so `export` can report how many data points were dropped (once per
+        // cycle, see `warn_on_overflow`).
         let count = cardinality.entry(metric_name.to_owned()).or_insert(0);
-        if *count >= MAX_CARDINALITY_PER_METRIC {
-            tracing::debug!(
-                metric = %metric_name,
-                "Cardinality budget exceeded (>{MAX_CARDINALITY_PER_METRIC} label combos), dropping sample"
-            );
+        *count += 1;
+        if *count > cardinality_budget(metric_name) {
             return;
         }
-        *count += 1;
 
+        let labels = attributes_to_filtered_labels(attributes);
         let sample = build(labels);
         let _ = self.tx.try_send(sample);
     }
@@ -559,6 +602,7 @@ impl opentelemetry_sdk::metrics::exporter::PushMetricExporter for NativeMetricEx
                 self.process_metric(metric.name(), metric.data(), ts, &mut cardinality);
             }
         }
+        warn_on_overflow(&cardinality);
 
         std::future::ready(Ok(()))
     }
@@ -938,5 +982,26 @@ mod tests {
     #[test]
     fn cardinality_budget_enforced() {
         assert_eq!(MAX_CARDINALITY_PER_METRIC, 100);
+    }
+
+    #[test]
+    fn cardinality_budget_is_raised_only_for_http_label_metrics() {
+        use super::super::metrics::{HTTP_ERRORS_METRIC, HTTP_ROUTE_DURATION_METRIC};
+        assert_eq!(cardinality_budget(HTTP_ROUTE_DURATION_METRIC), 1000);
+        // Every HTTP status code (100-599) fits: the error-rate source is exact.
+        assert!(cardinality_budget(HTTP_ERRORS_METRIC) >= 500);
+        assert_eq!(cardinality_budget("kaiku_ws_messages_total"), 100);
+    }
+
+    #[test]
+    fn overflow_report_lists_only_metrics_over_budget() {
+        let mut c = HashMap::new();
+        c.insert("kaiku_ws_messages_total".to_owned(), 103);
+        c.insert("kaiku_voice_joins_total".to_owned(), 2);
+        c.insert(
+            super::super::metrics::HTTP_ROUTE_DURATION_METRIC.to_owned(),
+            1000,
+        );
+        assert_eq!(overflowed_metrics(&c), vec![("kaiku_ws_messages_total", 3)]);
     }
 }

@@ -38,15 +38,43 @@ async fn insert_sample(
     .expect("insert metric sample");
 }
 
+const ROUTE_DURATION: &str = vc_server::observability::metrics::HTTP_ROUTE_DURATION_METRIC;
+
+/// The summary's latency p95 reads the unlabelled histogram only; per-route
+/// rows (one slow route among fast ones) must not be averaged into it.
+#[sqlx::test]
+async fn summary_latency_p95_uses_unlabelled_total_series(pool: PgPool) {
+    let total = json!({});
+    insert_sample(&pool, "kaiku_http_request_duration_ms", &total, 1001, 5.0).await;
+    let fast = json!({ "http.route": "/fast", "http.response.status_code": "200" });
+    let slow = json!({ "http.route": "/slow", "http.response.status_code": "200" });
+    insert_sample(&pool, ROUTE_DURATION, &fast, 1000, 5.0).await;
+    insert_sample(&pool, ROUTE_DURATION, &slow, 1, 4000.0).await;
+
+    let from = Utc::now() - Duration::hours(1);
+    let to = Utc::now() + Duration::minutes(1);
+    let p95 = vc_server::admin::queries::summary_latency_p95(&pool, from, to)
+        .await
+        .unwrap()
+        .expect("p95");
+    assert!((p95 - 5.0).abs() < f64::EPSILON, "p95 {p95}");
+
+    let trend = storage::query_trends(&pool, "kaiku_http_request_duration_ms", from, to)
+        .await
+        .unwrap();
+    assert_eq!(trend.len(), 1);
+    assert_eq!(trend[0].value_p95, Some(5.0));
+}
+
 #[sqlx::test]
 async fn observability_aggregate_queries_decode_with_data(pool: PgPool) {
     let route = json!({ "http.route": "/api/x", "http.response.status_code": "200" });
     let route_err = json!({ "http.route": "/api/x", "http.response.status_code": "500" });
-    let err_typed = json!({ "error.type": "timeout" });
+    let err_typed = json!({ "http.response.status_code": "500", "error.type": "500" });
 
-    insert_sample(&pool, "kaiku_http_request_duration_ms", &route, 10, 12.5).await;
-    insert_sample(&pool, "kaiku_http_request_duration_ms", &route_err, 3, 40.0).await;
-    insert_sample(&pool, "kaiku_http_requests_total", &route, 100, 0.0).await;
+    insert_sample(&pool, ROUTE_DURATION, &route, 10, 12.5).await;
+    insert_sample(&pool, ROUTE_DURATION, &route_err, 3, 40.0).await;
+    insert_sample(&pool, "kaiku_http_requests_total", &json!({}), 100, 0.0).await;
     insert_sample(&pool, "kaiku_http_errors_total", &err_typed, 5, 0.0).await;
 
     let from = Utc::now() - Duration::hours(1);
@@ -60,12 +88,17 @@ async fn observability_aggregate_queries_decode_with_data(pool: PgPool) {
     assert_eq!(routes[0].request_count, Some(13)); // 10 + 3
     assert_eq!(routes[0].error_count, Some(3)); // the 500 sample
 
-    // top_errors: SUM(value_count)::bigint grouped by error.type must decode.
+    // top_errors: per-route error rows from the route histogram must decode.
+    // The (newer, `error.type`-carrying) counter row is the same requests and
+    // must not be added on top.
     let errors = storage::query_top_errors(&pool, from, to, 10)
         .await
         .expect("query_top_errors must decode with data present");
-    assert_eq!(errors.len(), 1, "expected one error-type row");
-    assert_eq!(errors[0].error_count, Some(5));
+    assert_eq!(errors.len(), 1, "expected one error row: {errors:?}");
+    assert_eq!(errors[0].error_type.as_deref(), Some("500"));
+    assert_eq!(errors[0].route.as_deref(), Some("/api/x"));
+    assert_eq!(errors[0].error_count, Some(3));
+    assert_eq!(errors[0].avg_p95, Some(40.0));
 
     // trends (<=24h reads raw samples directly).
     let trend = storage::query_trends(&pool, "kaiku_http_requests_total", from, to)
@@ -250,6 +283,25 @@ async fn rollup_trends_average_gauges_and_sum_counters(pool: PgPool) {
         .await
         .unwrap();
     }
+    // f64 gauge (CPU %): stored in value_sum.
+    for cpu in [2.0_f64, 4.0] {
+        storage::insert_metric_sample(
+            &pool,
+            &InsertMetricSample {
+                ts: day_ts,
+                metric_name: "kaiku_process_cpu_percent",
+                scope: "test",
+                labels: &json!({}),
+                value_count: None,
+                value_sum: Some(cpu),
+                value_p50: None,
+                value_p95: None,
+                value_p99: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
     sqlx::query("REFRESH MATERIALIZED VIEW telemetry_trend_rollups")
         .execute(&pool)
         .await
@@ -268,6 +320,16 @@ async fn rollup_trends_average_gauges_and_sum_counters(pool: PgPool) {
         .unwrap();
     assert_eq!(errs.len(), 1);
     assert_eq!(errs[0].value_count, Some(10), "counter: daily total");
+
+    let cpu = storage::query_trends(&pool, "kaiku_process_cpu_percent", from, to)
+        .await
+        .unwrap();
+    assert_eq!(cpu.len(), 1);
+    assert_eq!(
+        cpu[0].value_sum,
+        Some(3.0),
+        "f64 gauge: daily mean of value_sum"
+    );
 }
 
 /// Several label sets exported in one cycle share a `ts`; the trend must
