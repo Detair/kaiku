@@ -53,3 +53,21 @@ export function visibleDevices(
     (d) => d.curated !== false || (selectedId != null && d.deviceId === selectedId),
   );
 }
+
+/** The entry that stands for the system default device, if the list has one. */
+export function systemDefaultDevice(devices: readonly AudioDevice[]): AudioDevice | undefined {
+  return devices.find((d) => d.isDefault);
+}
+
+/**
+ * Device id to preselect in a picker: the saved device when it is in the
+ * list (matched by id, never by label), else the system default entry,
+ * else the first device. Empty when the list is empty.
+ */
+export function preselectedDeviceId(
+  devices: readonly AudioDevice[],
+  savedId?: string | null,
+): string {
+  if (savedId && devices.some((d) => d.deviceId === savedId)) return savedId;
+  return (systemDefaultDevice(devices) ?? devices[0])?.deviceId ?? "";
+}

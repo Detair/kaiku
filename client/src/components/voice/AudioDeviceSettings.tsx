@@ -30,7 +30,7 @@ import { setSpeaking } from "@/stores/voice";
 import { appSettings, updateAudioSetting } from "@/stores/settings";
 import { isTauri } from "@/lib/tauri/common";
 import { showToast } from "@/components/ui/Toast";
-import { showAllAlsaDevices, visibleDevices } from "@/lib/audioDevices";
+import { preselectedDeviceId, showAllAlsaDevices, visibleDevices } from "@/lib/audioDevices";
 import ShowAllAlsaDevicesToggle from "./ShowAllAlsaDevicesToggle";
 import { t, type MessageKey } from "@/i18n";
 import Toggle from "@/components/ui/Toggle";
@@ -136,20 +136,11 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
           : voiceAdapter.isNoiseSuppressionEnabled(),
       );
 
-      // Set default selections (first device or default device)
-      if (result.value.inputs.length > 0) {
-        const defaultInput =
-          result.value.inputs.find((d) => d.isDefault) ||
-          result.value.inputs[0];
-        setSelectedInput(defaultInput.deviceId);
-      }
-
-      if (result.value.outputs.length > 0) {
-        const defaultOutput =
-          result.value.outputs.find((d) => d.isDefault) ||
-          result.value.outputs[0];
-        setSelectedOutput(defaultOutput.deviceId);
-      }
+      // Preselect the saved device (by id), else the system default entry,
+      // else the first device.
+      const audio = appSettings()?.audio;
+      setSelectedInput(preselectedDeviceId(result.value.inputs, audio?.input_device));
+      setSelectedOutput(preselectedDeviceId(result.value.outputs, audio?.output_device));
 
       setIsLoading(false);
     } catch (err) {
@@ -344,15 +335,12 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       void voiceAdapter.getAudioDevices().then((list) => {
         if (!list.ok) return;
         setDevices(list.value);
-        if (!selectedInput() && list.value.inputs[0]) {
-          setSelectedInput(
-            (list.value.inputs.find((d) => d.isDefault) ?? list.value.inputs[0]).deviceId,
-          );
+        const audio = appSettings()?.audio;
+        if (!selectedInput()) {
+          setSelectedInput(preselectedDeviceId(list.value.inputs, audio?.input_device));
         }
-        if (!selectedOutput() && list.value.outputs[0]) {
-          setSelectedOutput(
-            (list.value.outputs.find((d) => d.isDefault) ?? list.value.outputs[0]).deviceId,
-          );
+        if (!selectedOutput()) {
+          setSelectedOutput(preselectedDeviceId(list.value.outputs, audio?.output_device));
         }
       });
 

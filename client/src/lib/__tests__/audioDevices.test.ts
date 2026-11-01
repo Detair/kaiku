@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { hasHiddenDevices, visibleDevices } from "../audioDevices";
+import {
+  hasHiddenDevices,
+  preselectedDeviceId,
+  systemDefaultDevice,
+  visibleDevices,
+} from "../audioDevices";
 import type { AudioDevice } from "../webrtc/types";
 
 const devices: AudioDevice[] = [
@@ -44,5 +49,28 @@ describe("visibleDevices", () => {
 
   it("detects hidden devices", () => {
     expect(hasHiddenDevices(devices)).toBe(true);
+  });
+});
+
+describe("preselectedDeviceId", () => {
+  it("prefers the saved device, matched by id", () => {
+    expect(preselectedDeviceId(devices, "alsa:sysdefault:CARD=USB")).toBe("alsa:sysdefault:CARD=USB");
+  });
+
+  it("does not match a saved value by label", () => {
+    expect(preselectedDeviceId(devices, "Scarlett 2i2 USB")).toBe("alsa:default");
+  });
+
+  it("falls back to the system default entry, then the first device", () => {
+    expect(preselectedDeviceId(devices, null)).toBe("alsa:default");
+    expect(preselectedDeviceId(devices, "gone")).toBe("alsa:default");
+    const noDefault = devices.filter((d) => !d.isDefault);
+    expect(preselectedDeviceId(noDefault, undefined)).toBe("alsa:sysdefault:CARD=USB");
+    expect(preselectedDeviceId([], "x")).toBe("");
+  });
+
+  it("finds the system default entry", () => {
+    expect(systemDefaultDevice(devices)?.deviceId).toBe("alsa:default");
+    expect(systemDefaultDevice(devices.slice(1))).toBeUndefined();
   });
 });

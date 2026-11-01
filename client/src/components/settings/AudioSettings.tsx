@@ -6,7 +6,8 @@ import { Mic, Volume2 } from "lucide-solid";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 import { canSelectOutputDevice } from "@/lib/browserCapabilities";
-import { showAllAlsaDevices, visibleDevices } from "@/lib/audioDevices";
+import { showAllAlsaDevices, systemDefaultDevice, visibleDevices } from "@/lib/audioDevices";
+import Button from "@/components/ui/Button";
 import ShowAllAlsaDevicesToggle from "@/components/voice/ShowAllAlsaDevicesToggle";
 
 const AudioSettings: Component = () => {
@@ -62,6 +63,14 @@ const AudioSettings: Component = () => {
         }
     });
 
+    // The value shown in a picker: the saved device (matched by id), else
+    // the list's own system default entry (desktop list, Chrome's
+    // "default"), else the synthetic "default" option.
+    const pickerValue = (devices: AudioDevice[], saved: string | null | undefined) => {
+        if (saved && devices.some((d) => d.deviceId === saved)) return saved;
+        return systemDefaultDevice(devices)?.deviceId ?? "default";
+    };
+
     // Persist the selection and live-apply it to an active voice session.
     const changeDevice = async (kind: "input" | "output", value: string) => {
         const deviceId = value === "default" ? null : value;
@@ -112,10 +121,13 @@ const AudioSettings: Component = () => {
                                 </label>
                                 <select
                                     class="w-full px-4 py-2 bg-surface-base border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors appearance-none cursor-pointer"
-                                    value={settings().audio.input_device || "default"}
+                                    value={pickerValue(inputDevices(), settings().audio.input_device)}
                                     onChange={(e) => changeDevice("input", e.currentTarget.value)}
                                 >
-                                    <option value="default">{t("settings.audio.defaultDevice")}</option>
+                                    {/* Only when the list has no system default entry of its own. */}
+                                    <Show when={!systemDefaultDevice(inputDevices())}>
+                                        <option value="default">{t("settings.audio.defaultDevice")}</option>
+                                    </Show>
                                     <For each={visibleDevices(inputDevices(), showAllAlsaDevices(), settings().audio.input_device)}>
                                         {(device, i) => (
                                             <option value={device.deviceId}>
@@ -127,14 +139,14 @@ const AudioSettings: Component = () => {
                                 <Show when={!labelsAvailable()}>
                                     <div class="mt-2 flex flex-wrap items-center gap-3">
                                         <p class="text-xs text-text-secondary">{t("settings.audio.deviceNamesHidden")}</p>
-                                        <button
-                                            type="button"
-                                            class="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-layer2 text-text-primary hover:bg-surface-highlight border border-white/10 disabled:opacity-50"
+                                        <Button
+                                            variant="secondary"
+                                            size="sm"
                                             disabled={requestingLabels()}
                                             onClick={showDeviceNames}
                                         >
                                             {t("settings.audio.showDeviceNames")}
-                                        </button>
+                                        </Button>
                                     </div>
                                 </Show>
                             </div>
@@ -163,10 +175,13 @@ const AudioSettings: Component = () => {
                                 </label>
                                 <select
                                     class="w-full px-4 py-2 bg-surface-base border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors appearance-none cursor-pointer"
-                                    value={settings().audio.output_device || "default"}
+                                    value={pickerValue(outputDevices(), settings().audio.output_device)}
                                     onChange={(e) => changeDevice("output", e.currentTarget.value)}
                                 >
-                                    <option value="default">{t("settings.audio.defaultDevice")}</option>
+                                    {/* Only when the list has no system default entry of its own. */}
+                                    <Show when={!systemDefaultDevice(outputDevices())}>
+                                        <option value="default">{t("settings.audio.defaultDevice")}</option>
+                                    </Show>
                                     <For each={visibleDevices(outputDevices(), showAllAlsaDevices(), settings().audio.output_device)}>
                                         {(device, i) => (
                                             <option value={device.deviceId}>

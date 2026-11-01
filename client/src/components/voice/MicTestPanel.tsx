@@ -20,7 +20,8 @@ import {
 } from "@/lib/webrtc";
 import { t } from "@/i18n";
 import { canSelectOutputDevice } from "@/lib/browserCapabilities";
-import { showAllAlsaDevices, visibleDevices } from "@/lib/audioDevices";
+import { preselectedDeviceId, showAllAlsaDevices, visibleDevices } from "@/lib/audioDevices";
+import { appSettings } from "@/stores/settings";
 import { voiceErrorText } from "@/lib/webrtc/voiceErrorText";
 
 // Errors raised by the panel itself get their own types so the message is
@@ -54,12 +55,14 @@ function MicTestPanel(props: MicTestPanelProps) {
     if (result.ok) {
       setInputDevices(result.value.inputs);
       setOutputDevices(result.value.outputs);
-      const defaultInput =
-        result.value.inputs.find((d) => d.isDefault) ?? result.value.inputs[0];
-      const defaultOutput =
-        result.value.outputs.find((d) => d.isDefault) ?? result.value.outputs[0];
-      if (defaultInput && !selectedInput()) setSelectedInput(defaultInput.deviceId);
-      if (defaultOutput && !selectedOutput()) setSelectedOutput(defaultOutput.deviceId);
+      // Saved device (by id), else the system default entry, else the first.
+      const audio = appSettings()?.audio;
+      if (!selectedInput()) {
+        setSelectedInput(preselectedDeviceId(result.value.inputs, audio?.input_device));
+      }
+      if (!selectedOutput()) {
+        setSelectedOutput(preselectedDeviceId(result.value.outputs, audio?.output_device));
+      }
     } else {
       setError(result.error);
     }
