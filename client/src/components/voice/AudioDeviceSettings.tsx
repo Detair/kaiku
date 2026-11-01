@@ -25,12 +25,17 @@ import { Portal } from "solid-js/web";
 import { X, Mic, Headphones, Loader2 } from "lucide-solid";
 import { createVoiceAdapter } from "@/lib/webrtc";
 import { canSelectOutputDevice } from "@/lib/browserCapabilities";
-import type { AudioDeviceList, VoiceError, VoiceAdapter } from "@/lib/webrtc";
+import type { AudioDevice, AudioDeviceList, VoiceError, VoiceAdapter } from "@/lib/webrtc";
 import { setSpeaking } from "@/stores/voice";
 import { appSettings, updateAudioSetting } from "@/stores/settings";
 import { isTauri } from "@/lib/tauri/common";
 import { showToast } from "@/components/ui/Toast";
-import { preselectedDeviceId, showAllAlsaDevices, visibleDevices } from "@/lib/audioDevices";
+import {
+  labelNamesSystemDefault,
+  preselectedDeviceId,
+  showAllAlsaDevices,
+  visibleDevices,
+} from "@/lib/audioDevices";
 import ShowAllAlsaDevicesToggle from "./ShowAllAlsaDevicesToggle";
 import { t, type MessageKey } from "@/i18n";
 import Toggle from "@/components/ui/Toggle";
@@ -61,13 +66,15 @@ function getDeviceErrorMessage(error: VoiceError): string {
 
 /** Device label with the fallback name and the "(Default)" marker applied. */
 function deviceOptionLabel(
-  device: { deviceId: string; label?: string; isDefault?: boolean },
+  device: AudioDevice,
   index: number,
   fallbackKey: MessageKey,
 ): string {
   // Unlabeled devices (no mic permission yet) get a generic numbered name.
   const label = device.label || t(fallbackKey, { id: index + 1 });
-  return device.isDefault ? t("voice.audio.deviceDefault", { label }) : label;
+  return device.isDefault && !labelNamesSystemDefault(device)
+    ? t("voice.audio.deviceDefault", { label })
+    : label;
 }
 
 const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {

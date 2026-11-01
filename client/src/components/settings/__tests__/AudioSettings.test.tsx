@@ -19,12 +19,13 @@ vi.mock("@/lib/webrtc", () => ({
   getVoiceAdapter: () => null,
 }));
 vi.mock("@/lib/browserCapabilities", () => ({ canSelectOutputDevice: () => true }));
+const updateAudioSetting = vi.hoisted(() => vi.fn());
 vi.mock("@/stores/settings", () => {
   const [settings] = createSignal({ audio });
   return {
     appSettings: settings,
     isSettingsLoading: () => false,
-    updateAudioSetting: vi.fn(),
+    updateAudioSetting,
   };
 });
 
@@ -85,6 +86,27 @@ describe("AudioSettings device pickers", () => {
     render(() => <AudioSettings />);
     await waitFor(() => expect(screen.getAllByText("USB Mic").length).toBe(2));
     expect(selects()[0].value).toBe("alsa:default");
+  });
+
+  it("preselects a device saved by its legacy name without rewriting the setting", async () => {
+    audio.input_device = "Webcam, USB Audio";
+    adapter.getAudioDevices.mockResolvedValue({
+      ok: true,
+      value: {
+        inputs: [
+          { ...nativeList.inputs[0], legacyName: "Default ALSA Output" },
+          { ...nativeList.inputs[1], legacyName: "USB Audio, USB Audio" },
+          { ...nativeList.inputs[2], legacyName: "Webcam, USB Audio" },
+        ],
+        outputs: nativeList.outputs,
+      },
+    });
+    render(() => <AudioSettings />);
+    await waitFor(() => expect(screen.getAllByText("USB Mic").length).toBe(2));
+
+    expect(selects()[0].value).toBe("alsa:sysdefault:CARD=USB2");
+    expect(updateAudioSetting).not.toHaveBeenCalled();
+    expect(audio.input_device).toBe("Webcam, USB Audio");
   });
 
   it("keeps the synthetic Default option when the list has no default entry", async () => {

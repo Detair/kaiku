@@ -6,7 +6,12 @@ import { Mic, Volume2 } from "lucide-solid";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 import { canSelectOutputDevice } from "@/lib/browserCapabilities";
-import { showAllAlsaDevices, systemDefaultDevice, visibleDevices } from "@/lib/audioDevices";
+import {
+    findSelectedDevice,
+    showAllAlsaDevices,
+    systemDefaultDevice,
+    visibleDevices,
+} from "@/lib/audioDevices";
 import Button from "@/components/ui/Button";
 import ShowAllAlsaDevicesToggle from "@/components/voice/ShowAllAlsaDevicesToggle";
 
@@ -63,13 +68,12 @@ const AudioSettings: Component = () => {
         }
     });
 
-    // The value shown in a picker: the saved device (matched by id), else
-    // the list's own system default entry (desktop list, Chrome's
-    // "default"), else the synthetic "default" option.
-    const pickerValue = (devices: AudioDevice[], saved: string | null | undefined) => {
-        if (saved && devices.some((d) => d.deviceId === saved)) return saved;
-        return systemDefaultDevice(devices)?.deviceId ?? "default";
-    };
+    // The value shown in a picker: the saved device (by id, else by the
+    // legacy name older desktop versions stored), else the list's own
+    // system default entry (desktop list, Chrome's "default"), else the
+    // synthetic "default" option. The saved setting is left as it is.
+    const pickerValue = (devices: AudioDevice[], saved: string | null | undefined) =>
+        (findSelectedDevice(devices, saved) ?? systemDefaultDevice(devices))?.deviceId ?? "default";
 
     // Persist the selection and live-apply it to an active voice session.
     const changeDevice = async (kind: "input" | "output", value: string) => {
@@ -128,7 +132,7 @@ const AudioSettings: Component = () => {
                                     <Show when={!systemDefaultDevice(inputDevices())}>
                                         <option value="default">{t("settings.audio.defaultDevice")}</option>
                                     </Show>
-                                    <For each={visibleDevices(inputDevices(), showAllAlsaDevices(), settings().audio.input_device)}>
+                                    <For each={visibleDevices(inputDevices(), showAllAlsaDevices(), pickerValue(inputDevices(), settings().audio.input_device))}>
                                         {(device, i) => (
                                             <option value={device.deviceId}>
                                                 {device.label || t("settings.audio.microphoneFallback", { id: i() + 1 })}
@@ -182,7 +186,7 @@ const AudioSettings: Component = () => {
                                     <Show when={!systemDefaultDevice(outputDevices())}>
                                         <option value="default">{t("settings.audio.defaultDevice")}</option>
                                     </Show>
-                                    <For each={visibleDevices(outputDevices(), showAllAlsaDevices(), settings().audio.output_device)}>
+                                    <For each={visibleDevices(outputDevices(), showAllAlsaDevices(), pickerValue(outputDevices(), settings().audio.output_device))}>
                                         {(device, i) => (
                                             <option value={device.deviceId}>
                                                 {device.label || t("settings.audio.speakerFallback", { id: i() + 1 })}

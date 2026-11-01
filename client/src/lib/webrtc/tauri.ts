@@ -32,6 +32,8 @@ interface NativeAudioDevice {
   is_default: boolean;
   /** `false` for ALSA PCMs hidden from the curated list. */
   curated: boolean;
+  /** Name older versions stored as the selection (device description). */
+  legacy_name?: string;
 }
 
 interface NativeAudioDeviceList {
@@ -326,6 +328,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
         label: d.label,
         isDefault: d.is_default,
         curated: d.curated,
+        ...(d.legacy_name ? { legacyName: d.legacy_name } : {}),
       });
       return {
         ok: true,

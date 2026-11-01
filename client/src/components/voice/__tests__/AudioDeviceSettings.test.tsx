@@ -66,4 +66,27 @@ describe("AudioDeviceSettings device pickers", () => {
     expect([...input.options].filter((o) => o.value === "alsa:default").length).toBe(1);
     expect(input.value).toBe("alsa:default");
   });
+
+  it("adds (Default) only where the label does not already say it", async () => {
+    adapter.getAudioDevices.mockResolvedValue({ ok: true, value: list });
+    render(() => <AudioDeviceSettings onClose={() => {}} />);
+    const [input] = await pickers();
+    expect(input.options[0].textContent).toBe("System default (PipeWire)");
+    cleanup();
+
+    adapter.getAudioDevices.mockResolvedValue({
+      ok: true,
+      value: {
+        inputs: [
+          { deviceId: "m0", label: "Headset", isDefault: true },
+          { deviceId: "m1", label: "USB Mic", isDefault: false },
+          { deviceId: "m2", label: "USB Mic", isDefault: false },
+        ],
+        outputs: [],
+      },
+    });
+    render(() => <AudioDeviceSettings onClose={() => {}} />);
+    const [browserInput] = await pickers();
+    expect(browserInput.options[0].textContent).toBe("Headset (Default)");
+  });
 });

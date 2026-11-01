@@ -103,6 +103,12 @@ export interface AudioDevice {
    * Absent means curated.
    */
   curated?: boolean;
+  /**
+   * Desktop app: the name older versions stored as the selected device.
+   * A stored selection is matched by `deviceId` first, then by this name
+   * (same order as the native backend). Absent in the browser.
+   */
+  legacyName?: string;
 }
 
 export interface AudioDeviceList {
