@@ -756,6 +756,9 @@ impl LabelledDevice {
     }
 }
 
+/// How long `start_*playback` waits for the playback stream to open.
+const PLAYBACK_READY_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How opening the playback stream went (sent once by the playback task).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlaybackStart {
@@ -785,26 +788,37 @@ fn set_active(active: &ActiveLabel, label: Option<String>) {
     }
 }
 
-/// The system default device for one direction: the list entry that
-/// stands for it (on ALSA that may be the sound server PCM when `default`
-/// is missing), else what the host reports.
-fn default_device(host: &Host, is_input: bool) -> Option<Device> {
+/// The system default for one direction with its label, from one device
+/// enumeration: the list entry that stands for it (on ALSA that may be the
+/// sound server PCM when `default` is missing), else what the host reports.
+fn default_entry(host: &Host, is_input: bool) -> Option<LabelledDevice> {
     if is_alsa(host) {
         let listed = list_devices(host, is_input).ok().and_then(|listed| {
             listed
                 .into_iter()
                 .find(|d| d.system_default)
-                .map(|d| d.device)
+                .map(|d| LabelledDevice {
+                    device: d.device,
+                    label: d.label,
+                })
         });
         if listed.is_some() {
             return listed;
         }
     }
-    if is_input {
+    let device = if is_input {
         host.default_input_device()
     } else {
         host.default_output_device()
-    }
+    }?;
+    // Off ALSA the list labels devices by this same name.
+    let label = device_label(&device);
+    Some(LabelledDevice { device, label })
+}
+
+/// The system default device for one direction; see [`default_entry`].
+fn default_device(host: &Host, is_input: bool) -> Option<Device> {
+    default_entry(host, is_input).map(|d| d.device)
 }
 
 /// Whether `device` is the system default (falling back to it again
@@ -818,10 +832,9 @@ fn is_system_default(host: &Host, device: &Device, is_input: bool) -> bool {
 fn selection_label(host: &Host, selection: Option<&str>, is_input: bool) -> String {
     match selection {
         Some(id) => display_name(host, id, is_input),
-        None => default_device(host, is_input).map_or_else(
-            || "System default".to_string(),
-            |device| LabelledDevice::new(host, device, is_input).label,
-        ),
+        None => {
+            default_entry(host, is_input).map_or_else(|| "System default".to_string(), |d| d.label)
+        }
     }
 }
 
@@ -1005,7 +1018,10 @@ impl AudioHandle {
     /// Outside a call this only stores the choice. During a call the capture
     /// stream moves to the new device (see [`Self::switch_capture_device`]);
     /// if that fails, the previous microphone keeps running and the stored
-    /// choice is unchanged.
+    /// choice is unchanged. Exception: when the previous microphone cannot be
+    /// reopened either, capture moves to the system default, the stored
+    /// choice becomes `None` and [`AudioError::UsingSystemDefault`] is
+    /// returned.
     pub async fn set_input_device(&mut self, device_id: Option<String>) -> Result<(), AudioError> {
         if self.capture_output_tx.is_none() {
             self.input_device_id = device_id;
@@ -1124,10 +1140,8 @@ impl AudioHandle {
     /// System default speaker to fall back to when `device` is busy at call
     /// start (`None` when `device` already is the default).
     fn playback_fallback(&self, device: &Device) -> Option<LabelledDevice> {
-        if is_system_default(&self.host, device, false) {
-            return None;
-        }
-        default_device(&self.host, false).map(|d| LabelledDevice::new(&self.host, d, false))
+        let default = default_entry(&self.host, false)?;
+        (device_id_string(&default.device) != device_id_string(device)).then_some(default)
     }
 
     /// Wait until the playback task tried to open its stream, so the active
@@ -1135,9 +1149,17 @@ impl AudioHandle {
     /// to the default (selected speaker busy) clears the selected id, like
     /// capture: re-selecting the busy speaker is then tried, and a failed
     /// switch restores the default.
+    ///
+    /// A device that hangs while opening must not block the call: after
+    /// [`PLAYBACK_READY_TIMEOUT`] this counts as a failed open (the task
+    /// keeps running and reports on its own if it still fails).
     async fn await_playback_ready(&mut self, ready: tokio::sync::oneshot::Receiver<PlaybackStart>) {
-        if ready.await == Ok(PlaybackStart::FellBack) {
-            self.output_device_id = None;
+        match tokio::time::timeout(PLAYBACK_READY_TIMEOUT, ready).await {
+            Ok(Ok(PlaybackStart::FellBack)) => self.output_device_id = None,
+            Ok(_) => {}
+            Err(_) => warn!(
+                "Output stream did not open within {PLAYBACK_READY_TIMEOUT:?}; treating it as failed"
+            ),
         }
     }
 

@@ -738,13 +738,6 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       };
     }
 
-    if (message.includes("in use")) {
-      return {
-        type: "device_in_use",
-        message: "Audio device is in use",
-      };
-    }
-
     if (message.includes("Already in a voice channel")) {
       return {
         type: "already_connected",
