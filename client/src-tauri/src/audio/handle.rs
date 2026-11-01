@@ -332,6 +332,8 @@ struct CaptureTask {
     active: Arc<AtomicBool>,
     /// Failure state of this stream (unplugged, stalled; cleared on recovery).
     reporter: FailureReporter,
+    /// Opened on the system default because the selected mic was busy.
+    fell_back: bool,
 }
 
 /// A capture stream as seen by the switching logic.
@@ -413,6 +415,29 @@ async fn switch_capture<F: CaptureFactory + Sync>(
                                 factory.report_recovered(current.as_deref());
                             }
                         }
+                        Err(restore) if current.is_some() => {
+                            // E.g. the saved mic was busy at join and capture
+                            // runs on the default: restoring the saved one
+                            // fails again, the default still works.
+                            warn!(
+                                "Previous microphone could not be restored ({restore}); using \
+                                 the system default"
+                            );
+                            match factory.spawn(None).await {
+                                Ok(task) => {
+                                    task.activate();
+                                    *capture = Some(task);
+                                    if !old_healthy {
+                                        factory.report_recovered(current.as_deref());
+                                    }
+                                    *current = None;
+                                }
+                                Err(e) => {
+                                    error!("System default microphone could not be opened: {e}");
+                                    factory.report_failure(current.as_deref());
+                                }
+                            }
+                        }
                         Err(restore) => {
                             error!("Previous microphone could not be restored: {restore}");
                             factory.report_failure(current.as_deref());
@@ -466,6 +491,10 @@ pub struct AudioHandle {
     /// Selected output device id
     output_device_id: Option<String>,
 
+    /// Label of the output device actually playing (may be the default
+    /// when the selected one was busy).
+    active_output: ActiveLabel,
+
     /// VAD + noise suppression configuration
     vad_config: VadConfig,
 
@@ -480,7 +509,7 @@ enum PlaybackControl {
     /// buffer (mid-call speaker switching). Boxed: `cpal::Device` is large.
     /// The reply says whether the new device could be opened.
     SwitchDevice(
-        Box<Device>,
+        Box<LabelledDevice>,
         std::sync::mpsc::SyncSender<Result<(), AudioError>>,
     ),
 }
@@ -708,6 +737,29 @@ fn find_device(
     )
 }
 
+/// A device with the label it has in the device list.
+struct LabelledDevice {
+    device: Device,
+    label: String,
+}
+
+impl LabelledDevice {
+    fn new(host: &Host, device: Device, is_input: bool) -> Self {
+        let label = display_name(host, &device_id_string(&device), is_input);
+        Self { device, label }
+    }
+}
+
+/// Label of the output device that is actually playing (`None` while
+/// nothing plays); shared with the playback task.
+type ActiveLabel = Arc<std::sync::Mutex<Option<String>>>;
+
+fn set_active(active: &ActiveLabel, label: Option<String>) {
+    if let Ok(mut slot) = active.lock() {
+        *slot = label;
+    }
+}
+
 /// The system default device for one direction.
 fn default_device(host: &Host, is_input: bool) -> Option<Device> {
     if is_input {
@@ -791,7 +843,9 @@ impl CaptureFactory for CaptureSpawner {
             Err(AudioError::DeviceInUse) if self.fallback_to_default && device_id.is_some() => {
                 warn!("Audio device {device_id:?} is busy; using the system default");
                 let default = find_device(&self.host, None, true, true)?;
-                self.spawn_on(default).await
+                let mut task = self.spawn_on(default).await?;
+                task.fell_back = true;
+                Ok(task)
             }
             other => other,
         }
@@ -814,9 +868,10 @@ impl CaptureFactory for CaptureSpawner {
 impl CaptureSpawner {
     /// Build (but do not activate) a capture stream on `device`.
     async fn spawn_on(&self, device: Device) -> Result<CaptureTask, AudioError> {
+        let LabelledDevice { device, label } = LabelledDevice::new(&self.host, device, true);
         let reporter = FailureReporter::new(
             AudioErrorKind::CaptureFailed,
-            device_label(&device),
+            label,
             error_sink_for(self.app_handle.clone()),
         );
         let heartbeat = Heartbeat::new();
@@ -839,6 +894,7 @@ impl CaptureSpawner {
             owner,
             active,
             reporter,
+            fell_back: false,
         })
     }
 }
@@ -859,6 +915,7 @@ impl AudioHandle {
             mic_test: None,
             input_device_id: None,
             output_device_id: None,
+            active_output: ActiveLabel::default(),
             vad_config: VadConfig::new(),
             app_handle: None,
         })
@@ -967,7 +1024,8 @@ impl AudioHandle {
     async fn switch_running_playback(&self) -> Result<(), AudioError> {
         if let Some(control) = &self.playback_control {
             let device = self.get_device(self.output_device_id.as_deref(), false)?;
-            let label = device_label(&device);
+            let device = LabelledDevice::new(&self.host, device, false);
+            let label = device.label.clone();
             let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
             if control
                 .send(PlaybackControl::SwitchDevice(Box::new(device), reply_tx))
@@ -1013,10 +1071,11 @@ impl AudioHandle {
 
     /// System default speaker to fall back to when the saved one is busy
     /// at call start (`None` when the default is already selected).
-    fn playback_fallback(&self) -> Option<Device> {
+    fn playback_fallback(&self) -> Option<LabelledDevice> {
         self.output_device_id
             .as_ref()
             .and_then(|_| default_device(&self.host, false))
+            .map(|device| LabelledDevice::new(&self.host, device, false))
     }
 
     /// Delivers audio failures/recoveries to the webview as Tauri events.
@@ -1065,6 +1124,12 @@ impl AudioHandle {
             .capture_spawner(output_tx, true)
             .spawn(self.input_device_id.as_deref())
             .await?;
+        if task.fell_back {
+            // Capture runs on the default: choosing the saved mic again must
+            // try it (not be a no-op), and a failed switch restores the
+            // default, not the busy mic.
+            self.input_device_id = None;
+        }
         task.activate();
         self.capture = Some(task);
 
@@ -1077,9 +1142,24 @@ impl AudioHandle {
         self.input_device_id.as_deref()
     }
 
-    /// Label of the selected input/output device for messages (`None` =
-    /// system default); the stored id when the device is gone.
-    pub fn selected_device_label(&self, is_input: bool) -> Option<String> {
+    /// Label of the input/output device for messages: the one actually in
+    /// use (which is the system default when the selected one was busy),
+    /// else the selected one (`None` = system default; the stored id when
+    /// the device is gone).
+    pub fn active_device_label(&self, is_input: bool) -> Option<String> {
+        let in_use = if is_input {
+            self.capture
+                .as_ref()
+                .map(|task| task.reporter.event.device.clone())
+        } else {
+            self.active_output
+                .lock()
+                .ok()
+                .and_then(|label| label.clone())
+        };
+        if in_use.is_some() {
+            return in_use;
+        }
         let selected = if is_input {
             self.input_device_id.as_deref()
         } else {
@@ -1106,7 +1186,9 @@ impl AudioHandle {
         self.stop_playback().await;
 
         let device = self.get_device_or_default(self.output_device_id.as_deref(), false)?;
+        let device = LabelledDevice::new(&self.host, device, false);
         let fallback = self.playback_fallback();
+        let active = self.active_output.clone();
         let deafened = self.deafened.clone();
         let sink = self.error_sink();
 
@@ -1116,7 +1198,15 @@ impl AudioHandle {
 
         // Spawn playback task that owns the Stream
         tokio::task::spawn_blocking(move || {
-            run_playback_task(device, fallback, deafened, input_rx, &mut control_rx, sink);
+            run_playback_task(
+                device,
+                fallback,
+                &active,
+                deafened,
+                input_rx,
+                &mut control_rx,
+                sink,
+            );
         });
 
         info!("Audio playback started");
@@ -1135,7 +1225,9 @@ impl AudioHandle {
         self.stop_playback().await;
 
         let device = self.get_device_or_default(self.output_device_id.as_deref(), false)?;
+        let device = LabelledDevice::new(&self.host, device, false);
         let fallback = self.playback_fallback();
+        let active = self.active_output.clone();
         let deafened = self.deafened.clone();
         let sink = self.error_sink();
 
@@ -1145,7 +1237,15 @@ impl AudioHandle {
 
         // Spawn PCM playback task that owns the Stream
         tokio::task::spawn_blocking(move || {
-            run_pcm_playback_task(device, fallback, deafened, input_rx, &mut control_rx, sink);
+            run_pcm_playback_task(
+                device,
+                fallback,
+                &active,
+                deafened,
+                input_rx,
+                &mut control_rx,
+                sink,
+            );
         });
 
         info!("PCM playback started (mixer output)");
@@ -1156,6 +1256,7 @@ impl AudioHandle {
     pub async fn stop_playback(&mut self) {
         if let Some(control) = self.playback_control.take() {
             let _ = control.send(PlaybackControl::Stop).await;
+            set_active(&self.active_output, None);
             debug!("Audio playback stopped");
         }
     }
@@ -1558,8 +1659,9 @@ impl CaptureProcessor {
 
 /// Run playback task (owns the Stream)
 fn run_playback_task(
-    device: Device,
-    fallback: Option<Device>,
+    device: LabelledDevice,
+    fallback: Option<LabelledDevice>,
+    active: &ActiveLabel,
     deafened: Arc<AtomicBool>,
     mut input_rx: mpsc::Receiver<Vec<u8>>,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
@@ -1601,12 +1703,19 @@ fn run_playback_task(
         }
     });
 
-    let (stream, reporter) =
-        open_playback_stream(device, fallback, &deafened, &playback_buffer, sink.as_ref());
+    let (stream, reporter) = open_playback_stream(
+        device,
+        fallback,
+        active,
+        &deafened,
+        &playback_buffer,
+        sink.as_ref(),
+    );
 
     playback_control_loop(
         stream,
         reporter,
+        active,
         &deafened,
         &playback_buffer,
         control_rx,
@@ -1619,37 +1728,47 @@ fn run_playback_task(
 /// `device` is busy. A stream that cannot start is reported and `None` is
 /// returned: the task stays alive so choosing another speaker starts it.
 fn open_playback_stream(
-    device: Device,
-    fallback: Option<Device>,
+    device: LabelledDevice,
+    fallback: Option<LabelledDevice>,
+    active: &ActiveLabel,
     deafened: &Arc<AtomicBool>,
     playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
     sink: Option<&AudioErrorSink>,
 ) -> (Option<cpal::Stream>, FailureReporter) {
-    let reporter_for = |device: &Device| {
+    let reporter_for = |device: &LabelledDevice| {
         FailureReporter::new(
             AudioErrorKind::PlaybackFailed,
-            device_label(device),
+            device.label.clone(),
             sink.cloned(),
         )
     };
     let reporter = reporter_for(&device);
-    let result = match build_buffer_output_stream(&device, deafened, playback_buffer, &reporter) {
-        Err(AudioError::DeviceInUse) if fallback.is_some() => {
-            let fallback = fallback.unwrap_or(device);
-            warn!(
-                "Output device {} is busy; using the system default",
-                reporter.event.device
-            );
-            let reporter = reporter_for(&fallback);
-            let result =
-                build_buffer_output_stream(&fallback, deafened, playback_buffer, &reporter);
-            (result, reporter)
-        }
-        result => (result, reporter),
-    };
+    let result =
+        match build_buffer_output_stream(&device.device, deafened, playback_buffer, &reporter) {
+            Err(AudioError::DeviceInUse) if fallback.is_some() => {
+                let fallback = fallback.unwrap_or(device);
+                warn!(
+                    "Output device {} is busy; using the system default",
+                    reporter.event.device
+                );
+                let reporter = reporter_for(&fallback);
+                let result = build_buffer_output_stream(
+                    &fallback.device,
+                    deafened,
+                    playback_buffer,
+                    &reporter,
+                );
+                (result, reporter)
+            }
+            result => (result, reporter),
+        };
     match result {
-        (Ok(stream), reporter) => (Some(stream), reporter),
+        (Ok(stream), reporter) => {
+            set_active(active, Some(reporter.event.device.clone()));
+            (Some(stream), reporter)
+        }
         (Err(_), reporter) => {
+            set_active(active, None);
             reporter.report("output stream could not be started");
             (None, reporter)
         }
@@ -1725,6 +1844,7 @@ fn build_buffer_output_stream(
 fn playback_control_loop(
     mut stream: Option<cpal::Stream>,
     mut reporter: FailureReporter,
+    active: &ActiveLabel,
     deafened: &Arc<AtomicBool>,
     playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
@@ -1736,11 +1856,11 @@ fn playback_control_loop(
             PlaybackControl::SwitchDevice(new_device, reply) => {
                 let new_reporter = FailureReporter::new(
                     AudioErrorKind::PlaybackFailed,
-                    device_label(&new_device),
+                    new_device.label.clone(),
                     sink.clone(),
                 );
                 match build_buffer_output_stream(
-                    &new_device,
+                    &new_device.device,
                     deafened,
                     playback_buffer,
                     &new_reporter,
@@ -1749,6 +1869,7 @@ fn playback_control_loop(
                         stream = Some(new_stream);
                         reporter.recover();
                         reporter = new_reporter;
+                        set_active(active, Some(reporter.event.device.clone()));
                         let _ = reply.send(Ok(()));
                         info!("Playback switched to new output device");
                     }
@@ -1769,8 +1890,9 @@ fn playback_control_loop(
 /// Structurally identical to `run_playback_task` but skips Opus decoding since
 /// the audio mixer already produces mixed f32 PCM.
 fn run_pcm_playback_task(
-    device: Device,
-    fallback: Option<Device>,
+    device: LabelledDevice,
+    fallback: Option<LabelledDevice>,
+    active: &ActiveLabel,
     deafened: Arc<AtomicBool>,
     mut input_rx: mpsc::Receiver<Vec<f32>>,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
@@ -1797,12 +1919,19 @@ fn run_pcm_playback_task(
         }
     });
 
-    let (stream, reporter) =
-        open_playback_stream(device, fallback, &deafened, &playback_buffer, sink.as_ref());
+    let (stream, reporter) = open_playback_stream(
+        device,
+        fallback,
+        active,
+        &deafened,
+        &playback_buffer,
+        sink.as_ref(),
+    );
 
     playback_control_loop(
         stream,
         reporter,
+        active,
         &deafened,
         &playback_buffer,
         control_rx,
@@ -2331,6 +2460,35 @@ mod tests {
         let mut capture = Some(factory.task("A", false));
         let _ = switch_capture(&factory, &mut capture, &mut current, Some("B".into())).await;
         assert!(factory.recovered.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_restore_falls_back_to_the_system_default() {
+        // The saved mic X is busy (capture runs elsewhere); switching to Y
+        // fails, restoring X fails too: the default keeps the call audible.
+        let factory = FakeFactory::new(&[false, false, false, true]);
+        let mut capture = Some(factory.task("X", false));
+        let mut current = Some("X".to_string());
+
+        let err = switch_capture(&factory, &mut capture, &mut current, Some("Y".into()))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AudioError::StreamError(_)));
+        assert_eq!(
+            factory.log(),
+            [
+                "spawn Y err",
+                "stop X",
+                "spawn Y err",
+                "spawn X err",
+                "spawn default ok",
+                "activate default"
+            ]
+        );
+        assert_eq!(capture.as_ref().map(|t| t.name.as_str()), Some("default"));
+        assert_eq!(current, None, "capture now follows the system default");
+        assert!(factory.reported.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
