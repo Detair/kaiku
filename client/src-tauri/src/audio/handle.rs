@@ -431,6 +431,8 @@ async fn switch_capture<F: CaptureFactory + Sync>(
                                         factory.report_recovered(current.as_deref());
                                     }
                                     *current = None;
+                                    // Not the old state any more: say so.
+                                    return Err(AudioError::UsingSystemDefault(e.to_string()));
                                 }
                                 Err(e) => {
                                     error!("System default microphone could not be opened: {e}");
@@ -562,6 +564,14 @@ struct ListedDevice {
     /// Name older client versions stored as the selection (the description).
     legacy_name: String,
     direction: cpal::DeviceDirection,
+    /// Second ALSA description line (e.g. "IEC958 (S/PDIF) Digital Audio
+    /// Output"), if any.
+    detail: Option<String>,
+    /// Offered by default; `false` for ALSA PCMs only shown with "Show all
+    /// ALSA devices". Always `true` off ALSA.
+    curated: bool,
+    /// Stands for the system default.
+    system_default: bool,
 }
 
 /// Whether `host` is ALSA (Linux/BSD), whose raw PCM list needs curating.
@@ -609,24 +619,33 @@ fn raw_devices(host: &Host, is_input: bool) -> Result<Vec<ListedDevice>, AudioEr
             label: name.clone(),
             legacy_name: name,
             direction: desc.direction(),
+            detail: desc.extended().get(1).cloned(),
+            curated: true,
+            system_default: false,
             device,
         })
     })
     .collect())
 }
 
-/// Which of `raw` to offer, as indices into `raw`, with their labels.
-///
-/// On ALSA the raw PCM list is curated (see [`devices::curate_alsa_pcms`]);
-/// other hosts offer every device under its name.
-fn offered(host: &Host, raw: &[ListedDevice], is_input: bool) -> Vec<(usize, String)> {
+/// Every device for one direction: the offered ones first, then (ALSA only)
+/// the PCMs the curated list hides (`curated: false`), labelled with their
+/// PCM name. Off ALSA every device is offered under its name.
+fn list_devices(host: &Host, is_input: bool) -> Result<Vec<ListedDevice>, AudioError> {
+    let mut raw = raw_devices(host, is_input)?;
     if !is_alsa(host) {
-        return raw
-            .iter()
-            .enumerate()
-            .map(|(i, d)| (i, d.label.clone()))
-            .collect();
+        let default = if is_input {
+            host.default_input_device()
+        } else {
+            host.default_output_device()
+        };
+        let default_id = default.as_ref().map(device_id_string);
+        for device in &mut raw {
+            device.system_default = default_id.as_deref() == Some(device.id.as_str());
+        }
+        return Ok(raw);
     }
+
     let pcms: Vec<devices::AlsaPcm> = raw
         .iter()
         .map(|d| devices::AlsaPcm {
@@ -636,28 +655,27 @@ fn offered(host: &Host, raw: &[ListedDevice], is_input: bool) -> Vec<(usize, Str
             direction: d.direction,
         })
         .collect();
-    devices::curate_alsa_pcms(&pcms, is_input)
-        .into_iter()
-        .filter_map(|curated| {
-            let index = pcms.iter().position(|p| p.pcm_id == curated.pcm_id)?;
-            Some((index, curated.label))
-        })
-        .collect()
-}
-
-/// The devices offered for one direction (`is_input` = capture).
-fn list_devices(host: &Host, is_input: bool) -> Result<Vec<ListedDevice>, AudioError> {
-    let raw = raw_devices(host, is_input)?;
-    let offered = offered(host, &raw, is_input);
     let mut slots: Vec<Option<ListedDevice>> = raw.into_iter().map(Some).collect();
-    Ok(offered
-        .into_iter()
-        .filter_map(|(index, label)| {
-            let mut device = slots[index].take()?;
-            device.label = label;
-            Some(device)
-        })
-        .collect())
+    let mut listed = Vec::with_capacity(slots.len());
+    for curated in devices::curate_alsa_pcms(&pcms, is_input) {
+        let Some(index) = pcms.iter().position(|p| p.pcm_id == curated.pcm_id) else {
+            continue;
+        };
+        if let Some(mut device) = slots[index].take() {
+            device.label = curated.label;
+            device.system_default = curated.system_default;
+            listed.push(device);
+        }
+    }
+    for (pcm, slot) in pcms.iter().zip(slots) {
+        if let Some(mut device) = slot {
+            device.label =
+                devices::raw_pcm_label(&pcm.pcm_id, &device.legacy_name, device.detail.as_deref());
+            device.curated = false;
+            listed.push(device);
+        }
+    }
+    Ok(listed)
 }
 
 /// Resolve a stored selection (id, or a description stored by older
@@ -667,42 +685,30 @@ fn lookup(
     selection: &str,
     is_input: bool,
 ) -> Result<Option<ListedDevice>, AudioError> {
-    let mut raw = raw_devices(host, is_input)?;
-    let offered = offered(host, &raw, is_input);
-    let indices: Vec<usize> = offered.iter().map(|(i, _)| *i).collect();
+    let mut listed = list_devices(host, is_input)?;
+    let curated: Vec<usize> = listed
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.curated)
+        .map(|(i, _)| i)
+        .collect();
     let found = devices::find_selection(
-        &raw,
-        &indices,
+        &listed,
+        &curated,
         selection,
         |d| d.id.as_str(),
         |d| d.legacy_name.as_str(),
     );
-    Ok(found.map(|found| match found {
-        devices::Found::Listed(index) => {
-            let label = offered
-                .iter()
-                .find(|(i, _)| *i == index)
-                .map(|(_, label)| label.clone());
-            let mut device = raw.swap_remove(index);
-            if device.id != selection {
-                info!(
-                    "Audio device {selection:?} resolved by its old name to {:?}",
-                    device.id
-                );
-            }
-            if let Some(label) = label {
-                device.label = label;
-            }
-            device
-        }
-        devices::Found::Unlisted(index) => {
-            let device = raw.swap_remove(index);
-            warn!(
-                "Audio device {selection:?} is not in the device list; opening {:?} as stored",
+    Ok(found.map(|found| {
+        let (devices::Found::Listed(index) | devices::Found::Unlisted(index)) = found;
+        let device = listed.swap_remove(index);
+        if device.id != selection {
+            info!(
+                "Audio device {selection:?} resolved by its old name to {:?}",
                 device.id
             );
-            device
         }
+        device
     }))
 }
 
@@ -750,6 +756,25 @@ impl LabelledDevice {
     }
 }
 
+/// How opening the playback stream went (sent once by the playback task).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackStart {
+    Opened,
+    /// Opened on the system default because the selected speaker was busy.
+    FellBack,
+    Failed,
+}
+
+/// What a playback task needs to open its stream.
+struct PlaybackOpen {
+    device: LabelledDevice,
+    /// System default to use when `device` is busy.
+    fallback: Option<LabelledDevice>,
+    active: ActiveLabel,
+    /// Told how opening went, once.
+    ready: tokio::sync::oneshot::Sender<PlaybackStart>,
+}
+
 /// Label of the output device that is actually playing (`None` while
 /// nothing plays); shared with the playback task.
 type ActiveLabel = Arc<std::sync::Mutex<Option<String>>>;
@@ -760,12 +785,43 @@ fn set_active(active: &ActiveLabel, label: Option<String>) {
     }
 }
 
-/// The system default device for one direction.
+/// The system default device for one direction: the list entry that
+/// stands for it (on ALSA that may be the sound server PCM when `default`
+/// is missing), else what the host reports.
 fn default_device(host: &Host, is_input: bool) -> Option<Device> {
+    if is_alsa(host) {
+        let listed = list_devices(host, is_input).ok().and_then(|listed| {
+            listed
+                .into_iter()
+                .find(|d| d.system_default)
+                .map(|d| d.device)
+        });
+        if listed.is_some() {
+            return listed;
+        }
+    }
     if is_input {
         host.default_input_device()
     } else {
         host.default_output_device()
+    }
+}
+
+/// Whether `device` is the system default (falling back to it again
+/// would open the same device).
+fn is_system_default(host: &Host, device: &Device, is_input: bool) -> bool {
+    default_device(host, is_input).is_some_and(|d| device_id_string(&d) == device_id_string(device))
+}
+
+/// Label for a selection in messages; `None` = the system default, under
+/// the same label the device list and stream errors use.
+fn selection_label(host: &Host, selection: Option<&str>, is_input: bool) -> String {
+    match selection {
+        Some(id) => display_name(host, id, is_input),
+        None => default_device(host, is_input).map_or_else(
+            || "System default".to_string(),
+            |device| LabelledDevice::new(host, device, is_input).label,
+        ),
     }
 }
 
@@ -821,10 +877,7 @@ impl CaptureSpawner {
                 notice,
                 &AudioErrorEvent {
                     kind,
-                    device: device.map_or_else(
-                        || "default".to_string(),
-                        |id| display_name(&self.host, id, true),
-                    ),
+                    device: selection_label(&self.host, device, true),
                 },
             );
         }
@@ -839,8 +892,12 @@ impl CaptureFactory for CaptureSpawner {
     /// falls back to the system default; an explicit switch reports it.
     async fn spawn(&self, device_id: Option<&str>) -> Result<CaptureTask, AudioError> {
         let device = find_device(&self.host, device_id, true, self.fallback_to_default)?;
+        // A busy default (selected by id, or a gone device that already
+        // resolved to it) is not retried on the same device.
+        let can_fall_back =
+            self.fallback_to_default && !is_system_default(&self.host, &device, true);
         match self.spawn_on(device).await {
-            Err(AudioError::DeviceInUse) if self.fallback_to_default && device_id.is_some() => {
+            Err(AudioError::DeviceInUse) if can_fall_back => {
                 warn!("Audio device {device_id:?} is busy; using the system default");
                 let default = find_device(&self.host, None, true, true)?;
                 let mut task = self.spawn_on(default).await?;
@@ -926,16 +983,11 @@ impl AudioHandle {
     /// `set_input_device`/`set_output_device`/`start_mic_test`.
     pub fn enumerate_devices(&self) -> Result<AudioDeviceList, AudioError> {
         let to_frontend = |is_input: bool| -> Result<Vec<AudioDevice>, AudioError> {
-            let default = if is_input {
-                self.host.default_input_device()
-            } else {
-                self.host.default_output_device()
-            };
-            let default_id = default.as_ref().map(device_id_string);
             Ok(list_devices(&self.host, is_input)?
                 .into_iter()
                 .map(|d| AudioDevice {
-                    is_default: default_id.as_deref() == Some(d.id.as_str()),
+                    is_default: d.system_default,
+                    curated: d.curated,
                     device_id: d.id,
                     label: d.label,
                 })
@@ -1069,13 +1121,24 @@ impl AudioHandle {
         find_device(&self.host, device_id, is_input, true)
     }
 
-    /// System default speaker to fall back to when the saved one is busy
-    /// at call start (`None` when the default is already selected).
-    fn playback_fallback(&self) -> Option<LabelledDevice> {
-        self.output_device_id
-            .as_ref()
-            .and_then(|_| default_device(&self.host, false))
-            .map(|device| LabelledDevice::new(&self.host, device, false))
+    /// System default speaker to fall back to when `device` is busy at call
+    /// start (`None` when `device` already is the default).
+    fn playback_fallback(&self, device: &Device) -> Option<LabelledDevice> {
+        if is_system_default(&self.host, device, false) {
+            return None;
+        }
+        default_device(&self.host, false).map(|d| LabelledDevice::new(&self.host, d, false))
+    }
+
+    /// Wait until the playback task tried to open its stream, so the active
+    /// label is set before `start_*playback` returns. Playback that fell back
+    /// to the default (selected speaker busy) clears the selected id, like
+    /// capture: re-selecting the busy speaker is then tried, and a failed
+    /// switch restores the default.
+    async fn await_playback_ready(&mut self, ready: tokio::sync::oneshot::Receiver<PlaybackStart>) {
+        if ready.await == Ok(PlaybackStart::FellBack) {
+            self.output_device_id = None;
+        }
     }
 
     /// Delivers audio failures/recoveries to the webview as Tauri events.
@@ -1144,9 +1207,8 @@ impl AudioHandle {
 
     /// Label of the input/output device for messages: the one actually in
     /// use (which is the system default when the selected one was busy),
-    /// else the selected one (`None` = system default; the stored id when
-    /// the device is gone).
-    pub fn active_device_label(&self, is_input: bool) -> Option<String> {
+    /// else the selected one (the stored id when the device is gone).
+    pub fn active_device_label(&self, is_input: bool) -> String {
         let in_use = if is_input {
             self.capture
                 .as_ref()
@@ -1157,15 +1219,15 @@ impl AudioHandle {
                 .ok()
                 .and_then(|label| label.clone())
         };
-        if in_use.is_some() {
-            return in_use;
+        if let Some(label) = in_use {
+            return label;
         }
         let selected = if is_input {
             self.input_device_id.as_deref()
         } else {
             self.output_device_id.as_deref()
         };
-        selected.map(|id| display_name(&self.host, id, is_input))
+        selection_label(&self.host, selected, is_input)
     }
 
     /// Stop audio capture
@@ -1186,9 +1248,10 @@ impl AudioHandle {
         self.stop_playback().await;
 
         let device = self.get_device_or_default(self.output_device_id.as_deref(), false)?;
+        let fallback = self.playback_fallback(&device);
         let device = LabelledDevice::new(&self.host, device, false);
-        let fallback = self.playback_fallback();
         let active = self.active_output.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let deafened = self.deafened.clone();
         let sink = self.error_sink();
 
@@ -1199,9 +1262,12 @@ impl AudioHandle {
         // Spawn playback task that owns the Stream
         tokio::task::spawn_blocking(move || {
             run_playback_task(
-                device,
-                fallback,
-                &active,
+                PlaybackOpen {
+                    device,
+                    fallback,
+                    active,
+                    ready: ready_tx,
+                },
                 deafened,
                 input_rx,
                 &mut control_rx,
@@ -1209,6 +1275,7 @@ impl AudioHandle {
             );
         });
 
+        self.await_playback_ready(ready_rx).await;
         info!("Audio playback started");
         Ok(())
     }
@@ -1225,9 +1292,10 @@ impl AudioHandle {
         self.stop_playback().await;
 
         let device = self.get_device_or_default(self.output_device_id.as_deref(), false)?;
+        let fallback = self.playback_fallback(&device);
         let device = LabelledDevice::new(&self.host, device, false);
-        let fallback = self.playback_fallback();
         let active = self.active_output.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let deafened = self.deafened.clone();
         let sink = self.error_sink();
 
@@ -1238,9 +1306,12 @@ impl AudioHandle {
         // Spawn PCM playback task that owns the Stream
         tokio::task::spawn_blocking(move || {
             run_pcm_playback_task(
-                device,
-                fallback,
-                &active,
+                PlaybackOpen {
+                    device,
+                    fallback,
+                    active,
+                    ready: ready_tx,
+                },
                 deafened,
                 input_rx,
                 &mut control_rx,
@@ -1248,6 +1319,7 @@ impl AudioHandle {
             );
         });
 
+        self.await_playback_ready(ready_rx).await;
         info!("PCM playback started (mixer output)");
         Ok(())
     }
@@ -1659,9 +1731,7 @@ impl CaptureProcessor {
 
 /// Run playback task (owns the Stream)
 fn run_playback_task(
-    device: LabelledDevice,
-    fallback: Option<LabelledDevice>,
-    active: &ActiveLabel,
+    open: PlaybackOpen,
     deafened: Arc<AtomicBool>,
     mut input_rx: mpsc::Receiver<Vec<u8>>,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
@@ -1703,19 +1773,26 @@ fn run_playback_task(
         }
     });
 
-    let (stream, reporter) = open_playback_stream(
+    let PlaybackOpen {
         device,
         fallback,
         active,
+        ready,
+    } = open;
+    let (stream, reporter, start) = open_playback_stream(
+        device,
+        fallback,
+        &active,
         &deafened,
         &playback_buffer,
         sink.as_ref(),
     );
+    let _ = ready.send(start);
 
     playback_control_loop(
         stream,
         reporter,
-        active,
+        &active,
         &deafened,
         &playback_buffer,
         control_rx,
@@ -1734,7 +1811,7 @@ fn open_playback_stream(
     deafened: &Arc<AtomicBool>,
     playback_buffer: &Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
     sink: Option<&AudioErrorSink>,
-) -> (Option<cpal::Stream>, FailureReporter) {
+) -> (Option<cpal::Stream>, FailureReporter, PlaybackStart) {
     let reporter_for = |device: &LabelledDevice| {
         FailureReporter::new(
             AudioErrorKind::PlaybackFailed,
@@ -1758,19 +1835,19 @@ fn open_playback_stream(
                     playback_buffer,
                     &reporter,
                 );
-                (result, reporter)
+                (result, reporter, PlaybackStart::FellBack)
             }
-            result => (result, reporter),
+            result => (result, reporter, PlaybackStart::Opened),
         };
     match result {
-        (Ok(stream), reporter) => {
+        (Ok(stream), reporter, start) => {
             set_active(active, Some(reporter.event.device.clone()));
-            (Some(stream), reporter)
+            (Some(stream), reporter, start)
         }
-        (Err(_), reporter) => {
+        (Err(_), reporter, _) => {
             set_active(active, None);
             reporter.report("output stream could not be started");
-            (None, reporter)
+            (None, reporter, PlaybackStart::Failed)
         }
     }
 }
@@ -1890,9 +1967,7 @@ fn playback_control_loop(
 /// Structurally identical to `run_playback_task` but skips Opus decoding since
 /// the audio mixer already produces mixed f32 PCM.
 fn run_pcm_playback_task(
-    device: LabelledDevice,
-    fallback: Option<LabelledDevice>,
-    active: &ActiveLabel,
+    open: PlaybackOpen,
     deafened: Arc<AtomicBool>,
     mut input_rx: mpsc::Receiver<Vec<f32>>,
     control_rx: &mut mpsc::Receiver<PlaybackControl>,
@@ -1919,19 +1994,26 @@ fn run_pcm_playback_task(
         }
     });
 
-    let (stream, reporter) = open_playback_stream(
+    let PlaybackOpen {
         device,
         fallback,
         active,
+        ready,
+    } = open;
+    let (stream, reporter, start) = open_playback_stream(
+        device,
+        fallback,
+        &active,
         &deafened,
         &playback_buffer,
         sink.as_ref(),
     );
+    let _ = ready.send(start);
 
     playback_control_loop(
         stream,
         reporter,
-        active,
+        &active,
         &deafened,
         &playback_buffer,
         control_rx,
@@ -2474,7 +2556,13 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(matches!(err, AudioError::StreamError(_)));
+        // The caller learns that capture now runs on the default (not that
+        // the old mic is still active).
+        assert!(
+            matches!(err, AudioError::UsingSystemDefault(ref m) if m.contains("Y busy")),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("system default is used"));
         assert_eq!(
             factory.log(),
             [

@@ -668,6 +668,8 @@
   "voice.audio.outputSwitchFailed": "",
   "voice.audio.playbackFailed": "",
   "voice.audio.playing": "",
+  "voice.audio.showAllAlsaDevices": "",
+  "voice.audio.showAllAlsaDevicesHint": "",
   "voice.audio.speakerFallback": "",
   "voice.audio.speakerHint": "",
   "voice.audio.testMicrophone": "",

@@ -28,6 +28,8 @@ import type { AudioDeviceList, VoiceError, VoiceAdapter } from "@/lib/webrtc";
 import { setSpeaking } from "@/stores/voice";
 import { updateAudioSetting } from "@/stores/settings";
 import { showToast } from "@/components/ui/Toast";
+import { showAllAlsaDevices, visibleDevices } from "@/lib/audioDevices";
+import ShowAllAlsaDevicesToggle from "./ShowAllAlsaDevicesToggle";
 import { t, type MessageKey } from "@/i18n";
 
 interface AudioDeviceSettingsProps {
@@ -566,7 +568,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 onChange={(e) => handleInputChange(e.currentTarget.value)}
                 class="w-full px-3 py-2.5 bg-surface-base rounded-xl text-sm text-text-primary border border-white/10 outline-none focus:ring-2 focus:ring-accent-primary/30 transition-all"
               >
-                <For each={devices().inputs}>
+                <For each={visibleDevices(devices().inputs, showAllAlsaDevices(), selectedInput())}>
                   {(device) => (
                     <option value={device.deviceId}>
                       {deviceOptionLabel(device, "voice.audio.microphoneFallback")}
@@ -659,7 +661,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 onChange={(e) => handleOutputChange(e.currentTarget.value)}
                 class="w-full px-3 py-2.5 bg-surface-base rounded-xl text-sm text-text-primary border border-white/10 outline-none focus:ring-2 focus:ring-accent-primary/30 transition-all"
               >
-                <For each={devices().outputs}>
+                <For each={visibleDevices(devices().outputs, showAllAlsaDevices(), selectedOutput())}>
                   {(device) => (
                     <option value={device.deviceId}>
                       {deviceOptionLabel(device, "voice.audio.speakerFallback")}
@@ -688,6 +690,8 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 </p>
               </div>
             </div>
+
+            <ShowAllAlsaDevicesToggle devices={[...devices().inputs, ...devices().outputs]} />
           </Show>
         </div>
 

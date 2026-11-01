@@ -90,6 +90,13 @@ pub enum AudioError {
         "Audio device is busy: another program or the sound server is using it. Choose the system default instead."
     )]
     DeviceInUse,
+    /// A switch failed and the previous device could not be reopened, so
+    /// capture now runs on the system default.
+    #[error(
+        "Could not switch the microphone ({0}). The previous microphone could not be reopened \
+         either, so the system default is used now."
+    )]
+    UsingSystemDefault(String),
     #[error("Failed to get device config: {0}")]
     ConfigError(String),
     #[error("Failed to build stream: {0}")]
@@ -108,6 +115,9 @@ pub struct AudioDevice {
     pub device_id: String,
     pub label: String,
     pub is_default: bool,
+    /// Offered by default. `false` for ALSA PCMs the curated list hides
+    /// (shown with "Show all ALSA devices"); always `true` off Linux.
+    pub curated: bool,
 }
 
 /// List of audio devices

@@ -30,6 +30,8 @@ interface NativeAudioDevice {
   device_id: string;
   label: string;
   is_default: boolean;
+  /** `false` for ALSA PCMs hidden from the curated list. */
+  curated: boolean;
 }
 
 interface NativeAudioDeviceList {
@@ -323,6 +325,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
         deviceId: d.device_id,
         label: d.label,
         isDefault: d.is_default,
+        curated: d.curated,
       });
       return {
         ok: true,
@@ -712,6 +715,19 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       return {
         type: "permission_denied",
         message: "Microphone access denied",
+      };
+    }
+
+    // Before the generic "device" match below, which would swallow these.
+    if (message.includes("system default is used")) {
+      // A switch failed and capture fell back to the default: say so.
+      return { type: "unknown", message };
+    }
+
+    if (message.includes("in use") || message.includes("busy")) {
+      return {
+        type: "device_in_use",
+        message: "Audio device is in use",
       };
     }
 

@@ -5,6 +5,8 @@ import type { AudioDevice } from "@/lib/webrtc";
 import { Mic, Volume2 } from "lucide-solid";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
+import { showAllAlsaDevices, visibleDevices } from "@/lib/audioDevices";
+import ShowAllAlsaDevicesToggle from "@/components/voice/ShowAllAlsaDevicesToggle";
 
 const AudioSettings: Component = () => {
     const [inputDevices, setInputDevices] = createSignal<AudioDevice[]>([]);
@@ -83,7 +85,7 @@ const AudioSettings: Component = () => {
                                     onChange={(e) => changeDevice("input", e.currentTarget.value)}
                                 >
                                     <option value="default">{t("settings.audio.defaultDevice")}</option>
-                                    <For each={inputDevices()}>
+                                    <For each={visibleDevices(inputDevices(), showAllAlsaDevices(), settings().audio.input_device)}>
                                         {(device) => (
                                             <option value={device.deviceId}>
                                                 {device.label || t("settings.audio.microphoneFallback", { id: device.deviceId.slice(0, 5) })}
@@ -120,7 +122,7 @@ const AudioSettings: Component = () => {
                                     onChange={(e) => changeDevice("output", e.currentTarget.value)}
                                 >
                                     <option value="default">{t("settings.audio.defaultDevice")}</option>
-                                    <For each={outputDevices()}>
+                                    <For each={visibleDevices(outputDevices(), showAllAlsaDevices(), settings().audio.output_device)}>
                                         {(device) => (
                                             <option value={device.deviceId}>
                                                 {device.label || t("settings.audio.speakerFallback", { id: device.deviceId.slice(0, 5) })}
@@ -144,6 +146,8 @@ const AudioSettings: Component = () => {
                                 />
                             </div>
                         </div>
+
+                        <ShowAllAlsaDevicesToggle devices={[...inputDevices(), ...outputDevices()]} />
                     </>
                 )}
             </Show>

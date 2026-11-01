@@ -37,6 +37,9 @@ pub struct CuratedPcm {
     /// ALSA description, used to resolve selections stored by older client
     /// versions (they stored the description instead of an id).
     pub description: String,
+    /// The entry that stands for the system default (`default`, or the
+    /// sound server PCM when `default` is missing). At most one.
+    pub system_default: bool,
 }
 
 /// Sound servers that the `default` PCM may route to, in order of
@@ -158,6 +161,7 @@ pub fn curate_alsa_pcms(pcms: &[AlsaPcm], input: bool) -> Vec<CuratedPcm> {
             pcm_id: pcm.pcm_id.clone(),
             label,
             description: pcm.description.clone(),
+            system_default: true,
         });
     }
     if default_server.is_none() {
@@ -176,6 +180,7 @@ pub fn curate_alsa_pcms(pcms: &[AlsaPcm], input: bool) -> Vec<CuratedPcm> {
                 pcm_id: pcm.pcm_id.clone(),
                 label,
                 description: pcm.description.clone(),
+                system_default: default.is_none(),
             });
         }
     }
@@ -197,6 +202,7 @@ pub fn curate_alsa_pcms(pcms: &[AlsaPcm], input: bool) -> Vec<CuratedPcm> {
                         pcm_id: pcm.pcm_id.clone(),
                         label,
                         description: pcm.description.clone(),
+                        system_default: false,
                     });
                 }
             }
@@ -216,6 +222,7 @@ pub fn curate_alsa_pcms(pcms: &[AlsaPcm], input: bool) -> Vec<CuratedPcm> {
         pcm_id: pcm.pcm_id.clone(),
         label: card_label(&pcm.description),
         description: pcm.description.clone(),
+        system_default: false,
     });
 
     let mut seen_ids = HashSet::new();
@@ -234,6 +241,22 @@ pub fn curate_alsa_pcms(pcms: &[AlsaPcm], input: bool) -> Vec<CuratedPcm> {
         curated.push(entry);
     }
     curated
+}
+
+/// Label of a PCM the curated list hides (shown with "Show all ALSA
+/// devices"): `{card} — {detail} [{pcm}]` when ALSA has a second
+/// description line (e.g. "IEC958 (S/PDIF) Digital Audio Output"), else
+/// `{description} [{pcm}]`. The PCM name keeps labels unique.
+pub fn raw_pcm_label(pcm_id: &str, description: &str, detail: Option<&str>) -> String {
+    let detail = detail.map(str::trim).filter(|d| !d.is_empty());
+    match detail {
+        Some(detail) => {
+            let (card, _) = split_description(description);
+            format!("{card} — {detail} [{pcm_id}]")
+        }
+        None if description.trim().is_empty() || description == pcm_id => format!("[{pcm_id}]"),
+        None => format!("{} [{pcm_id}]", description.trim()),
+    }
 }
 
 /// Find the entry for a stored selection: by id first, else by the
@@ -575,6 +598,55 @@ mod tests {
             Some((false, "iec958:CARD=USB,DEV=0"))
         );
         assert_eq!(resolve(&all, &listed, "Unplugged Headset"), None);
+    }
+
+    #[test]
+    fn exactly_one_system_default() {
+        let curated = curate_alsa_pcms(&pipewire_desktop(), false);
+        let defaults: Vec<_> = curated
+            .iter()
+            .filter(|c| c.system_default)
+            .map(|c| c.pcm_id.as_str())
+            .collect();
+        assert_eq!(defaults, ["default"]);
+
+        // `default` missing: the promoted sound server is the default.
+        let pcms = vec![pcm(
+            "pulse",
+            "PulseAudio Sound Server",
+            DeviceDirection::Duplex,
+        )];
+        assert!(curate_alsa_pcms(&pcms, true)[0].system_default);
+
+        // `default` present but not routed to a server: the extra server
+        // entry is not the default.
+        let pcms = vec![
+            pcm("default", "Default Audio Device", DeviceDirection::Duplex),
+            pcm("pipewire", "PipeWire Sound Server", DeviceDirection::Duplex),
+        ];
+        let flags: Vec<_> = curate_alsa_pcms(&pcms, true)
+            .iter()
+            .map(|c| c.system_default)
+            .collect();
+        assert_eq!(flags, [true, false]);
+    }
+
+    #[test]
+    fn raw_pcm_labels() {
+        assert_eq!(
+            raw_pcm_label(
+                "iec958:CARD=USB,DEV=0",
+                SCARLETT,
+                Some("IEC958 (S/PDIF) Digital Audio Output")
+            ),
+            "Scarlett 2i2 USB — IEC958 (S/PDIF) Digital Audio Output [iec958:CARD=USB,DEV=0]"
+        );
+        assert_eq!(raw_pcm_label("eq", "Equalizer", None), "Equalizer [eq]");
+        assert_eq!(
+            raw_pcm_label("eq", "Equalizer", Some("  ")),
+            "Equalizer [eq]"
+        );
+        assert_eq!(raw_pcm_label("odd", "odd", None), "[odd]");
     }
 
     #[test]
