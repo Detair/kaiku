@@ -7,7 +7,7 @@ const NotFound: Component = () => {
   onCleanup(() => { document.title = "Kaiku"; });
 
   return (
-    <div class="flex items-center justify-center min-h-screen bg-background-primary">
+    <div class="flex items-center justify-center min-h-dvh bg-background-primary">
       <div class="text-center p-8">
         <h1 class="text-6xl font-bold text-accent-primary mb-4">404</h1>
         <p class="text-xl text-text-primary mb-2">{t("auth.notFound.heading")}</p>

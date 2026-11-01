@@ -150,6 +150,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - In the browser, joining a call while muted (or with push-to-talk) and switching to another microphone while muted no longer make you audible.
 - Web app: audio and voice settings (devices, volumes, noise suppression, push-to-talk) are now remembered after a reload, the chosen microphone and speaker are used from the start of a call (also for people who join later), opening Audio settings no longer asks for microphone access until you choose "Show device names", push-to-talk shows that it only works while the Kaiku tab is focused, and the screen share button and speaker picker are hidden in browsers that do not support them.
+- Web app: Kaiku no longer asks for notification permission by itself at login. Notification settings now show whether notifications are allowed, blocked or not supported in your browser and have an "Allow notifications" button; the test button explains when permission is missing.
+- Web app: settings that only work in the desktop app (flash taskbar, activity sharing, auto-activating focus modes) are no longer shown in the browser.
+- In phone browsers the message box and the bottom of the app are no longer hidden behind the browser's address bar.
 - Desktop app on Linux: the microphone and speaker lists show the system default (e.g. "System default (PipeWire)") and each sound card once, instead of a dozen ALSA variants per card, plugins and unused HDMI ports. The chosen device is now remembered by a unique id, so picking one opens exactly that device; a device chosen in an older version is still found. If the chosen microphone or speaker is busy when you join a call, the system default is used instead; choosing a busy device says it is in use.
 - Desktop app: choosing a microphone or speaker in the voice settings and mic test applies the selected device again, and the system default is preselected.
 - Admin Command Center: the CPU value and CPU chart now show data when the server runs without an OTLP exporter (`OBSERVABILITY_ENABLED=false`); CPU is sampled every 15 s by the server itself.
@@ -157,6 +160,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Admin Command Center: the Process Memory chart labels its axis in MiB/GiB without clipping, charts with no data (e.g. Voice Sessions) show a "No data" hint instead of an empty box, and 7d/30d charts of memory, connections and sessions show daily averages instead of daily sums.
 - Admin Command Center: the empty Traces list explains that traces are only captured with `OBSERVABILITY_ENABLED=true`.
 - Switching the theme during first-login onboarding no longer restarts the wizard or overwrites the display name you typed.
+- The desktop app and system tray now show the Kaiku logo instead of a plain turquoise square on Windows, macOS and Linux.
 - The mascot illustrations in the empty states (Friends, direct messages, Discovery, search, unread) no longer show a white box on dark themes.
 - When the server browser is turned off on the instance (`ENABLE_GUILD_DISCOVERY=false`), Create Server no longer offers discovery options (it becomes a single step with a short note), server settings explain why discovery is unavailable, and the Explore button is hidden. `GET /api/settings` now reports `guild_discovery`.
 - Opening a channel with a few unread messages no longer stops scrolling back after about 25 messages: older history loads again.

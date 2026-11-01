@@ -57,7 +57,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
     <Portal>
       <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
         <div
-          class="border border-white/10 rounded-2xl w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100vh-2rem))] flex flex-col shadow-2xl"
+          class="border border-white/10 rounded-2xl w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100dvh-2rem))] flex flex-col shadow-2xl"
           style={{"background-color":"var(--color-surface-base)"}}
         >
           {/* Header */}
