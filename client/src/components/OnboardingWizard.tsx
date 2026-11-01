@@ -16,6 +16,7 @@ import {
   createEffect,
   createComputed,
   on,
+  untrack,
   Show,
   For,
   lazy,
@@ -80,8 +81,14 @@ const OnboardingDialog: Component = () => {
     initialFocus: () => displayNameRef,
   });
 
+  // The dialog is mounted only while the wizard is shown, so initial values
+  // here are the (re)start state. Do not re-initialise from an effect: it would
+  // track preferences/currentUser and restart the wizard whenever either
+  // changes (e.g. picking a theme).
   const [step, setStep] = createSignal(0);
-  const [displayName, setDisplayName] = createSignal("");
+  const [displayName, setDisplayName] = createSignal(
+    untrack(() => currentUser()?.display_name ?? ""),
+  );
   const [inviteCode, setInviteCode] = createSignal("");
   const [joiningInvite, setJoiningInvite] = createSignal(false);
   const [savingName, setSavingName] = createSignal(false);
@@ -95,15 +102,6 @@ const OnboardingDialog: Component = () => {
   const [joinedIds, setJoinedIds] = createSignal<Set<string>>(new Set());
 
   let displayNameRef: HTMLInputElement | undefined;
-
-  // Reset wizard state when re-shown (e.g. re-run from settings).
-  // Also handles initial display name sync when user data loads.
-  createEffect(() => {
-    if (shouldShow()) {
-      setStep(0);
-      setDisplayName(currentUser()?.display_name ?? "");
-    }
-  });
 
   // Sync display name if user data loads asynchronously after wizard is already showing
   createEffect(

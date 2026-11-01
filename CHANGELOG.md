@@ -149,6 +149,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Admin Command Center: Top Routes and Top Errors now list the requests behind the error rate (including 401/403/429 from login and other auth endpoints), grouped by route template such as `/api/guilds/{id}/members`; Top Errors also shows the route. Errors count 4xx and 5xx consistently with the error rate.
 - Admin Command Center: the Process Memory chart labels its axis in MiB/GiB without clipping, charts with no data (e.g. Voice Sessions) show a "No data" hint instead of an empty box, and 7d/30d charts of memory, connections and sessions show daily averages instead of daily sums.
 - Admin Command Center: the empty Traces list explains that traces are only captured with `OBSERVABILITY_ENABLED=true`.
+- Switching the theme during first-login onboarding no longer restarts the wizard or overwrites the display name you typed.
+- The mascot illustrations in the empty states (Friends, direct messages, Discovery, search, unread) no longer show a white box on dark themes.
 - Opening a channel with a few unread messages no longer stops scrolling back after about 25 messages: older history loads again.
 - Picking someone from the @ suggestions now mentions them (and notifies them) even when their display name differs from their username.
 - Pressing Enter sends your message again when the suggestion list has no matches (for example after typing "@" or ":" text that matches nothing).
