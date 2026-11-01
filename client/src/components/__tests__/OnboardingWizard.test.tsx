@@ -23,17 +23,25 @@ vi.mock("@/stores/guilds", () => ({
   joinViaInviteCode: mocks.joinViaInviteCode,
   loadGuilds: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("@/stores/preferences", async (orig) => ({
+vi.mock("@/stores/preferences", async (orig) => {
+  const { createSignal } = await import("solid-js");
+  const [prefs, setPrefs] = createSignal<Record<string, unknown>>({
+    onboarding_completed: false,
+  });
+  return {
   ...(await orig<object>()),
-  preferences: () => ({ onboarding_completed: false }),
+  preferences: prefs,
+  __setPrefs: setPrefs,
   updatePreference: vi.fn(),
   isInitialized: () => true,
-}));
+  };
+});
 vi.mock("@/components/voice/MicTestPanel", () => ({ default: () => null }));
 vi.mock("@/stores/serverFeatures", () => ({ isGuildDiscoveryOff: mocks.isGuildDiscoveryOff }));
 
 import OnboardingWizard from "../OnboardingWizard";
 import { setAuthState } from "@/stores/auth";
+import * as prefsModule from "@/stores/preferences";
 import { t } from "@/i18n";
 
 afterEach(() => {
@@ -98,5 +106,56 @@ describe("OnboardingWizard", () => {
     } finally {
       mocks.isGuildDiscoveryOff.mockReturnValue(false);
     }
+  });
+
+  const setPrefs = (
+    prefsModule as unknown as {
+      __setPrefs: (v: Record<string, unknown>) => void;
+    }
+  ).__setPrefs;
+
+  it("changing theme keeps the current wizard step and typed name", async () => {
+    open();
+    const input = screen.getByTestId("onboarding-display-name") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "Typed Name" } });
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    // Saving the name is async, so wait until the wizard has left step 0.
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 2 }).textContent).not.toBe(
+        t("onboarding.step.profile.title"),
+      ),
+    );
+    const title = screen.getByRole("heading", { level: 2 }).textContent;
+
+    // A theme change replaces the whole preferences object.
+    setPrefs({ onboarding_completed: false, theme: "cosy" });
+
+    expect(screen.getByRole("heading", { level: 2 }).textContent).toBe(title);
+    fireEvent.click(screen.getByRole("button", { name: t("onboarding.nav.back") }));
+    expect((screen.getByTestId("onboarding-display-name") as HTMLInputElement).value).toBe(
+      "Typed Name",
+    );
+  });
+
+  it("wizard still resets when it is shown again after being hidden", async () => {
+    open();
+    fireEvent.input(screen.getByTestId("onboarding-display-name"), {
+      target: { value: "Typed Name" },
+    });
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 2 }).textContent).not.toBe(
+        t("onboarding.step.profile.title"),
+      ),
+    );
+
+    setPrefs({ onboarding_completed: true });
+    expect(screen.queryByTestId("onboarding-next")).toBeNull();
+    setPrefs({ onboarding_completed: false });
+
+    expect(screen.getByRole("heading", { level: 2 }).textContent).toBe(
+      t("onboarding.step.profile.title"),
+    );
+    expect((screen.getByTestId("onboarding-display-name") as HTMLInputElement).value).toBe("");
   });
 });
