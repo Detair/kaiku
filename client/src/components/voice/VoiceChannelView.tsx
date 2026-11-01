@@ -80,7 +80,7 @@ const VoiceChannelView: Component<VoiceChannelViewProps> = (props) => {
           <button
             onClick={handleJoin}
             disabled={isConnecting()}
-            class="px-8 py-3 bg-accent-primary text-on-accent rounded-xl font-semibold text-lg hover:opacity-90 transition-opacity disabled:opacity-50"
+            class="px-8 py-3 bg-accent-primary text-on-accent rounded-xl font-semibold text-lg hover:opacity-90 transition-opacity state-disabled"
           >
             {isConnecting() ? t("voice.status.connecting") : t("voice.channel.join")}
           </button>

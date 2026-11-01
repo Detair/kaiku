@@ -206,7 +206,7 @@ const NotificationOption: Component<{
       onClick={() => setChannelNotificationLevel(props.channelId, props.level)}
       class="w-full text-left p-3 rounded-xl border-2 transition-all duration-200"
       classList={{
-        "border-accent-primary bg-accent-primary/10": isSelected(),
+        "border-accent-primary bg-accent-primary/20": isSelected(),
         "border-white/10 hover:border-accent-primary/50 hover:bg-white/5":
           !isSelected(),
       }}

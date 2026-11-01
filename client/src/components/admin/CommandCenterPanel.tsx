@@ -511,7 +511,7 @@ const CommandCenterPanel: Component = () => {
             </span>
             <button
               onClick={handleRefresh}
-              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors state-disabled-quiet"
               disabled={adminState.isObsSummaryLoading}
             >
               <RefreshCw
@@ -915,7 +915,7 @@ const CommandCenterPanel: Component = () => {
                 placeholder="Domain..."
                 value={logsDomain()}
                 onInput={(e) => handleLogsDomainChange(e.currentTarget.value)}
-                class="w-24 px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-muted"
+                class="w-24 px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-placeholder"
               />
               <div class="relative">
                 <Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-text-secondary" />
@@ -926,7 +926,7 @@ const CommandCenterPanel: Component = () => {
                   onInput={(e) =>
                     handleLogsSearchChange(e.currentTarget.value)
                   }
-                  class="w-40 pl-6 pr-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-muted"
+                  class="w-40 pl-6 pr-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-placeholder"
                 />
               </div>
             </div>
@@ -977,7 +977,7 @@ const CommandCenterPanel: Component = () => {
                   <button
                     onClick={handleLoadMoreLogs}
                     disabled={adminState.isObsLogsLoading}
-                    class="flex items-center gap-1.5 mx-auto px-4 py-1.5 text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-white/5 rounded-lg transition-colors"
+                    class="flex items-center gap-1.5 mx-auto px-4 py-1.5 text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-white/5 rounded-lg transition-colors state-disabled-quiet"
                   >
                     <ChevronDown class="w-3 h-3" />
                     {adminState.isObsLogsLoading
@@ -1013,7 +1013,7 @@ const CommandCenterPanel: Component = () => {
                 onInput={(e) =>
                   handleTracesDomainChange(e.currentTarget.value)
                 }
-                class="w-24 px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-muted"
+                class="w-24 px-2 py-1 text-xs rounded-md bg-white/5 border border-white/10 text-text-primary placeholder:text-text-placeholder"
               />
             </div>
           </div>
@@ -1091,7 +1091,7 @@ const CommandCenterPanel: Component = () => {
                   <button
                     onClick={handleLoadMoreTraces}
                     disabled={adminState.isObsTracesLoading}
-                    class="flex items-center gap-1.5 mx-auto px-4 py-1.5 text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-white/5 rounded-lg transition-colors"
+                    class="flex items-center gap-1.5 mx-auto px-4 py-1.5 text-xs font-medium text-text-secondary hover:text-text-primary hover:bg-white/5 rounded-lg transition-colors state-disabled-quiet"
                   >
                     <ChevronDown class="w-3 h-3" />
                     {adminState.isObsTracesLoading

@@ -62,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Switches, disabled buttons and placeholders are easier to read in every theme: switches always show their knob, sit left with an outlined track when off and right on the accent colour with a check mark when on; disabled buttons keep a readable label with a dashed outline instead of fading into the background, and say why they are disabled (for example "Enter a channel name to continue."); placeholders are dimmer than typed text and read as examples ("e.g. voice-lounge"). Selected cards and options are marked more clearly, keyboard focus is visible on every button, and the Solarized themes reach the documented text contrast.
+- The banner picker when creating a server is a themed "Choose image" button with the file name instead of the browser's unstyled file control.
 - Desktop auto-updates are signed with a new updater key. Builds from before 1.0.0-rc.1 never shipped the previous key in a release, so no installed app is affected.
 - Desktop sign-in with an identity provider needs a server of the same version: update the server and the desktop app together.
 - The desktop app hides forum, announcement, event and screening features when the server has them turned off.
@@ -154,6 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Admin Command Center: the empty Traces list explains that traces are only captured with `OBSERVABILITY_ENABLED=true`.
 - Switching the theme during first-login onboarding no longer restarts the wizard or overwrites the display name you typed.
 - The mascot illustrations in the empty states (Friends, direct messages, Discovery, search, unread) no longer show a white box on dark themes.
+- When the server browser is turned off on the instance (`ENABLE_GUILD_DISCOVERY=false`), Create Server no longer offers discovery options (it becomes a single step with a short note), server settings explain why discovery is unavailable, and the Explore button is hidden. `GET /api/settings` now reports `guild_discovery`.
 - Opening a channel with a few unread messages no longer stops scrolling back after about 25 messages: older history loads again.
 - Picking someone from the @ suggestions now mentions them (and notifies them) even when their display name differs from their username.
 - Pressing Enter sends your message again when the suggestion list has no matches (for example after typing "@" or ":" text that matches nothing).

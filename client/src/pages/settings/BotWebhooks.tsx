@@ -306,7 +306,7 @@ const BotWebhooks: Component = () => {
                       <Eye size={16} />
                     </button>
                     <button
-                      class="p-2 rounded hover:bg-[var(--bg-tertiary)] transition-colors text-[var(--text-secondary)]"
+                      class="p-2 rounded hover:bg-[var(--bg-tertiary)] transition-colors text-[var(--text-secondary)] state-disabled-quiet"
                       title="Test Ping"
                       disabled={testingId() === wh.id}
                       onClick={() => handleTest(wh.id)}

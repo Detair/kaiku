@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   discoverGuilds: vi.fn(),
   showToast: vi.fn(),
   joinViaInviteCode: vi.fn(),
+  isGuildDiscoveryOff: vi.fn(() => false),
 }));
 
 vi.mock("@/lib/tauri", () => ({
@@ -36,6 +37,7 @@ vi.mock("@/stores/preferences", async (orig) => {
   };
 });
 vi.mock("@/components/voice/MicTestPanel", () => ({ default: () => null }));
+vi.mock("@/stores/serverFeatures", () => ({ isGuildDiscoveryOff: mocks.isGuildDiscoveryOff }));
 
 import OnboardingWizard from "../OnboardingWizard";
 import { setAuthState } from "@/stores/auth";
@@ -90,6 +92,20 @@ describe("OnboardingWizard", () => {
     fireEvent.input(input, { target: { value: "https://kaiku.example/invite/AbCd1234" } });
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(mocks.joinViaInviteCode).toHaveBeenCalledWith("AbCd1234"));
+  });
+
+  it("does not query discovery when the instance has it turned off", async () => {
+    mocks.isGuildDiscoveryOff.mockReturnValue(true);
+    try {
+      open();
+      fireEvent.click(screen.getByTestId("onboarding-next"));
+      fireEvent.click(screen.getByTestId("onboarding-next"));
+      fireEvent.click(screen.getByTestId("onboarding-next"));
+      expect(await screen.findByText(t("onboarding.join.discoveryDisabled"))).toBeTruthy();
+      expect(mocks.discoverGuilds).not.toHaveBeenCalled();
+    } finally {
+      mocks.isGuildDiscoveryOff.mockReturnValue(false);
+    }
   });
 
   const setPrefs = (

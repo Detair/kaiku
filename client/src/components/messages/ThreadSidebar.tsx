@@ -192,12 +192,12 @@ const ThreadSidebar: Component<ThreadSidebarProps> = (props) => {
               onKeyDown={handleKeyDown}
               placeholder="Reply in thread..."
               rows={1}
-              class="flex-1 bg-transparent text-text-primary text-sm placeholder-text-secondary/50 resize-none outline-none max-h-[120px]"
+              class="flex-1 bg-transparent text-text-primary text-sm placeholder-text-placeholder resize-none outline-none max-h-[120px]"
             />
             <button
               onClick={handleSend}
               disabled={!replyContent().trim() || sending()}
-              class="w-8 h-8 flex items-center justify-center rounded-lg text-text-secondary hover:text-accent-primary hover:bg-white/5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+              class="w-8 h-8 flex items-center justify-center rounded-lg text-text-secondary hover:text-accent-primary hover:bg-white/5 transition-colors flex-shrink-0 state-disabled-quiet"
               title="Send reply"
               aria-label="Send reply"
             >
