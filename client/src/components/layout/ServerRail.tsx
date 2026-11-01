@@ -27,6 +27,7 @@ import {
   loadGuilds,
 } from "@/stores/guilds";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
+import { isGuildDiscoveryOff } from "@/stores/serverFeatures";
 
 const CreateGuildModal = lazy(
   () => import("@/components/guilds/CreateGuildModal"),
@@ -187,7 +188,9 @@ const ServerRail: Component<ServerRailProps> = (props) => {
       {/* Separator before action buttons */}
       <div class={separatorClass()} />
 
-      {/* Explore / Discover Servers Button */}
+      {/* Explore / Discover Servers Button (hidden when the instance has the
+          server browser turned off) */}
+      <Show when={!isGuildDiscoveryOff()}>
       <div class="relative">
         {/* Pill Indicator */}
         <Show when={isDiscoveryActive()}>
@@ -212,6 +215,7 @@ const ServerRail: Component<ServerRailProps> = (props) => {
           <Compass class="w-5 h-5 text-accent-primary" />
         </button>
       </div>
+      </Show>
 
       {/* Add Server Button */}
       <div class="relative">

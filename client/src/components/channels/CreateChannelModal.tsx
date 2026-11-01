@@ -4,8 +4,8 @@
  * Simple form for channel creation with name and type selection.
  */
 
-import { Component, createSignal, Show } from "solid-js";
-import { X, Hash, Mic, MessagesSquare, Megaphone } from "lucide-solid";
+import { Component, JSX, createSignal, Show } from "solid-js";
+import { X, Hash, Mic, MessagesSquare, Megaphone, Check } from "lucide-solid";
 import { createChannel } from "@/stores/channels";
 import { getCategory } from "@/stores/categories";
 import { Portal } from "solid-js/web";
@@ -13,6 +13,53 @@ import { showToast } from "@/components/ui/Toast";
 import { createDialog } from "@/lib/a11y/dialog";
 import { t } from "@/i18n";
 import { isFeatureEnabled } from "@/stores/serverFeatures";
+import Button from "@/components/ui/Button";
+
+/**
+ * One channel-type option. Selected: accent frame, tinted fill and a check
+ * badge (so the choice is not shown by a thin border alone). Locked: dashed,
+ * readable "unavailable" style instead of fading out.
+ */
+const TypeCard: Component<{
+  selected: boolean;
+  locked?: boolean;
+  onSelect: () => void;
+  icon: JSX.Element;
+  title: string;
+  subtitle: string;
+}> = (props) => (
+  <button
+    type="button"
+    onClick={() => !props.locked && props.onSelect()}
+    disabled={props.locked}
+    aria-pressed={props.selected}
+    class="relative flex-1 flex items-center gap-3 p-4 rounded-xl border-2 transition-all text-left"
+    classList={{
+      "border-accent-primary bg-accent-primary/20": props.selected,
+      "border-border-solid hover:border-text-secondary": !props.selected && !props.locked,
+      "state-unavailable": !!props.locked,
+    }}
+  >
+    <Show when={props.selected}>
+      <span
+        class="absolute top-2 right-2 w-5 h-5 rounded-full flex items-center justify-center bg-accent-primary text-on-accent"
+        aria-hidden="true"
+      >
+        <Check size={12} stroke-width={3.5} />
+      </span>
+    </Show>
+    <div
+      class="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0"
+      style={{ "background-color": "var(--color-surface-layer2)" }}
+    >
+      {props.icon}
+    </div>
+    <div>
+      <div class="font-semibold text-text-primary">{props.title}</div>
+      <div class="text-xs text-text-secondary">{props.subtitle}</div>
+    </div>
+  </button>
+);
 
 interface CreateChannelModalProps {
   guildId: string;
@@ -119,113 +166,39 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                   Channel Type
                 </label>
                 <div class="flex gap-3">
-                  <button
-                    type="button"
-                    onClick={() => !isTypeLocked() && setChannelType("text")}
-                    disabled={isTypeLocked() && channelType() !== "text"}
-                    class="flex-1 flex items-center gap-3 p-4 rounded-xl border-2 transition-all"
-                    classList={{
-                      "border-accent-primary bg-accent-primary/10":
-                        channelType() === "text",
-                      "border-white/10 hover:border-white/20":
-                        channelType() !== "text" && !isTypeLocked(),
-                      "border-white/5 opacity-40 cursor-not-allowed":
-                        isTypeLocked() && channelType() !== "text",
-                    }}
-                  >
-                    <div
-                      class="w-10 h-10 rounded-lg flex items-center justify-center"
-                      style={{"background-color":"var(--color-surface-layer2)"}}
-                    >
-                      <Hash size={20} class="text-text-primary" />
-                    </div>
-                    <div class="text-left">
-                      <div class="font-semibold text-text-primary">Text</div>
-                      <div class="text-xs text-text-secondary">
-                        Send messages
-                      </div>
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => !isTypeLocked() && setChannelType("voice")}
-                    disabled={isTypeLocked() && channelType() !== "voice"}
-                    class="flex-1 flex items-center gap-3 p-4 rounded-xl border-2 transition-all"
-                    classList={{
-                      "border-accent-primary bg-accent-primary/10":
-                        channelType() === "voice",
-                      "border-white/10 hover:border-white/20":
-                        channelType() !== "voice" && !isTypeLocked(),
-                      "border-white/5 opacity-40 cursor-not-allowed":
-                        isTypeLocked() && channelType() !== "voice",
-                    }}
-                  >
-                    <div
-                      class="w-10 h-10 rounded-lg flex items-center justify-center"
-                      style={{"background-color":"var(--color-surface-layer2)"}}
-                    >
-                      <Mic size={20} class="text-text-primary" />
-                    </div>
-                    <div class="text-left">
-                      <div class="font-semibold text-text-primary">Voice</div>
-                      <div class="text-xs text-text-secondary">
-                        Talk with others
-                      </div>
-                    </div>
-                  </button>
+                  <TypeCard
+                    selected={channelType() === "text"}
+                    locked={isTypeLocked() && channelType() !== "text"}
+                    onSelect={() => setChannelType("text")}
+                    icon={<Hash size={20} class="text-text-primary" />}
+                    title="Text"
+                    subtitle="Send messages"
+                  />
+                  <TypeCard
+                    selected={channelType() === "voice"}
+                    locked={isTypeLocked() && channelType() !== "voice"}
+                    onSelect={() => setChannelType("voice")}
+                    icon={<Mic size={20} class="text-text-primary" />}
+                    title="Voice"
+                    subtitle="Talk with others"
+                  />
                   <Show when={!isTypeLocked() && isFeatureEnabled("forum_channels")}>
-                    <button
-                      type="button"
-                      onClick={() => setChannelType("forum")}
-                      class="flex-1 flex items-center gap-3 p-4 rounded-xl border-2 transition-all"
-                      classList={{
-                        "border-accent-primary bg-accent-primary/10":
-                          channelType() === "forum",
-                        "border-white/10 hover:border-white/20":
-                          channelType() !== "forum",
-                      }}
-                    >
-                      <div
-                        class="w-10 h-10 rounded-lg flex items-center justify-center"
-                        style={{ "background-color": "var(--color-surface-layer2)" }}
-                      >
-                        <MessagesSquare size={20} class="text-text-primary" />
-                      </div>
-                      <div class="text-left">
-                        <div class="font-semibold text-text-primary">Forum</div>
-                        <div class="text-xs text-text-secondary">
-                          Organized posts
-                        </div>
-                      </div>
-                    </button>
+                    <TypeCard
+                      selected={channelType() === "forum"}
+                      onSelect={() => setChannelType("forum")}
+                      icon={<MessagesSquare size={20} class="text-text-primary" />}
+                      title="Forum"
+                      subtitle="Organized posts"
+                    />
                   </Show>
                   <Show when={!isTypeLocked() && isFeatureEnabled("announcement_channels")}>
-                    <button
-                      type="button"
-                      onClick={() => setChannelType("announcement")}
-                      class="flex-1 flex items-center gap-3 p-4 rounded-xl border-2 transition-all"
-                      classList={{
-                        "border-accent-primary bg-accent-primary/10":
-                          channelType() === "announcement",
-                        "border-white/10 hover:border-white/20":
-                          channelType() !== "announcement",
-                      }}
-                    >
-                      <div
-                        class="w-10 h-10 rounded-lg flex items-center justify-center"
-                        style={{ "background-color": "var(--color-surface-layer2)" }}
-                      >
-                        <Megaphone size={20} class="text-text-primary" />
-                      </div>
-                      <div class="text-left">
-                        <div class="font-semibold text-text-primary">
-                          Announcement
-                        </div>
-                        <div class="text-xs text-text-secondary">
-                          Broadcast + follow
-                        </div>
-                      </div>
-                    </button>
+                    <TypeCard
+                      selected={channelType() === "announcement"}
+                      onSelect={() => setChannelType("announcement")}
+                      icon={<Megaphone size={20} class="text-text-primary" />}
+                      title="Announcement"
+                      subtitle="Broadcast + follow"
+                    />
                   </Show>
                 </div>
               </div>
@@ -255,9 +228,11 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
                       )
                     }
                     placeholder={
-                      channelType() === "text" ? "general-chat" : "voice-lounge"
+                      channelType() === "voice"
+                        ? t("channels.create.namePlaceholderVoice")
+                        : t("channels.create.namePlaceholderText")
                     }
-                    class="w-full pl-11 pr-4 py-3 border border-white/10 rounded-lg text-text-input placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
+                    class="w-full pl-11 pr-4 py-3 border border-white/10 rounded-lg text-text-input placeholder:text-text-placeholder focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
                     style={{"background-color":"var(--color-surface-layer2)"}}
                     maxLength={64}
                     disabled={isCreating()}
@@ -288,20 +263,20 @@ const CreateChannelModal: Component<CreateChannelModalProps> = (props) => {
             <button
               type="button"
               onClick={props.onClose}
-              class="px-4 py-2 text-text-primary hover:bg-surface-layer2 rounded-lg transition-colors"
+              class="px-4 py-2 text-text-primary hover:bg-surface-layer2 rounded-lg transition-colors state-disabled-quiet"
               disabled={isCreating()}
             >
               Cancel
             </button>
-            <button
+            <Button
               type="submit"
               onClick={handleSubmit}
               data-testid="create-channel-submit"
-              class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-on-accent font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={isCreating() || !name().trim()}
+              disabledReason={!name().trim() && t("channels.create.nameRequired")}
             >
               {isCreating() ? "Creating..." : "Create Channel"}
-            </button>
+            </Button>
           </div>
         </div>
       </div>
