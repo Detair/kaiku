@@ -248,7 +248,7 @@ export default function PageEditor(props: PageEditorProps) {
             onClick={handleSave}
             data-testid="page-editor-save"
             disabled={isSaving() || isContentTooLarge()}
-            class="px-4 py-1.5 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-md flex items-center gap-2 transition-colors"
+            class="px-4 py-1.5 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-500 rounded-md flex items-center gap-2 transition-colors state-disabled"
           >
             <Save class="w-4 h-4" />
             {isSaving() ? "Saving..." : "Save"}
@@ -277,7 +277,7 @@ export default function PageEditor(props: PageEditorProps) {
             onInput={(e) => setTitle(e.currentTarget.value)}
             placeholder="Page title"
             maxLength={100}
-            class="w-full px-3 py-2 bg-zinc-800 border border-zinc-600 rounded-md text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+            class="w-full px-3 py-2 bg-zinc-800 border border-zinc-600 rounded-md text-white placeholder-text-placeholder focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
           />
         </div>
         <div>
@@ -301,7 +301,7 @@ export default function PageEditor(props: PageEditorProps) {
             }}
             placeholder="page-slug"
             maxLength={100}
-            class="w-full px-3 py-2 bg-zinc-800 border border-zinc-600 rounded-md text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent font-mono text-sm"
+            class="w-full px-3 py-2 bg-zinc-800 border border-zinc-600 rounded-md text-white placeholder-text-placeholder focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent font-mono text-sm"
           />
         </div>
         <Show when={props.categories && props.categories.length > 0}>
@@ -390,7 +390,7 @@ export default function PageEditor(props: PageEditorProps) {
             value={content()}
             onInput={(e) => setContent(e.currentTarget.value)}
             placeholder="Write your content in Markdown..."
-            class="flex-1 w-full p-4 bg-zinc-900 text-white placeholder-zinc-500 resize-none focus:outline-none font-mono text-sm leading-relaxed"
+            class="flex-1 w-full p-4 bg-zinc-900 text-white placeholder-text-placeholder resize-none focus:outline-none font-mono text-sm leading-relaxed"
             spellcheck={false}
           />
           <div class="p-2 border-t border-zinc-700">

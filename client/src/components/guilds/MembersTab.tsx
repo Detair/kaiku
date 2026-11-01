@@ -145,7 +145,7 @@ const MembersTab: Component<MembersTabProps> = (props) => {
           value={search()}
           onInput={(e) => setSearch(e.currentTarget.value)}
           placeholder="Search members..."
-          class="w-full pl-10 pr-4 py-2 rounded-lg border border-white/10 text-text-primary placeholder-text-secondary"
+          class="w-full pl-10 pr-4 py-2 rounded-lg border border-white/10 text-text-primary placeholder-text-placeholder"
           style={{"background-color":"var(--color-surface-layer1)"}}
         />
       </div>

@@ -51,4 +51,7 @@ export const admin = {
   "admin.reauth.error.popupBlocked": "The sign-in window was blocked. Allow pop-ups for this page and try again.",
   "admin.reauth.codeUsedHint": "That code didn't work. If you just used it, wait for the next code and try again.",
   "admin.createAccount.invalid": "Check the username and the chosen servers, then try again.",
+  "admin.commandCenter.trend.noData": "No data in this time range",
+  "admin.commandCenter.topErrors.typeAndRoute": "Error / Route",
+  "admin.commandCenter.traces.needsOtlp": "Traces are only captured when the server runs with OBSERVABILITY_ENABLED=true.",
 } as const satisfies Record<`admin.${string}`, string>;

@@ -16,6 +16,7 @@ import {
   createEffect,
   createComputed,
   on,
+  untrack,
   Show,
   For,
   lazy,
@@ -49,6 +50,7 @@ import { showToast } from "@/components/ui/Toast";
 import type { DiscoverableGuild } from "@/lib/types";
 import { discoverGuilds, joinDiscoverable } from "@/lib/tauri";
 import { createDialog } from "@/lib/a11y/dialog";
+import { isGuildDiscoveryOff } from "@/stores/serverFeatures";
 import { t } from "@/i18n";
 import { formatNumber } from "@/i18n/format";
 
@@ -80,8 +82,14 @@ const OnboardingDialog: Component = () => {
     initialFocus: () => displayNameRef,
   });
 
+  // The dialog is mounted only while the wizard is shown, so initial values
+  // here are the (re)start state. Do not re-initialise from an effect: it would
+  // track preferences/currentUser and restart the wizard whenever either
+  // changes (e.g. picking a theme).
   const [step, setStep] = createSignal(0);
-  const [displayName, setDisplayName] = createSignal("");
+  const [displayName, setDisplayName] = createSignal(
+    untrack(() => currentUser()?.display_name ?? ""),
+  );
   const [inviteCode, setInviteCode] = createSignal("");
   const [joiningInvite, setJoiningInvite] = createSignal(false);
   const [savingName, setSavingName] = createSignal(false);
@@ -95,15 +103,6 @@ const OnboardingDialog: Component = () => {
   const [joinedIds, setJoinedIds] = createSignal<Set<string>>(new Set());
 
   let displayNameRef: HTMLInputElement | undefined;
-
-  // Reset wizard state when re-shown (e.g. re-run from settings).
-  // Also handles initial display name sync when user data loads.
-  createEffect(() => {
-    if (shouldShow()) {
-      setStep(0);
-      setDisplayName(currentUser()?.display_name ?? "");
-    }
-  });
 
   // Sync display name if user data loads asynchronously after wizard is already showing
   createEffect(
@@ -192,6 +191,15 @@ const OnboardingDialog: Component = () => {
   };
 
   const loadDiscoveryGuilds = async () => {
+    // The instance has the server browser off: show the same "discovery is
+    // turned off" note as the server's DISCOVERY_DISABLED error, no request.
+    if (isGuildDiscoveryOff()) {
+      setDiscoveryGuilds([]);
+      setDiscoveryLoading(false);
+      setDiscoveryPermanent(true);
+      setDiscoveryError(true);
+      return;
+    }
     setDiscoveryLoading(true);
     setDiscoveryError(false);
     setDiscoveryPermanent(false);
@@ -348,7 +356,7 @@ const OnboardingDialog: Component = () => {
                 onInput={(e) => setDisplayName(e.currentTarget.value)}
                 placeholder={t("onboarding.step.profile.displayNamePlaceholder")}
                 maxLength={32}
-                class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
+                class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary/50"
               />
               <p class="text-xs text-text-secondary mt-2">
                 {t("onboarding.step.profile.displayNameHint")}
@@ -372,11 +380,12 @@ const OnboardingDialog: Component = () => {
                 {(th: ThemeDefinition) => (
                   <button
                     onClick={() => setTheme(th.id)}
+                    aria-pressed={theme() === th.id}
                     class="text-left p-3 rounded-xl border-2 transition-all"
                     classList={{
-                      "border-accent-primary bg-accent-primary/10":
+                      "border-accent-primary bg-accent-primary/20":
                         theme() === th.id,
-                      "border-white/10 hover:border-accent-primary/50":
+                      "border-border-solid hover:border-accent-primary/50":
                         theme() !== th.id,
                     }}
                   >
@@ -615,7 +624,7 @@ const OnboardingDialog: Component = () => {
                   value={inviteCode()}
                   onInput={(e) => setInviteCode(e.currentTarget.value)}
                   placeholder={t("onboarding.join.invitePlaceholder")}
-                  class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
+                  class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary/50"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleJoinInvite();
                   }}
@@ -623,7 +632,7 @@ const OnboardingDialog: Component = () => {
                 <button
                   onClick={handleJoinInvite}
                   disabled={!inviteCode().trim() || joiningInvite()}
-                  class="w-full py-2.5 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                  class="w-full py-2.5 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover transition-colors state-disabled"
                 >
                   <Show
                     when={joiningInvite()}
@@ -701,7 +710,7 @@ const OnboardingDialog: Component = () => {
                 }
                 data-testid="onboarding-next"
                 disabled={savingName()}
-                class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover transition-colors state-disabled"
               >
                 <Show
                   when={!savingName()}

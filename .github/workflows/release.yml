@@ -44,7 +44,6 @@ jobs:
       is_prerelease: ${{ steps.version.outputs.is_prerelease }}
       android_version_code: ${{ steps.version.outputs.android_version_code }}
       publish: ${{ steps.mode.outputs.publish }}
-      release_notes: ${{ steps.release_notes.outputs.release_notes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,18 +90,18 @@ jobs:
             exit 1
           fi
 
+      # Dry runs check the notes too; publish-release regenerates them from the
+      # same tag. GitHub caps a release body at 125,000 characters, and an
+      # environment variable at 128 KiB, so the notes are trimmed to 100,000
+      # (room for the installation section) and passed as a file.
       - name: Generate standardized release notes
-        id: release_notes
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          python3 scripts/generate_release_notes.py --version "$VERSION" --output "$RUNNER_TEMP/release-notes.md"
-          delim="NOTES_$(openssl rand -hex 8)"
-          {
-            echo "release_notes<<$delim"
-            cat "$RUNNER_TEMP/release-notes.md"
-            echo "$delim"
-          } >> "$GITHUB_OUTPUT"
+          python3 scripts/generate_release_notes.py --version "$VERSION" --max-chars 100000 \
+            --changelog-url "https://github.com/Detair/kaiku/blob/$TAG/CHANGELOG.md" \
+            --output "$RUNNER_TEMP/release-notes.md"
 
   # ===========================================================================
   # Build Tauri Client (Multi-platform)
@@ -639,6 +638,45 @@ jobs:
           python3 scripts/verify_updater_signatures.py --manifest release-assets/latest.json \
             --assets-dir release-assets --mode publish
 
+      # Written to a file: an inline body becomes one environment variable,
+      # which fails above 128 KiB ("Argument list too long").
+      - name: Compose release body
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          python3 scripts/generate_release_notes.py --version "$VERSION" --max-chars 100000 \
+            --changelog-url "https://github.com/Detair/kaiku/blob/$TAG/CHANGELOG.md" \
+            --output "$RUNNER_TEMP/release-body.md"
+          # Quoted heredoc: the backticks below are Markdown, not commands.
+          cat >> "$RUNNER_TEMP/release-body.md" <<'EOF'
+
+          ## Installation
+
+          ### Linux
+          - **Debian/Ubuntu**: Download the `.deb` file and install with `sudo dpkg -i Kaiku_*_amd64.deb`
+          - **Other distros**: Download the `.AppImage` file, make it executable, and run it
+          - Linux: use the AppImage for auto-updates
+
+          ### Windows
+          - **Installer**: Download the `-setup.exe` file for automatic installation
+
+          ### macOS
+          - Download the `.dmg` file for your architecture (Intel or Apple Silicon)
+          - Open the DMG and drag the app to Applications
+
+          ### Android
+          - Download `Kaiku-${{ needs.prepare-release.outputs.version }}.apk` and allow installs from this source once. Updates install over the old version.
+
+          ### Verify checksums
+          ```bash
+          sha256sum -c checksums.txt
+          ```
+
+          ## Server Deployment
+          Server image: `${{ env.SERVER_IMAGE }}:${{ needs.prepare-release.outputs.version }}`
+          EOF
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         env:
@@ -646,33 +684,7 @@ jobs:
         with:
           tag_name: ${{ needs.prepare-release.outputs.tag }}
           name: Release ${{ needs.prepare-release.outputs.tag }}
-          body: |
-            ${{ needs.prepare-release.outputs.release_notes }}
-
-            ## Installation
-
-            ### Linux
-            - **Debian/Ubuntu**: Download the `.deb` file and install with `sudo dpkg -i Kaiku_*_amd64.deb`
-            - **Other distros**: Download the `.AppImage` file, make it executable, and run it
-            - Linux: use the AppImage for auto-updates
-
-            ### Windows
-            - **Installer**: Download the `-setup.exe` file for automatic installation
-
-            ### macOS
-            - Download the `.dmg` file for your architecture (Intel or Apple Silicon)
-            - Open the DMG and drag the app to Applications
-
-            ### Android
-            - Download `Kaiku-${{ needs.prepare-release.outputs.version }}.apk` and allow installs from this source once. Updates install over the old version.
-
-            ### Verify checksums
-            ```bash
-            sha256sum -c checksums.txt
-            ```
-
-            ## Server Deployment
-            Server image: `${{ env.SERVER_IMAGE }}:${{ needs.prepare-release.outputs.version }}`
+          body_path: ${{ runner.temp }}/release-body.md
           draft: true
           prerelease: ${{ needs.prepare-release.outputs.is_prerelease == 'true' }}
           files: |
