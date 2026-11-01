@@ -77,6 +77,21 @@ class FitReleaseNotesTest(unittest.TestCase):
         notes = fit_release_notes(self.HEADER, self.items(), 20_000, self.URL)
         self.assertLess(notes.index("- added entry 0 "), notes.index("- added entry 1 "))
 
+    def test_small_section_keeps_its_entry(self):
+        items = self.items()
+        items["Security"] = ["- the only security entry"]
+        notes = fit_release_notes(self.HEADER, items, 20_000, self.URL)
+        self.assertIn("- the only security entry\n", notes)
+        self.assertLessEqual(len(notes), 20_000)
+
+    def test_huge_entry_counts_stay_within_budget(self):
+        items = {section: ["- x"] * 100_000 for section in SECTIONS}
+        for max_chars in (1_000, 5_000):
+            with self.subTest(max_chars=max_chars):
+                notes = fit_release_notes(self.HEADER, items, max_chars, self.URL)
+                self.assertLessEqual(len(notes), max_chars)
+                self.assertEqual(notes.count("more, see the [full changelog]"), len(SECTIONS))
+
     def test_budget_below_header_is_rejected(self):
         with self.assertRaises(ValueError):
             fit_release_notes(self.HEADER, self.items(), 100, self.URL)
