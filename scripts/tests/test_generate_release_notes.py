@@ -10,7 +10,7 @@ from pathlib import Path
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from generate_release_notes import extract_section  # noqa: E402
+from generate_release_notes import SECTIONS, extract_section, fit_release_notes  # noqa: E402
 
 CHANGELOG = """# Changelog
 
@@ -46,8 +46,44 @@ class ExtractSectionTest(unittest.TestCase):
         self.assertIsNone(extract_section(CHANGELOG, "1.0"))
 
 
+class FitReleaseNotesTest(unittest.TestCase):
+    URL = "https://example.invalid/CHANGELOG.md"
+    HEADER = "## Milestone\n- Version: 1.0.0-rc.1\n\n"
+
+    def items(self) -> dict[str, list[str]]:
+        items = {section: [] for section in SECTIONS}
+        items["Added"] = [f"- added entry {i} " + "a" * 200 for i in range(400)]
+        items["Security"] = [f"- security entry {i} " + "s" * 200 for i in range(100)]
+        return items
+
+    def test_trimmed_notes_stay_within_budget(self):
+        notes = fit_release_notes(self.HEADER, self.items(), 20_000, self.URL)
+        self.assertLessEqual(len(notes), 20_000)
+        self.assertTrue(notes.startswith(self.HEADER))
+
+    def test_every_section_keeps_its_heading_and_a_share(self):
+        notes = fit_release_notes(self.HEADER, self.items(), 20_000, self.URL)
+        for section in SECTIONS:
+            self.assertIn(f"### {section}\n", notes)
+        self.assertIn("- security entry 0 ", notes)
+        self.assertIn("- None", notes)
+
+    def test_trimmed_section_points_to_full_changelog(self):
+        notes = fit_release_notes(self.HEADER, self.items(), 20_000, self.URL)
+        self.assertIn(f"more, see the [full changelog]({self.URL})", notes)
+        self.assertNotIn("- added entry 399 ", notes)
+
+    def test_entries_keep_their_order(self):
+        notes = fit_release_notes(self.HEADER, self.items(), 20_000, self.URL)
+        self.assertLess(notes.index("- added entry 0 "), notes.index("- added entry 1 "))
+
+    def test_budget_below_header_is_rejected(self):
+        with self.assertRaises(ValueError):
+            fit_release_notes(self.HEADER, self.items(), 100, self.URL)
+
+
 class MainTest(unittest.TestCase):
-    def run_main(self, version: str) -> str:
+    def run_main(self, version: str, *extra: str) -> str:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             (tmp_path / "CHANGELOG.md").write_text(CHANGELOG, encoding="utf-8")
@@ -60,6 +96,7 @@ class MainTest(unittest.TestCase):
                     "--changelog", str(tmp_path / "CHANGELOG.md"),
                     "--roadmap", str(tmp_path / "roadmap.md"),
                     "--output", str(out),
+                    *extra,
                 ],
                 capture_output=True,
                 text=True,
@@ -78,6 +115,12 @@ class MainTest(unittest.TestCase):
         notes = self.run_main("v1.1.0-rc.1")
         self.assertIn("unreleased thing", notes)
         self.assertNotIn("- x", notes)
+
+    def test_main_leaves_notes_untouched_within_max_chars(self):
+        self.assertEqual(
+            self.run_main("v1.1.0-rc.1"),
+            self.run_main("v1.1.0-rc.1", "--max-chars", "100000"),
+        )
 
 
 if __name__ == "__main__":

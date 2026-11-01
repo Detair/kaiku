@@ -107,6 +107,54 @@ def render_release_notes(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def fit_release_notes(
+    header: str,
+    section_items: dict[str, list[str]],
+    max_chars: int,
+    changelog_url: str,
+) -> str:
+    """Render the sections within ``max_chars``, dropping trailing entries.
+
+    GitHub rejects release bodies above 125,000 characters, and a release
+    candidate's notes come from the whole ``[Unreleased]`` section. Each
+    section gets a share of the budget proportional to its size and keeps
+    its entries in order until that share runs out, so no category (above
+    all Security) disappears; a trimmed section ends with a pointer to the
+    full changelog.
+    """
+    budget = max_chars - len(header)
+    more_line = "- ... {n} more, see the [full changelog]({url})"
+    # Every section always shows its heading and, when trimmed, the pointer.
+    reserve = sum(
+        len(f"### {section}\n") + len(more_line.format(n=99999, url=changelog_url)) + 2
+        for section in SECTIONS
+    )
+    if budget - reserve <= 0:
+        raise ValueError(f"--max-chars {max_chars} is too small for the notes header")
+    available = budget - reserve
+    total = sum(len(e) + 1 for entries in section_items.values() for e in entries)
+
+    lines: list[str] = []
+    for section in SECTIONS:
+        lines.append(f"### {section}")
+        entries = section_items.get(section, [])
+        size = sum(len(e) + 1 for e in entries)
+        remaining = size if total <= available else size * available // total
+        kept = 0
+        for entry in entries:
+            if len(entry) + 1 > remaining:
+                break
+            lines.append(entry)
+            remaining -= len(entry) + 1
+            kept += 1
+        if not entries:
+            lines.append("- None")
+        elif kept < len(entries):
+            lines.append(more_line.format(n=len(entries) - kept, url=changelog_url))
+        lines.append("")
+    return header + "\n".join(lines).rstrip() + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -123,6 +171,16 @@ def main() -> int:
         help="Path to roadmap file",
     )
     parser.add_argument("--output", required=True, help="Output markdown file path")
+    parser.add_argument(
+        "--max-chars",
+        type=int,
+        help="Trim entries so the notes stay within this many characters",
+    )
+    parser.add_argument(
+        "--changelog-url",
+        default="CHANGELOG.md",
+        help="Link to the full changelog, shown when entries are trimmed",
+    )
     args = parser.parse_args()
 
     try:
@@ -143,6 +201,13 @@ def main() -> int:
             section_items,
             source,
         )
+        if args.max_chars is not None and len(output) > args.max_chars:
+            header = render_release_notes(
+                args.version, roadmap_phase, roadmap_last_updated, {}, source
+            ).split("### ", 1)[0]
+            output = fit_release_notes(
+                header, section_items, args.max_chars, args.changelog_url
+            )
         output_path = Path(args.output)
         output_path.write_text(output, encoding="utf-8")
         print(f"Generated release notes at {output_path}")
