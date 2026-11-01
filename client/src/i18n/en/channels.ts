@@ -31,4 +31,7 @@ export const channels = {
   "channels.list.cannotMoveVoice": "Voice channels can't be moved to a text-only category.",
   "channels.list.cannotMoveText": "Text channels can't be moved to a voice-only category.",
   "channels.markAllReadFailed.message": "Could not mark all channels as read. Please try again.",
+  "channels.create.namePlaceholderText": "e.g. general-chat",
+  "channels.create.namePlaceholderVoice": "e.g. voice-lounge",
+  "channels.create.nameRequired": "Enter a channel name to continue.",
 } as const satisfies Record<`channels.${string}`, string>;

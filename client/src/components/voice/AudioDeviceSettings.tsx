@@ -30,7 +30,10 @@ import { setSpeaking } from "@/stores/voice";
 import { appSettings, updateAudioSetting } from "@/stores/settings";
 import { isTauri } from "@/lib/tauri/common";
 import { showToast } from "@/components/ui/Toast";
+import { showAllAlsaDevices, visibleDevices } from "@/lib/audioDevices";
+import ShowAllAlsaDevicesToggle from "./ShowAllAlsaDevicesToggle";
 import { t, type MessageKey } from "@/i18n";
+import Toggle from "@/components/ui/Toggle";
 
 interface AudioDeviceSettingsProps {
   onClose: () => void;
@@ -593,7 +596,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 onChange={(e) => handleInputChange(e.currentTarget.value)}
                 class="w-full px-3 py-2.5 bg-surface-base rounded-xl text-sm text-text-primary border border-white/10 outline-none focus:ring-2 focus:ring-accent-primary/30 transition-all"
               >
-                <For each={devices().inputs}>
+                <For each={visibleDevices(devices().inputs, showAllAlsaDevices(), selectedInput())}>
                   {(device, i) => (
                     <option value={device.deviceId}>
                       {deviceOptionLabel(device, i(), "voice.audio.microphoneFallback")}
@@ -656,20 +659,11 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                     {t("voice.audio.noiseSuppressionHint")}
                   </div>
                 </div>
-                <button
-                  onClick={toggleNoiseSuppression}
-                  class={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-accent-primary focus:ring-offset-2 focus:ring-offset-surface-base ${
-                    noiseSuppression()
-                      ? "bg-accent-primary"
-                      : "bg-surface-highlight"
-                  }`}
-                >
-                  <span
-                    class={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      noiseSuppression() ? "translate-x-6" : "translate-x-1"
-                    }`}
-                  />
-                </button>
+                <Toggle
+                  checked={noiseSuppression()}
+                  onChange={() => void toggleNoiseSuppression()}
+                  label={t("voice.audio.noiseSuppression")}
+                />
               </div>
             </div>
 
@@ -687,7 +681,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 onChange={(e) => handleOutputChange(e.currentTarget.value)}
                 class="w-full px-3 py-2.5 bg-surface-base rounded-xl text-sm text-text-primary border border-white/10 outline-none focus:ring-2 focus:ring-accent-primary/30 transition-all"
               >
-                <For each={devices().outputs}>
+                <For each={visibleDevices(devices().outputs, showAllAlsaDevices(), selectedOutput())}>
                   {(device, i) => (
                     <option value={device.deviceId}>
                       {deviceOptionLabel(device, i(), "voice.audio.speakerFallback")}
@@ -702,13 +696,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 <button
                   onClick={testSpeaker}
                   disabled={isTestingSpeaker()}
-                  class="px-4 py-2 rounded-xl font-medium text-sm transition-all duration-200"
-                  classList={{
-                    "bg-accent-primary text-on-accent hover:bg-accent-primary/90":
-                      !isTestingSpeaker(),
-                    "bg-accent-primary/50 text-on-accent cursor-not-allowed":
-                      isTestingSpeaker(),
-                  }}
+                  class="px-4 py-2 rounded-xl font-medium text-sm transition-all duration-200 bg-accent-primary text-on-accent hover:bg-accent-primary/90 state-disabled"
                 >
                   {isTestingSpeaker() ? t("voice.audio.playing") : t("voice.audio.testSpeaker")}
                 </button>
@@ -717,6 +705,8 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 </p>
               </div>
             </div>
+
+            <ShowAllAlsaDevicesToggle devices={[...devices().inputs, ...devices().outputs]} />
           </Show>
         </div>
 

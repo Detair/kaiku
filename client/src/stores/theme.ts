@@ -65,7 +65,7 @@ export const availableThemes: ThemeDefinition[] = [
     isDark: true,
     family: "standard",
     hidden: true,
-    preview: { surface: "#002b36", accent: "#268bd2", text: "#839496" },
+    preview: { surface: "#002b36", accent: "#4fa6ea", text: "#acb9b9" },
   },
   {
     id: "solarized-light",
@@ -74,7 +74,7 @@ export const availableThemes: ThemeDefinition[] = [
     isDark: false,
     family: "standard",
     hidden: true,
-    preview: { surface: "#fdf6e3", accent: "#268bd2", text: "#657b83" },
+    preview: { surface: "#fdf6e3", accent: "#1f6fa8", text: "#3d555c" },
   },
   {
     id: "pixel-cozy",

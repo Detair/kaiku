@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+mod devices;
 pub mod format;
 mod handle;
 
@@ -85,8 +86,17 @@ pub enum AudioError {
     NoOutputDevice,
     #[error("Device not found: {0}")]
     DeviceNotFound(String),
-    #[error("Device is in use by another application")]
+    #[error(
+        "Audio device is busy: another program or the sound server is using it. Choose the system default instead."
+    )]
     DeviceInUse,
+    /// A switch failed and the previous device could not be reopened, so
+    /// capture now runs on the system default.
+    #[error(
+        "Could not switch the microphone ({0}). The previous microphone could not be reopened \
+         either, so the system default is used now."
+    )]
+    UsingSystemDefault(String),
     #[error("Failed to get device config: {0}")]
     ConfigError(String),
     #[error("Failed to build stream: {0}")]
@@ -105,6 +115,9 @@ pub struct AudioDevice {
     pub device_id: String,
     pub label: String,
     pub is_default: bool,
+    /// Offered by default. `false` for ALSA PCMs the curated list hides
+    /// (shown with "Show all ALSA devices"); always `true` off Linux.
+    pub curated: bool,
 }
 
 /// List of audio devices
@@ -130,6 +143,33 @@ mod tests {
         let devices = handle.enumerate_devices();
         // May fail on CI without audio hardware, so just check it returns a result
         let _ = devices;
+    }
+
+    /// Manual check on real hardware:
+    /// `cargo test -p vc-client --lib audio::tests::print_devices -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs audio hardware; prints the device list"]
+    fn print_devices() {
+        let handle = AudioHandle::new().unwrap();
+        let devices = handle.enumerate_devices().unwrap();
+        for (kind, list) in [("input", &devices.inputs), ("output", &devices.outputs)] {
+            for d in list {
+                println!(
+                    "{kind}: {:<40} {} default={}",
+                    d.label, d.device_id, d.is_default
+                );
+            }
+        }
+        let ids: std::collections::HashSet<_> =
+            devices.inputs.iter().map(|d| &d.device_id).collect();
+        assert_eq!(ids.len(), devices.inputs.len(), "input ids must be unique");
+        let ids: std::collections::HashSet<_> =
+            devices.outputs.iter().map(|d| &d.device_id).collect();
+        assert_eq!(
+            ids.len(),
+            devices.outputs.len(),
+            "output ids must be unique"
+        );
     }
 
     #[test]

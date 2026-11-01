@@ -56,12 +56,13 @@ const VoiceControls: Component = () => {
           data-testid="voice-mute"
           aria-label={t("voice.controls.muteLabel")}
           aria-pressed={voiceState.muted}
+          aria-disabled={isPttActive() ? "true" : undefined}
           onClick={() => { if (!isPttActive()) toggleMute(); }}
           class={`p-2 rounded-full transition-colors ${
             voiceState.muted
               ? "bg-accent-danger/20 text-accent-danger hover:bg-accent-danger/30"
               : "bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary"
-          } ${isPttActive() ? "opacity-50 cursor-not-allowed" : ""}`}
+          } state-disabled-quiet`}
           title={
             isPttActive()
               ? t("voice.controls.pttControlled")

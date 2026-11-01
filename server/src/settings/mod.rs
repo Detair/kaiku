@@ -26,6 +26,10 @@ pub struct ServerSettingsResponse {
     /// Clients hide what is off; a response without this field (older server)
     /// means every feature is on.
     pub features: FeaturesResponse,
+    /// Whether the public server browser is on (`ENABLE_GUILD_DISCOVERY`).
+    /// Clients hide discovery options when it is off; a response without
+    /// this field (older server) means it is on.
+    pub guild_discovery: bool,
 }
 
 /// Optional features in [`ServerSettingsResponse`] (C22 wire form).
@@ -88,6 +92,7 @@ pub async fn get_server_settings(State(state): State<AppState>) -> Json<ServerSe
         auth_methods,
         registration_policy,
         features: state.config.optional_features.into(),
+        guild_discovery: state.config.enable_guild_discovery,
     })
 }
 

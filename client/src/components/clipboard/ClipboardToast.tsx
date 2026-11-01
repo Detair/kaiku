@@ -188,12 +188,7 @@ const ClipboardToast: Component<ClipboardToastProps> = (props) => {
               <button
                 onClick={handleExtend}
                 disabled={extending()}
-                class="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors"
-                classList={{
-                  "opacity-50 cursor-not-allowed": extending(),
-                  "bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary":
-                    !extending(),
-                }}
+                class="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors bg-white/5 text-text-secondary hover:bg-white/10 hover:text-text-primary state-disabled"
               >
                 <Plus class="w-3 h-3" />
                 Extend

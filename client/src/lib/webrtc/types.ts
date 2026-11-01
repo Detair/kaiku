@@ -97,6 +97,12 @@ export interface AudioDevice {
   deviceId: string;
   label: string;
   isDefault: boolean;
+  /**
+   * Offered by default. `false` only for ALSA devices (Linux desktop app)
+   * that the curated list hides; shown with "Show all ALSA devices".
+   * Absent means curated.
+   */
+  curated?: boolean;
 }
 
 export interface AudioDeviceList {

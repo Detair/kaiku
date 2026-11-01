@@ -154,7 +154,7 @@ const GuildCard: Component<GuildCardProps> = (props) => {
           <button
             onClick={handleJoin}
             disabled={joined() || joining()}
-            class="px-3 py-1 text-xs font-medium rounded-lg transition-colors"
+            class="px-3 py-1 text-xs font-medium rounded-lg transition-colors state-disabled"
             classList={{
               "bg-accent-primary text-on-accent hover:bg-primary-hover": !joined(),
               "bg-white/10 text-text-secondary cursor-default": joined(),

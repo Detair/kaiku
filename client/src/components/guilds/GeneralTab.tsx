@@ -10,7 +10,7 @@ import {
   Show,
   onMount,
 } from "solid-js";
-import { X, Compass } from "lucide-solid";
+import { X, Compass, Info } from "lucide-solid";
 import {
   getGuildSettings,
   updateGuildSettings,
@@ -21,6 +21,10 @@ import { isGuildOwner } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
 import { memberHasPermission } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
+import { isGuildDiscoveryOff } from "@/stores/serverFeatures";
+import { t } from "@/i18n";
+import Button from "@/components/ui/Button";
+import Toggle from "@/components/ui/Toggle";
 
 interface GeneralTabProps {
   guildId: string;
@@ -68,6 +72,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
   const showDiscoveryBanner = createMemo(
     () =>
       !loading() &&
+      !isGuildDiscoveryOff() &&
       canManageGuild() &&
       !discoverable() &&
       tags().length === 0 &&
@@ -281,35 +286,22 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
         {/* Threads Toggle */}
         <div class="flex items-center justify-between p-4 bg-surface-layer2 rounded-xl border border-white/5">
           <div class="flex-1 mr-4">
-            <div class="text-sm font-medium text-text-primary">
+            <div id="guild-threads-label" class="text-sm font-medium text-text-primary">
               Enable Message Threads
             </div>
-            <div class="text-xs text-text-secondary mt-1">
+            <div id="guild-threads-desc" class="text-xs text-text-secondary mt-1">
               Allow members to create threaded replies on messages. Disabling
               this hides the "Reply in Thread" option but keeps existing threads
               readable.
             </div>
           </div>
-          <button
-            onClick={handleToggleThreads}
+          <Toggle
+            checked={threadsEnabled()}
+            onChange={() => handleToggleThreads()}
             disabled={loading() || saving()}
-            class="relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-accent-primary/50 disabled:opacity-50"
-            classList={{
-              "bg-accent-primary": threadsEnabled(),
-              "bg-white/20": !threadsEnabled(),
-            }}
-            role="switch"
-            aria-checked={threadsEnabled()}
-            aria-label="Enable Message Threads"
-          >
-            <span
-              class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200"
-              classList={{
-                "translate-x-5": threadsEnabled(),
-                "translate-x-0": !threadsEnabled(),
-              }}
-            />
-          </button>
+            labelledBy="guild-threads-label"
+            describedBy="guild-threads-desc"
+          />
         </div>
       </div>
 
@@ -319,40 +311,40 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
           Discovery
         </h3>
 
+        <Show
+          when={!isGuildDiscoveryOff()}
+          fallback={
+            <p
+              class="flex items-start gap-2 p-4 text-sm text-text-secondary bg-surface-layer2 rounded-xl border border-border-solid border-dashed"
+              data-testid="guild-discovery-off"
+            >
+              <Info size={16} class="flex-shrink-0 mt-0.5" aria-hidden="true" />
+              {t("guilds.settings.discoveryOff")}
+            </p>
+          }
+        >
         {/* Discoverable Toggle */}
         <div
           id="discoverable-toggle"
           class="flex items-center justify-between p-4 bg-surface-layer2 rounded-xl border border-white/5"
         >
           <div class="flex-1 mr-4">
-            <div class="text-sm font-medium text-text-primary">
+            <div id="guild-discoverable-label" class="text-sm font-medium text-text-primary">
               Make Server Discoverable
             </div>
-            <div class="text-xs text-text-secondary mt-1">
+            <div id="guild-discoverable-desc" class="text-xs text-text-secondary mt-1">
               Allow this server to appear in the public server browser. Anyone
               can find and join without an invite code.
             </div>
           </div>
-          <button
-            onClick={handleToggleDiscoverable}
+          <Toggle
+            checked={discoverable()}
+            onChange={() => handleToggleDiscoverable()}
             disabled={loading() || saving()}
-            class="relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-accent-primary/50 disabled:opacity-50"
-            classList={{
-              "bg-accent-primary": discoverable(),
-              "bg-white/20": !discoverable(),
-            }}
-            role="switch"
-            aria-checked={discoverable()}
-            aria-label="Make Server Discoverable"
-          >
-            <span
-              class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200"
-              classList={{
-                "translate-x-5": discoverable(),
-                "translate-x-0": !discoverable(),
-              }}
-            />
-          </button>
+            labelledBy="guild-discoverable-label"
+            describedBy="guild-discoverable-desc"
+            data-testid="guild-discoverable-toggle"
+          />
         </div>
 
         {/* Tags Editor (only shown when discoverable) */}
@@ -374,7 +366,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
                       <button
                         onClick={() => handleRemoveTag(tag)}
                         disabled={saving()}
-                        class="hover:text-text-primary transition-colors disabled:opacity-50"
+                        class="hover:text-text-primary transition-colors state-disabled-quiet"
                         aria-label={`Remove tag ${tag}`}
                       >
                         <X class="w-3 h-3" />
@@ -390,20 +382,22 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
               <div class="flex items-center gap-2">
                 <input
                   type="text"
-                  placeholder="Add a tag..."
+                  placeholder={t("guilds.create.tagPlaceholder")}
                   value={tagInput()}
                   onInput={(e) => setTagInput(e.currentTarget.value)}
                   onKeyDown={handleTagKeyDown}
                   maxLength={32}
-                  class="flex-1 px-3 py-1.5 text-sm rounded-lg bg-surface-layer1 border border-white/5 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
+                  class="flex-1 px-3 py-1.5 text-sm rounded-lg bg-surface-layer1 border border-white/5 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary/50"
                 />
-                <button
+                <Button
+                  size="sm"
                   onClick={handleAddTag}
                   disabled={saving() || !tagInput().trim()}
-                  class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                  disabledReason={!tagInput().trim() && t("guilds.create.tagRequired")}
+                  showReason={false}
                 >
                   Add
-                </button>
+                </Button>
               </div>
             </Show>
           </div>
@@ -419,18 +413,18 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
             <div class="flex items-center gap-2">
               <input
                 type="url"
-                placeholder="https://example.com/banner.png"
+                placeholder={t("guilds.create.bannerUrlPlaceholder")}
                 value={bannerUrl()}
                 onInput={(e) => {
                   setBannerUrl(e.currentTarget.value);
                   setBannerLoadError(false);
                 }}
-                class="flex-1 px-3 py-1.5 text-sm rounded-lg bg-surface-layer1 border border-white/5 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
+                class="flex-1 px-3 py-1.5 text-sm rounded-lg bg-surface-layer1 border border-white/5 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary/50"
               />
               <button
                 onClick={handleBannerSave}
                 disabled={saving()}
-                class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover transition-colors state-disabled"
               >
                 Save
               </button>
@@ -456,6 +450,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
               </div>
             </Show>
           </div>
+        </Show>
         </Show>
       </div>
     </div>

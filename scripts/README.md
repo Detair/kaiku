@@ -78,6 +78,11 @@ python3 scripts/generate_release_notes.py \
   --output /tmp/release-notes.md
 ```
 
+`--max-chars N` trims entries so the notes fit in N characters (GitHub caps a
+release body at 125,000). Each section keeps a share proportional to its size
+and ends with a link to `--changelog-url` when trimmed. `release.yml` uses
+`--max-chars 100000`.
+
 ## Real Playwright Runner
 
 ### `run-e2e-real.sh`

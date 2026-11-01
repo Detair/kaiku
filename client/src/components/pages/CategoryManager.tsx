@@ -180,7 +180,7 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
                         </span>
                         <button
                           onClick={() => startEditing(category)}
-                          class="text-zinc-400 hover:text-white p-1 rounded-md transition-colors flex-shrink-0"
+                          class="text-zinc-400 hover:text-white p-1 rounded-md transition-colors flex-shrink-0 state-disabled-quiet"
                           disabled={loading()}
                           aria-label={`Rename ${category.name}`}
                         >
@@ -190,7 +190,7 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
                           onClick={() =>
                             handleDelete(category.id, category.name)
                           }
-                          class="text-red-400 hover:text-red-300 hover:bg-red-900/30 p-1 rounded-md transition-colors flex-shrink-0"
+                          class="text-red-400 hover:text-red-300 hover:bg-red-900/30 p-1 rounded-md transition-colors flex-shrink-0 state-disabled-quiet"
                           disabled={loading()}
                           aria-label={`Delete ${category.name}`}
                         >
@@ -212,7 +212,7 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
                     />
                     <button
                       onClick={() => handleUpdate()}
-                      class="bg-emerald-600 hover:bg-emerald-500 text-white p-1 rounded-md transition-colors flex-shrink-0"
+                      class="bg-emerald-600 hover:bg-emerald-500 text-white p-1 rounded-md transition-colors flex-shrink-0 state-disabled"
                       disabled={loading()}
                       aria-label="Save"
                     >
@@ -220,7 +220,7 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
                     </button>
                     <button
                       onClick={cancelEditing}
-                      class="text-zinc-400 hover:text-white p-1 rounded-md transition-colors flex-shrink-0"
+                      class="text-zinc-400 hover:text-white p-1 rounded-md transition-colors flex-shrink-0 state-disabled-quiet"
                       disabled={loading()}
                       aria-label="Cancel"
                     >
@@ -250,12 +250,12 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
               onKeyDown={handleCreateKeyDown}
               maxLength={MAX_CATEGORY_NAME_LENGTH}
               placeholder="New category name..."
-              class="w-full px-3 py-2 bg-zinc-900 border border-zinc-600 rounded-md text-white placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              class="w-full px-3 py-2 bg-zinc-900 border border-zinc-600 rounded-md text-white placeholder-text-placeholder focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
               disabled={loading()}
             />
             <button
               onClick={() => handleCreate()}
-              class="bg-emerald-600 hover:bg-emerald-500 text-white p-2 rounded-md transition-colors flex-shrink-0"
+              class="bg-emerald-600 hover:bg-emerald-500 text-white p-2 rounded-md transition-colors flex-shrink-0 state-disabled"
               disabled={loading() || newCategoryName().trim().length === 0}
               aria-label="Add category"
             >

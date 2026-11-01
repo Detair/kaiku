@@ -38,11 +38,15 @@ body {
   color: var(--color-selection-text);
 }
 
-/* Visible focus indicators for buttons, links, and selects (inputs use focus:ring via input-field shortcut) */
-button:focus-visible,
-a:focus-visible,
-select:focus-visible {
-  outline: 2px solid var(--color-accent-primary);
+/* Visible focus indicators for buttons, links, selects and ARIA widgets
+   (inputs use focus:ring via input-field shortcut). Specificity 0,4,0: above
+   `focus:outline-none` utilities (which otherwise left many buttons without
+   any keyboard focus indicator) and above the dashed outline of
+   .state-disabled (0,3,0), so a focusable aria-disabled control keeps its
+   ring. Elements that draw their own focus ring (`focus:ring-*` /
+   `focus-visible:ring-*`) are left alone to avoid a doubled indicator. */
+:root :is(button, a, select, summary, [role="switch"], [role="tab"], [role="radio"], [role="checkbox"], [role="option"]):not([class*="focus:ring"], [class*="focus-visible:ring"]):focus-visible {
+  outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
 }
 
@@ -63,6 +67,13 @@ textarea {
   background-color: var(--color-surface-layer2);
 }
 
+/* Native checkboxes and radios follow the theme accent instead of the
+   browser blue, so checked vs unchecked matches the rest of the UI. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--color-accent-primary);
+}
+
 select {
   color: var(--color-text-input);
   background-color: var(--color-surface-layer2);
@@ -73,9 +84,171 @@ select option {
   background-color: var(--color-surface-layer2);
 }
 
+/* Placeholders are examples, not values: a dedicated, dimmer token (see
+   themes.css) so an empty field never reads as filled in. opacity: 1 undoes
+   Firefox's default placeholder fade, which would push it below 3:1. */
 input::placeholder,
 textarea::placeholder {
-  color: var(--color-text-secondary);
+  color: var(--color-text-placeholder);
+  opacity: 1;
+}
+
+/* ============================================================================
+ * Disabled controls
+ *
+ * Replaces `disabled:opacity-50`, which faded a button into its background.
+ * A disabled control keeps a readable label (>=3:1), shows a dashed outline
+ * and a not-allowed cursor. The :root prefix (specificity 0,3,0) beats fill
+ * and hover utilities such as `bg-accent-primary` or `hover:bg-…:hover`.
+ *
+ * - .state-disabled        solid controls (filled buttons, inputs, cards)
+ * - .state-disabled-quiet  ghost/text/icon buttons: label colour only
+ * - .btn-primary / .btn-danger shortcuts get the solid treatment for free
+ * ========================================================================== */
+:root .state-disabled:is(:disabled, [aria-disabled="true"]),
+:root .btn-primary:is(:disabled, [aria-disabled="true"]),
+:root .btn-danger:is(:disabled, [aria-disabled="true"]) {
+  background-color: var(--color-disabled-bg);
+  background-image: none;
+  color: var(--color-disabled-text);
+  border-color: var(--color-disabled-border);
+  outline: var(--border-width, 1px) dashed var(--color-disabled-border);
+  outline-offset: calc(-1 * var(--border-width, 1px));
+  box-shadow: none;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+:root .state-disabled-quiet:is(:disabled, [aria-disabled="true"]) {
+  color: var(--color-disabled-text);
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+/* Children (icons, spans with their own text colour) follow the label. */
+:root .state-disabled:is(:disabled, [aria-disabled="true"]) *,
+:root .state-disabled-quiet:is(:disabled, [aria-disabled="true"]) *,
+:root .btn-primary:is(:disabled, [aria-disabled="true"]) *,
+:root .btn-danger:is(:disabled, [aria-disabled="true"]) * {
+  color: inherit;
+}
+
+/* Reason next to a disabled button (components/ui/Button.tsx). In a flex
+   footer it moves to the far left, away from the buttons. */
+.ui-disabled-reason {
+  order: -1;
+  margin-right: auto;
+}
+
+:root .state-disabled:is(input, textarea, select):disabled::placeholder {
+  color: var(--color-disabled-text);
+}
+
+/* Container whose whole contents are unavailable (e.g. a locked option
+   card): readable text, dashed frame, no fade. */
+:root .state-unavailable {
+  color: var(--color-disabled-text);
+  border-color: var(--color-disabled-border);
+  border-style: dashed;
+  cursor: not-allowed;
+}
+
+:root .state-unavailable * {
+  color: inherit;
+}
+
+/* ============================================================================
+ * Toggle (switch) — see components/ui/Toggle.tsx
+ *
+ * Off: inset track with a visible outline, light knob on the left.
+ * On: accent track, contrasting knob on the right with a check mark.
+ * Position, glyph and colour all change, so the state never hangs on colour
+ * alone. Pixel themes get square shapes and a stepped slide.
+ * ========================================================================== */
+.ui-toggle {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  width: 2.75rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 2px solid var(--color-toggle-border-off);
+  border-radius: 9999px;
+  background-color: var(--color-toggle-track-off);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.ui-toggle[aria-checked="true"] {
+  background-color: var(--color-toggle-track-on);
+  border-color: var(--color-toggle-track-on);
+}
+
+.ui-toggle:not(:disabled):hover {
+  border-color: var(--color-text-primary);
+}
+
+.ui-toggle[aria-checked="true"]:not(:disabled):hover {
+  border-color: var(--color-text-primary);
+}
+
+.ui-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 9999px;
+  background-color: var(--color-toggle-knob-off);
+  color: var(--color-toggle-track-on);
+  transition: transform 0.15s ease;
+}
+
+.ui-toggle[aria-checked="true"] .ui-toggle-knob {
+  /* 44px track - 2*2px border - 16px knob - 2*2px gap */
+  transform: translateX(1.25rem);
+  background-color: var(--color-toggle-knob-on);
+}
+
+.ui-toggle:disabled {
+  cursor: not-allowed;
+  border-style: dashed;
+  border-color: var(--color-disabled-border);
+  background-color: var(--color-disabled-bg);
+}
+
+.ui-toggle:disabled .ui-toggle-knob {
+  background-color: var(--color-disabled-text);
+  color: var(--color-disabled-bg);
+}
+
+[data-theme^="pixel-"] .ui-toggle,
+[data-theme^="pixel-"] .ui-toggle-knob {
+  border-radius: 0;
+}
+
+[data-theme^="pixel-"] .ui-toggle,
+[data-theme^="pixel-"] .ui-toggle-knob {
+  transition-timing-function: steps(2, end);
+}
+
+/* Pixel knob: a chunky square with a hard 2px "bevel" so it reads as a
+   physical block on both tracks. */
+[data-theme^="pixel-"] .ui-toggle-knob {
+  box-shadow: inset -2px -2px 0 rgb(0 0 0 / 0.25);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-toggle,
+  .ui-toggle-knob {
+    transition: none;
+  }
 }
 
 /* Transparent background overrides for inputs inside styled containers */

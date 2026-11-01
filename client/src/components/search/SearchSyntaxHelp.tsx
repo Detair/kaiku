@@ -39,8 +39,9 @@ const SearchSyntaxHelp: Component = () => {
       <button
         onClick={() => setIsOpen(!isOpen())}
         class="ml-1 p-1.5 rounded transition-colors"
+        aria-expanded={isOpen()}
         classList={{
-          "text-accent-primary bg-accent-primary/10": isOpen(),
+          "text-text-primary bg-accent-primary/20": isOpen(),
           "text-text-secondary hover:text-text-primary": !isOpen(),
         }}
         title="Search syntax help"

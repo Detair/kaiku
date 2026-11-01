@@ -19,6 +19,8 @@ export interface ServerMetadata {
   environment: string;
   active_user_count: number;
   guild_count: number;
+  /** OTLP exporter enabled; trace capture needs it (metrics/logs do not). */
+  otlp_export_enabled: boolean;
 }
 
 export interface SystemStats {
@@ -75,6 +77,8 @@ export interface TopRoutesResponse {
 
 export interface ErrorCategoryEntry {
   error_type: string | null;
+  /** Matched route template; null for samples recorded before routes were labelled. */
+  route: string | null;
   count: number;
   avg_p95_ms: number | null;
 }

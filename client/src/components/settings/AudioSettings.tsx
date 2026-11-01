@@ -6,6 +6,8 @@ import { Mic, Volume2 } from "lucide-solid";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 import { canSelectOutputDevice } from "@/lib/browserCapabilities";
+import { showAllAlsaDevices, visibleDevices } from "@/lib/audioDevices";
+import ShowAllAlsaDevicesToggle from "@/components/voice/ShowAllAlsaDevicesToggle";
 
 const AudioSettings: Component = () => {
     const [inputDevices, setInputDevices] = createSignal<AudioDevice[]>([]);
@@ -114,7 +116,7 @@ const AudioSettings: Component = () => {
                                     onChange={(e) => changeDevice("input", e.currentTarget.value)}
                                 >
                                     <option value="default">{t("settings.audio.defaultDevice")}</option>
-                                    <For each={inputDevices()}>
+                                    <For each={visibleDevices(inputDevices(), showAllAlsaDevices(), settings().audio.input_device)}>
                                         {(device, i) => (
                                             <option value={device.deviceId}>
                                                 {device.label || t("settings.audio.microphoneFallback", { id: i() + 1 })}
@@ -165,7 +167,7 @@ const AudioSettings: Component = () => {
                                     onChange={(e) => changeDevice("output", e.currentTarget.value)}
                                 >
                                     <option value="default">{t("settings.audio.defaultDevice")}</option>
-                                    <For each={outputDevices()}>
+                                    <For each={visibleDevices(outputDevices(), showAllAlsaDevices(), settings().audio.output_device)}>
                                         {(device, i) => (
                                             <option value={device.deviceId}>
                                                 {device.label || t("settings.audio.speakerFallback", { id: i() + 1 })}
@@ -190,6 +192,8 @@ const AudioSettings: Component = () => {
                                 />
                             </div>
                         </div>
+
+                        <ShowAllAlsaDevicesToggle devices={[...inputDevices(), ...outputDevices()]} />
                     </>
                 )}
             </Show>
