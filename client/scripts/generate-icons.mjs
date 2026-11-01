@@ -11,10 +11,10 @@
 // App icons are produced by the official Tauri CLI (`tauri icon`). Only the
 // files that tauri.conf.json (bundle.icon) references are kept; the CLI's
 // Android/iOS/Windows-Store extras are discarded because no bundle target uses
-// them. Tray icons are resized from tray-icon.png with sharp.
+// them. Tray icons and the web favicon/apple-touch icon are resized with sharp.
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +23,7 @@ import sharp from "sharp";
 const clientDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const iconsDir = join(clientDir, "src-tauri", "icons");
 const trayDir = join(iconsDir, "tray");
+const publicDir = join(clientDir, "public");
 
 /** Files kept from the `tauri icon` output (must match tauri.conf.json). */
 const APP_FILES = [
@@ -37,6 +38,35 @@ const APP_FILES = [
 
 /** Tray icon sizes (px): 32 for standard DPI, 64 for HiDPI panels. */
 const TRAY_SIZES = [32, 64];
+
+/** Entries of the web favicon.ico (px). */
+const FAVICON_SIZES = [16, 32, 48];
+
+function resizedPng(source, size) {
+  return sharp(source)
+    .resize(size, size, { fit: "contain", kernel: "lanczos3" })
+    .png({ compressionLevel: 9 });
+}
+
+/** Pack PNG images into an .ico container (PNG-compressed entries). */
+function packIco(pngs) {
+  const header = Buffer.alloc(6 + pngs.length * 16);
+  header.writeUInt16LE(0, 0); // reserved
+  header.writeUInt16LE(1, 2); // type: icon
+  header.writeUInt16LE(pngs.length, 4);
+  let offset = header.length;
+  pngs.forEach(({ size, data }, i) => {
+    const e = 6 + i * 16;
+    header[e] = size; // width (< 256)
+    header[e + 1] = size; // height
+    header.writeUInt16LE(1, e + 4); // colour planes
+    header.writeUInt16LE(32, e + 6); // bits per pixel
+    header.writeUInt32LE(data.length, e + 8);
+    header.writeUInt32LE(offset, e + 12);
+    offset += data.length;
+  });
+  return Buffer.concat([header, ...pngs.map((p) => p.data)]);
+}
 
 function argValue(flag) {
   const i = process.argv.indexOf(flag);
@@ -61,12 +91,15 @@ try {
 
   mkdirSync(trayDir, { recursive: true });
   for (const size of TRAY_SIZES) {
-    await sharp(traySource)
-      .resize(size, size, { fit: "contain", kernel: "lanczos3" })
-      .png({ compressionLevel: 9 })
-      .toFile(join(trayDir, `${size}x${size}.png`));
+    await resizedPng(traySource, size).toFile(join(trayDir, `${size}x${size}.png`));
   }
-  console.log(`Icons written to ${iconsDir}`);
+
+  const favicons = await Promise.all(
+    FAVICON_SIZES.map(async (size) => ({ size, data: await resizedPng(appSource, size).toBuffer() })),
+  );
+  writeFileSync(join(publicDir, "favicon.ico"), packIco(favicons));
+  await resizedPng(appSource, 180).toFile(join(publicDir, "apple-touch-icon.png"));
+  console.log(`Icons written to ${iconsDir} and ${publicDir}`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

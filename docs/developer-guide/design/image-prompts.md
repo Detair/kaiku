@@ -122,10 +122,18 @@ The desktop app icon and the system tray icon are generated from two committed s
 | `client/src-tauri/icons/source/app-icon.png` | Main logo (square, at least 1024 px, transparent corners). Produces the window, taskbar, dock and installer icons. |
 | `client/src-tauri/icons/source/tray-icon.png` | Simplified variant (head only, no thin outer rings) that stays readable at 16-32 px. Produces `icons/tray/32x32.png` and `64x64.png`. |
 
-Both stand-ins currently sit on a filled dark slate disc (`#2E3440`) so they read on light and dark panels. When the final artwork is ready, overwrite the two source files and run, from `client/`:
+Both sit on a filled dark slate disc (`#2E3440`) so they read on light and dark panels. To swap the artwork, overwrite the two source files and run, from `client/`:
 
 ```bash
 bun run icons
 ```
 
-This runs the official `tauri icon` CLI (PNG sizes, `.icns`, `.ico`) and resizes the tray icon with sharp. Commit the regenerated files. `client/scripts/__tests__/app-icons.test.ts` fails if any icon is a placeholder.
+This runs the official `tauri icon` CLI (PNG sizes, `.icns`, `.ico`), resizes the tray icon with sharp and writes the web `public/favicon.ico` and `public/apple-touch-icon.png` from the app icon. Commit the regenerated files. `client/scripts/__tests__/app-icons.test.ts` fails if any icon is a placeholder.
+
+### Prompts used (generated with Gemini)
+
+**App icon (`app-icon.png`):**
+> `A minimalist, sleek app icon of a Suomenlapinkoira (Finnish Lapphund) dog head wearing a gaming headset with a boom microphone, three-quarter view, calm friendly expression. Flat vector style with clean, bold shapes and few details so it stays recognizable at small sizes. CachyOS Nordic color palette: frosty cyan (#88C0D0) and aurora purple (#B48EAD) accents, dark charcoal fur shading, on a solid filled dark slate (#2E3440) circle that fills the whole square canvas edge to edge, with a thin cyan outer ring. No text, no letters, no drop shadow, no background outside the circle (transparent or pure white). Centered, square 1024x1024.`
+
+**Tray icon (`tray-icon.png`):**
+> `An extremely simplified glyph icon of a Finnish Lapphund dog head silhouette wearing a headset, front view, designed to be legible at 16x16 pixels. Only two colors: frosty cyan (#88C0D0) shapes on a solid dark slate (#2E3440) circle filling the canvas. Thick shapes, no fine lines, no fur texture, no facial detail except two simple eyes, pointed ears and the headset band with ear cups. Flat, high contrast, no text, no gradients, no shadow. Square 1024x1024.`
