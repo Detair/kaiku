@@ -46,7 +46,14 @@ import {
   setObsTimeRange,
 } from "@/stores/admin";
 import type { ObsTimeRange } from "@/lib/types";
+import { t } from "@/i18n";
 import TableRowSkeleton from "./TableRowSkeleton";
+import {
+  type ChartValueFormat,
+  axisWidthFor,
+  formatAxisValue,
+  hasPlottableValues,
+} from "./chartFormat";
 
 // ============================================================================
 // Helpers
@@ -186,6 +193,8 @@ const TrendChart: Component<{
   dataKey: "value_p95" | "value_count" | "value_sum";
   unit: string;
   color: string;
+  /** Y-axis tick format; defaults to compact numbers. */
+  format?: ChartValueFormat;
 }> = (props) => {
   let container: HTMLDivElement | undefined;
   let chart: uPlot | null = null;
@@ -210,6 +219,9 @@ const TrendChart: Component<{
     return [timestamps, values as (number | null)[]];
   };
 
+  /** False when the selected range has no datapoints (e.g. no voice sessions yet). */
+  const hasData = () => hasPlottableValues(getData()[1] ?? []);
+
   const createChart = () => {
     if (!container) return;
 
@@ -232,7 +244,13 @@ const TrendChart: Component<{
           grid: { stroke: "rgba(255,255,255,0.05)" },
           ticks: { stroke: "rgba(255,255,255,0.1)" },
           font: "11px sans-serif",
-          size: 50,
+          // Formatted ticks (MiB/GiB, %, 12k) and a width that fits the
+          // longest label, so large values are not clipped ("00,000").
+          values: (_u, splits) =>
+            splits.map((v) =>
+              v == null ? "" : formatAxisValue(v, props.format ?? "number"),
+            ),
+          size: (_u, values) => axisWidthFor(values),
         },
       ],
       series: [
@@ -280,11 +298,16 @@ const TrendChart: Component<{
       </div>
       <div
         ref={container}
-        classList={{ hidden: adminState.isObsTrendsLoading }}
+        classList={{ hidden: adminState.isObsTrendsLoading || !hasData() }}
       />
       <Show when={adminState.isObsTrendsLoading}>
         <div class="h-40 flex items-center justify-center text-text-secondary text-sm">
           Loading...
+        </div>
+      </Show>
+      <Show when={!adminState.isObsTrendsLoading && !hasData()}>
+        <div class="h-40 flex items-center justify-center text-text-secondary text-sm">
+          {t("admin.commandCenter.trend.noData")}
         </div>
       </Show>
     </div>
@@ -706,16 +729,18 @@ const CommandCenterPanel: Component = () => {
             <TrendChart
               title="CPU %"
               metricName="kaiku_process_cpu_percent"
-              dataKey="value_count"
+              dataKey="value_sum"
               unit="%"
               color="#f97316"
+              format="percent"
             />
             <TrendChart
               title="Process Memory"
               metricName="kaiku_process_memory_bytes"
               dataKey="value_count"
-              unit="bytes"
+              unit="RSS"
               color="#22c55e"
+              format="bytes"
             />
           </div>
         </section>
@@ -839,15 +864,21 @@ const CommandCenterPanel: Component = () => {
               >
                 {/* Header */}
                 <div class="grid grid-cols-[1fr_80px_80px] gap-2 px-4 py-2 text-xs font-medium text-text-secondary border-b border-white/5">
-                  <span>Error Type</span>
+                  <span>{t("admin.commandCenter.topErrors.typeAndRoute")}</span>
                   <span class="text-right">Count</span>
                   <span class="text-right">Avg P95</span>
                 </div>
                 <For each={adminState.obsTopErrors!.error_categories}>
                   {(err) => (
                     <div class="grid grid-cols-[1fr_80px_80px] gap-2 px-4 py-2 text-xs border-b border-white/5 hover:bg-white/3">
-                      <span class="text-text-primary font-mono truncate">
+                      <span
+                        class="text-text-primary font-mono truncate"
+                        title={err.route ?? undefined}
+                      >
                         {err.error_type ?? "unknown"}
+                        <Show when={err.route}>
+                          <span class="text-text-secondary"> {err.route}</span>
+                        </Show>
                       </span>
                       <span class="text-right text-red-400">{err.count}</span>
                       <span class="text-right text-text-secondary">
@@ -998,6 +1029,11 @@ const CommandCenterPanel: Component = () => {
               fallback={
                 <div class="p-8 text-center text-text-secondary text-sm">
                   No trace data found
+                  <Show when={meta()?.otlp_export_enabled === false}>
+                    <p class="mt-1 text-xs">
+                      {t("admin.commandCenter.traces.needsOtlp")}
+                    </p>
+                  </Show>
                 </div>
               }
             >

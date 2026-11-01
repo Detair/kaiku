@@ -1,4 +1,7 @@
 {
+  "admin.commandCenter.topErrors.typeAndRoute": "",
+  "admin.commandCenter.traces.needsOtlp": "",
+  "admin.commandCenter.trend.noData": "",
   "admin.createAccount.copyAll": "",
   "admin.createAccount.copyFailed": "",
   "admin.createAccount.created": "",
