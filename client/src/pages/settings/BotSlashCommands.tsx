@@ -225,7 +225,7 @@ const BotSlashCommands: Component = () => {
   }
 
   return (
-    <div class="min-h-screen bg-surface-base text-text-primary p-6">
+    <div class="min-h-dvh bg-surface-base text-text-primary p-6">
       <div class="max-w-4xl mx-auto">
         {/* Header */}
         <div class="flex items-center gap-4 mb-6">

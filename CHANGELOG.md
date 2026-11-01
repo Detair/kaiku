@@ -150,6 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Web app: Kaiku no longer asks for notification permission by itself at login. Notification settings now show whether notifications are allowed, blocked or not supported in your browser and have an "Allow notifications" button; the test button explains when permission is missing.
 - Web app: settings that only work in the desktop app (flash taskbar, activity sharing, auto-activating focus modes) are no longer shown in the browser.
+- In phone browsers the message box and the bottom of the app are no longer hidden behind the browser's address bar.
 - Desktop app on Linux: the microphone and speaker lists show the system default (e.g. "System default (PipeWire)") and each sound card once, instead of a dozen ALSA variants per card, plugins and unused HDMI ports. The chosen device is now remembered by a unique id, so picking one opens exactly that device; a device chosen in an older version is still found. If the chosen microphone or speaker is busy when you join a call, the system default is used instead; choosing a busy device says it is in use.
 - Desktop app: choosing a microphone or speaker in the voice settings and mic test applies the selected device again, and the system default is preselected.
 - Admin Command Center: the CPU value and CPU chart now show data when the server runs without an OTLP exporter (`OBSERVABILITY_ENABLED=false`); CPU is sampled every 15 s by the server itself.
