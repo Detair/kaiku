@@ -169,7 +169,7 @@ function MicTestPanel(props: MicTestPanelProps) {
           value={selectedInput()}
           onChange={(e) => setSelectedInput(e.target.value)}
           disabled={isTesting()}
-          class="w-full px-3 py-2 bg-surface-layer2 border border-white/10 rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 disabled:opacity-50 text-sm"
+          class="w-full px-3 py-2 bg-surface-layer2 border border-white/10 rounded-lg text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-primary/50 text-sm state-disabled"
         >
           <For each={inputDevices()}>
             {(device) => (

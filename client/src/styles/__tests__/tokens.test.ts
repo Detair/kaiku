@@ -63,4 +63,43 @@ describe("colour tokens", () => {
     }
     expect(hits).toEqual([]);
   });
+
+});
+
+describe("state styling", () => {
+  it("no control fades out with disabled:opacity (use state-disabled)", () => {
+    const hits: string[] = [];
+    for (const f of files) {
+      for (const m of f.text.matchAll(/\b(?:peer-|group-)?disabled:opacity-\d+/g)) {
+        hits.push(`${f.path}: ${m[0]}`);
+      }
+    }
+    expect(hits).toEqual([]);
+  });
+
+  it("every switch is the shared Toggle component", () => {
+    const hits: string[] = [];
+    for (const f of files) {
+      if (f.path.endsWith("components/ui/Toggle.tsx")) continue;
+      if (/role="switch"/.test(f.text)) hits.push(`${f.path}: role="switch"`);
+      // Hand-built knob: a track with a knob slid by translate-x-5/6.
+      if (/"translate-x-[56]"|\? "translate-x-[56]"|peer-checked:after:translate-x/.test(f.text)) {
+        hits.push(`${f.path}: hand-built switch knob`);
+      }
+    }
+    expect(hits).toEqual([]);
+  });
+
+  it("placeholders use the placeholder token", () => {
+    const hits: string[] = [];
+    for (const f of files) {
+      for (const m of f.text.matchAll(/placeholder(?::|-)(?!text-placeholder\b|text-text-placeholder\b)[\w/-]+/g)) {
+        // Only class names, not the `placeholder=` attribute or i18n keys.
+        if (/^placeholder[-:](text|zinc|gray|white|slate|neutral)/.test(m[0])) {
+          hits.push(`${f.path}: ${m[0]}`);
+        }
+      }
+    }
+    expect(hits).toEqual([]);
+  });
 });

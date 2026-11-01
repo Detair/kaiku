@@ -121,7 +121,7 @@ const DiscoveryView: Component = () => {
               aria-label="Search servers"
               value={query()}
               onInput={(e) => setQuery(e.currentTarget.value)}
-              class="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-surface-layer2 border border-white/5 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
+              class="w-full pl-9 pr-3 py-2 text-sm rounded-lg bg-surface-layer2 border border-white/5 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary/50"
             />
           </div>
 
@@ -223,7 +223,7 @@ const DiscoveryView: Component = () => {
                 }
                 disabled={offset() === 0}
                 aria-label="Previous page"
-                class="p-2 rounded-lg bg-surface-layer2 text-text-secondary hover:text-text-primary disabled:opacity-50 disabled:cursor-default transition-colors"
+                class="p-2 rounded-lg bg-surface-layer2 text-text-secondary hover:text-text-primary transition-colors state-disabled"
               >
                 <ChevronLeft class="w-4 h-4" />
               </button>
@@ -234,7 +234,7 @@ const DiscoveryView: Component = () => {
                 onClick={() => setOffset((prev) => prev + PAGE_SIZE)}
                 disabled={offset() + PAGE_SIZE >= total()}
                 aria-label="Next page"
-                class="p-2 rounded-lg bg-surface-layer2 text-text-secondary hover:text-text-primary disabled:opacity-50 disabled:cursor-default transition-colors"
+                class="p-2 rounded-lg bg-surface-layer2 text-text-secondary hover:text-text-primary transition-colors state-disabled"
               >
                 <ChevronRight class="w-4 h-4" />
               </button>

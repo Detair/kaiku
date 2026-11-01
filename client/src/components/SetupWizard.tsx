@@ -306,7 +306,7 @@ const SetupWizard: Component = () => {
                 required
                 maxLength={64}
                 disabled={isLoading()}
-                class="w-full px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                class="w-full px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors state-disabled"
               />
               <p class="mt-1 text-xs text-text-muted">
                 This appears in the app and invites
@@ -326,7 +326,7 @@ const SetupWizard: Component = () => {
                   )
                 }
                 disabled={isLoading()}
-                class="w-full px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                class="w-full px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors state-disabled"
               >
                 <option value="open">Open - Anyone can register</option>
                 <option value="invite_only">
@@ -350,7 +350,7 @@ const SetupWizard: Component = () => {
                 onInput={(e) => setTermsUrl(e.currentTarget.value)}
                 placeholder="https://example.com/terms"
                 disabled={isLoading()}
-                class="w-full px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                class="w-full px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors state-disabled"
               />
               <p class="mt-1 text-xs text-text-muted">Optional</p>
             </div>
@@ -366,7 +366,7 @@ const SetupWizard: Component = () => {
                 onInput={(e) => setPrivacyUrl(e.currentTarget.value)}
                 placeholder="https://example.com/privacy"
                 disabled={isLoading()}
-                class="w-full px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                class="w-full px-3 py-2 bg-surface-base rounded-lg text-text-primary border border-white/10 focus:border-accent-primary focus:outline-none transition-colors state-disabled"
               />
               <p class="mt-1 text-xs text-text-muted">Optional</p>
             </div>
@@ -377,7 +377,7 @@ const SetupWizard: Component = () => {
                 type="submit"
                 data-testid="setup-complete"
                 disabled={isLoading() || !serverName().trim()}
-                class="flex items-center gap-2 px-6 py-2.5 bg-accent-primary hover:bg-primary-hover text-on-accent font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-accent-primary"
+                class="flex items-center gap-2 px-6 py-2.5 bg-accent-primary hover:bg-primary-hover text-on-accent font-medium rounded-lg transition-colors disabled:hover:bg-accent-primary state-disabled"
               >
                 <Show
                   when={!isLoading()}

@@ -103,7 +103,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                                     type="password"
                                     value={currentPassword()}
                                     onInput={(e) => setCurrentPassword(e.currentTarget.value)}
-                                    class="w-full px-4 py-2 bg-surface-layer1 border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors disabled:opacity-50"
+                                    class="w-full px-4 py-2 bg-surface-layer1 border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors state-disabled"
                                     required
                                     disabled={isLoading()}
                                 />
@@ -117,7 +117,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                                     type="password"
                                     value={newPassword()}
                                     onInput={(e) => setNewPassword(e.currentTarget.value)}
-                                    class="w-full px-4 py-2 bg-surface-layer1 border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors disabled:opacity-50"
+                                    class="w-full px-4 py-2 bg-surface-layer1 border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors state-disabled"
                                     required
                                     minLength={8}
                                     disabled={isLoading()}
@@ -133,7 +133,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                                     type="password"
                                     value={confirmPassword()}
                                     onInput={(e) => setConfirmPassword(e.currentTarget.value)}
-                                    class="w-full px-4 py-2 bg-surface-layer1 border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors disabled:opacity-50"
+                                    class="w-full px-4 py-2 bg-surface-layer1 border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors state-disabled"
                                     required
                                     minLength={8}
                                     disabled={isLoading()}
@@ -144,7 +144,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                                 <button
                                     type="button"
                                     onClick={props.onClose}
-                                    class="px-5 py-2 text-text-primary hover:bg-white/5 rounded-xl font-medium transition-colors"
+                                    class="px-5 py-2 text-text-primary hover:bg-white/5 rounded-xl font-medium transition-colors state-disabled-quiet"
                                     disabled={isLoading()}
                                 >
                                     {t("common.cancel")}
@@ -177,7 +177,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                         <div class="flex gap-3 justify-end pt-2">
                             <button
                                 onClick={props.onClose}
-                                class="px-5 py-2 text-text-primary hover:bg-white/5 rounded-xl font-medium transition-colors"
+                                class="px-5 py-2 text-text-primary hover:bg-white/5 rounded-xl font-medium transition-colors state-disabled-quiet"
                                 disabled={isRevoking()}
                             >
                                 {t("auth.changePassword.revokeNo")}
@@ -185,7 +185,7 @@ const ChangePasswordModal: Component<ChangePasswordModalProps> = (props) => {
                             <button
                                 onClick={handleRevokeAll}
                                 disabled={isRevoking()}
-                                class="px-5 py-2 bg-status-danger/20 text-status-danger rounded-xl font-medium hover:bg-status-danger/30 transition-colors disabled:opacity-50 flex items-center justify-center min-w-[180px]"
+                                class="px-5 py-2 bg-status-danger/20 text-status-danger rounded-xl font-medium hover:bg-status-danger/30 transition-colors flex items-center justify-center min-w-[180px] state-disabled"
                             >
                                 {isRevoking() ? (
                                     <div class="w-5 h-5 border-2 border-current/30 border-t-current rounded-full animate-spin" />

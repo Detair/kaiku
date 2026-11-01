@@ -348,7 +348,7 @@ const OnboardingDialog: Component = () => {
                 onInput={(e) => setDisplayName(e.currentTarget.value)}
                 placeholder={t("onboarding.step.profile.displayNamePlaceholder")}
                 maxLength={32}
-                class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
+                class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary/50"
               />
               <p class="text-xs text-text-secondary mt-2">
                 {t("onboarding.step.profile.displayNameHint")}
@@ -372,11 +372,12 @@ const OnboardingDialog: Component = () => {
                 {(th: ThemeDefinition) => (
                   <button
                     onClick={() => setTheme(th.id)}
+                    aria-pressed={theme() === th.id}
                     class="text-left p-3 rounded-xl border-2 transition-all"
                     classList={{
-                      "border-accent-primary bg-accent-primary/10":
+                      "border-accent-primary bg-accent-primary/20":
                         theme() === th.id,
-                      "border-white/10 hover:border-accent-primary/50":
+                      "border-border-solid hover:border-accent-primary/50":
                         theme() !== th.id,
                     }}
                   >
@@ -615,7 +616,7 @@ const OnboardingDialog: Component = () => {
                   value={inviteCode()}
                   onInput={(e) => setInviteCode(e.currentTarget.value)}
                   placeholder={t("onboarding.join.invitePlaceholder")}
-                  class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-secondary focus:outline-none focus:border-accent-primary/50"
+                  class="w-full px-4 py-3 text-sm rounded-lg bg-surface-layer1 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary/50"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") handleJoinInvite();
                   }}
@@ -623,7 +624,7 @@ const OnboardingDialog: Component = () => {
                 <button
                   onClick={handleJoinInvite}
                   disabled={!inviteCode().trim() || joiningInvite()}
-                  class="w-full py-2.5 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                  class="w-full py-2.5 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover transition-colors state-disabled"
                 >
                   <Show
                     when={joiningInvite()}
@@ -701,7 +702,7 @@ const OnboardingDialog: Component = () => {
                 }
                 data-testid="onboarding-next"
                 disabled={savingName()}
-                class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover disabled:opacity-50 transition-colors"
+                class="flex items-center gap-1.5 px-5 py-2 text-sm font-medium rounded-lg bg-accent-primary text-on-accent hover:bg-primary-hover transition-colors state-disabled"
               >
                 <Show
                   when={!savingName()}

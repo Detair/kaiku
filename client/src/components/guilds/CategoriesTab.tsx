@@ -221,7 +221,7 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
           value={newCategoryName()}
           onInput={(e) => setNewCategoryName(e.currentTarget.value)}
           onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
-          class="flex-1 px-3 py-2 bg-surface-layer2 rounded-lg text-sm text-text-primary border border-white/10 outline-none focus:ring-1 focus:ring-accent-primary placeholder-text-secondary"
+          class="flex-1 px-3 py-2 bg-surface-layer2 rounded-lg text-sm text-text-primary border border-white/10 outline-none focus:ring-1 focus:ring-accent-primary placeholder-text-placeholder"
           disabled={isCreating()}
         />
         <div class="flex rounded-lg border border-white/10 overflow-hidden shrink-0">
@@ -242,7 +242,7 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
         <button
           onClick={handleCreate}
           disabled={!newCategoryName().trim() || isCreating()}
-          class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+          class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg text-sm font-medium hover:opacity-90 transition-opacity shrink-0 state-disabled"
         >
           Add
         </button>
@@ -286,14 +286,14 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
                             if (e.key === "Enter") handleCreateSubcategory(category.id);
                             if (e.key === "Escape") setAddingSubcategoryFor(null);
                           }}
-                          class="flex-1 px-2 py-1 bg-surface-layer2 rounded text-sm text-text-primary border border-white/10 outline-none focus:ring-1 focus:ring-accent-primary placeholder-text-secondary"
+                          class="flex-1 px-2 py-1 bg-surface-layer2 rounded text-sm text-text-primary border border-white/10 outline-none focus:ring-1 focus:ring-accent-primary placeholder-text-placeholder"
                           disabled={isCreating()}
                           ref={(el) => setTimeout(() => el.focus(), 0)}
                         />
                         <button
                           onClick={() => handleCreateSubcategory(category.id)}
                           disabled={!subCategoryName().trim() || isCreating()}
-                          class="p-1 text-accent-success hover:bg-white/10 rounded disabled:opacity-50"
+                          class="p-1 text-accent-success hover:bg-white/10 rounded state-disabled-quiet"
                           title="Add"
                         >
                           <Check class="w-4 h-4" />

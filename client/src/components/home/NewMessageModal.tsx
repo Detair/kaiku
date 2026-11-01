@@ -119,7 +119,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
                 value={search()}
                 onInput={(e) => setSearch(e.currentTarget.value)}
                 placeholder={t("dm.new.searchPlaceholder")}
-                class="w-full pl-9 pr-4 py-2 border border-white/10 rounded-lg text-text-input placeholder-text-secondary focus:outline-none focus:border-accent-primary"
+                class="w-full pl-9 pr-4 py-2 border border-white/10 rounded-lg text-text-input placeholder-text-placeholder focus:outline-none focus:border-accent-primary"
                 style={{"background-color":"var(--color-surface-layer1)"}}
               />
             </div>
@@ -174,7 +174,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
               data-testid="new-dm-submit"
               onClick={handleCreate}
               disabled={selectedIds().length === 0 || isCreating()}
-              class="w-full py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+              class="w-full py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 transition-opacity state-disabled"
             >
               {submitLabel()}
             </button>

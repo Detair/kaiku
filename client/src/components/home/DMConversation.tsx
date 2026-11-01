@@ -306,7 +306,7 @@ const DMConversation: Component = () => {
                 ? t("dm.header.startCall")
                 : t("dm.header.callInProgress")
             }
-            class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-layer2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-layer2 transition-colors state-disabled-quiet"
           >
             <Phone class="w-5 h-5" />
           </button>
