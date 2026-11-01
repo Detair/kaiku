@@ -110,3 +110,22 @@ This document tracks the specific text prompts used to generate the Kaiku brandi
 
 ### Home View: Idle Dashboard (`floki_home_idle.png`)
 > `[BASE PROMPT] The dog is relaxing at a cozy futuristic desk, leaning back comfortably, with softly glowing dual monitors showing chat interfaces, a warm cup of coffee nearby, looking content and at ease. Highly detailed, minimalist background, transparent background feel.`
+
+---
+
+## App and Tray Icons
+
+The desktop app icon and the system tray icon are generated from two committed source images:
+
+| Source | Use |
+|--------|-----|
+| `client/src-tauri/icons/source/app-icon.png` | Main logo (square, at least 1024 px, transparent corners). Produces the window, taskbar, dock and installer icons. |
+| `client/src-tauri/icons/source/tray-icon.png` | Simplified variant (head only, no thin outer rings) that stays readable at 16-32 px. Produces `icons/tray/32x32.png` and `64x64.png`. |
+
+Both stand-ins currently sit on a filled dark slate disc (`#2E3440`) so they read on light and dark panels. When the final artwork is ready, overwrite the two source files and run, from `client/`:
+
+```bash
+bun run icons
+```
+
+This runs the official `tauri icon` CLI (PNG sizes, `.icns`, `.ico`) and resizes the tray icon with sharp. Commit the regenerated files. `client/scripts/__tests__/app-icons.test.ts` fails if any icon is a placeholder.
