@@ -10,6 +10,56 @@
   calls. Planned after v1.1 (admin MCP / agent bots); its Android UI work may
   start in parallel.
 
+## Decisions 2026-11-03 (maintainer GO)
+
+These override anything below that contradicts them.
+
+1. **B1 and B2 are v1.0**: admin device setup for another user and
+   passwordless accounts ship with the new login. Family members are set up
+   on the full Android app at the v1.0 launch; the simple app joins in v1.2.
+2. **E-mail password reset is removed** (`/auth/forgot-password`,
+   `/auth/reset-password`): it is an e-mail login in disguise. Recovery is
+   only another own device, backup codes / TOTP, or admin recovery.
+3. **Admin recovery works in person and remotely**; the safeguard is the
+   confirmation on the admin's own key device (B1.3) plus admin re-auth.
+4. **Voice messages** (record, send, play) are v1.2 on all clients
+   (desktop, web, full app, simple app), together with 1:1 video.
+5. **State of the art is the bar, and no password at all is fine.**
+   Passkeys (WebAuthn / FIDO2) are a first-class login method in v1.0, not a
+   later option: Android via Credential Manager, browsers and Windows/macOS
+   desktop via WebAuthn where the webview supports it. Phone-as-key with QR
+   (B3) stays the universal path, notably for the Linux desktop. A password
+   becomes optional for every account; users may remove theirs. Before
+   implementation the login part is checked against current standards
+   (NIST SP 800-63B-4, OWASP ASVS 5 and the Authentication / MFA cheat sheets,
+   FIDO cross-device guidance, CISA guidance on MFA fatigue) and gets a final
+   design review.
+
+Builder calls (settled by the coordinator, may be revised by that review):
+
+- **Approvals are signed by the device**: each key device holds a P-256 key
+  in the Android Keystore (as in the v1.1 owner-approvals plan) and signs the
+  server-built approval bytes. A session token alone cannot approve.
+- **One approval mechanism** for login approvals (v1.0) and agent elevation /
+  destructive-action approvals (v1.1); the v1.1 owner-approvals foundation
+  moves to v1.0.
+- **Adding or removing a key device** needs approval on an existing key
+  device. The first key device of a migrating account needs a fresh re-auth
+  (password + TOTP, or a passkey). The current `POST /auth/qr/redeem`, which
+  returns a session without confirmation, is replaced by the confirmed flow.
+- **TOTP / backup codes for users with a key device** are offered only as
+  "phone not at hand" after an approval has expired; using them sends a
+  notice to the key devices, and after "That wasn't me" the fallback is
+  closed for that login attempt.
+- **Admin re-auth (C24)** accepts a key-device approval or a passkey as a
+  method, so admins can be passwordless too.
+- **A key device whose refresh session has lapsed** signs in again with its
+  device key (proof of possession); no admin is needed and token lifetimes
+  stay unchanged.
+- **QR login warning**: the approval screen warns prominently when the PC's
+  and the phone's IP or location differ strongly. The relay residual risk is
+  documented; passkeys (hybrid transport) are the real answer where available.
+
 ## Intent
 
 Kaiku's family server has two kinds of users:
@@ -43,7 +93,7 @@ are confirmed in the app, ideally by scanning a QR code shown on the PC.
 
 ## Non-goals
 
-- **E-mail login or magic links**, also not as a fallback (decided: an e-mail
+- **E-mail login, magic links or e-mail password reset**, also not as a fallback (decided: an e-mail
   account is a weaker key than the phone; see the 2026-10-31 web.de hijack).
 - iOS.
 - Android E2EE. E2EE is off for v1.0 everywhere and Android has none
