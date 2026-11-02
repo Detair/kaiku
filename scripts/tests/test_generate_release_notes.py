@@ -169,6 +169,22 @@ class NeutralizeMentionsTest(unittest.TestCase):
         line = "- run ``a ` b @here`` then"
         self.assertEqual(neutralize_mentions(line), line)
 
+    def test_unmatched_double_run_does_not_pair_with_fence(self) -> None:
+        self.assertEqual(
+            neutralize_mentions("- `` @alice ` text"),
+            "- `` ```@alice``` ` text",
+        )
+
+    def test_nested_paren_link_destination_is_kept(self) -> None:
+        line = "- [x](foo(bar)?user=@alice)"
+        self.assertEqual(neutralize_mentions(line), line)
+
+    def test_bracket_paren_prose_is_not_protected(self) -> None:
+        self.assertEqual(
+            neutralize_mentions("- literal ]( ping @alice )"),
+            "- literal ]( ping `@alice` )",
+        )
+
     def test_team_mention_is_neutralized(self) -> None:
         self.assertEqual(neutralize_mentions("- ping @org/team"), "- ping `@org`/team")
 

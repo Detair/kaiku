@@ -61,14 +61,37 @@ def parse_roadmap_metadata(roadmap: str) -> tuple[str, str]:
 
 # A GitHub handle after "@" that is not part of an e-mail address or URL.
 MENTION_RE = re.compile(r"(?<![\w@./`+%-])@([A-Za-z0-9][A-Za-z0-9-]*)")
-# Text left untouched: code spans (a backtick run closed by a run of the same
-# length), Markdown link destinations, URLs and e-mail addresses.
-PROTECTED_RE = re.compile(
-    r"(?P<tick>`+)(?:.*?[^`])??(?P=tick)(?!`)"
-    r"|\]\([^)]*\)"
-    r"|[A-Za-z][A-Za-z0-9+.-]*://\S+"
+# Prose left untouched: inline links (destination without spaces, one level
+# of nested parentheses), bare URLs and e-mail addresses.
+LINK_URL_EMAIL_RE = re.compile(
+    r"\[[^\]]*\]\((?:[^()\s]|\([^()\s]*\))*\)"
+    r"|\b[A-Za-z][A-Za-z0-9+.-]*://\S+"
     r"|[\w.+%-]+@[\w-]+(?:\.[\w-]+)+"
 )
+
+
+def split_code_spans(line: str) -> list[tuple[bool, str]]:
+    """Split a line into (is_code, text) pieces following CommonMark: a code
+    span opens with a backtick run and closes at the next run of exactly the
+    same length; a run without such a partner is literal text."""
+    runs = [(m.start(), m.end()) for m in re.finditer(r"`+", line)]
+    pieces: list[tuple[bool, str]] = []
+    pos = i = 0
+    while i < len(runs):
+        start, end = runs[i]
+        closer = next(
+            (j for j in range(i + 1, len(runs)) if runs[j][1] - runs[j][0] == end - start),
+            None,
+        )
+        if closer is None:
+            i += 1
+            continue
+        pieces.append((False, line[pos:start]))
+        pieces.append((True, line[start : runs[closer][1]]))
+        pos = runs[closer][1]
+        i = closer + 1
+    pieces.append((False, line[pos:]))
+    return pieces
 
 
 def neutralize_mentions(line: str) -> str:
@@ -79,21 +102,24 @@ def neutralize_mentions(line: str) -> str:
     "@everyone" or "@mention" names a feature, not a person. Code spans, link
     destinations, URLs and e-mail addresses are left as they are.
     """
-    pieces: list[tuple[bool, str]] = []
-    pos = 0
-    for m in PROTECTED_RE.finditer(line):
-        pieces.append((False, line[pos : m.start()]))
-        pieces.append((True, m.group(0)))
-        pos = m.end()
-    pieces.append((False, line[pos:]))
-    # A stray (unclosed) single backtick in the prose would pair with an
-    # inserted one, so use a double-backtick span then.
-    stray = any("`" in text for protected, text in pieces if not protected)
-    fence = "``" if stray else "`"
-    return "".join(
-        text if protected else MENTION_RE.sub(lambda m: f"{fence}{m.group(0)}{fence}", text)
-        for protected, text in pieces
-    )
+    pieces = split_code_spans(line)
+    # Literal (unpaired) backtick runs stay in the prose; the inserted fence
+    # must differ in length from all of them so it cannot pair with one.
+    literal = {len(r) for code, text in pieces if not code for r in re.findall(r"`+", text)}
+    fence = "`" * next(n for n in range(1, len(literal) + 2) if n not in literal)
+
+    def wrap(text: str) -> str:
+        if "@" not in text:
+            return text
+        out, pos = [], 0
+        for m in LINK_URL_EMAIL_RE.finditer(text):
+            out.append(MENTION_RE.sub(lambda h: f"{fence}{h.group(0)}{fence}", text[pos : m.start()]))
+            out.append(m.group(0))
+            pos = m.end()
+        out.append(MENTION_RE.sub(lambda h: f"{fence}{h.group(0)}{fence}", text[pos:]))
+        return "".join(out)
+
+    return "".join(text if code else wrap(text) for code, text in pieces)
 
 
 def collect_section_items(unreleased: str) -> dict[str, list[str]]:
