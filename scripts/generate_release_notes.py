@@ -60,20 +60,39 @@ def parse_roadmap_metadata(roadmap: str) -> tuple[str, str]:
 
 
 # A GitHub handle after "@" that is not part of an e-mail address or URL.
-MENTION_RE = re.compile(r"(?<![\w@./`])@([A-Za-z0-9][A-Za-z0-9-]*)")
+MENTION_RE = re.compile(r"(?<![\w@./`+%-])@([A-Za-z0-9][A-Za-z0-9-]*)")
+# Text left untouched: code spans (a backtick run closed by a run of the same
+# length), Markdown link destinations, URLs and e-mail addresses.
+PROTECTED_RE = re.compile(
+    r"(?P<tick>`+)(?:.*?[^`])??(?P=tick)(?!`)"
+    r"|\]\([^)]*\)"
+    r"|[A-Za-z][A-Za-z0-9+.-]*://\S+"
+    r"|[\w.+%-]+@[\w-]+(?:\.[\w-]+)+"
+)
 
 
 def neutralize_mentions(line: str) -> str:
-    """Wrap ``@word`` outside inline code in backticks.
+    """Render ``@word`` in changelog prose as inline code.
 
     GitHub links every ``@handle`` in a release body to that account, notifies
     it and lists it under the release's contributors. Changelog prose such as
-    "@everyone" or "@mention" names a feature, not a person, so it is rendered
-    as code instead.
+    "@everyone" or "@mention" names a feature, not a person. Code spans, link
+    destinations, URLs and e-mail addresses are left as they are.
     """
-    parts = re.split(r"(`[^`]*`)", line)
+    pieces: list[tuple[bool, str]] = []
+    pos = 0
+    for m in PROTECTED_RE.finditer(line):
+        pieces.append((False, line[pos : m.start()]))
+        pieces.append((True, m.group(0)))
+        pos = m.end()
+    pieces.append((False, line[pos:]))
+    # A stray (unclosed) single backtick in the prose would pair with an
+    # inserted one, so use a double-backtick span then.
+    stray = any("`" in text for protected, text in pieces if not protected)
+    fence = "``" if stray else "`"
     return "".join(
-        part if part.startswith("`") else MENTION_RE.sub(r"`@\1`", part) for part in parts
+        text if protected else MENTION_RE.sub(lambda m: f"{fence}{m.group(0)}{fence}", text)
+        for protected, text in pieces
     )
 
 

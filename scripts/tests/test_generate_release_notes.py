@@ -155,6 +155,23 @@ class NeutralizeMentionsTest(unittest.TestCase):
         line = "- mail me@example.com, see https://x.test/@foo and `@here` in code"
         self.assertEqual(neutralize_mentions(line), line)
 
+    def test_keeps_link_destinations_and_plus_emails(self) -> None:
+        line = "- [profile](https://example.com?user=@alice) or first+@example.com"
+        self.assertEqual(neutralize_mentions(line), line)
+
+    def test_unmatched_backtick_uses_double_backticks(self) -> None:
+        self.assertEqual(
+            neutralize_mentions("- unmatched ` text @alice"),
+            "- unmatched ` text ``@alice``",
+        )
+
+    def test_double_backtick_code_span_is_kept(self) -> None:
+        line = "- run ``a ` b @here`` then"
+        self.assertEqual(neutralize_mentions(line), line)
+
+    def test_team_mention_is_neutralized(self) -> None:
+        self.assertEqual(neutralize_mentions("- ping @org/team"), "- ping `@org`/team")
+
     def test_collected_items_are_neutralized(self) -> None:
         items = collect_section_items("### Fixed\n- @mentions now notify\n")
         self.assertEqual(items["Fixed"], ["- `@mentions` now notify"])
