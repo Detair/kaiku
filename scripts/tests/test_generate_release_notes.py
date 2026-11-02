@@ -10,7 +10,13 @@ from pathlib import Path
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from generate_release_notes import SECTIONS, extract_section, fit_release_notes  # noqa: E402
+from generate_release_notes import (  # noqa: E402
+    SECTIONS,
+    collect_section_items,
+    extract_section,
+    fit_release_notes,
+    neutralize_mentions,
+)
 
 CHANGELOG = """# Changelog
 
@@ -136,6 +142,22 @@ class MainTest(unittest.TestCase):
             self.run_main("v1.1.0-rc.1"),
             self.run_main("v1.1.0-rc.1", "--max-chars", "100000"),
         )
+
+
+class NeutralizeMentionsTest(unittest.TestCase):
+    def test_wraps_bare_mentions(self) -> None:
+        self.assertEqual(
+            neutralize_mentions("- a denial for @everyone and @user autocomplete"),
+            "- a denial for `@everyone` and `@user` autocomplete",
+        )
+
+    def test_keeps_code_emails_and_urls(self) -> None:
+        line = "- mail me@example.com, see https://x.test/@foo and `@here` in code"
+        self.assertEqual(neutralize_mentions(line), line)
+
+    def test_collected_items_are_neutralized(self) -> None:
+        items = collect_section_items("### Fixed\n- @mentions now notify\n")
+        self.assertEqual(items["Fixed"], ["- `@mentions` now notify"])
 
 
 if __name__ == "__main__":

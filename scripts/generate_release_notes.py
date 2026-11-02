@@ -59,6 +59,24 @@ def parse_roadmap_metadata(roadmap: str) -> tuple[str, str]:
     return phase_match.group(1).strip(), date_match.group(1).strip()
 
 
+# A GitHub handle after "@" that is not part of an e-mail address or URL.
+MENTION_RE = re.compile(r"(?<![\w@./`])@([A-Za-z0-9][A-Za-z0-9-]*)")
+
+
+def neutralize_mentions(line: str) -> str:
+    """Wrap ``@word`` outside inline code in backticks.
+
+    GitHub links every ``@handle`` in a release body to that account, notifies
+    it and lists it under the release's contributors. Changelog prose such as
+    "@everyone" or "@mention" names a feature, not a person, so it is rendered
+    as code instead.
+    """
+    parts = re.split(r"(`[^`]*`)", line)
+    return "".join(
+        part if part.startswith("`") else MENTION_RE.sub(r"`@\1`", part) for part in parts
+    )
+
+
 def collect_section_items(unreleased: str) -> dict[str, list[str]]:
     items = {section: [] for section in SECTIONS}
     current_section: str | None = None
@@ -72,7 +90,7 @@ def collect_section_items(unreleased: str) -> dict[str, list[str]]:
             continue
 
         if current_section and re.match(r"^\s*-\s+", line):
-            items[current_section].append(line)
+            items[current_section].append(neutralize_mentions(line))
 
     return items
 
