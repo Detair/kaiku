@@ -27,7 +27,7 @@ const VARIANTS: Record<ButtonVariant, string> = {
   primary: "bg-accent-primary text-on-accent hover:bg-primary-hover font-semibold state-disabled",
   secondary:
     "bg-surface-layer2 text-text-primary border border-border-solid hover:bg-surface-highlight font-medium state-disabled",
-  danger: "bg-accent-danger text-on-danger hover:bg-accent-danger/90 font-semibold state-disabled",
+  danger: "bg-accent-danger-fill text-on-danger hover:bg-accent-danger-fill/90 font-semibold state-disabled",
   ghost: "text-text-primary hover:bg-surface-layer2 state-disabled-quiet",
 };
 

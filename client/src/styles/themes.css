@@ -24,6 +24,7 @@
  * --color-accent-primary     Buttons, links, active indicators
  * --color-accent-primary-hover  Hovered state of accent-primary
  * --color-accent-danger      Delete actions, errors, destructive UI
+ * --color-danger-fill        Danger button fill (darker, >= 4.5:1 with text-on-danger)
  * --color-accent-success     Online status, success messages, confirmations
  * --color-accent-warning     Warnings, pending states, caution indicators
  * --color-text-on-accent    Text color for use on accent-primary backgrounds
@@ -88,6 +89,8 @@
   --color-text-on-accent: #2E3440;
   --color-accent-danger: #bf616a;
   --color-accent-danger-rgb: 191 97 106;
+  --color-danger-fill: #b24852;
+  --color-danger-fill-rgb: 178 72 82;
   --color-accent-success: #a3be8c;
   --color-accent-success-rgb: 163 190 140;
   --color-accent-warning: #ebcb8b;
@@ -151,6 +154,8 @@
   --color-text-on-accent: #002b36;
   --color-accent-danger: #dc322f;
   --color-accent-danger-rgb: 220 50 47;
+  --color-danger-fill: #d72724;
+  --color-danger-fill-rgb: 215 39 36;
   --color-accent-success: #859900;
   --color-accent-success-rgb: 133 153 0;
   --color-accent-warning: #b58900;
@@ -206,6 +211,8 @@
   --color-text-on-accent: #fdf6e3;
   --color-accent-danger: #dc322f;
   --color-accent-danger-rgb: 220 50 47;
+  --color-danger-fill: #c82522;
+  --color-danger-fill-rgb: 200 37 34;
   --color-accent-success: #859900;
   --color-accent-success-rgb: 133 153 0;
   --color-accent-warning: #b58900;
@@ -275,6 +282,8 @@
   --color-text-on-accent: #2c2418;
   --color-accent-danger: #c06050;
   --color-accent-danger-rgb: 192 96 80;
+  --color-danger-fill: #a64b3c;
+  --color-danger-fill-rgb: 166 75 60;
   --color-accent-success: #8db87e;
   --color-accent-success-rgb: 141 184 126;
   --color-accent-warning: #d4a854;
@@ -334,6 +343,8 @@
   --color-text-on-accent: #2E3440;
   --color-accent-danger: #bf616a;
   --color-accent-danger-rgb: 191 97 106;
+  --color-danger-fill: #b24852;
+  --color-danger-fill-rgb: 178 72 82;
   --color-accent-success: #a3be8c;
   --color-accent-success-rgb: 163 190 140;
   --color-accent-warning: #ebcb8b;

@@ -3,7 +3,7 @@
  */
 
 import { isPermissionVisible } from "@/stores/serverFeatures";
-import { Component, createSignal, createEffect, For, Show } from "solid-js";
+import { Component, createSignal, createEffect, createMemo, For, Show, on, untrack } from "solid-js";
 import { ArrowLeft, Plus, X } from "lucide-solid";
 import {
   permissionsState,
@@ -57,19 +57,28 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
     return perms;
   };
 
-  // Initialize form when role changes
-  createEffect(() => {
-    if (props.role) {
-      setName(props.role.is_default ? "@everyone" : props.role.name);
-      setColor(props.role.color);
-      setPermissions(props.role.permissions);
-    } else {
-      setName("");
-      setColor(null);
-      setPermissions(0);
-    }
-    setHasChanges(false);
-  });
+  // Initialize the form when a different role is opened. Keyed on the id only
+  // (the memo drops equal ids): a live update or a fresh copy of the same role
+  // (store/WebSocket/reload) must not discard edits.
+  const roleId = createMemo(() => props.role?.id);
+  createEffect(
+    on(
+      roleId,
+      () => {
+        const role = untrack(() => props.role);
+        if (role) {
+          setName(role.is_default ? "@everyone" : role.name);
+          setColor(role.color);
+          setPermissions(role.permissions);
+        } else {
+          setName("");
+          setColor(null);
+          setPermissions(0);
+        }
+        setHasChanges(false);
+      },
+    ),
+  );
 
   // Track changes
   createEffect(() => {

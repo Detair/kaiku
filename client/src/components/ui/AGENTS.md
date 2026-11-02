@@ -185,6 +185,7 @@ From CSS custom properties:
 - `--color-surface-layer2` - More elevated
 - `--color-error-text` - Error messages
 - `--color-text-on-success` - Text on a success fill
+- `--color-danger-fill` - Danger button fill (>= 4.5:1 with `--color-text-on-danger`; `--color-accent-danger` stays the danger text colour)
 - `--color-text-on-danger` - Text on a danger fill
 
 ### Spacing

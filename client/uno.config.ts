@@ -51,6 +51,7 @@ export default defineConfig({
       accent: {
         primary: "rgb(var(--color-accent-primary-rgb) / <alpha-value>)",
         danger: "rgb(var(--color-accent-danger-rgb) / <alpha-value>)",
+        "danger-fill": "rgb(var(--color-danger-fill-rgb) / <alpha-value>)",
         success: "rgb(var(--color-accent-success-rgb) / <alpha-value>)",
         warning: "rgb(var(--color-accent-warning-rgb) / <alpha-value>)",
       },
@@ -89,7 +90,7 @@ export default defineConfig({
     // Buttons
     "btn": "px-4 py-2 rounded-lg font-medium transition-all duration-200",
     "btn-primary": "btn bg-accent-primary hover:bg-accent-primary/80 text-on-accent",
-    "btn-danger": "btn bg-accent-danger hover:bg-accent-danger/80 text-on-danger",
+    "btn-danger": "btn bg-accent-danger-fill hover:bg-accent-danger-fill/90 text-on-danger",
 
     // Input fields — uses arbitrary-value bg to bypass UnoCSS's trailing-digit
     // parsing issue with `surface-layer2` inside shortcuts (the same class

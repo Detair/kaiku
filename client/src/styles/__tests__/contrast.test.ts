@@ -110,10 +110,9 @@ function pairs(): Pair[] {
     { fg: "--color-text-muted", bg: "--color-surface-layer1", min: 3 },
     // Button labels, default state.
     { fg: "--color-text-on-accent", bg: "--color-accent-primary", min: 4.5 },
-    // Danger fills double as danger text colour on dark surfaces, so a darker
-    // fill would hurt that use. Held at 3:1 (bold button labels) until danger
-    // gets its own fill token.
-    { fg: "--color-text-on-danger", bg: "--color-accent-danger", min: 3 },
+    // Danger buttons use their own darker fill; accent-danger stays the
+    // danger text colour on dark surfaces.
+    { fg: "--color-text-on-danger", bg: "--color-danger-fill", min: 4.5 },
     // Disabled buttons: the label on its own fill.
     { fg: "--color-disabled-text", bg: "--color-disabled-bg", min: 3 },
     // Toggle: knob vs its track in both states.
