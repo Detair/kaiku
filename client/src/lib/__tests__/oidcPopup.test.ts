@@ -37,6 +37,17 @@ describe("watchSsoPopup", () => {
     expect(onResult).not.toHaveBeenCalled();
   });
 
+  it("ignores a message from the popup with a foreign origin", () => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        origin: "https://evil.example",
+        source: popup as unknown as MessageEventSource,
+        data: { type: "oidc-callback", access_token: "tok" },
+      }),
+    );
+    expect(onResult).not.toHaveBeenCalled();
+  });
+
   it("accepts the message from the popup", () => {
     window.dispatchEvent(msg(popup));
     expect(onResult).toHaveBeenCalledTimes(1);
