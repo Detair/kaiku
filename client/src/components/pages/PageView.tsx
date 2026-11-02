@@ -110,7 +110,7 @@ export default function PageView(props: PageViewProps) {
               type="button"
               onClick={handleDelete}
               disabled={isDeleting()}
-              class="px-3 py-1.5 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-900/30 rounded-md flex items-center gap-2 transition-colors disabled:opacity-50"
+              class="px-3 py-1.5 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-900/30 rounded-md flex items-center gap-2 transition-colors state-disabled-quiet"
             >
               <Trash2 class="w-4 h-4" />
               {isDeleting() ? "Deleting..." : "Delete"}

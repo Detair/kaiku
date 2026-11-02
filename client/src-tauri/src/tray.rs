@@ -252,8 +252,8 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             }
         });
 
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
+    if let Some(icon) = tray_icon(app) {
+        builder = builder.icon(icon);
     }
 
     builder.build(app)?;
@@ -266,6 +266,22 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     }
     refresh_host_availability(app);
     Ok(())
+}
+
+/// Simplified tray artwork (64 px; the OS downscales it on standard-DPI panels).
+/// Regenerate with `bun run icons` from `icons/source/tray-icon.png`.
+const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray/64x64.png");
+
+/// The dedicated tray icon, falling back to the window icon if decoding fails.
+fn tray_icon<R: Runtime>(app: &AppHandle<R>) -> Option<tauri::image::Image<'static>> {
+    match tauri::image::Image::from_bytes(TRAY_ICON_PNG) {
+        Ok(icon) => Some(icon),
+        Err(e) => {
+            tracing::warn!(error = %e, "tray icon failed to decode, using window icon");
+            app.default_window_icon()
+                .map(|icon| icon.clone().to_owned())
+        }
+    }
 }
 
 fn build_menu<R: Runtime>(

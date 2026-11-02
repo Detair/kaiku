@@ -5,10 +5,52 @@ import type { AudioDevice } from "@/lib/webrtc";
 import { Mic, Volume2 } from "lucide-solid";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
+import { canSelectOutputDevice } from "@/lib/browserCapabilities";
+import {
+    FOLLOW_SYSTEM_DEFAULT,
+    pickerDeviceValue,
+    showAllAlsaDevices,
+    systemDefaultAlias,
+    systemDefaultDevice,
+    visibleDevices,
+} from "@/lib/audioDevices";
+import Button from "@/components/ui/Button";
+import ShowAllAlsaDevicesToggle from "@/components/voice/ShowAllAlsaDevicesToggle";
 
 const AudioSettings: Component = () => {
     const [inputDevices, setInputDevices] = createSignal<AudioDevice[]>([]);
     const [outputDevices, setOutputDevices] = createSignal<AudioDevice[]>([]);
+    const [labelsAvailable, setLabelsAvailable] = createSignal(true);
+    const [requestingLabels, setRequestingLabels] = createSignal(false);
+
+    const applyDeviceList = (list: { inputs: AudioDevice[]; outputs: AudioDevice[]; labelsAvailable?: boolean }) => {
+        setInputDevices(list.inputs);
+        setOutputDevices(list.outputs);
+        setLabelsAvailable(list.labelsAvailable !== false);
+    };
+
+    // Explicit user action: browsers only reveal device names after the
+    // microphone permission has been granted.
+    const showDeviceNames = async () => {
+        setRequestingLabels(true);
+        try {
+            const adapter = await createVoiceAdapter();
+            const result = await adapter.requestDeviceLabels?.();
+            if (result?.ok) {
+                applyDeviceList(result.value);
+            } else {
+                showToast({
+                    type: "error",
+                    title: t("settings.audio.deviceNamesFailed"),
+                    duration: 8000,
+                });
+            }
+        } catch (err) {
+            console.error("Failed to request device names:", err);
+        } finally {
+            setRequestingLabels(false);
+        }
+    };
 
     onMount(async () => {
         try {
@@ -19,8 +61,7 @@ const AudioSettings: Component = () => {
             const adapter = await createVoiceAdapter();
             const result = await adapter.getAudioDevices();
             if (result.ok) {
-                setInputDevices(result.value.inputs);
-                setOutputDevices(result.value.outputs);
+                applyDeviceList(result.value);
             } else {
                 console.error("Failed to enumerate audio devices:", result.error);
             }
@@ -31,19 +72,24 @@ const AudioSettings: Component = () => {
 
     // Persist the selection and live-apply it to an active voice session.
     const changeDevice = async (kind: "input" | "output", value: string) => {
-        const deviceId = value === "default" ? null : value;
+        const deviceId = value === FOLLOW_SYSTEM_DEFAULT ? null : value;
         await updateAudioSetting(
             kind === "input" ? "input_device" : "output_device",
             deviceId,
         );
-        // Live-apply only for concrete devices; "default" takes effect on
-        // the next voice join (the adapter API has no "reset to default").
+        // Live-apply to a running call. "Default Device" switches it to the
+        // device that is the system default now (as the voice audio modal
+        // does); with no default listed (e.g. Firefox) it takes effect on
+        // the next voice join, the adapter has no "reset to default".
+        const liveId =
+            deviceId ??
+            systemDefaultDevice(kind === "input" ? inputDevices() : outputDevices())?.deviceId;
         const adapter = getVoiceAdapter();
-        if (adapter && deviceId) {
+        if (adapter && liveId) {
             const result =
                 kind === "input"
-                    ? await adapter.setInputDevice(deviceId)
-                    : await adapter.setOutputDevice(deviceId);
+                    ? await adapter.setInputDevice(liveId)
+                    : await adapter.setOutputDevice(liveId);
             if (!result.ok) {
                 console.warn(`Failed to apply ${kind} device:`, result.error);
                 showToast({
@@ -79,18 +125,35 @@ const AudioSettings: Component = () => {
                                 </label>
                                 <select
                                     class="w-full px-4 py-2 bg-surface-base border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors appearance-none cursor-pointer"
-                                    value={settings().audio.input_device || "default"}
+                                    value={pickerDeviceValue(inputDevices(), settings().audio.input_device)}
                                     onChange={(e) => changeDevice("input", e.currentTarget.value)}
                                 >
-                                    <option value="default">{t("settings.audio.defaultDevice")}</option>
-                                    <For each={inputDevices()}>
-                                        {(device) => (
+                                    {/* Unless the list has its own alias entry that follows the
+                                        system default (Linux "System default", Chrome). */}
+                                    <Show when={!systemDefaultAlias(inputDevices())}>
+                                        <option value={FOLLOW_SYSTEM_DEFAULT}>{t("settings.audio.defaultDevice")}</option>
+                                    </Show>
+                                    <For each={visibleDevices(inputDevices(), showAllAlsaDevices(), pickerDeviceValue(inputDevices(), settings().audio.input_device))}>
+                                        {(device, i) => (
                                             <option value={device.deviceId}>
-                                                {device.label || t("settings.audio.microphoneFallback", { id: device.deviceId.slice(0, 5) })}
+                                                {device.label || t("settings.audio.microphoneFallback", { id: i() + 1 })}
                                             </option>
                                         )}
                                     </For>
                                 </select>
+                                <Show when={!labelsAvailable()}>
+                                    <div class="mt-2 flex flex-wrap items-center gap-3">
+                                        <p class="text-xs text-text-secondary">{t("settings.audio.deviceNamesHidden")}</p>
+                                        <Button
+                                            variant="secondary"
+                                            size="sm"
+                                            disabled={requestingLabels()}
+                                            onClick={showDeviceNames}
+                                        >
+                                            {t("settings.audio.showDeviceNames")}
+                                        </Button>
+                                    </div>
+                                </Show>
                             </div>
 
                             <div>
@@ -109,6 +172,7 @@ const AudioSettings: Component = () => {
                         </div>
 
                         <div class="space-y-4 pt-4 border-t border-white/10">
+                            <Show when={canSelectOutputDevice()}>
                             <div>
                                 <label class="text-sm font-medium text-text-primary flex items-center gap-2 mb-2">
                                     <Volume2 class="w-4 h-4 text-text-secondary" />
@@ -116,19 +180,24 @@ const AudioSettings: Component = () => {
                                 </label>
                                 <select
                                     class="w-full px-4 py-2 bg-surface-base border border-white/10 rounded-xl text-text-primary focus:outline-none focus:border-accent-primary focus:ring-1 focus:ring-accent-primary transition-colors appearance-none cursor-pointer"
-                                    value={settings().audio.output_device || "default"}
+                                    value={pickerDeviceValue(outputDevices(), settings().audio.output_device)}
                                     onChange={(e) => changeDevice("output", e.currentTarget.value)}
                                 >
-                                    <option value="default">{t("settings.audio.defaultDevice")}</option>
-                                    <For each={outputDevices()}>
-                                        {(device) => (
+                                    {/* Unless the list has its own alias entry that follows the
+                                        system default (Linux "System default", Chrome). */}
+                                    <Show when={!systemDefaultAlias(outputDevices())}>
+                                        <option value={FOLLOW_SYSTEM_DEFAULT}>{t("settings.audio.defaultDevice")}</option>
+                                    </Show>
+                                    <For each={visibleDevices(outputDevices(), showAllAlsaDevices(), pickerDeviceValue(outputDevices(), settings().audio.output_device))}>
+                                        {(device, i) => (
                                             <option value={device.deviceId}>
-                                                {device.label || t("settings.audio.speakerFallback", { id: device.deviceId.slice(0, 5) })}
+                                                {device.label || t("settings.audio.speakerFallback", { id: i() + 1 })}
                                             </option>
                                         )}
                                     </For>
                                 </select>
                             </div>
+                            </Show>
 
                             <div>
                                 <label class="text-sm font-medium text-text-primary flex items-center gap-2 mb-2 mt-4">
@@ -144,6 +213,8 @@ const AudioSettings: Component = () => {
                                 />
                             </div>
                         </div>
+
+                        <ShowAllAlsaDevicesToggle devices={[...inputDevices(), ...outputDevices()]} />
                     </>
                 )}
             </Show>

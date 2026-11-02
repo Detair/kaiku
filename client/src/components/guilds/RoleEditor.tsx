@@ -248,7 +248,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
             onInput={(e) => setName(e.currentTarget.value)}
             disabled={isEveryoneRole()}
             placeholder="Enter role name..."
-            class="w-full px-3 py-2 rounded-lg border border-white/10 text-text-primary placeholder-text-secondary disabled:opacity-50"
+            class="w-full px-3 py-2 rounded-lg border border-white/10 text-text-primary placeholder-text-placeholder state-disabled-quiet"
             style={{"background-color":"var(--color-surface-layer1)"}}
           />
         </div>
@@ -311,7 +311,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                             <label
                               class="flex items-start gap-3 p-2 rounded-lg cursor-pointer hover:bg-white/5 transition-colors"
                               classList={{
-                                "opacity-50 cursor-not-allowed": !canEdit,
+                                "state-unavailable": !canEdit,
                               }}
                             >
                               <input
@@ -442,7 +442,7 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
                   onClick={handleSave}
                   data-testid="role-editor-save"
                   disabled={isSaving() || !hasChanges() || !name().trim()}
-                  class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium hover:bg-accent-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium hover:bg-accent-primary/90 transition-colors state-disabled"
                 >
           {isSaving()
             ? "Saving..."

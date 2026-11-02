@@ -156,7 +156,7 @@ const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
               <button
                 onClick={props.onSkip}
                 disabled={props.isLoading}
-                class="flex-1 px-4 py-2 text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+                class="flex-1 px-4 py-2 text-text-secondary hover:text-text-primary transition-colors state-disabled-quiet"
               >
                 Skip for Now
               </button>
@@ -164,7 +164,7 @@ const RecoveryKeyModal: Component<RecoveryKeyModalProps> = (props) => {
             <button
               onClick={props.onConfirm}
               disabled={!confirmed() || props.isLoading}
-              class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-medium text-on-accent transition-colors"
+              class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/90 rounded-lg font-medium text-on-accent transition-colors state-disabled"
             >
               <Show when={props.isLoading}>
                 <Loader2 class="w-4 h-4 animate-spin" />

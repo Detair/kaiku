@@ -457,12 +457,7 @@ impl CallAudio for AudioHandle {
     }
 
     fn device_label(&self, kind: AudioErrorKind) -> String {
-        match kind {
-            AudioErrorKind::CaptureFailed => self.input_device_name(),
-            AudioErrorKind::PlaybackFailed => self.output_device_name(),
-        }
-        .unwrap_or("default")
-        .to_string()
+        self.active_device_label(matches!(kind, AudioErrorKind::CaptureFailed))
     }
 }
 

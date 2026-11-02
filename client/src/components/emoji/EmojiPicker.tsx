@@ -50,7 +50,7 @@ const EmojiPicker: Component<EmojiPickerProps> = (props) => {
           placeholder="Search emoji..."
           value={search()}
           onInput={(e) => setSearch(e.currentTarget.value)}
-          class="w-full px-3 py-1.5 bg-surface-layer1 rounded text-sm text-text-primary placeholder:text-text-secondary"
+          class="w-full px-3 py-1.5 bg-surface-layer1 rounded text-sm text-text-primary placeholder:text-text-placeholder"
         />
       </div>
 

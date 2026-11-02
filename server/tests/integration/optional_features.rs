@@ -105,6 +105,25 @@ async fn test_settings_reports_features_off_by_default(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn test_settings_reports_guild_discovery(pool: PgPool) {
+    for enabled in [false, true] {
+        let mut config = Config::default_for_test();
+        config.enable_guild_discovery = enabled;
+        let app = TestApp::with_pool_and_config(pool.clone(), config).await;
+        let res = app
+            .oneshot(
+                TestApp::request(Method::GET, "/api/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_to_json(res).await;
+        assert_eq!(body["guild_discovery"], enabled);
+    }
+}
+
+#[sqlx::test]
 async fn test_create_forum_channel_rejected_when_disabled(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (owner, _) = create_test_user(&pool).await;

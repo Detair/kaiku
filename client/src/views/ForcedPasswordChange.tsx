@@ -123,7 +123,7 @@ const ForcedPasswordChange: Component = () => {
   };
 
   return (
-    <div class="flex items-center justify-center min-h-screen overflow-y-auto bg-background-primary px-4">
+    <div class="flex items-center justify-center min-h-dvh overflow-y-auto bg-background-primary px-4">
       <div class="w-full max-w-md bg-background-secondary rounded-lg shadow-lg p-8">
         <h1 class="text-2xl font-bold mb-2 text-center text-text-primary">
           {t("auth.forcedChange.title")}
@@ -237,7 +237,7 @@ const ForcedPasswordChange: Component = () => {
             type="button"
             onClick={() => void logout()}
             disabled={saving()}
-            class="w-full px-4 py-2 rounded-lg text-text-secondary hover:text-text-primary transition-colors"
+            class="w-full px-4 py-2 rounded-lg text-text-secondary hover:text-text-primary transition-colors state-disabled-quiet"
           >
             {t("auth.forcedChange.signOut")}
           </button>

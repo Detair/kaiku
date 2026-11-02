@@ -103,7 +103,7 @@ const AddFriend: Component<AddFriendProps> = (props) => {
                 value={username()}
                 onInput={(e) => setUsername(e.currentTarget.value)}
                 placeholder="Enter username..."
-                class="w-full px-4 py-2 border border-white/10 rounded-lg text-text-input placeholder-text-secondary focus:outline-none focus:border-accent-primary transition-colors"
+                class="w-full px-4 py-2 border border-white/10 rounded-lg text-text-input placeholder-text-placeholder focus:outline-none focus:border-accent-primary transition-colors"
                 style={{"background-color":"var(--color-surface-layer1)"}}
                 disabled={isSubmitting()}
                 autocomplete="off"
@@ -132,7 +132,7 @@ const AddFriend: Component<AddFriendProps> = (props) => {
               <button
                 type="button"
                 onClick={props.onClose}
-                class="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors"
+                class="px-4 py-2 text-text-secondary hover:text-text-primary transition-colors state-disabled-quiet"
                 disabled={isSubmitting()}
               >
                 Cancel
@@ -140,7 +140,7 @@ const AddFriend: Component<AddFriendProps> = (props) => {
               <button
                 type="submit"
                 data-testid="add-friend-submit"
-                class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                class="px-4 py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 transition-opacity state-disabled"
                 disabled={isSubmitting()}
               >
                 {isSubmitting() ? "Sending..." : "Send Request"}

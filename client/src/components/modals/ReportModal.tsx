@@ -166,7 +166,7 @@ const ReportModal: Component<ReportModalProps> = (props) => {
                       setDescription(e.currentTarget.value.slice(0, 500))
                     }
                     placeholder="Provide additional context..."
-                    class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary resize-none text-sm"
+                    class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary resize-none text-sm"
                     rows={3}
                     maxLength={500}
                   />
@@ -191,7 +191,7 @@ const ReportModal: Component<ReportModalProps> = (props) => {
                   <button
                     onClick={handleSubmit}
                     disabled={isSubmitting()}
-                    class="px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 state-disabled"
                   >
                     {isSubmitting() ? "Submitting..." : "Submit Report"}
                   </button>

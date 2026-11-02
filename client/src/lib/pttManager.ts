@@ -399,14 +399,14 @@ export function resetPttFallbackNotice(): void {
 }
 
 /** Tell the user once per session that a plain key only works while focused. */
-function showFocusOnlyNotice(): void {
+function showFocusOnlyNotice(browser = false): void {
   if (fallbackNoticeShown) return;
   fallbackNoticeShown = true;
   showToast({
     type: "info",
     id: "ptt-focus-only",
-    title: t("voice.ptt.focusOnlyTitle"),
-    message: t("voice.ptt.focusOnly"),
+    title: t(browser ? "voice.ptt.browserFocusOnlyTitle" : "voice.ptt.focusOnlyTitle"),
+    message: t(browser ? "voice.ptt.browserFocusOnly" : "voice.ptt.focusOnly"),
     duration: 10000,
   });
 }
@@ -425,7 +425,14 @@ export async function createTauriPttListeners(
   config: PttFullConfig,
 ): Promise<() => void> {
   const cleanupBrowser = createBrowserPttListeners(controller);
-  if (!isTauri()) return cleanupBrowser;
+  if (!isTauri()) {
+    // Browsers can't register OS-wide shortcuts: keys only work while the
+    // tab is focused. Tell the user once per session.
+    if ((config.pttEnabled && config.pttKey) || (config.ptmEnabled && config.ptmKey)) {
+      showFocusOnlyNotice(true);
+    }
+    return cleanupBrowser;
+  }
 
   const wanted: string[] = [];
   if (config.pttEnabled && config.pttKey) wanted.push(config.pttKey);

@@ -628,7 +628,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
             onKeyUp={trackCursor}
             onCompositionStart={() => setIsComposing(true)}
             onCompositionEnd={() => setIsComposing(false)}
-            class="flex-1 bg-transparent py-3 text-text-input placeholder-text-secondary focus:outline-none resize-none overflow-y-auto"
+            class="flex-1 bg-transparent py-3 text-text-input placeholder-text-placeholder focus:outline-none resize-none overflow-y-auto"
             style={{ "min-height": "24px", "max-height": "192px" }}
             placeholder={t("chat.composer.placeholder", { channel: props.channelName })}
             disabled={isSending()}
@@ -667,7 +667,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
               <button
                 type="submit"
                 data-testid="message-send"
-                class="p-2 text-accent-primary hover:text-accent-primary/80 transition-colors disabled:opacity-50"
+                class="p-2 text-accent-primary hover:text-accent-primary/80 transition-colors state-disabled-quiet"
                 disabled={isSending() || isOverLimit()}
                 title={sendLabel()}
                 aria-label={sendLabel()}

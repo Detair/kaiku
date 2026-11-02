@@ -203,7 +203,7 @@ const CommandPalette: Component = () => {
               data-testid="command-palette-input"
               type="text"
               placeholder="Search channels, users, or type > for commands..."
-              class="w-full px-6 py-4 bg-transparent text-xl text-text-input outline-none placeholder:text-text-muted"
+              class="w-full px-6 py-4 bg-transparent text-xl text-text-input outline-none placeholder:text-text-placeholder"
               value={query()}
               onInput={(e) => setQuery(e.currentTarget.value)}
             />

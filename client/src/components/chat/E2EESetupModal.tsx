@@ -262,7 +262,7 @@ const E2EESetupModal: Component<E2EESetupModalProps> = (props) => {
                   <button
                     onClick={handleCopy}
                     disabled={isLoading()}
-                    class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 disabled:opacity-50 rounded-lg transition-colors text-text-primary"
+                    class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-text-primary state-disabled"
                   >
                     <Show when={copied()} fallback={<Copy class="w-4 h-4" />}>
                       <Check class="w-4 h-4 text-green-400" />
@@ -272,7 +272,7 @@ const E2EESetupModal: Component<E2EESetupModalProps> = (props) => {
                   <button
                     onClick={handleDownload}
                     disabled={isLoading()}
-                    class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 disabled:opacity-50 rounded-lg transition-colors text-text-primary"
+                    class="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-text-primary state-disabled"
                   >
                     <Download class="w-4 h-4" />
                     Download
@@ -286,7 +286,7 @@ const E2EESetupModal: Component<E2EESetupModalProps> = (props) => {
                     checked={hasSaved()}
                     onChange={(e) => setHasSaved(e.currentTarget.checked)}
                     disabled={isLoading()}
-                    class="w-5 h-5 rounded border-white/20 bg-surface-base text-accent-primary focus:ring-accent-primary disabled:opacity-50"
+                    class="w-5 h-5 rounded border-white/20 bg-surface-base text-accent-primary focus:ring-accent-primary state-disabled"
                   />
                   <span class="text-text-secondary">
                     I have saved my recovery key somewhere safe
@@ -308,14 +308,14 @@ const E2EESetupModal: Component<E2EESetupModalProps> = (props) => {
               <button
                 onClick={props.onClose}
                 disabled={isLoading()}
-                class="flex-1 px-4 py-2.5 text-text-secondary hover:text-text-primary hover:bg-white/5 rounded-lg font-medium transition-colors disabled:opacity-50"
+                class="flex-1 px-4 py-2.5 text-text-secondary hover:text-text-primary hover:bg-white/5 rounded-lg font-medium transition-colors state-disabled-quiet"
               >
                 Cancel
               </button>
               <button
                 onClick={handleSetup}
                 disabled={!hasSaved() || isLoading() || isGenerating()}
-                class="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-accent-primary hover:bg-accent-primary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-medium text-on-accent transition-colors"
+                class="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-accent-primary hover:bg-accent-primary/90 rounded-lg font-medium text-on-accent transition-colors state-disabled"
               >
                 <Show when={isLoading()}>
                   <Loader2 class="w-4 h-4 animate-spin" />

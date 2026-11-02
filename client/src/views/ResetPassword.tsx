@@ -74,7 +74,7 @@ const ResetPassword: Component = () => {
   };
 
   return (
-    <div class="flex items-center justify-center min-h-screen overflow-y-auto bg-background-primary">
+    <div class="flex items-center justify-center min-h-dvh overflow-y-auto bg-background-primary">
       <div class="flex w-full max-w-4xl mx-4 bg-background-secondary rounded-lg shadow-lg overflow-hidden">
         <div class="hidden lg:flex w-1/2 items-center justify-center p-8 bg-surface-base">
           <img src={getThemeImage("floki_auth_forgot.png")} alt={t("auth.reset.illustrationAlt")} class="w-full max-w-xs object-contain" loading="eager" decoding="async" fetchpriority="high" />
