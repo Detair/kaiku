@@ -14,10 +14,11 @@ unmaintained = "workspace"
 ignore = [
     # zip < 9 aborts on a crafted symlink entry in ZipArchive::extract
     # (RUSTSEC-2026-0429, 2026-11-02). Still pulled by utoipa-swagger-ui 9
-    # (build script, extracts the vendored Swagger UI archive; v10 needs
-    # utoipa 6) and tauri-plugin-updater 2.10 (extracts update bundles only
-    # after their minisign signature is verified). Neither path extracts
-    # untrusted archives. Remove with the utoipa 6 / Tauri updater upgrade.
+    # (build script only: copies entries of the Swagger UI release archive
+    # via by_index/enclosed_name and never calls ZipArchive::extract; v10
+    # needs utoipa 6) and tauri-plugin-updater 2.10 (extracts update bundles
+    # only after their minisign signature is verified; the client only calls
+    # downloadAndInstall). Remove with the utoipa 6 / Tauri updater upgrade.
     "RUSTSEC-2026-0429",
     # rsa crate Marvin Attack - no safe upgrade available, used by openidconnect
     "RUSTSEC-2023-0071",
