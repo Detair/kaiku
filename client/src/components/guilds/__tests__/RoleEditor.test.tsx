@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { GuildRole } from "@/lib/types";
 
@@ -44,6 +45,19 @@ describe("RoleEditor", () => {
 
     setState("role", "permissions", 8);
     setState("role", "position", 2);
+
+    expect(input.value).toBe("Moderators");
+  });
+
+  it("keeps unsaved edits when the role is replaced by a fresh copy of itself", () => {
+    const [current, setCurrent] = createSignal<GuildRole>(role("r1", "Mods"));
+    render(() => (
+      <RoleEditor guildId="g1" role={current()} onBack={() => {}} onSave={() => {}} />
+    ));
+    const input = screen.getByTestId("role-editor-name-input") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "Moderators" } });
+
+    setCurrent({ ...role("r1", "Mods"), permissions: 8 });
 
     expect(input.value).toBe("Moderators");
   });

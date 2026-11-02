@@ -3,7 +3,7 @@
  */
 
 import { isPermissionVisible } from "@/stores/serverFeatures";
-import { Component, createSignal, createEffect, For, Show, on, untrack } from "solid-js";
+import { Component, createSignal, createEffect, createMemo, For, Show, on, untrack } from "solid-js";
 import { ArrowLeft, Plus, X } from "lucide-solid";
 import {
   permissionsState,
@@ -57,11 +57,13 @@ const RoleEditor: Component<RoleEditorProps> = (props) => {
     return perms;
   };
 
-  // Initialize the form when a different role is opened. Keyed on the id only:
-  // a live update of the same role (store/WebSocket) must not discard edits.
+  // Initialize the form when a different role is opened. Keyed on the id only
+  // (the memo drops equal ids): a live update or a fresh copy of the same role
+  // (store/WebSocket/reload) must not discard edits.
+  const roleId = createMemo(() => props.role?.id);
   createEffect(
     on(
-      () => props.role?.id,
+      roleId,
       () => {
         const role = untrack(() => props.role);
         if (role) {
