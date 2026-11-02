@@ -26,12 +26,12 @@ Overwrite the two files in `source/`, then from `client/`:
 bun run icons
 ```
 
-(`client/scripts/generate-icons.mjs`: runs `bunx tauri icon` and keeps only the files `tauri.conf.json` references, resizes the tray icon with sharp, and writes `client/public/favicon.ico` + `apple-touch-icon.png` from the app icon.)
+(`client/scripts/generate-icons.mjs`: runs `bunx tauri icon` and keeps only the files `tauri.conf.json` references, resizes the tray icon with sharp, writes `client/public/favicon.ico` + `apple-touch-icon.png` and the Android launcher icons from the app icon.)
 
 The guard test `client/scripts/__tests__/app-icons.test.ts` fails on placeholder (1x1, empty, stub) icons.
 
 ## Notes
 
 - Windows-Store/MSIX `Square*Logo.png` files are not generated: no bundle target (`nsis`) uses them.
-- Android launcher icons are not handled here (see `mobile/android`).
+- Android launcher icons (`mobile/android/app/src/main/res/mipmap-*`, adaptive icon on `#2F3744`) are generated from `source/app-icon.png` by the same script.
 - Prompts for the current artwork: `docs/developer-guide/design/image-prompts.md` (App and Tray Icons).
