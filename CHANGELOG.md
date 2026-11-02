@@ -165,6 +165,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The mascot illustrations in the empty states (Friends, direct messages, Discovery, search, unread) no longer show a white box on dark themes.
 - When the server browser is turned off on the instance (`ENABLE_GUILD_DISCOVERY=false`), Create Server no longer offers discovery options (it becomes a single step with a short note), server settings explain why discovery is unavailable, and the Explore button is hidden. `GET /api/settings` now reports `guild_discovery`.
 - Opening a channel with a few unread messages no longer stops scrolling back after about 25 messages: older history loads again.
+- Signing in or registering with SSO in the browser now says so when the pop-up is blocked instead of spinning forever. If the pop-up closes without reporting back (some sign-in providers cut its link to the app), you get a Reload button that picks up the finished sign-in.
+- The browser app no longer talks to a server address remembered from an earlier visit on another host.
 - Picking someone from the @ suggestions now mentions them (and notifies them) even when their display name differs from their username.
 - Pressing Enter sends your message again when the suggestion list has no matches (for example after typing "@" or ":" text that matches nothing).
 - The @mention, emoji and command suggestion list appears next to the message box instead of the top-left corner, and no longer causes errors after it closes.
