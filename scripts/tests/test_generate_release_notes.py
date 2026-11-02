@@ -10,7 +10,13 @@ from pathlib import Path
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from generate_release_notes import SECTIONS, extract_section, fit_release_notes  # noqa: E402
+from generate_release_notes import (  # noqa: E402
+    SECTIONS,
+    collect_section_items,
+    extract_section,
+    fit_release_notes,
+    neutralize_mentions,
+)
 
 CHANGELOG = """# Changelog
 
@@ -136,6 +142,55 @@ class MainTest(unittest.TestCase):
             self.run_main("v1.1.0-rc.1"),
             self.run_main("v1.1.0-rc.1", "--max-chars", "100000"),
         )
+
+
+class NeutralizeMentionsTest(unittest.TestCase):
+    def test_wraps_bare_mentions(self) -> None:
+        self.assertEqual(
+            neutralize_mentions("- a denial for @everyone and @user autocomplete"),
+            "- a denial for `@everyone` and `@user` autocomplete",
+        )
+
+    def test_keeps_code_emails_and_urls(self) -> None:
+        line = "- mail me@example.com, see https://x.test/@foo and `@here` in code"
+        self.assertEqual(neutralize_mentions(line), line)
+
+    def test_keeps_link_destinations_and_plus_emails(self) -> None:
+        line = "- [profile](https://example.com?user=@alice) or first+@example.com"
+        self.assertEqual(neutralize_mentions(line), line)
+
+    def test_unmatched_backtick_uses_double_backticks(self) -> None:
+        self.assertEqual(
+            neutralize_mentions("- unmatched ` text @alice"),
+            "- unmatched ` text ``@alice``",
+        )
+
+    def test_double_backtick_code_span_is_kept(self) -> None:
+        line = "- run ``a ` b @here`` then"
+        self.assertEqual(neutralize_mentions(line), line)
+
+    def test_unmatched_double_run_does_not_pair_with_fence(self) -> None:
+        self.assertEqual(
+            neutralize_mentions("- `` @alice ` text"),
+            "- `` ```@alice``` ` text",
+        )
+
+    def test_nested_paren_link_destination_is_kept(self) -> None:
+        line = "- [x](foo(bar)?user=@alice)"
+        self.assertEqual(neutralize_mentions(line), line)
+
+    def test_bracket_paren_prose_is_not_protected(self) -> None:
+        self.assertEqual(
+            neutralize_mentions("- literal ]( ping @alice )"),
+            "- literal ]( ping `@alice` )",
+        )
+
+    def test_team_mention_is_neutralized(self) -> None:
+        self.assertEqual(neutralize_mentions("- ping @org/team"), "- ping `@org`/team")
+
+    def test_collected_items_are_neutralized(self) -> None:
+        items = collect_section_items("### Fixed\n- @mentions now notify\n")
+        self.assertEqual(items["Fixed"], ["- `@mentions` now notify"])
 
 
 if __name__ == "__main__":
