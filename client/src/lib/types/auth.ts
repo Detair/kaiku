@@ -55,6 +55,8 @@ export interface ServerSettings {
   registration_policy: string;
   /** Absent on older servers: treat every feature as on. */
   features?: ServerFeatures;
+  /** Public server browser on (ENABLE_GUILD_DISCOVERY). Absent on older servers: on. */
+  guild_discovery?: boolean;
 }
 
 /** Admin auth settings response. */

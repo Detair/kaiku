@@ -139,4 +139,62 @@ describe("TauriVoiceAdapter native events", () => {
     expect(invoke).toHaveBeenCalledWith("set_user_volume", { userId: "u-1", volume: 0.5 });
     adapter.dispose();
   });
+
+  it("reports a busy device as in use and a default fallback with its message", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const adapter = new TauriVoiceAdapter();
+    await flushListen();
+
+    vi.mocked(invoke).mockRejectedValueOnce(
+      "Audio device is busy: another program or the sound server is using it. Choose the system default instead.",
+    );
+    const busy = await adapter.setInputDevice("alsa:sysdefault:CARD=USB");
+    expect(busy).toMatchObject({ ok: false, error: { type: "device_in_use" } });
+
+    const fallback =
+      "Could not switch the microphone (x). The previous microphone could not be reopened either, so the system default is used now.";
+    vi.mocked(invoke).mockRejectedValueOnce(fallback);
+    const fellBack = await adapter.setInputDevice("alsa:sysdefault:CARD=USB");
+    expect(fellBack).toEqual({ ok: false, error: { type: "unknown", message: fallback } });
+    adapter.dispose();
+  });
+
+  it("maps the native device list to device ids, not names", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockResolvedValueOnce({
+      inputs: [
+        { device_id: "alsa:default", label: "System default (PipeWire)", is_default: true, curated: true },
+        {
+          device_id: "alsa:eq",
+          label: "Equalizer [eq]",
+          is_default: false,
+          curated: false,
+          legacy_name: "Equalizer",
+        },
+      ],
+      outputs: [],
+    });
+    const adapter = new TauriVoiceAdapter();
+    await flushListen();
+
+    const result = await adapter.getAudioDevices();
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        inputs: [
+          { deviceId: "alsa:default", label: "System default (PipeWire)", isDefault: true, curated: true },
+          {
+            deviceId: "alsa:eq",
+            label: "Equalizer [eq]",
+            isDefault: false,
+            curated: false,
+            legacyName: "Equalizer",
+          },
+        ],
+        outputs: [],
+      },
+    });
+    adapter.dispose();
+  });
 });

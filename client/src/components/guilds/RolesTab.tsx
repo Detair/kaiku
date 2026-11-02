@@ -187,7 +187,7 @@ const RolesTab: Component<RolesTabProps> = (props) => {
                 classList={{
                   "border-white/10 hover:bg-white/5":
                     dropTargetId() !== role.id,
-                  "border-accent-primary bg-accent-primary/10":
+                  "border-accent-primary bg-accent-primary/20":
                     dropTargetId() === role.id,
                   "opacity-50": draggedRoleId() === role.id,
                 }}

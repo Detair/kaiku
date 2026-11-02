@@ -60,7 +60,7 @@ const PlatformPagesPanel: Component = () => {
                   type="button"
                   onClick={handleRefresh}
                   disabled={isRefreshing() || pagesState.isPlatformLoading}
-                  class="px-3 py-1.5 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-white/5 disabled:opacity-50 transition-colors"
+                  class="px-3 py-1.5 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-white/5 transition-colors state-disabled-quiet"
                 >
                   <span class="inline-flex items-center gap-2">
                     <RefreshCw class="w-4 h-4" classList={{ "animate-spin": isRefreshing() }} />

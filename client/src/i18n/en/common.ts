@@ -22,4 +22,6 @@ export const common = {
   "common.changePassword": "Change Password",
   "common.unit.ms": "{{value}}ms",
   "common.unit.percent": "{{value}}%",
+  "common.fileInput.choose": "Choose file",
+  "common.fileInput.none": "No file chosen",
 } as const satisfies Record<`common.${string}`, string>;

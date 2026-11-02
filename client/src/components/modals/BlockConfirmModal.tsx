@@ -102,7 +102,7 @@ const BlockConfirmModal: Component<BlockConfirmModalProps> = (props) => {
               <button
                 onClick={handleBlock}
                 disabled={isBlocking()}
-                class="px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                class="px-4 py-2 rounded-lg bg-status-error text-white font-medium transition-colors hover:bg-status-error/90 state-disabled"
               >
                 {isBlocking() ? "Blocking..." : "Block"}
               </button>

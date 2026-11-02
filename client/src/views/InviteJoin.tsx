@@ -40,7 +40,7 @@ const InviteJoin: Component = () => {
 
   return (
     <div
-      class="h-screen flex items-center justify-center"
+      class="h-dvh flex items-center justify-center"
       style={{"background-color":"var(--color-surface-base)"}}
     >
       <div

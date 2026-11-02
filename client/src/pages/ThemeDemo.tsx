@@ -49,7 +49,7 @@ print(calculate_fibonacci(10))`,
                 onClick={() => setTheme(theme.id)}
                 class="w-full text-left p-4 rounded-xl border-2 transition-all"
                 classList={{
-                  "border-accent-primary bg-accent-primary/10":
+                  "border-accent-primary bg-accent-primary/20":
                     currentTheme() === theme.id,
                   "border-white/10 hover:border-accent-primary/50 bg-surface-layer2":
                     currentTheme() !== theme.id,

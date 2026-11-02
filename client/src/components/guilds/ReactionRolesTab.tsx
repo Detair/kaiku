@@ -235,7 +235,7 @@ const ReactionRolesTab: Component<ReactionRolesTabProps> = (props) => {
         <button
           type="submit"
           disabled={!canSubmit()}
-          class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-sm font-medium hover:bg-accent-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-sm font-medium hover:bg-accent-primary/90 transition-colors state-disabled"
         >
           <Plus class="w-4 h-4" />
           Add binding

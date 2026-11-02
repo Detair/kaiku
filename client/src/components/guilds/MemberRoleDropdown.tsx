@@ -143,7 +143,7 @@ const MemberRoleDropdown: Component<MemberRoleDropdownProps> = (props) => {
                         data-role-name={role.name}
                         class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-white/10 transition-colors"
                         classList={{
-                          "opacity-50 cursor-not-allowed": !canManage,
+                          "state-unavailable": !canManage,
                         }}
                       >
                         <input

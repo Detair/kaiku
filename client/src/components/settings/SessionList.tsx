@@ -137,7 +137,7 @@ export const SessionList: Component = () => {
 
         <Show when={pageSize() === 10}>
           <button
-            class="w-full py-2 text-sm text-text-secondary hover:text-text-primary"
+            class="w-full py-2 text-sm text-text-secondary hover:text-text-primary state-disabled-quiet"
             disabled={page.loading}
             onClick={() => setOffset((o) => o + 10)}
           >

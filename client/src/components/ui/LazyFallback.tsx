@@ -8,7 +8,7 @@ const Spinner: Component<{ class?: string }> = (props) => (
 
 /** Centered spinner for route-level lazy components */
 export const PageFallback: Component = () => (
-  <div class="flex-1 flex items-center justify-center h-screen">
+  <div class="flex-1 flex items-center justify-center h-dvh">
     <Spinner />
   </div>
 );

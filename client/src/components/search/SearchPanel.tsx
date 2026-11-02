@@ -217,7 +217,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
             value={inputValue()}
             onInput={handleInput}
             autofocus
-            class="w-full pl-8 pr-3 py-1.5 rounded-md text-sm text-text-primary placeholder:text-text-secondary bg-surface-layer1 border border-white/10 outline-none focus:ring-1 focus:ring-accent-primary/30"
+            class="w-full pl-8 pr-3 py-1.5 rounded-md text-sm text-text-primary placeholder:text-text-placeholder bg-surface-layer1 border border-white/10 outline-none focus:ring-1 focus:ring-accent-primary/30"
           />
         </div>
         <button
@@ -246,10 +246,11 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
           <button
             data-testid="scope-channel"
             onClick={() => setScope("channel")}
+            aria-pressed={scope() === "channel"}
             disabled={!props.channelId}
-            class="px-2.5 py-1 rounded text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            class="px-2.5 py-1 rounded text-xs font-medium transition-colors state-disabled-quiet"
             classList={{
-              "bg-accent-primary/20 text-text-primary": scope() === "channel",
+              "bg-accent-primary/30 text-text-primary ring-1 ring-accent-primary": scope() === "channel",
               "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                 scope() !== "channel",
             }}
@@ -259,9 +260,10 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
           <button
             data-testid="scope-guild"
             onClick={() => setScope("guild")}
+            aria-pressed={scope() === "guild"}
             class="px-2.5 py-1 rounded text-xs font-medium transition-colors"
             classList={{
-              "bg-accent-primary/20 text-text-primary": scope() === "guild",
+              "bg-accent-primary/30 text-text-primary ring-1 ring-accent-primary": scope() === "guild",
               "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                 scope() !== "guild",
             }}
@@ -271,9 +273,10 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
           <button
             data-testid="scope-all"
             onClick={() => setScope("all")}
+            aria-pressed={scope() === "all"}
             class="px-2.5 py-1 rounded text-xs font-medium transition-colors"
             classList={{
-              "bg-accent-primary/20 text-text-primary": scope() === "all",
+              "bg-accent-primary/30 text-text-primary ring-1 ring-accent-primary": scope() === "all",
               "bg-surface-layer1 text-text-secondary hover:text-text-primary":
                 scope() !== "all",
             }}
@@ -361,7 +364,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
                 setAuthorFilter(e.currentTarget.value);
                 triggerSearch();
               }}
-              class="w-full px-2 py-1 rounded text-xs text-text-primary placeholder:text-text-muted bg-surface-layer1 border border-white/10 outline-none"
+              class="w-full px-2 py-1 rounded text-xs text-text-primary placeholder:text-text-placeholder bg-surface-layer1 border border-white/10 outline-none"
             />
           </div>
           <div class="flex gap-2">
@@ -551,7 +554,7 @@ const SearchPanel: Component<SearchPanelProps> = (props) => {
               <button
                 onClick={loadMore}
                 disabled={searchState.isSearching}
-                class="px-4 py-2 text-sm text-accent-primary hover:bg-white/5 rounded-lg disabled:opacity-50"
+                class="px-4 py-2 text-sm text-accent-primary hover:bg-white/5 rounded-lg state-disabled-quiet"
               >
                 <Show when={searchState.isSearching} fallback="Load more">
                   <Loader2 class="w-4 h-4 animate-spin inline mr-2" />

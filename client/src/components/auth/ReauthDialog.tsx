@@ -114,9 +114,9 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
   };
 
   const inputClass =
-    "w-full px-3 py-2 rounded-lg bg-white/10 text-text-primary text-sm border border-white/10 focus:outline-none focus:border-accent-primary disabled:opacity-60";
+    "w-full px-3 py-2 rounded-lg bg-white/10 text-text-primary text-sm border border-white/10 focus:outline-none focus:border-accent-primary state-disabled";
   const secondaryBtn =
-    "px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors text-text-primary text-sm disabled:opacity-60 disabled:cursor-not-allowed";
+    "px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors text-text-primary text-sm state-disabled";
 
   return (
     <div
@@ -207,7 +207,7 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
                 <button
                   type="submit"
                   disabled={busy()}
-                  class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                  class="px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium state-disabled"
                 >
                   {t("admin.reauth.submit")}
                 </button>
@@ -224,7 +224,7 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
                     <button
                       type="button"
                       disabled={busy()}
-                      class={`${secondaryBtn} w-full`}
+                      class={`${secondaryBtn} w-full state-disabled-quiet`}
                       onClick={() => {
                         const { onOidc } = props;
                         if (!onOidc) return;

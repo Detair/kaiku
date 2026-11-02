@@ -43,6 +43,7 @@ export default defineConfig({
         secondary: "rgb(var(--color-text-secondary-rgb) / <alpha-value>)",
         muted: "rgb(var(--color-text-muted-rgb) / <alpha-value>)",
         input: "rgb(var(--color-text-input-rgb) / <alpha-value>)",
+        placeholder: "rgb(var(--color-text-placeholder-rgb) / <alpha-value>)",
       },
       "on-accent": "var(--color-text-on-accent)",
       "on-success": "var(--color-text-on-success)",
@@ -93,7 +94,7 @@ export default defineConfig({
     // Input fields — uses arbitrary-value bg to bypass UnoCSS's trailing-digit
     // parsing issue with `surface-layer2` inside shortcuts (the same class
     // resolves correctly when written directly on an element).
-    "input-field": "w-full px-3 py-2 bg-[rgb(var(--color-surface-layer2-rgb))] rounded-lg text-text-input placeholder-text-secondary outline-none focus:ring-2 focus:ring-accent-primary/70 focus:border-accent-primary/50 border border-white/5",
+    "input-field": "w-full px-3 py-2 bg-[rgb(var(--color-surface-layer2-rgb))] rounded-lg text-text-input placeholder-text-placeholder outline-none focus:ring-2 focus:ring-accent-primary/70 focus:border-accent-primary/50 border border-white/5",
 
     // Interactive items
     "item-hover": "rounded-lg px-2 py-1 hover:bg-white/5 transition-colors cursor-pointer",
@@ -151,6 +152,10 @@ export default defineConfig({
     },
   ],
   rules: [
+    // Full-page heights follow the visible viewport (100dvh: phone address
+    // bars), with 100vh first for webviews that predate dvh.
+    ["h-dvh", [["height", "100vh"], ["height", "100dvh"]]],
+    ["min-h-dvh", [["min-height", "100vh"], ["min-height", "100dvh"]]],
     [/^animate-\[slideUp/, () => ({
       animation: "slideUp 0.2s ease-out",
     })],
