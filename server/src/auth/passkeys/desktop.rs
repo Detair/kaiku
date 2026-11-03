@@ -175,8 +175,8 @@ fn require_desktop(headers: &HeaderMap) -> AuthResult<()> {
     }
 }
 
-/// `POST /auth/passkeys/desktop/flows`.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+/// `POST /auth/passkeys/desktop/flows`. `Debug` leaves out the callback path.
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct DesktopFlowRequest {
     /// `sign_in` or `step_up`.
     pub purpose: String,
@@ -190,6 +190,16 @@ pub struct DesktopFlowRequest {
     /// `sign_in` only: the user name typed in the app, `null` for none.
     #[serde(default)]
     pub username: Option<String>,
+}
+
+impl std::fmt::Debug for DesktopFlowRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopFlowRequest")
+            .field("purpose", &self.purpose)
+            .field("action", &self.action)
+            .field("loopback_port", &self.loopback_port)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -683,12 +693,22 @@ impl std::fmt::Debug for DesktopRedeemRequest {
     }
 }
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// `Debug` leaves out the tokens.
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DesktopSignInRedeemed {
     pub purpose: &'static str,
     pub user_id: Uuid,
     #[serde(flatten)]
     pub auth: AuthResponse,
+}
+
+impl std::fmt::Debug for DesktopSignInRedeemed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DesktopSignInRedeemed")
+            .field("purpose", &self.purpose)
+            .field("user_id", &self.user_id)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -807,5 +827,62 @@ async fn redeem_inner(
             .into_response())
         }
         _ => Err(AuthError::PasskeyHandoffInvalid),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PATH: &str = "c2VjcmV0LWNhbGxiYWNrLXBhdGgtMzItYnl0ZXMtYWJj";
+
+    #[test]
+    fn debug_output_never_carries_the_callback_path_or_tokens() {
+        let target = LoopbackTarget {
+            port: 4242,
+            callback_path: PATH.into(),
+        };
+        let flow = DesktopFlow {
+            purpose: FlowPurpose::SignIn { username: None },
+            loopback: target.clone(),
+            client_challenge: "c".repeat(43),
+            ceremony_id: None,
+            result: None,
+            created_at: 0,
+        };
+        let request = DesktopFlowRequest {
+            purpose: "sign_in".into(),
+            action: None,
+            target: None,
+            loopback_port: 4242,
+            callback_path: PATH.into(),
+            client_challenge: "c".repeat(43),
+            username: None,
+        };
+        let redeemed = DesktopSignInRedeemed {
+            purpose: "sign_in",
+            user_id: Uuid::nil(),
+            auth: AuthResponse {
+                access_token: "secret-access".into(),
+                refresh_token: Some("secret-refresh".into()),
+                expires_in: 900,
+                token_type: "Bearer".into(),
+                setup_required: false,
+                password_change_required: false,
+                session_id: Uuid::nil(),
+                assurance: crate::auth::assurance::Assurance::Full,
+                absolute_expires_at: chrono::Utc::now(),
+            },
+        };
+        for out in [
+            format!("{target:?}"),
+            format!("{flow:?}"),
+            format!("{request:?}"),
+            format!("{redeemed:?}"),
+        ] {
+            assert!(!out.contains(PATH), "{out}");
+            assert!(!out.contains("secret-"), "{out}");
+        }
+        assert!(format!("{target:?}").contains("4242"));
     }
 }

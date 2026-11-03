@@ -12,11 +12,20 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 /// Where the hand-off page posts: `http://127.0.0.1:{port}/callback/{path}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoopbackTarget {
     pub port: u16,
     /// 32 random bytes, b64u (43 characters), drawn by the app per flow.
+    /// A secret of the flow: never in `Debug` output.
     pub callback_path: String,
+}
+
+impl std::fmt::Debug for LoopbackTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoopbackTarget")
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LoopbackTarget {
