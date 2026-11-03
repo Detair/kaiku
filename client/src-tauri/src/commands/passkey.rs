@@ -140,7 +140,7 @@ pub async fn run_flow(
             "action": action,
             "target": target,
             "loopback_port": cb.port,
-            "callback_path": cb.callback_path,
+            "callback_path": cb.callback_path.as_str(),
             "client_challenge": s256_challenge(&verifier),
         });
         attempt.check()?;

@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::Instant;
+use zeroize::Zeroizing;
 
 use super::oidc_loopback::{Acceptor, CallbackTimeout};
 
@@ -31,8 +32,8 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 #[derive(Clone, PartialEq, Eq)]
 pub struct LoopbackCallback {
     pub port: u16,
-    /// 32 random bytes, b64u (43 characters).
-    pub callback_path: String,
+    /// 32 random bytes, b64u (43 characters); wiped when dropped.
+    pub callback_path: Zeroizing<String>,
 }
 
 impl std::fmt::Debug for LoopbackCallback {
@@ -68,7 +69,7 @@ pub async fn bind() -> std::io::Result<(TcpListener, LoopbackCallback)> {
         listener,
         LoopbackCallback {
             port,
-            callback_path: super::oidc_loopback::new_secret(),
+            callback_path: Zeroizing::new(super::oidc_loopback::new_secret()),
         },
     ))
 }
@@ -278,7 +279,7 @@ mod tests {
     fn good(cb: &LoopbackCallback, body: &str) -> Vec<u8> {
         post(
             cb,
-            &format!("/callback/{}", cb.callback_path),
+            &format!("/callback/{}", cb.callback_path.as_str()),
             &format!("127.0.0.1:{}", cb.port),
             "application/x-www-form-urlencoded",
             body,
@@ -329,10 +330,10 @@ mod tests {
         let (listener, cb) = bind().await.unwrap();
         let task = spawn_wait(listener, cb.clone(), Duration::from_secs(10));
         let host = format!("127.0.0.1:{}", cb.port);
-        let path = format!("/callback/{}", cb.callback_path);
+        let path = format!("/callback/{}", cb.callback_path.as_str());
         let form = "application/x-www-form-urlencoded";
         let body = format!("flow_id={FLOW}&code=c");
-        let mut other_path = cb.callback_path.clone();
+        let mut other_path = cb.callback_path.as_str().to_owned();
         other_path.replace_range(
             0..1,
             if other_path.starts_with('A') {
@@ -444,7 +445,7 @@ mod tests {
         let task = spawn_wait(listener, cb.clone(), Duration::from_secs(5));
         let body = format!("flow_id={FLOW}&code=c");
         let host = format!("127.0.0.1:{}", cb.port);
-        let path = format!("/callback/{}", cb.callback_path);
+        let path = format!("/callback/{}", cb.callback_path.as_str());
         for extra in [
             format!("Host: {host}\r\n"),
             "Content-Type: text/plain\r\n".to_string(),
@@ -486,9 +487,21 @@ mod tests {
     fn debug_never_prints_secrets() {
         let cb = LoopbackCallback {
             port: 1,
-            callback_path: "secret-path".into(),
+            callback_path: Zeroizing::new("secret-path".into()),
         };
         assert!(!format!("{cb:?}").contains("secret-path"));
         assert!(!format!("{:?}", HandBack::Code("c0de".into())).contains("c0de"));
+    }
+
+    #[test]
+    fn the_callback_path_is_wiped_when_dropped() {
+        // Fable r2 R3: the path itself is zeroized, not only the copy the
+        // start request gets.
+        fn wiped_on_drop(_: &Zeroizing<String>) {}
+        let cb = LoopbackCallback {
+            port: 1,
+            callback_path: Zeroizing::new("secret-path".into()),
+        };
+        wiped_on_drop(&cb.callback_path);
     }
 }

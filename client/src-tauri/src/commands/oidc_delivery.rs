@@ -173,7 +173,7 @@ where
     attempt.check()?;
     let answer = start(LoopbackStart {
         port: cb.port,
-        callback_path: Zeroizing::new(cb.callback_path.clone()),
+        callback_path: cb.callback_path.clone(),
         client_challenge: s256_challenge(&verifier),
     })
     .await?;
