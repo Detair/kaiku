@@ -162,8 +162,11 @@ class AuthRepository @Inject constructor(
         signedInRefusal()?.let { return it }
         val attempt = invalidateLogin()
         if (tokenStorage.getServerUrl() != serverUrl) return supersededResult()
+        // A collected session that is neither installed, kept pending nor already ended.
+        var unsettled: AuthResponse? = null
         return try {
             val authResponse = collect()
+            unsettled = authResponse
 
             if (authResponse.passwordChangeRequired && typedPassword != null) {
                 val pending = PendingPasswordChange(
@@ -181,13 +184,17 @@ class AuthRepository @Inject constructor(
                         false
                     }
                 }
+                unsettled = null
                 if (!installed) return superseded(serverUrl, authResponse)
                 return Result.failure(PasswordChangeRequiredException())
             }
 
             // Server switched while the attempt was collected: don't send server A's
             // token anywhere else (the minted session is ended on A), and leave B alone.
-            if (tokenStorage.getServerUrl() != serverUrl) return superseded(serverUrl, authResponse)
+            if (tokenStorage.getServerUrl() != serverUrl) {
+                unsettled = null
+                return superseded(serverUrl, authResponse)
+            }
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
             // The previous session's teardown finishes before this one starts.
@@ -199,11 +206,15 @@ class AuthRepository @Inject constructor(
                 authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id,
                 precondition = { loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl },
             )
+            unsettled = null
             if (!persisted) return superseded(serverUrl, authResponse)
             Result.success(user)
         } catch (e: CancellationException) {
+            // Cancelled while the profile loaded or the old teardown ran: the minted session is ended.
+            unsettled?.let { endUnused(serverUrl, it) }
             throw e
         } catch (e: Exception) {
+            unsettled?.let { endUnused(serverUrl, it) }
             // Only the latest attempt may clear, and never under a running session: a stale
             // sign-in failing late must not wipe the session a newer one stored meanwhile.
             synchronized(pendingLock) {
@@ -259,8 +270,13 @@ class AuthRepository @Inject constructor(
                 Result.success(user)
             }
         } catch (e: CancellationException) {
+            // Cancelled in GET /auth/me or the old teardown (e.g. the screen cancelled its sign-in job):
+            // the minted session is ended (NonCancellable inside), never left live.
+            endUnused(serverUrl, authResponse)
             throw e
         } catch (e: Exception) {
+            // GET /auth/me failed: nothing was installed, so the minted session is ended too.
+            endUnused(serverUrl, authResponse)
             Result.failure(e)
         }
     }
@@ -501,14 +517,18 @@ class AuthRepository @Inject constructor(
      */
     suspend fun installDeviceSession(auth: AuthResponse, expectedUserId: String, start: DeviceSignInStart): Result<User> {
         val serverUrl = start.serverUrl
+        // True once the session is installed or already ended: until then a failure ends it.
+        var settled = false
         return try {
             val user = authApi.authenticatedGetMe(auth.accessToken, serverUrl)
             if (user.id != expectedUserId) {
+                settled = true
                 endUnused(serverUrl, auth)
                 return Result.failure(IllegalStateException("device session for another account"))
             }
             val running = start.session as? AuthSession.LoggedIn
             if (running != null && running.userId != user.id) {
+                settled = true
                 endUnused(serverUrl, auth)
                 return Result.failure(AlreadySignedInException())
             }
@@ -526,6 +546,7 @@ class AuthRepository @Inject constructor(
                 }
                 unchanged
             }
+            settled = true
             if (!installed) {
                 endUnused(serverUrl, auth)
                 return Result.failure(IllegalStateException("Device sign-in was cancelled or superseded"))
@@ -543,8 +564,10 @@ class AuthRepository @Inject constructor(
             }
             Result.success(user)
         } catch (e: CancellationException) {
+            if (!settled) endUnused(serverUrl, auth)
             throw e
         } catch (e: Exception) {
+            if (!settled) endUnused(serverUrl, auth)
             Result.failure(e)
         }
     }

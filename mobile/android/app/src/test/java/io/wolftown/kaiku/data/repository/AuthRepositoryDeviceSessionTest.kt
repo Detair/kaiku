@@ -24,6 +24,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
 
 /**
  * A device-key session (C26) is installed only if nothing changed since the
@@ -176,5 +177,72 @@ class AuthRepositoryDeviceSessionTest {
         testScheduler.advanceUntilIdle()
         verify { tokenStorage.saveTokens("device-access", "device-refresh", 900, "u1") }
         coVerify(exactly = 1) { authApi.logoutSession(origin, "old-access", null) }
+        // The installed session itself is never ended by the cancellation.
+        coVerify(exactly = 0) { authApi.logoutSession(origin, "device-access", any()) }
+    }
+
+    private val attemptAuth = AuthResponse(
+        accessToken = "attempt-access", refreshToken = "attempt-refresh", expiresIn = 900, tokenType = "Bearer",
+    )
+
+    @Test fun `a collected session whose profile load fails is ended`() = runTest {
+        coEvery { authApi.authenticatedGetMe("attempt-access", origin) } throws IOException("offline")
+
+        val result = repository.completeAttempt(origin, null) { attemptAuth }
+
+        assertTrue(result.exceptionOrNull() is IOException)
+        coVerify(exactly = 1) { authApi.logoutSession(origin, "attempt-access", "attempt-refresh") }
+        verify(exactly = 0) { tokenStorage.saveTokens("attempt-access", any(), any(), any()) }
+    }
+
+    @Test fun `a collected session cancelled while its profile loads is ended`() = runTest {
+        val loading = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { authApi.authenticatedGetMe("attempt-access", origin) } coAnswers {
+            loading.complete(Unit)
+            kotlinx.coroutines.awaitCancellation()
+        }
+
+        val job = launch { repository.completeAttempt(origin, null) { attemptAuth } }
+        loading.await()
+        job.cancel()
+        job.join()
+
+        coVerify(exactly = 1) { authApi.logoutSession(origin, "attempt-access", "attempt-refresh") }
+        verify(exactly = 0) { tokenStorage.saveTokens("attempt-access", any(), any(), any()) }
+    }
+
+    @Test fun `a collect that fails mints nothing and ends nothing`() = runTest {
+        val result = repository.completeAttempt(origin, null) { throw IOException("offline") }
+
+        assertTrue(result.isFailure)
+        coVerify(exactly = 0) { authApi.logoutSession(any(), any(), any()) }
+    }
+
+    @Test fun `a device session whose profile load fails is ended`() = runTest {
+        coEvery { authApi.authenticatedGetMe("device-access", origin) } throws IOException("offline")
+        val start = repository.beginDeviceSignIn(origin)!!
+
+        assertTrue(repository.installDeviceSession(auth, "u1", start).exceptionOrNull() is IOException)
+
+        coVerify(exactly = 1) { authApi.logoutSession(origin, "device-access", "device-refresh") }
+        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+    }
+
+    @Test fun `a device sign-in cancelled while its profile loads ends its session`() = runTest {
+        val loading = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { authApi.authenticatedGetMe("device-access", origin) } coAnswers {
+            loading.complete(Unit)
+            kotlinx.coroutines.awaitCancellation()
+        }
+        val start = repository.beginDeviceSignIn(origin)!!
+
+        val job = launch { repository.installDeviceSession(auth, "u1", start) }
+        loading.await()
+        job.cancel()
+        job.join()
+
+        coVerify(exactly = 1) { authApi.logoutSession(origin, "device-access", "device-refresh") }
+        verify(exactly = 0) { tokenStorage.saveTokens("device-access", any(), any(), any()) }
+        assertEquals(AuthSession.LoggedOut, authState.session.value)
     }
 }
