@@ -16,8 +16,8 @@ async function load(mock: DeMock = {}) {
   });
   if (mock.areaFails) {
     let left = mock.areaFails;
-    const real = await vi.importActual<typeof import("../en/security")>("../en/security");
-    vi.doMock("../en/security", () => {
+    const real = await vi.importActual<typeof import("../enLazy")>("../enLazy");
+    vi.doMock("../enLazy", () => {
       if (left > 0) {
         left -= 1;
         throw new Error("chunk load failed");
@@ -40,7 +40,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.doUnmock("../locales/de.json");
-  vi.doUnmock("../en/security");
+  vi.doUnmock("../enLazy");
 });
 
 describe("locale runtime", () => {

@@ -24,14 +24,12 @@ type Dict = Record<string, string>;
 const enDict: Dict = { ...enCore };
 
 /**
- * English areas kept off the startup path (bundle budget): the
- * account-security texts (Kaiku DM, notices, security settings, step-ups).
+ * English areas kept out of the startup chunk (bundle budget): security,
+ * settings, admin, onboarding, voice, notifications (`enLazy.ts`).
  * `initLocale` awaits them before the first render, so no screen shows
  * them missing; `en.ts` lists them too, for the types and the checks.
  */
-const LAZY_AREAS: ReadonlyArray<() => Promise<Dict>> = [
-  () => import("./en/security").then((m) => m.security),
-];
+const LAZY_AREAS: ReadonlyArray<() => Promise<Dict>> = [() => import("./enLazy").then((m) => m.enLazy)];
 let lazyAreas: Promise<boolean> | null = null;
 let lazyAreasOk = false;
 
