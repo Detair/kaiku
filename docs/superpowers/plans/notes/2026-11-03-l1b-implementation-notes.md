@@ -231,3 +231,80 @@ decision. "For L2" marks interface facts the clients need.
   `RECOVERY_CONTACT_INVALID` (stage another).
 - The TOTP replay store is per account: a staged TOTP code in the same 30 s step as an old-secret
   code is refused (harmless: a real client stages at least a day after the start).
+
+## Task 23 — "Add a phone", admin setup (F5c), admin routes
+
+- `POST /auth/enrollments` (`own`): from a key device with `may_approve` (else 403
+  `APPROVAL_NOT_ALLOWED`) by its `enrollment.issue` grant, or from a full PC session by a passkey
+  grant (recorded as `Issuer::PcSession`). `GET`/`DELETE /auth/enrollments/{id}` for the issuer (any
+  admin for `admin` enrolments); `POST /auth/enrollments/{id}/confirm {code}` for the PC, which
+  re-checks the session (live, full) and the recorded passkey (active) — otherwise the enrolment
+  expires (409 `ENROLLMENT_STATE`).
+- `POST /api/admin/users/{user_id}/enrollments` from the admin's own key device (403
+  `KEY_DEVICE_REQUIRED`), full + `admin.enrollment.issue`/user id per code; `400
+  ENROLLMENT_TARGET_SELF` (new `AuthError` code); for an existing account (B.0 =
+  `first_activity_at` set) 409 `ACCOUNT_REQUEST_OPEN` / `NO_INDEPENDENT_CANCELLER` at issue and
+  again at `done` (rolls the done back). `mode` is stored in the new column
+  `enrollments.admin_mode`. At `done`: a new account is active + `admin_setup {mode,
+  admin_user_id, new_account: true}`; an existing account gets an `admin` request with the device
+  pending (`admin_setup` / `admin_recovery`), lost devices revoked at completion.
+- Admin routes (non-elevated admin group, full + grant): `PUT …/may-approve`, `PUT …/factors`
+  (`compromised` marks the current generation; `active` clears `throttled` only, a compromised
+  factor → 400 `VALIDATION_ERROR`), `POST …/authenticators/{id}/remove` (key device or passkey; no
+  last-authenticator check; the removed phone's last notice goes before its push rows).
+  `ensure_not_admin_target` refuses other admins' accounts (403 `ADMIN_TARGET_IS_ADMIN`), the
+  admin's own account is allowed.
+- `POST /api/admin/users`: `temporary_password` → 400; passwordless, `may_approve` off,
+  `recovery_contact_id` optional. Admin views: the list carries `is_admin` and `may_approve`
+  (coordinator item 3); details flatten the sign-in view (`key_devices`/`passkeys` as arrays
+  `{id, label, state, ready_at, created_at, last_used_at}` as L2a's panel reads them).
+- **Not done:** the browser setup-link passkey claim (`/auth/enrollments/passkey/{start,finish}`,
+  `claimed_passkey`, the `passkeys` row at `done`) — L2a calls it; `admin_role_granted` (no server
+  route grants the role).
+
+## Task 24 — "That wasn't me"
+
+- `POST /api/me/security-events/{id}/repudiate {part2|null}` → `{event, ended_session_ids,
+  revoked_authenticator_ids, compromised, voided_request_ids}`. Repudiable: `sign_in`,
+  `authenticator_added`, `password_set`, `password_changed`. A password sign-in's generation comes
+  from its login attempt; TOTP uses the current generation. The event's own authenticator never
+  vouches; part 2 never revokes.
+- `actions_for`: `repudiate` (`step_up` / `part2`, warnings `voids_own_request` /
+  `voids_own_bootstrap`), `remove_device`, `confirm_contact`.
+
+## Task 25 — upgrade, security overview, removed routes
+
+- Migration `20261121000600_upgrade_login_v1.sql` (000500 is `admin_mode`): ends sessions of
+  accounts with neither TOTP nor a strong authenticator (`upgrade`), opens bootstrap for
+  password/OIDC + TOTP accounts without one, clears `must_change_password`, adds
+  `users.bootstrap_reminded_at`, drops `mfa_backup_codes` and `password_reset_tokens`.
+- `/auth/forgot-password` and `/auth/reset-password` are gone (404); the reset e-mail, queries and
+  cleanup job too. `RateLimitCategory::AuthPasswordReset` stays (config compatibility).
+- `GET /api/me/security` with the C27 prompts; `bootstrap_reminder` every 30 days
+  (`COALESCE(bootstrap_reminded_at, created_at)`).
+- **For L2:** the `client/` code on this branch still has the reset views.
+
+## Task 26 — per-account throttling (B.5)
+
+- `ratelimit/account.rs`: counters `ratelimit:acct:{password|totp}:{key}`; from the 5th failure
+  429 `TOO_MANY_ATTEMPTS` + `Retry-After` (30 s · 2^(n−5), max 1 h); `guessing` every 20; at 100
+  `throttle_tx` (TOTP also compromises the attempt's password generation). Only wrong passwords
+  count; a started attempt resets. Valkey down → 503. TOTP failures do not feed the per-IP
+  counter.
+
+## Task 27 — self-service recovery
+
+- `purpose: "recovery"`: budget (3 per delay period) → recovery code (invalid = unknown-user
+  answer and work, `recovery_codes::dummy_check`) → consumed + start counted → password (`active`)
+  or TOTP (any state); failure → 401 `REQUEST_FACTOR_INVALID {recovery_codes_left}`.
+  `lost: "all_key_devices"`.
+- **Not done:** OIDC as a request factor (`/auth/account-requests/oidc/authorize/{provider_id}`,
+  `oidc-request-callback`, desktop/Android hand-back); `redeem_oidc_code` refuses every code. L2a
+  calls the authorize route.
+
+## Task 28 — host CLI recovery
+
+- `factor reset`, `throttle reset`, `may-approve`, `recovery-contact`, `admin demote`, `request
+  cancel` (`OwnerAuthority::Cli`). CLI session ends record a new event `sessions_ended` (high,
+  `{count, by: "cli"}`) — appended to C28 (coordinator item 5). Factor/throttle resets and
+  `may-approve` are audit-only (no C28 event).
