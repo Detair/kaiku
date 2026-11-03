@@ -60,9 +60,14 @@ fun QrCameraView(onCode: (String) -> Unit, modifier: Modifier = Modifier) {
     val barcodeScanner = remember { BarcodeScanning.getClient() }
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     val lastCode = remember { java.util.concurrent.atomic.AtomicReference<String?>(null) }
+    /** What this view bound, so leaving composition releases the camera at once (Argon part7 #6). */
+    val bound = remember { CameraBinding() }
 
     DisposableEffect(Unit) {
         onDispose {
+            // The destination may stay resumed (the scanner swapped for the setup or a refusal):
+            // the lifecycle alone would keep the camera open.
+            bound.dispose()
             barcodeScanner.close()
             analysisExecutor.shutdown()
         }
@@ -90,6 +95,7 @@ fun QrCameraView(onCode: (String) -> Unit, modifier: Modifier = Modifier) {
                     val previewView = PreviewView(ctx)
                     val providerFuture = ProcessCameraProvider.getInstance(ctx)
                     providerFuture.addListener({
+                        if (bound.disposed) return@addListener
                         val provider = providerFuture.get()
                         val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
                         val analysis = ImageAnalysis.Builder()
@@ -115,6 +121,7 @@ fun QrCameraView(onCode: (String) -> Unit, modifier: Modifier = Modifier) {
                         try {
                             provider.unbindAll()
                             provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                            bound.set { provider.unbind(preview, analysis) }
                         } catch (e: Exception) {
                             logger.warning("Camera bind failed: ${e.javaClass.simpleName}")
                             cameraFailed = true
@@ -125,5 +132,22 @@ fun QrCameraView(onCode: (String) -> Unit, modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxSize(),
             )
         }
+    }
+}
+
+/** The camera use cases one [QrCameraView] bound; [dispose] unbinds them once (main thread). */
+internal class CameraBinding {
+    var disposed = false
+        private set
+    private var unbind: (() -> Unit)? = null
+
+    fun set(u: () -> Unit) {
+        if (disposed) u() else unbind = u
+    }
+
+    fun dispose() {
+        disposed = true
+        unbind?.invoke()
+        unbind = null
     }
 }

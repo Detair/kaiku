@@ -8,8 +8,13 @@ import io.wolftown.kaiku.domain.ScanPayload
  * [PendingSetupLinks].
  */
 object ScanHandoff {
-    @Volatile private var login: ScanPayload.Login? = null
+    private val login = java.util.concurrent.atomic.AtomicReference<ScanPayload.Login?>(null)
 
-    fun putLogin(p: ScanPayload.Login) { login = p }
-    fun takeLogin(): ScanPayload.Login? = login.also { login = null }
+    fun putLogin(p: ScanPayload.Login) { login.set(p) }
+
+    /** At most once, also with two takers at the same time. */
+    fun takeLogin(): ScanPayload.Login? = login.getAndSet(null)
+
+    /** A sign-out drops a scanned code nobody took. */
+    fun clear() { login.set(null) }
 }

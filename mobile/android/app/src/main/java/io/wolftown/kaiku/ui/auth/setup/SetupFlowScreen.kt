@@ -52,8 +52,11 @@ fun SetupFlowScreen(
     val ui by viewModel.ui.collectAsState()
 
     LaunchedEffect(entry) {
-        if (!viewModel.started) {
-            if (entry != null) viewModel.start(entry) else viewModel.resumeWithoutEntry()
+        when {
+            // A newer link opened while this screen is up replaces the setup (unless a claim is
+            // unresolved: start() then hands over to the waiting screen).
+            entry != null -> viewModel.startIfNew(entry)
+            !viewModel.started -> viewModel.resumeWithoutEntry()
         }
     }
     val u0 = ui

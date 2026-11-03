@@ -477,4 +477,27 @@ class SetupFlowViewModelTest {
         assertEquals("https://typed.example.net", env.stored)
         assertFalse(f.keyStore.hasKey())
     }
+
+    @Test fun `the same code again changes nothing, a newer one starts over`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (v, _) = vm()
+        v.startIfNew(entry)
+        val opens = enroll.calls.count { it == "open" }
+        v.startIfNew(entry.copy()) // a recreated screen passes the same code
+        assertEquals(opens, enroll.calls.count { it == "open" })
+        v.startIfNew(entry.copy(tokenB64u = "BAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")) // a newer link
+        assertEquals(opens + 1, enroll.calls.count { it == "open" })
+    }
+
+    @Test fun `the phone's suitability is known before the scanner opens`() = runTest {
+        decision = UvDecision.Unsuitable(UnsuitableReason.NO_SCREEN_LOCK)
+        val (v, _) = vm()
+        assertNull(v.scanReady.value)
+        v.checkBeforeScan()
+        assertEquals(UvDecision.Unsuitable(UnsuitableReason.NO_SCREEN_LOCK), v.scanReady.value)
+        assertTrue(enroll.calls.isEmpty())
+        decision = UvPolicy.choose(30, true, true)
+        v.checkBeforeScan()
+        assertTrue(v.scanReady.value is UvDecision.Use)
+    }
 }

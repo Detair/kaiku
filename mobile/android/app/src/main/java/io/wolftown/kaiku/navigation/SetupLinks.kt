@@ -6,6 +6,7 @@ import io.wolftown.kaiku.ui.auth.setup.SetupEntry
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 
 /**
  * Setup links (L2-A15): `kaiku://setup/v1?o=&t=` (the "Open in Kaiku" intent of
@@ -26,9 +27,15 @@ object PendingSetupLinks {
         _pending.value = e
     }
 
-    fun take(): SetupEntry? {
-        val e = _pending.value
+    /** Takes the pending link at most once, also with two takers at the same time. */
+    fun take(): SetupEntry? = _pending.getAndUpdate { null }
+
+    /** Clears [e] once its screen has it; a newer link posted meanwhile stays. */
+    fun consume(e: SetupEntry) {
+        _pending.compareAndSet(e, null)
+    }
+
+    fun clear() {
         _pending.value = null
-        return e
     }
 }

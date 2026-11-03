@@ -75,4 +75,15 @@ class ScanViewModelTest {
         v.onCode(loginCode)
         assertEquals(ScanUi.Refused(R.string.scan_not_kaiku), v.ui.value)
     }
+
+    @Test fun `a key phone refuses a setup code`() {
+        isKey = true
+        val v = vm()
+        v.onCode(setupCode)
+        assertEquals(ScanUi.Refused(R.string.setup_already_key), v.ui.value)
+        isKey = false
+        v.rescan()
+        v.onCode(setupCode)
+        assertEquals(ScanUi.OpenSetup(ScanPayload.Setup("https://chat.example.com", token)), v.ui.value)
+    }
 }

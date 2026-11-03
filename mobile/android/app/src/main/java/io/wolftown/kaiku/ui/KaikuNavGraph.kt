@@ -150,7 +150,12 @@ fun KaikuNavGraph(
     // Any transition into logged-out clears a pending link, whatever the route.
     var wasLoggedIn by remember { mutableStateOf(isLoggedIn) }
     LaunchedEffect(isLoggedIn) {
-        if (!isLoggedIn && wasLoggedIn) pendingNavigation.clear()
+        if (!isLoggedIn && wasLoggedIn) {
+            pendingNavigation.clear()
+            // What the signed-in phone scanned or was handed is not the next person's.
+            PendingSetupLinks.clear()
+            ScanHandoff.clear()
+        }
         wasLoggedIn = isLoggedIn
     }
 
@@ -333,6 +338,11 @@ fun KaikuNavGraph(
                         },
                         onSetup = { payload ->
                             PendingSetupLinks.post(SetupEntry(payload.origin, payload.tokenB64u, SetupEntry.Source.SCAN))
+                            // The scanner (and its camera) does not stay underneath the setup.
+                            navController.navigate(SETUP_FLOW_ROUTE) {
+                                popUpTo(SCAN_ROUTE) { inclusive = true }
+                                launchSingleTop = true
+                            }
                         },
                         onBack = { navController.popBackStack() },
                     )
@@ -395,10 +405,19 @@ fun KaikuNavGraph(
                 }
 
                 composable(SETUP_FLOW_ROUTE) {
-                    // Taken once; a recreated screen keeps its ViewModel, which already started.
-                    val entry = androidx.compose.runtime.remember { PendingSetupLinks.take() }
+                    // Read during composition, cleared only once composed (a discarded composition
+                    // never loses the memory-only code); a newer link opened here replaces it.
+                    // Memory only (never saved state): the setup code is a secret.
+                    var entry by remember { mutableStateOf<SetupEntry?>(null) }
+                    val shown = pendingSetup ?: entry
+                    LaunchedEffect(pendingSetup) {
+                        pendingSetup?.let {
+                            entry = it
+                            PendingSetupLinks.consume(it)
+                        }
+                    }
                     SetupFlowScreen(
-                        entry = entry,
+                        entry = shown,
                         onSignedIn = { navController.navigate("home") { popUpTo(0) { inclusive = true } } },
                         onBack = { if (!navController.popBackStack()) navController.navigate("login") },
                         // Restored without its (memory-only) setup code: scan it again.

@@ -7,6 +7,7 @@ import io.wolftown.kaiku.data.local.TokenStorage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import java.net.URLEncoder
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -108,9 +109,6 @@ object PendingOidcCallback {
         _pending.value = uri
     }
 
-    fun take(): Uri? {
-        val uri = _pending.value
-        _pending.value = null
-        return uri
-    }
+    /** At most once, also with two takers at the same time. */
+    fun take(): Uri? = _pending.getAndUpdate { null }
 }

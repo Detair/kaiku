@@ -61,7 +61,8 @@ class ScanViewModel internal constructor(
     }
 
     private fun decide(p: ScanPayload): ScanUi = when (p) {
-        is ScanPayload.Setup -> ScanUi.OpenSetup(p)
+        // A key phone is not set up again from a scan (the setup would refuse it later anyway).
+        is ScanPayload.Setup -> if (isKeyDevice()) ScanUi.Refused(R.string.setup_already_key) else ScanUi.OpenSetup(p)
         is ScanPayload.Login -> when {
             mode == ScanMode.SETUP_ONLY -> ScanUi.Refused(R.string.scan_sign_in_code_in_setup)
             !isKeyDevice() -> ScanUi.Refused(R.string.scan_not_a_key)

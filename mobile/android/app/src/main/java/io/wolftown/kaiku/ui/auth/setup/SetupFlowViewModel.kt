@@ -188,6 +188,15 @@ class SetupFlowViewModel internal constructor(
 
     val started: Boolean get() = entry != null
 
+    private val _scanReady = MutableStateFlow<UvDecision?>(null)
+    /** C26 "Suitability": the screen lock and a hardware key store, checked before any scan. */
+    val scanReady: StateFlow<UvDecision?> = _scanReady.asStateFlow()
+
+    /** Runs the suitability check before the scanner opens (again after the screen-lock settings). */
+    fun checkBeforeScan() {
+        viewModelScope.launch { _scanReady.value = withContext(keyDispatcher) { suitability.check() } }
+    }
+
     /** For hosts that switch between the scanner and this flow (SetupScanScreen). */
     private val _startedFlow = MutableStateFlow(false)
     val startedFlow: StateFlow<Boolean> = _startedFlow.asStateFlow()
@@ -219,6 +228,11 @@ class SetupFlowViewModel internal constructor(
     private fun step(block: suspend () -> Unit) {
         job?.cancel()
         job = viewModelScope.launch { block() }
+    }
+
+    /** [start] for a code this flow is not already running (a recreated screen passes the same one). */
+    fun startIfNew(e: SetupEntry) {
+        if (e != entry) start(e)
     }
 
     fun start(e: SetupEntry) {
