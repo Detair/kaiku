@@ -56,6 +56,18 @@ fn lock_entries(entries: &Entries) -> std::sync::MutexGuard<'_, HashMap<String, 
     entries.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// One collect or TOTP step in flight; ends it when dropped.
+struct StepGuard<'a> {
+    verifiers: &'a AttemptVerifiers,
+    attempt_id: &'a str,
+}
+
+impl Drop for StepGuard<'_> {
+    fn drop(&mut self) {
+        self.verifiers.end_step(self.attempt_id);
+    }
+}
+
 /// Verifiers of the attempts this app started, by attempt id.
 #[derive(Default)]
 pub struct AttemptVerifiers {
@@ -165,19 +177,29 @@ impl AttemptVerifiers {
         self.lock().remove(attempt_id);
     }
 
-    /// A collect or TOTP step starts (`true` while the attempt is wanted).
-    fn begin_step(&self, attempt_id: &str) -> bool {
+    /// A collect or TOTP step starts (`None` once the attempt is unwanted).
+    /// The step ends when the guard drops, also when the step's future is
+    /// dropped mid-flight (an aborted command; Flash r3 p2 #5).
+    fn begin_step<'a>(&'a self, attempt_id: &'a str) -> Option<StepGuard<'a>> {
         self.prune(Instant::now());
-        self.lock()
-            .get_mut(attempt_id)
-            .map(|e| e.busy += 1)
-            .is_some()
+        self.lock().get_mut(attempt_id)?.busy += 1;
+        Some(StepGuard {
+            verifiers: self,
+            attempt_id,
+        })
     }
 
-    /// The step is over (the entry may be gone after a cancel).
+    /// The step is over (the entry may be gone after a cancel). An entry
+    /// that outlived its 10 minutes while busy goes now, as its timer
+    /// skipped it.
     fn end_step(&self, attempt_id: &str) {
-        if let Some(e) = self.lock().get_mut(attempt_id) {
+        let mut entries = self.lock();
+        let expired = entries.get_mut(attempt_id).is_some_and(|e| {
             e.busy = e.busy.saturating_sub(1);
+            e.busy == 0 && e.created.elapsed() >= ATTEMPT_TTL
+        });
+        if expired {
+            entries.remove(attempt_id);
         }
     }
 
@@ -448,15 +470,15 @@ impl SessionManager {
         step: &str,
         extra: Value,
     ) -> Result<AuthResult, SessionError> {
-        if !self.attempts.begin_step(attempt_id) {
+        let Some(step_guard) = self.attempts.begin_step(attempt_id) else {
             return Err(unknown_attempt());
-        }
+        };
         let outcome = async {
             let (base, result) = self.attempt_call(attempt_id, step, extra).await?;
             self.adopt_attempt(attempt_id, &base, result?).await
         }
         .await;
-        self.attempts.end_step(attempt_id);
+        drop(step_guard);
         if let Err(SessionError::Server(404 | 410, _)) = &outcome {
             self.attempts.remove(attempt_id);
         }
@@ -950,6 +972,41 @@ mod tests {
         });
         assert!(collect.is_err());
         assert!(m.auth_info().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_dropped_collect_is_no_longer_busy() {
+        // Flash r3 p2 #5: a collect whose future is dropped mid-flight (the
+        // command was aborted) leaves its entry removable and expirable.
+        let server = MockServer::start().await;
+        let m = Arc::new(manager());
+        started(&server, &m).await;
+        Mock::given(method("POST"))
+            .and(path(format!("/auth/login-attempts/{ID}/collect")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(tokens_body("at-d", "rt-d"))
+                    .set_delay(Duration::from_secs(30)),
+            )
+            .mount(&server)
+            .await;
+        let dropped = tokio::time::timeout(Duration::from_millis(100), m.collect_attempt(ID)).await;
+        assert!(dropped.is_err(), "the collect was still in flight");
+        m.attempt_verifiers().remove(ID);
+        assert!(m.attempt_verifiers().get(ID).is_none());
+    }
+
+    #[test]
+    fn a_step_that_ends_after_the_ttl_drops_its_entry() {
+        let v = AttemptVerifiers::default();
+        v.insert(ID, "https://chat.example.com", Zeroizing::new("ver".into()));
+        let step = v.begin_step(ID).expect("wanted");
+        v.backdate(ID, ATTEMPT_TTL + Duration::from_secs(1));
+        // Busy: its 10 minutes do not count yet.
+        v.prune(Instant::now());
+        assert_eq!(v.len(), 1);
+        drop(step);
+        assert_eq!(v.len(), 0);
     }
 
     #[tokio::test]
