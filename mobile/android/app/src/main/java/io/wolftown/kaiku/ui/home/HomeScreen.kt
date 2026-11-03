@@ -18,6 +18,7 @@ import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.ui.shared.ConnectionBanner
 import io.wolftown.kaiku.ui.shared.NotificationPermissionPrompt
+import io.wolftown.kaiku.ui.shared.ProbationBanner
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -104,6 +105,7 @@ fun HomeScreen(
                     .padding(paddingValues)
             ) {
             ConnectionBanner(status = connectionStatus)
+            ProbationBanner()
             // A failed load is shown inline while there is still something to
             // display; the full-screen error below is only for the empty case.
             val errorRes = error

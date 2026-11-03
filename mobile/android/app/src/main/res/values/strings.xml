@@ -59,6 +59,7 @@
     <string name="auth_totp_label">Code</string>
     <string name="auth_totp_hint">If you just used a code, wait for the next one.</string>
     <string name="auth_totp_unavailable">Authenticator codes can\'t be used for this account right now. Use your phone or ask an admin.</string>
+    <string name="auth_probation_banner">Signed in for chat only on this phone. To make it your key, use \'Add a phone\' on your key phone, or sign in with a passkey.</string>
 
     <!-- Account creation -->
     <string name="auth_register_heading">Create an account</string>
