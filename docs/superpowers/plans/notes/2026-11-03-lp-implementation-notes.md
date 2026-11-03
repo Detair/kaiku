@@ -460,3 +460,25 @@ Gates (review round 2):
 - `cargo test -p vc-client --lib`: 277 passed, 2 ignored.
 - Client: vitest 151 files / 1604 tests passed; `tsc --noEmit` clean; `i18n:check` ok;
   `lint:tauri-commands` ok (82); `bun run lint` 0 errors. Android not touched.
+
+## Review round 3 (2026-11-03)
+
+Verdicts: Argon APPROVE, Fable APPROVE (2 nits), Codex APPROVE WITH FIXES (2 items). All three
+accept the refresh-cookie residual for v1.0.
+
+| Finding | Reviewer | Commit | Test |
+|---|---|---|---|
+| A Valkey error in `fail()` or the final result CAS still posts a terminal loopback callback | Codex | 0d13a583 | `passkeys_desktop::a_valkey_error_at_the_result_hands_back_nothing`, `passkeys_desktop::a_valkey_error_when_ending_a_flow_hands_back_nothing` |
+| Key-device step-up: `KEY_DEVICE_REQUIRED` before `NOT_ADMIN` | Codex | e03bdb27 | `passkeys_step_up::device_admin_step_up_needs_an_admin` (non-admin without a key device) |
+| A pending server-change timer can start autofill during a password sign-in | Fable | 47cde0ea | `Login.passkey.test.tsx`: "a password sign-in cancels a pending autofill restart" |
+| `is_admin` must cover every `admin.*` action | Fable | e03bdb27 | `auth::step_up::tests::every_admin_action_is_gated` (fails when an arm is removed) |
+
+On a Valkey error the finish now shows `unavailable_page` (503, en/de: Kaiku is not reachable,
+go back to the app and try again) with no hand-off form; the app keeps waiting until
+`expires_at` or a cancel. The tests make the compare-and-set fail with a real Valkey error: the
+finish is held at the passkey row lock (as in round 2) while the flow key is replaced by a list,
+so the script's `GET` fails with `WRONGTYPE`. The hand-off page template is unchanged, so the
+browser run was not repeated.
+
+Gates: server lib 696 passed; passkey, approvals and step-up integration suites 173 passed; fmt
+and `clippy -p vc-server` clean; vitest 151 files / 1605 tests; `tsc` clean; lint 0 errors.
