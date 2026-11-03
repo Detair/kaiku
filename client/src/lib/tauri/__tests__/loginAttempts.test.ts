@@ -120,6 +120,82 @@ describe("login attempt wrappers (browser)", () => {
     }
   });
 
+  const authBody = {
+    access_token: "at-late",
+    expires_in: 900,
+    token_type: "Bearer",
+    setup_required: false,
+    session_id: "s9",
+    assurance: "probation",
+    absolute_expires_at: "2026-12-03T00:00:00Z",
+  };
+
+  it("a collect the caller no longer wants is ended, never taken over", async () => {
+    let wanted = true;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).endsWith("/collect")) {
+        wanted = false; // the user left while the server answered
+        return json(200, authBody);
+      }
+      return new Response(null, { status: 204 });
+    });
+    await expect(collectAttempt(attempt.attempt_id, () => wanted)).rejects.toMatchObject({
+      status: 410,
+      code: "LOGIN_ATTEMPT_ENDED",
+      details: { state: "cancelled" },
+    });
+    expect(browserState.accessToken).toBeNull();
+    const urls = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(urls).not.toContain("https://chat.example.com/auth/me");
+    const { url, init } = lastCall();
+    expect(url).toBe("https://chat.example.com/auth/logout");
+    expect(init.credentials).toBe("omit");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer at-late");
+  });
+
+  it("a TOTP step abandoned during the profile load is ended too", async () => {
+    let wanted = true;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).endsWith("/totp")) return json(200, authBody);
+      if (String(url).endsWith("/auth/me")) {
+        wanted = false;
+        return json(200, { id: "u1", username: "alice" });
+      }
+      return new Response(null, { status: 204 });
+    });
+    await expect(attemptTotp(attempt.attempt_id, "123456", () => wanted)).rejects.toMatchObject({
+      code: "LOGIN_ATTEMPT_ENDED",
+    });
+    expect(browserState.accessToken).toBeNull();
+    expect(lastCall().url).toBe("https://chat.example.com/auth/logout");
+  });
+
+  it("the profile is loaded from the server the collect went to", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).endsWith("/collect")) {
+        // Another sign-in picked a different server meanwhile.
+        browserState.serverUrl = "https://other.example.org";
+        return json(200, authBody);
+      }
+      return json(200, { id: "u1", username: "alice" });
+    });
+    await collectAttempt(attempt.attempt_id);
+    expect(lastCall().url).toBe("https://chat.example.com/auth/me");
+    expect(browserState.accessToken).toBe("at-late");
+    clearBrowserTokens();
+  });
+
+  it("a failed profile load ends the new session and keeps no token", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).endsWith("/collect")) return json(200, authBody);
+      if (String(url).endsWith("/auth/me")) return json(503, { error: "SERVICE_UNAVAILABLE", message: "x" });
+      return new Response(null, { status: 204 });
+    });
+    await expect(collectAttempt(attempt.attempt_id)).rejects.toMatchObject({ status: 503, code: "SERVICE_UNAVAILABLE" });
+    expect(browserState.accessToken).toBeNull();
+    expect(lastCall().url).toBe("https://chat.example.com/auth/logout");
+  });
+
   it("attemptTotp and cancelAttempt post to their routes", async () => {
     fetchMock.mockResolvedValueOnce(json(401, { error: "INVALID_MFA", message: "x" }));
     await expect(attemptTotp(attempt.attempt_id, "123456")).rejects.toMatchObject({ code: "INVALID_MFA" });

@@ -9,6 +9,7 @@
 import type { User } from "../types";
 import {
   browserState,
+  HttpError,
   httpRequest,
   isTauri,
   scheduleTokenRefresh,
@@ -38,15 +39,72 @@ export function useBrowserServer(serverUrl: string): void {
   setSessionRestoreBlocked(false);
 }
 
+/** Whether the caller still wants a session that is being made. */
+export type StillWanted = () => boolean;
+
+/** The sign-in was abandoned while its session was made (C27 shape). */
+export function abandonedSignIn(): HttpError {
+  return new HttpError(410, "LOGIN_ATTEMPT_ENDED", "LOGIN_ATTEMPT_ENDED", { state: "cancelled" });
+}
+
+/** `GET /auth/me` with an explicit server and bearer (not the global ones). */
+async function fetchMeWith(base: string, accessToken: string): Promise<User> {
+  const response = await fetch(`${base}/auth/me`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}` },
+    credentials: "omit",
+  });
+  if (!response.ok) {
+    let code: string | undefined;
+    try {
+      const body = (await response.json()) as { error?: unknown };
+      if (typeof body?.error === "string") code = body.error;
+    } catch {
+      code = undefined;
+    }
+    throw new HttpError(response.status, `HTTP ${response.status}`, code);
+  }
+  return (await response.json()) as User;
+}
+
+/** End one browser session by its own bearer, without cookies (best effort). */
+async function endSessionWith(base: string, accessToken: string): Promise<void> {
+  try {
+    await fetch(`${base}/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      credentials: "omit",
+    });
+  } catch (err) {
+    console.warn("[Auth] Ending an abandoned session failed:", err instanceof Error ? err.message : err);
+  }
+}
+
 /**
  * Browser: take over the access token of a session-creating answer (the
- * refresh token is an HttpOnly cookie), then load the profile.
+ * refresh token is an HttpOnly cookie) once its profile has loaded from
+ * `base`, the server the answer came from. If the caller no longer wants it
+ * (`stillWanted`, checked before and after the profile load) or the profile
+ * cannot be loaded, the new session is ended instead and nothing is kept.
  */
-export async function adoptBrowserAuth(response: AuthResponse): Promise<AuthResult> {
+export async function adoptBrowserAuth(
+  response: AuthResponse,
+  opts: { base?: string; stillWanted?: StillWanted } = {},
+): Promise<AuthResult> {
+  const base = opts.base ?? browserState.serverUrl;
+  const wanted = opts.stillWanted ?? (() => true);
+  let user: User;
+  try {
+    if (!wanted()) throw abandonedSignIn();
+    user = await fetchMeWith(base, response.access_token);
+    if (!wanted()) throw abandonedSignIn();
+  } catch (err) {
+    await endSessionWith(base, response.access_token);
+    throw err;
+  }
   browserState.accessToken = response.access_token;
   browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
   scheduleTokenRefresh();
-  const user = await httpRequest<User>("GET", "/auth/me");
   return {
     user,
     setup_required: response.setup_required,

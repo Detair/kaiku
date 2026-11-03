@@ -14,8 +14,15 @@ import {
   type LoginAttempt,
   type LoginStep,
 } from "../types/login";
-import { httpRequest, isTauri, loadNativeAuthInfo, type AuthResponse, type AuthResult } from "./common";
-import { adoptBrowserAuth, baseOf, invokeNative, useBrowserServer } from "./preSession";
+import {
+  browserState,
+  httpRequest,
+  isTauri,
+  loadNativeAuthInfo,
+  type AuthResponse,
+  type AuthResult,
+} from "./common";
+import { adoptBrowserAuth, baseOf, invokeNative, useBrowserServer, type StillWanted } from "./preSession";
 
 function attemptPath(attemptId: string, step: "poll" | "collect" | "totp" | "cancel"): string {
   return `/auth/login-attempts/${encodeURIComponent(attemptId)}/${step}`;
@@ -66,8 +73,14 @@ export async function pollAttempt(attemptId: string, wait: number): Promise<Logi
   return decodeLoginAttempt(await httpRequest<unknown>("POST", attemptPath(attemptId, "poll"), { wait: w }));
 }
 
-/** Collect an `approved` attempt: the session (probation) starts here. */
-export async function collectAttempt(attemptId: string): Promise<AuthResult> {
+/**
+ * Collect an `approved` attempt: the session (probation) starts here, unless
+ * `stillWanted()` is false by then (the user left or started another
+ * sign-in): that session is ended and the call fails with 410
+ * `LOGIN_ATTEMPT_ENDED {state: "cancelled"}`. Desktop: Rust makes the same
+ * check against a cancel of the attempt.
+ */
+export async function collectAttempt(attemptId: string, stillWanted?: StillWanted): Promise<AuthResult> {
   if (isTauri()) {
     const result = await invokeNative((invoke) =>
       invoke<AuthResult>("login_attempt_collect", { attemptId }),
@@ -75,12 +88,13 @@ export async function collectAttempt(attemptId: string): Promise<AuthResult> {
     await loadNativeAuthInfo();
     return result;
   }
+  const base = browserState.serverUrl;
   const response = await httpRequest<AuthResponse>("POST", attemptPath(attemptId, "collect"), {});
-  return adoptBrowserAuth(response);
+  return adoptBrowserAuth(response, { base, stillWanted });
 }
 
-/** The TOTP step of a password or OIDC attempt (F4). */
-export async function attemptTotp(attemptId: string, code: string): Promise<AuthResult> {
+/** The TOTP step of a password or OIDC attempt (F4); `stillWanted` as for collect. */
+export async function attemptTotp(attemptId: string, code: string, stillWanted?: StillWanted): Promise<AuthResult> {
   if (isTauri()) {
     const result = await invokeNative((invoke) =>
       invoke<AuthResult>("login_attempt_totp", { attemptId, code }),
@@ -88,8 +102,9 @@ export async function attemptTotp(attemptId: string, code: string): Promise<Auth
     await loadNativeAuthInfo();
     return result;
   }
+  const base = browserState.serverUrl;
   const response = await httpRequest<AuthResponse>("POST", attemptPath(attemptId, "totp"), { code });
-  return adoptBrowserAuth(response);
+  return adoptBrowserAuth(response, { base, stillWanted });
 }
 
 /** Give the attempt up (the user left the screen, SM1). */

@@ -13,7 +13,12 @@
  *   `expires_at` on the PC's clock.
  * - A failed poll (offline, 5xx, 429) keeps the attempt and retries after
  *   1 s, 2 s, then every 5 s.
- * - Leaving the screen cancels the attempt (SM1 "close the screen").
+ * - Leaving the screen cancels the attempt (SM1 "close the screen"); so does
+ *   the attempt's expiry on the PC's clock and an SSO step that replaces it.
+ * - Each attempt belongs to one run with a fixed server. A collect or TOTP
+ *   answer for a run that is no longer the current one is never taken over:
+ *   that session is ended (browser wrappers and Rust check before adopting;
+ *   here once more afterwards). A failed collect is retried like a poll.
  */
 
 import { createSignal } from "solid-js";
@@ -22,6 +27,7 @@ import {
   cancelAttempt,
   collectAttempt,
   createQrAttempt,
+  logout as endTransportSession,
   pollAttempt,
 } from "@/lib/tauri";
 import { HttpError } from "@/lib/tauri/common";
@@ -46,8 +52,10 @@ export type LoginFlow =
 const POLL_WAIT_S = 25;
 /** Never poll more often than this, even if a server answers at once. */
 const MIN_POLL_INTERVAL_MS = 1_000;
-/** Retry delays after failed polls: 1 s, 2 s, then every 5 s. */
+/** Retry delays after failed polls and collects: 1 s, 2 s, then every 5 s. */
 const RETRY_DELAYS_MS = [1_000, 2_000, 5_000];
+/** An approved attempt can be collected for 60 s (C27); retries stop then. */
+const COLLECT_WINDOW_MS = 60_000;
 
 /** Largest delay `setTimeout` keeps (2^31 - 1 ms). */
 const MAX_TIMER_MS = 2_147_483_647;
@@ -65,11 +73,22 @@ export const loginFlowError = flowError;
 /** A sign-in step is being sent (TOTP submit, collect). */
 export const loginFlowBusy = flowBusy;
 
-/** Bumped whenever the flow changes attempt or ends: older loops stop. */
-let run = 0;
+/**
+ * One run of the flow: its server never changes. A new run object replaces
+ * the current one whenever the flow changes attempt or ends, so older loops
+ * and late answers can tell they are obsolete (`isLive`).
+ */
+interface Run {
+  readonly serverUrl: string;
+}
+
+let current: Run = { serverUrl: "" };
 let via: FlowVia = "qr";
-let serverUrl = "";
+/** The server the next SSO step belongs to (`setFlowServer`). */
+let nextServer = "";
 let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+const isLive = (r: Run): boolean => r === current;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -80,16 +99,46 @@ function clearExpiry(): void {
   expiryTimer = null;
 }
 
-/** End the flow for good (the attempt cannot sign anyone in any more). */
-function end(state: EndedState): void {
-  run += 1;
+/** Start a new run on `serverUrl`; every older run becomes obsolete. */
+function startRun(serverUrl: string): Run {
   clearExpiry();
   setFlowBusy(false);
+  current = { serverUrl };
+  return current;
+}
+
+/** Stop the current run without telling the server (it is replaced or over). */
+function stopRun(): void {
+  startRun(current.serverUrl);
+}
+
+/** End the flow for good (the attempt cannot sign anyone in any more). */
+function end(state: EndedState): void {
+  stopRun();
   setFlow({ step: "ended", state, via });
 }
 
+/** Tell the server (and Rust) an attempt is given up; failures only logged. */
+function dropAttempt(attemptId: string): void {
+  void cancelAttempt(attemptId).catch((err: unknown) => {
+    console.warn("[LoginFlow] Cancelling the attempt failed:", err instanceof Error ? err.message : err);
+  });
+}
+
+/**
+ * A session was made for a run the user already left (desktop: Rust adopted
+ * it just before the cancel arrived). It is ended, never shown.
+ */
+async function discardSession(): Promise<void> {
+  try {
+    await endTransportSession();
+  } catch (err) {
+    console.warn("[LoginFlow] Ending an abandoned session failed:", err instanceof Error ? err.message : err);
+  }
+}
+
 /** The attempt runs out on the PC's clock too (the long-poll may hang). */
-function armExpiry(attempt: LoginAttempt, myRun: number): void {
+function armExpiry(attempt: LoginAttempt, r: Run): void {
   clearExpiry();
   const at = Date.parse(attempt.expires_at);
   if (Number.isNaN(at)) return;
@@ -97,7 +146,10 @@ function armExpiry(attempt: LoginAttempt, myRun: number): void {
   // at most 10 minutes anyway.
   const delay = Math.min(Math.max(0, at - Date.now()), MAX_TIMER_MS);
   expiryTimer = setTimeout(() => {
-    if (myRun === run) end("expired");
+    if (!isLive(r)) return;
+    end("expired");
+    // The verifier (desktop) and the attempt go now, not at the next call.
+    dropAttempt(attempt.attempt_id);
   }, delay);
 }
 
@@ -123,44 +175,63 @@ function currentAttempt(): LoginAttempt | null {
   return f.step === "qr" || f.step === "confirm" || f.step === "totp" ? f.attempt : null;
 }
 
-async function collect(myRun: number, attemptId: string): Promise<void> {
+/** Back to the form with a sentence about `err`; the attempt is given up. */
+function failRun(err: unknown, attemptId: string | null): void {
+  stopRun();
+  if (attemptId) dropAttempt(attemptId);
+  setFlowError(loginErrorText(err));
+  setFlow({ step: "form" });
+}
+
+/**
+ * Collect an approved attempt (exactly once successfully). Transient
+ * failures are retried within the collect window; `false` means the attempt
+ * is not ready after all and polling goes on.
+ */
+async function collect(r: Run, attemptId: string): Promise<boolean> {
   // The attempt is approved: its expiry no longer matters, and a session
-  // that the server already made must never be dropped.
+  // that the server already made must never be dropped by the timer.
   clearExpiry();
   setFlowBusy(true);
+  const giveUpAt = Date.now() + COLLECT_WINDOW_MS;
+  let failures = 0;
   try {
-    const result = await collectAttempt(attemptId);
-    if (myRun !== run) {
-      // The user left meanwhile; the session exists already, so finish it.
-      await completeSignIn(serverUrl, result);
-      return;
+    for (;;) {
+      try {
+        const result = await collectAttempt(attemptId, () => isLive(r));
+        if (!isLive(r)) {
+          await discardSession();
+          return true;
+        }
+        stopRun();
+        await completeSignIn(r.serverUrl, result);
+        setFlow({ step: "form" });
+        return true;
+      } catch (err) {
+        if (!isLive(r)) return true;
+        const ended = endedBy(err);
+        if (ended) {
+          end(ended);
+          return true;
+        }
+        if (err instanceof HttpError && codeIs(err.code, "LOGIN_ATTEMPT_NOT_READY")) return false;
+        if (!retryable(err) || Date.now() >= giveUpAt) {
+          failRun(err, attemptId);
+          return true;
+        }
+        await sleep(RETRY_DELAYS_MS[Math.min(failures, RETRY_DELAYS_MS.length - 1)]);
+        failures += 1;
+        if (!isLive(r)) return true;
+      }
     }
-    run += 1;
-    clearExpiry();
-    await completeSignIn(serverUrl, result);
-    setFlow({ step: "form" });
-  } catch (err) {
-    if (myRun !== run) return;
-    const ended = endedBy(err);
-    if (ended) {
-      end(ended);
-      return;
-    }
-    run += 1;
-    clearExpiry();
-    setFlowError(loginErrorText(err));
-    setFlow({ step: "form" });
   } finally {
-    setFlowBusy(false);
+    if (isLive(r)) setFlowBusy(false);
   }
 }
 
 /** Apply one poll answer; `true` once the loop must stop. */
-async function applyPolled(myRun: number, next: LoginAttempt): Promise<boolean> {
-  if (next.state === "approved") {
-    await collect(myRun, next.attempt_id);
-    return true;
-  }
+async function applyPolled(r: Run, next: LoginAttempt): Promise<boolean> {
+  if (next.state === "approved") return collect(r, next.attempt_id);
   if (next.state === "consumed") {
     end("expired");
     return true;
@@ -178,9 +249,9 @@ async function applyPolled(myRun: number, next: LoginAttempt): Promise<boolean> 
   return false;
 }
 
-async function pollLoop(myRun: number): Promise<void> {
+async function pollLoop(r: Run): Promise<void> {
   let failures = 0;
-  while (myRun === run) {
+  while (isLive(r)) {
     const attempt = currentAttempt();
     const f = flow();
     if (!attempt || (f.step !== "qr" && f.step !== "confirm")) return;
@@ -189,17 +260,14 @@ async function pollLoop(myRun: number): Promise<void> {
     try {
       next = await pollAttempt(attempt.attempt_id, POLL_WAIT_S);
     } catch (err) {
-      if (myRun !== run) return;
+      if (!isLive(r)) return;
       const ended = endedBy(err);
       if (ended) {
         end(ended);
         return;
       }
       if (!retryable(err)) {
-        run += 1;
-        clearExpiry();
-        setFlowError(loginErrorText(err));
-        setFlow({ step: "form" });
+        failRun(err, null);
         return;
       }
       const delay = RETRY_DELAYS_MS[Math.min(failures, RETRY_DELAYS_MS.length - 1)];
@@ -208,27 +276,25 @@ async function pollLoop(myRun: number): Promise<void> {
       continue;
     }
     failures = 0;
-    if (myRun !== run) return;
-    if (await applyPolled(myRun, next)) return;
+    if (!isLive(r)) return;
+    if (await applyPolled(r, next)) return;
     const elapsed = Date.now() - started;
     if (elapsed < MIN_POLL_INTERVAL_MS) await sleep(MIN_POLL_INTERVAL_MS - elapsed);
   }
 }
 
-/** Stop the current attempt without telling the server (it is replaced or over). */
-function stopRun(): void {
-  run += 1;
-  clearExpiry();
-  setFlowBusy(false);
-}
-
-/** Show a `LoginStep` (password or SSO answer, F3). */
-export function applyLoginStep(step: LoginStep, from: "password" | "oidc"): void {
-  stopRun();
+/**
+ * Show a `LoginStep` (password or SSO answer, F3) as a new run on
+ * `serverUrl` (default: the server named by `setFlowServer`). A different
+ * live attempt it replaces is cancelled.
+ */
+export function applyLoginStep(step: LoginStep, from: "password" | "oidc", serverUrl: string = nextServer): void {
+  const replaced = currentAttempt();
+  const r = startRun(serverUrl);
+  if (replaced && replaced.attempt_id !== step.attempt.attempt_id) dropAttempt(replaced.attempt_id);
   via = from;
   setFlowError(null);
-  const myRun = run;
-  armExpiry(step.attempt, myRun);
+  armExpiry(step.attempt, r);
   if (step.status === "totp_required") {
     setFlow({ step: "totp", attempt: step.attempt, from: "totp_required" });
     return;
@@ -239,29 +305,28 @@ export function applyLoginStep(step: LoginStep, from: "password" | "oidc"): void
     qrPayload: step.attempt.qr?.payload ?? "",
     via: from,
   });
-  void pollLoop(myRun);
+  void pollLoop(r);
 }
 
 /** "Sign in with your phone" (F2): a new QR attempt. */
 export async function startPhoneSignIn(url: string): Promise<void> {
   await leaveFlow();
-  serverUrl = url;
   via = "qr";
-  const myRun = run;
+  const r = startRun(url);
   setFlowBusy(true);
   try {
     const attempt = await createQrAttempt(url);
-    if (myRun !== run) {
-      void cancelAttempt(attempt.attempt_id).catch(() => undefined);
+    if (!isLive(r)) {
+      dropAttempt(attempt.attempt_id);
       return;
     }
-    armExpiry(attempt, myRun);
+    armExpiry(attempt, r);
     setFlow({ step: "qr", attempt, qrPayload: attempt.qr?.payload ?? "" });
-    void pollLoop(myRun);
+    void pollLoop(r);
   } catch (err) {
-    if (myRun === run) setFlowError(loginErrorText(err));
+    if (isLive(r)) setFlowError(loginErrorText(err));
   } finally {
-    if (myRun === run) setFlowBusy(false);
+    if (isLive(r)) setFlowBusy(false);
   }
 }
 
@@ -271,30 +336,29 @@ export async function startPhoneSignIn(url: string): Promise<void> {
  */
 export async function submitPassword(url: string, username: string, password: string): Promise<void> {
   await leaveFlow();
-  serverUrl = url;
-  const myRun = run;
+  const r = startRun(url);
   const step = await passwordSignIn(url, username, password);
-  if (myRun !== run) {
+  if (!isLive(r)) {
     // Left (or submitted again) while the password was checked.
-    void cancelAttempt(step.attempt.attempt_id).catch(() => undefined);
+    dropAttempt(step.attempt.attempt_id);
     return;
   }
-  applyLoginStep(step, "password");
+  applyLoginStep(step, "password", url);
 }
 
-/** Remember the server of an SSO sign-in whose `LoginStep` arrives later. */
+/** Name the server of an SSO sign-in whose `LoginStep` arrives later. */
 export function setFlowServer(url: string): void {
-  serverUrl = url;
+  nextServer = url;
 }
 
 /** "Phone not at hand?": the same attempt continues with TOTP (F3 step 5). */
 export function usePhoneNotAtHand(): void {
   const f = flow();
-  if (f.step !== "confirm" || !f.attempt.totp_available) return;
+  // While an approved attempt is being collected, the session is on its way.
+  if (f.step !== "confirm" || !f.attempt.totp_available || flowBusy()) return;
   const attempt = f.attempt;
-  stopRun();
-  const myRun = run;
-  armExpiry(attempt, myRun);
+  const r = startRun(current.serverUrl);
+  armExpiry(attempt, r);
   setFlowError(null);
   setFlow({ step: "totp", attempt, from: "phone_not_at_hand" });
 }
@@ -303,24 +367,28 @@ export function usePhoneNotAtHand(): void {
 export async function submitTotp(code: string): Promise<User> {
   const f = flow();
   if (f.step !== "totp") throw new Error("No TOTP step");
-  const myRun = run;
+  const r = current;
   setFlowBusy(true);
   setFlowError(null);
   try {
-    const result = await attemptTotp(f.attempt.attempt_id, code);
+    const result = await attemptTotp(f.attempt.attempt_id, code, () => isLive(r));
+    if (!isLive(r)) {
+      await discardSession();
+      throw new HttpError(410, "LOGIN_ATTEMPT_ENDED", "LOGIN_ATTEMPT_ENDED", { state: "cancelled" });
+    }
     stopRun();
-    const user = await completeSignIn(serverUrl, result);
+    const user = await completeSignIn(r.serverUrl, result);
     setFlow({ step: "form" });
     return user;
   } catch (err) {
-    if (myRun === run) {
+    if (isLive(r)) {
       const ended = endedBy(err);
       if (ended) end(ended);
       else setFlowError(loginErrorText(err));
     }
     throw err;
   } finally {
-    setFlowBusy(false);
+    if (isLive(r)) setFlowBusy(false);
   }
 }
 
@@ -328,7 +396,7 @@ export async function submitTotp(code: string): Promise<User> {
 export async function retryLoginFlow(): Promise<void> {
   const f = flow();
   if (f.step === "ended" && f.via === "qr") {
-    await startPhoneSignIn(serverUrl);
+    await startPhoneSignIn(current.serverUrl);
     return;
   }
   stopRun();

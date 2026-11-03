@@ -708,7 +708,40 @@ impl SessionManager {
         tokens: TokenResponse,
         expected_user_id: Option<&str>,
     ) -> Result<AuthResult, SessionError> {
+        let adopted = self
+            .adopt_tokens_checked(server_url, tokens, expected_user_id, || true)
+            .await?;
+        adopted.ok_or_else(|| SessionError::InvalidRequest("SIGN_IN_ABANDONED".to_string()))
+    }
+
+    /// [`Self::adopt_tokens`], but only while `wanted()` holds: it is checked
+    /// before the profile is fetched and again under the token lock, right
+    /// before the session is installed. An unwanted pair is ended on the
+    /// server and `Ok(None)` returned (the current session is untouched).
+    pub async fn adopt_tokens_if(
+        &self,
+        server_url: &str,
+        tokens: TokenResponse,
+        wanted: impl Fn() -> bool,
+    ) -> Result<Option<AuthResult>, SessionError> {
+        self.adopt_tokens_checked(server_url, tokens, None, wanted)
+            .await
+    }
+
+    /// The shared adoption: the account check of [`Self::adopt_tokens_for`]
+    /// and the `wanted()` checks of [`Self::adopt_tokens_if`].
+    async fn adopt_tokens_checked(
+        &self,
+        server_url: &str,
+        tokens: TokenResponse,
+        expected_user_id: Option<&str>,
+        wanted: impl Fn() -> bool,
+    ) -> Result<Option<AuthResult>, SessionError> {
         let base = normalize_server_url(server_url)?;
+        if !wanted() {
+            self.end_unwanted(&base, &tokens).await;
+            return Ok(None);
+        }
         let user = self.fetch_me(&base, &tokens.access_token).await?;
         if let Some(expected) = expected_user_id {
             if user.get("id").and_then(Value::as_str) != Some(expected) {
@@ -720,6 +753,11 @@ impl SessionManager {
             tokens.password_change_required || flag(&user, "password_change_required");
 
         let guard = self.lock().await;
+        if !wanted() {
+            drop(guard);
+            self.end_unwanted(&base, &tokens).await;
+            return Ok(None);
+        }
         let previous = self
             .snapshot()
             .filter(|old| old.refresh_token != tokens.refresh_token);
@@ -738,32 +776,46 @@ impl SessionManager {
         if let Some(old) = previous {
             self.end_previous_session(&old, &base).await;
         }
-        Ok(AuthResult {
+        Ok(Some(AuthResult {
             user,
             setup_required: tokens.setup_required,
             password_change_required,
             persisted,
-        })
+        }))
+    }
+
+    /// End a session nobody takes over (its sign-in was abandoned meanwhile).
+    async fn end_unwanted(&self, base: &str, tokens: &TokenResponse) {
+        info!("Ending a session whose sign-in was cancelled meanwhile");
+        self.end_on_server(base, &tokens.access_token, &tokens.refresh_token)
+            .await;
+    }
+
+    /// `POST /auth/logout` for one session (its own bearer and refresh
+    /// token). Failures are logged, never shown.
+    async fn end_on_server(&self, base: &str, access_token: &str, refresh_token: &str) {
+        let result = self
+            .http
+            .post(format!("{base}/auth/logout"))
+            .bearer_auth(access_token)
+            .json(&json!({ "refresh_token": refresh_token }))
+            .send()
+            .await;
+        match result {
+            Ok(r) if r.status().is_success() => info!("Ended the session on the server"),
+            Ok(r) => warn!(
+                status = r.status().as_u16(),
+                "Could not end the session on the server"
+            ),
+            Err(e) => warn!(error = %e, "Could not end the session on the server"),
+        }
     }
 
     /// End a replaced session on its server (only that session: its own
     /// bearer and refresh token). Failures are logged, never shown.
     async fn end_previous_session(&self, old: &Session, new_base: &str) {
-        let result = self
-            .http
-            .post(format!("{}/auth/logout", old.server_url))
-            .bearer_auth(&old.access_token)
-            .json(&json!({ "refresh_token": old.refresh_token }))
-            .send()
+        self.end_on_server(&old.server_url, &old.access_token, &old.refresh_token)
             .await;
-        match result {
-            Ok(r) if r.status().is_success() => info!("Ended the previous session"),
-            Ok(r) => warn!(
-                status = r.status().as_u16(),
-                "Could not end the previous session"
-            ),
-            Err(e) => warn!(error = %e, "Could not end the previous session"),
-        }
         if old.server_url != new_base {
             if let Err(e) = self.store.clear(&old.server_url) {
                 warn!(error = %e, "Could not remove the previous login from the OS keyring");

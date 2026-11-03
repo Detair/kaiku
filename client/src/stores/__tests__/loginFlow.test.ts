@@ -6,6 +6,7 @@ const api = vi.hoisted(() => ({
   collectAttempt: vi.fn(),
   cancelAttempt: vi.fn(),
   attemptTotp: vi.fn(),
+  logout: vi.fn(),
 }));
 const authStore = vi.hoisted(() => ({
   login: vi.fn(),
@@ -21,6 +22,7 @@ import {
   loginFlow,
   loginFlowError,
   retryLoginFlow,
+  setFlowServer,
   startPhoneSignIn,
   submitPassword,
   submitTotp,
@@ -65,6 +67,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   for (const f of [...Object.values(api), ...Object.values(authStore)]) f.mockReset();
   api.cancelAttempt.mockResolvedValue(undefined);
+  api.logout.mockResolvedValue(undefined);
   authStore.completeSignIn.mockResolvedValue({ id: "u1" });
 });
 
@@ -120,7 +123,7 @@ describe("login flow store", () => {
     polls.resolve(attempt({ state: "approved", qr: null }));
     await vi.advanceTimersByTimeAsync(5000);
     expect(api.collectAttempt).toHaveBeenCalledTimes(1);
-    expect(api.collectAttempt).toHaveBeenCalledWith(ID);
+    expect(api.collectAttempt).toHaveBeenCalledWith(ID, expect.any(Function));
     expect(authStore.completeSignIn).toHaveBeenCalledTimes(1);
     expect(loginFlow().step).toBe("form");
     expect(polls.count()).toBe(1);
@@ -230,7 +233,7 @@ describe("login flow store", () => {
     );
     api.attemptTotp.mockResolvedValueOnce({ user: { id: "u1" }, setup_required: false, password_change_required: false });
     await submitTotp("654321");
-    expect(api.attemptTotp).toHaveBeenLastCalledWith(ID, "654321");
+    expect(api.attemptTotp).toHaveBeenLastCalledWith(ID, "654321", expect.any(Function));
     expect(authStore.completeSignIn).toHaveBeenCalledTimes(1);
     expect(loginFlow().step).toBe("form");
   });
@@ -277,5 +280,144 @@ describe("login flow store", () => {
     expect(loginFlow().step).toBe("form");
     expect(api.pollAttempt).not.toHaveBeenCalled();
     expect(api.cancelAttempt).toHaveBeenCalledWith(ID);
+  });
+});
+
+describe("login flow ownership (Codex review)", () => {
+  const signedIn = { user: { id: "u1" }, setup_required: false, password_change_required: false };
+
+  /** A QR attempt on `url` whose poll says approved, with the collect held open. */
+  async function approvedWithPendingCollect(url = "https://chat.example.com") {
+    let finish!: (r: unknown) => void;
+    let fail!: (e: unknown) => void;
+    api.collectAttempt.mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          finish = resolve;
+          fail = reject;
+        }),
+    );
+    api.createQrAttempt.mockResolvedValue(attempt());
+    api.pollAttempt.mockResolvedValueOnce(attempt({ state: "approved", qr: null }));
+    api.pollAttempt.mockImplementation(() => new Promise(() => undefined));
+    await startPhoneSignIn(url);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(api.collectAttempt).toHaveBeenCalledTimes(1);
+    return { finish: (r: unknown) => finish(r), fail: (e: unknown) => fail(e) };
+  }
+
+  it("leaving while a collect is in flight never signs in and ends that session", async () => {
+    const collect = await approvedWithPendingCollect();
+    const stillWanted = api.collectAttempt.mock.calls[0][1] as () => boolean;
+    expect(stillWanted()).toBe(true);
+    await leaveFlow();
+    expect(stillWanted()).toBe(false);
+    expect(api.cancelAttempt).toHaveBeenCalledWith(ID);
+    collect.finish(signedIn);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(authStore.completeSignIn).not.toHaveBeenCalled();
+    expect(api.logout).toHaveBeenCalledTimes(1);
+    expect(loginFlow().step).toBe("form");
+  });
+
+  it("a late collect never replaces the flow that followed it", async () => {
+    const collect = await approvedWithPendingCollect();
+    const second = attempt({ attempt_id: "55555555-5555-4555-8555-555555555555" });
+    api.createQrAttempt.mockResolvedValue(second);
+    await startPhoneSignIn("https://chat.example.com");
+    collect.finish(signedIn);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(authStore.completeSignIn).not.toHaveBeenCalled();
+    expect(loginFlow()).toMatchObject({ step: "qr", attempt: { attempt_id: second.attempt_id } });
+  });
+
+  it("a late TOTP success after leaving neither signs in nor stops the new flow", async () => {
+    applyLoginStep({ status: "totp_required", attempt: attempt({ kind: "password" }) }, "password");
+    let finish!: (r: unknown) => void;
+    api.attemptTotp.mockImplementation(() => new Promise((r) => (finish = r)));
+    const pending = submitTotp("123456");
+    expect(api.attemptTotp).toHaveBeenCalledWith(ID, "123456", expect.any(Function));
+    pendingPolls();
+    const second = attempt({ attempt_id: "55555555-5555-4555-8555-555555555555" });
+    api.createQrAttempt.mockResolvedValue(second);
+    await startPhoneSignIn("https://chat.example.com");
+    finish(signedIn);
+    await expect(pending).rejects.toBeTruthy();
+    expect(authStore.completeSignIn).not.toHaveBeenCalled();
+    expect(api.logout).toHaveBeenCalledTimes(1);
+    expect(loginFlow()).toMatchObject({ step: "qr", attempt: { attempt_id: second.attempt_id } });
+  });
+
+  it("a session is completed with the server of its own run", async () => {
+    const collect = await approvedWithPendingCollect("https://chat.example.com");
+    // An SSO start for another server only names the server of the next run.
+    setFlowServer("https://other.example.org");
+    collect.finish(signedIn);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(authStore.completeSignIn).toHaveBeenCalledWith("https://chat.example.com", signedIn);
+  });
+
+  it("a failed collect is retried while the attempt is still approved", async () => {
+    const collect = await approvedWithPendingCollect();
+    collect.fail(new HttpError(503, "x", "SERVICE_UNAVAILABLE"));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(loginFlow().step).toBe("qr");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(api.collectAttempt).toHaveBeenCalledTimes(2);
+    collect.finish(signedIn);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(authStore.completeSignIn).toHaveBeenCalledTimes(1);
+    expect(loginFlow().step).toBe("form");
+  });
+
+  it("LOGIN_ATTEMPT_NOT_READY on collect goes back to polling", async () => {
+    const collect = await approvedWithPendingCollect();
+    const polls = pendingPolls();
+    collect.fail(new HttpError(409, "x", "LOGIN_ATTEMPT_NOT_READY"));
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(polls.count()).toBe(1);
+    expect(loginFlow().step).toBe("qr");
+  });
+
+  it("a refused collect gives the attempt up and says why", async () => {
+    const collect = await approvedWithPendingCollect();
+    collect.fail(new HttpError(403, "x", "TOTP_UNAVAILABLE"));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(loginFlow().step).toBe("form");
+    expect(loginFlowError()).toBeTruthy();
+    expect(api.cancelAttempt).toHaveBeenCalledWith(ID);
+  });
+
+  it("an attempt that runs out on the PC's clock is also cancelled", async () => {
+    pendingPolls();
+    api.createQrAttempt.mockResolvedValue(attempt({ expires_at: new Date(Date.now() + 1000).toISOString() }));
+    await startPhoneSignIn("https://chat.example.com");
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(loginFlow()).toEqual({ step: "ended", state: "expired", via: "qr" });
+    expect(api.cancelAttempt).toHaveBeenCalledWith(ID);
+  });
+
+  it("phone not at hand waits while the approved attempt is collected", async () => {
+    let finish!: (r: unknown) => void;
+    api.collectAttempt.mockImplementation(() => new Promise((r) => (finish = r)));
+    api.pollAttempt.mockResolvedValueOnce(attempt({ kind: "password", state: "approved", totp_available: true, qr: null }));
+    api.pollAttempt.mockImplementation(() => new Promise(() => undefined));
+    applyLoginStep({ status: "confirmation_required", attempt: attempt({ kind: "password", totp_available: true }) }, "password");
+    await vi.advanceTimersByTimeAsync(10);
+    usePhoneNotAtHand();
+    expect(loginFlow().step).toBe("confirm");
+    finish(signedIn);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(authStore.completeSignIn).toHaveBeenCalledTimes(1);
+  });
+
+  it("an SSO step cancels the phone attempt it replaces", async () => {
+    pendingPolls();
+    api.createQrAttempt.mockResolvedValue(attempt());
+    await startPhoneSignIn("https://chat.example.com");
+    const sso = attempt({ attempt_id: "66666666-6666-4666-8666-666666666666", kind: "oidc" });
+    applyLoginStep({ status: "confirmation_required", attempt: sso }, "oidc");
+    expect(api.cancelAttempt).toHaveBeenCalledWith(ID);
+    expect(loginFlow()).toMatchObject({ step: "confirm", attempt: { attempt_id: sso.attempt_id } });
   });
 });

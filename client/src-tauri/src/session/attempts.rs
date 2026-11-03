@@ -5,11 +5,15 @@
 //! secret is a verifier drawn here: the server sees only `client_challenge =
 //! S256(verifier)` at creation and the verifier in the body of every later
 //! attempt call. Verifiers never leave Rust; the webview only names the
-//! attempt id. A verifier is forgotten on any terminal state, on collect and
-//! after ten minutes (the attempt's maximum life).
+//! attempt id. A verifier is forgotten on any terminal state, when its
+//! session is taken over, on cancel and ten minutes after it was drawn (the
+//! attempt's maximum life, by a timer of its own). A verifier present here
+//! also means the webview still wants the attempt: a collect or TOTP answer
+//! that arrives after a cancel is never adopted.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -36,21 +40,26 @@ struct Entry {
     base: String,
     verifier: Zeroizing<String>,
     created: Instant,
+    /// Tells this entry from a later one under the same id (expiry timer).
+    seq: u64,
+}
+
+type Entries = Mutex<HashMap<String, Entry>>;
+
+fn lock_entries(entries: &Entries) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
+    entries.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Verifiers of the attempts this app started, by attempt id.
 #[derive(Default)]
 pub struct AttemptVerifiers {
-    entries: Mutex<HashMap<String, Entry>>,
+    entries: Arc<Entries>,
+    next_seq: AtomicU64,
 }
 
 impl std::fmt::Debug for AttemptVerifiers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let len = self
-            .entries
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .len();
+        let len = self.lock().len();
         f.debug_struct("AttemptVerifiers")
             .field("entries", &len)
             .field("verifiers", &"[REDACTED]")
@@ -60,31 +69,58 @@ impl std::fmt::Debug for AttemptVerifiers {
 
 impl AttemptVerifiers {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Entry>> {
-        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+        lock_entries(&self.entries)
     }
 
-    /// Keep `verifier` for `attempt_id` on server `base`.
+    /// Keep `verifier` for `attempt_id` on server `base`. A timer drops it
+    /// after [`ATTEMPT_TTL`] even if no other attempt call follows.
     pub fn insert(&self, attempt_id: &str, base: &str, verifier: Zeroizing<String>) {
         self.prune(Instant::now());
-        let mut entries = self.lock();
-        while entries.len() >= MAX_ATTEMPTS {
-            let Some(oldest) = entries
-                .iter()
-                .min_by_key(|(_, e)| e.created)
-                .map(|(id, _)| id.clone())
-            else {
-                break;
-            };
-            entries.remove(&oldest);
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut entries = self.lock();
+            while entries.len() >= MAX_ATTEMPTS {
+                let Some(oldest) = entries
+                    .iter()
+                    .min_by_key(|(_, e)| e.created)
+                    .map(|(id, _)| id.clone())
+                else {
+                    break;
+                };
+                entries.remove(&oldest);
+            }
+            entries.insert(
+                attempt_id.to_string(),
+                Entry {
+                    base: base.to_string(),
+                    verifier,
+                    created: Instant::now(),
+                    seq,
+                },
+            );
         }
-        entries.insert(
-            attempt_id.to_string(),
-            Entry {
-                base: base.to_string(),
-                verifier,
-                created: Instant::now(),
-            },
-        );
+        self.expire_later(attempt_id, seq);
+    }
+
+    /// Drop the entry `seq` of `attempt_id` once its attempt is over for
+    /// sure. Without a runtime (plain unit tests) only `prune` applies.
+    fn expire_later(&self, attempt_id: &str, seq: u64) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let entries = Arc::downgrade(&self.entries);
+        let id = attempt_id.to_string();
+        // Measured from the insert, not from the task's first poll.
+        let deadline = tokio::time::Instant::now() + ATTEMPT_TTL;
+        runtime.spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            if let Some(entries) = entries.upgrade() {
+                let mut entries = lock_entries(&entries);
+                if entries.get(&id).is_some_and(|e| e.seq == seq) {
+                    entries.remove(&id);
+                }
+            }
+        });
     }
 
     /// Server base and verifier of a live attempt.
@@ -93,6 +129,17 @@ impl AttemptVerifiers {
         self.lock()
             .get(attempt_id)
             .map(|e| (e.base.clone(), e.verifier.clone()))
+    }
+
+    /// Remove and return a live attempt's server base and verifier.
+    pub fn take(&self, attempt_id: &str) -> Option<(String, Zeroizing<String>)> {
+        self.prune(Instant::now());
+        self.lock().remove(attempt_id).map(|e| (e.base, e.verifier))
+    }
+
+    /// Whether the attempt is still wanted (not cancelled, ended or expired).
+    pub fn contains(&self, attempt_id: &str) -> bool {
+        self.get(attempt_id).is_some()
     }
 
     pub fn remove(&self, attempt_id: &str) {
@@ -174,6 +221,15 @@ pub async fn json_body(response: reqwest::Response) -> Result<Value, SessionErro
 
 fn unknown_attempt() -> SessionError {
     SessionError::Server(404, "LOGIN_ATTEMPT_UNKNOWN".to_string())
+}
+
+/// The attempt was cancelled while its session was being made.
+fn cancelled_attempt() -> SessionError {
+    code_error_from(
+        410,
+        None,
+        r#"{"error":"LOGIN_ATTEMPT_ENDED","state":"cancelled"}"#,
+    )
 }
 
 fn attempt_url(base: &str, attempt_id: &str, step: &str) -> Result<String, SessionError> {
@@ -258,8 +314,8 @@ impl SessionManager {
         Ok(attempt)
     }
 
-    /// One attempt call with the kept verifier. `forget` decides from the
-    /// outcome whether the verifier is dropped.
+    /// One attempt call with the kept verifier. An unknown or ended attempt
+    /// (404, 410) drops the verifier; any other refusal keeps it.
     async fn attempt_call(
         &self,
         attempt_id: &str,
@@ -267,23 +323,36 @@ impl SessionManager {
         extra: Value,
     ) -> Result<(String, Result<Value, SessionError>), SessionError> {
         let (base, verifier) = self.attempts.get(attempt_id).ok_or_else(unknown_attempt)?;
-        let mut body = json!({ "verifier": verifier.as_str() });
+        let result = self
+            .send_attempt_step(&base, attempt_id, step, &verifier, extra)
+            .await?;
+        if let Err(SessionError::Server(404 | 410, _)) = &result {
+            // Unknown or ended: the verifier is worthless now.
+            self.attempts.remove(attempt_id);
+        }
+        Ok((base, result))
+    }
+
+    /// POST `step` of an attempt with `verifier` (and `extra` body fields).
+    async fn send_attempt_step(
+        &self,
+        base: &str,
+        attempt_id: &str,
+        step: &str,
+        verifier: &str,
+        extra: Value,
+    ) -> Result<Result<Value, SessionError>, SessionError> {
+        let mut body = json!({ "verifier": verifier });
         if let (Some(target), Value::Object(fields)) = (body.as_object_mut(), extra) {
             target.extend(fields);
         }
         let response = self
-            .post_desktop(&attempt_url(&base, attempt_id, step)?, &body)
+            .post_desktop(&attempt_url(base, attempt_id, step)?, &body)
             .await?;
-        let status = response.status().as_u16();
         if !response.status().is_success() {
-            let err = code_error(response).await;
-            // Unknown or ended: the verifier is worthless now.
-            if status == 404 || status == 410 {
-                self.attempts.remove(attempt_id);
-            }
-            return Ok((base, Err(err)));
+            return Ok(Err(code_error(response).await));
         }
-        Ok((base, json_body(response).await))
+        Ok(json_body(response).await)
     }
 
     /// Long-poll (`wait` 0..25 s) → `LoginAttempt` JSON.
@@ -299,14 +368,11 @@ impl SessionManager {
     }
 
     /// Collect an approved attempt: the tokens stay here, the webview gets
-    /// the user. The verifier is forgotten whatever the outcome.
+    /// the user. A refusal other than 404/410 and a network failure keep the
+    /// verifier, so the webview can retry within the collect window.
     pub async fn collect_attempt(&self, attempt_id: &str) -> Result<AuthResult, SessionError> {
-        let outcome = self.attempt_call(attempt_id, "collect", json!({})).await;
-        self.attempts.remove(attempt_id);
-        let (base, result) = outcome?;
-        let tokens: TokenResponse =
-            serde_json::from_value(result?).map_err(|e| invalid_response(200, &e))?;
-        self.adopt_tokens(&base, tokens).await
+        let (base, result) = self.attempt_call(attempt_id, "collect", json!({})).await?;
+        self.adopt_attempt(attempt_id, &base, result?).await
     }
 
     /// The TOTP step (F4). A wrong code (`INVALID_MFA`) keeps the attempt.
@@ -318,18 +384,38 @@ impl SessionManager {
         let (base, result) = self
             .attempt_call(attempt_id, "totp", json!({ "code": code }))
             .await?;
-        let value = result?;
-        self.attempts.remove(attempt_id);
-        let tokens: TokenResponse =
-            serde_json::from_value(value).map_err(|e| invalid_response(200, &e))?;
-        self.adopt_tokens(&base, tokens).await
+        self.adopt_attempt(attempt_id, &base, result?).await
     }
 
-    /// Give the attempt up; the verifier is forgotten even if the server is unreachable.
-    pub async fn cancel_attempt(&self, attempt_id: &str) -> Result<(), SessionError> {
-        let outcome = self.attempt_call(attempt_id, "cancel", json!({})).await;
+    /// Take over the session an attempt produced, but only while the
+    /// webview still wants that attempt: after a cancel (or the attempt's
+    /// expiry) the new session is ended on the server instead (Codex review:
+    /// a superseded sign-in must never replace the current one).
+    async fn adopt_attempt(
+        &self,
+        attempt_id: &str,
+        base: &str,
+        value: Value,
+    ) -> Result<AuthResult, SessionError> {
+        let outcome = match serde_json::from_value::<TokenResponse>(value) {
+            Ok(tokens) => {
+                self.adopt_tokens_if(base, tokens, || self.attempts.contains(attempt_id))
+                    .await
+            }
+            Err(e) => Err(invalid_response(200, &e)),
+        };
         self.attempts.remove(attempt_id);
-        outcome?.1.map(|_| ())
+        outcome?.ok_or_else(cancelled_attempt)
+    }
+
+    /// Give the attempt up. The verifier is taken out before the server is
+    /// asked, so a collect or TOTP step still in flight never adopts its
+    /// session, and it is gone even if the server is unreachable.
+    pub async fn cancel_attempt(&self, attempt_id: &str) -> Result<(), SessionError> {
+        let (base, verifier) = self.attempts.take(attempt_id).ok_or_else(unknown_attempt)?;
+        self.send_attempt_step(&base, attempt_id, "cancel", &verifier, json!({}))
+            .await?
+            .map(|_| ())
     }
 
     /// Redeem a desktop SSO hand-off code (`POST /auth/oidc/desktop/exchange`)
@@ -646,6 +732,159 @@ mod tests {
         assert_eq!(m.attempt_verifiers().get(ID).unwrap().1.as_str(), "v-1");
         // No session yet.
         assert!(m.auth_info().is_none());
+    }
+
+    fn tokens_body(access: &str, refresh: &str) -> Value {
+        json!({
+            "access_token": access,
+            "refresh_token": refresh,
+            "expires_in": 900,
+            "token_type": "Bearer",
+            "session_id": "s-1",
+            "assurance": "probation",
+            "absolute_expires_at": "2027-02-01T00:00:00Z"
+        })
+    }
+
+    #[tokio::test]
+    async fn failed_collect_keeps_the_verifier_for_a_retry() {
+        let server = MockServer::start().await;
+        let m = manager();
+        started(&server, &m).await;
+        mount_me(&server).await;
+        Mock::given(method("POST"))
+            .and(path(format!("/auth/login-attempts/{ID}/collect")))
+            .respond_with(
+                ResponseTemplate::new(503)
+                    .set_body_json(json!({"error": "SERVICE_UNAVAILABLE", "message": "x"})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/auth/login-attempts/{ID}/collect")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens_body("at-1", "rt-1")))
+            .mount(&server)
+            .await;
+        let err = m.collect_attempt(ID).await.unwrap_err();
+        assert_eq!(err.to_string(), "SERVICE_UNAVAILABLE");
+        assert!(m.attempt_verifiers().get(ID).is_some());
+        let result = m.collect_attempt(ID).await.unwrap();
+        assert_eq!(result.user["username"], "alice");
+        assert!(m.attempt_verifiers().get(ID).is_none());
+    }
+
+    /// A collect (or TOTP step) that answers after the webview cancelled
+    /// the attempt never becomes the app's session: it is ended at once.
+    #[tokio::test]
+    async fn cancel_during_collect_or_totp_ends_the_new_session() {
+        for step in ["collect", "totp"] {
+            let server = MockServer::start().await;
+            let m = manager();
+            started(&server, &m).await;
+            mount_me(&server).await;
+            Mock::given(method("POST"))
+                .and(path(format!("/auth/login-attempts/{ID}/{step}")))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(tokens_body("at-late", "rt-late"))
+                        .set_delay(Duration::from_millis(300)),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!("/auth/login-attempts/{ID}/cancel")))
+                .respond_with(ResponseTemplate::new(204))
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/auth/logout"))
+                .and(header("authorization", "Bearer at-late"))
+                .respond_with(ResponseTemplate::new(204))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let late = async {
+                if step == "collect" {
+                    m.collect_attempt(ID).await
+                } else {
+                    m.attempt_totp(ID, "123456").await
+                }
+            };
+            let cancel = async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                m.cancel_attempt(ID).await
+            };
+            let (late, cancelled) = tokio::join!(late, cancel);
+            cancelled.unwrap();
+            assert_eq!(
+                late.unwrap_err().to_string(),
+                r#"LOGIN_ATTEMPT_ENDED::{"state":"cancelled"}"#,
+                "{step}"
+            );
+            assert!(m.auth_info().is_none(), "{step}");
+            assert!(m.attempt_verifiers().get(ID).is_none(), "{step}");
+            let logout = server
+                .received_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|r| r.url.path() == "/auth/logout")
+                .expect("the late session is ended");
+            assert_eq!(body_of(&logout)["refresh_token"], "rt-late");
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_forgets_the_verifier_before_the_server_answers() {
+        let server = MockServer::start().await;
+        let m = manager();
+        started(&server, &m).await;
+        Mock::given(method("POST"))
+            .and(path(format!("/auth/login-attempts/{ID}/cancel")))
+            .respond_with(ResponseTemplate::new(204).set_delay(Duration::from_millis(300)))
+            .mount(&server)
+            .await;
+        let cancel = m.cancel_attempt(ID);
+        let check = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            m.attempt_verifiers().get(ID).is_none()
+        };
+        let (cancelled, gone_early) = tokio::join!(cancel, check);
+        cancelled.unwrap();
+        assert!(gone_early);
+        let body = body_of(&server.received_requests().await.unwrap()[1]);
+        assert!(body["verifier"].as_str().is_some_and(|v| !v.is_empty()));
+    }
+
+    /// Codex review: a verifier must not outlive its attempt just because no
+    /// other attempt call follows (a hung poll, a closed screen).
+    #[tokio::test(start_paused = true)]
+    async fn expired_verifier_is_dropped_without_another_call() {
+        let v = AttemptVerifiers::default();
+        v.insert("a", "https://chat.example.com", Zeroizing::new("x".into()));
+        tokio::time::advance(Duration::from_secs(ATTEMPT_TTL.as_secs() - 1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(v.len(), 1);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(v.len(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expiry_of_an_old_entry_spares_a_newer_one_with_the_same_id() {
+        let v = AttemptVerifiers::default();
+        v.insert("a", "b", Zeroizing::new("old".into()));
+        tokio::time::advance(Duration::from_mins(5)).await;
+        v.insert("a", "b", Zeroizing::new("new".into()));
+        tokio::time::advance(Duration::from_mins(5) + Duration::from_secs(1)).await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(v.len(), 1);
+        assert_eq!(v.lock().get("a").unwrap().verifier.as_str(), "new");
     }
 
     #[test]
