@@ -286,7 +286,14 @@ if (typeof localStorage !== "undefined") {
 export const SESSION_ENDED_EVENT = "kaiku:session-ended";
 
 /** Why the session ended; selects the message shown on the sign-in prompt. */
-export type SessionEndReason = "expired" | "revoked" | "banned";
+export type SessionEndReason = "expired" | "revoked" | "banned" | "reused";
+
+/** Window event: a request needs a full session (403 `FULL_SESSION_REQUIRED`, C27). */
+export const FULL_SESSION_REQUIRED_EVENT = "kaiku:full-session-required";
+
+/** The full-session event is dispatched at most once per this interval. */
+const FULL_SESSION_EVENT_GAP_MS = 2_000;
+let lastFullSessionEventAt = -Infinity;
 
 /** Browser: drop the local session and tell the app to show the sign-in prompt. */
 export function endBrowserSession(reason: SessionEndReason): void {
@@ -357,12 +364,17 @@ export async function getAuthContext(): Promise<AuthContext> {
  * Native mode: the Rust session has ended (refresh token rejected). Clears
  * the cache and dispatches `kaiku:session-expired` once, however many paths
  * report it (the `auth:session_expired` event, `refresh_session` returning
- * `null`, a `session_request` failing with "Session expired").
+ * `null`, a `session_request` failing with "Session expired"). A refresh
+ * token used twice (`reused`, C27) ends the session for good instead.
  */
-export function expireNativeSession(): void {
+export function expireNativeSession(reason: "expired" | "reused" = "expired"): void {
   if (nativeSessionExpiryReported) return;
   nativeSessionExpiryReported = true;
   setNativeAuthInfo(null);
+  if (reason === "reused") {
+    window.dispatchEvent(new CustomEvent(SESSION_ENDED_EVENT, { detail: { reason } }));
+    return;
+  }
   window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
 }
 
@@ -396,8 +408,8 @@ async function registerNativeAuthEvents(): Promise<void> {
     },
   );
   try {
-    await listen("auth:session_expired", () => {
-      expireNativeSession();
+    await listen<{ reason?: string } | null>("auth:session_expired", (event) => {
+      expireNativeSession(event.payload?.reason === "reused" ? "reused" : "expired");
     });
   } catch (err) {
     unlistenRefreshed();
@@ -472,19 +484,31 @@ export function refreshAccessToken(): Promise<boolean> {
   if (refreshInFlight) {
     return refreshInFlight;
   }
-  refreshInFlight = doRefreshAccessToken().finally(() => {
+  refreshInFlight = withRefreshLock(doRefreshAccessToken).finally(() => {
     refreshInFlight = null;
   });
   return refreshInFlight;
 }
 
-/** Whether a 403 refresh response carries the `ACCOUNT_BANNED` code. */
-async function isAccountBanned(response: Response): Promise<boolean> {
+/**
+ * Browser: serialise refreshes across tabs with a Web Lock (B.4): two tabs
+ * rotating the shared refresh cookie at once would look like a reused token.
+ * Without `navigator.locks` (old browsers, the desktop app) the in-tab single
+ * flight is all there is.
+ */
+function withRefreshLock(run: () => Promise<boolean>): Promise<boolean> {
+  const locks = typeof navigator !== "undefined" ? (navigator as Navigator & { locks?: LockManager }).locks : undefined;
+  if (isTauri() || !locks?.request) return run();
+  return locks.request("kaiku-refresh", run) as Promise<boolean>;
+}
+
+/** The `error` code of a refused refresh, if the body names one. */
+async function refreshErrorCode(response: Response): Promise<unknown> {
   try {
     const body = (await response.json()) as { error?: unknown };
-    return codeIs(body?.error, "ACCOUNT_BANNED");
+    return body?.error;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -527,8 +551,15 @@ async function doRefreshAccessToken(): Promise<boolean> {
       // Only an explicit rejection ends the session. Other statuses (e.g. a
       // 502/503 from a proxy while the server restarts) are transient, like a
       // network error: keep the tokens so the caller can retry later.
-      if (response.status === 403 && (await isAccountBanned(response))) {
+      const code =
+        response.status === 401 || response.status === 403 ? await refreshErrorCode(response) : undefined;
+      if (response.status === 403 && codeIs(code, "ACCOUNT_BANNED")) {
         endBrowserSession("banned");
+        return false;
+      }
+      // C27: the refresh token was used twice; the server ended the session.
+      if (response.status === 401 && codeIs(code, "SESSION_REUSED")) {
+        endBrowserSession("reused");
         return false;
       }
       if (response.status === 401 || response.status === 403) {
@@ -830,6 +861,15 @@ async function sendHttpRequest<T>(
           window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_REQUIRED_EVENT));
         }
         throw new HttpError(403, PASSWORD_CHANGE_REQUIRED, PASSWORD_CHANGE_REQUIRED);
+      }
+      // C27: this needs a full session (passkey or phone sign-in). The app
+      // shows one dialog; repeats within 2 s do not stack it.
+      if (response.status === 403 && codeIs(errorBody.error, "FULL_SESSION_REQUIRED")) {
+        const now = Date.now();
+        if (typeof window !== "undefined" && now - lastFullSessionEventAt >= FULL_SESSION_EVENT_GAP_MS) {
+          lastFullSessionEventAt = now;
+          window.dispatchEvent(new CustomEvent(FULL_SESSION_REQUIRED_EVENT));
+        }
       }
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     }

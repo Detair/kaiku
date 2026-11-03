@@ -7,7 +7,7 @@ export const I18N_GUARDED_FILES = [
   "src/components/home/DMConversation.tsx",
   "src/components/admin/CreateAccountModal.tsx",
   "src/views/ForcedPasswordChange.tsx",
-  "src/views/{Login,Register,ForgotPassword,ResetPassword,InviteJoin,NotFound,Main}.tsx",
+  "src/views/{Login,Register,InviteJoin,NotFound,Main}.tsx",
   "src/components/auth/{AuthGuard,SessionExpiredModal}.tsx",
   "src/components/settings/ChangePasswordModal.tsx",
   "src/stores/auth.ts",

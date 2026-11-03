@@ -7,7 +7,9 @@
 import { loadServerFeatures, resetServerFeatures } from "@/stores/serverFeatures";
 import { createStore } from "solid-js/store";
 import { codeIs } from "@/lib/errorCode";
-import type { LoginStep, User } from "@/lib/types";
+import { decodeAuthSession, type AuthSession, type LoginStep, type User } from "@/lib/types";
+import { passkeyCeremonies } from "@/lib/passkeySeam";
+import { resetMeSecurity } from "./security";
 import * as tauri from "@/lib/tauri";
 import {
   initWebSocket,
@@ -76,6 +78,15 @@ const [authState, setAuthState] = createStore<AuthState>({
 // Derived state
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
+
+/** The current session from `GET /auth/me` (C27); null when the server sent none. */
+export const sessionInfo = (): AuthSession | null => decodeAuthSession(authState.user?.session);
+
+/**
+ * Chat-only session (B.4, CC4): everything but a passkey or device-key
+ * sign-in. A missing `session` counts as probation.
+ */
+export const isProbation = (): boolean => sessionInfo()?.assurance !== "full";
 
 /**
  * The temporary password the user just signed in with, kept so the forced
@@ -717,6 +728,7 @@ export async function completeSignIn(
   // Only a temporary password is remembered, and only until it is replaced.
   pendingTemporaryPassword = passwordChangeRequired ? stepPassword : null;
   stepPassword = null;
+  resetMeSecurity();
   setAuthState({
     restorePending: false,
     user: result.user,
@@ -792,6 +804,7 @@ export async function register(
 export async function logout(): Promise<void> {
   invalidatePasskeySignIns();
   resetServerFeatures();
+  resetMeSecurity();
   pendingTemporaryPassword = null;
   stepPassword = null;
   passwordChangeSaved = false;
@@ -824,6 +837,36 @@ export async function logout(): Promise<void> {
       error,
     });
   }
+}
+
+/**
+ * "Sign in with a passkey" from a chat-only session (F1): a new full session
+ * replaces it, then the old one ends. Nothing upgrades a session (CC4).
+ * Browser: the old session is ended with its own bearer and no cookies, so
+ * only that `sid` ends (the new refresh cookie is not sent). Desktop: Rust's
+ * `adopt_tokens` ends the old session itself.
+ */
+export async function replaceSessionWithPasskey(signal?: AbortSignal): Promise<User> {
+  const ceremonies = passkeyCeremonies();
+  if (!ceremonies) throw new Error("PASSKEYS_UNAVAILABLE");
+  const serverUrl = tauri.getServerUrl();
+  const oldToken = isTauri() ? null : tauri.getAccessToken();
+  const result = await ceremonies.signIn(serverUrl, {
+    mediation: "optional",
+    signal: signal ?? new AbortController().signal,
+  });
+  if (oldToken && oldToken !== tauri.getAccessToken()) {
+    try {
+      await fetch(`${serverUrl.replace(/\/+$/, "")}/auth/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${oldToken}` },
+        credentials: "omit",
+      });
+    } catch (err) {
+      console.warn("[Auth] Ending the chat-only session failed:", err instanceof Error ? err.message : err);
+    }
+  }
+  return completeSignIn(serverUrl, result);
 }
 
 /** Thrown when the new password is saved but the session could not start yet. */

@@ -49,6 +49,9 @@ const MIN_POLL_INTERVAL_MS = 1_000;
 /** Retry delays after failed polls: 1 s, 2 s, then every 5 s. */
 const RETRY_DELAYS_MS = [1_000, 2_000, 5_000];
 
+/** Largest delay `setTimeout` keeps (2^31 - 1 ms). */
+const MAX_TIMER_MS = 2_147_483_647;
+
 const ENDED: readonly EndedState[] = ["denied", "reported", "cancelled", "expired"];
 
 const [flow, setFlow] = createSignal<LoginFlow>({ step: "form" });
@@ -90,9 +93,12 @@ function armExpiry(attempt: LoginAttempt, myRun: number): void {
   clearExpiry();
   const at = Date.parse(attempt.expires_at);
   if (Number.isNaN(at)) return;
+  // Timers overflow past 2^31-1 ms and would fire at once; attempts live
+  // at most 10 minutes anyway.
+  const delay = Math.min(Math.max(0, at - Date.now()), MAX_TIMER_MS);
   expiryTimer = setTimeout(() => {
     if (myRun === run) end("expired");
-  }, Math.max(0, at - Date.now()));
+  }, delay);
 }
 
 /** The ended state a refused attempt call reports, or null if it may be retried. */

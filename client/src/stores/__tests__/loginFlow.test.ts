@@ -150,6 +150,14 @@ describe("login flow store", () => {
     expect(loginFlow().step).toBe("qr");
   });
 
+  it("an attempt far in the future does not end at once", async () => {
+    pendingPolls();
+    api.createQrAttempt.mockResolvedValue(attempt({ expires_at: "2099-01-01T00:00:00Z" }));
+    await startPhoneSignIn("https://chat.example.com");
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(loginFlow().step).toBe("qr");
+  });
+
   it("410 LOGIN_ATTEMPT_ENDED ends with the reported state", async () => {
     const polls = pendingPolls();
     api.createQrAttempt.mockResolvedValue(attempt());

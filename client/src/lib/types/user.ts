@@ -59,6 +59,12 @@ export interface User extends UserProfile {
   mfa_enabled: boolean;
   created_at: string;
   status_message?: string | null;
+  /** C27 `GET /auth/me`: may this account's phones confirm sign-ins. */
+  may_approve?: boolean;
+  /** C28: the built-in "Kaiku" system account (false for everyone else). */
+  is_system?: boolean;
+  /** C27 `GET /auth/me` `session`; decode with `decodeAuthSession` (absent = probation). */
+  session?: unknown;
 }
 
 // Session Management Types

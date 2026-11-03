@@ -21,6 +21,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { useLocation } from "@solidjs/router";
+import ProbationBanner from "@/components/auth/ProbationBanner";
 import { Hash, Volume2, Pin } from "lucide-solid";
 import AppShell from "@/components/layout/AppShell";
 import CommandPalette from "@/components/layout/CommandPalette";
@@ -154,6 +155,9 @@ const Main: Component = () => {
 
   return (
     <>
+      {/* Chat-only session: what it cannot do, and the way to a full one (B.4) */}
+      <ProbationBanner />
+
       {/* Command Palette (Global) */}
       <CommandPalette />
 

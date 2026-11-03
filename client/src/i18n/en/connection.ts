@@ -10,5 +10,6 @@ export const connection = {
   "connection.session.endedTitle": "Signed out",
   "connection.session.revoked": "Your session was ended on another device or by an admin. Please log in again to continue.",
   "connection.session.banned": "This account has been suspended, so you were signed out.",
+  "connection.session.reused": "A session was ended because its key was used twice. Sign in again to continue.",
   "connection.session.logIn": "Log in",
 } as const satisfies Record<`connection.${string}`, string>;

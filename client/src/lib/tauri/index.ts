@@ -98,6 +98,7 @@ export {
   expireNativeSession,
   endBrowserSession,
   SESSION_ENDED_EVENT,
+  FULL_SESSION_REQUIRED_EVENT,
   type SessionEndReason,
   initNativeAuthEvents,
   PASSWORD_CHANGE_REQUIRED,
