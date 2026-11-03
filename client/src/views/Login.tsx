@@ -2,6 +2,7 @@ import { Component, createSignal, createResource, Show, For, onCleanup, onMount 
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import {
   login,
+  loginWithPasskey,
   loginWithOidc,
   completeNativeOidcLogin,
   authState,
@@ -19,7 +20,18 @@ import { isTauri } from "@/lib/tauri/common";
 import { openBlankSsoPopup, reloadAfterSsoPopup, watchSsoPopup } from "@/lib/oidcPopup";
 import { safeReturnUrl } from "@/lib/returnUrl";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
-import { LOGIN_ERRORS } from "@/lib/authErrors";
+import { LOGIN_ERRORS, passkeyErrorKey } from "@/lib/authErrors";
+import PasskeyButton from "@/components/auth/PasskeyButton";
+import { PasskeyError } from "@/lib/tauri/passkeys";
+import {
+  isConditionalMediationAvailable,
+  isWebAuthnAvailable,
+  signalUnknown,
+} from "@/lib/webauthn";
+import { formatTimestamp } from "@/i18n/format";
+
+/** A conditional ceremony lives 300 s on the server; restart it before. */
+const CONDITIONAL_RESTART_MS = 270_000;
 
 /** Map icon_hint to a Lucide icon component. */
 function providerIcon(hint: string | null) {
@@ -82,10 +94,113 @@ const Login: Component = () => {
     }
   });
 
+  // Passkeys (F1, C29): autofill (conditional mediation) runs in the
+  // background in browsers; the button runs a modal ceremony (desktop: the
+  // system browser).
+  const desktop = isTauri();
+  const showPasskey = () => desktop || isWebAuthnAvailable();
+  const [passkeyBusy, setPasskeyBusy] = createSignal(false);
+  let conditionalCtl: AbortController | undefined;
+  let modalCtl: AbortController | undefined;
+  let restartTimer: ReturnType<typeof setTimeout> | undefined;
+  const linux = typeof navigator !== "undefined" && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+
+  const stopConditional = () => {
+    conditionalCtl?.abort();
+    conditionalCtl = undefined;
+    clearTimeout(restartTimer);
+  };
+
+  /** Words a passkey failure; silent for cancels and aborts. */
+  const showPasskeyError = (err: unknown) => {
+    if (!(err instanceof PasskeyError)) {
+      setLocalError(errorText(err, "passkeys.error.failed", LOGIN_ERRORS));
+      return;
+    }
+    if (err.code === "ABORTED" || err.code === "PASSKEY_CANCELLED") return;
+    if (err.code === "PASSKEY_UNKNOWN") {
+      if (err.rpId && err.credentialId) void signalUnknown(err.rpId, err.credentialId);
+      setLocalError(t("passkeys.error.removed"));
+      return;
+    }
+    if (err.code === "PASSKEY_PENDING") {
+      // Never signalled as unknown (B.1).
+      setLocalError(
+        t("passkeys.error.readyAt", { time: err.readyAt ? formatTimestamp(err.readyAt) : "" }),
+      );
+      return;
+    }
+    setLocalError(t(passkeyErrorKey(err.code)));
+  };
+
+  const afterPasskey = () =>
+    navigate(safeReturnUrl(searchParams.returnUrl) ?? "/", { replace: true });
+
+  const startConditional = async () => {
+    if (desktop || disposed || !isWebAuthnAvailable()) return;
+    if (!(await isConditionalMediationAvailable()) || disposed) return;
+    stopConditional();
+    const ctl = new AbortController();
+    conditionalCtl = ctl;
+    restartTimer = setTimeout(() => {
+      if (conditionalCtl === ctl) void startConditional();
+    }, CONDITIONAL_RESTART_MS);
+    try {
+      await loginWithPasskey(serverUrl(), { mediation: "conditional", signal: ctl.signal });
+      afterPasskey();
+    } catch (err) {
+      if (ctl.signal.aborted) return;
+      // Autofill stays quiet, except for a removed or a pending passkey.
+      if (err instanceof PasskeyError && ["PASSKEY_UNKNOWN", "PASSKEY_PENDING"].includes(err.code)) {
+        showPasskeyError(err);
+      }
+    }
+  };
+  onMount(() => {
+    void startConditional();
+  });
+  onCleanup(() => {
+    stopConditional();
+    modalCtl?.abort();
+  });
+
+  const handlePasskey = async () => {
+    setLocalError("");
+    clearError();
+    stopConditional();
+    modalCtl?.abort();
+    const ctl = new AbortController();
+    modalCtl = ctl;
+    setPasskeyBusy(true);
+    try {
+      await loginWithPasskey(serverUrl(), {
+        mediation: "optional",
+        signal: ctl.signal,
+        username: username().trim() || undefined,
+      });
+      afterPasskey();
+    } catch (err) {
+      if (!ctl.signal.aborted) showPasskeyError(err);
+    } finally {
+      if (modalCtl === ctl) {
+        modalCtl = undefined;
+        setPasskeyBusy(false);
+        if (!disposed) void startConditional();
+      }
+    }
+  };
+
+  const cancelPasskey = () => {
+    modalCtl?.abort();
+    modalCtl = undefined;
+    setPasskeyBusy(false);
+  };
+
   const handleLogin = async (e: Event) => {
     e.preventDefault();
     setLocalError("");
     clearError();
+    stopConditional();
 
     if (!username().trim()) {
       setLocalError(t("auth.login.usernameRequired"));
@@ -318,6 +433,39 @@ const Login: Component = () => {
 
         {/* Normal Login Flow (hidden during MFA) */}
         <Show when={!authState.mfaRequired}>
+          {/* Passkeys first (F1) */}
+          <Show when={showPasskey()}>
+            <div class="mb-4 space-y-2">
+              <PasskeyButton busy={passkeyBusy()} onClick={() => void handlePasskey()} />
+              <Show when={desktop && passkeyBusy()}>
+                <div role="status" class="p-3 rounded-lg border border-white/10 bg-white/5 text-sm text-text-primary space-y-2">
+                  <p>{t("passkeys.login.browserHint")}</p>
+                  <Show when={linux}>
+                    <p class="text-text-secondary">{t("passkeys.login.linuxHint")}</p>
+                  </Show>
+                  <button
+                    type="button"
+                    class="w-full min-h-12 rounded-lg border border-white/10 text-text-primary hover:bg-white/10"
+                    onClick={cancelPasskey}
+                  >
+                    {t("passkeys.login.cancel")}
+                  </button>
+                </div>
+              </Show>
+              <Show when={showOidc() || showLocalLogin()}>
+                <div class="relative my-5">
+                  <div class="absolute inset-0 flex items-center">
+                    <div class="w-full border-t border-white/10" />
+                  </div>
+                  <div class="relative flex justify-center text-xs">
+                    <span class="bg-background-secondary px-3 text-text-muted">
+                      {t("auth.login.or")}
+                    </span>
+                  </div>
+                </div>
+              </Show>
+            </div>
+          </Show>
           {/* SSO Buttons */}
           <Show when={showOidc()}>
             <div class="space-y-2 mb-4">
@@ -385,7 +533,7 @@ const Login: Component = () => {
                   type="text"
                   class="input-field"
                   name="username"
-                  autocomplete="username"
+                  autocomplete="username webauthn"
                   placeholder={t("auth.login.usernamePlaceholder")}
                   data-testid="login-username"
                   value={username()}

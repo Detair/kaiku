@@ -649,6 +649,39 @@ export async function login(
 }
 
 /**
+ * Sign in with a passkey (C29): a new full session. Browser: a WebAuthn
+ * ceremony (`conditional` for autofill, `optional` for the button, with the
+ * typed user name as a hint); desktop: the system browser, tokens stay in
+ * Rust. Errors are `PasskeyError`s for the view to word; the store state only
+ * changes on success.
+ */
+export async function loginWithPasskey(
+  serverUrl: string,
+  o: { mediation: "conditional" | "optional"; signal: AbortSignal; username?: string },
+): Promise<User> {
+  if (isTauri()) await initNativeSession();
+  resetServerFeatures();
+  const result = await tauri.passkeySignIn(serverUrl, o);
+  warnIfNotRemembered(result);
+  stopRestoreRetry();
+  pendingTemporaryPassword = null;
+  setAuthState({
+    restorePending: false,
+    user: result.user,
+    serverUrl: (isTauri() && tauri.getServerUrl()) || serverUrl,
+    isLoading: false,
+    isInitialized: true,
+    error: null,
+    setupRequired: result.setup_required,
+    mfaRequired: false,
+    sessionExpired: false,
+    passwordChangeRequired: result.password_change_required === true,
+  });
+  if (!authState.passwordChangeRequired) await startSessionServices();
+  return result.user;
+}
+
+/**
  * Register a new account.
  */
 export async function register(

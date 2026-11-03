@@ -23,6 +23,7 @@ import { onboarding } from "./en/onboarding";
 import { voice } from "./en/voice";
 import { notifications } from "./en/notifications";
 import { guilds } from "./en/guilds";
+import { passkeys } from "./en/passkeys";
 
 export const en = {
   ...common,
@@ -41,6 +42,7 @@ export const en = {
   ...voice,
   ...notifications,
   ...guilds,
+  ...passkeys,
 } as const;
 
 export type MessageKey = keyof typeof en;

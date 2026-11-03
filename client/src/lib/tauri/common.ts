@@ -666,6 +666,8 @@ export class HttpError extends Error {
     message: string,
     /** Server error code from the body's `error` field (contract C16). */
     public readonly code?: string,
+    /** The parsed error body (extra fields such as `ready_at`). */
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "HttpError";
@@ -678,7 +680,13 @@ export const PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
 /** Window event dispatched when a request reports `PASSWORD_CHANGE_REQUIRED`. */
 export const PASSWORD_CHANGE_REQUIRED_EVENT = "kaiku:password-change-required";
 
-const AUTH_ENDPOINTS = new Set(["/auth/login", "/auth/register", "/auth/refresh"]);
+const AUTH_ENDPOINTS = new Set([
+  "/auth/login",
+  "/auth/register",
+  "/auth/refresh",
+  "/auth/passkeys/login/start",
+  "/auth/passkeys/login/finish",
+]);
 
 /**
  * HTTP helper for both modes. Base URL and bearer come from
@@ -791,7 +799,12 @@ async function sendHttpRequest<T>(
       errorBody && typeof errorBody === "object" && typeof errorBody.error === "string"
         ? errorBody.error
         : undefined;
-    throw new HttpError(response.status, errorMessage, code);
+    throw new HttpError(
+      response.status,
+      errorMessage,
+      code,
+      errorBody && typeof errorBody === "object" ? (errorBody as Record<string, unknown>) : undefined,
+    );
   }
 
   // Handle empty responses

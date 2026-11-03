@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- **Passkeys:** sign in with a passkey (fingerprint, face, device PIN or security key) in the browser, where the login page also offers your passkey in the user-name field, and in the desktop app, which opens your browser for it. No password needed.
 - **Passkeys (server):** sign in with a passkey (fingerprint, face, device PIN or security key) and get a full session; confirm sensitive actions such as removing a passkey or admin elevation with one; add, rename and remove passkeys. The desktop app uses the system browser for its passkey sign-in. Passkeys are bound to `PUBLIC_URL`'s host: a later domain change refuses startup while passkeys exist, unless `PASSKEY_ALLOW_RP_ID_CHANGE` names the new host. See `docs/admin-guide/ops/passkeys.md`.
 - Servers publish `/.well-known/assetlinks.json` for passkeys in the Android app (`PASSKEY_ANDROID_APP_IDS`, `PASSKEY_ANDROID_CERT_SHA256`); reverse proxies must send `/.well-known/` to the server (the compose setup does). See `docs/admin-guide/ops/passkeys.md`.
 - `kaiku-admin` on the server host can set up a key phone for any account and remove devices or end sessions; every use is logged and notified.

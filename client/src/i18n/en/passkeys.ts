@@ -1,0 +1,26 @@
+export const passkeys = {
+  "passkeys.login.button": "Sign in with passkey",
+  "passkeys.login.busy": "Waiting for your passkey…",
+  "passkeys.login.browserHint": "Continue in your browser. Kaiku opened it for your passkey.",
+  "passkeys.login.linuxHint":
+    "No phone option in Firefox? Use a security key, or choose another browser under Settings → Browser for passkey sign-in.",
+  "passkeys.login.cancel": "Cancel",
+  "passkeys.error.removed": "This passkey was removed from Kaiku. Sign in another way.",
+  "passkeys.error.readyAt": "This passkey is ready at {{time}}.",
+  "passkeys.error.invalid": "The passkey could not be checked. Please try again.",
+  "passkeys.error.userMismatch": "This passkey belongs to another account.",
+  "passkeys.error.expired": "The passkey request expired. Please try again.",
+  "passkeys.error.notSupported": "This browser cannot use passkeys.",
+  "passkeys.error.failed": "That did not work with a passkey. Please try again.",
+  "passkeys.error.alreadyRegistered": "This passkey is already added.",
+  "passkeys.error.limit": "You already have 10 passkeys. Remove one first.",
+  "passkeys.error.lastStrong": "This is your only passkey. Add another one first.",
+  "passkeys.error.browserFailed":
+    "Kaiku could not open the browser. Check “Browser for passkey sign-in” in the settings.",
+  "passkeys.error.timeout": "The passkey took too long. Please try again.",
+  "passkeys.error.clientOutdated": "Please update the Kaiku app.",
+  "passkeys.error.unavailable": "Passkeys are not available on this server.",
+  "passkeys.error.handoff": "The browser could not hand the passkey to Kaiku. Please try again.",
+  "passkeys.error.stepUpRequired": "Please confirm this with a passkey first.",
+  "passkeys.error.fullSessionRequired": "Sign in with a passkey or your key phone to do this.",
+} as const satisfies Record<`passkeys.${string}`, string>;
