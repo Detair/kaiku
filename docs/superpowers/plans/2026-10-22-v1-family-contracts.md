@@ -904,3 +904,7 @@ not sign in someone else by mistake. Additive; absent means no check.
 
   Text keys follow C15 (`security.notice.<event_type>` and so on). Clients that do not know them show the generic
   text (C5).
+
+**C27 amendment (2026-11-03, L1b review round 2; behaviour, no new code):**
+- A TOTP step on a QR login attempt answers 403 `TOTP_UNAVAILABLE`, as listed for the TOTP step; it no longer answers 409 `LOGIN_ATTEMPT_NOT_READY`.
+- The bootstrap request start answers the neutral 401 while its per-account TOTP counter is delayed, so a correct password is not revealed. The recovery start still answers 429 with `Retry-After` before consumption. Only a holder of a valid recovery code can reach that answer, so it reveals nothing.
