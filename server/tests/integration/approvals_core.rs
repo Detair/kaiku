@@ -15,7 +15,9 @@ use vc_server::auth::client_class::ClientClass;
 use vc_server::auth::ctx::AuthCtx;
 
 use super::helpers::approvals::KeyDeviceFixture;
-use super::helpers::{body_to_json, create_session_with_token, create_test_user, TestApp};
+use super::helpers::{
+    body_to_json, create_session_with_token, create_test_user, make_admin, TestApp,
+};
 
 pub(super) async fn post(app: &TestApp, uri: &str, token: &str, body: Value) -> (u16, Value) {
     let req = TestApp::request(Method::POST, uri)
@@ -120,6 +122,7 @@ async fn valid_answer_returns_a_grant(pool: PgPool) {
 async fn answer_retry_creates_no_second_grant(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
     assert_eq!(answer(&app, &dev, &c, b"").await.0, 200);
@@ -140,6 +143,7 @@ async fn answer_retry_creates_no_second_grant(pool: PgPool) {
 async fn concurrent_answers_one_wins(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     for _ in 0..25 {
         let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
@@ -172,6 +176,7 @@ async fn age_challenge(pool: &PgPool, id: &str) {
 async fn expired_challenge_is_gone(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
     age_challenge(&pool, c["challenge_id"].as_str().unwrap()).await;
@@ -197,6 +202,7 @@ async fn expired_challenge_is_gone(pool: PgPool) {
 async fn answer_and_sweep_race(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     for _ in 0..25 {
         let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
@@ -239,6 +245,7 @@ async fn answer_and_sweep_race(pool: PgPool) {
 async fn other_device_sees_not_found(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let other = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
@@ -261,6 +268,7 @@ async fn other_device_sees_not_found(pool: PgPool) {
 async fn bad_signature_keeps_the_challenge_issued(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let stranger = KeyDeviceFixture::insert(&pool, &app.config, user, "pending").await;
     let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
@@ -294,6 +302,7 @@ async fn bad_signature_keeps_the_challenge_issued(pool: PgPool) {
 async fn non_key_device_sessions_are_refused(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let (_, token) = create_session_with_token(&pool, &app.config, user).await;
     let (status, body) = post(
         &app,
@@ -312,6 +321,7 @@ async fn non_key_device_sessions_are_refused(pool: PgPool) {
 async fn pending_and_revoked_devices_cannot_answer(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
     for state in ["pending", "revoked"] {
@@ -339,6 +349,7 @@ async fn pending_and_revoked_devices_cannot_answer(pool: PgPool) {
 async fn revoking_a_device_ends_sessions_voids_challenges_and_grants(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
     let g = stepup_challenge(&app, &dev, "admin.elevate", "").await;
@@ -438,6 +449,7 @@ async fn answer_and_revocation_never_deadlock(pool: PgPool) {
     use vc_server::approvals::devices::{revoke_tx, RevokeReason};
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
     let ctx = AuthCtx::from(&app.state);
@@ -555,6 +567,7 @@ async fn sub_second_lifetime_never_issues_a_past_due_challenge(pool: PgPool) {
 async fn approved_past_due_is_expired(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
     let id = c["challenge_id"].as_str().unwrap();
@@ -583,6 +596,7 @@ async fn approved_past_due_is_expired(pool: PgPool) {
 async fn finished_challenges_and_enrolments_are_cleaned_up(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, _) = create_test_user(&pool).await;
+    make_admin(&pool, user).await;
     let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     let old = stepup_challenge(&app, &dev, "admin.elevate", "").await;
     let recent = stepup_challenge(&app, &dev, "admin.elevate", "").await;
@@ -695,4 +709,73 @@ async fn elevation_and_revocation_never_deadlock(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(elevated, 0);
+}
+
+fn admin_actions(other: Uuid, device: Uuid) -> Vec<(&'static str, String)> {
+    vec![
+        ("admin.elevate", String::new()),
+        ("admin.enrollment.issue", other.to_string()),
+        ("admin.authenticator.remove", device.to_string()),
+        ("admin.may_approve", other.to_string()),
+        ("admin.factor.set_state", other.to_string()),
+        ("admin.recovery_contact.set", other.to_string()),
+    ]
+}
+
+#[sqlx::test]
+async fn device_admin_step_up_needs_an_admin(pool: PgPool) {
+    // Review round 2: the key-device step-up resolves no foreign label for
+    // a non-admin; an admin's challenge names the foreign key device.
+    let app = TestApp::with_pool(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (other, _) = create_test_user(&app.pool).await;
+    let dev = KeyDeviceFixture::insert(&app.pool, &app.config, user, "active").await;
+    let theirs = KeyDeviceFixture::insert(&app.pool, &app.config, other, "active").await;
+    sqlx::query("UPDATE approval_devices SET label = 'Their secret phone' WHERE id = $1")
+        .bind(theirs.row_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    for (action, target) in admin_actions(other, theirs.row_id) {
+        let (s, b) = post(
+            &app,
+            "/api/approvals/step-up",
+            &dev.access_token,
+            json!({"action": action, "target": target}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (403, Some("NOT_ADMIN")),
+            "{action}: {b}"
+        );
+        assert!(!b.to_string().contains("Their secret phone"), "{b}");
+    }
+    // Review round 3 (Codex): NOT_ADMIN comes first, also without a key
+    // device (never KEY_DEVICE_REQUIRED for a non-admin).
+    let (_, plain) = create_session_with_token(&app.pool, &app.config, user).await;
+    for (action, target) in admin_actions(other, theirs.row_id) {
+        let (s, b) = post(
+            &app,
+            "/api/approvals/step-up",
+            &plain,
+            json!({"action": action, "target": target}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (403, Some("NOT_ADMIN")),
+            "{action}: {b}"
+        );
+    }
+    make_admin(&app.pool, user).await;
+    let (s, c) = post(
+        &app,
+        "/api/approvals/step-up",
+        &dev.access_token,
+        json!({"action": "admin.authenticator.remove", "target": theirs.row_id.to_string()}),
+    )
+    .await;
+    assert_eq!(s, 201, "{c}");
+    assert_eq!(c["context"]["target_label"], "Their secret phone", "{c}");
 }

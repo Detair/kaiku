@@ -28,7 +28,8 @@ const STEPUP_TTL_SECS: i64 = 120;
 /// The server's display label for a step-up target (signed as
 /// `target_label`, so the phone shows exactly what it confirms). Targets of
 /// the caller's own account (its sessions and key devices) are read only
-/// from that account; admin targets name any account.
+/// from that account; admin targets name any account, so `step_up` lets
+/// only system admins get here with an `admin.*` action.
 async fn target_label(
     conn: &mut sqlx::PgConnection,
     user_id: uuid::Uuid,
@@ -87,7 +88,10 @@ async fn target_label(
     path = "/api/approvals/step-up",
     tag = "approvals",
     request_body = StepUpChallengeRequest,
-    responses((status = 201, body = ApprovalChallenge), (status = 403, description = "KEY_DEVICE_REQUIRED")),
+    responses(
+        (status = 201, body = ApprovalChallenge),
+        (status = 403, description = "KEY_DEVICE_REQUIRED, or NOT_ADMIN for an admin.* action"),
+    ),
     security(("bearer_auth" = [])),
 )]
 #[tracing::instrument(skip(state, auth, body), fields(user_id = %auth.id))]
@@ -99,6 +103,9 @@ pub async fn step_up(
     let action = StepUpAction::parse(&body.action)
         .ok_or_else(|| ApprovalError::Validation("unknown action".into()))?;
     let target = StepUpTarget::parse(action, &body.target)?;
+    // NOT_ADMIN before anything else for an admin.* action (as on
+    // /api/admin/*), also before the key-device lookup.
+    crate::auth::guards::require_admin_for_step_up(&state.db, &auth, action).await?;
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
     let dev: KeyDeviceSession = key_device_session(&mut tx, &auth).await?;

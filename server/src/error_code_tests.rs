@@ -169,6 +169,7 @@ async fn admin_and_auth_codes_are_upper_snake() {
         AuthError::AuthMethodDisabled,
         AuthError::PasswordChangeRequired,
         AuthError::AccountBanned,
+        AuthError::NotAdmin,
         AuthError::ElevationRequired,
         AuthError::CannotUnlinkLastIdentity,
         AuthError::ServiceUnavailable,
