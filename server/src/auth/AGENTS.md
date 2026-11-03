@@ -29,6 +29,8 @@
 - `mfa_crypto.rs` — TOTP generation, verification, and QR code creation
 - `oidc.rs` — OpenID Connect provider configuration and callback handling
 - `error.rs` — AuthError and AuthResult types
+- `session_issue.rs` — `issue_session_tx`: every new session (account lock, session limit, absolute cap by client class); device-key sign-in lives in `crate::approvals::device_login`
+- `../cli/` + `../bin/kaiku_admin.rs` — `kaiku-admin` host CLI (enrol a key phone, remove devices, end sessions; audit rows with the system account as actor)
 
 ## For AI Agents
 
@@ -120,6 +122,8 @@ Config::default()  // Uses OWASP-recommended defaults
 - `AuthLogin`: 5 req/60s per IP + IP blocking after 10 failures
 - `AuthRegister`: 3 req/3600s per IP (prevent mass registration)
 - `AuthOther`: 40 req/60s per IP by default (refresh, OIDC authorize/callback, desktop hand-off exchange)
+- `AuthFlow`: 60 req/60s per IP (phone setup `/auth/enrollments/*`, device-key sign-in `/auth/device-login*`); never behind `check_ip_not_blocked`, 429 `TOO_MANY_ATTEMPTS`
+- `ApprovalLogin`: 30 req/60s per user (`/api/approvals/*`), 429 `TOO_MANY_ATTEMPTS`
 
 **IP Blocking**: `check_ip_not_blocked` middleware reads `ratelimit:block:{ip}` key from Redis. If exists, return 403. Login failures increment `ratelimit:login_failures:{ip}`, block at 10 failures for 1 hour.
 
