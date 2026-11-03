@@ -52,6 +52,13 @@ describe("PasswordSection", () => {
     expect(stepUp.mock.calls[0][0]).toMatchObject({ action: "password.set", target: "" });
   });
 
+  it("a lowercase password_rejected code still names the reason (Argon review 3 #6)", async () => {
+    await mount();
+    api.setPassword.mockRejectedValueOnce(new HttpError(400, "x", "password_rejected", { reason: "breached" }));
+    await submit("some-password-1");
+    expect(await screen.findByText("This password is too common or was leaked. Choose another one.")).toBeTruthy();
+  });
+
   it("saves with a password.set step-up", async () => {
     await mount();
     api.setPassword.mockResolvedValue(undefined);

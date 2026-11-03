@@ -3,6 +3,12 @@ import { render, screen, fireEvent, cleanup } from "@solidjs/testing-library";
 
 const api = vi.hoisted(() => ({ getMeSecurity: vi.fn() }));
 vi.mock("@/lib/tauri/security", async (orig) => ({ ...(await orig<object>()), ...api }));
+const passkeySignIn = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/tauri/passkeys", async (orig) => ({
+  ...(await orig<object>()),
+  passkeySignIn,
+  canUsePasskeys: () => true,
+}));
 const nav = vi.hoisted(() => vi.fn());
 vi.mock("@solidjs/router", async (orig) => ({ ...(await orig<object>()), useNavigate: () => nav }));
 
@@ -37,6 +43,17 @@ describe("security prompts", () => {
     expect(screen.queryByText(/Add a passkey/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Secure my account" }));
     expect(nav).toHaveBeenCalledWith("/secure-account");
+  });
+
+  it("a failed passkey sign-in says so instead of nothing (Argon review 2 #5)", async () => {
+    signInAs("probation");
+    await load(["sign_in_with_passkey"]);
+    passkeySignIn.mockRejectedValue(new Error("boom"));
+    render(() => <SecurityPromptBanner />);
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with a passkey" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Signing in with a passkey did not work. Please try again.",
+    );
   });
 
   it("snooze hides a prompt for seven days", async () => {

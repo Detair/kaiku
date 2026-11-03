@@ -149,6 +149,21 @@ describe("ProbationBanner across sessions (Argon review)", () => {
     await waitFor(() => expect(screen.getByText(/Signed in for chat only/)).toBeTruthy());
   });
 
+  it("a failed sign-in's error is gone for the next chat-only session (Argon review 1 #2)", async () => {
+    getMeSecurity.mockResolvedValue(security(1));
+    passkeySignIn.mockRejectedValue(new Error("boom"));
+    setAuthState({ user: user(probation) });
+    render(() => <ProbationBanner />);
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in with a passkey" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Signing in with a passkey did not work. Please try again.",
+    );
+    setAuthState({ user: user({ ...probation, assurance: "full" }) });
+    setAuthState({ user: user({ ...probation, id: "s2" }) });
+    await screen.findByRole("button", { name: "Sign in with a passkey" });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("the collapsed chip is a large touch target", () => {
     getMeSecurity.mockResolvedValue(security(1));
     setAuthState({ user: user(probation) });

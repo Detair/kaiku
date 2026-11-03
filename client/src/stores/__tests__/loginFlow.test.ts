@@ -392,6 +392,33 @@ describe("login flow ownership (Codex review)", () => {
     expect(loginFlow().step).toBe("qr");
   });
 
+  it("after LOGIN_ATTEMPT_NOT_READY the attempt's expiry counts again (Argon review 6 #7)", async () => {
+    api.createQrAttempt.mockResolvedValue(attempt({ expires_at: new Date(Date.now() + 5000).toISOString() }));
+    api.pollAttempt.mockResolvedValueOnce(attempt({ state: "approved", qr: null }));
+    api.pollAttempt.mockImplementation(() => new Promise(() => undefined));
+    api.collectAttempt.mockRejectedValueOnce(new HttpError(409, "x", "LOGIN_ATTEMPT_NOT_READY"));
+    await startPhoneSignIn("https://chat.example.com");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(api.collectAttempt).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(loginFlow()).toEqual({ step: "ended", state: "expired", via: "qr" });
+    expect(api.cancelAttempt).toHaveBeenCalledWith(ID);
+  });
+
+  it("leaving while the collected session is installed cancels nothing (Argon review 6 #6)", async () => {
+    const collect = await approvedWithPendingCollect();
+    let installed!: () => void;
+    authStore.completeSignIn.mockImplementation(() => new Promise((r) => (installed = () => r({ id: "u1" }))));
+    collect.finish({ user: { id: "u1" }, setup_required: false, password_change_required: false });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(authStore.completeSignIn).toHaveBeenCalledTimes(1);
+    // The sign-in screen unmounts while the session is installed.
+    await leaveFlow();
+    expect(api.cancelAttempt).not.toHaveBeenCalled();
+    installed();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
   it("a refused collect gives the attempt up and says why", async () => {
     const collect = await approvedWithPendingCollect();
     collect.fail(new HttpError(403, "x", "TOTP_UNAVAILABLE"));
