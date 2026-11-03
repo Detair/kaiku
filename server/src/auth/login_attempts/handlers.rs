@@ -238,6 +238,29 @@ pub async fn totp(
         .to_string();
     let client = SessionClient::from_request(&state, &headers, addr);
     let ctx = AuthCtx::from(&state);
+    // B.5: the account's TOTP counter (the attempt names the account).
+    let account: Option<(Option<Uuid>, Option<i64>)> = sqlx::query_as(
+        "SELECT user_id, first_factor_generation FROM login_attempts
+          WHERE id = $1 AND first_factor = 'password'",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?;
+    let (account, password_generation) = account.unwrap_or((None, None));
+    let limiter = crate::ratelimit::account::AccountLimiter::new(&state.redis);
+    let counter = account.map(crate::ratelimit::account::CounterKey::Totp);
+    if let Some(c) = &counter {
+        match limiter.check(c).await {
+            Ok(Ok(())) => {}
+            Ok(Err(d)) => {
+                tracing::warn!(retry_after = d.retry_after, "TOTP step delayed (B.5)");
+                return Err(AuthError::TooManyAttempts {
+                    retry_after: d.retry_after,
+                });
+            }
+            Err(_) => return Err(AuthError::ServiceUnavailable),
+        }
+    }
     let mut tries = 0;
     let outcome = loop {
         let mut tx = state.db.begin().await?;
@@ -248,13 +271,79 @@ pub async fn totp(
     };
     match outcome {
         core::TotpOutcome::Signed(collected) => {
+            if let Some(c) = &counter {
+                let _ = limiter.record_success(c).await;
+            }
             Ok(session_response(&state, &headers, jar, collected))
         }
-        core::TotpOutcome::WrongCode(events) => {
+        core::TotpOutcome::WrongCode(mut events) => {
+            if let (Some(c), Some(user)) = (&counter, account) {
+                events.extend(totp_failure(&state, &ctx, c, user, password_generation).await?);
+            }
             crate::security_events::spawn_delivery(&state, events);
+            crate::security_events::notices::spawn_pending_delivery(&state);
             Err(AuthError::InvalidMfaCode)
         }
     }
+}
+
+/// B.5: count a wrong code; every 20th a `guessing {factor: totp}` notice,
+/// the 100th throttles TOTP and marks the attempt's password generation
+/// compromised.
+async fn totp_failure(
+    state: &AppState,
+    ctx: &AuthCtx<'_>,
+    counter: &crate::ratelimit::account::CounterKey,
+    user: Uuid,
+    password_generation: Option<i64>,
+) -> AuthResult<Vec<Uuid>> {
+    use crate::auth::factors::{self, Factor, FactorRef, StateCause};
+    use crate::ratelimit::account::{AccountLimiter, NOTICE_EVERY, THROTTLE_AT};
+    use crate::security_events::{record, Actor, EventType, NewSecurityEvent};
+    let n = AccountLimiter::new(&state.redis)
+        .record_failure(counter)
+        .await
+        .map_err(|_| AuthError::ServiceUnavailable)?;
+    if n % NOTICE_EVERY != 0 && n != THROTTLE_AT {
+        return Ok(Vec::new());
+    }
+    let mut tx = state.db.begin().await?;
+    crate::approvals::transition::lock_accounts(&mut tx, &[user]).await?;
+    let mut events = Vec::new();
+    if n % NOTICE_EVERY == 0 {
+        events.push(
+            record(
+                &mut tx,
+                NewSecurityEvent::new(
+                    user,
+                    EventType::Guessing,
+                    Actor::System,
+                    serde_json::json!({"factor": "totp", "count": n}),
+                ),
+            )
+            .await?,
+        );
+    }
+    if n == THROTTLE_AT {
+        tracing::warn!(%user, "TOTP throttled after repeated failures (B.5)");
+        factors::throttle_tx(&mut tx, ctx, user, Factor::Totp).await?;
+        if let Some(generation) = password_generation {
+            factors::mark_compromised_tx(
+                &mut tx,
+                ctx,
+                user,
+                FactorRef {
+                    factor: Factor::Password,
+                    generation,
+                },
+                StateCause::Guessing,
+                Actor::System,
+            )
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(events)
 }
 
 /// The PC closed the screen.

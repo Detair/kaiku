@@ -3,6 +3,7 @@
 //! Provides Redis-based rate limiting for various request categories
 //! including authentication, API calls, and WebSocket connections.
 
+pub mod account;
 pub mod config;
 pub mod constants;
 pub mod error;

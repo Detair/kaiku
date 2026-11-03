@@ -97,6 +97,23 @@ pub async fn login(
     let binding =
         super::login_attempts::handlers::binding(&headers, body.client_challenge.as_deref())?;
 
+    // B.5: the per-account counter (unknown usernames count alike, DC15).
+    let counter = crate::ratelimit::account::CounterKey::password(&body.username);
+    let limiter = crate::ratelimit::account::AccountLimiter::new(&state.redis);
+    match limiter.check(&counter).await {
+        Ok(Ok(())) => {}
+        Ok(Err(d)) => {
+            tracing::warn!(
+                retry_after = d.retry_after,
+                "password sign-in delayed (B.5)"
+            );
+            return Err(AuthError::TooManyAttempts {
+                retry_after: d.retry_after,
+            });
+        }
+        Err(_) => return Err(AuthError::ServiceUnavailable),
+    }
+
     // Always one Argon2 verify (a dummy hash for unknown users, the system
     // account and passwordless accounts), so the work is the same.
     let user_opt = find_user_by_username(&state.db, &body.username).await?;
@@ -111,6 +128,7 @@ pub async fn login(
     .await
     .map_err(|e| AuthError::Internal(format!("password check failed: {e}")))?;
 
+    let typed_account = user_opt.as_ref().filter(|u| !u.is_system).map(|u| u.id);
     let user = match user_opt {
         Some(u) if u.password_hash.is_some() && !u.is_system && password_valid => Some(u),
         _ => None,
@@ -128,6 +146,9 @@ pub async fn login(
         None => None,
     };
     drop(conn);
+    if !password_valid {
+        account_failure(&state, &counter, typed_account).await?;
+    }
     let (Some(user), Some((step, generation))) = (user, step) else {
         record_failed_auth!();
         crate::observability::metrics::record_auth_login_attempt(false);
@@ -158,8 +179,55 @@ pub async fn login(
     if let (Some(ref rl), Some(Extension(ref nip))) = (&state.rate_limiter, &normalized_ip) {
         let _ = rl.clear_failed_auth(&nip.0).await;
     }
+    let _ = limiter.record_success(&counter).await;
     tracing::info!(user_id = %user.id, step = step.status, "Password correct; confirmation pending");
     Ok((status, jar, Json(step)))
+}
+
+/// B.5: count a wrong password for `counter`; at every 20th a coalesced
+/// `guessing` notice, at the 100th the password is `throttled`.
+async fn account_failure(
+    state: &AppState,
+    counter: &crate::ratelimit::account::CounterKey,
+    account: Option<Uuid>,
+) -> AuthResult<()> {
+    use crate::ratelimit::account::{AccountLimiter, NOTICE_EVERY, THROTTLE_AT};
+    let n = AccountLimiter::new(&state.redis)
+        .record_failure(counter)
+        .await
+        .map_err(|_| AuthError::ServiceUnavailable)?;
+    let Some(user) = account else {
+        return Ok(());
+    };
+    if n % NOTICE_EVERY != 0 && n != THROTTLE_AT {
+        return Ok(());
+    }
+    let ctx = AuthCtx::from(state);
+    let mut tx = state.db.begin().await?;
+    crate::approvals::transition::lock_accounts(&mut tx, &[user]).await?;
+    let mut events = Vec::new();
+    if n % NOTICE_EVERY == 0 {
+        events.push(
+            crate::security_events::record(
+                &mut tx,
+                crate::security_events::NewSecurityEvent::new(
+                    user,
+                    crate::security_events::EventType::Guessing,
+                    crate::security_events::Actor::System,
+                    serde_json::json!({"factor": "password", "count": n}),
+                ),
+            )
+            .await?,
+        );
+    }
+    if n == THROTTLE_AT {
+        tracing::warn!(%user, "password throttled after repeated failures (B.5)");
+        super::factors::throttle_tx(&mut tx, &ctx, user, Factor::Password).await?;
+    }
+    tx.commit().await?;
+    crate::security_events::spawn_delivery(state, events);
+    crate::security_events::notices::spawn_pending_delivery(state);
+    Ok(())
 }
 
 /// Create the `password`/`oidc` attempt of a correct first factor and its

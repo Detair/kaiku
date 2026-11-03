@@ -20,7 +20,11 @@ use super::login_attempts::{
 const PASSWORD: &str = "zq8#vT4p-login";
 
 /// `POST /auth/login` from the desktop app with a fresh verifier.
-async fn login_native(app: &TestApp, username: &str, password: &str) -> (u16, Value, Secret) {
+pub(super) async fn login_native(
+    app: &TestApp,
+    username: &str,
+    password: &str,
+) -> (u16, Value, Secret) {
     let (verifier, challenge) = verifier_pair();
     let req = peer_request(Method::POST, "/auth/login")
         .header("Content-Type", "application/json")

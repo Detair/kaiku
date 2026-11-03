@@ -122,6 +122,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.
 - A session ends automatically when its refresh token is used twice, browser sessions end after 30 days and app sessions after 90 days, and an account can have at most 50 open sessions.
 - Sign-in IP addresses are no longer sent to an external GeoIP service.
 - Update `pulldown-cmark` 0.13.1 → 0.13.6 (RUSTSEC-2026-0414, exponential output with the wikilinks option; Kaiku does not enable that option).

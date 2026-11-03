@@ -97,6 +97,7 @@ mod step_up_grants;
 mod system_account;
 mod tenancy_isolation;
 mod threads;
+mod throttling;
 mod transition_locks;
 mod unread;
 mod upgrade_migration;
