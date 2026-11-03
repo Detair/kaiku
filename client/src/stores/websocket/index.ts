@@ -1053,6 +1053,8 @@ async function resyncOpenChannel(
  * deletes from the gap. Unread metadata is refreshed in parallel.
  */
 async function handleReconnect(): Promise<void> {
+  // C27: the open-request prompt is re-checked after every reconnect.
+  void refreshMeSecurity();
   const open = openChannelIds();
   const cached = Object.keys(messagesState.byChannel).filter(
     (id) => (messagesState.byChannel[id]?.length ?? 0) > 0,

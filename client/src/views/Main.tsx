@@ -22,6 +22,9 @@ import {
 } from "solid-js";
 import { useLocation } from "@solidjs/router";
 import ProbationBanner from "@/components/auth/ProbationBanner";
+import OpenRequestModal from "@/components/security/OpenRequestModal";
+import SecurityPromptBanner from "@/components/security/SecurityPromptBanner";
+import { refreshMeSecurity } from "@/stores/security";
 import { Hash, Volume2, Pin } from "lucide-solid";
 import AppShell from "@/components/layout/AppShell";
 import CommandPalette from "@/components/layout/CommandPalette";
@@ -87,6 +90,9 @@ const Main: Component = () => {
   const [showPinDrawer, setShowPinDrawer] = createSignal(false);
 
   // Load guilds on mount
+  // C27: load the security overview at app start (open request, prompts).
+  onMount(() => void refreshMeSecurity());
+
   onMount(() => {
     void loadGuilds().then(landOnFirstServerIfIdle);
   });
@@ -157,6 +163,8 @@ const Main: Component = () => {
     <>
       {/* Chat-only session: what it cannot do, and the way to a full one (B.4) */}
       <ProbationBanner />
+      <OpenRequestModal />
+      <SecurityPromptBanner />
 
       {/* Command Palette (Global) */}
       <CommandPalette />

@@ -7,7 +7,7 @@
 
 import { createSignal } from "solid-js";
 import { getMeSecurity } from "@/lib/tauri/security";
-import type { MeSecurity } from "@/lib/types";
+import type { MeSecurity, SecurityPrompt } from "@/lib/types";
 
 const [security, setSecurity] = createSignal<MeSecurity | null>(null);
 let inFlight: Promise<void> | null = null;
@@ -51,4 +51,46 @@ export function closeSignOutOthers(): void {
 export function resetMeSecurity(): void {
   setSecurity(null);
   setSignOutOthersOffered(false);
+}
+
+/** Banner prompts, highest priority first (`open_request` is the modal's). */
+const PROMPT_ORDER: SecurityPrompt[] = [
+  "secure_my_account",
+  "set_up_phone",
+  "add_passkey",
+  "sign_in_with_passkey",
+  "name_recovery_contact",
+  "renew_totp",
+  "renew_recovery_codes",
+];
+
+const SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
+const snoozeKey = (p: SecurityPrompt) => `kaiku:prompt-snooze:${p}`;
+const [snoozeTick, setSnoozeTick] = createSignal(0);
+
+/** A store that fails (private mode, blocked site data) means "not snoozed". */
+function isSnoozed(p: SecurityPrompt): boolean {
+  try {
+    const until = Number(localStorage.getItem(snoozeKey(p)));
+    return Number.isFinite(until) && until > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+/** The one prompt the banner shows now, or null. */
+export function currentPrompt(): SecurityPrompt | null {
+  snoozeTick();
+  const prompts = security()?.prompts ?? [];
+  return PROMPT_ORDER.find((p) => prompts.includes(p) && !isSnoozed(p)) ?? null;
+}
+
+/** "Later": hide a prompt for 7 days in this browser. */
+export function snoozePrompt(p: SecurityPrompt): void {
+  try {
+    localStorage.setItem(snoozeKey(p), String(Date.now() + SNOOZE_MS));
+  } catch {
+    // Not stored: the prompt simply comes back.
+  }
+  setSnoozeTick((n) => n + 1);
 }
