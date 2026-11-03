@@ -11,6 +11,7 @@ import {
   lazy,
 } from "solid-js";
 import { marked } from "marked";
+import SecurityNoticeCard from "@/components/security/SecurityNoticeCard";
 import { createIsolatedPurifier } from "@/lib/sanitizer";
 import {
   File,
@@ -612,6 +613,10 @@ const MessageItem: Component<MessageItemProps> = (props) => {
 
   return (
     <Show
+      when={props.message.message_type !== "security" || !props.message.security_notice}
+      fallback={<SecurityNoticeCard notice={props.message.security_notice!} meId={currentUser()?.id ?? ""} />}
+    >
+    <Show
       when={props.message.message_type !== "system"}
       fallback={
         <div class="flex items-center justify-center gap-2 py-2 px-4 text-xs text-text-secondary">
@@ -963,6 +968,7 @@ const MessageItem: Component<MessageItemProps> = (props) => {
         </Show>
       </div>
     </div>
+    </Show>
     </Show>
   );
 };

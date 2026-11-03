@@ -1,3 +1,4 @@
+import type { SecurityNotice } from "./login";
 /**
  * Message, attachment, reaction, thread, and pagination types.
  */
@@ -41,7 +42,9 @@ export interface Message {
   reactions?: Reaction[];
   thread_info?: ThreadInfo;
   pinned: boolean;
-  message_type: string; // "user" | "system"
+  message_type: string; // "user" | "system" | "security" (C28)
+  /** C28: the notice of a `message_type: "security"` message. */
+  security_notice?: SecurityNotice | null;
   nonce?: string | null;
   embeds?: MessageEmbed[];
   components?: MessageActionRow[];

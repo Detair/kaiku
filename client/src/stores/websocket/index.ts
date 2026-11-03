@@ -23,6 +23,7 @@ import {
   catchUpChannel,
   catchUpAnchor,
   clearChannelMessages,
+  updateSecurityNotice,
 } from "../messages";
 import { handlePreferencesUpdated } from "../preferences";
 import {
@@ -50,6 +51,10 @@ import {
 } from "../channels";
 import { currentUser } from "../auth";
 import { refreshMeSecurity } from "../security";
+import { isKaikuDM } from "@/lib/kaikuDm";
+import { sendSecurityNotification } from "@/lib/notifications";
+import { decodeSecurityNotice } from "@/lib/types/login";
+import { pushText } from "@/components/security/noticeText";
 import { ENROLLMENT_UPDATED_EVENT } from "@/lib/types/events";
 import {
   guildsState,
@@ -359,6 +364,17 @@ function attachBrowserMessageHandler(): void {
  * Handle server events in browser mode.
  * IMPORTANT: Voice events are handled asynchronously to ensure proper ICE candidate processing.
  */
+/** OS notification for a new Kaiku notice (text from the event type only). */
+function notifySecurityNotice(message: Message): void {
+  const notice = decodeSecurityNotice(message.security_notice);
+  if (!notice) return;
+  sendSecurityNotification(
+    t("security.notice.pushTitle"),
+    pushText(notice, currentUser()?.id ?? ""),
+    notice.notice_id,
+  ).catch((err) => console.warn("[WebSocket] Security notification failed:", err));
+}
+
 export async function handleServerEvent(event: ServerEvent): Promise<void> {
   console.log("[WebSocket] Received event:", event.type);
 
@@ -366,9 +382,13 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
     case "message_new":
       await addMessage(event.message);
       updateDMLastMessage(event.channel_id, event.message);
-      handleMessageNotification(event.message).catch((err) => {
-        console.warn("[WebSocket] Message notification failed:", err);
-      });
+      if (event.message.message_type === "security") {
+        notifySecurityNotice(event.message);
+      } else {
+        handleMessageNotification(event.message).catch((err) => {
+          console.warn("[WebSocket] Message notification failed:", err);
+        });
+      }
       // Increment unread count if message is not in the selected channel
       {
         const isActiveGuildChannel = event.channel_id === channelsState.selectedChannelId;
@@ -767,6 +787,10 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       void refreshMeSecurity();
       break;
 
+    case "security_notice_updated":
+      updateSecurityNotice(event.channel_id, event.message_id, event.security_notice);
+      break;
+
     case "enrollment_updated":
       window.dispatchEvent(
         new CustomEvent(ENROLLMENT_UPDATED_EVENT, { detail: { enrollment_id: event.enrollment_id } }),
@@ -1004,7 +1028,8 @@ async function resyncOpenChannel(
     console.warn("[WS] No subscribe ack before catch-up for channel", channelId);
   }
   try {
-    if (gapTooLongForCatchUp()) {
+    // C28: coalescing edits older notices, so the Kaiku DM reloads its latest page.
+    if (gapTooLongForCatchUp() || isKaikuDM(dmsState.dms?.find((d) => d.id === channelId))) {
       await loadInitialMessages(channelId);
     } else {
       await catchUpChannel(channelId, undefined, anchor);

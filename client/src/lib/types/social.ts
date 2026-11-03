@@ -39,6 +39,8 @@ export interface DMParticipant {
   display_name: string;
   avatar_url: string | null;
   joined_at: string;
+  /** C28: the built-in "Kaiku" system account. */
+  is_system?: boolean;
 }
 
 export interface DMChannel {
@@ -68,6 +70,8 @@ export interface DMListItem {
   position: number;
   created_at: string;
   participants: DMParticipant[];
+  /** C28: true only for the Kaiku DM (no sending, no calls). */
+  read_only?: boolean;
   last_message: LastMessagePreview | null;
   unread_count: number;
   /** ID of the last message the user has read (null = never read). */

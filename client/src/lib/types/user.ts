@@ -52,6 +52,8 @@ export interface UserProfile {
   display_name: string;
   avatar_url: string | null;
   status: UserStatus;
+  /** C28: the built-in "Kaiku" system account (no presence, no profile actions). */
+  is_system?: boolean;
 }
 
 export interface User extends UserProfile {

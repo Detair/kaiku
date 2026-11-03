@@ -45,6 +45,7 @@ import RecoveryCodesSection from "./security/RecoveryCodesSection";
 import RecoveryContactSection from "./security/RecoveryContactSection";
 import { ReadOnlyNote, secondaryButton as setupPhoneButton } from "./security/SectionCard";
 import SetupPhoneModal from "./security/SetupPhoneModal";
+import SecurityLogSection from "./security/SecurityLogSection";
 import { t } from "@/i18n";
 import { securityErrorText } from "./security/securityErrors";
 // TODO(LP rebase): LP's <PasskeysSection /> mounts above the TOTP section.
@@ -455,6 +456,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
 
       <RecoveryCodesSection />
       <RecoveryContactSection />
+      <SecurityLogSection />
 
       {/* Clipboard Protection Section */}
       <div class="pt-6 border-t border-white/10">

@@ -6,6 +6,7 @@
  */
 
 import { createSignal } from "solid-js";
+import { decodeSecurityNotice } from "@/lib/types/login";
 import { createStore } from "solid-js/store";
 import type { Message, E2EEContent, MegolmE2EEContent } from "@/lib/types";
 import { t } from "@/i18n";
@@ -706,6 +707,17 @@ export function updateMessage(message: Message): void {
       setMessagesState("byChannel", channelId, index, message);
     }
   }
+}
+
+/**
+ * C28: a coalesced notice changed; replace the message's `security_notice`.
+ * A notice not loaded here is picked up by the next reload of the Kaiku DM.
+ */
+export function updateSecurityNotice(channelId: string, messageId: string, raw: unknown): void {
+  const notice = decodeSecurityNotice(raw);
+  if (!notice) return;
+  const message = messagesState.byChannel[channelId]?.find((m) => m.id === messageId);
+  if (message) updateMessage({ ...message, security_notice: notice });
 }
 
 /**

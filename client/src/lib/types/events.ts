@@ -268,6 +268,8 @@ export type ServerEvent =
   | { type: "authenticators_changed"; user_id: string }
   | { type: "account_request_updated"; request_id: string; subject_id: string; state: string }
   | { type: "enrollment_updated"; enrollment_id: string; state: string }
+  // C28: a coalesced notice changed (count, events, last_at)
+  | { type: "security_notice_updated"; channel_id: string; message_id: string; security_notice: unknown }
   // Block events
   | { type: "user_blocked"; user_id: string }
   | { type: "user_unblocked"; user_id: string }

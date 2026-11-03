@@ -7,6 +7,9 @@ vi.mock("@/stores/security", async (orig) => ({ ...(await orig<object>()), ...se
 
 import { handleServerEvent } from "../websocket";
 import { ENROLLMENT_UPDATED_EVENT } from "@/lib/types/events";
+import { messagesState, setMessagesState } from "../messages";
+import { notice } from "@/components/security/__tests__/fixtures";
+import type { Message } from "@/lib/types";
 
 describe("security hints over the WebSocket", () => {
   it("authenticators_changed and account_request_updated refetch the overview", async () => {
@@ -21,5 +24,18 @@ describe("security hints over the WebSocket", () => {
     await handleServerEvent({ type: "enrollment_updated", enrollment_id: "e1", state: "claimed" });
     expect((seen.mock.calls[0][0] as CustomEvent).detail).toEqual({ enrollment_id: "e1" });
     window.removeEventListener(ENROLLMENT_UPDATED_EVENT, seen);
+  });
+
+  it("security_notice_updated replaces the card", async () => {
+    setMessagesState("byChannel", "k1", [
+      { id: "m1", channel_id: "k1", message_type: "security", security_notice: notice({ count: 1 }) } as unknown as Message,
+    ]);
+    await handleServerEvent({
+      type: "security_notice_updated",
+      channel_id: "k1",
+      message_id: "m1",
+      security_notice: notice({ count: 4 }),
+    });
+    expect(messagesState.byChannel.k1[0].security_notice?.count).toBe(4);
   });
 });
