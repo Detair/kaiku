@@ -123,6 +123,9 @@ pub enum OidcFlowPurpose {
         #[serde(default)]
         session_id: Option<Uuid>,
     },
+    /// A fresh sign-in (`prompt=login`, `max_age=0`) as the factor of an
+    /// account request (C27); the callback hands back a one-time `oidc_code`.
+    RequestFactor,
 }
 
 impl OidcFlowPurpose {
@@ -131,6 +134,7 @@ impl OidcFlowPurpose {
         match self {
             Self::Login => "login",
             Self::Link { .. } => "link",
+            Self::RequestFactor => "request_factor",
         }
     }
 }

@@ -204,13 +204,141 @@ async fn count_failure(state: &AppState, key: &crate::ratelimit::account::Counte
         .await;
 }
 
-/// Redeem a one-time request OIDC code. The OIDC request flow
-/// (`/auth/account-requests/oidc/authorize/{provider}`) is not built yet:
-/// every code is refused.
+/// A sign-in counts as fresh this long after its `auth_time` (C27).
+pub const OIDC_FRESH_SECS: i64 = 300;
+
+/// The Valkey record behind a one-time request `oidc_code` (60 s).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RequestOidcGrant {
+    /// `None`: a stale or unlinked sign-in (the code redeems to nothing).
+    pub user_id: Option<Uuid>,
+    pub slug: String,
+    pub auth_time: Option<DateTime<Utc>>,
+    /// Native starts bind the code to this S256 challenge.
+    pub client_challenge: Option<String>,
+}
+
+/// The Valkey key of a request `oidc_code` (only its hash is stored).
+#[must_use]
+pub fn request_code_key(code: &str) -> String {
+    use sha2::Digest;
+    format!(
+        "oidc:request:{}",
+        hex::encode(sha2::Sha256::digest(code.as_bytes()))
+    )
+}
+
+/// Redeem a one-time request OIDC code (single use, also when it fails): a
+/// native code needs the verifier of its `client_challenge`.
 pub async fn redeem_oidc_code(
-    _ctx: &AuthCtx<'_>,
-    _code: &str,
-    _verifier: Option<&str>,
+    ctx: &AuthCtx<'_>,
+    code: &str,
+    verifier: Option<&str>,
 ) -> AuthResult<OidcFactor> {
-    Err(AuthError::InvalidCredentials)
+    use fred::interfaces::KeysInterface;
+    let raw: Option<String> = ctx
+        .redis
+        .getdel(request_code_key(code))
+        .await
+        .map_err(|_| AuthError::ServiceUnavailable)?;
+    let grant: RequestOidcGrant = raw
+        .and_then(|r| serde_json::from_str(&r).ok())
+        .ok_or(AuthError::InvalidCredentials)?;
+    if let Some(challenge) = &grant.client_challenge {
+        let ok =
+            verifier.is_some_and(|v| crate::auth::oidc::client_challenge_matches(v, challenge));
+        if !ok {
+            return Err(AuthError::InvalidCredentials);
+        }
+    }
+    match (grant.user_id, grant.auth_time) {
+        (Some(user_id), Some(auth_time)) => Ok(OidcFactor {
+            user_id,
+            provider_slug: grant.slug,
+            auth_time,
+        }),
+        _ => Err(AuthError::InvalidCredentials),
+    }
+}
+
+/// `POST /auth/account-requests/oidc/authorize/{provider_id}` body (native
+/// starts; a browser sends none).
+#[derive(Debug, Default, serde::Deserialize, utoipa::ToSchema)]
+pub struct OidcRequestAuthorize {
+    #[serde(default)]
+    pub loopback_port: Option<u16>,
+    #[serde(default)]
+    pub callback_path: Option<String>,
+    #[serde(default)]
+    pub client_challenge: Option<String>,
+}
+
+/// Start a fresh OIDC sign-in as a request factor → `{url}` (browser,
+/// Android) or `{url, flow_id}` (desktop, as its sign-in start; C29 step 8).
+#[utoipa::path(
+    post,
+    path = "/auth/account-requests/oidc/authorize/{provider_id}",
+    tag = "auth",
+    params(("provider_id" = String, Path, description = "Provider slug")),
+    request_body = OidcRequestAuthorize,
+    responses((status = 200, description = "`{url}` or `{url, flow_id}`"), (status = 400, description = "OIDC_CLIENT_OUTDATED or VALIDATION_ERROR")),
+)]
+#[tracing::instrument(skip_all, fields(provider = %provider))]
+pub async fn oidc_request_authorize(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    axum::extract::Path(provider): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Option<axum::Json<OidcRequestAuthorize>>,
+) -> AuthResult<axum::response::Response> {
+    use crate::auth::client_class::ClientClass;
+    use crate::auth::oidc::NativeLogin;
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let native = match ClientClass::from_headers(&headers) {
+        ClientClass::Web => {
+            if body.client_challenge.is_some() || body.loopback_port.is_some() {
+                return Err(AuthError::OidcClientOutdated);
+            }
+            None
+        }
+        ClientClass::Desktop => {
+            let (Some(port), Some(path), Some(_)) = (
+                body.loopback_port,
+                body.callback_path.as_deref(),
+                body.client_challenge.as_deref(),
+            ) else {
+                return Err(AuthError::OidcClientOutdated);
+            };
+            if port < 1024
+                || path.len() != 43
+                || crate::approvals::secrets::b64u_decode(path).is_none()
+            {
+                return Err(AuthError::Validation(
+                    "loopback_port or callback_path".into(),
+                ));
+            }
+            Some(NativeLogin::Desktop {
+                flow_id: Uuid::new_v4(),
+                loopback: crate::auth::passkeys::desktop_page::LoopbackTarget {
+                    port,
+                    callback_path: path.to_string(),
+                },
+            })
+        }
+        ClientClass::Android => {
+            if body.client_challenge.is_none() {
+                return Err(AuthError::OidcClientOutdated);
+            }
+            Some(NativeLogin::Android)
+        }
+    };
+    crate::auth::login::start_oidc_flow_with(
+        &state,
+        &provider,
+        None,
+        body.client_challenge.as_deref(),
+        crate::auth::oidc::OidcFlowPurpose::RequestFactor,
+        true,
+        native,
+    )
+    .await
 }

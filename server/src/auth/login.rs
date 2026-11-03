@@ -560,8 +560,11 @@ pub async fn start_oidc_flow_with(
 
     // Desktop login hands back a one-time code bound to this challenge; an app
     // that sends none would expect tokens in the loopback URL and is refused.
-    let is_desktop_login = matches!(purpose, OidcFlowPurpose::Login)
-        && (redirects.client_redirect_uri.is_some() || native.is_some());
+    // The request factor binds its native code like a login (C27).
+    let is_desktop_login = matches!(
+        purpose,
+        OidcFlowPurpose::Login | OidcFlowPurpose::RequestFactor
+    ) && (redirects.client_redirect_uri.is_some() || native.is_some());
     let client_challenge = match (is_desktop_login, client_challenge) {
         (true, Some(challenge)) if is_valid_client_challenge(challenge) => {
             Some(challenge.to_string())
@@ -580,8 +583,10 @@ pub async fn start_oidc_flow_with(
         (false, None) => None,
     };
 
+    // A request factor needs a fresh sign-in (`prompt=login`, `max_age=0`).
+    let force_login = matches!(purpose, OidcFlowPurpose::RequestFactor);
     let (auth_url, csrf_state, nonce, pkce_verifier) = oidc_manager
-        .generate_auth_url_with(provider, &redirects.provider_redirect_uri, false)
+        .generate_auth_url_with(provider, &redirects.provider_redirect_uri, force_login)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, provider = %provider, "Failed to generate OIDC auth URL");
@@ -715,6 +720,10 @@ pub async fn oidc_callback(
             return Ok(flow_failure_response(&flow_state, OIDC_PROVIDER_ERROR));
         }
     };
+
+    if matches!(flow_state.purpose, OidcFlowPurpose::RequestFactor) {
+        return Ok(request_factor_callback(&state, &flow_state, code).await);
+    }
 
     // Exchange code for tokens (also verifies ID token nonce for OIDC providers)
     let access_token = match oidc_manager
@@ -1074,6 +1083,93 @@ async fn native_hand_back(
     }
 }
 
+/// The request-factor callback (C27): the verified ID token's `auth_time`
+/// must be at most 300 s old and its identity linked; the one-time
+/// `oidc_code` (60 s) comes back by `postMessage` `oidc-request-callback`,
+/// the desktop hand-off page or the Android hand-back. A stale or unlinked
+/// sign-in still gets a code (no oracle), which redeems to nothing.
+async fn request_factor_callback(
+    state: &AppState,
+    flow_state: &OidcFlowState,
+    code: &str,
+) -> Response {
+    use super::account_requests::recovery::{request_code_key, RequestOidcGrant, OIDC_FRESH_SECS};
+    let Some(manager) = state.oidc_manager.as_ref() else {
+        return flow_failure_response(flow_state, OIDC_EXCHANGE_FAILED);
+    };
+    let claims = match manager
+        .exchange_code_verified(
+            &flow_state.slug,
+            code,
+            &flow_state.pkce_verifier,
+            &flow_state.redirect_uri,
+            &flow_state.nonce,
+        )
+        .await
+    {
+        Ok((_, Some((_, claims)))) => claims,
+        Ok((_, None)) => {
+            tracing::info!(provider = %flow_state.slug, "request factor needs an ID token");
+            return flow_failure_response(flow_state, OIDC_EXCHANGE_FAILED);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, provider = %flow_state.slug, "OIDC code exchange failed");
+            return flow_failure_response(flow_state, OIDC_EXCHANGE_FAILED);
+        }
+    };
+    let now = Utc::now();
+    let fresh = claims.auth_time.is_some_and(|t| {
+        (now - t).num_seconds() <= OIDC_FRESH_SECS && (t - now).num_seconds() <= 60
+    });
+    let user = match find_user_id_by_identity(&state.db, &flow_state.slug, &claims.subject).await {
+        Ok(u) => u,
+        Err(_) => return flow_failure_response(flow_state, "SERVICE_UNAVAILABLE"),
+    };
+    if !fresh {
+        tracing::info!(provider = %flow_state.slug, "request factor: sign-in not fresh");
+    }
+    let grant = RequestOidcGrant {
+        user_id: if fresh { user } else { None },
+        slug: flow_state.slug.clone(),
+        auth_time: claims.auth_time,
+        client_challenge: flow_state.client_challenge.clone(),
+    };
+    let oidc_code = new_handoff_code();
+    let stored = match serde_json::to_string(&grant) {
+        Ok(json) => state
+            .redis
+            .set::<(), _, _>(
+                request_code_key(&oidc_code),
+                json.as_str(),
+                Some(Expiration::EX(OIDC_HANDOFF_TTL_SECS)),
+                None,
+                false,
+            )
+            .await
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    if let Err(e) = stored {
+        tracing::error!(error = %e, "Failed to store the request OIDC code");
+        return flow_failure_response(flow_state, "SERVICE_UNAVAILABLE");
+    }
+    match &flow_state.native {
+        Some(super::oidc::NativeLogin::Desktop { flow_id, loopback }) => {
+            super::passkeys::desktop_page::handoff_page(
+                loopback,
+                *flow_id,
+                super::passkeys::desktop_page::HandoffField::Code(&oidc_code),
+            )
+        }
+        Some(super::oidc::NativeLogin::Android) => android_callback("code", &oidc_code),
+        None => axum::response::Html(popup_result_page(
+            &serde_json::json!({"type": "oidc-request-callback", "oidc_code": oidc_code}),
+            true,
+        ))
+        .into_response(),
+    }
+}
+
 /// Generic code: a desktop login state without a client challenge (started by
 /// an older app or before the upgrade) cannot be handed back.
 const OIDC_CLIENT_OUTDATED: &str = "OIDC_CLIENT_OUTDATED";
@@ -1313,6 +1409,12 @@ fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Resp
     let is_link = match flow_state.purpose {
         OidcFlowPurpose::Link { .. } => true,
         OidcFlowPurpose::Login => false,
+        OidcFlowPurpose::RequestFactor => {
+            let payload = serde_json::json!({
+                "type": "oidc-request-callback", "status": "error", "error": code,
+            });
+            return axum::response::Html(popup_result_page(&payload, false)).into_response();
+        }
     };
     if let Some(mut redirect_url) = client_return_url(flow_state) {
         let key = if is_link { "link_error" } else { "error" };

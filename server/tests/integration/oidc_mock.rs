@@ -33,7 +33,7 @@ use super::helpers::{serve_test_router, TestServer};
 
 const CLIENT_ID: &str = "kaiku-reauth-test";
 const KEY_ID: &str = "test-key";
-const PASSWORD: &str = "Admin-Pass-42";
+pub(super) const PASSWORD: &str = "Admin-Pass-42";
 /// Desktop loopback return address (nothing listens; the test reads the
 /// redirect that points here).
 pub(super) const DESKTOP_RETURN: &str = "http://127.0.0.1:9/callback";
@@ -61,7 +61,7 @@ static OTHER_KEY: LazyLock<(String, String, String)> = LazyLock::new(rsa_key);
 #[derive(Clone, Default)]
 pub(super) struct NextToken {
     sub: String,
-    auth_time: Option<i64>,
+    pub(super) auth_time: Option<i64>,
     nonce_override: Option<String>,
     sign_with_other_key: bool,
 }

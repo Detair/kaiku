@@ -34,6 +34,10 @@ pub fn public_router(state: &AppState) -> Router<AppState> {
             "/account-requests/current",
             get(handlers::current).delete(handlers::withdraw),
         )
+        .route(
+            "/account-requests/oidc/authorize/{provider_id}",
+            post(recovery::oidc_request_authorize),
+        )
         .merge(client::routes())
         .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
         .layer(from_fn(with_category(RateLimitCategory::AuthFlow)))

@@ -303,3 +303,207 @@ async fn full_recovery_to_a_new_phone(pool: PgPool) {
     .await;
     assert_eq!(s, 201, "{c}");
 }
+
+// ---------------------------------------------------------------------------
+// A fresh OIDC sign-in as the second factor (C27)
+// ---------------------------------------------------------------------------
+
+mod oidc_factor {
+    use serde_json::{json, Value};
+    use sqlx::PgPool;
+    use uuid::Uuid;
+
+    use super::super::helpers::approvals::KeyDeviceFixture;
+    use super::super::helpers::{create_test_user, make_admin};
+    use super::super::oidc_mock::{
+        callback_response, client, create_user, form_fields, fresh, issue, link, query_of, setup,
+        Ctx, NextToken,
+    };
+
+    /// An OIDC-linked account with one recovery code, and an admin canceller.
+    async fn account(ctx: &Ctx, sub: &str) -> (Uuid, String, Vec<String>) {
+        let (admin, _) = create_test_user(&ctx.pool).await;
+        make_admin(&ctx.pool, admin).await;
+        KeyDeviceFixture::insert(&ctx.pool, &ctx.config, admin, "active").await;
+        let user = create_user(&ctx.pool, true).await;
+        link(ctx, user, sub).await;
+        let (shown, hashes) = vc_server::auth::recovery_codes::generate();
+        for h in &hashes[..3] {
+            sqlx::query(
+                "INSERT INTO recovery_codes (id, user_id, generation, code_hash)
+                 SELECT gen_random_uuid(), $1, recovery_codes_generation, $2 FROM users WHERE id = $1",
+            )
+            .bind(user)
+            .bind(h)
+            .execute(&ctx.pool)
+            .await
+            .unwrap();
+        }
+        let name: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&ctx.pool)
+            .await
+            .unwrap();
+        (user, name, shown[..3].to_vec())
+    }
+
+    async fn authorize(ctx: &Ctx, desktop: Option<Value>) -> Value {
+        let mut req = client().post(format!(
+            "{}/auth/account-requests/oidc/authorize/{}",
+            ctx.server.url, ctx.slug
+        ));
+        if let Some(body) = desktop {
+            req = req.header("x-kaiku-client", "desktop").json(&body);
+        }
+        let resp = req.send().await.expect("authorize");
+        assert_eq!(resp.status().as_u16(), 200);
+        resp.json().await.expect("json")
+    }
+
+    /// The `oidc_code` the browser popup page posts to its opener.
+    fn posted_code(html: &str) -> String {
+        let v: Value = serde_json::from_str(
+            html.split("postMessage(")
+                .nth(1)
+                .and_then(|r| r.split(", window.location.origin").next())
+                .expect("postMessage payload"),
+        )
+        .expect("payload json");
+        assert_eq!(v["type"], "oidc-request-callback", "{v}");
+        v["oidc_code"].as_str().expect("oidc_code").to_string()
+    }
+
+    async fn start(ctx: &Ctx, name: &str, code: &str, second: Value) -> (u16, Value) {
+        let resp = client()
+            .post(format!("{}/auth/account-requests", ctx.server.url))
+            .header("x-kaiku-client", "android")
+            .json(
+                &json!({"username": name, "purpose": "recovery", "recovery_code": code,
+                          "second": second, "lost": "none"}),
+            )
+            .send()
+            .await
+            .expect("start");
+        let status = resp.status().as_u16();
+        (status, resp.json().await.unwrap_or(Value::Null))
+    }
+
+    #[sqlx::test]
+    async fn fresh_oidc_is_a_factor(pool: PgPool) {
+        let ctx = setup(&pool).await;
+        let (_, name, codes) = account(&ctx, "sub-fresh").await;
+        let code = codes[0].clone();
+        let answer = authorize(&ctx, None).await;
+        let url = answer["url"].as_str().unwrap();
+        let params = query_of(url);
+        assert_eq!(params.get("prompt").map(String::as_str), Some("login"));
+        assert_eq!(params.get("max_age").map(String::as_str), Some("0"));
+        issue(&ctx, fresh("sub-fresh"));
+        let html = callback_response(url).await.text().await.unwrap();
+        let oidc_code = posted_code(&html);
+        let (s, b) = start(
+            &ctx,
+            &name,
+            &code,
+            json!({"type": "oidc", "oidc_code": oidc_code}),
+        )
+        .await;
+        assert_eq!(s, 201, "{b}");
+        assert!(b["request"]["factors"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("oidc")));
+    }
+
+    #[sqlx::test]
+    async fn stale_oidc_is_refused(pool: PgPool) {
+        let ctx = setup(&pool).await;
+        let (_, name, codes) = account(&ctx, "sub-stale").await;
+        let code = codes[0].clone();
+        let answer = authorize(&ctx, None).await;
+        let url = answer["url"].as_str().unwrap();
+        let mut stale = fresh("sub-stale");
+        stale.auth_time = Some(chrono::Utc::now().timestamp() - 600);
+        issue(&ctx, stale);
+        let html = callback_response(url).await.text().await.unwrap();
+        // A stale sign-in yields no code, or one that is refused.
+        let second = html
+            .contains("\"oidc_code\"")
+            .then(|| posted_code(&html))
+            .unwrap_or_else(|| "nothing".into());
+        let (s, b) = start(
+            &ctx,
+            &name,
+            &code,
+            json!({"type": "oidc", "oidc_code": second}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (401, Some("REQUEST_FACTOR_INVALID")),
+            "{b}"
+        );
+        let _ = NextToken::default;
+    }
+
+    #[sqlx::test]
+    async fn desktop_gets_url_and_flow_id_and_needs_the_verifier(pool: PgPool) {
+        let ctx = setup(&pool).await;
+        let (_, name, codes) = account(&ctx, "sub-desk").await;
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+        let answer = authorize(
+            &ctx,
+            Some(json!({"loopback_port": 50123,
+                        "callback_path": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        "client_challenge": challenge})),
+        )
+        .await;
+        let flow_id = answer["flow_id"].as_str().expect("flow_id").to_string();
+        issue(&ctx, fresh("sub-desk"));
+        let html = callback_response(answer["url"].as_str().unwrap())
+            .await
+            .text()
+            .await
+            .unwrap();
+        let fields = form_fields(&html);
+        assert_eq!(fields.get("flow_id"), Some(&flow_id));
+        let oidc_code = fields.get("code").expect("code").clone();
+        // Without the verifier: refused (the code is spent).
+        let (s, b) = start(
+            &ctx,
+            &name,
+            &codes[0],
+            json!({"type": "oidc", "oidc_code": oidc_code}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (401, Some("REQUEST_FACTOR_INVALID")),
+            "{b}"
+        );
+        // A new flow with the verifier.
+        let answer = authorize(
+            &ctx,
+            Some(json!({"loopback_port": 50123,
+                        "callback_path": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        "client_challenge": challenge})),
+        )
+        .await;
+        issue(&ctx, fresh("sub-desk"));
+        let html = callback_response(answer["url"].as_str().unwrap())
+            .await
+            .text()
+            .await
+            .unwrap();
+        let oidc_code = form_fields(&html).get("code").expect("code").clone();
+        let (s, b) = start(
+            &ctx,
+            &name,
+            &codes[1],
+            json!({"type": "oidc", "oidc_code": oidc_code, "verifier": verifier}),
+        )
+        .await;
+        assert_eq!(s, 201, "{b}");
+    }
+}
