@@ -50,7 +50,7 @@ import {
   refreshChannelsForGuild,
 } from "../channels";
 import { currentUser } from "../auth";
-import { refreshMeSecurity } from "../security";
+import { noteAccountRequestHint, refreshMeSecurity } from "../security";
 import { isKaikuDM } from "@/lib/kaikuDm";
 import { sendSecurityNotification } from "@/lib/notifications";
 import { decodeSecurityNotice } from "@/lib/types/login";
@@ -783,8 +783,12 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     // v1.0 login hints (C26, C27): refetch, never act on a hint alone.
     case "authenticators_changed":
+      void refreshMeSecurity();
+      break;
     case "account_request_updated":
       void refreshMeSecurity();
+      // Admin request lists refetch as well (C27 sends the hint to admins).
+      noteAccountRequestHint();
       break;
 
     case "security_notice_updated":

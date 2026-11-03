@@ -22,6 +22,10 @@ export interface UserSummary {
   avatar_url: string | null;
   created_at: string;
   is_banned: boolean;
+  /** C28: the "Kaiku" system account (servers hide it from lists anyway). */
+  is_system?: boolean;
+  /** Not in C27's list; when present, admins are left out of recovery-contact choices. */
+  is_admin?: boolean;
 }
 
 /** Request body for `POST /api/admin/users` (wire format). */

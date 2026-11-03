@@ -16,6 +16,7 @@ import { t } from "@/i18n";
 import { createDialog } from "@/lib/a11y/dialog";
 import { errorText } from "@/i18n/errors";
 import ElevateDialog from "./ElevateDialog";
+import { contactCandidates } from "./recoveryContacts";
 
 /** Most servers one admin-created account can join at creation (contract C23). */
 const MAX_GUILDS = 10;
@@ -24,6 +25,8 @@ const USERNAME_RE = /^[a-z0-9_]{3,32}$/;
 
 interface CreateAccountModalProps {
   onClose: () => void;
+  /** The creating admin: never offered as a recovery contact (C28). */
+  meId?: string;
 }
 
 const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
@@ -211,7 +214,7 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
                   class={inputClass}
                 >
                   <option value="">{t("admin.createAccount.noContact")}</option>
-                  <For each={(adminState.users ?? []).filter((u) => !u.is_banned)}>
+                  <For each={contactCandidates(adminState.users, props.meId ? [props.meId] : [])}>
                     {(u) => <option value={u.id}>{u.display_name || u.username}</option>}
                   </For>
                 </select>

@@ -950,7 +950,7 @@ const UsersPanel: Component = () => {
       </Show>
 
       <Show when={showCreateAccount()}>
-        <CreateAccountModal onClose={() => setShowCreateAccount(false)} />
+        <CreateAccountModal meId={currentUser()?.id} onClose={() => setShowCreateAccount(false)} />
       </Show>
     </div>
   );

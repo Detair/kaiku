@@ -42,6 +42,16 @@ export function refreshMeSecurity(): Promise<void> {
   return flight.promise;
 }
 
+const [requestHints, setRequestHints] = createSignal(0);
+
+/** Bumped by every `account_request_updated` hint: request lists refetch on it. */
+export const accountRequestHints = requestHints;
+
+/** An `account_request_updated` hint arrived (C27; refetch, never act on it alone). */
+export function noteAccountRequestHint(): void {
+  setRequestHints((n) => n + 1);
+}
+
 const [signOutOthersOffered, setSignOutOthersOffered] = createSignal(false);
 
 /** Whether the "Sign out everywhere else?" prompt is open. */

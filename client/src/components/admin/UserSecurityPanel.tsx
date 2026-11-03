@@ -4,8 +4,10 @@
  * password and TOTP state, recovery codes, the recovery contact,
  * `may_approve`, an open request, sessions and the account's security log.
  * Every change steps up with the account or the authenticator as target.
- * Immediate actions on another admin's account are hidden (F6 rev 4).
- * Phones are set up from the admin's own phone only (coordinator call 1).
+ * Immediate actions (removing devices, `may_approve`, factor states, the
+ * recovery contact) are refused on another admin's account (F6 rev 4); an
+ * admin account never gets a recovery contact (C28). Phones are set up from
+ * the admin's own phone only (coordinator call 1).
  */
 
 import { Component, For, Show, createSignal } from "solid-js";
@@ -15,19 +17,46 @@ import {
   adminRemoveAuthenticator,
   adminSetFactors,
   adminSetMayApprove,
+  adminSetRecoveryContact,
   listAdminSecurityEvents,
 } from "@/lib/tauri/adminSecurity";
 import { cancelAccountRequest } from "@/lib/tauri/security";
+import { HttpError } from "@/lib/tauri/common";
+import { codeIs } from "@/lib/errorCode";
 import { withStepUp } from "@/lib/stepUp";
 import type { UserDetailsResponse } from "@/lib/types";
+import { adminState, loadUserDetails } from "@/stores/admin";
 import Toggle from "@/components/ui/Toggle";
+import { showToast } from "@/components/ui/Toast";
 import SecurityLogSection from "@/components/settings/security/SecurityLogSection";
 import { securityErrorText } from "@/components/settings/security/securityErrors";
+import { contactCandidates } from "./recoveryContacts";
 
 const STATE: Record<string, MessageKey> = {
   active: "security.overview.state.active",
   throttled: "security.overview.state.throttled",
   compromised: "security.overview.state.compromised",
+};
+
+/** Key device and passkey states (C26/C29); anything else is "Unknown state". */
+const AUTHENTICATOR_STATE: Record<string, MessageKey> = {
+  active: "security.keyDevices.state.active",
+  pending: "security.keyDevices.state.pending",
+  revoked: "security.keyDevices.state.revoked",
+};
+
+type Factor = "password" | "totp";
+type FactorState = "active" | "compromised";
+
+const FACTOR_BUTTON: Record<Factor, Record<FactorState, MessageKey>> = {
+  password: {
+    compromised: "admin.userSecurity.markPasswordUnsafe",
+    active: "admin.userSecurity.allowPasswordAgain",
+  },
+  totp: {
+    compromised: "admin.userSecurity.markTotpUnsafe",
+    active: "admin.userSecurity.allowTotpAgain",
+  },
 };
 
 const small = "min-h-11 px-3 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-sm text-text-primary state-disabled";
@@ -42,10 +71,18 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const [done, setDone] = createSignal<Set<string>>(new Set());
   const [mayApprove, setMayApprove] = createSignal(props.user.may_approve === true);
-  const [password, setPassword] = createSignal(props.user.password_state ?? null);
-  const isAdminTarget = () => props.user.is_admin === true;
+  const [factors, setFactors] = createSignal<Record<Factor, string | null>>({
+    password: props.user.password_state ?? null,
+    totp: props.user.totp_state ?? null,
+  });
+  const [contactName, setContactName] = createSignal(props.user.recovery_contact?.display_name ?? null);
+  const [contactPick, setContactPick] = createSignal("");
   const userId = () => props.user.id;
+  const isAdmin = () => props.user.is_admin === true;
+  /** Another admin's account: immediate actions are that admin's or the CLI's (F6 rev 4). */
+  const isAdminTarget = () => isAdmin() && props.user.id !== props.meId;
   const name = () => props.user.display_name || props.user.username;
+  const candidates = () => contactCandidates(adminState.users, [userId(), props.meId]);
 
   const run = async (job: () => Promise<unknown>, mark?: string) => {
     setBusy(true);
@@ -77,24 +114,70 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
       setMayApprove(next);
     });
 
-  const setPasswordState = (state: "active" | "compromised") =>
+  const setFactorState = (factor: Factor, state: FactorState) =>
     run(async () => {
       await withStepUp({ action: "admin.factor.set_state", target: userId(), targetLabel: name() }, () =>
-        adminSetFactors(userId(), { password: state }),
+        adminSetFactors(userId(), { [factor]: state }),
       );
-      setPassword(state);
+      setFactors((f) => ({ ...f, [factor]: state }));
     });
 
-  const cancelRequest = (id: string) =>
-    run(
-      () =>
-        withStepUp({ action: "request.cancel", target: id, targetLabel: name() }, () =>
-          cancelAccountRequest(id, null, null),
-        ),
-      id,
-    );
+  const saveContact = () => {
+    const pick = candidates().find((u) => u.id === contactPick());
+    if (!pick) return;
+    return run(async () => {
+      await withStepUp({ action: "admin.recovery_contact.set", target: userId(), targetLabel: name() }, () =>
+        adminSetRecoveryContact(userId(), pick.id),
+      );
+      setContactName(pick.display_name || pick.username);
+      setContactPick("");
+    });
+  };
+
+  const cancelRequest = async (id: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await withStepUp({ action: "request.cancel", target: id, targetLabel: name() }, () =>
+        cancelAccountRequest(id, null, null),
+      );
+      setDone((s) => new Set(s).add(id));
+    } catch (err) {
+      if (err instanceof HttpError && codeIs(err.code, "ACCOUNT_REQUEST_COMPLETED")) {
+        // Lost against completion (C27): reload, so the new device shows with
+        // "Remove device now" (the panel is rebuilt; the toast stays).
+        showToast({ type: "warning", title: t("admin.userSecurity.tooLate") });
+        void loadUserDetails(userId());
+      } else {
+        setError(securityErrorText(err, "admin.userSecurity.failed"));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const authenticators = () => [...(props.user.key_devices ?? []), ...(props.user.passkeys ?? [])];
+  const authenticatorState = (a: { state: string; ready_at?: string | null }) =>
+    a.state === "pending" && a.ready_at
+      ? t("security.keyDevices.readyAt", { time: formatTimestamp(a.ready_at) })
+      : t(AUTHENTICATOR_STATE[a.state] ?? "security.keyDevices.state.unknown");
+
+  const factorText = (state: string | null) =>
+    state ? t(STATE[state] ?? "security.overview.state.unknown") : t("security.overview.none");
+
+  /** "Mark as unsafe" / "Allow again" for one factor, if it is set. */
+  const FactorButton = (p: { factor: Factor }) => (
+    <Show when={factors()[p.factor]}>
+      {(state) => {
+        const next = (): FactorState => (state() === "compromised" ? "active" : "compromised");
+        return (
+          <button type="button" class={small} disabled={busy()} onClick={() => void setFactorState(p.factor, next())}>
+            {t(FACTOR_BUTTON[p.factor][next()])}
+          </button>
+        );
+      }}
+    </Show>
+  );
 
   return (
     <section class="space-y-4 pt-4 border-t border-white/10" data-testid="admin-user-security">
@@ -112,7 +195,7 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
                 <li class="flex flex-wrap items-center gap-2 p-2 rounded-lg bg-white/5">
                   <span class="flex-1 text-sm text-text-primary">
                     {a.label}
-                    <span class="text-text-secondary"> · {a.state === "pending" && a.ready_at ? t("security.keyDevices.readyAt", { time: formatTimestamp(a.ready_at) }) : a.state}</span>
+                    <span class="text-text-secondary"> · {authenticatorState(a)}</span>
                   </span>
                   <Show when={!isAdminTarget() && a.state !== "revoked" && !done().has(a.id)}>
                     <button
@@ -135,13 +218,13 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
 
       <dl class="grid grid-cols-2 gap-2 text-sm">
         <dt class="text-text-secondary">{t("security.overview.password")}</dt>
-        <dd class="text-text-primary">{password() ? t(STATE[password()!] ?? "security.overview.state.unknown") : t("security.overview.none")}</dd>
+        <dd class="text-text-primary">{factorText(factors().password)}</dd>
         <dt class="text-text-secondary">{t("security.overview.totp")}</dt>
-        <dd class="text-text-primary">{props.user.totp_state ? t(STATE[props.user.totp_state] ?? "security.overview.state.unknown") : t("security.overview.none")}</dd>
+        <dd class="text-text-primary">{factorText(factors().totp)}</dd>
         <dt class="text-text-secondary">{t("security.overview.recoveryCodes")}</dt>
         <dd class="text-text-primary">{props.user.recovery_codes_left ?? "-"}</dd>
         <dt class="text-text-secondary">{t("security.overview.contact")}</dt>
-        <dd class="text-text-primary">{props.user.recovery_contact?.display_name ?? t("security.overview.none")}</dd>
+        <dd class="text-text-primary">{contactName() ?? t("security.overview.none")}</dd>
         <Show when={props.user.open_sessions}>
           {(s) => (
             <>
@@ -157,20 +240,30 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
         </span>
       </Show>
 
-      <Show when={!isAdminTarget() && password()}>
+      <Show when={!isAdminTarget() && (factors().password || factors().totp)}>
         <div class="flex flex-wrap gap-2">
-          <Show
-            when={password() === "compromised"}
-            fallback={
-              <button type="button" class={small} disabled={busy()} onClick={() => void setPasswordState("compromised")}>
-                {t("admin.userSecurity.markUnsafe")}
-              </button>
-            }
+          <FactorButton factor="password" />
+          <FactorButton factor="totp" />
+        </div>
+      </Show>
+
+      <Show when={!isAdmin()}>
+        <div class="flex flex-wrap items-center gap-2">
+          <select
+            class="min-h-11 flex-1 rounded-lg border border-white/15 bg-surface-base px-2 text-sm text-text-primary"
+            aria-label={t("security.overview.contact")}
+            value={contactPick()}
+            disabled={busy()}
+            onChange={(e) => setContactPick(e.currentTarget.value)}
           >
-            <button type="button" class={small} disabled={busy()} onClick={() => void setPasswordState("active")}>
-              {t("admin.userSecurity.allowAgain")}
-            </button>
-          </Show>
+            <option value="" disabled>
+              {t("admin.userSecurity.contactChoose")}
+            </option>
+            <For each={candidates()}>{(u) => <option value={u.id}>{u.display_name || u.username}</option>}</For>
+          </select>
+          <button type="button" class={small} disabled={busy() || !contactPick()} onClick={() => void saveContact()}>
+            {t("admin.userSecurity.contactSave")}
+          </button>
         </div>
       </Show>
 
@@ -181,7 +274,7 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
             checked={mayApprove()}
             onChange={(next) => void toggleMayApprove(next)}
             label={t("admin.userSecurity.mayApprove")}
-            disabled={busy()}
+            disabled={busy() || isAdminTarget()}
           />
         </div>
         <p class="text-xs text-text-secondary">{t("admin.userSecurity.mayApproveHint")}</p>
