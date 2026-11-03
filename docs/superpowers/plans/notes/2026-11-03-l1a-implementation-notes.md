@@ -307,3 +307,93 @@ is listed here, per task. "Coordinator" marks items that need a decision.
 - Size: `git diff --stat origin/main...HEAD` → 202 files, ~19.6k insertions (≈17.3k in `.rs`),
   far above the ~7k threshold; the split point is the commit marked "L1a-1 boundary" (Task 7).
 - Not done here (coordinator): the whole-branch Faramir review, the external reviews and the PR.
+
+## Review round 1 (2026-11-03)
+
+Reviews: Fable (APPROVE WITH FIXES, M1–M4, m1–m9), Codex (REQUEST CHANGES, 1–5 major, 6 minor),
+Argon (REQUEST CHANGES, B1–B3, M1–M3, m1–m2). Every finding was checked against the code first;
+every blocker and major fix, and the m5, m8, m9 and Argon m1 fixes, are test-first (the test
+failed before the fix); m1, m4 and the m6 bounds have no dedicated test. The three lock-order tests reproduced
+`40P01` deterministically before the fix (PostgreSQL log: `deadlock detected` in
+`lock_full_session`, `DELETE FROM users` and `lock_accounts`). Commits: **(A)** `faefb63f` (migrations),
+**(B)** `264baaf1` (admin guard, ban/delete locks), **(C)** `803c2e9e` (approvals, revocation, minors).
+
+### Argon B1 decision: probation admin sessions on `/api/admin/*` → guard (fixed)
+
+The spec forbids it. C27 "What each may do" lists `/api/admin/*` (with the elevation window where
+it applies) in the **full** row, and its "unchanged" row reads B.4's "cannot" list as exhaustive
+only for *every other route*; B.4's "cannot" list includes "elevate as admin". Fable's "no
+privilege-escalation path" holds for creation (`POST /api/admin/users` was already behind
+`require_elevated`, and elevation already needed `require_full`), but a probation admin session
+(every pre-upgrade session, QR, password/OIDC + phone, TOTP) could read the user list with emails,
+the CSV export, user details, the audit log, stats, guilds, diagnostics and observability, and an
+elevation row from before the upgrade (Codex 5) opened the elevated routes to it. The plan had put
+the guard in L1b Task 16; it moves to L1a: `require_system_admin` now also requires `full`
+(403 `FULL_SESSION_REQUIRED`; non-admins still get `NOT_ADMIN`; `/api/admin/status` stays open to
+any session). `elevate_session` checks the assurance before it parses the body. Tests:
+`guarded_routes::{admin_routes_need_full, probation_elevation_opens_nothing}`. Still L1b Task 16:
+bot and incoming-webhook token creation behind `full` (C27 same row), the own-account routes.
+
+### Findings
+
+| Finding | Reviewer(s) | Result |
+|---|---|---|
+| `first_activity_at` backfill leaves dormant OIDC-only accounts "new" | Fable M1, Argon B2 | Fixed (A): `20261120000100` edited in place: every non-system account existing at the upgrade gets `first_activity_at = created_at` (local accounts had a password, OIDC accounts are created at their first sign-in). Test `dormant_oidc_account_is_existing_after_the_upgrade` |
+| Legacy elevations survive the assurance migration | Codex 5 | Fixed (A + B): the migration deletes every `elevated_sessions` row; the admin guard refuses probation anyway. Tests `legacy_elevations_end_at_the_upgrade`, `probation_elevation_opens_nothing` |
+| `kaiku` rename can collide; owner not told | Codex 6, Fable m8 | Fixed (A): `20261120000000` edited in place: a DO block picks the first free `kaiku_` + 8/12/16/20/24 hex digits (fails with a clear message only if all are taken) and writes a `system.username_reserved` audit row (actor: the system account). The rename stays (coordinator item from Task 3 unchanged); admin guide "After the upgrade" tells admins to tell the owner. Test `pre_existing_kaiku_is_renamed_to_a_free_name` |
+| Kaiku rename is case-sensitive | Argon M2.1 | Rejected: `username_format` is `^[a-z0-9_]{3,32}$`, so no `Kaiku`/`KAIKU` can exist |
+| `last_used_at = created_at` expires active legacy sessions | Argon B3 | Rejected: inactivity is decided by `expires_at` (refresh: `row.expires_at <= now`; `session_check`: `s.expires_at > NOW()`), which the migration keeps; `last_used_at` only orders the session-limit LRU and is displayed. Already expired rows are not live for any check and the cleanup deletes them |
+| Probation admins on `/api/admin/*` | Argon B1 | Fixed (B), see the decision above |
+| Lock order answer/deny/release/issuer challenge/confirm vs revocation (40P01) | Fable M2, Codex 2 | Fixed (C): `lock_challenge` reads the challenge's approver and subject unlocked, locks both accounts in one statement, then `key_device_session` (account → device row `FOR UPDATE` → session row `FOR UPDATE`), then the challenge; `confirm_tx` reads the subject unlocked, locks subject (+ answering account) in one statement, then the enrolment. Tests `answer_and_revocation_never_deadlock`, `enroll_answer_and_revocation_never_deadlock` (both produced 40P01 before) |
+| Ban/delete without the account lock; delete was sessions → users | Argon M3 | Fixed (B): ban, bulk ban, re-tell and delete lock the admin's and the subject's accounts first. Tests `admin_delete_and_a_transition_never_deadlock` (40P01 before), `ban_takes_the_account_lock` (a lapsed ban renewed in place takes no FK lock, so the ban ran past a held account lock before) |
+| Challenge bound only to the client-chosen install id; `enroll` answer not bound to the issuer | Fable M3, Codex 1, Argon M1.2 | Fixed (C): `lock_for_answer(conn, id, approver_id, device_id)` filters in SQL; an `enroll` answer or deny must come from the enrolment's issuing device row (`lock_issued_by`), checked again in `confirm_tx`; `Confirmer::KeyDeviceAnswer` carries the locked `KeyDeviceSession`. Tests `same_install_id_of_another_account_cannot_answer` (it enrolled a key before) and `…_cannot_deny` (it cancelled before) |
+| Stale request session in `key_device_session` | Codex 3 | Fixed (C): the session row is re-read under the account lock (`FOR UPDATE`, live, full, bound to that device) → 401 `INVALID_TOKEN` if it ended; the account's ban is re-checked. Test `ended_session_cannot_act_after_waiting_for_the_lock` (`/invalidated` revoked the key after a concurrent logout before) |
+| Re-enrolment on the same install silently revokes a key | Fable M4 | Fixed in part (C): each replaced row records `authenticator_removed {type: key_device, by}` (high; `by` from the confirmer: `cli`, `self`, `admin`, `request`) and is delivered with the `authenticator_added` notice. Push clean-up rejected: push subscriptions are keyed by (account, install id), so deleting them would delete the new key's own subscription on the same install. Refusing the claim when a live row has that install id is **not** done (coordinator): it changes the claim interface for L2 and would not stop the case where the victim's own phone issued the enrolment. Test `re_enrolment_records_the_removed_key` |
+| `NOTIFY` payload unbounded (~200 ids max): large revocations roll back | Codex 4 | Fixed (C): `after_update` sends ≤ 100 ids per `pg_notify` (`NOTIFY_CHUNK`), `all` on the first chunk. Test `ending_a_thousand_sessions_commits` (failed with the payload error before) |
+| Cascades do not void open challenges | Argon M1.1 | Rejected in substance, consolidated (C): `revoke_tx` and the re-enrol branch already voided the device's challenges (`void_for_device`); this moved into `on_authenticator_revoked` so every key-device revocation gets it. `on_sessions_ended` deliberately leaves challenges alone: a `device_stepup` challenge is answerable only from its requesting session, re-read live under the lock, and `enroll`/`enroll_pop` effects re-check the enrolment state under the lock; voiding them there would add challenge rows to the lock set of logout and refresh, which do not take the account lock, and recreate a cycle with the `enroll` answer |
+| Expired mark rolled back by `?` | Argon M1.3 | Answer and deny already committed it (notes, Task 10); fixed (C) for `claim` and `release` |
+| `bulk_ban_users` can ban the system account | Argon M2.2 | Rejected: the loop calls `queries::user_exists`, which is `… AND NOT is_system` (`admin/queries.rs`); unknown → "User not found" |
+| Sub-second TTL issues a past-due challenge | Argon m1 | Fixed (C): `issue` answers 410 `APPROVAL_EXPIRED` when the floored `expires_at` is not after now. Test `sub_second_lifetime_never_issues_a_past_due_challenge` |
+| `chmod 0750 kaiku-admin` | Argon m2 | Rejected: the guide runs it as `docker compose exec server kaiku-admin` (the image's service user); anyone who can exec into the container already has the database credentials in its environment, so a root-only mode adds nothing and breaks the documented use |
+| `target_label` reads other accounts' rows | Fable m1 | Fixed (C) for `sessions.end` and `key_device.remove` (`AND user_id = $2`); admin and recovery-contact targets name other accounts by design. **LP:** scope the passkey label of `passkey.remove` to the caller when adding its arm |
+| Legacy refresh tokens recognised only from the second rotation | Fable m2 | Documented (A): admin guide "After the upgrade to v1.0" |
+| Dead legacy token helpers in `jwt.rs` | Fable m3 | Deferred: the integration tests mint their tokens with `generate_token_pair_for_session`; moving them under `#[cfg(test)]` needs a test-support feature (L1b clean-up) |
+| `Debug` on secret-bearing types | Fable m4 | Fixed (C): redacting `Debug` for `AnswerRequest`, `EnrollmentIssued`, `CliEnrollment` |
+| No clean-up of terminal challenges and enrolments | Fable m5 | Fixed (C): `db::cleanup_finished_approvals` in the hourly job (finished challenges and ended enrolments after 30 days; grants go with their sessions). Test `finished_challenges_and_enrolments_are_cleaned_up` |
+| Attestation chain decoded before it is bounded | Fable m6 | Fixed in part (C): ≤ 8 entries of ≤ 8 KiB DER (b64u length) checked before decoding → 400 `VALIDATION_ERROR`. Deferred: comparing the leaf SPKI with the claimed key (the `rcgen` fixtures certify another key; needs fixtures that certify the phone key, L1b with the L2 attestation fixtures) |
+| `grant_tx` trusts its caller for `by`'s owner | Fable m7 | Deferred to **LP**: L1a's only caller passes the session's own device (now locked and re-checked in `key_device_session`); LP adds the passkey arm and should add an owner check for `by` in `grant_tx` with it (no L1a interface change now) |
+| `approved` past due answered 409 | Fable m9 | Fixed (C): open (`issued`/`approved`) and past due → expired, 410. Test `approved_past_due_is_expired` |
+
+### Interface changes (LP, L1b, L2)
+
+- Wire: `/api/admin/*` (except `/status`) answers 403 `FULL_SESSION_REQUIRED` to probation
+  sessions (C27 as frozen; clients show the admin area only on full sessions). Re-enrolment adds an
+  `authenticator_removed` notice. An attestation chain above the bounds → 400 `VALIDATION_ERROR`.
+  An `answer`/`deny` whose session ended while it waited → 401 `INVALID_TOKEN`.
+- Rust: `approvals::core::lock_for_answer(conn, id, approver_id, device_id)` (new argument),
+  `core::head`, `devices::require_key_device_snapshot`, `enrollments::lock_issued_by`;
+  `Confirmer::KeyDeviceAnswer(&KeyDeviceSession)` (was `&ChallengeRow`); `key_device_session`
+  now takes the caller's account lock itself and may answer `Auth(InvalidToken)`;
+  `cascade::on_authenticator_revoked` also voids a key device's open challenges (callers no longer
+  call `void_for_device`); `revocation::NOTIFY_CHUNK`; `db::cleanup_finished_approvals`. LP's
+  listed interfaces (`issue_session*`, `step_up::*`, `guards::*`, `strong::*`,
+  `on_authenticator_revoked`, `security_events::record`) keep their signatures.
+- Migrations `20261120000000` and `20261120000100` were edited in place (timestamps kept): a
+  database that already ran the branch's migrations (e.g. a local LP test database) must be
+  recreated; `#[sqlx::test]` databases are fresh.
+
+### Gate results (round 1, 2026-11-03)
+
+- `cargo test --workspace --lib --bins --tests` (test DB `:55433`, integration Valkey `:56379`,
+  lib Valkey tests against a temporary Valkey on `127.0.0.1:6379`): vc-server lib 682, vc-client
+  lib 248 (2 ignored), vc-crypto 24, vp8 decoder 4 + 1; `--test integration` 1037 passed, 2
+  failed, 33 ignored. The two (`screening_http::pending_member_is_blocked_then_unlocked_on_accept`,
+  `unread::test_viewable_filter_matches_require_channel_access`) are the known flaky
+  pending-member family: 3/3 green on rerun, and the integration-only run of the same code before
+  had 1038 passed, 0 failed (the clean-up test was added after it).
+- `cargo +nightly fmt --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server -- -D warnings`
+  clean; `cargo deny check`: advisories, bans, licenses, sources ok.
+- `.sqlx`: no `query!` macro changed, so no cache file was added or removed; `cargo sqlx prepare`
+  rewrites 38 existing files only with the `origin` metadata of the local sqlx-cli (no semantic
+  difference, checked by a JSON comparison without `origin`), so the cache is left as committed.
+  `git diff --check` clean.
