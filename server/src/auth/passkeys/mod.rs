@@ -7,6 +7,7 @@
 //! - `queries`: the `passkeys` table; revocation runs the L1a cascade.
 //! - `rp_pin`: the RP-ID pin checked at startup (DC5).
 //! - `step_up`: passkey step-up on L1a's action-bound grants.
+//! - `login`: discoverable sign-in → a new full session.
 //! - `register`: adding a passkey (`passkey.add`) and the core L1b calls.
 //!
 //! Limits (B.5): every passkey route has its own `AuthPasskey` request
@@ -15,6 +16,7 @@
 
 pub mod ceremony;
 pub mod config;
+pub(crate) mod login;
 pub mod queries;
 pub mod register;
 pub mod rp;
@@ -94,7 +96,9 @@ pub(crate) fn session_limits(router: Router<AppState>, state: &AppState) -> Rout
 
 /// The passkey routes, merged under `/auth`.
 pub fn router(state: &AppState) -> Router<AppState> {
-    let public = Router::new();
+    let public = Router::new()
+        .route("/passkeys/login/start", post(login::start))
+        .route("/passkeys/login/finish", post(login::finish));
     let session = Router::new()
         .route("/passkeys/step-up/start", post(step_up::start))
         .route("/passkeys/step-up/finish", post(step_up::finish))
