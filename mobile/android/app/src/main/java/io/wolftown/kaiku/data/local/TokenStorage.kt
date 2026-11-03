@@ -238,6 +238,8 @@ class TokenStorage internal constructor(
         return System.currentTimeMillis() >= expiresAt
     }
 
+    /** Removes the session tokens (logout). Starts a new session generation. */
+    @Synchronized
     fun clear() {
         sessionGeneration++
         removeTokens()
