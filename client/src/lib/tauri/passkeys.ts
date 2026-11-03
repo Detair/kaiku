@@ -20,6 +20,7 @@ import {
   type AuthResult,
 } from "./common";
 import type { User } from "../types";
+import type { StepUpAction, StepUpGrant } from "../types/login";
 import {
   credentialToJSON,
   creationOptionsFromJSON,
@@ -32,38 +33,12 @@ import {
 
 export type { PasskeyRemovedResponse } from "../webauthn";
 
-/** The step-up registry (C27 common rules); passkeys consume two of them. */
-export type StepUpAction =
-  | "passkey.add"
-  | "passkey.remove"
-  | "key_device.remove"
-  | "enrollment.issue"
-  | "password.set"
-  | "password.remove"
-  | "totp.set"
-  | "totp.remove"
-  | "recovery_codes.create"
-  | "identity.link"
-  | "identity.unlink"
-  | "sessions.end"
-  | "recovery_contact.set"
-  | "request.cancel"
-  | "event.repudiate"
-  | "account.delete"
-  | "admin.elevate"
-  | "admin.enrollment.issue"
-  | "admin.authenticator.remove"
-  | "admin.may_approve"
-  | "admin.factor.set_state"
-  | "admin.recovery_contact.set";
-
-export interface StepUpGrant {
-  action: StepUpAction;
-  /** Canonical target: lowercase UUID, `others` or `""`. */
-  target: string;
-  via: "passkey" | "device";
-  expires_at: string;
-}
+/**
+ * The step-up action table and grant (C26–C29 common rules), defined once
+ * in `lib/types/login.ts` next to `STEP_UP_ACTIONS` (the server's
+ * `StepUpAction::ALL`); passkeys consume two of them.
+ */
+export type { StepUpAction, StepUpGrant };
 
 /** C29 `Passkey`. */
 export interface Passkey {

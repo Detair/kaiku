@@ -51,5 +51,4 @@ export const passkeys = {
   "passkeys.browser.chrome": "Google Chrome",
   "passkeys.browser.firefox": "Firefox",
   "passkeys.browser.safari": "Safari",
-  "passkeys.reauth.method": "Confirm with a passkey",
 } as const satisfies Record<`passkeys.${string}`, string>;

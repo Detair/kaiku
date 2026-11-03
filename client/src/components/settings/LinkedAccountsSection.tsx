@@ -7,6 +7,7 @@ import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { formatRelativeTimeShort } from "@/lib/utils";
 import type { IdentityInfo, OidcProvider } from "@/lib/types";
 import ElevateDialog from "@/components/admin/ElevateDialog";
+import { StepUpCancelled, withStepUp } from "@/lib/stepUp";
 import { t } from "@/i18n";
 
 /** Longest the browser link flow waits for the provider window. */
@@ -21,6 +22,12 @@ let linkAttempt = 0;
  *
  * Linking uses the native command on desktop (Tauri) and a popup + postMessage
  * handshake in the browser — see `tauri.linkIdentity`.
+ *
+ * C27: an identity is a sign-in method, so linking needs the step-up grant
+ * `identity.link` (spent when the link starts) and unlinking
+ * `identity.unlink` for that identity. The grant comes first; the link then
+ * starts from a "Link now" click, because the provider popup must open inside
+ * a click.
  */
 const LinkedAccountsSection: Component = () => {
   const [identities, setIdentities] = createSignal<IdentityInfo[]>([]);
@@ -31,9 +38,11 @@ const LinkedAccountsSection: Component = () => {
   const [linking, setLinking] = createSignal<string | null>(null);
   // Provider to link once the admin has confirmed with the re-auth dialog.
   const [pendingLink, setPendingLink] = createSignal<OidcProvider | null>(null);
-  // Elevated, waiting for the user to start the link themselves (a popup must
-  // open from a click, not after a long re-auth).
-  const [readyLink, setReadyLink] = createSignal<OidcProvider | null>(null);
+  // Confirmed (step-up, and for an admin elevation), waiting for the user to
+  // start the link themselves (a popup must open from a click, not after a
+  // long confirmation). `afterElevation`: a second ELEVATION_REQUIRED is an
+  // error, not another round.
+  const [readyLink, setReadyLink] = createSignal<{ provider: OidcProvider; afterElevation: boolean } | null>(null);
 
   const loadData = async () => {
     try {
@@ -85,9 +94,12 @@ const LinkedAccountsSection: Component = () => {
     }
     try {
       setError(null);
-      await tauri.unlinkIdentity(identity.id);
+      await withStepUp({ action: "identity.unlink", target: identity.id, targetLabel: label }, () =>
+        tauri.unlinkIdentity(identity.id),
+      );
       setIdentities((prev) => prev.filter((i) => i.id !== identity.id));
     } catch (err) {
+      if (err instanceof StepUpCancelled) return;
       // Surfaces the server's message, e.g. the last-login-method guard (409).
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -95,6 +107,8 @@ const LinkedAccountsSection: Component = () => {
 
   // Text for a failed link, from a callback code or a native error string.
   const linkErrorText = (code: string): string | null => {
+    // The grant expired (300 s) or was spent: confirm again.
+    if (messageHasCode(code, "STEP_UP_REQUIRED")) return t("passkeys.error.stepUpRequired");
     if (messageHasCode(code, "LINK_SESSION_INVALID")) return t("settings.linkedAccounts.error.sessionInvalid");
     if (messageHasCode(code, "ACCOUNT_BANNED")) return t("settings.linkedAccounts.error.banned");
     if (messageHasCode(code, "SERVICE_UNAVAILABLE"))
@@ -102,8 +116,21 @@ const LinkedAccountsSection: Component = () => {
     return null;
   };
 
-  // `afterElevation` is true for the one retry that follows a re-auth; a second
-  // "elevation required" then ends in an error instead of asking again.
+  /** "Link <provider>": the `identity.link` step-up, then "Link now". */
+  const confirmLink = async (provider: OidcProvider) => {
+    setError(null);
+    stopActive?.();
+    try {
+      await withStepUp({ action: "identity.link", target: "", targetLabel: provider.display_name }, async () => {
+        setReadyLink({ provider, afterElevation: false });
+      });
+    } catch (err) {
+      if (!(err instanceof StepUpCancelled)) setError(t("auth.sso.linkFailed"));
+    }
+  };
+
+  // `afterElevation` is true for the one retry that follows an elevation; a
+  // second "elevation required" then ends in an error instead of asking again.
   const handleLink = async (provider: OidcProvider, afterElevation = false) => {
     setError(null);
     stopActive?.();
@@ -218,7 +245,9 @@ const LinkedAccountsSection: Component = () => {
       }, LINK_TIMEOUT_MS);
     } catch (err) {
       popup?.close();
-      if (err instanceof HttpError && err.code && err.code in SSO_ERRORS.byCode) {
+      if (err instanceof HttpError && codeIs(err.code, "STEP_UP_REQUIRED")) {
+        setError(t("passkeys.error.stepUpRequired"));
+      } else if (err instanceof HttpError && err.code && err.code in SSO_ERRORS.byCode) {
         // Desktop: a named SSO code (e.g. OIDC_CLIENT_OUTDATED) gets its message.
         setError(errorText(err, "auth.sso.linkFailed", SSO_ERRORS.byCode));
       } else {
@@ -297,7 +326,7 @@ const LinkedAccountsSection: Component = () => {
             <For each={availableProviders()}>
               {(provider) => (
                 <button
-                  onClick={() => handleLink(provider)}
+                  onClick={() => void confirmLink(provider)}
                   disabled={linking() !== null}
                   class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm bg-surface-layer2 hover:bg-surface-highlight border border-white/5 text-text-primary transition-colors state-disabled"
                 >
@@ -312,17 +341,17 @@ const LinkedAccountsSection: Component = () => {
         </Show>
       </Show>
       <Show when={readyLink()}>
-        {(provider) => (
+        {(ready) => (
           <div class="flex items-center gap-3 p-3 rounded-xl bg-surface-layer2 border border-white/5">
             <p class="flex-1 text-sm text-text-primary">
-              {t("settings.linkedAccounts.confirmed", { provider: provider().display_name })}
+              {t("settings.linkedAccounts.confirmed", { provider: ready().provider.display_name })}
             </p>
             <button
               type="button"
               onClick={() => {
-                const target = provider();
+                const target = ready();
                 setReadyLink(null);
-                void handleLink(target, true);
+                void handleLink(target.provider, target.afterElevation);
               }}
               class="px-3 py-1.5 rounded-lg text-sm bg-accent-primary text-on-accent hover:bg-accent-primary/90"
             >
@@ -336,7 +365,7 @@ const LinkedAccountsSection: Component = () => {
           onElevated={() => {
             const provider = pendingLink();
             setPendingLink(null);
-            setReadyLink(provider);
+            if (provider) setReadyLink({ provider, afterElevation: true });
           }}
           onClose={() => setPendingLink(null)}
         />

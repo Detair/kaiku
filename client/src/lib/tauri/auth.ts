@@ -5,7 +5,6 @@
 
 import type {
   IdentityListResponse,
-  ReauthMethodsResponse,
   RevokeAllResponse,
   ServerSettings,
   SessionListResponse,
@@ -470,48 +469,6 @@ export function isElevationRequiredError(err: unknown): boolean {
   if (err instanceof HttpError) return codeIs(err.code, "ELEVATION_REQUIRED");
   const text = typeof err === "string" ? err : err instanceof Error ? err.message : "";
   return messageHasCode(text, "ELEVATION_REQUIRED");
-}
-
-// ============================================================================
-// Re-authentication (contract C24)
-// ============================================================================
-
-/** Which re-authentication methods this session can use. */
-export async function getReauthMethods(): Promise<ReauthMethodsResponse> {
-  return httpRequest<ReauthMethodsResponse>("GET", "/auth/reauth/methods");
-}
-
-/**
- * Start re-authenticating with a sign-in provider (C24, browser only).
- *
- * C27 removes this route (404) in favour of step-up grants; LP's rebase
- * deletes the whole path (Task A5). The desktop commands `oidc_reauth` /
- * `oidc_reauth_cancel` are already gone, so the app refuses at once.
- * Browser: the server returns the provider URL for the caller to open in a
- * popup; the result arrives as an `oidc-reauth-callback` message.
- */
-export async function startOidcReauth(
-  providerId: string,
-  opts: { reason?: string | null; mfaCode?: string | null; signal?: AbortSignal },
-): Promise<{ mode: "browser"; url: string }> {
-  if (opts.signal?.aborted) {
-    const e = new Error("aborted");
-    e.name = "AbortError";
-    throw e;
-  }
-  if (isTauri()) {
-    throw new HttpError(404, "REAUTH_UNAVAILABLE", "REAUTH_UNAVAILABLE");
-  }
-  const resp = await httpRequest<{ url: string }>(
-    "POST",
-    `/auth/reauth/oidc/authorize/${encodeURIComponent(providerId)}`,
-    {
-      redirect_uri: null,
-      reason: opts.reason ?? null,
-      mfa_code: opts.mfaCode ?? null,
-    },
-  );
-  return { mode: "browser", url: resp.url };
 }
 
 // ============================================================================

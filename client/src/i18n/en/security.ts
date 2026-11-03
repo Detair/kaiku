@@ -11,6 +11,7 @@ export const security = {
   "security.stepUp.error.unknownPasskey": "This passkey was removed from Kaiku. Use another one.",
   "security.stepUp.error.fullSession": "This needs a sign-in with a passkey.",
   "security.stepUp.error.generic": "Confirming with a passkey did not work. Please try again.",
+  "security.stepUp.error.notAdmin": "Only a server admin can do this.",
   "security.stepUp.action.passkeyAdd": "Add a passkey",
   "security.stepUp.action.passkeyRemove": "Remove the passkey {{target}}",
   "security.stepUp.action.keyDeviceRemove": "Remove the device {{target}}",

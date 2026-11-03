@@ -23,6 +23,8 @@ const STEP_UP_ERRORS = {
   PASSKEY_USER_MISMATCH: "security.stepUp.error.userMismatch",
   PASSKEY_UNKNOWN: "security.stepUp.error.unknownPasskey",
   FULL_SESSION_REQUIRED: "security.stepUp.error.fullSession",
+  // `admin.*` step-ups need a system admin (server `StepUpAction::is_admin`).
+  NOT_ADMIN: "security.stepUp.error.notAdmin",
 } as const;
 
 /**

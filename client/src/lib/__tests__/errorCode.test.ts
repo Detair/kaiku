@@ -4,7 +4,8 @@ import { errorText } from "@/i18n/errors";
 import { t } from "@/i18n";
 import { HttpError } from "../tauri/common";
 import { isElevationRequiredError } from "../tauri/auth";
-import { reauthErrorCode } from "../reauth";
+import { reauthErrorText } from "../reauth";
+import { PasskeyError } from "../tauri/passkeys";
 
 describe("normalizeCode", () => {
   it("trims and upper-cases strings, null for anything else", () => {
@@ -58,8 +59,15 @@ describe("isElevationRequiredError", () => {
   });
 });
 
-describe("reauthErrorCode", () => {
-  it("upper-cases", () => {
-    expect(reauthErrorCode(new HttpError(401, "x", "invalid_credentials"))).toBe("INVALID_CREDENTIALS");
+describe("reauthErrorText", () => {
+  it("looks codes up case-insensitively, also behind a cause", () => {
+    expect(reauthErrorText(new HttpError(403, "x", "not_admin"))).toBe(t("security.stepUp.error.notAdmin"));
+    expect(reauthErrorText(new Error("wrapped", { cause: new HttpError(403, "x", "STEP_UP_REQUIRED") }))).toBe(
+      t("passkeys.error.stepUpRequired"),
+    );
+  });
+  it("words passkey failures with LP's texts", () => {
+    expect(reauthErrorText(new PasskeyError("PASSKEY_USER_MISMATCH"))).toBe(t("passkeys.error.userMismatch"));
+    expect(reauthErrorText(new PasskeyError("PASSKEY_CANCELLED"))).toBe("");
   });
 });
