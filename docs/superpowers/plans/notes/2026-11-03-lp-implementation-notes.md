@@ -602,3 +602,15 @@ Gates on the final tree (`e09642f7`):
   -D warnings` clean; `cargo deny check`: advisories, bans, licenses, sources ok. No `query!`
   macro changed (`.sqlx` unchanged). Client and Android were not touched in these merges, so
   their gates were not run again.
+
+## Review round 5 (merge delta; Codex, Fable, Gemini Flash; 2026-11-03)
+
+Codex APPROVE, Gemini Flash APPROVE (Argon stand-in until 2026-11-08), Fable APPROVE WITH FIXES (one item, fixed by the coordinator):
+
+| Finding | Verdict | Commit | Test |
+|---|---|---|---|
+| Fable R1: `manage::rename` took the passkey row before the account (audit row key share); a step-up grant takes the account and then reads the passkey → 40P01, a 500 | fixed: `rename` takes `lock_accounts([auth.id])` first (B.7 rule 1) | see `git log` ("rename takes the account lock first") | `passkeys_step_up::renaming_a_passkey_during_its_step_up_never_deadlocks` (red before: the rename answered 500) |
+
+Fable's other note (Android: a `GetMe` failure or a cancellation while suspended in `installNativeSignIn` leaves the minted session neither installed nor ended) is pre-existing and low (the UI makes it near-unreachable); recorded for the L2b merge.
+
+Gates: `passkeys*` integration suites 148 passed; fmt and `clippy -p vc-server -D warnings` clean.

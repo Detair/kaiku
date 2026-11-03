@@ -844,6 +844,62 @@ async fn concurrent_passkey_step_ups_never_deadlock(pool: PgPool) {
     assert_eq!(b.0, 200, "second grant: {}", b.1);
 }
 
+/// LP review r5 (Fable): renaming a passkey while a step-up with it finishes
+/// never deadlocks. The rename used to take the passkey row before the
+/// account (its audit row's key share), the grant the account before the
+/// passkey (`strong::is_active` FOR SHARE).
+#[sqlx::test]
+async fn renaming_a_passkey_during_its_step_up_never_deadlocks(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let handle = queries::user_handle(&app.pool, user).await.unwrap();
+    let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
+    let (s, start) = post(
+        &app,
+        "/auth/passkeys/step-up/start",
+        Some(&token),
+        json!({"action": "passkey.add", "target": ""}),
+    )
+    .await;
+    assert_eq!(s, 200, "{start}");
+    let cred = auth.assert(
+        TEST_ORIGIN,
+        &start["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    let finish = json!({"ceremony_id": start["ceremony_id"], "credential": cred});
+    // Hold the account: the grant queues for it first, then the rename takes
+    // the passkey row and queues behind the grant.
+    let mut holder = app.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let grant = post(&app, "/auth/passkeys/step-up/finish", Some(&token), finish);
+    let rename = async {
+        crate::helpers::wait_for_lock_waiters(&app.pool, 1).await;
+        let req = peer_request(Method::PATCH, &format!("/auth/passkeys/{}", row.id))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(json!({"label": "Renamed"}).to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await;
+        let status = resp.status().as_u16();
+        (status, body_to_json(resp).await)
+    };
+    let release = async {
+        crate::helpers::wait_for_lock_waiters(&app.pool, 2).await;
+        holder.commit().await.unwrap();
+    };
+    let (g, r, ()) = tokio::join!(grant, rename, release);
+    assert_eq!(g.0, 200, "grant: {}", g.1);
+    assert_eq!(r.0, 200, "rename: {}", r.1);
+}
+
 /// L1a review round 3, part 2 M2 (for LP): the target of
 /// `admin.authenticator.remove` is a key device or a passkey id (C27), so an
 /// admin's key-device challenge names another account's passkey too (the
