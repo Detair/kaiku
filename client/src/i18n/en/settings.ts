@@ -5,6 +5,7 @@ export const settings = {
   "settings.linkedAccounts.confirmed": "Confirmed. You can now link {{provider}}.",
   "settings.linkedAccounts.error.popupBlocked": "The sign-in window was blocked. Allow pop-ups for this page and try again.",
   "settings.linkedAccounts.error.timeout": "No answer from the provider in time. Please try again.",
+  "settings.linkedAccounts.error.unlinkFailed": "Could not unlink this account. Please try again.",
   "settings.linkedAccounts.error.sessionInvalid": "Your session is no longer valid. Please sign in again.",
   "settings.linkedAccounts.error.banned": "This account is suspended.",
   "settings.linkedAccounts.error.serviceUnavailable": "The server cannot do this right now, please try again later.",

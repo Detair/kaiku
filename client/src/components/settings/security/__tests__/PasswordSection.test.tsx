@@ -71,6 +71,17 @@ describe("PasswordSection", () => {
     expect(screen.getByText("This password was marked unsafe. Set a new one.")).toBeTruthy();
   });
 
+  it("removing the password offers to sign out everywhere else (Argon review 3 #7)", async () => {
+    const { signOutOthersPrompt, closeSignOutOthers } = await import("@/stores/security");
+    closeSignOutOthers();
+    api.removePassword.mockResolvedValue(undefined);
+    await mount(security({ password: { state: "active" }, passkeys: 1 }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove password" }));
+    await waitFor(() => expect(api.removePassword).toHaveBeenCalled());
+    await waitFor(() => expect(signOutOthersPrompt()).toBe(true));
+    closeSignOutOthers();
+  });
+
   it("remove steps up with password.remove", async () => {
     await mount();
     api.removePassword.mockResolvedValue(undefined);

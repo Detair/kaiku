@@ -8,6 +8,9 @@ import { formatRelativeTimeShort } from "@/lib/utils";
 import type { IdentityInfo, OidcProvider } from "@/lib/types";
 import ElevateDialog from "@/components/admin/ElevateDialog";
 import { StepUpCancelled, withStepUp } from "@/lib/stepUp";
+import { isProbation } from "@/stores/auth";
+import { ReadOnlyNote } from "./security/SectionCard";
+import { securityErrorText } from "./security/securityErrors";
 import { t } from "@/i18n";
 
 /** Longest the browser link flow waits for the provider window. */
@@ -99,9 +102,9 @@ const LinkedAccountsSection: Component = () => {
       );
       setIdentities((prev) => prev.filter((i) => i.id !== identity.id));
     } catch (err) {
-      if (err instanceof StepUpCancelled) return;
-      // Surfaces the server's message, e.g. the last-login-method guard (409).
-      setError(err instanceof Error ? err.message : String(err));
+      // Never the server's text (C16): the last-sign-in-method guard, a
+      // missing full session or grant are worded (Fable m5, Argon 3 #3).
+      setError(securityErrorText(err, "settings.linkedAccounts.error.unlinkFailed"));
     }
   };
 
@@ -121,17 +124,26 @@ const LinkedAccountsSection: Component = () => {
     setError(null);
     stopActive?.();
     try {
+      if (tauri.isTauri()) {
+        // Desktop: no popup gesture is needed, so the link starts inside the
+        // step-up and gets its one retry on STEP_UP_REQUIRED (Argon 3 #1).
+        await withStepUp({ action: "identity.link", target: "", targetLabel: provider.display_name }, () =>
+          handleLink(provider, false, true),
+        );
+        return;
+      }
       await withStepUp({ action: "identity.link", target: "", targetLabel: provider.display_name }, async () => {
         setReadyLink({ provider, afterElevation: false });
       });
     } catch (err) {
-      if (!(err instanceof StepUpCancelled)) setError(t("auth.sso.linkFailed"));
+      if (err instanceof StepUpCancelled) return;
+      setError(securityErrorText(err, "auth.sso.linkFailed"));
     }
   };
 
   // `afterElevation` is true for the one retry that follows an elevation; a
   // second "elevation required" then ends in an error instead of asking again.
-  const handleLink = async (provider: OidcProvider, afterElevation = false) => {
+  const handleLink = async (provider: OidcProvider, afterElevation = false, rethrowStepUp = false) => {
     setError(null);
     stopActive?.();
 
@@ -246,7 +258,11 @@ const LinkedAccountsSection: Component = () => {
     } catch (err) {
       popup?.close();
       if (err instanceof HttpError && codeIs(err.code, "STEP_UP_REQUIRED")) {
+        setLinking(null);
+        // Inside withStepUp (desktop): its retry gets a new grant.
+        if (rethrowStepUp) throw err;
         setError(t("passkeys.error.stepUpRequired"));
+        return;
       } else if (err instanceof HttpError && err.code && err.code in SSO_ERRORS.byCode) {
         // Desktop: a named SSO code (e.g. OIDC_CLIENT_OUTDATED) gets its message.
         setError(errorText(err, "auth.sso.linkFailed", SSO_ERRORS.byCode));
@@ -308,20 +324,26 @@ const LinkedAccountsSection: Component = () => {
                       </span>
                     </div>
                   </div>
-                  <button
-                    onClick={() => handleUnlink(identity)}
-                    class="shrink-0 p-1.5 rounded-lg text-text-secondary hover:text-status-danger hover:bg-status-danger/10 transition-colors"
-                    title={`Unlink ${identity.provider_name || identity.provider_slug}`}
-                  >
-                    <Unlink size={16} />
-                  </button>
+                  <Show when={!isProbation()}>
+                    <button
+                      onClick={() => handleUnlink(identity)}
+                      class="shrink-0 p-1.5 rounded-lg text-text-secondary hover:text-status-danger hover:bg-status-danger/10 transition-colors"
+                      title={`Unlink ${identity.provider_name || identity.provider_slug}`}
+                    >
+                      <Unlink size={16} />
+                    </button>
+                  </Show>
                 </div>
               )}
             </For>
           </div>
         </Show>
 
-        <Show when={availableProviders().length > 0}>
+        {/* C27: linking and unlinking need a full session (Argon 3 #4). */}
+        <Show when={isProbation()}>
+          <ReadOnlyNote />
+        </Show>
+        <Show when={!isProbation() && availableProviders().length > 0}>
           <div class="flex flex-wrap gap-2 pt-1">
             <For each={availableProviders()}>
               {(provider) => (

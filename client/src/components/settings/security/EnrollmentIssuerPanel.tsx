@@ -18,7 +18,7 @@ import {
 } from "@/lib/tauri/enrollments";
 import { HttpError } from "@/lib/tauri/common";
 import { codeIs } from "@/lib/errorCode";
-import { withStepUp } from "@/lib/stepUp";
+import { StepUpCancelled, withStepUp } from "@/lib/stepUp";
 import { ENROLLMENT_UPDATED_EVENT } from "@/lib/types/events";
 import type { Enrollment, EnrollmentIssued } from "@/lib/types";
 import { offerSignOutOthers } from "@/stores/security";
@@ -47,6 +47,9 @@ const EnrollmentIssuerPanel: Component<EnrollmentIssuerPanelProps> = (props) => 
   const [copied, setCopied] = createSignal(false);
   let timer: ReturnType<typeof setInterval> | undefined;
   let disposed = false;
+  /** The issued code was cancelled already (no second cancel on unmount). */
+  let cancelSent = false;
+  let doneHandled = false;
 
   const stopPolling = () => {
     if (timer) clearInterval(timer);
@@ -56,6 +59,18 @@ const EnrollmentIssuerPanel: Component<EnrollmentIssuerPanelProps> = (props) => 
   const state = () => enrollment()?.state ?? "issued";
   const finished = () => failed() || ["done", "cancelled", "expired", "failed"].includes(state());
 
+  /**
+   * The phone is a key now, however it was learned (the code typed here, or
+   * a poll or hint after another device confirmed it): once (Argon 3 #2).
+   */
+  const finishDone = (e: Enrollment) => {
+    if (doneHandled) return;
+    doneHandled = true;
+    stopPolling();
+    if (props.issuer.kind === "own") offerSignOutOthers();
+    props.onDone(e);
+  };
+
   const refresh = async () => {
     const id = issued()?.enrollment_id;
     if (!id || disposed || finished()) return;
@@ -63,7 +78,8 @@ const EnrollmentIssuerPanel: Component<EnrollmentIssuerPanelProps> = (props) => 
       const e = await getEnrollment(props.issuer, id);
       if (disposed) return;
       setEnrollment(e);
-      if (["done", "cancelled", "expired", "failed"].includes(e.state)) stopPolling();
+      if (e.state === "done") finishDone(e);
+      else if (["cancelled", "expired", "failed"].includes(e.state)) stopPolling();
     } catch (err) {
       console.warn("[Enrollment] Refresh failed:", err instanceof Error ? err.message : err);
     }
@@ -86,12 +102,20 @@ const EnrollmentIssuerPanel: Component<EnrollmentIssuerPanelProps> = (props) => 
               issue,
             )
           : await issue();
-      if (disposed) return;
+      if (disposed) {
+        // Closed while the code was issued: it must not take one of the five
+        // open slots for ten minutes (Argon review 3 #2).
+        void cancelEnrollment(props.issuer, result.enrollment_id).catch(() => undefined);
+        return;
+      }
       setIssued(result);
       timer = setInterval(() => void refresh(), POLL_MS);
     } catch (err) {
+      if (err instanceof StepUpCancelled) {
+        props.onCancel();
+        return;
+      }
       setError(securityErrorText(err, "security.setupPhone.issueFailed") ?? null);
-      if (err instanceof Error && err.name === "StepUpCancelled") props.onCancel();
     } finally {
       setBusy(false);
     }
@@ -101,6 +125,12 @@ const EnrollmentIssuerPanel: Component<EnrollmentIssuerPanelProps> = (props) => 
     disposed = true;
     stopPolling();
     window.removeEventListener(ENROLLMENT_UPDATED_EVENT, onHint);
+    // Closing the dialog (X, Escape, backdrop) gives an open code up.
+    const id = issued()?.enrollment_id;
+    if (id && !cancelSent && !finished()) {
+      cancelSent = true;
+      void cancelEnrollment(props.issuer, id).catch(() => undefined);
+    }
   });
 
   const copyLink = async () => {
@@ -133,11 +163,7 @@ const EnrollmentIssuerPanel: Component<EnrollmentIssuerPanelProps> = (props) => 
       const e = await confirmEnrollment(props.issuer, id, code());
       setEnrollment(e);
       setCode("");
-      if (e.state === "done") {
-        stopPolling();
-        if (props.issuer.kind === "own") offerSignOutOthers();
-        props.onDone(e);
-      }
+      if (e.state === "done") finishDone(e);
     } catch (err) {
       setCode("");
       if (err instanceof HttpError && codeIs(err.code, "ENROLL_CODE_WRONG")) {
@@ -157,7 +183,8 @@ const EnrollmentIssuerPanel: Component<EnrollmentIssuerPanelProps> = (props) => 
   const cancel = async () => {
     const id = issued()?.enrollment_id;
     stopPolling();
-    if (id && !finished()) {
+    if (id && !finished() && !cancelSent) {
+      cancelSent = true;
       try {
         await cancelEnrollment(props.issuer, id);
       } catch (err) {

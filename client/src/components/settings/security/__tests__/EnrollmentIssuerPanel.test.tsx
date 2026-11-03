@@ -180,3 +180,44 @@ describe("EnrollmentIssuerPanel", () => {
     expect(onCancel).toHaveBeenCalled();
   });
 });
+
+describe("issuer panel review round (Argon review 3 #2)", () => {
+  it("closing the panel gives an open code up", async () => {
+    const view = render(() => <EnrollmentIssuerPanel issuer={{ kind: "own" }} onDone={onDone} onCancel={onCancel} />);
+    await waitFor(() => expect(api.issueEnrollment).toHaveBeenCalled());
+    await screen.findByRole("img");
+    view.unmount();
+    expect(api.cancelEnrollment).toHaveBeenCalledWith({ kind: "own" }, ID);
+  });
+
+  it("a code issued after the panel closed is cancelled at once", async () => {
+    let finish!: (v: unknown) => void;
+    api.issueEnrollment.mockImplementation(() => new Promise((r) => (finish = r)));
+    const view = render(() => <EnrollmentIssuerPanel issuer={{ kind: "own" }} onDone={onDone} onCancel={onCancel} />);
+    await waitFor(() => expect(api.issueEnrollment).toHaveBeenCalled());
+    view.unmount();
+    finish(issued);
+    await waitFor(() => expect(api.cancelEnrollment).toHaveBeenCalledWith({ kind: "own" }, ID));
+  });
+
+  it("a code confirmed elsewhere (poll or hint) finishes like one typed here", async () => {
+    render(() => <EnrollmentIssuerPanel issuer={{ kind: "own" }} onDone={onDone} onCancel={onCancel} />);
+    await screen.findByRole("img");
+    api.getEnrollment.mockResolvedValue(enrollment("done"));
+    window.dispatchEvent(new CustomEvent(ENROLLMENT_UPDATED_EVENT, { detail: { enrollment_id: ID } }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(offer).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(new CustomEvent(ENROLLMENT_UPDATED_EVENT, { detail: { enrollment_id: ID } }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("a closed step-up closes the panel", async () => {
+    const { StepUpCancelled } = await vi.importActual<typeof import("@/lib/stepUp")>("@/lib/stepUp");
+    stepUp.mockImplementationOnce(async () => {
+      throw new StepUpCancelled();
+    });
+    render(() => <EnrollmentIssuerPanel issuer={{ kind: "own" }} onDone={onDone} onCancel={onCancel} />);
+    await waitFor(() => expect(onCancel).toHaveBeenCalled());
+  });
+});

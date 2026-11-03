@@ -124,9 +124,8 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
         duration: 5000,
       });
     } catch (err) {
-      setDisableError(
-        err instanceof Error ? err.message : "Invalid code. Please try again.",
-      );
+      // Never the server's text; a closed step-up is no error (Argon 3 #3).
+      setDisableError(securityErrorText(err, "security.totp.failed") ?? "");
     } finally {
       setIsDisabling(false);
     }

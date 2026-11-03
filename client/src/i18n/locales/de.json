@@ -1017,6 +1017,7 @@
   "settings.linkedAccounts.error.serviceUnavailable": "",
   "settings.linkedAccounts.error.sessionInvalid": "",
   "settings.linkedAccounts.error.timeout": "",
+  "settings.linkedAccounts.error.unlinkFailed": "",
   "settings.linkedAccounts.linkNow": "",
   "settings.modal.title": "",
   "settings.privacy.browserNone": "",

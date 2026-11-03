@@ -4,7 +4,8 @@
  * "Set up a phone" (Task A7, full session).
  */
 
-import { Component, For, JSX, Show, createSignal, onMount } from "solid-js";
+import { Component, For, JSX, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { AUTHENTICATORS_CHANGED_EVENT } from "@/lib/types/events";
 import { Smartphone } from "lucide-solid";
 import { totalKey } from "@/lib/totalKey";
 import { t, type MessageKey } from "@/i18n";
@@ -41,7 +42,14 @@ const KeyDevicesSection: Component<KeyDevicesSectionProps> = (props) => {
       setError(securityErrorText(err, "security.keyDevices.loadFailed"));
     }
   };
-  onMount(() => void load());
+  // C26: a device added, activated or removed elsewhere (or by "Set up a
+  // phone" here) shows without reopening the settings (Argon review 3 #5).
+  const onChanged = () => void load();
+  onMount(() => {
+    void load();
+    window.addEventListener(AUTHENTICATORS_CHANGED_EVENT, onChanged);
+  });
+  onCleanup(() => window.removeEventListener(AUTHENTICATORS_CHANGED_EVENT, onChanged));
 
   const remove = async (d: KeyDevice) => {
     setBusy(d.id);

@@ -68,6 +68,8 @@ const PasswordSection: Component = () => {
     try {
       await withStepUp({ action: "password.remove", target: "", targetLabel: "" }, () => removePassword());
       void refreshMeSecurity();
+      // A sign-in method changed: offer to end every other session (Argon 3 #7).
+      offerSignOutOthers();
     } catch (err) {
       setError(securityErrorText(err, "security.password.failed"));
     } finally {

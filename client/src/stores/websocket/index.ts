@@ -55,7 +55,7 @@ import { isKaikuDM } from "@/lib/kaikuDm";
 import { sendSecurityNotification } from "@/lib/notifications";
 import { decodeSecurityNotice } from "@/lib/types/login";
 import { pushText } from "@/components/security/noticeText";
-import { ENROLLMENT_UPDATED_EVENT } from "@/lib/types/events";
+import { AUTHENTICATORS_CHANGED_EVENT, ENROLLMENT_UPDATED_EVENT } from "@/lib/types/events";
 import {
   guildsState,
   getGuildIdForChannel,
@@ -784,6 +784,7 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
     // v1.0 login hints (C26, C27): refetch, never act on a hint alone.
     case "authenticators_changed":
       void refreshMeSecurity();
+      window.dispatchEvent(new CustomEvent(AUTHENTICATORS_CHANGED_EVENT));
       break;
     case "account_request_updated":
       void refreshMeSecurity();

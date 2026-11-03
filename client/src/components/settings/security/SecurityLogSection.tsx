@@ -33,7 +33,8 @@ const SecurityLogSection: Component<SecurityLogSectionProps> = (props) => {
     setError(null);
     try {
       const page = await (props.load ?? listSecurityEvents)(before, PAGE);
-      setItems((prev) => [...prev, ...page.items]);
+      // Only a "more" page appends; a first load replaces (Argon review 3 #8).
+      setItems((prev) => (before ? [...prev, ...page.items] : page.items));
       setCursor(page.next_cursor);
       setMore(page.has_more && page.next_cursor !== null);
     } catch (err) {

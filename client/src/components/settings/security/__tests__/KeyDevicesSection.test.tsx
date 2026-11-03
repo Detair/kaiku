@@ -63,3 +63,15 @@ describe("KeyDevicesSection", () => {
     expect(screen.getByText("Sign in with a passkey to change this.")).toBeTruthy();
   });
 });
+
+describe("device list freshness (Argon review 3 #5)", () => {
+  it("authenticators_changed reloads the list", async () => {
+    const { AUTHENTICATORS_CHANGED_EVENT } = await import("@/lib/types/events");
+    api.listKeyDevices.mockResolvedValueOnce([device()]).mockResolvedValueOnce([device(), device({ id: "d2", label: "Tab A7" })]);
+    render(() => <KeyDevicesSection />);
+    await screen.findByText("Pixel 8");
+    window.dispatchEvent(new CustomEvent(AUTHENTICATORS_CHANGED_EVENT));
+    expect(await screen.findByText("Tab A7")).toBeTruthy();
+  });
+});
+

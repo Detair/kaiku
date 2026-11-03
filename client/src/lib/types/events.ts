@@ -327,3 +327,6 @@ export type ServerEvent =
 
 /** Window event for `enrollment_updated` (C26): issuer panels refetch at once. */
 export const ENROLLMENT_UPDATED_EVENT = "kaiku:enrollment-updated";
+
+/** Window event for `authenticators_changed` (C26): device lists refetch. */
+export const AUTHENTICATORS_CHANGED_EVENT = "kaiku:authenticators-changed";
