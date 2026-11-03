@@ -228,7 +228,7 @@ impl std::fmt::Debug for EnrollmentIssued {
 impl std::fmt::Debug for ClaimResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClaimResponse")
-            .field("enrollment_id", &self.enrollment_id)
+            .field("enrollment_id", &self.enrollment_id())
             .finish_non_exhaustive()
     }
 }
@@ -275,14 +275,37 @@ pub struct ClaimRequest {
     pub api_level: Option<i32>,
 }
 
-/// `POST /auth/enrollments/claim` answer: the code goes only here.
+/// `POST /auth/enrollments/claim` answer: the code goes only here. A claim
+/// that carries the issuing client's own ticket or request secret is `done`
+/// at once, without a code (C26).
 #[derive(Clone, Serialize, utoipa::ToSchema)]
-pub struct ClaimResponse {
-    pub enrollment_id: Uuid,
-    pub state: String,
-    pub code: String,
-    pub code_expires_at: DateTime<Utc>,
-    pub claim_secret: String,
+#[serde(untagged)]
+pub enum ClaimResponse {
+    Claimed {
+        enrollment_id: Uuid,
+        state: String,
+        code: String,
+        code_expires_at: DateTime<Utc>,
+        claim_secret: String,
+    },
+    Done {
+        enrollment_id: Uuid,
+        state: String,
+        /// `active` or `pending`.
+        authenticator_state: String,
+        ready_at: Option<DateTime<Utc>>,
+    },
+}
+
+impl ClaimResponse {
+    #[must_use]
+    pub const fn enrollment_id(&self) -> Uuid {
+        match self {
+            Self::Claimed { enrollment_id, .. } | Self::Done { enrollment_id, .. } => {
+                *enrollment_id
+            }
+        }
+    }
 }
 
 /// `POST /auth/enrollments/status` body.
@@ -621,11 +644,7 @@ pub async fn claim(
     ctx: &AuthCtx<'_>,
     req: ClaimRequest,
     own: Option<OwnClaim>,
-) -> Result<ClaimResponse, ApprovalError> {
-    if own.is_some() {
-        // L1b Tasks 19 and 22: the issuing client's own claim.
-        return Err(ApprovalError::Validation("not supported".into()));
-    }
+) -> Result<(ClaimResponse, Option<AfterDone>), ApprovalError> {
     let uv_class = UvClass::parse(&req.uv_class)
         .ok_or_else(|| ApprovalError::Validation("uv_class".into()))?;
     let der = b64u_decode(&req.public_key)
@@ -708,6 +727,61 @@ pub async fn claim(
     )
     .await?;
     let label = clean_label(&req.label);
+    if let Some(own) = own {
+        // The issuing client's own key (SM2 rev 4): its ticket or request
+        // secret proves it is the issuer; no code, `done` at once.
+        let issuer_ok = match &own {
+            OwnClaim::Ticket(secret) => {
+                crate::auth::registration::ticket_id_by_secret(&mut tx, ctx, secret)
+                    .await?
+                    .is_some_and(|t| row.issuer_kind == "ticket" && row.issuer_ticket_id == Some(t))
+            }
+            // The request client's own key: L1b Task 22.
+            OwnClaim::Request(_) => false,
+        };
+        if !issuer_ok {
+            return Err(ApprovalError::EnrollmentTokenInvalid);
+        }
+        let claimed: EnrollmentRow = sqlx::query_as(
+            "UPDATE enrollments
+                SET state = 'claimed', claimed_at = NOW(), authenticator_type = 'key_device',
+                    claimed_device_id = $2, claimed_public_key = $3, claimed_key_hash = $4,
+                    claimed_label = $5, claimed_attestation = $6, claimed_properties = $7,
+                    claimed_uv_class = $8, claimed_api_level = $9
+              WHERE id = $1
+              RETURNING *",
+        )
+        .bind(row.id)
+        .bind(challenge.device_id)
+        .bind(&der)
+        .bind(new_key_hash.to_vec())
+        .bind(&label)
+        .bind(&chain)
+        .bind(serde_json::to_value(&props).unwrap_or_default())
+        .bind(uv_class.as_str())
+        .bind(req.api_level)
+        .fetch_one(&mut *tx)
+        .await?;
+        let (_, after) =
+            finish_done_tx(&mut tx, ctx, &claimed, Actor::User(row.subject_id), None).await?;
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM approval_devices WHERE enrollment_id = $1")
+                .bind(row.id)
+                .fetch_one(&mut *tx)
+                .await?;
+        // A pending key's `ready_at` comes from its account request (Task 22).
+        let ready_at: Option<DateTime<Utc>> = None;
+        tx.commit().await?;
+        return Ok((
+            ClaimResponse::Done {
+                enrollment_id: row.id,
+                state: "done".into(),
+                authenticator_state: state,
+                ready_at,
+            },
+            Some(after),
+        ));
+    }
     let code = random_digits(6);
     let claim_secret = Secret256::random();
     let now = Utc::now();
@@ -744,13 +818,16 @@ pub async fn claim(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(ClaimResponse {
-        enrollment_id: row.id,
-        state: "claimed".into(),
-        code,
-        code_expires_at,
-        claim_secret: claim_secret.to_b64u(),
-    })
+    Ok((
+        ClaimResponse::Claimed {
+            enrollment_id: row.id,
+            state: "claimed".into(),
+            code,
+            code_expires_at,
+            claim_secret: claim_secret.to_b64u(),
+        },
+        None,
+    ))
 }
 
 async fn lock_by_id(conn: &mut PgConnection, id: Uuid) -> Result<EnrollmentRow, ApprovalError> {
@@ -958,8 +1035,22 @@ pub async fn confirm_tx(
             }
             None
         }
-        // L1b: PC sessions, requests and tickets confirm through their routes.
-        Confirmer::Pc(_) | Confirmer::Request(_) | Confirmer::Ticket(_) => {
+        // The registration ticket's own client (F8) and the request client
+        // (SM3) confirm the enrolments they issued.
+        Confirmer::Ticket(ticket_id) => {
+            if row.issuer_kind != "ticket" || row.issuer_ticket_id != Some(*ticket_id) {
+                return Err(ApprovalError::NotFound);
+            }
+            None
+        }
+        Confirmer::Request(request_id) => {
+            if row.issuer_kind != "request" || row.issuer_request_id != Some(*request_id) {
+                return Err(ApprovalError::NotFound);
+            }
+            None
+        }
+        // L1b Task 23: PC sessions confirm through their route.
+        Confirmer::Pc(_) => {
             return Err(ApprovalError::NotFound);
         }
     };
@@ -990,6 +1081,27 @@ pub async fn confirm_tx(
         });
     }
     // Done: the device row, the account's first activity, the notice.
+    let actor = match (&by, issuer_user) {
+        (Confirmer::Cli, _) => Actor::Cli,
+        (Confirmer::Ticket(_) | Confirmer::Request(_), _) => Actor::User(row.subject_id),
+        (_, Some(u)) if u == row.subject_id => Actor::User(u),
+        (_, Some(u)) => Actor::Admin(u),
+        (_, None) => Actor::System,
+    };
+    finish_done_tx(conn, ctx, &row, actor, issuer_user).await
+}
+
+/// SM2 `done` (B.7 rule 1, under the subject's account lock): the key
+/// device row (`active` or `pending` by variant), a replaced live row of the
+/// same install revoked with its cascade, the first activity, a bound
+/// registration ticket, the `authenticator_added` notice.
+pub async fn finish_done_tx(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    row: &EnrollmentRow,
+    actor: Actor,
+    issuer_user: Option<Uuid>,
+) -> Result<(Enrollment, AfterDone), ApprovalError> {
     let variant = EnrollmentVariant::parse(&row.variant).ok_or(ApprovalError::EnrollmentState)?;
     let first_activity: Option<DateTime<Utc>> =
         sqlx::query_scalar("SELECT first_activity_at FROM users WHERE id = $1")
@@ -1001,12 +1113,6 @@ pub async fn confirm_tx(
     let claimed_device_id = row
         .claimed_device_id
         .ok_or(ApprovalError::EnrollmentState)?;
-    let actor = match (&by, issuer_user) {
-        (Confirmer::Cli, _) => Actor::Cli,
-        (_, Some(u)) if u == row.subject_id => Actor::User(u),
-        (_, Some(u)) => Actor::Admin(u),
-        (_, None) => Actor::System,
-    };
     // A device that re-enrols replaces its own earlier (live) row, with the
     // revocation cascade (B.7 rule 2): its sessions end, its grants and open
     // challenges are void. The removal is a notice of its own (B.1: every add
@@ -1077,6 +1183,7 @@ pub async fn confirm_tx(
     .execute(&mut *conn)
     .await?;
     crate::auth::strong::mark_first_activity(conn, row.subject_id).await?;
+    crate::auth::registration::mark_bound_tx(conn, row.subject_id).await?;
     let mut ev = NewSecurityEvent::new(
         row.subject_id,
         EventType::AuthenticatorAdded,

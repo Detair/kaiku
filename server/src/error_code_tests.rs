@@ -162,6 +162,7 @@ async fn admin_and_auth_codes_are_upper_snake() {
         AuthError::PasswordRejected(crate::auth::password_policy::PasswordRejected::Breached),
         AuthError::LoginAttemptUnknown,
         AuthError::NeutralSignIn,
+        AuthError::TicketInvalid,
         AuthError::TotpUnavailable,
         AuthError::LoginAttemptNotReady,
         AuthError::LoginAttemptEnded { state: s() },

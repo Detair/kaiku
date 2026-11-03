@@ -71,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- **Breaking:** new accounts start by adding a passkey or a key phone (or an authenticator app) within 30 minutes; a password is optional, and registering no longer signs you in. Accounts that add nothing within 30 minutes are removed. The first admin of a new server adds a passkey or a key phone.
 - **Breaking for older apps:** after your password (or single sign-on), Kaiku asks you to confirm on your phone by scanning a code, or for your authenticator code if you have no key phone. Sessions created this way are limited to chat and calls. A wrong password, an unknown user name and an account without a second step all get the same answer. The desktop app receives single sign-on results through a page that hands a one-time code to the app.
 - Signing in on a PC with your phone now shows the PC what to scan, and your phone asks you to confirm who is signing in before anything happens. Such sign-ins are limited to chat and calls; use a passkey for full access.
 - **Breaking:** changing your password, two-factor settings, recovery codes, linked accounts or other sessions, and deleting your account, now needs a confirmation on your key phone or with a passkey; a password and code alone no longer do. Creating bot tokens and incoming webhooks needs a session signed in with a passkey or your phone.

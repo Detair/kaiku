@@ -27,6 +27,7 @@ pub(crate) mod reauth;
 pub mod recovery_codes;
 pub mod refresh;
 pub(crate) mod register;
+pub mod registration;
 pub mod revocation;
 pub mod session_check;
 pub mod session_issue;
@@ -198,7 +199,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(oidc_routes)
         .merge(forgot_password_route)
         .merge(reset_password_route)
-        .merge(login_attempts::router(&state));
+        .merge(login_attempts::router(&state))
+        .merge(registration::router(&state));
 
     // Routes a user with a pending forced password change may still use.
     // `/me/password` needs a full session and a step-up grant (C27).

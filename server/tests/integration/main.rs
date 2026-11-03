@@ -70,6 +70,7 @@ mod ratelimit_http;
 mod reaction_roles;
 mod reauth;
 mod refresh_rotation;
+mod registration_tickets;
 mod reports;
 mod role_channel_overrides;
 mod roles_security;

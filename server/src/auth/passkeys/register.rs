@@ -28,13 +28,27 @@ use crate::security_events::{record, Actor, EventType, NewSecurityEvent};
 #[serde(rename_all = "snake_case")]
 pub enum RegistrationVia {
     StepUp,
+    /// A new account's registration ticket (F8, L1b).
+    Ticket,
+    /// The client of a `ready` account request (SM3, L1b).
+    Request,
 }
 
 /// What the ceremony is bound to besides the account. L1b appends
 /// `Request`, `Ticket` and `Enrollment`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RegistrationBinding {
-    Session { session_id: Uuid },
+    Session {
+        session_id: Uuid,
+    },
+    /// A registration ticket (L1b Task 19).
+    Ticket {
+        ticket_id: Uuid,
+    },
+    /// An account request (L1b Task 22).
+    Request {
+        request_id: Uuid,
+    },
 }
 
 impl RegistrationVia {
@@ -42,6 +56,8 @@ impl RegistrationVia {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::StepUp => "step_up",
+            Self::Ticket => "ticket",
+            Self::Request => "request",
         }
     }
 }

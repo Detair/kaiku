@@ -36,12 +36,32 @@ pub struct RegisterRequest {
     /// Email address (optional).
     #[validate(email)]
     pub email: Option<String>,
-    /// Password (8-128 characters).
-    #[validate(length(min = 8, max = 128))]
-    pub password: String,
+    /// Password (optional, B.1; 8–128 characters and the blocklist when
+    /// given).
+    #[serde(default)]
+    pub password: Option<String>,
     /// Display name (optional, defaults to username).
     #[validate(length(max = 64))]
     pub display_name: Option<String>,
+}
+
+/// `POST /auth/register` answer (C27): the account and its registration
+/// ticket (native clients; browsers get the cookie), never a session.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct RegisterResponse {
+    pub user_id: Uuid,
+    pub username: String,
+    pub ticket_expires_at: chrono::DateTime<chrono::Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_ticket: Option<String>,
+}
+
+impl std::fmt::Debug for RegisterResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisterResponse")
+            .field("user_id", &self.user_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Login request.

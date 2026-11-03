@@ -120,8 +120,12 @@ pub async fn link_authorize(
         &provider,
     )
     .await?;
+    // The grant is spent before the provider round trip (no transaction is
+    // held across it); a failed start needs a new step-up.
+    tx.commit().await?;
+    crate::security_events::spawn_delivery(&state, vec![event]);
     let want_json = query.response.as_deref() == Some("json");
-    let response = start_oidc_flow(
+    start_oidc_flow(
         &state,
         &provider,
         query.redirect_uri.as_deref(),
@@ -132,10 +136,7 @@ pub async fn link_authorize(
         },
         want_json,
     )
-    .await?;
-    tx.commit().await?;
-    crate::security_events::spawn_delivery(&state, vec![event]);
-    Ok(response)
+    .await
 }
 
 /// Generic hand-back code: the session that started the link flow has ended

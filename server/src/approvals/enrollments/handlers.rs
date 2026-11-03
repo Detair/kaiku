@@ -84,20 +84,36 @@ pub async fn pop_challenge(
 #[tracing::instrument(skip_all)]
 pub async fn claim(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<ClaimRequest>,
 ) -> Result<(StatusCode, Json<ClaimResponse>), ApprovalError> {
     let ctx = AuthCtx::from(&state);
-    let response = claim_core(&ctx, body, None).await?;
+    // The Android app enrolling itself sends its own ticket or request
+    // secret (C26/C27 headers).
+    let header = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(Secret256::from_b64u)
+    };
+    let own = header("x-kaiku-ticket")
+        .map(super::OwnClaim::Ticket)
+        .or_else(|| header("x-kaiku-request-secret").map(super::OwnClaim::Request));
+    let (response, after) = claim_core(&ctx, body, own).await?;
+    if let Some(after) = after {
+        super::after_done(&state, after).await;
+        return Ok((StatusCode::CREATED, Json(response)));
+    }
     // Tell the issuer's screen that a device claimed the setup.
     if let Ok(Some(user)) = sqlx::query_scalar::<_, Uuid>(
         "SELECT d.user_id FROM enrollments e JOIN approval_devices d ON d.id = e.issuer_device_id
           WHERE e.id = $1",
     )
-    .bind(response.enrollment_id)
+    .bind(response.enrollment_id())
     .fetch_optional(&state.db)
     .await
     {
-        super::enrollment_updated(&state, user, response.enrollment_id, "claimed").await;
+        super::enrollment_updated(&state, user, response.enrollment_id(), "claimed").await;
     }
     Ok((StatusCode::CREATED, Json(response)))
 }

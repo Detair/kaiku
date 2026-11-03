@@ -48,7 +48,11 @@ pub async fn run_once(state: &AppState) -> anyhow::Result<()> {
             // 3. Enrolments whose setup token or code is past due (SM2).
             Ok(_) => match crate::approvals::enrollments::expire_due(&mut conn).await {
                 // 4. Login attempts: dead claims reopen, past due expire (SM1).
-                Ok(_) => crate::auth::login_attempts::core::expire_due(&mut conn).await,
+                Ok(_) => match crate::auth::login_attempts::core::expire_due(&mut conn).await {
+                    // 5. Accounts whose registration ticket bound nothing (F8).
+                    Ok(_) => crate::auth::registration::delete_unbound_due(&mut conn).await,
+                    Err(e) => Err(e),
+                },
                 Err(e) => Err(e),
             },
             Err(e) => Err(e),

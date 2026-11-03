@@ -242,6 +242,11 @@ pub enum AuthError {
     #[error("Your authenticator code cannot be used for this account")]
     TotpUnavailable,
 
+    /// Unknown or expired registration ticket (404
+    /// `REGISTRATION_TICKET_INVALID`; not in C27's list, appended).
+    #[error("This sign-up has expired; please register again")]
+    TicketInvalid,
+
     /// Unknown attempt or wrong collection secret (C27).
     #[error("This sign-in is not known")]
     LoginAttemptUnknown,
@@ -333,6 +338,7 @@ impl AuthError {
             Self::ClientOutdated => (StatusCode::BAD_REQUEST, "CLIENT_OUTDATED"),
             Self::PasswordRejected(_) => (StatusCode::BAD_REQUEST, "PASSWORD_REJECTED"),
             Self::NeutralSignIn => (StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS"),
+            Self::TicketInvalid => (StatusCode::NOT_FOUND, "REGISTRATION_TICKET_INVALID"),
             Self::TotpUnavailable => (StatusCode::FORBIDDEN, "TOTP_UNAVAILABLE"),
             Self::LoginAttemptUnknown => (StatusCode::NOT_FOUND, "LOGIN_ATTEMPT_UNKNOWN"),
             Self::LoginAttemptNotReady => (StatusCode::CONFLICT, "LOGIN_ATTEMPT_NOT_READY"),

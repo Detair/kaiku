@@ -73,14 +73,14 @@ impl Phone {
         }
     }
 
-    fn sign(&self, prefix_b64u: &str, decision: Decision, response: &[u8]) -> String {
+    pub(super) fn sign(&self, prefix_b64u: &str, decision: Decision, response: &[u8]) -> String {
         use p256::ecdsa::signature::Signer;
         let prefix = b64u_decode(prefix_b64u).unwrap();
         let sig: p256::ecdsa::Signature = self.key.sign(&message(&prefix, decision, response));
         b64u_encode(sig.to_der().as_bytes())
     }
 
-    fn public_key(&self) -> String {
+    pub(super) fn public_key(&self) -> String {
         b64u_encode(&spki_der(&self.key))
     }
 }
@@ -130,6 +130,47 @@ pub(super) async fn claim_with(
         }),
     )
     .await
+}
+
+/// The issuing client's own claim (C26): open → pop → claim with its
+/// ticket or request-secret header; no code.
+pub(super) async fn claim_own(
+    app: &TestApp,
+    token: &str,
+    phone: &Phone,
+    header: (&str, &str),
+) -> (u16, Value) {
+    let (_, opened) = public(app, "/auth/enrollments/open", json!({"setup_token": token})).await;
+    let nonce = b64u_decode(opened["enrollment_nonce"].as_str().unwrap()).unwrap();
+    let (_, pop) = public(
+        app,
+        "/auth/enrollments/pop-challenge",
+        json!({"setup_token": token, "device_id": phone.device_id, "public_key": phone.public_key()}),
+    )
+    .await;
+    let c = &pop["challenge"];
+    let mut r = Reported::good(&[]);
+    r.challenge = nonce;
+    let req = peer_request(Method::POST, "/auth/enrollments/claim")
+        .header("Content-Type", "application/json")
+        .header(header.0, header.1)
+        .body(Body::from(
+            json!({
+                "setup_token": token,
+                "challenge_id": c["challenge_id"],
+                "signature": phone.sign(c["signing_prefix"].as_str().unwrap(), Decision::Approve, b""),
+                "public_key": phone.public_key(),
+                "attestation_chain": chain(&r).iter().map(|d| b64u_encode(d)).collect::<Vec<_>>(),
+                "label": "Pixel 8",
+                "uv_class": "per_use",
+                "api_level": 34,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    let status = resp.status().as_u16();
+    (status, body_to_json(resp).await)
 }
 
 pub(super) fn good() -> Option<Reported> {

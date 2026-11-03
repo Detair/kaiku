@@ -65,7 +65,7 @@ pub async fn insert_local_user(
     username: &str,
     display_name: &str,
     email: Option<&str>,
-    password_hash: &str,
+    password_hash: Option<&str>,
 ) -> Result<User, AuthError> {
     let user = sqlx::query_as::<_, User>(
         "INSERT INTO users (username, display_name, email, password_hash, auth_method)
