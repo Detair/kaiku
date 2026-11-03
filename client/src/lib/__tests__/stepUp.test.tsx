@@ -157,6 +157,18 @@ describe("withStepUp", () => {
     expect(stepUp).not.toHaveBeenCalled();
   });
 
+  it("linux hint renders in the step-up dialog while the desktop browser runs", async () => {
+    tauriMode.on = true;
+    const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (X11; Linux x86_64) Kaiku");
+    stepUp.mockImplementation(() => new Promise(() => {}));
+    const p = withStepUp(req, vi.fn());
+    await confirm();
+    expect(await screen.findByText(/No phone option in Firefox\?/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await expect(p).rejects.toBeInstanceOf(StepUpCancelled);
+    ua.mockRestore();
+  });
+
   it("every action of the table has a label", () => {
     for (const a of STEP_UP_ACTIONS) expect(STEP_UP_LABELS[a]).toMatch(/^security\.stepUp\./);
   });

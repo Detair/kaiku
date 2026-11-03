@@ -325,6 +325,18 @@ describe("Login with a passkey", () => {
     expect(signalUnknownMock).not.toHaveBeenCalled();
   });
 
+  it("desktop on Linux shows LP's Firefox hint while the browser runs", async () => {
+    tauriMode.on = true;
+    const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (X11; Linux x86_64) Kaiku");
+    pendingUntilAbort();
+    await renderLogin();
+    expect(screen.queryByText(/No phone option in Firefox\?/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with passkey" }));
+    expect(await screen.findByText(/No phone option in Firefox\?/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    ua.mockRestore();
+  });
+
   it("desktop invokes passkey_sign_in and shows the browser hint", async () => {
     tauriMode.on = true;
     pendingUntilAbort();

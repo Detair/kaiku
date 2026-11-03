@@ -14,6 +14,7 @@ import { PasskeyError } from "@/lib/tauri/passkeys";
 import { formatPasskeyError } from "@/lib/authErrors";
 import { pendingStepUp, stepUpLabel, type PendingStepUp } from "@/lib/stepUp";
 import DialogShell from "./DialogShell";
+import LinuxPasskeyHint from "./LinuxPasskeyHint";
 
 const STEP_UP_ERRORS = {
   PASSKEY_BROWSER_FAILED: "security.stepUp.error.browserFailed",
@@ -50,7 +51,7 @@ export const StepUpDialog: Component<{ pending: PendingStepUp }> = (props) => {
           <p class="text-base text-text-primary" role="status">
             {t("security.stepUp.continueInBrowser")}
           </p>
-          {/* TODO(LP rebase): <LinuxPasskeyHint /> (LP's Linux/Firefox hint) here on Linux. */}
+          <LinuxPasskeyHint class="text-base text-text-secondary" />
         </Show>
         <Show when={props.pending.error()}>
           {(err) => (

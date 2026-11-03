@@ -14,6 +14,7 @@ import { safeReturnUrl } from "@/lib/returnUrl";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { formatPasskeyError, LOGIN_ERRORS, loginErrorText } from "@/lib/authErrors";
 import PasskeyButton from "@/components/auth/PasskeyButton";
+import LinuxPasskeyHint from "@/components/auth/LinuxPasskeyHint";
 import { PasskeyError } from "@/lib/tauri/passkeys";
 import { isConditionalMediationAvailable, isWebAuthnAvailable } from "@/lib/webauthn";
 import {
@@ -119,7 +120,6 @@ const Login: Component = () => {
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
   /** A pending autofill start after a server change. */
   let serverChangeTimer: ReturnType<typeof setTimeout> | undefined;
-  const linux = typeof navigator !== "undefined" && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
 
   // Bumped by every start and stop: a start still waiting for
   // `isConditionalMediationAvailable` gives way to anything later (Argon B R2).
@@ -451,9 +451,7 @@ const Login: Component = () => {
               <Show when={desktop && passkeyBusy()}>
                 <div role="status" class="p-3 rounded-lg border border-white/10 bg-white/5 text-sm text-text-primary space-y-2">
                   <p>{t("passkeys.login.browserHint")}</p>
-                  <Show when={linux}>
-                    <p class="text-text-secondary">{t("passkeys.login.linuxHint")}</p>
-                  </Show>
+                  <LinuxPasskeyHint />
                   <button
                     type="button"
                     class="w-full min-h-12 rounded-lg border border-white/10 text-text-primary hover:bg-white/10"

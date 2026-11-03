@@ -12,6 +12,8 @@ import { isProbation, replaceSessionWithPasskey } from "@/stores/auth";
 import { meSecurity, refreshMeSecurity } from "@/stores/security";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
+import { isTauri } from "@/lib/tauri/common";
+import LinuxPasskeyHint from "./LinuxPasskeyHint";
 
 // Per chat-only session, not stored: the banner comes back after a restart
 // and for every new chat-only session.
@@ -82,6 +84,12 @@ const ProbationBanner: Component = () => {
               <button type="button" class="btn-primary min-h-12 text-base" disabled={busy()} onClick={() => void signIn()}>
                 {t("auth.probation.signIn")}
               </button>
+            </Show>
+            <Show when={isTauri() && busy()}>
+              <div role="status" class="w-full space-y-1 text-sm">
+                <p class="text-text-primary">{t("passkeys.login.browserHint")}</p>
+                <LinuxPasskeyHint />
+              </div>
             </Show>
             <button
               type="button"

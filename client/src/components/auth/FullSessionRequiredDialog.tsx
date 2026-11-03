@@ -8,11 +8,12 @@
 import { Component, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { t } from "@/i18n";
 import { passkeyFailureText } from "@/lib/authErrors";
-import { FULL_SESSION_REQUIRED_EVENT } from "@/lib/tauri/common";
+import { FULL_SESSION_REQUIRED_EVENT, isTauri } from "@/lib/tauri/common";
 import { replaceSessionWithPasskey } from "@/stores/auth";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { meSecurity, refreshMeSecurity } from "@/stores/security";
 import DialogShell from "./DialogShell";
+import LinuxPasskeyHint from "./LinuxPasskeyHint";
 
 const [open, setOpen] = createSignal(false);
 
@@ -59,7 +60,10 @@ const FullSessionRequiredDialog: Component = () => {
           <button type="button" class="btn-primary w-full min-h-12 text-base" disabled={busy()} onClick={() => void signIn()}>
             {t("auth.probation.signIn")}
           </button>
-          {/* TODO(LP rebase): <LinuxPasskeyHint /> (Task A5) under the button on the desktop. */}
+          <Show when={isTauri() && busy()}>
+            <p class="text-base text-text-primary" role="status">{t("passkeys.login.browserHint")}</p>
+            <LinuxPasskeyHint class="text-base text-text-secondary" />
+          </Show>
         </Show>
         <p class="text-base text-text-secondary">{t("auth.fullSession.phone")}</p>
         <Show when={error()}>
