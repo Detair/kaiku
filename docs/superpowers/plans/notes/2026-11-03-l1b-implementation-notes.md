@@ -525,3 +525,13 @@ Gemini 3.8 Flash (High) reviewed the whole package in 9 parts against 35fcadf8, 
 | P9 m3: wildcard factor match | **real**: explicit | 172decd3 | — |
 
 Totals: 25 real (P8 M-01 duplicates P6 #3), 23 not real, 0 settled, 5 deferred. P7 #10 (missing tests) is covered by `flash_review` and the round 3 `consume_id_tx` test.
+
+## Review round 6 (Codex) at 67dcc46c
+
+Fable and Gemini Flash approved, accepting all 23 not-real verdicts. Codex requested changes for three items.
+
+| Finding | Verdict | Commit | Test |
+|---|---|---|---|
+| Codex r6 #1 — post-lock ticket expiry uses the transaction's start (`NOW()`) | fixed: `clock_timestamp()` in the post-lock expiry checks: `ticket_unbound_tx`, `ticket_id_by_secret`, `live_clause!`, the step-up grant and its session, `request_id_by_secret` | 5bb3f88f | `flash_review::a_ticket_expiring_during_the_lock_wait_binds_no_totp` (natural expiry during the lock wait; RED 200) |
+| Codex r6 #2 — the dummy fix skips Argon2 | fixed: the verify always runs (real hash or dummy) and is ANDed with `has_real`. No behavioural test: the difference is timing only | 5bb3f88f | `flash_review::the_dummy_hash_is_no_password` stays green |
+| Codex r6 #3 — an unconditional claim release; an abandoned claim | fixed: `thr` = `p:{epoch}:{claimed_at}` is settled only by its own claimant, through a compare-and-set script (`d` after commit, deleted after an error). A pending claim older than `THROTTLE_CLAIM_SECS` (300 s) is taken over | 5bb3f88f | `flash_review::{a_stale_release_keeps_the_next_epochs_claim, an_abandoned_claim_is_taken_over}` (RED) |
