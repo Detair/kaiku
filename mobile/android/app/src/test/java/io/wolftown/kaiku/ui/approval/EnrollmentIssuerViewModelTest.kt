@@ -278,4 +278,10 @@ class EnrollmentIssuerViewModelTest {
         assertTrue(v.ui.value is IssuerUi.ShowSetup)
         assertEquals(1, enroll.calls.count { it == "issueOwn" })
     }
+
+    @Test fun `an own setup code for the own account or a phone already in use says so`() {
+        assertEquals(R.string.admin_target_self, issuerErrorFor(apiError(400, "ENROLLMENT_TARGET_SELF")))
+        assertEquals(R.string.issuer_device_in_use, issuerErrorFor(apiError(400, "ENROLLMENT_DEVICE_IN_USE")))
+        assertEquals(R.string.admin_target_self, io.wolftown.kaiku.ui.admin.adminErrorFor(apiError(400, "ENROLLMENT_TARGET_SELF")))
+    }
 }

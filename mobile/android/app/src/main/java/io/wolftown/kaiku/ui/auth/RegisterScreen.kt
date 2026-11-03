@@ -105,6 +105,8 @@ class RegisterViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // An expired ticket (30 min) is gone with its unconfirmed account: register again.
+                if (e is io.wolftown.kaiku.data.api.ApiException && e.normalizedCode == "REGISTRATION_TICKET_INVALID") created = null
                 _uiState.update { it.copy(isLoading = false, errorRes = AuthErrorMapper.register(e)) }
             }
         }

@@ -522,4 +522,23 @@ class SetupFlowViewModelTest {
         idle.cancel() // its own key goes
         assertFalse(f.keyStore.hasKey())
     }
+
+    @Test fun `a phone that already is the account's key is told so and offered to sign in`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.popFailure = apiError(400, "ENROLLMENT_DEVICE_IN_USE")
+        val (v, f) = vm()
+        v.start(entry)
+        assertEquals(SetupUi.Ended(R.string.setup_device_in_use, canRetry = false, offerSignIn = true), v.ui.value)
+        assertFalse(f.keyStore.hasKey()) // the key made for this attempt goes; nothing was revoked
+        assertFalse(enroll.calls.contains("claim"))
+    }
+
+    @Test fun `an expired ticket or request says so`() {
+        assertEquals(SetupUi.Ended(R.string.setup_registration_expired, canRetry = false),
+            setupErrorFor(apiError(404, "REGISTRATION_TICKET_INVALID")))
+        assertEquals(SetupUi.Ended(R.string.setup_request_expired, canRetry = false),
+            setupErrorFor(apiError(409, "ACCOUNT_REQUEST_NOT_READY", io.wolftown.kaiku.data.api.ApiErrorFields(state = "expired"))))
+        assertEquals(SetupUi.Ended(R.string.setup_request_not_ready, canRetry = false),
+            setupErrorFor(apiError(409, "ACCOUNT_REQUEST_NOT_READY", io.wolftown.kaiku.data.api.ApiErrorFields(state = "waiting"))))
+    }
 }

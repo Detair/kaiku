@@ -84,7 +84,8 @@ sealed interface SetupUi {
     data object Resume : SetupUi
     /** The setup screen came back without its setup code before anything was claimed. */
     data object Interrupted : SetupUi
-    data class Ended(@StringRes val msg: Int, val canRetry: Boolean, val arg: String? = null) : SetupUi
+    /** [offerSignIn]: this phone is already a key of the account (C26 `ENROLLMENT_DEVICE_IN_USE`): sign in with it. */
+    data class Ended(@StringRes val msg: Int, val canRetry: Boolean, val arg: String? = null, val offerSignIn: Boolean = false) : SetupUi
 }
 
 /** What the setup needs from the app around it (JVM-testable). */
@@ -607,6 +608,13 @@ internal fun setupErrorFor(x: Exception): SetupUi.Ended = when (x) {
         "DEVICE_UNSUITABLE" -> SetupUi.Ended(R.string.setup_cannot_be_key, canRetry = false)
         "ENROLLMENT_STATE", "APPROVAL_EXPIRED" -> SetupUi.Ended(R.string.setup_expired, canRetry = false)
         "TOO_MANY_ATTEMPTS" -> SetupUi.Ended(R.string.errors_rate_limited, canRetry = true)
+        // C26/C27 amendment (2026-11-03): nothing was revoked; this phone already is that account's key.
+        "ENROLLMENT_DEVICE_IN_USE" -> SetupUi.Ended(R.string.setup_device_in_use, canRetry = false, offerSignIn = true)
+        "REGISTRATION_TICKET_INVALID" -> SetupUi.Ended(R.string.setup_registration_expired, canRetry = false)
+        "ACCOUNT_REQUEST_NOT_READY" -> SetupUi.Ended(
+            if (x.fields.state == "expired") R.string.setup_request_expired else R.string.setup_request_not_ready,
+            canRetry = false,
+        )
         else -> SetupUi.Ended(R.string.setup_failed_generic, canRetry = true)
     }
     is IOException -> SetupUi.Ended(R.string.security_network_error, canRetry = true)

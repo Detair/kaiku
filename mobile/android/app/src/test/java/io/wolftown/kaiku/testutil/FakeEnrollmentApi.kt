@@ -33,6 +33,7 @@ class FakeEnrollmentApi {
         "https://chat.example.com/setup#v=1&t=x", "2026-11-03T12:10:00Z")
     var enrollment: Enrollment? = null
     var getFailure: Exception? = null
+    var popFailure: Exception? = null
     /** The `wait` of the last status long-poll. */
     var lastStatusWait: Int? = null
     /** Rewrites the PoP context before the server-side hash is made (a consistent, tampered context). */
@@ -66,6 +67,7 @@ class FakeEnrollmentApi {
         }
         override suspend fun popChallenge(setupToken: String, deviceId: String, publicKeyB64u: String, origin: String?): PopChallenge {
             calls += "popChallenge"
+            popFailure?.let { throw it }
             return PopChallenge(popChallengeFor(publicKeyB64u), subject)
         }
         override suspend fun claim(req: EnrollmentClaim, ticket: String?, origin: String?): ClaimResult {

@@ -409,6 +409,7 @@ internal fun issuerErrorFor(e: Exception): Int = when (e) {
         "ACCOUNT_REQUEST_OPEN" -> R.string.admin_request_open
         "NO_INDEPENDENT_CANCELLER" -> R.string.admin_no_canceller
         "ENROLLMENT_TARGET_SELF" -> R.string.admin_target_self
+        "ENROLLMENT_DEVICE_IN_USE" -> R.string.issuer_device_in_use
         else -> R.string.security_sign_in_failed
     }
     is IOException -> R.string.security_network_error

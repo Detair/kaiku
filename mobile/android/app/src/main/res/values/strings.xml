@@ -73,6 +73,7 @@
     <string name="auth_register_email_taken">That email address is already in use.</string>
     <string name="auth_register_closed">Ask the person who runs this server to create an account for you.</string>
     <string name="auth_register_failed">Registration failed. Please try again.</string>
+    <string name="auth_register_ticket_expired">The registration ran out of time. Please register again.</string>
 
     <!-- QR sign-in -->
     <string name="qr_scanner_permission_required">Camera permission is required to scan QR codes</string>
@@ -416,6 +417,11 @@
     <string name="setup_token_invalid">This setup code is not valid any more.</string>
     <string name="setup_failed_generic">The setup didn\'t work. Try again.</string>
     <string name="setup_invalid">This is not a valid setup code.</string>
+    <string name="setup_device_in_use">This phone is already a key of this account. Sign in with it instead.</string>
+    <string name="setup_device_in_use_sign_in">Sign in with this phone</string>
+    <string name="setup_registration_expired">The registration ran out of time. Register again.</string>
+    <string name="setup_request_not_ready">This request is not ready yet. Try again once it is ready.</string>
+    <string name="setup_request_expired">This request has expired. Start a new one.</string>
     <string name="setup_stopped">Setup stopped. Nothing was changed.</string>
     <string name="setup_start_again">Start again</string>
     <string name="setup_claim_unsure">The connection broke while this phone was being set up. Try again: Kaiku checks what the server already knows.</string>
@@ -446,6 +452,7 @@
     <string name="issuer_expired">The setup code ran out of time. Start again.</string>
     <string name="issuer_limit">There are already five open setup codes. Cancel one first.</string>
     <string name="issuer_key_phone_required">Use your Kaiku key phone for this.</string>
+    <string name="issuer_device_in_use">That phone is already a key of this account.</string>
     <string name="security_step_up_none">Confirm this on your Kaiku key phone or with a passkey. This phone has neither.</string>
     <string name="issuer_stopped">Stopped. Nothing was added.</string>
     <string name="keypad_delete">Delete</string>

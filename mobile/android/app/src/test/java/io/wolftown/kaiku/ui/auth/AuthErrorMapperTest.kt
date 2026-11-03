@@ -133,4 +133,10 @@ class AuthErrorMapperTest {
             AuthErrorMapper.oidc(ApiException(HttpStatusCode.Unauthorized, "server text", "INVALID_CREDENTIALS")))
         assertEquals(R.string.auth_login_sso_failed, AuthErrorMapper.oidc(IllegalStateException("no server")))
     }
+
+    @Test
+    fun `an expired registration ticket says to register again`() {
+        assertEquals(R.string.auth_register_ticket_expired,
+            AuthErrorMapper.register(ApiException(HttpStatusCode.NotFound, "server text", "REGISTRATION_TICKET_INVALID")))
+    }
 }

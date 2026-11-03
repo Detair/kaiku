@@ -128,4 +128,20 @@ class RegisterViewModelTest {
         advanceUntilIdle()
         io.mockk.coVerify(exactly = 1) { authRepository.register(any(), any(), any(), any()) }
     }
+
+    @Test
+    fun `an expired ticket is dropped so the next try registers again`() = runTest {
+        coEvery { authRepository.register("anna", "pw", null, null) } returns
+            Result.success(io.wolftown.kaiku.domain.model.RegistrationTicket("u1", "anna", "2026-11-03T12:30:00Z", "ticket-1"))
+        coEvery { enrollmentApi.issueWithTicket("ticket-1") } throws
+            ApiException(HttpStatusCode.NotFound, "x", "REGISTRATION_TICKET_INVALID")
+        viewModel.onUsernameChanged("anna")
+        viewModel.onPasswordChanged("pw")
+        viewModel.onRegisterClicked()
+        advanceUntilIdle()
+        assertEquals(io.wolftown.kaiku.R.string.auth_register_ticket_expired, viewModel.uiState.value.errorRes)
+        viewModel.onRegisterClicked()
+        advanceUntilIdle()
+        io.mockk.coVerify(exactly = 2) { authRepository.register(any(), any(), any(), any()) }
+    }
 }

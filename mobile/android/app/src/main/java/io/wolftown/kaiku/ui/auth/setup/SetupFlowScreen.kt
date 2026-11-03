@@ -147,7 +147,12 @@ internal fun SetupStatus(ui: SetupUi, onSignIn: () -> Unit, onRetry: (() -> Unit
                 else -> R.string.setup_start_again
             }
             if (ui.canRetry && onRetry != null) KeyPrimaryButton(stringResource(retryLabel), onClick = onRetry)
-            if (onBack != null) KeySecondaryButton(stringResource(R.string.common_back), onClick = onBack)
+            // Back leads to the sign-in, which for a key phone is "Confirm it's you" (its screen lock).
+            if (ui.offerSignIn && onBack != null) {
+                KeyPrimaryButton(stringResource(R.string.setup_device_in_use_sign_in), onClick = onBack)
+            } else if (onBack != null) {
+                KeySecondaryButton(stringResource(R.string.common_back), onClick = onBack)
+            }
         }
         else -> Unit
     }

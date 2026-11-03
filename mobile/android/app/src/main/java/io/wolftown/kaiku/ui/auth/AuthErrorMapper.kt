@@ -40,6 +40,7 @@ object AuthErrorMapper {
                 "USER_EXISTS" -> return R.string.auth_register_username_taken
                 "EMAIL_TAKEN" -> return R.string.auth_register_email_taken
                 "REGISTRATION_DISABLED" -> return R.string.auth_register_closed
+                "REGISTRATION_TICKET_INVALID" -> return R.string.auth_register_ticket_expired
             }
         }
         return common(e) ?: R.string.auth_register_failed
