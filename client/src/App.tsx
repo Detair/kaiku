@@ -43,6 +43,9 @@ import OnboardingWizard from "./components/OnboardingWizard";
 import SessionExpiredModal from "./components/auth/SessionExpiredModal";
 // Full-session, step-up and sign-out-others dialogs: off the startup path.
 const SessionDialogHosts = lazy(() => import("./components/auth/SessionDialogHosts"));
+// Their open state stays eager: a refusal reported before the chunk has
+// loaded still opens the full-session dialog (Fable r2 R2).
+import "./lib/fullSessionRequired";
 import BlockConfirmModal from "./components/modals/BlockConfirmModal";
 import ReportModal from "./components/modals/ReportModal";
 import type { ReportTarget } from "./components/modals/ReportModal";
