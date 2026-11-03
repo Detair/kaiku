@@ -73,18 +73,56 @@ pub struct SecurityNotice {
 
 /// The recipients of an event on `subject_id`.
 ///
-/// The subject's own copy, and for `high` every admin other than the subject
-/// (L1b Task 20 adds the confirmed recovery contact). Never the system
-/// account, never twice.
+/// The subject's own copy; for `high` the confirmed recovery contact and
+/// every admin other than the subject; the contact events also to the
+/// contacts they name. Never the system account, never twice.
 pub async fn recipients(
     conn: &mut PgConnection,
     subject_id: Uuid,
     severity: Severity,
+    event_type: Option<EventType>,
+    details: &serde_json::Value,
 ) -> sqlx::Result<Vec<Recipient>> {
     let mut out = vec![Recipient {
         user_id: subject_id,
         role: RecipientRole::Subject,
     }];
+    // The confirmed recovery contact gets high notices (Part C); the
+    // contact events also go to the contact they name (C28).
+    let mut contacts: Vec<Uuid> = Vec::new();
+    if severity == Severity::High {
+        let confirmed: Option<Uuid> = sqlx::query_scalar(
+            "SELECT recovery_contact_id FROM users
+              WHERE id = $1 AND recovery_contact_confirmed_at IS NOT NULL",
+        )
+        .bind(subject_id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .flatten();
+        contacts.extend(confirmed);
+    }
+    if matches!(
+        event_type,
+        Some(
+            EventType::RecoveryContactNamed
+                | EventType::RecoveryContactConfirmed
+                | EventType::RecoveryContactChanged
+        )
+    ) {
+        for key in ["contact_user_id", "previous_contact_user_id"] {
+            if let Some(id) = details[key].as_str().and_then(|s| s.parse::<Uuid>().ok()) {
+                contacts.push(id);
+            }
+        }
+    }
+    for c in contacts {
+        if c != subject_id && !out.iter().any(|r| r.user_id == c) {
+            out.push(Recipient {
+                user_id: c,
+                role: RecipientRole::Contact,
+            });
+        }
+    }
     if severity == Severity::High {
         let admins: Vec<Uuid> = sqlx::query_scalar(
             "SELECT sa.user_id FROM system_admins sa
@@ -95,10 +133,14 @@ pub async fn recipients(
         .bind(subject_id)
         .fetch_all(&mut *conn)
         .await?;
-        out.extend(admins.into_iter().map(|user_id| Recipient {
-            user_id,
-            role: RecipientRole::Admin,
-        }));
+        for user_id in admins {
+            if !out.iter().any(|r| r.user_id == user_id) {
+                out.push(Recipient {
+                    user_id,
+                    role: RecipientRole::Admin,
+                });
+            }
+        }
     }
     Ok(out)
 }
@@ -173,7 +215,12 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
         _ => None,
     };
     let mut outcomes = Vec::new();
-    for r in recipients(&mut tx, ev.subject_id, severity).await? {
+    let details: serde_json::Value =
+        sqlx::query_scalar("SELECT details FROM security_events WHERE id = $1")
+            .bind(ev.id)
+            .fetch_one(&mut *tx)
+            .await?;
+    for r in recipients(&mut tx, ev.subject_id, severity, event_type, &details).await? {
         let (channel_id, created_dm) = kaiku_dm_created_tx(&mut tx, r.user_id).await?;
         let existing = sqlx::query_as::<_, NoticeRow>(
             "SELECT id, message_id, count, last_pushed_at FROM security_notices

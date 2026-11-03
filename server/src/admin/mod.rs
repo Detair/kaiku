@@ -108,6 +108,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/users/export", get(users::export_users_csv))
         .route("/users/{id}/details", get(users::get_user_details))
+        .route(
+            "/users/{user_id}/recovery-contact",
+            put(crate::auth::recovery_contact::put_admin),
+        )
         .route("/guilds", get(guilds::list_guilds))
         .route("/guilds/export", get(guilds::export_guilds_csv))
         .route("/guilds/{id}/details", get(guilds::get_guild_details))

@@ -163,6 +163,8 @@ async fn admin_and_auth_codes_are_upper_snake() {
         AuthError::LoginAttemptUnknown,
         AuthError::NeutralSignIn,
         AuthError::TicketInvalid,
+        AuthError::RecoveryContactInvalid,
+        AuthError::AdminTargetIsAdmin,
         AuthError::TotpUnavailable,
         AuthError::LoginAttemptNotReady,
         AuthError::LoginAttemptEnded { state: s() },

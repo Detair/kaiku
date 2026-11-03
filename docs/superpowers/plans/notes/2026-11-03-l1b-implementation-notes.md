@@ -121,3 +121,31 @@ decision. "For L2" marks interface facts the clients need.
   neutral answer; C27 has no registration-ticket path for OIDC sign-up (Task 19 decides).
 - LP's passkey routes already record `sign_in` and `authenticator_added`/`authenticator_removed`;
   nothing added.
+
+## Task 19 — registration tickets and passwordless accounts (F8)
+
+- `POST /auth/register {username, password?, email?, display_name?}` → 201 `{user_id, username,
+  ticket_expires_at, registration_ticket?}`: native clients (`X-Kaiku-Client`) get the ticket in
+  the body, browsers the cookie `__Secure-kaiku_ticket` (`Path=/auth/registration`). Never a
+  session. A password, when given, goes through the policy (400 `PASSWORD_REJECTED`).
+- Ticket routes (`AuthFlow` per IP, header `X-Kaiku-Ticket` or the cookie): `GET
+  /auth/registration` → `{expires_at, bound}`; `POST /auth/registration/totp` → `{secret,
+  otpauth_uri}`; `POST …/totp/verify {code}` → `{recovery_codes}` (sets TOTP, recovery codes and
+  `bootstrap_open`); `POST /auth/registration/passkey/{start,finish}` (C29 shapes, `active`);
+  `POST /auth/registration/enrollments`, `GET|DELETE …/{id}`, `POST …/{id}/confirm {code}`
+  (variant `registration`, `active`). The issuer routes are written per issuer (ticket here,
+  request in Task 22) instead of the plan's generic `issuer_routes<E>`.
+- The Android app's own key: `POST /auth/enrollments/claim` with `X-Kaiku-Ticket` (or, Task 22,
+  `X-Kaiku-Request-Secret`) → 201 `{enrollment_id, state: "done", authenticator_state, ready_at}`
+  without a code (`ClaimResponse` is an untagged enum; the code path is unchanged).
+- New code `REGISTRATION_TICKET_INVALID` (404) for an unknown or expired ticket (**for L2**: not
+  in C27's list).
+- The sweep deletes accounts whose ticket bound nothing 30 minutes after creation; the first
+  admin's TOTP routes answer 403 `TOTP_UNAVAILABLE`.
+- `enrollments::finish_done_tx` holds SM2's `done` effects for codes and own claims; any `done`
+  marks the subject's ticket bound. LP's `RegistrationBinding`/`RegistrationVia` gain `Ticket`
+  and `Request` (appended).
+- **L1b-1 boundary:** the Task 19 commit (`861d5778`) is the split point (≈ 8.9k insertions
+  incl. tests up to there).
+- Identity link (Task 16 follow-up): the `identity.link` grant is spent and committed before the
+  provider round trip (a test showed a pool timeout when a transaction was held across it).

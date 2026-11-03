@@ -40,6 +40,17 @@ pub async fn on_generation_ended(
     Ok(())
 }
 
+/// B.7 rule 2: the account's recovery contact changed or was removed; open
+/// requests that recorded the old contact lose that route (Task 21).
+#[tracing::instrument(skip_all)]
+pub async fn on_contact_changed(
+    _conn: &mut PgConnection,
+    _ctx: &AuthCtx<'_>,
+    _account: Uuid,
+) -> AuthResult<()> {
+    Ok(())
+}
+
 /// The cascade of ended sessions (called by `end_sessions_tx`).
 pub async fn on_sessions_ended(
     conn: &mut PgConnection,

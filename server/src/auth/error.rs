@@ -242,6 +242,16 @@ pub enum AuthError {
     #[error("Your authenticator code cannot be used for this account")]
     TotpUnavailable,
 
+    /// An admin, the account itself or the system account as recovery
+    /// contact (400 `RECOVERY_CONTACT_INVALID`, C28).
+    #[error("This person cannot be a recovery contact")]
+    RecoveryContactInvalid,
+
+    /// An immediate admin action on another admin's account (403
+    /// `ADMIN_TARGET_IS_ADMIN`, F6 rev 4).
+    #[error("This cannot be done to another admin's account")]
+    AdminTargetIsAdmin,
+
     /// Unknown or expired registration ticket (404
     /// `REGISTRATION_TICKET_INVALID`; not in C27's list, appended).
     #[error("This sign-up has expired; please register again")]
@@ -339,6 +349,8 @@ impl AuthError {
             Self::PasswordRejected(_) => (StatusCode::BAD_REQUEST, "PASSWORD_REJECTED"),
             Self::NeutralSignIn => (StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS"),
             Self::TicketInvalid => (StatusCode::NOT_FOUND, "REGISTRATION_TICKET_INVALID"),
+            Self::RecoveryContactInvalid => (StatusCode::BAD_REQUEST, "RECOVERY_CONTACT_INVALID"),
+            Self::AdminTargetIsAdmin => (StatusCode::FORBIDDEN, "ADMIN_TARGET_IS_ADMIN"),
             Self::TotpUnavailable => (StatusCode::FORBIDDEN, "TOTP_UNAVAILABLE"),
             Self::LoginAttemptUnknown => (StatusCode::NOT_FOUND, "LOGIN_ATTEMPT_UNKNOWN"),
             Self::LoginAttemptNotReady => (StatusCode::CONFLICT, "LOGIN_ATTEMPT_NOT_READY"),

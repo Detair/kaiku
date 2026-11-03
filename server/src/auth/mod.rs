@@ -25,6 +25,7 @@ pub(crate) mod profile;
 pub(crate) mod queries;
 pub(crate) mod reauth;
 pub mod recovery_codes;
+pub mod recovery_contact;
 pub mod refresh;
 pub(crate) mod register;
 pub mod registration;

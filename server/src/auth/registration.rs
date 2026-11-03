@@ -520,7 +520,7 @@ pub async fn passkey_finish(
 // Enrolment issuer routes of a ticket (variant `registration`, C26)
 // ---------------------------------------------------------------------------
 
-fn approval(e: AuthError) -> ApprovalError {
+const fn approval(e: AuthError) -> ApprovalError {
     ApprovalError::Auth(e)
 }
 

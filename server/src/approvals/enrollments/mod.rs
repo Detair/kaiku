@@ -1091,10 +1091,11 @@ pub async fn confirm_tx(
     finish_done_tx(conn, ctx, &row, actor, issuer_user).await
 }
 
-/// SM2 `done` (B.7 rule 1, under the subject's account lock): the key
-/// device row (`active` or `pending` by variant), a replaced live row of the
-/// same install revoked with its cascade, the first activity, a bound
-/// registration ticket, the `authenticator_added` notice.
+/// SM2 `done`, under the subject's account lock (B.7 rule 1).
+///
+/// The key device row (`active` or `pending` by variant), a replaced live
+/// row of the same install revoked with its cascade, the first activity, a
+/// bound registration ticket, the `authenticator_added` notice.
 pub async fn finish_done_tx(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,

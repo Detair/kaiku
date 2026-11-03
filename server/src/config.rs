@@ -316,6 +316,11 @@ pub struct Config {
     /// WebSocket session re-check interval in seconds (≤ 60, B.4).
     pub session_recheck_secs: u64,
 
+    /// Account-request delay in hours (`ACCOUNT_REQUEST_DELAY_HOURS`,
+    /// default 24, 24..=72; SM3, Q1). A recovery contact counts as a
+    /// canceller from `confirmed_at` + this delay.
+    pub account_request_delay_hours: i64,
+
     /// FCM service account (env: `FCM_SERVICE_ACCOUNT_FILE` or
     /// `FCM_SERVICE_ACCOUNT_JSON`). `None` = FCM off.
     pub fcm_service_account: Option<crate::push::fcm::ServiceAccountKey>,
@@ -600,6 +605,9 @@ impl Config {
             loki_url: env_opt("LOKI_URL"),
             prometheus_url: env_opt("PROMETHEUS_URL"),
             max_sessions_per_user: parse_max_sessions(env_opt("MAX_SESSIONS_PER_USER").as_deref())?,
+            account_request_delay_hours: parse_request_delay(
+                env_opt("ACCOUNT_REQUEST_DELAY_HOURS").as_deref(),
+            )?,
             session_recheck_secs: DEFAULT_SESSION_RECHECK_SECS,
             fcm_service_account,
             fcm_api_base,
@@ -752,6 +760,7 @@ impl Config {
             loki_url: None,
             prometheus_url: None,
             max_sessions_per_user: DEFAULT_MAX_SESSIONS_PER_USER,
+            account_request_delay_hours: DEFAULT_ACCOUNT_REQUEST_DELAY_HOURS,
             session_recheck_secs: DEFAULT_SESSION_RECHECK_SECS,
             fcm_service_account: None,
             fcm_api_base: crate::push::fcm::FCM_API_BASE.into(),
@@ -769,6 +778,19 @@ pub const DEFAULT_SESSION_RECHECK_SECS: u64 = 60;
 
 /// `MAX_SESSIONS_PER_USER`: an integer 1..=1000; unset = 50. Anything else
 /// refuses startup.
+/// Default account-request delay (SM3).
+pub const DEFAULT_ACCOUNT_REQUEST_DELAY_HOURS: i64 = 24;
+
+fn parse_request_delay(raw: Option<&str>) -> Result<i64> {
+    let Some(raw) = raw.map(str::trim) else {
+        return Ok(DEFAULT_ACCOUNT_REQUEST_DELAY_HOURS);
+    };
+    match raw.parse::<i64>() {
+        Ok(n) if (24..=72).contains(&n) => Ok(n),
+        _ => anyhow::bail!("ACCOUNT_REQUEST_DELAY_HOURS must be an integer from 24 to 72"),
+    }
+}
+
 fn parse_max_sessions(raw: Option<&str>) -> Result<i64> {
     let Some(raw) = raw.map(str::trim) else {
         return Ok(DEFAULT_MAX_SESSIONS_PER_USER);
