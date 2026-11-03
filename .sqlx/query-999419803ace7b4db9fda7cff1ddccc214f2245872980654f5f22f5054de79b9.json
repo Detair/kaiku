@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO users (username, display_name, password_hash, auth_method)\n                   VALUES ($1, $2, $3, 'local')\n                   RETURNING id, username, display_name, email, password_hash,\n                             auth_method as \"auth_method: _\", external_id, avatar_url,\n                             status as \"status: _\", mfa_secret, is_bot, bot_owner_id,\n                             deletion_requested_at, deletion_scheduled_at,\n                             created_at, updated_at, must_change_password",
+  "query": "INSERT INTO users (username, display_name, password_hash, auth_method)\n                   VALUES ($1, $2, $3, 'local')\n                   RETURNING id, username, display_name, email, password_hash,\n                             auth_method as \"auth_method: _\", external_id, avatar_url,\n                             status as \"status: _\", mfa_secret, is_bot, bot_owner_id,\n                             deletion_requested_at, deletion_scheduled_at,\n                             created_at, updated_at, must_change_password, is_system",
   "describe": {
     "columns": [
       {
@@ -211,6 +211,17 @@
             "name": "must_change_password"
           }
         }
+      },
+      {
+        "ordinal": 17,
+        "name": "is_system",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "is_system"
+          }
+        }
       }
     ],
     "parameters": {
@@ -237,8 +248,9 @@
       true,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "417116f24ac26417a638d8b004859f6f92959e6c19766e4f61c2e16fc6239280"
+  "hash": "999419803ace7b4db9fda7cff1ddccc214f2245872980654f5f22f5054de79b9"
 }

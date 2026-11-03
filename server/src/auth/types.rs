@@ -123,6 +123,8 @@ pub struct UserProfile {
     pub deletion_scheduled_at: Option<String>,
     /// Whether the user must set a new password before using the rest of the API.
     pub password_change_required: bool,
+    /// The "Kaiku" system account (C28); always false for a signed-in user.
+    pub is_system: bool,
 }
 
 /// MFA setup response.

@@ -233,9 +233,10 @@ pub(super) async fn delete_elevated_session(
 
 /// Total number of users on the instance.
 pub(super) async fn count_users(pool: &PgPool) -> Result<i64, AdminError> {
-    let count = sqlx::query_scalar!(r#"SELECT COUNT(*) as "count!" FROM users"#)
-        .fetch_one(pool)
-        .await?;
+    let count =
+        sqlx::query_scalar!(r#"SELECT COUNT(*) as "count!" FROM users WHERE NOT is_system"#)
+            .fetch_one(pool)
+            .await?;
     Ok(count)
 }
 
@@ -273,15 +274,16 @@ pub(super) async fn count_users_filtered(
         sqlx::query_scalar!(
             r#"SELECT COUNT(*) as "count!"
                FROM users u
-               WHERE LOWER(u.username) LIKE $1
+               WHERE NOT u.is_system
+                 AND (LOWER(u.username) LIKE $1
                   OR LOWER(u.display_name) LIKE $1
-                  OR LOWER(COALESCE(u.email, '')) LIKE $1"#,
+                  OR LOWER(COALESCE(u.email, '')) LIKE $1)"#,
             pattern
         )
         .fetch_one(pool)
         .await?
     } else {
-        sqlx::query_scalar!(r#"SELECT COUNT(*) as "count!" FROM users"#)
+        sqlx::query_scalar!(r#"SELECT COUNT(*) as "count!" FROM users WHERE NOT is_system"#)
             .fetch_one(pool)
             .await?
     };
@@ -310,9 +312,10 @@ pub(super) async fn list_users_filtered(
                       AND (gb.expires_at IS NULL OR gb.expires_at > NOW())
                 ) as is_banned
               FROM users u
-              WHERE LOWER(u.username) LIKE $3
+              WHERE NOT u.is_system
+                AND (LOWER(u.username) LIKE $3
                  OR LOWER(u.display_name) LIKE $3
-                 OR LOWER(COALESCE(u.email, '')) LIKE $3
+                 OR LOWER(COALESCE(u.email, '')) LIKE $3)
               ORDER BY u.created_at DESC
               LIMIT $1 OFFSET $2",
         )
@@ -336,6 +339,7 @@ pub(super) async fn list_users_filtered(
                       AND (gb.expires_at IS NULL OR gb.expires_at > NOW())
                 ) as is_banned
               FROM users u
+              WHERE NOT u.is_system
               ORDER BY u.created_at DESC
               LIMIT $1 OFFSET $2",
         )
@@ -361,7 +365,7 @@ pub(super) async fn get_user_details(
                         AND (gb.expires_at IS NULL OR gb.expires_at > NOW())
                   ) as "is_banned!"
            FROM users
-           WHERE id = $1"#,
+           WHERE id = $1 AND NOT is_system"#,
         user_id
     )
     .fetch_optional(pool)
@@ -422,10 +426,11 @@ pub(super) async fn export_users(
                         AND (gb.expires_at IS NULL OR gb.expires_at > NOW())
                   ) as "is_banned!"
            FROM users u
-           WHERE $1::text IS NULL
+           WHERE NOT u.is_system
+             AND ($1::text IS NULL
               OR LOWER(u.username) LIKE $1
               OR LOWER(u.display_name) LIKE $1
-              OR LOWER(COALESCE(u.email, '')) LIKE $1
+              OR LOWER(COALESCE(u.email, '')) LIKE $1)
            ORDER BY u.created_at DESC
            LIMIT 10000"#,
         search_pattern
@@ -438,7 +443,7 @@ pub(super) async fn export_users(
 /// Check whether a user exists by id.
 pub(super) async fn user_exists(pool: &PgPool, user_id: Uuid) -> Result<bool, AdminError> {
     let exists = sqlx::query_scalar!(
-        r#"SELECT EXISTS(SELECT 1 FROM users WHERE id = $1) as "exists!""#,
+        r#"SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND NOT is_system) as "exists!""#,
         user_id
     )
     .fetch_one(pool)
@@ -1037,7 +1042,7 @@ pub async fn summary_active_voice_sessions(
 
 /// Total user count (observability summary metadata).
 pub async fn summary_user_count(pool: &PgPool) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE NOT is_system")
         .fetch_one(pool)
         .await
 }

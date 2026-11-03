@@ -124,6 +124,8 @@ pub struct AuthorProfile {
     /// WebSocket (`presence_update` events to the presence audience).
     #[schema(deprecated, example = "offline")]
     pub status: String,
+    /// The "Kaiku" system account (C28); clients recognise it only by this.
+    pub is_system: bool,
 }
 
 impl From<db::User> for AuthorProfile {
@@ -134,6 +136,7 @@ impl From<db::User> for AuthorProfile {
             display_name: user.display_name,
             avatar_url: super::files::maybe_file_url(user.avatar_url),
             status: AUTHOR_STATUS_PLACEHOLDER.to_string(),
+            is_system: user.is_system,
         }
     }
 }
@@ -435,6 +438,9 @@ pub struct DMListResponse {
     pub participants: Vec<DMParticipant>,
     pub last_message: Option<LastMessagePreview>,
     pub unread_count: i64,
+    /// True only for the Kaiku DM (C28): the user cannot send, edit,
+    /// react, pin, type, leave or rename it.
+    pub read_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -444,6 +450,8 @@ pub struct DMParticipant {
     pub display_name: String,
     pub avatar_url: Option<String>,
     pub joined_at: chrono::DateTime<chrono::Utc>,
+    /// The "Kaiku" system account (C28); clients recognise it only by this.
+    pub is_system: bool,
 }
 
 #[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]

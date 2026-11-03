@@ -18,6 +18,7 @@
         "avatar_url": null,
         "display_name": "Alice",
         "id": "00000000-0000-4000-8000-00000000a001",
+        "is_system": false,
         "status": "offline",
         "username": "alice"
       },
@@ -40,6 +41,7 @@
         "avatar_url": null,
         "display_name": "Alice",
         "id": "00000000-0000-4000-8000-00000000a001",
+        "is_system": false,
         "status": "offline",
         "username": "alice"
       },

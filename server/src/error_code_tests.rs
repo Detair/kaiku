@@ -182,6 +182,7 @@ async fn chat_codes_are_upper_snake() {
     let mut chat = vec![
         ChatError::ChannelNotFound,
         ChatError::Forbidden,
+        ChatError::ChannelReadOnly,
         ChatError::PasswordChangeRequired,
         ChatError::SessionEnded,
         ChatError::ServiceUnavailable,
@@ -226,6 +227,7 @@ async fn chat_codes_are_upper_snake() {
             ReactionsError::ChannelNotFound,
             ReactionsError::InvalidEmoji,
             ReactionsError::Forbidden,
+            ReactionsError::ChannelReadOnly,
             ReactionsError::Database(db()),
         ],
     )
@@ -239,6 +241,7 @@ async fn chat_codes_are_upper_snake() {
             ChannelPinsError::NotGuildChannel,
             ChannelPinsError::PinLimitReached,
             ChannelPinsError::Forbidden,
+            ChannelPinsError::ChannelReadOnly,
             ChannelPinsError::FeatureDisabled,
             ChannelPinsError::Database(db()),
         ],

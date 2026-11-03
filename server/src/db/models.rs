@@ -42,6 +42,10 @@ pub struct User {
     pub updated_at: DateTime<Utc>,
     /// Set for admin-created accounts until the user chooses their own password.
     pub must_change_password: bool,
+    /// The built-in "Kaiku" system account (C28). Refused on every auth path.
+    #[sqlx(default)]
+    #[serde(default)]
+    pub is_system: bool,
 }
 
 /// Authentication method.

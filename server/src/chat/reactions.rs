@@ -52,6 +52,9 @@ pub enum ReactionsError {
     InvalidEmoji,
     #[error("Forbidden")]
     Forbidden,
+    /// The channel is read-only (the Kaiku DM, C28).
+    #[error("This conversation is read-only")]
+    ChannelReadOnly,
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -71,6 +74,11 @@ impl IntoResponse for ReactionsError {
             ),
             Self::InvalidEmoji => (StatusCode::BAD_REQUEST, "INVALID_EMOJI", "Invalid emoji"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Forbidden"),
+            Self::ChannelReadOnly => (
+                StatusCode::FORBIDDEN,
+                "CHANNEL_READ_ONLY",
+                "This conversation is read-only",
+            ),
             Self::Database(err) => {
                 tracing::error!("Database error: {}", err);
                 (
@@ -128,6 +136,9 @@ pub async fn add_reaction(
     crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
         .await
         .map_err(|_| ReactionsError::Forbidden)?;
+    if super::read_only::is_read_only(&state.db, channel_id).await? {
+        return Err(ReactionsError::ChannelReadOnly);
+    }
 
     // Check message exists and belongs to channel
     let message = db::find_message_by_id(&state.db, message_id)
@@ -289,6 +300,9 @@ pub async fn remove_reaction(
     crate::permissions::require_channel_access(&state.db, auth_user.id, channel_id)
         .await
         .map_err(|_| ReactionsError::Forbidden)?;
+    if super::read_only::is_read_only(&state.db, channel_id).await? {
+        return Err(ReactionsError::ChannelReadOnly);
+    }
 
     // Check message exists and belongs to channel
     let message = db::find_message_by_id(&state.db, message_id)

@@ -92,6 +92,7 @@ fn author() -> AuthorProfile {
         display_name: "Alice".to_string(),
         avatar_url: None,
         status: "offline".to_string(),
+        is_system: false,
     }
 }
 
@@ -354,6 +355,7 @@ fn participant(user_id: Uuid, username: &str, display_name: &str) -> DMParticipa
         display_name: display_name.to_string(),
         avatar_url: None,
         joined_at: ts("2026-03-12T09:30:00Z"),
+        is_system: false,
     }
 }
 
@@ -368,6 +370,7 @@ fn new_dm_entry() -> DMListResponse {
         ],
         last_message: None,
         unread_count: 0,
+        read_only: false,
     }
 }
 
@@ -407,6 +410,7 @@ fn android_golden_dm_list() {
             created_at: ts("2026-03-12T11:00:00Z"),
         }),
         unread_count: 2,
+        read_only: false,
     };
     group.participants[2].avatar_url = Some("/api/users/carol/avatar".to_string());
 

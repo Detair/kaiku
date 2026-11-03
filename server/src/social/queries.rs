@@ -10,23 +10,30 @@ use super::types::{Friend, Friendship};
 // User lookups
 // ============================================================================
 
-/// Find a user's id by username. Returns `None` if no such user.
+/// Find a user's id by username. Returns `None` if no such user, and for
+/// the system account (C28: hidden from friend paths).
 pub async fn find_user_id_by_username(
     pool: &PgPool,
     username: &str,
 ) -> Result<Option<Uuid>, SocialError> {
-    let id = sqlx::query_scalar!("SELECT id FROM users WHERE username = $1", username)
-        .fetch_optional(pool)
-        .await?;
+    let id = sqlx::query_scalar!(
+        "SELECT id FROM users WHERE username = $1 AND NOT is_system",
+        username
+    )
+    .fetch_optional(pool)
+    .await?;
     Ok(id)
 }
 
-/// Check whether a user with the given id exists.
+/// Check whether a user with the given id exists (never the system account).
 pub async fn user_exists(pool: &PgPool, user_id: Uuid) -> Result<bool, SocialError> {
-    let exists = sqlx::query_scalar!("SELECT id FROM users WHERE id = $1", user_id)
-        .fetch_optional(pool)
-        .await?
-        .is_some();
+    let exists = sqlx::query_scalar!(
+        "SELECT id FROM users WHERE id = $1 AND NOT is_system",
+        user_id
+    )
+    .fetch_optional(pool)
+    .await?
+    .is_some();
     Ok(exists)
 }
 

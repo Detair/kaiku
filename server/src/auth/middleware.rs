@@ -131,6 +131,11 @@ async fn authenticate(
         .await?
         .ok_or(AuthError::UserNotFound)?;
 
+    // The system account never has a session (C28).
+    if user.is_system {
+        return Err(AuthError::InvalidToken);
+    }
+
     // A banned account is refused even with a token that is still valid.
     if super::queries::is_user_globally_banned(&state.db, user.id).await? {
         return Err(AuthError::AccountBanned);

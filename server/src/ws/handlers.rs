@@ -1152,6 +1152,27 @@ pub async fn handle_client_message(
                 .last_typing
                 .retain(|_, last| now.duration_since(*last) < Duration::from_secs(2));
 
+            // Nobody types in a read-only channel (the Kaiku DM, C28). A
+            // database error drops the typing hint (fail closed).
+            match crate::chat::read_only::is_read_only(&state.db, channel_id).await {
+                Ok(false) => {}
+                Err(e) => {
+                    debug!(error = %e, "Typing dropped: read-only check failed");
+                    return Ok(());
+                }
+                Ok(true) => {
+                    send_outbound(
+                        tx,
+                        OutboundMsg::Event(ServerEvent::Error {
+                            code: "CHANNEL_READ_ONLY".to_string(),
+                            message: "This conversation is read-only".to_string(),
+                        }),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+
             // Broadcast typing indicator
             broadcast_to_channel(
                 &state.redis,

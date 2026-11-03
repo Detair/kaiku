@@ -234,6 +234,7 @@ pub async fn create(
                             display_name: "Unknown User".to_string(),
                             avatar_url: None,
                             status: "offline".to_string(),
+                            is_system: false,
                         });
                     let latency_ms = start.elapsed().as_millis();
                     let content = format!("Pong! (latency: {latency_ms}ms)");
@@ -454,6 +455,7 @@ pub async fn create(
                                 display_name: "Unknown User".to_string(),
                                 avatar_url: None,
                                 status: "offline".to_string(),
+                                is_system: false,
                             });
 
                         let accepted = MessageResponse {
@@ -557,6 +559,7 @@ pub async fn create(
             display_name: "Unknown User".to_string(),
             avatar_url: None,
             status: "offline".to_string(),
+            is_system: false,
         });
 
     // Rich embeds: bot-authored only. Validate against size/URL caps, persist,
@@ -720,6 +723,7 @@ pub async fn update(
     )
     .await
     .map_err(|_| ChatError::Forbidden)?;
+    super::read_only::ensure_writable(&state.db, existing_message.channel_id).await?;
 
     // Content filtering on edited content: skip encrypted messages and DMs
     if !existing_message.encrypted {
@@ -790,6 +794,7 @@ pub async fn update(
             display_name: "Unknown User".to_string(),
             avatar_url: None,
             status: "offline".to_string(),
+            is_system: false,
         });
 
     // Fetch existing attachments
@@ -880,6 +885,7 @@ pub async fn delete(
     crate::permissions::require_channel_access(&state.db, auth_user.id, message.channel_id)
         .await
         .map_err(|_| ChatError::Forbidden)?;
+    super::read_only::ensure_writable(&state.db, message.channel_id).await?;
 
     // Check ownership (deleted/anonymized messages cannot be modified)
     if message.user_id != Some(auth_user.id) {
@@ -1052,6 +1058,7 @@ pub async fn build_message_responses(
                             display_name: name,
                             avatar_url: msg.webhook_avatar_url.clone(),
                             status: "offline".to_string(),
+                            is_system: false,
                         }
                     } else {
                         AuthorProfile {
@@ -1060,6 +1067,7 @@ pub async fn build_message_responses(
                             display_name: "Deleted User".to_string(),
                             avatar_url: None,
                             status: "offline".to_string(),
+                            is_system: false,
                         }
                     }
                 });

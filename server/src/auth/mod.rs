@@ -23,6 +23,7 @@ pub(crate) mod reauth;
 pub(crate) mod register;
 pub(crate) mod revocation;
 pub(crate) mod sessions;
+pub mod strong;
 pub mod types;
 pub mod ua_parser;
 

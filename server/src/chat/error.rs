@@ -15,6 +15,10 @@ pub enum ChatError {
     #[error("Access denied")]
     Forbidden,
 
+    /// The channel is read-only (the Kaiku DM, C28).
+    #[error("This conversation is read-only")]
+    ChannelReadOnly,
+
     #[error("You must change your password before continuing")]
     PasswordChangeRequired,
 
@@ -93,6 +97,7 @@ impl IntoResponse for ChatError {
             // Channel
             Self::ChannelNotFound => (StatusCode::NOT_FOUND, "CHANNEL_NOT_FOUND", self.to_string()),
             Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", self.to_string()),
+            Self::ChannelReadOnly => (StatusCode::FORBIDDEN, "CHANNEL_READ_ONLY", self.to_string()),
             Self::SessionEnded => (StatusCode::UNAUTHORIZED, "INVALID_TOKEN", self.to_string()),
             Self::ServiceUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,

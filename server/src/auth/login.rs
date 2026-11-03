@@ -97,8 +97,9 @@ pub async fn login(
     let password_valid = verify_password(&body.password, stored_hash).unwrap_or(false);
 
     let user = match user_opt {
-        // Local account whose password matched.
-        Some(u) if u.password_hash.is_some() && password_valid => u,
+        // Local account whose password matched. The system account has no
+        // password and is refused like an unknown user (C28).
+        Some(u) if u.password_hash.is_some() && !u.is_system && password_valid => u,
         // Missing user, non-local (OIDC) account, or wrong password — all
         // indistinguishable to the caller.
         _ => {

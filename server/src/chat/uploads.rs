@@ -525,6 +525,7 @@ pub async fn upload_message_with_file(
             display_name: "Unknown User".to_string(),
             avatar_url: None,
             status: "offline".to_string(),
+            is_system: false,
         });
 
     let mention_type = detect_mention_type(&message.content, Some(&author.username));

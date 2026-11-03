@@ -113,11 +113,14 @@ fn build_dm_list_entry(
     last_message: Option<LastMessagePreview>,
     unread_count: i64,
 ) -> DMListResponse {
+    // Only Kaiku DMs include the system account, and they are read-only.
+    let read_only = participants.iter().any(|p| p.is_system);
     DMListResponse {
         channel: channel.into(),
         participants,
         last_message,
         unread_count,
+        read_only,
     }
 }
 
@@ -238,9 +241,12 @@ pub async fn create_dm(
     }
 
     // Verify all participants exist
+    // (the system account answers like an unknown id: only `kaiku_dm_tx`
+    // creates its DMs, C28)
     for participant_id in &body.participant_ids {
         db::find_user_by_id(&state.db, *participant_id)
             .await?
+            .filter(|u| !u.is_system)
             .ok_or_else(|| {
                 ChatError::Validation("One or more participants not found".to_string())
             })?;
@@ -405,6 +411,9 @@ pub async fn leave_dm(
         return Err(ChatError::ChannelNotFound);
     }
 
+    // The Kaiku DM cannot be left (C28).
+    super::read_only::ensure_writable(&state.db, channel_id).await?;
+
     // Remove user from participants
     let removed = queries::remove_dm_participant(&state.db, channel_id, auth.id).await?;
 
@@ -462,6 +471,7 @@ pub async fn update_dm_name(
     if !queries::is_dm_participant(&state.db, channel_id, auth.id).await? {
         return Err(ChatError::Forbidden);
     }
+    super::read_only::ensure_writable(&state.db, channel_id).await?;
 
     // Verify it's a group DM (more than 2 participants)
     let participant_count = queries::count_dm_participants(&state.db, channel_id).await?;
@@ -540,6 +550,7 @@ pub async fn upload_dm_icon(
     if !queries::is_dm_participant(&state.db, channel_id, auth.id).await? {
         return Err(ChatError::Forbidden);
     }
+    super::read_only::ensure_writable(&state.db, channel_id).await?;
 
     // Process file upload (similar to uploads.rs)
     let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;

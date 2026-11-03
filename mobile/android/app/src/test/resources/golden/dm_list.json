@@ -19,6 +19,7 @@
       {
         "avatar_url": null,
         "display_name": "Alice",
+        "is_system": false,
         "joined_at": "2026-03-12T09:30:00Z",
         "user_id": "00000000-0000-4000-8000-00000000a001",
         "username": "alice"
@@ -26,6 +27,7 @@
       {
         "avatar_url": null,
         "display_name": "Bob",
+        "is_system": false,
         "joined_at": "2026-03-12T09:30:00Z",
         "user_id": "00000000-0000-4000-8000-00000000a002",
         "username": "bob"
@@ -33,12 +35,14 @@
       {
         "avatar_url": "/api/users/carol/avatar",
         "display_name": "Carol",
+        "is_system": false,
         "joined_at": "2026-03-12T09:30:00Z",
         "user_id": "00000000-0000-4000-8000-00000000a003",
         "username": "carol"
       }
     ],
     "position": 0,
+    "read_only": false,
     "topic": null,
     "unread_count": 2,
     "user_limit": null
@@ -57,6 +61,7 @@
       {
         "avatar_url": null,
         "display_name": "Alice",
+        "is_system": false,
         "joined_at": "2026-03-12T09:30:00Z",
         "user_id": "00000000-0000-4000-8000-00000000a001",
         "username": "alice"
@@ -64,12 +69,14 @@
       {
         "avatar_url": null,
         "display_name": "Bob",
+        "is_system": false,
         "joined_at": "2026-03-12T09:30:00Z",
         "user_id": "00000000-0000-4000-8000-00000000a002",
         "username": "bob"
       }
     ],
     "position": 0,
+    "read_only": false,
     "topic": null,
     "unread_count": 0,
     "user_limit": null

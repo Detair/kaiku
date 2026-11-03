@@ -36,6 +36,8 @@ pub struct UserSummary {
     pub avatar_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub is_banned: bool,
+    /// The "Kaiku" system account (C28); it is never listed, so always false.
+    pub is_system: bool,
 }
 
 /// User guild membership info for detail view.
@@ -112,6 +114,7 @@ pub async fn list_users(
                 avatar_url,
                 created_at,
                 is_banned,
+                is_system: false,
             },
         )
         .collect();
@@ -246,6 +249,7 @@ pub async fn create_user(
             avatar_url,
             created_at,
             is_banned,
+            is_system: false,
         }),
     ))
 }

@@ -182,11 +182,7 @@ pub async fn resolve_mention_targets(
     let mut candidates: Vec<Uuid> = Vec::new();
 
     if !mentions.usernames.is_empty() {
-        match sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE username = ANY($1)")
-            .bind(&mentions.usernames)
-            .fetch_all(&state.db)
-            .await
-        {
+        match resolve_usernames(&state.db, &mentions.usernames).await {
             Ok(ids) => candidates.extend(ids),
             Err(e) => tracing::warn!(error = %e, "Failed to resolve mentioned usernames"),
         }
@@ -342,4 +338,16 @@ mod tests {
             ["cleo"]
         );
     }
+}
+
+/// Resolve mentioned usernames to user ids. The system account is never a
+/// mention target (C28).
+pub async fn resolve_usernames(
+    pool: &sqlx::PgPool,
+    usernames: &[String],
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM users WHERE username = ANY($1) AND NOT is_system")
+        .bind(usernames)
+        .fetch_all(pool)
+        .await
 }

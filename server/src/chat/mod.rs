@@ -19,6 +19,7 @@ pub mod overrides;
 pub mod pins;
 pub mod queries;
 pub mod reactions;
+pub mod read_only;
 pub mod s3;
 pub(crate) mod screenshare;
 pub mod send;

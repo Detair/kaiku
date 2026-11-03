@@ -66,7 +66,9 @@ pub async fn find_user_id_by_identity(
     subject: &str,
 ) -> sqlx::Result<Option<Uuid>> {
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT user_id FROM user_identities WHERE provider_slug = $1 AND subject = $2",
+        "SELECT i.user_id FROM user_identities i
+           JOIN users u ON u.id = i.user_id
+          WHERE i.provider_slug = $1 AND i.subject = $2 AND NOT u.is_system",
     )
     .bind(provider_slug)
     .bind(subject)
@@ -2011,7 +2013,7 @@ pub async fn mark_setup_complete(pool: &PgPool, updated_by: Uuid) -> sqlx::Resul
 /// Count total number of users in the database.
 /// Used in critical first-user registration path - errors must be logged for debugging.
 pub async fn count_users(pool: &PgPool) -> sqlx::Result<i64> {
-    let row = sqlx::query("SELECT COUNT(*) as count FROM users")
+    let row = sqlx::query("SELECT COUNT(*) as count FROM users WHERE NOT is_system")
         .fetch_one(pool)
         .await
         .map_err(|e| {

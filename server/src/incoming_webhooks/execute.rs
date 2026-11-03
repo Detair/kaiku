@@ -63,6 +63,7 @@ pub(super) fn webhook_message_response(message: Message) -> MessageResponse {
             display_name: name,
             avatar_url: message.webhook_avatar_url.clone(),
             status: "offline".to_string(),
+            is_system: false,
         },
         content: message.content,
         encrypted: false,

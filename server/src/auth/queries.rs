@@ -33,7 +33,9 @@ pub async fn lock_setup_complete(conn: &mut PgConnection) -> Result<(), AuthErro
 
 /// Count all users (used for first-user detection inside a registration tx).
 pub async fn count_users(conn: &mut PgConnection) -> Result<i64, AuthError> {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+    // The system account (C28) is not a user: the first registered user
+    // still becomes the admin.
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE NOT is_system")
         .fetch_one(conn)
         .await?;
     Ok(count)

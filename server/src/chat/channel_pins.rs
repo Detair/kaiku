@@ -66,6 +66,9 @@ pub enum ChannelPinsError {
     PinLimitReached,
     #[error("Forbidden")]
     Forbidden,
+    /// The channel is read-only (the Kaiku DM, C28).
+    #[error("This conversation is read-only")]
+    ChannelReadOnly,
     /// Forum channel while the forum feature is off.
     #[error("This feature is turned off on this server.")]
     FeatureDisabled,
@@ -97,6 +100,11 @@ impl IntoResponse for ChannelPinsError {
                 "This channel has reached the maximum of 50 pins",
             ),
             Self::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Forbidden"),
+            Self::ChannelReadOnly => (
+                StatusCode::FORBIDDEN,
+                "CHANNEL_READ_ONLY",
+                "This conversation is read-only",
+            ),
             Self::FeatureDisabled => (
                 StatusCode::BAD_REQUEST,
                 crate::features::FEATURE_DISABLED,
@@ -201,6 +209,11 @@ pub async fn pin_message(
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(ChannelPinsError::ChannelNotFound)?;
+
+    // The Kaiku DM is read-only (C28), before the guild-only check.
+    if super::read_only::is_read_only(&state.db, channel_id).await? {
+        return Err(ChannelPinsError::ChannelReadOnly);
+    }
 
     let guild_id = channel.guild_id.ok_or(ChannelPinsError::NotGuildChannel)?;
 
@@ -333,6 +346,11 @@ pub async fn unpin_message(
     let channel = db::find_channel_by_id(&state.db, channel_id)
         .await?
         .ok_or(ChannelPinsError::ChannelNotFound)?;
+
+    // The Kaiku DM is read-only (C28), before the guild-only check.
+    if super::read_only::is_read_only(&state.db, channel_id).await? {
+        return Err(ChannelPinsError::ChannelReadOnly);
+    }
 
     let guild_id = channel.guild_id.ok_or(ChannelPinsError::NotGuildChannel)?;
 

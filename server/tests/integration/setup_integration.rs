@@ -43,7 +43,7 @@ async fn test_first_user_receives_admin_sequential(pool: PgPool) {
     .expect("Failed to lock setup_complete");
 
     // Count users (should be 0)
-    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE NOT is_system")
         .fetch_one(&mut *tx1)
         .await
         .expect("Failed to count users");
@@ -59,7 +59,7 @@ async fn test_first_user_receives_admin_sequential(pool: PgPool) {
                      auth_method as "auth_method: _", external_id, avatar_url,
                      status as "status: _", mfa_secret, is_bot, bot_owner_id,
                      deletion_requested_at, deletion_scheduled_at,
-                     created_at, updated_at, must_change_password"#,
+                     created_at, updated_at, must_change_password, is_system"#,
         username1,
         "First User",
         "hash"
@@ -102,7 +102,7 @@ async fn test_first_user_receives_admin_sequential(pool: PgPool) {
     .expect("Failed to lock setup_complete");
 
     // Count users (should be 1 now)
-    let user_count2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+    let user_count2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE NOT is_system")
         .fetch_one(&mut *tx2)
         .await
         .expect("Failed to count users");
@@ -121,7 +121,7 @@ async fn test_first_user_receives_admin_sequential(pool: PgPool) {
                      auth_method as "auth_method: _", external_id, avatar_url,
                      status as "status: _", mfa_secret, is_bot, bot_owner_id,
                      deletion_requested_at, deletion_scheduled_at,
-                     created_at, updated_at, must_change_password"#,
+                     created_at, updated_at, must_change_password, is_system"#,
         username2,
         "Second User",
         "hash"
@@ -186,10 +186,11 @@ async fn test_concurrent_registrations_only_one_gets_admin(pool: PgPool) {
             .expect("Failed to lock setup_complete");
 
             // Count users
-            let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-                .fetch_one(&mut *tx)
-                .await
-                .expect("Failed to count users");
+            let user_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE NOT is_system")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .expect("Failed to count users");
 
             // Create user
             let user = sqlx::query_as!(
@@ -200,7 +201,7 @@ async fn test_concurrent_registrations_only_one_gets_admin(pool: PgPool) {
                              auth_method as "auth_method: _", external_id, avatar_url,
                              status as "status: _", mfa_secret, is_bot, bot_owner_id,
                              deletion_requested_at, deletion_scheduled_at,
-                             created_at, updated_at, must_change_password"#,
+                             created_at, updated_at, must_change_password, is_system"#,
                 username.clone(),
                 format!("User {}", i),
                 "hash"
@@ -260,7 +261,7 @@ async fn test_concurrent_registrations_only_one_gets_admin(pool: PgPool) {
     assert_eq!(admin_count, 1, "Should have exactly 1 admin in database");
 
     // Verify all users were created
-    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE NOT is_system")
         .fetch_one(pool.as_ref())
         .await
         .expect("Failed to count users");

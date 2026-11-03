@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT\n            u.id as user_id,\n            u.username,\n            u.display_name,\n            u.avatar_url,\n            dp.joined_at\n           FROM dm_participants dp\n           JOIN users u ON u.id = dp.user_id\n           WHERE dp.channel_id = $1\n           ORDER BY dp.joined_at ASC, dp.user_id ASC",
+  "query": "SELECT id, username, display_name, email, avatar_url, created_at,\n                  EXISTS(\n                      SELECT 1 FROM global_bans gb\n                      WHERE gb.user_id = users.id\n                        AND (gb.expires_at IS NULL OR gb.expires_at > NOW())\n                  ) as \"is_banned!\"\n           FROM users\n           WHERE id = $1 AND NOT is_system",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "user_id",
+        "name": "id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -38,6 +38,17 @@
       },
       {
         "ordinal": 3,
+        "name": "email",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "avatar_url",
         "type_info": "Text",
         "origin": {
@@ -48,15 +59,21 @@
         }
       },
       {
-        "ordinal": 4,
-        "name": "joined_at",
+        "ordinal": 5,
+        "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "dm_participants",
-            "name": "joined_at"
+            "table": "users",
+            "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 6,
+        "name": "is_banned!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -69,8 +86,10 @@
       false,
       false,
       true,
-      false
+      true,
+      false,
+      null
     ]
   },
-  "hash": "c2465a96bd3f31d4b249db42621241d78ad50856d7cfe036cca75091996a7084"
+  "hash": "8e14ee33ad9b52c6171fab1ea0e4de787b936ddb3989bde5b049ef2c39403199"
 }

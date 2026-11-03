@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, username, display_name, email, avatar_url, created_at,\n                  EXISTS(\n                      SELECT 1 FROM global_bans gb\n                      WHERE gb.user_id = users.id\n                        AND (gb.expires_at IS NULL OR gb.expires_at > NOW())\n                  ) as \"is_banned!\"\n           FROM users\n           WHERE id = $1",
+  "query": "SELECT\n            u.id as user_id,\n            u.username,\n            u.display_name,\n            u.avatar_url,\n            dp.joined_at,\n            u.is_system\n           FROM dm_participants dp\n           JOIN users u ON u.id = dp.user_id\n           WHERE dp.channel_id = $1\n           ORDER BY dp.joined_at ASC, dp.user_id ASC",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "user_id",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -38,17 +38,6 @@
       },
       {
         "ordinal": 3,
-        "name": "email",
-        "type_info": "Varchar",
-        "origin": {
-          "Table": {
-            "table": "users",
-            "name": "email"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
         "name": "avatar_url",
         "type_info": "Text",
         "origin": {
@@ -59,21 +48,26 @@
         }
       },
       {
-        "ordinal": 5,
-        "name": "created_at",
+        "ordinal": 4,
+        "name": "joined_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "users",
-            "name": "created_at"
+            "table": "dm_participants",
+            "name": "joined_at"
           }
         }
       },
       {
-        "ordinal": 6,
-        "name": "is_banned!",
+        "ordinal": 5,
+        "name": "is_system",
         "type_info": "Bool",
-        "origin": "Expression"
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "is_system"
+          }
+        }
       }
     ],
     "parameters": {
@@ -86,10 +80,9 @@
       false,
       false,
       true,
-      true,
       false,
-      null
+      false
     ]
   },
-  "hash": "037c6e3b43c4b89868377be2fa99505d52fa40b7f6647852678852e795df54cb"
+  "hash": "3fced3e5e265348e353420ede43851a3ade9f49ab15ca748c68498f71e0386a9"
 }
