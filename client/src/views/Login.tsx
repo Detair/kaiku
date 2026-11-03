@@ -42,6 +42,25 @@ const TotpStepPanel = lazy(() => import("@/components/auth/login/TotpStepPanel")
 const AttemptEnded = lazy(() => import("@/components/auth/login/AttemptEnded"));
 const STEP_PANELS = [QrLoginPanel, ConfirmationPanel, TotpStepPanel, AttemptEnded];
 
+/** A step panel whose chunk cannot load: say so, reload, or back to the form (Flash r3 p3 #2). */
+const StepLoadFailed: Component = () => (
+  <div role="alert" class="space-y-3">
+    <p class="text-base text-text-primary">{t("common.loadFailed")}</p>
+    <div class="flex flex-wrap gap-2">
+      <button type="button" class="btn-primary min-h-11 px-4 text-base" onClick={() => window.location.reload()}>
+        {t("common.reload")}
+      </button>
+      <button
+        type="button"
+        class="min-h-11 px-4 rounded-lg border border-white/15 text-base text-text-primary hover:bg-white/5"
+        onClick={() => void leaveFlow()}
+      >
+        {t("auth.flow.back")}
+      </button>
+    </div>
+  </div>
+);
+
 /** A conditional ceremony lives 300 s on the server; restart it before. */
 const CONDITIONAL_RESTART_MS = 270_000;
 /** Pause after a server change before autofill starts again. */
@@ -479,7 +498,7 @@ const Login: Component = () => {
         <Switch>
           <Match when={(() => { const f = loginFlow(); return f.step === "qr" ? f : null; })()}>
             {(f) => (
-              <LazyErrorBoundary name="QrLoginPanel">
+              <LazyErrorBoundary name="QrLoginPanel" fallback={<StepLoadFailed />}>
                 <QrLoginPanel
                   attempt={f().attempt}
                   payload={f().qrPayload}
@@ -491,7 +510,7 @@ const Login: Component = () => {
           </Match>
           <Match when={(() => { const f = loginFlow(); return f.step === "confirm" ? f : null; })()}>
             {(f) => (
-              <LazyErrorBoundary name="ConfirmationPanel">
+              <LazyErrorBoundary name="ConfirmationPanel" fallback={<StepLoadFailed />}>
                 <ConfirmationPanel
                   attempt={f().attempt}
                   payload={f().qrPayload}
@@ -503,7 +522,7 @@ const Login: Component = () => {
             )}
           </Match>
           <Match when={loginFlow().step === "totp"}>
-            <LazyErrorBoundary name="TotpStepPanel">
+            <LazyErrorBoundary name="TotpStepPanel" fallback={<StepLoadFailed />}>
               <TotpStepPanel
                 error={loginFlowError()}
                 busy={loginFlowBusy()}
@@ -514,7 +533,7 @@ const Login: Component = () => {
           </Match>
           <Match when={(() => { const f = loginFlow(); return f.step === "ended" ? f : null; })()}>
             {(f) => (
-              <LazyErrorBoundary name="AttemptEnded">
+              <LazyErrorBoundary name="AttemptEnded" fallback={<StepLoadFailed />}>
                 <AttemptEnded
                   state={f().state}
                   via={f().via}
