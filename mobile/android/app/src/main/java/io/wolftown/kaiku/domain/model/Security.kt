@@ -72,7 +72,7 @@ data class EventActor(val kind: String, val userId: String? = null, val username
 data class EventClient(@SerialName("class") val clientClass: String = "", val label: String = "")
 
 @Serializable
-data class AuthenticatorRef(val id: String, val type: String, val label: String = "")
+data class AuthenticatorRef(val id: String, val type: String = "", val label: String = "", val state: String = "")
 
 /** C28 `SecurityEvent`. */
 @Serializable

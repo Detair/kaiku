@@ -47,6 +47,7 @@ fun SettingsScreen(
     onNavigateBack: () -> Unit,
     onLogout: () -> Unit,
     onOpenSecurity: () -> Unit = {},
+    onOpenAdmin: (() -> Unit)? = null,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val user by viewModel.user.collectAsState()
@@ -140,6 +141,14 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
             ) {
                 Text(stringResource(R.string.security_title), color = MaterialTheme.colorScheme.onBackground)
+            }
+            if (onOpenAdmin != null) {
+                OutlinedButton(
+                    onClick = onOpenAdmin,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).heightIn(min = 56.dp),
+                ) {
+                    Text(stringResource(R.string.admin_title), color = MaterialTheme.colorScheme.onBackground)
+                }
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))

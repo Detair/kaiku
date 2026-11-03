@@ -585,4 +585,31 @@
     <string name="security_open_request_lost">Named as lost: %1$s</string>
     <string name="security_open_request_cancel">Cancel this request</string>
     <string name="security_open_request_ok">That\'s right</string>
+
+    <!-- Admin on the phone (F5c issuer, Remove device now) -->
+    <string name="admin_title">Admin</string>
+    <string name="admin_enter">Open admin mode</string>
+    <string name="admin_enter_explain">Admin mode is open for 15 minutes. Confirm it\'s you with your screen lock.</string>
+    <string name="admin_key_phone_required">Set up admin tasks from your own key phone.</string>
+    <string name="admin_elevation_ended">Admin mode has ended. Open it again.</string>
+    <string name="admin_invalid_input">Check the username: 3 to 32 lowercase letters, digits or _.</string>
+    <string name="admin_search">Search people</string>
+    <string name="admin_new_account">New account</string>
+    <string name="admin_new_account_explain">The account has no password. Set up a phone for it next.</string>
+    <string name="admin_display_name">Display name</string>
+    <string name="admin_create">Create account</string>
+    <string name="admin_remove_now">Remove device now</string>
+    <string name="admin_may_approve">May confirm sign-ins</string>
+    <string name="admin_may_approve_explain">Their phone may confirm sign-ins on other devices and add phones. Keep it off unless they need it.</string>
+    <string name="admin_set_up_phone">Set up a phone</string>
+    <string name="admin_set_up_phone_for">Set up a phone for %1$s</string>
+    <string name="admin_old_phone_hint">Old phone still working and with them? Turn on \'May confirm sign-ins\', use \'Add a phone\' on the old phone, then turn it off again: the new phone works at once.</string>
+    <string name="admin_mode_recover">Recover: their old phone is lost</string>
+    <string name="admin_lost_devices">Which phones are lost?</string>
+    <string name="admin_claimant_in_person">With me in person</string>
+    <string name="admin_claimant_called_back">I called them back</string>
+    <string name="admin_claimant_called_back_explain">End the incoming call or chat, call them back on a number you knew before, and recognise them.</string>
+    <string name="admin_claimant_note">Note (how you checked it was them)</string>
+    <string name="admin_issue_code">Show the setup code</string>
+    <string name="admin_type_code_hint">Type the code the new phone shows. Remotely, let them read it to you.</string>
 </resources>

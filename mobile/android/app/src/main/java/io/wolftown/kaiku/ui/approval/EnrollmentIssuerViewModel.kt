@@ -105,10 +105,12 @@ class EnrollmentIssuerViewModel internal constructor(
         deviceIds: DeviceIdProvider,
         flags: AccountFlags,
         socket: RealtimeSocket,
+        adminApi: io.wolftown.kaiku.data.api.AdminApi,
     ) : this(
         stepUp, enrollmentApi, approvalApi, signer, keyDevices, deviceIds,
         mayApprove = { flags.refresh(); flags.mayApprove() },
         events = socket.events,
+        issueAdmin = { m -> adminApi.issueEnrollment(m.userId, m.mode, m.claimantMethod, m.note, m.lostDeviceIds) },
     )
 
     private companion object {

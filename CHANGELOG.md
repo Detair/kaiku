@@ -75,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: "Add a phone" on your key phone shows a setup code for a new phone and asks for the 6 digits it shows, on a large keypad that never sends by itself.
 - Android security settings: your phones, sessions, recovery codes and recovery contact, each change confirmed with your screen lock; password and authenticator app are shown and changed on the web or desktop.
 - Android shows Kaiku's security notices in the read-only "Kaiku" chat (with "That wasn't me", Cancel, Remove device and "I will help" where they apply) and as private lock-screen notifications, also on a key phone that is signed out, with the security log under Settings > Security and a full-screen prompt for an open request to change how you sign in.
+- **Android: admins set up phones from their own phone.** Create the account (no password), choose "Set up a phone", and type the code the new phone shows; existing accounts wait 24 hours with notices to everyone involved. "Remove device now" for stolen phones. See `docs/admin-guide/ops/phone-setup.md`.
 
 ### Changed
 - Admins elevate by confirming on their phone (or with a passkey) instead of typing their password and code.

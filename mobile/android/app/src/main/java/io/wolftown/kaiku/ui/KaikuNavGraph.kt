@@ -31,6 +31,10 @@ import io.wolftown.kaiku.ui.settings.security.SecuritySettingsScreen
 import io.wolftown.kaiku.ui.security.OpenRequestPrompt
 import io.wolftown.kaiku.ui.security.OpenRequestViewModel
 import io.wolftown.kaiku.ui.security.SecurityLogScreen
+import io.wolftown.kaiku.ui.admin.AdminEntryViewModel
+import io.wolftown.kaiku.ui.admin.AdminSetupPhoneScreen
+import io.wolftown.kaiku.ui.admin.AdminUserScreen
+import io.wolftown.kaiku.ui.admin.AdminUsersScreen
 import io.wolftown.kaiku.navigation.PendingSetupLinks
 import io.wolftown.kaiku.ui.auth.setup.SetupEntry
 import io.wolftown.kaiku.ui.auth.setup.SetupFlowScreen
@@ -262,7 +266,10 @@ fun KaikuNavGraph(
                 }
 
                 composable("settings") {
+                    val adminEntry: AdminEntryViewModel = hiltViewModel()
+                    val isAdmin by adminEntry.isAdmin.collectAsState()
                     SettingsScreen(
+                        onOpenAdmin = if (isAdmin) ({ navController.navigate(ADMIN_ROUTE) }) else null,
                         appVersion = appVersion,
                         onNavigateBack = { navController.popBackStack() },
                         onLogout = {
@@ -335,6 +342,24 @@ fun KaikuNavGraph(
 
                 composable(OPEN_REQUEST_ROUTE) {
                     OpenRequestPrompt(onDone = { navController.popBackStack() }, viewModel = openRequestViewModel)
+                }
+
+                composable(ADMIN_ROUTE) {
+                    AdminUsersScreen(
+                        onBack = { navController.popBackStack() },
+                        onOpenUser = { id -> navController.navigate("admin/user/$id") },
+                    )
+                }
+
+                composable("admin/user/{userId}") {
+                    AdminUserScreen(
+                        onBack = { navController.popBackStack() },
+                        onSetUpPhone = { id -> navController.navigate("admin/user/$id/setup") },
+                    )
+                }
+
+                composable("admin/user/{userId}/setup") {
+                    AdminSetupPhoneScreen(onDone = { navController.popBackStack() })
                 }
 
                 composable(ADD_PHONE_ROUTE) {
@@ -416,3 +441,6 @@ const val SECURITY_LOG_ROUTE = "security_log"
 
 /** The full-screen open-request prompt (L2-A10). */
 const val OPEN_REQUEST_ROUTE = "open_request"
+
+/** The small admin area on the admin's own key phone (F5c, coordinator call 1). */
+const val ADMIN_ROUTE = "admin"
