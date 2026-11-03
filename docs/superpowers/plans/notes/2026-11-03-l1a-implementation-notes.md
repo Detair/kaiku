@@ -565,6 +565,6 @@ Codex: gate, SPKI and 503 FIXED; two PARTLY, fixed by the coordinator. Gemini Fl
 | Finding | Verdict | Commit | Test |
 |---|---|---|---|
 | Own-issuer collision still `VALIDATION_ERROR`; the C26 amendment (09fa5da1) names `ENROLLMENT_DEVICE_IN_USE` for it too | fixed | see `git log` ("issuer's own phone") | `enrollments::own_enrolment_cannot_replace_its_issuer` (red before) |
-| Notice sweep: failing events at both ends starve a middle one forever | fixed: the second half is a random sample of all undelivered events | see `git log` ("random sample") | `security_notices::failing_events_at_both_ends_never_starve_the_middle` (red before); the round-4 test now loops |
+| Notice sweep: failing events at both ends starve a middle one forever | fixed: the second half continues from a rotating cursor (`system_settings` key `security.notice_sweep_cursor`) and wraps around, so every leftover is reached within `ceil(undelivered / half)` sweeps; both halves are index range scans (a first random-sample version was refused by Codex r5: unbounded scan, no fairness bound) | see `git log` ("rotating cursor") | `security_notices::failing_events_at_both_ends_never_starve_the_middle` (red before; deterministic, 5 sweeps); the round-4 test loops 4 sweeps |
 
-Gates: `enrollments::`, `security_notices::`, `approvals*` integration 72 passed; fmt and `clippy -p vc-server -D warnings` clean.
+Gates: `enrollments::`, `security_notices::`, `approvals*` integration 72 passed; after the cursor change `security_notices::` + `enrollments::` 53 passed; fmt and `clippy -p vc-server -D warnings` clean.

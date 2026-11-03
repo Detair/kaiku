@@ -426,28 +426,88 @@ pub async fn deliver_pending(state: &AppState) -> anyhow::Result<usize> {
 
 /// [`deliver_pending`] with the batch bound given (tests).
 ///
-/// Half the batch is the oldest undelivered events, the other half a random
-/// sample of all undelivered ones, so events that keep failing (at either
-/// end) never take every sweep and each leftover is reached eventually
-/// (`security_events` is append-only, so there is no per-event attempt
-/// count); [`deliver`] still delivers oldest first.
+/// Half the batch is the oldest undelivered events; the other half continues
+/// from a cursor kept in `system_settings` and wraps around, so events that
+/// keep failing (at either end) never take every sweep and each leftover is
+/// reached within `ceil(undelivered / half)` sweeps (`security_events` is
+/// append-only, so there is no per-event attempt count). Both halves are
+/// index range scans; [`deliver`] still delivers oldest first.
 pub async fn deliver_pending_bounded(state: &AppState, batch: i64) -> anyhow::Result<usize> {
     let half = (batch / 2).max(1);
-    let ids: Vec<Uuid> = sqlx::query_scalar(
-        "(SELECT id FROM security_events WHERE delivered_at IS NULL
-           ORDER BY created_at, id LIMIT $1)
-         UNION
-         (SELECT id FROM security_events WHERE delivered_at IS NULL
-           ORDER BY random() LIMIT $2)",
+    let rest = (batch - half).max(1);
+    let mut ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM security_events WHERE delivered_at IS NULL
+          ORDER BY created_at, id LIMIT $1",
     )
     .bind(half)
-    .bind((batch - half).max(1))
     .fetch_all(&state.db)
     .await?;
+    let cursor: Option<(DateTime<Utc>, Uuid)> = sqlx::query_as(
+        "SELECT (value->>'created_at')::timestamptz, (value->>'id')::uuid
+           FROM system_settings WHERE key = $1",
+    )
+    .bind(SWEEP_CURSOR_KEY)
+    .fetch_optional(&state.db)
+    .await?;
+    let (after_at, after_id) = cursor.unzip();
+    let mut window: Vec<(Uuid, DateTime<Utc>)> = sqlx::query_as(
+        "SELECT id, created_at FROM security_events
+          WHERE delivered_at IS NULL
+            AND ($1::timestamptz IS NULL OR (created_at, id) > ($1, $2))
+          ORDER BY created_at, id LIMIT $3",
+    )
+    .bind(after_at)
+    .bind(after_id)
+    .bind(rest)
+    .fetch_all(&state.db)
+    .await?;
+    let short = rest - i64::try_from(window.len()).unwrap_or(rest);
+    if short > 0 && cursor.is_some() {
+        // The cursor reached the newest event: wrap around to the oldest.
+        let wrapped: Vec<(Uuid, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT id, created_at FROM security_events
+              WHERE delivered_at IS NULL AND (created_at, id) <= ($1, $2)
+              ORDER BY created_at, id LIMIT $3",
+        )
+        .bind(after_at)
+        .bind(after_id)
+        .bind(short)
+        .fetch_all(&state.db)
+        .await?;
+        window.extend(wrapped);
+    }
+    match window.last() {
+        Some((id, at)) => {
+            sqlx::query(
+                "INSERT INTO system_settings (key, value)
+                 VALUES ($1, jsonb_build_object('created_at', $2::timestamptz, 'id', $3::uuid))
+                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+            )
+            .bind(SWEEP_CURSOR_KEY)
+            .bind(at)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM system_settings WHERE key = $1")
+                .bind(SWEEP_CURSOR_KEY)
+                .execute(&state.db)
+                .await?;
+        }
+    }
+    for (id, _) in window {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
     let n = ids.len();
     deliver(state, &ids).await?;
     Ok(n)
 }
+
+/// `system_settings` key of the notice sweep's rotating cursor.
+pub const SWEEP_CURSOR_KEY: &str = "security.notice_sweep_cursor";
 
 /// The notices of `reader`, keyed by message id.
 ///

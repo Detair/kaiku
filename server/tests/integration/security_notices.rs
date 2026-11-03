@@ -767,9 +767,9 @@ async fn failing_events_never_take_the_whole_sweep(pool: PgPool) {
     }
     let good = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
     // Sweeps of two: the oldest end alone holds only failing events; the
-    // sampled half reaches the newer one (certain within 64 sweeps).
+    // rotating half reaches the newer one within four sweeps.
     let mut delivered: Option<chrono::DateTime<chrono::Utc>> = None;
-    for _ in 0..64 {
+    for _ in 0..4 {
         let _ = notices::deliver_pending_bounded(&app.state, 2).await;
         delivered = sqlx::query_scalar("SELECT delivered_at FROM security_events WHERE id = $1")
             .bind(good)
@@ -785,7 +785,7 @@ async fn failing_events_never_take_the_whole_sweep(pool: PgPool) {
 }
 
 /// Review round 5 (Codex r4): failing events at both ends of the outbox never
-/// starve one in the middle; the rest of each sweep is a random sample.
+/// starve one in the middle; the rest of each sweep rotates through them.
 #[sqlx::test]
 async fn failing_events_at_both_ends_never_starve_the_middle(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
@@ -819,9 +819,9 @@ async fn failing_events_at_both_ends_never_starve_the_middle(pool: PgPool) {
     }
     let good = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
     let mut delivered: Option<chrono::DateTime<chrono::Utc>> = None;
-    // A sweep of two: one oldest, one sampled. Delivery is certain to come
-    // within 64 sweeps unless the sample never reaches the middle event.
-    for _ in 0..64 {
+    // Sweeps of two: one oldest, one rotating. The rotating half reaches
+    // the middle event within five sweeps (one per undelivered event).
+    for _ in 0..5 {
         let _ = notices::deliver_pending_bounded(&app.state, 2).await;
         delivered = sqlx::query_scalar("SELECT delivered_at FROM security_events WHERE id = $1")
             .bind(good)
