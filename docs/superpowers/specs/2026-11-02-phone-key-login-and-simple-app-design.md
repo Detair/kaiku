@@ -1129,7 +1129,7 @@ After an authenticator change, the UI offers "Sign out everywhere else" (ASVS 7.
 **Revocation order (rev 4, rev 5; C27, L1a; ASVS 7.4.1):** `sessions.ended_at` is authoritative,
 and it is what decides: every authenticated request, every WebSocket and voice connection on its
 periodic re-check, refresh and device-key sign-in accept a session only after checking its
-committed row (directly or through the cache below). The Valkey denylist may only speed up a
+committed row (see below). The Valkey denylist may only speed up a
 rejection; a missing, empty or unreachable denylist never makes a session valid **(rev 5)**. Inside
 the transaction, after its locks and re-checks, `end_sessions` writes the `sid`s to the Valkey
 denylist (TTL ≥ the access-JWT lifetime), issues a PostgreSQL `NOTIFY` naming them, and only then
@@ -1138,17 +1138,20 @@ session **(rev 5)**. An entry whose commit then fails only over-revokes until it
 direction. After commit, the session's WebSocket and voice connections are closed through pub/sub,
 and every connection re-checks its `sid` against the committed state at least every 60 s.
 
-**Keeping the check cheap (rev 5; required of the builder):** each server process keeps a positive
-cache of `sid`s whose committed row it has read as live, each entry at most 5 s old **(design
-call)**. PostgreSQL delivers the revoking transaction's `NOTIFY` only when that transaction
-commits; every process listens and drops the named entries on receipt, so a committed end stops
-being served from the cache when the notification arrives, not after the 5 s. A cache fill whose
-row read began before an invalidation of that `sid` arrived is discarded, and a process that loses
-its listener connection empties its cache and reads the row on every check until it listens again.
-A check consults the denylist first (a hit rejects at once; an unreachable denylist is skipped),
-then the cache, then the row: at most one primary-key read per live session per process every
-5 s. A Valkey restart without its data therefore costs only that speed; there is no marker key, no
-fail-closed rebuild and no rebuild barrier, and refilling the denylist after a restart is optional.
+**Keeping the check cheap (rev 5, tightened after the Codex confirmation; required of the
+builder):** there is **no positive cache** of live sessions. Every authenticated request and every
+connection re-check reads the session's committed row by primary key (`sessions.sid`, a single
+indexed lookup on the existing pool; negligible at the scale of a family server and still cheap
+for larger ones). A check consults the denylist first (a hit rejects at once; an unreachable
+denylist is skipped), then the row; nothing else can make a session valid. Because the row read
+happens after the revoking commit is visible, there is no window in which a committed end is still
+accepted. The `NOTIFY` above only triggers the immediate close of live WebSocket and voice
+connections; it is not needed for correctness. A Valkey restart without its data therefore costs
+only the early-reject speed-up; there is no marker key, no fail-closed rebuild and no rebuild
+barrier, and refilling the denylist after a restart is optional. If profiling ever shows the
+lookup matters, any cache added later must be invalidated synchronously within the revoking
+transaction's commit path (never by asynchronous notification), and that change needs a security
+review.
 
 **Refresh rotation with reuse detection** (RFC 9700 §2.2.2, §4.14.2):
 
