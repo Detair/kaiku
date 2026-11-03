@@ -44,7 +44,12 @@ const RegistrationBind: Component = () => {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const timer = setInterval(() => setNow(Date.now()), 15_000);
-  onCleanup(() => clearInterval(timer));
+  // The passkey ceremony ends with the page (Argon review 10 #5).
+  const abort = new AbortController();
+  onCleanup(() => {
+    clearInterval(timer);
+    abort.abort();
+  });
 
   const loginHref = () => {
     const back = safeReturnUrl(searchParams.returnUrl);
@@ -82,15 +87,18 @@ const RegistrationBind: Component = () => {
   const usePasskey = () =>
     run(async () => {
       const start = await startRegistrationPasskey(null);
-      const credential = await createPasskeyCredential(start.options, new AbortController().signal);
+      const credential = await createPasskeyCredential(start.options, abort.signal);
       await finishRegistrationPasskey(start.ceremony_id, credential);
       setDone("passkey");
     });
 
+  // The TOTP step opens only once its secret is there: a failed start keeps
+  // the choices on screen (Argon review 10 #5).
   const useTotp = () =>
     run(async () => {
+      const setup = await startRegistrationTotp();
+      setTotp(setup);
       setPicked("totp");
-      setTotp(await startRegistrationTotp());
     });
 
   const verify = (e: Event) => {
@@ -143,6 +151,16 @@ const RegistrationBind: Component = () => {
                 <label for="bind-totp" class={fieldLabel}>{t("auth.totp.label")}</label>
                 <input id="bind-totp" class={`${fieldInput} font-mono`} inputmode="numeric" autocomplete="one-time-code" value={code()} onInput={(e) => setCode(e.currentTarget.value)} />
                 <button type="submit" class="btn-primary w-full min-h-12 text-base" disabled={busy()}>{t("security.code.confirm")}</button>
+                <button
+                  type="button"
+                  class="w-full min-h-12 rounded-lg border border-white/10 text-base text-text-primary hover:bg-white/5"
+                  onClick={() => {
+                    setPicked(null);
+                    setTotp(null);
+                  }}
+                >
+                  {t("auth.flow.back")}
+                </button>
               </form>
             )}
           </Show>

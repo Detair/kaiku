@@ -11,7 +11,9 @@ import {
   startAccountRequest,
   withdrawRequest,
 } from "@/lib/tauri/accountRequests";
-import { getServerUrl } from "@/lib/tauri/common";
+import { signInServer } from "@/lib/signInServer";
+import { HttpError } from "@/lib/tauri/common";
+import { isAuthenticated } from "@/stores/auth";
 import type { AccountRequest, BootstrapStart, RecoveryStart } from "@/lib/types";
 
 const [current, setCurrent] = createSignal<AccountRequest | null>(null);
@@ -19,25 +21,36 @@ const [current, setCurrent] = createSignal<AccountRequest | null>(null);
 /** The request this client follows, or null. */
 export const request = current;
 
-function serverUrl(): string {
-  return getServerUrl() || (typeof window !== "undefined" ? window.location.origin : "");
+/** The account's own server when signed in, else the sign-in page's (Codex M3). */
+export function requestServer(): string {
+  return signInServer(isAuthenticated());
 }
 
 export async function startRecovery(r: RecoveryStart): Promise<void> {
-  setCurrent(await startAccountRequest(serverUrl(), r));
+  setCurrent(await startAccountRequest(requestServer(), r));
 }
 
 export async function startBootstrap(b: BootstrapStart): Promise<void> {
-  setCurrent(await startAccountRequest(serverUrl(), b));
+  setCurrent(await startAccountRequest(requestServer(), b));
 }
 
 export async function reloadRequest(): Promise<void> {
-  setCurrent(await getCurrentRequest());
+  try {
+    setCurrent(await getCurrentRequest());
+  } catch (err) {
+    // The request (or its secret) is gone: show nothing of it any more.
+    if (err instanceof HttpError && [401, 404, 410].includes(err.status)) setCurrent(null);
+    throw err;
+  }
 }
 
+/**
+ * Withdraw: the secret (keyring or cookie) is gone afterwards, so the
+ * request is not read again; it is marked withdrawn here (Argon review 6 #8).
+ */
 export async function withdraw(): Promise<void> {
   await withdrawRequest();
-  await reloadRequest();
+  setCurrent((prev) => (prev ? { ...prev, state: "withdrawn" } : null));
 }
 
 /** Finish: the new recovery codes, shown once. */

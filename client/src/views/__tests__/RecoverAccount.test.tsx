@@ -70,3 +70,14 @@ describe("RecoverAccount", () => {
     expect(await screen.findByText("Name and confirm a recovery contact first, or use the host CLI.")).toBeTruthy();
   });
 });
+
+describe("RecoverAccount review round", () => {
+  it("an empty second factor never goes out with the recovery code (Argon review 10 #1)", async () => {
+    render(routed(RecoverAccount, "/recover"));
+    fireEvent.input(screen.getByLabelText("Username"), { target: { value: "alice" } });
+    fireEvent.input(screen.getByLabelText("Recovery code"), { target: { value: "abcde fghjk mnp" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start recovery" }));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(api.startAccountRequest).not.toHaveBeenCalled();
+  });
+});

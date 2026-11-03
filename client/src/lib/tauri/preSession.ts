@@ -13,6 +13,7 @@ import {
   httpRequest,
   isTauri,
   scheduleTokenRefresh,
+  setBrowserToken,
   setSessionRestoreBlocked,
   type AuthResponse,
   type AuthResult,
@@ -102,8 +103,13 @@ export async function adoptBrowserAuth(
     await endSessionWith(base, response.access_token);
     throw err;
   }
-  browserState.accessToken = response.access_token;
-  browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
+  // The token and its server together (Argon review 5 #1).
+  setBrowserToken(base, response.access_token, response.expires_in);
+  try {
+    localStorage.setItem("serverUrl", browserState.serverUrl);
+  } catch {
+    // Storage blocked: this tab still knows the server.
+  }
   scheduleTokenRefresh();
   return {
     user,

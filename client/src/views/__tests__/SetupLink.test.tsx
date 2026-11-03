@@ -133,3 +133,60 @@ describe("SetupLink page", () => {
     for (const [url] of fetchMock.mock.calls as [string][]) expect(url).not.toContain(TOKEN);
   });
 });
+
+describe("SetupLink review round (Argon review 10 #3, #6)", () => {
+  it("a failed ceremony gets a fresh one from the token in memory", async () => {
+    let starts = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/auth/enrollments/passkey/start")) {
+        starts += 1;
+        return json(200, { ceremony_id: `c${starts}`, options: { publicKey: {} }, server_name: "Familie Müller", subject: { username: "oma", display_name: "Oma" } });
+      }
+      if (url.endsWith("/auth/enrollments/passkey/finish")) {
+        return json(400, { error: "PASSKEY_CEREMONY_INVALID", message: "x" });
+      }
+      throw new Error(url);
+    });
+    open(`#v=1&t=${TOKEN}`);
+    fireEvent.click(await screen.findByRole("button", { name: "Set up a passkey" }));
+    await waitFor(() => expect(starts).toBe(2));
+    expect(window.location.hash).toBe("");
+    // The retry uses the new ceremony.
+    fireEvent.click(await screen.findByRole("button", { name: "Set up a passkey" }));
+    await waitFor(() => {
+      const finishes = fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/passkey/finish"));
+      expect(finishes).toHaveLength(2);
+      expect(JSON.parse(String((finishes[1][1] as RequestInit).body)).ceremony_id).toBe("c2");
+    });
+  });
+
+  it("a pending passkey offers no sign-in yet", async () => {
+    mountClaim({ state: "done", authenticator_state: "pending", ready_at: "2026-11-04T09:00:00Z" });
+    open(`#v=1&t=${TOKEN}`);
+    fireEvent.click(await screen.findByRole("button", { name: "Set up a passkey" }));
+    expect(await screen.findByText(/^Your passkey will be ready at /)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Sign in" })).toBeNull();
+  });
+
+  it("a refused status stops polling", async () => {
+    let polls = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/auth/enrollments/passkey/start")) {
+        return json(200, { ceremony_id: "c1", options: { publicKey: {} }, server_name: "Familie Müller", subject: { username: "oma", display_name: "Oma" } });
+      }
+      if (url.endsWith("/auth/enrollments/passkey/finish")) {
+        return json(201, { enrollment_id: ID, state: "claimed", code: "123456", code_expires_at: "" });
+      }
+      if (url.endsWith("/auth/enrollments/status")) {
+        polls += 1;
+        return json(404, { error: "ENROLLMENT_TOKEN_INVALID", message: "x" });
+      }
+      throw new Error(url);
+    });
+    open(`#v=1&t=${TOKEN}`);
+    fireEvent.click(await screen.findByRole("button", { name: "Set up a passkey" }));
+    await screen.findByRole("alert");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(polls).toBe(1);
+  });
+});

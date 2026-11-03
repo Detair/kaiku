@@ -15,9 +15,15 @@ const api = vi.hoisted(() => ({
 vi.mock("@/lib/tauri/accountRequests", async (orig) => ({ ...(await orig<object>()), ...api }));
 const panel = vi.hoisted(() => vi.fn());
 vi.mock("@/components/settings/security/EnrollmentIssuerPanel", () => ({
-  default: (p: { issuer: unknown }) => {
+  default: (p: { issuer: unknown; onDone: (e: unknown) => void }) => {
     panel(p.issuer);
-    return <div data-testid="issuer-panel" />;
+    return (
+      <div data-testid="issuer-panel">
+        <button type="button" onClick={() => p.onDone({ state: "done" })}>
+          panel-done
+        </button>
+      </div>
+    );
   },
 }));
 
@@ -83,3 +89,51 @@ describe("AccountRequestView", () => {
     expect(document.body.textContent).not.toMatch(/request_secret/);
   });
 });
+
+describe("AccountRequestView review round (Argon review 9 #1, #4, 6 #8)", () => {
+  it("a phone set up here goes back to the choices, where Finish is", async () => {
+    api.getCurrentRequest.mockResolvedValue(requestOf({ state: "ready" }));
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up a phone" }));
+    fireEvent.click(await screen.findByRole("button", { name: "panel-done" }));
+    expect(await screen.findByRole("button", { name: "Finish" })).toBeTruthy();
+    expect(screen.queryByTestId("issuer-panel")).toBeNull();
+  });
+
+  it("a failed TOTP start goes back with the reason", async () => {
+    const { HttpError } = await import("@/lib/tauri/common");
+    api.getCurrentRequest.mockResolvedValue(requestOf({ state: "ready" }));
+    api.startRequestTotp.mockRejectedValue(new HttpError(503, "x", "SERVICE_UNAVAILABLE"));
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /authenticator app/i }));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Finish" })).toBeTruthy();
+  });
+
+  it("the password form has a way back", async () => {
+    api.getCurrentRequest.mockResolvedValue(requestOf({ state: "ready" }));
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /password/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("button", { name: "Finish" })).toBeTruthy();
+  });
+
+  it("a request that cannot be loaded offers a new start", async () => {
+    const { HttpError } = await import("@/lib/tauri/common");
+    api.getCurrentRequest.mockRejectedValue(new HttpError(404, "x", "NO_PRE_SESSION_SECRET"));
+    mount();
+    expect(await screen.findByRole("link", { name: /Start again/i })).toBeTruthy();
+    expect(screen.queryByText("Loading...")).toBeNull();
+  });
+
+  it("withdrawing does not read the request again (its secret is gone)", async () => {
+    api.getCurrentRequest.mockResolvedValue(requestOf());
+    api.withdrawRequest.mockResolvedValue(undefined);
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Withdraw request" }));
+    await waitFor(() => expect(api.withdrawRequest).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(api.getCurrentRequest).toHaveBeenCalledTimes(1);
+  });
+});
+

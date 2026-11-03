@@ -35,3 +35,33 @@ describe("SecureAccount", () => {
     );
   });
 });
+
+describe("SecureAccount review round (Argon review 10 #2, Fable m5)", () => {
+  it("a 401 is worded for this page, not for a recovery code", async () => {
+    const { HttpError } = await import("@/lib/tauri/common");
+    const { requestStartError } = await import("../requestErrors");
+    const text = requestStartError(new HttpError(401, "x", "INVALID_CREDENTIALS"), "bootstrap");
+    expect(text).not.toContain("recovery code");
+    expect(text).toContain("authenticator code");
+  });
+
+  it("with several providers the user picks one (Argon review 10 #2)", async () => {
+    const auth = await import("@/lib/tauri/auth");
+    vi.mocked(auth.fetchServerSettings).mockResolvedValue({
+      oidc_enabled: true,
+      oidc_providers: [
+        { slug: "kc", display_name: "Keycloak", icon_hint: null },
+        { slug: "gh", display_name: "GitHub", icon_hint: "github" },
+      ],
+      auth_methods: { local: true, oidc: true },
+      registration_policy: "closed",
+    } as never);
+    render(routed(SecureAccount, "/secure-account"));
+    fireEvent.click(await screen.findByLabelText("My sign-in provider"));
+    const select = (await screen.findByLabelText("Sign-in provider")) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "gh" } });
+    expect(select.value).toBe("gh");
+    vi.mocked(auth.fetchServerSettings).mockResolvedValue(null as never);
+  });
+});
+

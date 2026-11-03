@@ -6,13 +6,16 @@ import { codeIs } from "@/lib/errorCode";
 import { HttpError } from "@/lib/tauri/common";
 import { loginErrorText } from "@/lib/authErrors";
 
-export function requestStartError(err: unknown): string {
+/** `bootstrap` words a 401 without the recovery code it does not have (Fable m5). */
+export function requestStartError(err: unknown, purpose: "recovery" | "bootstrap" = "recovery"): string {
   if (err instanceof HttpError) {
     if (codeIs(err.code, "REQUEST_FACTOR_INVALID")) {
       const left = typeof err.details.recovery_codes_left === "number" ? err.details.recovery_codes_left : 0;
       return plural(left, { one: "auth.recover.factorInvalid.one", other: "auth.recover.factorInvalid.other" });
     }
-    if (codeIs(err.code, "INVALID_CREDENTIALS") || err.status === 401) return t("auth.recover.notAccepted");
+    if (codeIs(err.code, "INVALID_CREDENTIALS") || err.status === 401) {
+      return t(purpose === "bootstrap" ? "auth.secure.notAccepted" : "auth.recover.notAccepted");
+    }
     if (codeIs(err.code, "TOO_MANY_ATTEMPTS")) return loginErrorText(err);
   }
   if (err instanceof Error && err.message === "POPUP_BLOCKED") return t("auth.login.popupBlocked");

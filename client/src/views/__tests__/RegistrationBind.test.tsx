@@ -72,3 +72,16 @@ describe("RegistrationBind", () => {
     expect(await screen.findByRole("link", { name: "Sign in" })).toBeTruthy();
   });
 });
+
+describe("RegistrationBind review round (Argon review 10 #5)", () => {
+  it("a failed TOTP start keeps the choices on screen", async () => {
+    const { HttpError } = await import("@/lib/tauri/common");
+    api.getRegistration.mockResolvedValue({ user_id: "u1", username: "neu", expires_at: new Date(Date.now() + 600_000).toISOString(), bound: false });
+    api.startRegistrationTotp.mockRejectedValue(new HttpError(503, "x", "SERVICE_UNAVAILABLE"));
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Use an authenticator app" }));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use an authenticator app" })).toBeTruthy();
+    expect(screen.queryByText("Loading...")).toBeNull();
+  });
+});

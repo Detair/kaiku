@@ -6,7 +6,7 @@
  * domain modules (e.g. auth.ts presence updates) can send via the same socket.
  */
 
-import { browserState, isTauri } from "./common";
+import { browserBearer, browserState, isTauri } from "./common";
 
 // ============================================================================
 // Connection state (browser mode)
@@ -61,7 +61,8 @@ export async function wsConnect(): Promise<void> {
   // Browser mode
   if (browserWs?.readyState === WebSocket.OPEN) return;
 
-  if (!browserState.accessToken) {
+  const bearer = browserBearer();
+  if (!bearer) {
     throw new Error("No access token available for WebSocket connection");
   }
 
@@ -70,7 +71,7 @@ export async function wsConnect(): Promise<void> {
   // Send both the token protocol and "access_token" so the server can echo
   // back "access_token" (which the browser accepts as a matching protocol).
   const wsUrl = browserState.serverUrl.replace(/^http/, "ws") + "/ws";
-  const wsTokenProtocol = `access_token.${browserState.accessToken}`;
+  const wsTokenProtocol = `access_token.${bearer}`;
 
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl, [wsTokenProtocol, "access_token"]);

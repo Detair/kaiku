@@ -16,6 +16,8 @@ import { androidIntentUrl, isAndroidBrowser, parseSetupFragment, type SetupFragm
 import { createPasskeyCredential } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
 import { formatCode } from "@/components/auth/CodeEntry";
+import { HttpError } from "@/lib/tauri/common";
+import { codeIs } from "@/lib/errorCode";
 import type { ClaimStatus, PasskeyClaimStart } from "@/lib/types";
 
 const SETUP_ERRORS = {
@@ -59,6 +61,7 @@ const SetupLink: Component = () => {
   const poll = async (enrollmentId: string, code: string) => {
     for (;;) {
       if (abort.signal.aborted) return;
+      const started = Date.now();
       try {
         const status = await claimStatus(enrollmentId, 25);
         if (abort.signal.aborted) return;
@@ -66,9 +69,19 @@ const SetupLink: Component = () => {
         if (status.state !== "claimed" && status.state !== "issued") return;
       } catch (err) {
         if (abort.signal.aborted) return;
+        // A refused status (claim secret gone, enrolment unknown) will not
+        // change by asking again (Argon review 10 #6).
+        if (err instanceof HttpError && [401, 403, 404, 410].includes(err.status)) {
+          setError(errorText(err, "auth.setup.failed", SETUP_ERRORS));
+          return;
+        }
         console.warn("[Setup] Status poll failed:", err instanceof Error ? err.message : err);
         await new Promise((r) => setTimeout(r, 5_000));
+        continue;
       }
+      // Never more often than once a second, even if a server answers at once.
+      const elapsed = Date.now() - started;
+      if (elapsed < 1_000) await new Promise((r) => setTimeout(r, 1_000 - elapsed));
     }
   };
 
@@ -84,6 +97,17 @@ const SetupLink: Component = () => {
       void poll(claimed.enrollment_id, claimed.code);
     } catch (err) {
       setError(passkeyFailureText(err, "auth.setup.failed", SETUP_ERRORS) || null);
+      // The ceremony is single use: a retry needs a fresh one, from the token
+      // kept in memory (the address bar no longer has it) (Argon 10 #3).
+      const dead =
+        err instanceof HttpError && ["ENROLLMENT_TOKEN_INVALID", "ENROLLMENT_ALREADY_CLAIMED"].some((c) => codeIs(err.code, c));
+      if (!dead && !abort.signal.aborted) {
+        try {
+          setPhase({ kind: "ask", start: await startPasskeyClaim(token) });
+        } catch (again) {
+          setError(errorText(again, "auth.setup.failed", SETUP_ERRORS));
+        }
+      }
     } finally {
       setBusy(false);
     }
@@ -151,7 +175,8 @@ const SetupLink: Component = () => {
                 {(text) => (
                   <>
                     <p class="text-lg text-text-primary" role="status">{text()}</p>
-                    <Show when={p().status?.state === "done"}>
+                    {/* A pending passkey cannot sign in yet (409 PASSKEY_PENDING). */}
+                    <Show when={p().status?.state === "done" && p().status?.authenticator_state !== "pending"}>
                       <A href="/login" class="btn-primary w-full min-h-12 text-base flex items-center justify-center">
                         {t("auth.setup.signIn")}
                       </A>

@@ -241,6 +241,7 @@
   "auth.secure.first": "",
   "auth.secure.intro": "",
   "auth.secure.needBoth": "",
+  "auth.secure.notAccepted": "",
   "auth.secure.submit": "",
   "auth.secure.title": "",
   "auth.session.notRemembered": "",

@@ -8,11 +8,12 @@ import { Component, For, Show, createResource, createSignal } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { t } from "@/i18n";
 import { fetchServerSettings } from "@/lib/tauri/auth";
-import { getServerUrl } from "@/lib/tauri/common";
+import { resolveSignInServer } from "@/lib/signInServer";
+import { isAuthenticated } from "@/stores/auth";
 import PasswordInput from "@/components/ui/PasswordInput";
 import RecoveryCodeInput from "@/components/auth/RecoveryCodeInput";
 import AuthPageShell, { errorStyle, fieldInput, fieldLabel } from "@/components/auth/AuthPageShell";
-import { startRecovery } from "@/stores/accountRequest";
+import { requestServer, startRecovery } from "@/stores/accountRequest";
 import { requestOidcCode } from "@/lib/requestOidc";
 import type { RecoveryStart } from "@/lib/types";
 import { requestStartError } from "./requestErrors";
@@ -22,10 +23,13 @@ type Second = "password" | "totp" | "oidc";
 const RecoverAccount: Component = () => {
   document.title = `${t("auth.recover.title")} | Kaiku`;
   const navigate = useNavigate();
-  const server = () => getServerUrl() || window.location.origin;
-  const [settings] = createResource(async () => {
+  // Desktop: a fresh start has no session; the sign-in page's server (or
+  // the native override) is the one to ask (Codex review M3).
+  const [serverChoice] = createResource(() => resolveSignInServer(isAuthenticated()));
+  const server = () => serverChoice() ?? requestServer();
+  const [settings] = createResource(serverChoice, async (url) => {
     try {
-      return await fetchServerSettings(server());
+      return await fetchServerSettings(url);
     } catch {
       return null;
     }
@@ -45,6 +49,13 @@ const RecoverAccount: Component = () => {
     e.preventDefault();
     setError(null);
     if (!username().trim() || code().length < 8) {
+      setError(t("auth.recover.missing"));
+      return;
+    }
+    // C27: a valid recovery code with a failed second factor is spent (B.5),
+    // so an empty factor never goes out with it (Argon review 10 #1).
+    const totpDigits = totp().replace(/\D+/g, "");
+    if ((second() === "password" && !password()) || (second() === "totp" && totpDigits.length < 6)) {
       setError(t("auth.recover.missing"));
       return;
     }

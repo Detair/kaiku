@@ -16,6 +16,7 @@ import {
   HttpError,
   isTauri,
   scheduleTokenRefresh,
+  setBrowserToken,
   setSessionRestoreBlocked,
   type AuthResult,
 } from "./common";
@@ -279,11 +280,10 @@ export async function passkeySignIn(
     await endStaleSession(serverUrl, response.access_token);
     throw new PasskeyError("ABORTED");
   }
-  browserState.serverUrl = serverUrl;
-  localStorage.setItem("serverUrl", serverUrl);
+  // L2a: the token is bound to the server that issued it.
+  setBrowserToken(serverUrl, response.access_token, response.expires_in);
+  localStorage.setItem("serverUrl", browserState.serverUrl);
   setSessionRestoreBlocked(false);
-  browserState.accessToken = response.access_token;
-  browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
   scheduleTokenRefresh();
   return {
     user,

@@ -232,9 +232,36 @@ export function validateFileSize(
 export const browserState = {
   serverUrl: typeof window !== "undefined" ? window.location.origin : "",
   accessToken: null as string | null,
+  /**
+   * The server that issued `accessToken` (base URL). The bearer goes only
+   * there, even if a pre-session page names another server meanwhile
+   * (Argon review 5 #1). `null`: not bound (set directly, e.g. by tests).
+   */
+  tokenServerUrl: null as string | null,
   tokenExpiresAt: null as number | null,
   refreshTimer: null as ReturnType<typeof setTimeout> | null,
 };
+
+function trimBase(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+/** Browser: the access token, only for the server that issued it. */
+export function browserBearer(serverUrl: string = browserState.serverUrl): string | null {
+  const token = browserState.accessToken;
+  if (!token) return null;
+  const bound = browserState.tokenServerUrl;
+  return bound === null || bound === trimBase(serverUrl) ? token : null;
+}
+
+/** Browser: install a session's access token, bound to its server. */
+export function setBrowserToken(serverUrl: string, accessToken: string, expiresIn: number): void {
+  const base = trimBase(serverUrl);
+  browserState.serverUrl = base;
+  browserState.tokenServerUrl = base;
+  browserState.accessToken = accessToken;
+  browserState.tokenExpiresAt = Date.now() + expiresIn * 1000;
+}
 
 const SESSION_RESTORE_BLOCK_KEY = "kaiku:skip-session-restore";
 
@@ -312,6 +339,7 @@ export function clearBrowserTokens() {
     browserState.refreshTimer = null;
   }
   browserState.accessToken = null;
+  browserState.tokenServerUrl = null;
   browserState.tokenExpiresAt = null;
 }
 
@@ -352,10 +380,8 @@ export async function loadNativeAuthInfo(): Promise<NativeAuthInfo | null> {
 /** Base URL and access token for the next request. */
 export async function getAuthContext(): Promise<AuthContext> {
   if (!isTauri()) {
-    return {
-      baseUrl: getServerUrl().replace(/\/+$/, ""),
-      accessToken: browserState.accessToken,
-    };
+    const baseUrl = getServerUrl().replace(/\/+$/, "");
+    return { baseUrl, accessToken: browserBearer(baseUrl) };
   }
   const info = nativeAuthInfo ?? (await loadNativeAuthInfo());
   return {
@@ -563,7 +589,8 @@ async function doRefreshAccessToken(): Promise<boolean> {
   try {
     console.log("[Auth] Refreshing access token...");
 
-    const baseUrl = browserState.serverUrl.replace(/\/+$/, "");
+    // The session's own server, even if a pre-session page named another.
+    const baseUrl = (browserState.tokenServerUrl ?? browserState.serverUrl).replace(/\/+$/, "");
 
     // The server reads the HttpOnly refresh cookie.
     const response = await fetch(`${baseUrl}/auth/refresh`, {
@@ -614,6 +641,7 @@ async function doRefreshAccessToken(): Promise<boolean> {
     // Store access token in memory; browser mode relies on HttpOnly cookie
     // for the refresh token so we don't keep it in JS-accessible memory.
     browserState.accessToken = data.access_token;
+    browserState.tokenServerUrl = baseUrl;
     browserState.tokenExpiresAt = Date.now() + data.expires_in * 1000;
 
     console.log("[Auth] Token refreshed successfully");
@@ -981,5 +1009,5 @@ export function getServerUrl(): string {
  */
 export function getAccessToken(): string | null {
   if (isTauri()) return nativeAuthInfo?.access_token ?? null;
-  return browserState.accessToken;
+  return browserBearer();
 }

@@ -78,12 +78,12 @@ const AccountRequestView: Component = () => {
   });
   onCleanup(() => clearInterval(timer));
 
-  const run = async (job: () => Promise<unknown>) => {
+  const run = async (job: () => Promise<unknown>, reload = true) => {
     setBusy(true);
     setError(null);
     try {
       await job();
-      await reloadRequest();
+      if (reload) await reloadRequest();
       setStage(null);
     } catch (err) {
       setError(passkeyFailureText(err, "auth.request.failed", REQUEST_ERRORS) || null);
@@ -100,11 +100,14 @@ const AccountRequestView: Component = () => {
     });
 
   const beginTotp = async () => {
+    setTotp(null);
     setStage("totp");
     setError(null);
     try {
       setTotp(await startRequestTotp());
     } catch (err) {
+      // Back to the choices, with the reason (Argon review 9 #1).
+      setStage(null);
       setError(errorText(err, "auth.request.failed", REQUEST_ERRORS));
     }
   };
@@ -127,7 +130,19 @@ const AccountRequestView: Component = () => {
 
   return (
     <AuthPageShell title={t("auth.request.title")}>
-      <Switch fallback={<p class="text-base text-text-secondary">{t("common.loading")}</p>}>
+      <Switch
+        fallback={
+          // A request that cannot be loaded (secret gone, ended) offers a new
+          // start instead of "Loading" for ever (Argon review 9 #4).
+          <Show when={!error()} fallback={
+            <A href="/recover" class="btn-primary w-full min-h-12 text-base flex items-center justify-center">
+              {t("auth.request.startAgain")}
+            </A>
+          }>
+            <p class="text-base text-text-secondary">{t("common.loading")}</p>
+          </Show>
+        }
+      >
         <Match when={codes()}>
           {(list) => <RecoveryCodesDisplay codes={list()} onDone={() => setCodes(null)} />}
         </Match>
@@ -139,7 +154,7 @@ const AccountRequestView: Component = () => {
         </Match>
         <Match when={r()?.state === "waiting"}>
           <p class="text-base text-text-primary">{t("auth.request.waiting", { time: formatTimestamp(r()!.ready_at) })}</p>
-          <button type="button" class={item} disabled={busy()} onClick={() => void run(withdraw)}>
+          <button type="button" class={item} disabled={busy()} onClick={() => void run(withdraw, false)}>
             {t("auth.request.withdraw")}
           </button>
         </Match>
@@ -153,13 +168,22 @@ const AccountRequestView: Component = () => {
           </Show>
           <Switch>
             <Match when={stage() === "phone"}>
-              <EnrollmentIssuerPanel issuer={{ kind: "request" }} onDone={() => void load()} onCancel={() => setStage(null)} />
+              <EnrollmentIssuerPanel
+                issuer={{ kind: "request" }}
+                onDone={() => {
+                  // Back to the choices, where "Finish" is (Argon review 9 #1).
+                  setStage(null);
+                  void load();
+                }}
+                onCancel={() => setStage(null)}
+              />
             </Match>
             <Match when={stage() === "password"}>
               <form class="space-y-3" onSubmit={(e) => { e.preventDefault(); const pw = password(); void run(() => setRequestPassword(pw)); }} noValidate>
                 <label for="req-password" class={fieldLabel}>{t("security.password.new")}</label>
                 <PasswordInput id="req-password" class={fieldInput} autocomplete="new-password" value={password()} onInput={(e) => setPassword(e.currentTarget.value)} />
                 <button type="submit" class="btn-primary min-h-12 text-base" disabled={busy()}>{t("security.password.save")}</button>
+                <button type="button" class={item} onClick={() => setStage(null)}>{t("auth.flow.back")}</button>
               </form>
             </Match>
             <Match when={stage() === "totp"}>
@@ -172,6 +196,7 @@ const AccountRequestView: Component = () => {
                     <label for="req-totp" class={fieldLabel}>{t("auth.totp.label")}</label>
                     <input id="req-totp" class={`${fieldInput} font-mono`} inputmode="numeric" autocomplete="one-time-code" value={totpCode()} onInput={(e) => setTotpCode(e.currentTarget.value)} />
                     <button type="submit" class="btn-primary min-h-12 text-base" disabled={busy()}>{t("security.code.confirm")}</button>
+                    <button type="button" class={item} onClick={() => setStage(null)}>{t("auth.flow.back")}</button>
                   </form>
                 )}
               </Show>
@@ -181,6 +206,7 @@ const AccountRequestView: Component = () => {
                 <label for="req-contact" class={fieldLabel}>{t("auth.request.contactUsername")}</label>
                 <input id="req-contact" class={fieldInput} value={contact()} onInput={(e) => setContact(e.currentTarget.value)} />
                 <button type="submit" class="btn-primary min-h-12 text-base" disabled={busy()}>{t("common.save")}</button>
+                <button type="button" class={item} onClick={() => setStage(null)}>{t("auth.flow.back")}</button>
               </form>
             </Match>
             <Match when={stage() === null}>

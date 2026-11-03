@@ -11,6 +11,7 @@ import { t } from "@/i18n";
 import { isTauri } from "@/lib/tauri/common";
 import { openBlankSsoPopup, reloadAfterSsoPopup, watchSsoPopup } from "@/lib/oidcPopup";
 import { safeReturnUrl } from "@/lib/returnUrl";
+import { setSignInServer } from "@/lib/signInServer";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { formatPasskeyError, LOGIN_ERRORS, loginErrorText } from "@/lib/authErrors";
 import PasskeyButton from "@/components/auth/PasskeyButton";
@@ -86,6 +87,9 @@ const Login: Component = () => {
       console.warn("[Login] Could not read default server URL:", err instanceof Error ? err.message : err);
     }
   });
+  // The pre-session pages (recover, secure my account) use this server on
+  // a desktop start without a session (Codex review M3).
+  createEffect(() => setSignInServer(serverUrl()));
   const [username, setUsername] = createSignal("");
   const [password, setPassword] = createSignal("");
   const [localError, setLocalError] = createSignal("");

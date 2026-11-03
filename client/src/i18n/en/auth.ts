@@ -91,6 +91,7 @@ export const auth = {
   "auth.secure.intro": "Confirm it is you with your password and an authenticator code. After a waiting time you can add a phone or a passkey, so only you can sign in.",
   "auth.secure.first": "Confirm with",
   "auth.secure.needBoth": "Enter your password and a code from your authenticator app.",
+  "auth.secure.notAccepted": "We couldn't start this with these details. Check the username, password or sign-in and the authenticator code, or ask an admin.",
   "auth.secure.submit": "Start",
   "auth.request.title": "Your request",
   "auth.request.waiting": "Ready at {{time}}. We told your devices, your recovery contact and the admins.",

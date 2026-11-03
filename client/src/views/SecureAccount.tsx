@@ -8,10 +8,11 @@ import { Component, For, Show, createResource, createSignal } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { t } from "@/i18n";
 import { fetchServerSettings } from "@/lib/tauri/auth";
-import { getServerUrl } from "@/lib/tauri/common";
+import { resolveSignInServer } from "@/lib/signInServer";
+import { isAuthenticated } from "@/stores/auth";
 import PasswordInput from "@/components/ui/PasswordInput";
 import AuthPageShell, { errorStyle, fieldInput, fieldLabel } from "@/components/auth/AuthPageShell";
-import { startBootstrap } from "@/stores/accountRequest";
+import { requestServer, startBootstrap } from "@/stores/accountRequest";
 import { requestOidcCode } from "@/lib/requestOidc";
 import type { BootstrapStart } from "@/lib/types";
 import { requestStartError } from "./requestErrors";
@@ -19,10 +20,13 @@ import { requestStartError } from "./requestErrors";
 const SecureAccount: Component = () => {
   document.title = `${t("auth.secure.title")} | Kaiku`;
   const navigate = useNavigate();
-  const server = () => getServerUrl() || window.location.origin;
-  const [settings] = createResource(async () => {
+  // Desktop: a fresh start has no session; the sign-in page's server (or
+  // the native override) is the one to ask (Codex review M3).
+  const [serverChoice] = createResource(() => resolveSignInServer(isAuthenticated()));
+  const server = () => serverChoice() ?? requestServer();
+  const [settings] = createResource(serverChoice, async (url) => {
     try {
-      return await fetchServerSettings(server());
+      return await fetchServerSettings(url);
     } catch {
       return null;
     }
@@ -31,6 +35,7 @@ const SecureAccount: Component = () => {
   const [first, setFirst] = createSignal<"password" | "oidc">("password");
   const [password, setPassword] = createSignal("");
   const [totp, setTotp] = createSignal("");
+  const [provider, setProvider] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const providers = () => settings()?.oidc_providers ?? [];
@@ -52,11 +57,11 @@ const SecureAccount: Component = () => {
       const factor: BootstrapStart["first"] =
         first() === "password"
           ? { type: "password", password: password() }
-          : { type: "oidc", oidc_code: await requestOidcCode(server(), providers()[0]?.slug ?? "") };
+          : { type: "oidc", oidc_code: await requestOidcCode(server(), provider() || providers()[0]?.slug || "") };
       await startBootstrap({ username: username().trim(), purpose: "bootstrap", first: factor, totp_code: code });
       navigate("/account-request", { replace: true });
     } catch (err) {
-      setError(requestStartError(err));
+      setError(requestStartError(err, "bootstrap"));
     } finally {
       setBusy(false);
     }
@@ -82,6 +87,15 @@ const SecureAccount: Component = () => {
               )}
             </For>
           </fieldset>
+        </Show>
+        {/* Every configured provider, as on /recover (Argon review 10 #2). */}
+        <Show when={first() === "oidc" && providers().length > 1}>
+          <div>
+            <label for="secure-provider" class={fieldLabel}>{t("auth.recover.provider")}</label>
+            <select id="secure-provider" class={fieldInput} value={provider()} onChange={(e) => setProvider(e.currentTarget.value)}>
+              <For each={providers()}>{(p) => <option value={p.slug}>{p.display_name}</option>}</For>
+            </select>
+          </div>
         </Show>
         <Show when={first() === "password"}>
           <div>
