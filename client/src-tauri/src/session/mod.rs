@@ -660,30 +660,43 @@ impl SessionManager {
         bearer: bool,
     ) -> Result<Value, SessionError> {
         let requested = normalize_server_url(server_url)?;
-        // A bearer only ever goes to the session's own server: take the
-        // snapshot first and refuse (sending nothing) when the caller names
-        // another one.
-        let session = if bearer {
-            let session = self.snapshot().ok_or(SessionError::Expired)?;
-            if normalize_server_url(&session.server_url)? != requested {
-                return Err(SessionError::ServerMismatch);
+        let mut retried = false;
+        let (status, text) = loop {
+            // A bearer only ever goes to the session's own server: take the
+            // snapshot first and refuse (sending nothing) when the caller
+            // names another one.
+            let session = if bearer {
+                let session = self.snapshot().ok_or(SessionError::Expired)?;
+                if normalize_server_url(&session.server_url)? != requested {
+                    return Err(SessionError::ServerMismatch);
+                }
+                Some(session)
+            } else {
+                None
+            };
+            let base = session
+                .as_ref()
+                .map_or_else(|| requested.clone(), |s| s.server_url.clone());
+            let mut request = self
+                .http
+                .post(format!("{base}{path}"))
+                .header("X-Kaiku-Client", "desktop")
+                .json(body);
+            if let Some(session) = &session {
+                request = request.bearer_auth(&session.access_token);
             }
-            Some(session)
-        } else {
-            None
+            let response = request.send().await.map_err(|e| network(&e))?;
+            let status = response.status().as_u16();
+            // The access token can expire while the browser waits (up to
+            // ten minutes). A 401 leaves the flow unspent (the server checks
+            // the bearer before it takes the flow): refresh and retry once.
+            if status == 401 && bearer && !retried {
+                retried = true;
+                self.refresh().await?;
+                continue;
+            }
+            break (status, response.text().await.map_err(|e| network(&e))?);
         };
-        let base = session.as_ref().map_or(requested, |s| s.server_url.clone());
-        let mut request = self
-            .http
-            .post(format!("{base}{path}"))
-            .header("X-Kaiku-Client", "desktop")
-            .json(body);
-        if let Some(session) = &session {
-            request = request.bearer_auth(&session.access_token);
-        }
-        let response = request.send().await.map_err(|e| network(&e))?;
-        let status = response.status().as_u16();
-        let text = response.text().await.map_err(|e| network(&e))?;
         if !(200..300).contains(&status) {
             return Err(match error_code(&text) {
                 Some(code) => SessionError::Server(status, code),
@@ -1843,6 +1856,57 @@ mod tests {
             Ok(SessionEvent::TokenRefreshed(info)) => assert_eq!(info.access_token, "at-2"),
             other => panic!("expected TokenRefreshed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn passkey_redeem_refreshes_once_after_401() {
+        // Earlier review m5: the access token may expire while the browser
+        // waits; a 401 leaves the flow unspent, so refresh and retry once.
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = logged_in(&server, &store).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/passkeys/desktop/redeem"))
+            .and(header("authorization", "Bearer at-1"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/passkeys/desktop/redeem"))
+            .and(header("authorization", "Bearer at-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"purpose": "step_up"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("at-2", "rt-2")))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let value = m
+            .redeem_passkey_flow(&server.uri(), "f", "c", "v", true)
+            .await
+            .unwrap();
+        assert_eq!(value["purpose"], "step_up");
+    }
+
+    #[tokio::test]
+    async fn passkey_redeem_without_bearer_is_not_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/passkeys/desktop/redeem"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let m = manager(&Arc::new(MemoryTokenStore::new()));
+        assert!(m
+            .redeem_passkey_flow(&server.uri(), "f", "c", "v", false)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

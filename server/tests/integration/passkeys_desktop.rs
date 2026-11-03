@@ -577,6 +577,36 @@ async fn step_up_redeem_needs_the_starting_session(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn an_expired_bearer_leaves_the_step_up_unspent(pool: PgPool) {
+    // The desktop app refreshes and retries once after a 401 (earlier
+    // review m5): the 401 comes before the flow is taken.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let (_, b) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
+    let flow = start(
+        &app.router,
+        start_body("step_up", Some("passkey.remove"), Some(&b.id.to_string())),
+        Some(&token),
+    )
+    .await;
+    let h = finish_with(&app.router, &app.pool, &flow, &mut auth, &row, user).await;
+    let code = hidden(&h.body, "code").unwrap();
+    let r = redeem(
+        &app.router,
+        &flow.id,
+        &code,
+        VERIFIER,
+        Some("not-a-valid-token"),
+    )
+    .await;
+    assert_eq!(r.status, 401, "{}", r.body);
+    let r = redeem(&app.router, &flow.id, &code, VERIFIER, Some(&token)).await;
+    assert_eq!(r.status, 200, "{}", r.body);
+}
+
+#[sqlx::test]
 async fn redeem_rechecks_account_passkey_and_session(pool: PgPool) {
     let app = TestApp::with_passkeys(pool).await;
     // 1. The passkey revoked between finish and redeem.
