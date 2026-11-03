@@ -59,3 +59,34 @@ decision. "For L2" marks interface facts the clients need.
   tests mint their legacy-format tokens in `tests/integration/helpers/tokens.rs` from the public
   `Claims`. Test helpers `grant_step_up(pool, sid, action, target)` and `make_session_full` serve
   existing tests of guarded routes.
+
+## Task 17 — login attempts (SM1), QR sign-in (F2), the `login` approval
+
+- Module `auth::login_attempts::{core, handlers, types}` (no separate `queries.rs`); routes
+  `POST /auth/login-attempts`, `/{id}/poll`, `/{id}/collect`, `/{id}/cancel` (`AuthFlow` per IP,
+  never IP-blocked) and `POST /api/approvals/claim` (`ApprovalLogin` per user).
+- **Lock order:** device-side transitions (claim, answer, deny, release) lock accounts → device →
+  session → challenge → attempt; collect (and Task 18's TOTP step) lock the attempt's account →
+  attempt, retrying (≤ 3, then 503) if the attempt's account changed while unlocked; poll, cancel
+  and the sweep update only attempt rows and never a challenge. An answer, deny or release whose
+  attempt ended or moved on voids its own challenge and answers 409 `APPROVAL_STATE`.
+- A claim whose challenge expired or was released returns the attempt to `open` lazily (next
+  poll, claim or sweep); a QR attempt then forgets its claimer. A token used by a claim is
+  rotated by the next poll.
+- The claim challenge lives `min(2 min, attempt deadline)`; at approve the challenge is
+  `consumed` and the attempt `approved` (collect within 60 s while the approving device is active
+  and, for password attempts, the password generation unchanged; otherwise the attempt becomes
+  `expired` and collect answers 410 `LOGIN_ATTEMPT_ENDED {state: "expired"}`).
+- Extra columns: `collection_digest` (the signed `collection_hash`: the S256 challenge, or
+  SHA-256 of the cookie secret; the cookie itself is stored only as a keyed hash),
+  `session_id` (the collected session, for repudiation), `unfinished_recorded` (Task 18).
+- `client_label` from the User-Agent: desktop "Kaiku desktop on <OS>", Android "Kaiku on <OS>",
+  web "<Browser> on <OS>", cleaned (controls, bidi overrides) and ≤ 64 characters.
+- New codes: `LOGIN_CODE_STALE` 404, `LOGIN_ATTEMPT_CLAIMED` 409, `LOGIN_ATTEMPT_OTHER_ACCOUNT` 409,
+  `APPROVAL_RESPONSE_MISMATCH` 400 (approvals); `LOGIN_ATTEMPT_UNKNOWN` 404,
+  `LOGIN_ATTEMPT_NOT_READY` 409, `LOGIN_ATTEMPT_ENDED {state}` 410 (auth).
+- **For L2:** poll answers 200 with the attempt in every state (also terminal); `qr` only when a
+  token was minted in that response. Golden files `login_attempt.json`,
+  `approval_challenge_login.json`.
+- The `sign_in` event of a QR sign-in carries the PC's class/label/IP and session; a QR sign-in
+  ends a password throttle (B.1 exit "another method").
