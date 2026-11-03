@@ -135,4 +135,13 @@ describe("PasskeysSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(screen.getByText("Kaiku opens your browser to confirm with a passkey.")).toBeTruthy();
   });
+
+  it("a pending passkey in a step-up shows its ready time", async () => {
+    // Review Argon minor 2.
+    list(ACTIVE);
+    api.stepUpWithPasskey.mockRejectedValue(new PasskeyError("PASSKEY_PENDING", undefined, undefined, "2026-11-05T10:00:00Z"));
+    render(() => <PasskeysSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "Add a passkey" }));
+    expect(await screen.findByText(/This passkey is ready at/)).toBeTruthy();
+  });
 });

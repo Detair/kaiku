@@ -30,6 +30,10 @@ import ElevateDialog from "../ElevateDialog";
 describe("ElevateDialog passkey path", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
+    (globalThis as { PublicKeyCredential?: unknown }).PublicKeyCredential ??= {};
+    if (!navigator.credentials) {
+      Object.defineProperty(navigator, "credentials", { value: { get: () => undefined }, configurable: true });
+    }
     stepUp.mockReset().mockResolvedValue({ action: "admin.elevate", target: "", via: "passkey", expires_at: "x" });
     elevateWithStepUp.mockReset().mockResolvedValue(undefined);
     confirmElevation.mockReset().mockResolvedValue(true);

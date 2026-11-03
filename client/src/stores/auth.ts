@@ -603,6 +603,7 @@ export async function login(
 ): Promise<User> {
   resetServerFeatures(); // a different server may be chosen
   setAuthState({ isLoading: true, error: null });
+  invalidatePasskeySignIns();
 
   try {
     await initNativeSession();
@@ -657,28 +658,63 @@ export async function login(
  */
 export async function loginWithPasskey(
   serverUrl: string,
-  o: { mediation: "conditional" | "optional"; signal: AbortSignal; username?: string },
+  o: {
+    mediation: "conditional" | "optional";
+    signal: AbortSignal;
+    username?: tauri.UsernameHint;
+  },
 ): Promise<User> {
   if (isTauri()) await initNativeSession();
-  resetServerFeatures();
-  const result = await tauri.passkeySignIn(serverUrl, o);
-  warnIfNotRemembered(result);
-  stopRestoreRetry();
-  pendingTemporaryPassword = null;
-  setAuthState({
-    restorePending: false,
-    user: result.user,
-    serverUrl: (isTauri() && tauri.getServerUrl()) || serverUrl,
-    isLoading: false,
-    isInitialized: true,
-    error: null,
-    setupRequired: result.setup_required,
-    mfaRequired: false,
-    sessionExpired: false,
-    passwordChangeRequired: result.password_change_required === true,
-  });
-  if (!authState.passwordChangeRequired) await startSessionServices();
-  return result.user;
+  // A later sign-in, logout or another passkey attempt makes this one stale
+  // (Codex M1): it is aborted and never installs its session.
+  const generation = invalidatePasskeySignIns();
+  const ctl = new AbortController();
+  passkeyAttempt = ctl;
+  const abort = () => ctl.abort();
+  o.signal.addEventListener("abort", abort, { once: true });
+  const isCurrent = () => generation === signInGeneration && !ctl.signal.aborted;
+  try {
+    const result = await tauri.passkeySignIn(serverUrl, {
+      mediation: o.mediation,
+      signal: ctl.signal,
+      username: o.username,
+      isCurrent,
+    });
+    if (!isCurrent()) throw new tauri.PasskeyError("ABORTED");
+    resetServerFeatures(); // a different server may have been chosen
+    warnIfNotRemembered(result);
+    stopRestoreRetry();
+    pendingTemporaryPassword = null;
+    setAuthState({
+      restorePending: false,
+      user: result.user,
+      serverUrl: (isTauri() && tauri.getServerUrl()) || serverUrl,
+      isLoading: false,
+      isInitialized: true,
+      error: null,
+      setupRequired: result.setup_required,
+      mfaRequired: false,
+      sessionExpired: false,
+      passwordChangeRequired: result.password_change_required === true,
+    });
+    if (!authState.passwordChangeRequired) await startSessionServices();
+    return result.user;
+  } finally {
+    o.signal.removeEventListener("abort", abort);
+    if (passkeyAttempt === ctl) passkeyAttempt = null;
+  }
+}
+
+/** Sign-in generation: bumped by every sign-in and logout. */
+let signInGeneration = 0;
+let passkeyAttempt: AbortController | null = null;
+
+/** Make every running passkey sign-in stale; returns the new generation. */
+function invalidatePasskeySignIns(): number {
+  passkeyAttempt?.abort();
+  passkeyAttempt = null;
+  signInGeneration += 1;
+  return signInGeneration;
 }
 
 /**
@@ -741,6 +777,7 @@ export async function completeNativeOidcLogin(
   serverUrl: string,
   result: tauri.AuthResult,
 ): Promise<void> {
+  invalidatePasskeySignIns();
   await initNativeSession();
   warnIfNotRemembered(result);
   stopRestoreRetry();
@@ -772,6 +809,7 @@ export async function loginWithOidc(
   setupRequired: boolean = false,
 ): Promise<void> {
   setAuthState({ isLoading: true, error: null });
+  invalidatePasskeySignIns();
 
   try {
     await tauri.oidcCompleteLogin(serverUrl, accessToken, expiresIn);
@@ -805,6 +843,7 @@ export async function loginWithOidc(
  * Logout and clear session.
  */
 export async function logout(): Promise<void> {
+  invalidatePasskeySignIns();
   resetServerFeatures();
   pendingTemporaryPassword = null;
   passwordChangeSaved = false;

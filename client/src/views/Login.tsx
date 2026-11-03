@@ -1,4 +1,4 @@
-import { Component, createSignal, createResource, Show, For, onCleanup, onMount } from "solid-js";
+import { Component, createEffect, createSignal, createResource, Show, For, on, onCleanup, onMount } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import {
   login,
@@ -20,15 +20,10 @@ import { isTauri } from "@/lib/tauri/common";
 import { openBlankSsoPopup, reloadAfterSsoPopup, watchSsoPopup } from "@/lib/oidcPopup";
 import { safeReturnUrl } from "@/lib/returnUrl";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
-import { LOGIN_ERRORS, passkeyErrorKey } from "@/lib/authErrors";
+import { formatPasskeyError, LOGIN_ERRORS } from "@/lib/authErrors";
 import PasskeyButton from "@/components/auth/PasskeyButton";
 import { PasskeyError } from "@/lib/tauri/passkeys";
-import {
-  isConditionalMediationAvailable,
-  isWebAuthnAvailable,
-  signalUnknown,
-} from "@/lib/webauthn";
-import { formatTimestamp } from "@/i18n/format";
+import { isConditionalMediationAvailable, isWebAuthnAvailable } from "@/lib/webauthn";
 
 /** A conditional ceremony lives 300 s on the server; restart it before. */
 const CONDITIONAL_RESTART_MS = 270_000;
@@ -117,25 +112,17 @@ const Login: Component = () => {
       setLocalError(errorText(err, "passkeys.error.failed", LOGIN_ERRORS));
       return;
     }
-    if (err.code === "ABORTED" || err.code === "PASSKEY_CANCELLED") return;
-    if (err.code === "PASSKEY_UNKNOWN") {
-      if (err.rpId && err.credentialId) void signalUnknown(err.rpId, err.credentialId);
-      setLocalError(t("passkeys.error.removed"));
-      return;
-    }
-    if (err.code === "PASSKEY_PENDING") {
-      // Never signalled as unknown (B.1).
-      setLocalError(
-        t("passkeys.error.readyAt", { time: err.readyAt ? formatTimestamp(err.readyAt) : "" }),
-      );
-      return;
-    }
-    setLocalError(t(passkeyErrorKey(err.code)));
+    // PASSKEY_UNKNOWN was already signalled; PASSKEY_PENDING never is (B.1).
+    const text = formatPasskeyError(err);
+    if (text) setLocalError(text);
   };
 
   const afterPasskey = () =>
     navigate(safeReturnUrl(searchParams.returnUrl) ?? "/", { replace: true });
 
+  // After a failed autofill (cancelled sheet, server error) it restarts,
+  // with a growing pause so an offline server is not hammered.
+  let conditionalBackoff = 2_000;
   const startConditional = async () => {
     if (desktop || disposed || !isWebAuthnAvailable()) return;
     if (!(await isConditionalMediationAvailable()) || disposed) return;
@@ -146,16 +133,37 @@ const Login: Component = () => {
       if (conditionalCtl === ctl) void startConditional();
     }, CONDITIONAL_RESTART_MS);
     try {
-      await loginWithPasskey(serverUrl(), { mediation: "conditional", signal: ctl.signal });
+      await loginWithPasskey(serverUrl(), {
+        mediation: "conditional",
+        signal: ctl.signal,
+        // The name typed by the time a passkey is picked.
+        username: () => username().trim() || undefined,
+      });
       afterPasskey();
     } catch (err) {
-      if (ctl.signal.aborted) return;
+      if (ctl.signal.aborted || conditionalCtl !== ctl) return;
       // Autofill stays quiet, except for a removed or a pending passkey.
       if (err instanceof PasskeyError && ["PASSKEY_UNKNOWN", "PASSKEY_PENDING"].includes(err.code)) {
         showPasskeyError(err);
       }
+      clearTimeout(restartTimer);
+      const delay = conditionalBackoff;
+      conditionalBackoff = Math.min(conditionalBackoff * 2, 60_000);
+      restartTimer = setTimeout(() => {
+        if (conditionalCtl === ctl) void startConditional();
+      }, delay);
     }
   };
+  // A changed server gets its own autofill ceremony.
+  createEffect(
+    on(
+      serverUrl,
+      () => {
+        if (conditionalCtl) void startConditional();
+      },
+      { defer: true },
+    ),
+  );
   onMount(() => {
     void startConditional();
   });

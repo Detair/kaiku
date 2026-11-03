@@ -8,7 +8,7 @@
 import { Component, createResource, createSignal, For, onCleanup, Show } from "solid-js";
 import { t } from "@/i18n";
 import { formatRelativeTime, formatTimestamp } from "@/i18n/format";
-import { passkeyErrorKey } from "@/lib/authErrors";
+import { formatPasskeyError } from "@/lib/authErrors";
 import { isTauri } from "@/lib/tauri/common";
 import {
   deletePasskey,
@@ -47,7 +47,7 @@ function defaultLabel(): string {
 }
 
 function failureText(err: unknown): string {
-  if (err instanceof PasskeyError) return t(passkeyErrorKey(err.code));
+  if (err instanceof PasskeyError) return formatPasskeyError(err);
   return errorText(err, "passkeys.error.failed");
 }
 

@@ -130,7 +130,19 @@ describe("Login with a passkey", () => {
     expect(modal.username).toBe("fabian");
   });
 
-  it("PASSKEY_UNKNOWN signals the credential and shows the removed message", async () => {
+  it("conditional autofill restarts after a failed attempt", async () => {
+    // Review Argon M4.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    passkeySignInMock.mockRejectedValueOnce(new PasskeyError("PASSKEY_CANCELLED"));
+    pendingUntilAbort();
+    passkeySignInMock.mockRejectedValueOnce(new PasskeyError("PASSKEY_CANCELLED"));
+    await renderLogin();
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(2_500);
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("PASSKEY_UNKNOWN shows the removed message", async () => {
     conditional.available = false;
     passkeySignInMock.mockRejectedValue(
       new PasskeyError("PASSKEY_UNKNOWN", "Y3JlZA", "chat.example.com"),
@@ -138,7 +150,7 @@ describe("Login with a passkey", () => {
     await renderLogin();
     fireEvent.click(screen.getByRole("button", { name: "Sign in with passkey" }));
     await screen.findByText("This passkey was removed from Kaiku. Sign in another way.");
-    expect(signalUnknownMock).toHaveBeenCalledWith("chat.example.com", "Y3JlZA");
+    // The credential is signalled where the server answered (passkeySignIn).
   });
 
   it("PASSKEY_PENDING shows the ready time and signals nothing", async () => {

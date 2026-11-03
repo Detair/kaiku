@@ -8,6 +8,7 @@ function json(body: unknown, status = 200) {
 
 beforeEach(() => {
   setSessionRestoreBlocked(true);
+  vi.stubGlobal("PublicKeyCredential", {});
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {

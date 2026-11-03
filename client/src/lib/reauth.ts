@@ -17,8 +17,7 @@ import { normalizeCode } from "@/lib/errorCode";
 import type { ReauthMethodsResponse } from "@/lib/types";
 import type { MessageKey } from "@/i18n";
 import { errorText } from "@/i18n/errors";
-import { t } from "@/i18n";
-import { passkeyErrorKey } from "@/lib/authErrors";
+import { formatPasskeyError } from "@/lib/authErrors";
 import { PasskeyError } from "@/lib/tauri/passkeys";
 
 export type ReauthMethod =
@@ -247,7 +246,7 @@ export function isRejectedCode(err: unknown): boolean {
  * One shared mapping (R12): the re-auth codes on top of `errorText()`.
  */
 export function reauthErrorText(err: unknown): string {
-  if (err instanceof PasskeyError) return t(passkeyErrorKey(err.code));
+  if (err instanceof PasskeyError) return formatPasskeyError(err);
   // Case-insensitive lookup, also for a wrapped HttpError.
   return errorText(normalisedHttpError(err) ?? err, "admin.reauth.error.generic", REAUTH_ERRORS, REAUTH_STATUS_ERRORS);
 }

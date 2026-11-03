@@ -16,6 +16,8 @@ import {
 } from "@/lib/reauth";
 import { createDialog } from "@/lib/a11y/dialog";
 import { PasskeyError } from "@/lib/tauri/passkeys";
+import { isTauri } from "@/lib/tauri/common";
+import { isWebAuthnAvailable } from "@/lib/webauthn";
 import { t } from "@/i18n";
 
 export interface ReauthDialogProps {
@@ -68,7 +70,10 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
   const showCode = () =>
     props.mfaEnabled && (mfaOnly() || showPassword() || oidcMethods().length > 0);
   const showPasskey = () =>
-    !mfaOnly() && props.onPasskey !== undefined && props.methods.some((m) => m.kind === "passkey");
+    !mfaOnly() &&
+    props.onPasskey !== undefined &&
+    (isTauri() || isWebAuthnAvailable()) &&
+    props.methods.some((m) => m.kind === "passkey");
   const unavailable = () =>
     !mfaOnly() &&
     (serverUnavailable() ||

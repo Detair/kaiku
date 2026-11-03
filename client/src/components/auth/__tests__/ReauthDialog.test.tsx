@@ -38,6 +38,10 @@ const type = (label: RegExp, value: string) =>
 
 describe("ReauthDialog", () => {
   beforeEach(() => {
+    (globalThis as { PublicKeyCredential?: unknown }).PublicKeyCredential ??= {};
+    if (!navigator.credentials) {
+      Object.defineProperty(navigator, "credentials", { value: { get: () => undefined }, configurable: true });
+    }
     document.body.innerHTML = "";
   });
 
@@ -281,5 +285,14 @@ describe("ReauthDialog", () => {
     await waitFor(() => expect(onPasskey).toHaveBeenCalledOnce());
     unmount();
     expect(seen?.aborted).toBe(true);
+  });
+
+  it("no passkey method in a browser without WebAuthn", () => {
+    // Review Argon minor 8.
+    const saved = (globalThis as { PublicKeyCredential?: unknown }).PublicKeyCredential;
+    delete (globalThis as { PublicKeyCredential?: unknown }).PublicKeyCredential;
+    setup({ methods: [{ kind: "passkey" }, ...PW], onPasskey: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Confirm with a passkey" })).toBeNull();
+    (globalThis as { PublicKeyCredential?: unknown }).PublicKeyCredential = saved;
   });
 });

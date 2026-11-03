@@ -23,7 +23,9 @@ import type { User } from "../types";
 import {
   credentialToJSON,
   creationOptionsFromJSON,
+  isWebAuthnAvailable,
   requestOptionsFromJSON,
+  signalUnknown,
   webAuthnErrorCode,
   type PasskeyRemovedResponse,
 } from "../webauthn";
@@ -135,6 +137,7 @@ async function getCredential(
   signal: AbortSignal,
   mediation?: CredentialMediationRequirement,
 ): Promise<PublicKeyCredential> {
+  if (!isWebAuthnAvailable()) throw new PasskeyError("PASSKEY_NOT_SUPPORTED");
   try {
     const cred = await navigator.credentials.get({
       publicKey: requestOptionsFromJSON(options.publicKey),
@@ -152,9 +155,12 @@ async function getCredential(
 /** Map a server refusal to a `PasskeyError` carrying what the UI needs. */
 function serverError(err: unknown, cred?: PublicKeyCredential, rpId?: string): PasskeyError {
   if (err instanceof HttpError && err.code) {
+    const code = err.code.toUpperCase();
     const readyAt =
       typeof err.details?.ready_at === "string" ? (err.details.ready_at as string) : undefined;
-    return new PasskeyError(err.code.toUpperCase(), cred?.id, rpId, readyAt);
+    // C29: an unknown credential is signalled (never a pending one).
+    if (code === "PASSKEY_UNKNOWN" && rpId && cred?.id) void signalUnknown(rpId, cred.id);
+    return new PasskeyError(code, cred?.id, rpId, readyAt);
   }
   throw err;
 }
@@ -163,38 +169,111 @@ function serverError(err: unknown, cred?: PublicKeyCredential, rpId?: string): P
  * Sign in with a passkey. Browser: a discoverable ceremony
  * (`mediation: "conditional"` for autofill). Desktop: the system browser.
  */
+/** A user name now, or read when the credential was chosen. */
+export type UsernameHint = string | (() => string | undefined);
+
+interface FinishedSignIn {
+  access_token: string;
+  expires_in: number;
+  setup_required: boolean;
+  password_change_required?: boolean;
+}
+
+/**
+ * POST to `serverUrl` directly (browser): the client's current server and
+ * tokens stay untouched until a sign-in completed. Errors are `HttpError`s
+ * with the parsed body as `details`.
+ */
+async function passkeyPost<T>(
+  serverUrl: string,
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  const base = serverUrl.replace(/\/+$/, "");
+  const response = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    credentials: "include",
+    signal,
+  });
+  const text = await response.text();
+  const parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  if (!response.ok) {
+    const code = typeof parsed.error === "string" ? parsed.error : undefined;
+    const message = typeof parsed.message === "string" ? parsed.message : `HTTP ${response.status}`;
+    throw new HttpError(response.status, message, code, parsed);
+  }
+  return parsed as T;
+}
+
+/** End a session minted by a stale attempt (best effort, its own bearer only). */
+async function endStaleSession(serverUrl: string, accessToken: string): Promise<void> {
+  try {
+    await fetch(`${serverUrl.replace(/\/+$/, "")}/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      credentials: "omit",
+    });
+  } catch {
+    // The session lapses on its own.
+  }
+}
+
+/**
+ * Sign in with a passkey. Browser: a discoverable ceremony
+ * (`mediation: "conditional"` for autofill). Desktop: the system browser.
+ * `isCurrent` is checked after every await: a stale attempt (aborted, or
+ * replaced by another sign-in or a logout) never installs its session.
+ */
 export async function passkeySignIn(
   serverUrl: string,
-  o: { mediation: "conditional" | "optional"; signal: AbortSignal; username?: string },
+  o: {
+    mediation: "conditional" | "optional";
+    signal: AbortSignal;
+    username?: UsernameHint;
+    isCurrent?: () => boolean;
+  },
 ): Promise<AuthResult> {
+  const hint = () => {
+    const raw = typeof o.username === "function" ? o.username() : o.username;
+    return raw?.trim() || null;
+  };
   if (isTauri()) {
     return invokeCancellable(
-      (attemptId) => invoke<AuthResult>("passkey_sign_in", { serverUrl, attemptId }),
+      (attemptId) =>
+        invoke<AuthResult>("passkey_sign_in", { serverUrl, username: hint(), attemptId }),
       o.signal,
     );
   }
-  // The base URL for the calls below; the restore block and the stored
-  // server are only touched after a completed sign-in (autofill runs on
-  // every login page and must not re-enable a logged-out session).
-  browserState.serverUrl = serverUrl;
-  const start = await httpRequest<CeremonyStart>("POST", "/auth/passkeys/login/start", {});
+  const live = () => !o.signal.aborted && (o.isCurrent?.() ?? true);
+  const start = await passkeyPost<CeremonyStart>(
+    serverUrl,
+    "/auth/passkeys/login/start",
+    {},
+    o.signal,
+  );
   const rpId = start.options.publicKey.rpId as string | undefined;
   const cred = await getCredential(start.options, o.signal, o.mediation);
-  let response: {
-    access_token: string;
-    expires_in: number;
-    setup_required: boolean;
-    password_change_required?: boolean;
-  };
+  if (!live()) throw new PasskeyError("ABORTED");
+  let response: FinishedSignIn;
   try {
-    response = await httpRequest("POST", "/auth/passkeys/login/finish", {
-      ceremony_id: start.ceremony_id,
-      credential: credentialToJSON(cred),
-      username: o.username?.trim() || null,
-    });
+    response = await passkeyPost<FinishedSignIn>(
+      serverUrl,
+      "/auth/passkeys/login/finish",
+      { ceremony_id: start.ceremony_id, credential: credentialToJSON(cred), username: hint() },
+      o.signal,
+    );
   } catch (err) {
+    if (o.signal.aborted) throw new PasskeyError("ABORTED");
     throw serverError(err, cred, rpId);
   }
+  if (!live()) {
+    await endStaleSession(serverUrl, response.access_token);
+    throw new PasskeyError("ABORTED");
+  }
+  browserState.serverUrl = serverUrl;
   localStorage.setItem("serverUrl", serverUrl);
   setSessionRestoreBlocked(false);
   browserState.accessToken = response.access_token;
@@ -248,7 +327,7 @@ export async function stepUpWithPasskey(
 
 /** Add a passkey (browser only; needs a `passkey.add` grant first). */
 export async function registerPasskey(o: { label: string; signal: AbortSignal }): Promise<Passkey> {
-  if (isTauri()) throw new PasskeyError("PASSKEY_NOT_SUPPORTED");
+  if (isTauri() || !isWebAuthnAvailable()) throw new PasskeyError("PASSKEY_NOT_SUPPORTED");
   const start = await httpRequest<CeremonyStart>("POST", "/auth/passkeys/register/start", {
     label: o.label,
   });

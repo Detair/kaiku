@@ -1,4 +1,5 @@
-import type { MessageKey } from "@/i18n";
+import { t, type MessageKey } from "@/i18n";
+import { formatTimestamp } from "@/i18n/format";
 
 /** Server codes the sign-in form words specifically (used with `errorText`). */
 export const LOGIN_ERRORS: Partial<Record<string, MessageKey>> = {
@@ -44,4 +45,16 @@ export const PASSKEY_ERRORS: Partial<Record<string, MessageKey>> = {
 /** The sentence for a passkey failure code. */
 export function passkeyErrorKey(code: string): MessageKey {
   return PASSKEY_ERRORS[code] ?? "passkeys.error.failed";
+}
+
+/**
+ * The sentence for a passkey failure, `PASSKEY_PENDING` with its ready time
+ * (never "unknown", B.1). Silent codes (`ABORTED`, `PASSKEY_CANCELLED`) give "".
+ */
+export function formatPasskeyError(err: { code: string; readyAt?: string }): string {
+  if (err.code === "ABORTED" || err.code === "PASSKEY_CANCELLED") return "";
+  if (err.code === "PASSKEY_PENDING") {
+    return t("passkeys.error.readyAt", { time: err.readyAt ? formatTimestamp(err.readyAt) : "" });
+  }
+  return t(passkeyErrorKey(err.code));
 }
