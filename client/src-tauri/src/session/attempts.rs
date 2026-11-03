@@ -42,6 +42,12 @@ struct Entry {
     created: Instant,
     /// Tells this entry from a later one under the same id (expiry timer).
     seq: u64,
+    /// A collect or TOTP step is in flight (or adopting its session): only a
+    /// cancel removes the entry then. A long-poll that wakes with `consumed`
+    /// (the server's answer to that very step), a late 404/410 of that poll
+    /// or the attempt's 10 minutes must not make its own session unwanted
+    /// (Argon review, part 8 #1).
+    busy: u32,
 }
 
 type Entries = Mutex<HashMap<String, Entry>>;
@@ -96,6 +102,7 @@ impl AttemptVerifiers {
                     verifier,
                     created: Instant::now(),
                     seq,
+                    busy: 0,
                 },
             );
         }
@@ -116,7 +123,10 @@ impl AttemptVerifiers {
             tokio::time::sleep_until(deadline).await;
             if let Some(entries) = entries.upgrade() {
                 let mut entries = lock_entries(&entries);
-                if entries.get(&id).is_some_and(|e| e.seq == seq) {
+                if entries
+                    .get(&id)
+                    .is_some_and(|e| e.seq == seq && e.busy == 0)
+                {
                     entries.remove(&id);
                 }
             }
@@ -142,14 +152,39 @@ impl AttemptVerifiers {
         self.get(attempt_id).is_some()
     }
 
+    /// Drop the entry unless a collect or TOTP step of it is in flight.
     pub fn remove(&self, attempt_id: &str) {
+        let mut entries = self.lock();
+        if entries.get(attempt_id).is_some_and(|e| e.busy == 0) {
+            entries.remove(attempt_id);
+        }
+    }
+
+    /// Drop the entry for good (its session was taken over or ended).
+    pub fn finish(&self, attempt_id: &str) {
         self.lock().remove(attempt_id);
     }
 
-    /// Drop entries older than [`ATTEMPT_TTL`] at `now`.
+    /// A collect or TOTP step starts (`true` while the attempt is wanted).
+    fn begin_step(&self, attempt_id: &str) -> bool {
+        self.prune(Instant::now());
+        self.lock()
+            .get_mut(attempt_id)
+            .map(|e| e.busy += 1)
+            .is_some()
+    }
+
+    /// The step is over (the entry may be gone after a cancel).
+    fn end_step(&self, attempt_id: &str) {
+        if let Some(e) = self.lock().get_mut(attempt_id) {
+            e.busy = e.busy.saturating_sub(1);
+        }
+    }
+
+    /// Drop entries older than [`ATTEMPT_TTL`] at `now` (not while busy).
     pub fn prune(&self, now: Instant) {
         self.lock()
-            .retain(|_, e| now.saturating_duration_since(e.created) < ATTEMPT_TTL);
+            .retain(|_, e| e.busy > 0 || now.saturating_duration_since(e.created) < ATTEMPT_TTL);
     }
 
     #[cfg(test)]
@@ -217,6 +252,24 @@ pub async fn json_body(response: reqwest::Response) -> Result<Value, SessionErro
         return Ok(Value::Null);
     }
     serde_json::from_str(&text).map_err(|e| invalid_response(status, &e))
+}
+
+/// Fields of a session answer (`AuthResponse`).
+const TOKEN_FIELDS: &[&str] = &["access_token", "refresh_token", "session_id"];
+
+/// A server without the v1.0 sign-in steps (pre-L1b) answers `/auth/login`,
+/// `/auth/oidc/desktop/exchange` and `/auth/register` with a token pair.
+/// Those answers would hand the tokens to the webview, so they are refused
+/// as `SERVER_OUTDATED` (Fable review M1); no sign-in step or pre-session
+/// answer ever carries tokens.
+pub fn refuse_token_answer(value: &Value) -> Result<(), SessionError> {
+    let carries_tokens = value
+        .as_object()
+        .is_some_and(|o| TOKEN_FIELDS.iter().any(|k| o.contains_key(*k)));
+    if carries_tokens {
+        return Err(SessionError::Server(400, "SERVER_OUTDATED".to_string()));
+    }
+    Ok(())
 }
 
 fn unknown_attempt() -> SessionError {
@@ -294,6 +347,7 @@ impl SessionManager {
             return Err(code_error(response).await);
         }
         let step = json_body(response).await?;
+        refuse_token_answer(&step)?;
         self.keep_verifier(&base, &step, verifier);
         Ok(step)
     }
@@ -310,6 +364,7 @@ impl SessionManager {
             return Err(code_error(response).await);
         }
         let attempt = json_body(response).await?;
+        refuse_token_answer(&attempt)?;
         self.keep_verifier(&base, &attempt, verifier);
         Ok(attempt)
     }
@@ -371,8 +426,7 @@ impl SessionManager {
     /// the user. A refusal other than 404/410 and a network failure keep the
     /// verifier, so the webview can retry within the collect window.
     pub async fn collect_attempt(&self, attempt_id: &str) -> Result<AuthResult, SessionError> {
-        let (base, result) = self.attempt_call(attempt_id, "collect", json!({})).await?;
-        self.adopt_attempt(attempt_id, &base, result?).await
+        self.session_step(attempt_id, "collect", json!({})).await
     }
 
     /// The TOTP step (F4). A wrong code (`INVALID_MFA`) keeps the attempt.
@@ -381,10 +435,32 @@ impl SessionManager {
         attempt_id: &str,
         code: &str,
     ) -> Result<AuthResult, SessionError> {
-        let (base, result) = self
-            .attempt_call(attempt_id, "totp", json!({ "code": code }))
-            .await?;
-        self.adopt_attempt(attempt_id, &base, result?).await
+        self.session_step(attempt_id, "totp", json!({ "code": code }))
+            .await
+    }
+
+    /// A step that answers with a session (collect, TOTP). The entry is busy
+    /// from before the request until the session is taken over or ended, so
+    /// only a cancel can make that session unwanted.
+    async fn session_step(
+        &self,
+        attempt_id: &str,
+        step: &str,
+        extra: Value,
+    ) -> Result<AuthResult, SessionError> {
+        if !self.attempts.begin_step(attempt_id) {
+            return Err(unknown_attempt());
+        }
+        let outcome = async {
+            let (base, result) = self.attempt_call(attempt_id, step, extra).await?;
+            self.adopt_attempt(attempt_id, &base, result?).await
+        }
+        .await;
+        self.attempts.end_step(attempt_id);
+        if let Err(SessionError::Server(404 | 410, _)) = &outcome {
+            self.attempts.remove(attempt_id);
+        }
+        outcome
     }
 
     /// Take over the session an attempt produced, but only while the
@@ -404,7 +480,7 @@ impl SessionManager {
             }
             Err(e) => Err(invalid_response(200, &e)),
         };
-        self.attempts.remove(attempt_id);
+        self.attempts.finish(attempt_id);
         outcome?.ok_or_else(cancelled_attempt)
     }
 
@@ -437,6 +513,7 @@ impl SessionManager {
             return Err(code_error(response).await);
         }
         let step = json_body(response).await?;
+        refuse_token_answer(&step)?;
         self.keep_verifier(&base, &step, verifier);
         Ok(step)
     }
@@ -450,6 +527,7 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Duration;
 
     use serde_json::{json, Value};
     use tokio::sync::RwLock;
@@ -483,6 +561,18 @@ mod tests {
 
     fn body_of(req: &Request) -> Value {
         serde_json::from_slice(&req.body).unwrap()
+    }
+
+    fn me_json() -> Value {
+        json!({
+            "id": "0192f0c0-0000-7000-8000-000000000001",
+            "username": "alice",
+            "display_name": "Alice",
+            "email": null,
+            "avatar_url": null,
+            "status": "online",
+            "mfa_enabled": false
+        })
     }
 
     async fn mount_me(server: &MockServer) {
@@ -732,6 +822,180 @@ mod tests {
         assert_eq!(m.attempt_verifiers().get(ID).unwrap().1.as_str(), "v-1");
         // No session yet.
         assert!(m.auth_info().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_pre_l1b_token_answer_to_login_is_server_outdated() {
+        // Fable review M1: an old server answers with tokens; none reach the
+        // webview, and no verifier is kept for them.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/login"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(tokens_body("at-old-1", "rt-old-1")),
+            )
+            .mount(&server)
+            .await;
+        let m = manager();
+        let err = m.login(&server.uri(), "alice", "pw").await.unwrap_err();
+        let text = format!("{err} {err:?}");
+        assert_eq!(err.to_string(), "SERVER_OUTDATED");
+        assert!(
+            !text.contains("at-old-1") && !text.contains("rt-old-1"),
+            "{text}"
+        );
+        assert_eq!(m.attempt_verifiers().len(), 0);
+        assert!(m.auth_info().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_pre_l1b_token_answer_to_the_oidc_exchange_is_server_outdated() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/oidc/desktop/exchange"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(tokens_body("at-old-2", "rt-old-2")),
+            )
+            .mount(&server)
+            .await;
+        let err = manager()
+            .exchange_oidc_code(&server.uri(), "c", Zeroizing::new("v".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "SERVER_OUTDATED");
+        assert!(!format!("{err:?}").contains("at-old-2"));
+    }
+
+    #[tokio::test]
+    async fn a_poll_that_wakes_consumed_keeps_the_totp_session() {
+        // Argon review part 8 #1: "Phone not at hand?" leaves the PC's
+        // long-poll running; the server wakes it with `consumed` when the
+        // TOTP step succeeds. That must not make the new session unwanted.
+        let server = MockServer::start().await;
+        let m = Arc::new(manager());
+        started(&server, &m).await;
+        Mock::given(method("GET"))
+            .and(path("/auth/me"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(me_json())
+                    .set_delay(Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/auth/login-attempts/{ID}/totp")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens_body("at-t", "rt-t")))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/auth/login-attempts/{ID}/poll")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(attempt("consumed"))
+                    .set_delay(Duration::from_millis(100)),
+            )
+            .mount(&server)
+            .await;
+        let (totp, poll) = tokio::join!(m.attempt_totp(ID, "123456"), async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            m.poll_attempt(ID, 25).await
+        });
+        assert_eq!(poll.unwrap()["state"], "consumed");
+        totp.unwrap();
+        assert!(m.auth_info().is_some());
+        let logouts = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path() == "/auth/logout")
+            .count();
+        assert_eq!(logouts, 0);
+        assert!(m.attempt_verifiers().get(ID).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_cancel_still_beats_a_busy_collect() {
+        let server = MockServer::start().await;
+        let m = Arc::new(manager());
+        started(&server, &m).await;
+        Mock::given(method("GET"))
+            .and(path("/auth/me"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(me_json())
+                    .set_delay(Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/auth/login-attempts/{ID}/collect")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens_body("at-c", "rt-c")))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/auth/login-attempts/{ID}/cancel")))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/logout"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        let (collect, _) = tokio::join!(m.collect_attempt(ID), async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            m.cancel_attempt(ID).await
+        });
+        assert!(collect.is_err());
+        assert!(m.auth_info().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_sign_out_while_the_profile_loads_wins() {
+        // Argon review part 8 #2: a sign-out (or another sign-in) that lands
+        // during `/auth/me` is never undone by the older adoption.
+        let server = MockServer::start().await;
+        let m = Arc::new(manager());
+        started(&server, &m).await;
+        Mock::given(method("GET"))
+            .and(path("/auth/me"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(me_json())
+                    .set_delay(Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/auth/login-attempts/{ID}/collect")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens_body("at-g", "rt-g")))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/logout"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        let (collect, _) = tokio::join!(m.collect_attempt(ID), async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            m.logout().await
+        });
+        assert!(collect.is_err());
+        assert!(m.auth_info().is_none());
+        // The abandoned pair was ended with its own bearer.
+        let ended = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .any(|r| {
+                r.url.path() == "/auth/logout"
+                    && r.headers.get("authorization").and_then(|v| v.to_str().ok())
+                        == Some("Bearer at-g")
+            });
+        assert!(ended);
     }
 
     fn tokens_body(access: &str, refresh: &str) -> Value {

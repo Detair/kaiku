@@ -33,6 +33,7 @@ use zeroize::Zeroizing;
 
 use super::loopback_post::{self, HandBack, FLOW_LISTEN_MAX};
 use super::oidc_loopback::{new_secret, s256_challenge, READ_DEADLINE};
+use super::reauth::{run_cancellable, Attempt, CANCELLED as ATTEMPT_CANCELLED};
 use crate::session::SessionManager;
 
 /// Anything that is not a server code (malformed answer, unsafe URL, no listener).
@@ -41,6 +42,8 @@ pub const FAILED: &str = "OIDC_FAILED";
 pub const TIMEOUT: &str = "OIDC_TIMEOUT";
 /// The chosen browser did not start (LP's code; its text names the setting).
 pub const BROWSER_FAILED: &str = "PASSKEY_BROWSER_FAILED";
+/// The webview cancelled the flow (`oidc_cancel`); nothing more happens.
+pub const CANCELLED: &str = "OIDC_CANCELLED";
 
 /// How long the app waits for the provider sign-in in the browser (the
 /// server keeps an OIDC flow 10 minutes; a provider sign-in with its own
@@ -50,7 +53,8 @@ pub const OIDC_LISTEN_MAX: Duration = Duration::from_mins(5);
 /// What a start sends next to the provider: the listener and the challenge.
 pub struct LoopbackStart {
     pub port: u16,
-    pub callback_path: String,
+    /// The listener's per-flow path: a secret (Codex m6), wiped on drop.
+    pub callback_path: Zeroizing<String>,
     pub client_challenge: String,
 }
 
@@ -126,7 +130,8 @@ pub async fn send_start(request: reqwest::RequestBuilder) -> Result<Value, Strin
         .header("x-kaiku-client", "desktop")
         .send()
         .await
-        .map_err(|e| format!("Connection failed: {e}"))?;
+        // Never the request URL: its query carries `callback_path` (Codex m6).
+        .map_err(|e| format!("Connection failed: {}", e.without_url()))?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -147,8 +152,11 @@ pub fn start_client() -> Result<reqwest::Client, String> {
         .map_err(|_| FAILED.to_string())
 }
 
-/// Run one delivery: bind, start, open, wait (see the module docs).
+/// Run one delivery: bind, start, open, wait (see the module docs). A
+/// cancelled `attempt` stops it before the start, before the browser opens
+/// and after the hand-off.
 pub async fn deliver<F, Fut>(
+    attempt: &Attempt,
     start: F,
     open: impl FnOnce(&str) -> Result<(), String>,
     listen_cap: Duration,
@@ -162,9 +170,10 @@ where
         .await
         .map_err(|_| FAILED.to_string())?;
     let verifier = Zeroizing::new(new_secret());
+    attempt.check()?;
     let answer = start(LoopbackStart {
         port: cb.port,
-        callback_path: cb.callback_path.clone(),
+        callback_path: Zeroizing::new(cb.callback_path.clone()),
         client_challenge: s256_challenge(&verifier),
     })
     .await?;
@@ -177,7 +186,8 @@ where
         .as_str()
         .and_then(provider_url)
         .ok_or(FAILED)?;
-    // 2. Browser.
+    // 2. Browser (a flow the webview gave up meanwhile opens nothing).
+    attempt.check()?;
     open(&url).map_err(|_| BROWSER_FAILED.to_string())?;
     info!("Opened the browser for a provider sign-in");
     // 3. Hand-off.
@@ -186,6 +196,7 @@ where
         .await
         .map_err(|_| TIMEOUT.to_string())?;
     drop(listener);
+    attempt.check()?;
     match handed {
         HandBack::Code(code) => Ok(Delivered {
             code: Zeroizing::new(code),
@@ -195,17 +206,66 @@ where
     }
 }
 
+/// Run `run` under the attempt `attempt_id` of the shared registry, so
+/// `oidc_cancel` (or any cancel of that id) reaches it.
+pub async fn with_attempt<T>(
+    attempt_id: &str,
+    run: impl AsyncFnOnce(&Attempt) -> Result<T, String>,
+) -> Result<T, String> {
+    let attempt = super::reauth::registry().register(attempt_id)?;
+    let result = run(&attempt).await;
+    super::reauth::registry().finish(attempt_id);
+    result
+}
+
+/// The flow, dropped where it stands when the webview cancels (the
+/// listener closes with it); a cancel is [`CANCELLED`].
+async fn cancellable<T>(
+    attempt: &Attempt,
+    flow: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    run_cancellable(attempt, flow).await.map_err(|e| {
+        if e == ATTEMPT_CANCELLED {
+            CANCELLED.to_string()
+        } else {
+            e
+        }
+    })
+}
+
 /// Desktop SSO sign-in (F3 variant): the delivery, then the exchange →
 /// `LoginStep` JSON (the verifier stays in Rust under the attempt id).
 pub async fn sign_in(
     session: &SessionManager,
+    attempt: &Attempt,
     server_url: &str,
     provider_slug: &str,
     open: impl FnOnce(&str) -> Result<(), String>,
     listen_cap: Duration,
 ) -> Result<Value, String> {
+    cancellable(attempt, async {
+        let delivered =
+            sign_in_delivery(attempt, server_url, provider_slug, open, listen_cap).await?;
+        // A flow given up after the hand-off redeems nothing.
+        attempt.check()?;
+        session
+            .exchange_oidc_code(server_url, &delivered.code, delivered.verifier)
+            .await
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+async fn sign_in_delivery(
+    attempt: &Attempt,
+    server_url: &str,
+    provider_slug: &str,
+    open: impl FnOnce(&str) -> Result<(), String>,
+    listen_cap: Duration,
+) -> Result<Delivered, String> {
     let client = start_client()?;
-    let delivered = deliver(
+    deliver(
+        attempt,
         |lb| async move {
             let mut url = endpoint(server_url, &["auth", "oidc", "authorize", provider_slug])?;
             url.query_pairs_mut()
@@ -217,44 +277,49 @@ pub async fn sign_in(
         open,
         listen_cap,
     )
-    .await?;
-    session
-        .exchange_oidc_code(server_url, &delivered.code, delivered.verifier)
-        .await
-        .map_err(|e| e.to_string())
+    .await
 }
 
 /// The OIDC factor of an account request (C27) → `{oidc_code}`; the
 /// verifier is kept for `account_request_start` (single use).
 pub async fn request_factor(
     session: &SessionManager,
+    attempt: &Attempt,
     server_url: &str,
     provider_id: &str,
     open: impl FnOnce(&str) -> Result<(), String>,
     listen_cap: Duration,
 ) -> Result<Value, String> {
     let client = start_client()?;
-    let delivered = deliver(
-        |lb| async move {
-            let url = endpoint(
-                server_url,
-                &["auth", "account-requests", "oidc", "authorize", provider_id],
-            )?;
-            send_start(client.post(url.as_str()).json(&json!({
-                "loopback_port": lb.port,
-                "callback_path": lb.callback_path,
-                "client_challenge": lb.client_challenge,
-            })))
-            .await
-        },
-        open,
-        listen_cap,
-    )
-    .await?;
-    session
-        .keep_request_oidc_verifier(server_url, delivered.verifier)
-        .map_err(|e| e.to_string())?;
-    Ok(json!({ "oidc_code": delivered.code.as_str() }))
+    let flow = async {
+        let delivered = deliver(
+            attempt,
+            |lb| async move {
+                let url = endpoint(
+                    server_url,
+                    &["auth", "account-requests", "oidc", "authorize", provider_id],
+                )?;
+                send_start(client.post(url.as_str()).json(&json!({
+                    "loopback_port": lb.port,
+                    "callback_path": lb.callback_path.as_str(),
+                    "client_challenge": lb.client_challenge,
+                })))
+                .await
+            },
+            open,
+            listen_cap,
+        )
+        .await?;
+        // A flow given up after the hand-off keeps no verifier (a newer
+        // factor's one stays).
+        attempt.check()?;
+        // Bound to its code: only the start naming this code gets it.
+        session
+            .keep_request_oidc_verifier(server_url, &delivered.code, delivered.verifier)
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "oidc_code": delivered.code.as_str() }))
+    };
+    cancellable(attempt, flow).await
 }
 
 #[cfg(test)]
@@ -393,9 +458,16 @@ mod tests {
             .mount(&server)
             .await;
         let m = manager();
-        sign_in(&m, &server.uri(), "kc", |_| Ok(()), Duration::from_secs(5))
-            .await
-            .unwrap();
+        sign_in(
+            &m,
+            &Attempt::default(),
+            &server.uri(),
+            "kc",
+            |_| Ok(()),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
         let seen = seen.lock().unwrap();
         assert!(seen.bound, "the listener is bound before the start");
         assert_eq!(seen.client.as_deref(), Some("desktop"));
@@ -434,6 +506,7 @@ mod tests {
         let o = opened.clone();
         let step = sign_in(
             &m,
+            &Attempt::default(),
             &server.uri(),
             "kc",
             move |url| {
@@ -484,6 +557,7 @@ mod tests {
         .await;
         let err = sign_in(
             &manager(),
+            &Attempt::default(),
             &server.uri(),
             "kc",
             |_| Err("no browser".into()),
@@ -507,6 +581,7 @@ mod tests {
             let opened = AtomicBool::new(false);
             let err = sign_in(
                 &manager(),
+                &Attempt::default(),
                 &server.uri(),
                 "kc",
                 |_| {
@@ -535,6 +610,7 @@ mod tests {
         .await;
         let err = sign_in(
             &manager(),
+            &Attempt::default(),
             &server.uri(),
             "kc",
             |_| Ok(()),
@@ -555,6 +631,7 @@ mod tests {
         .await;
         let err = sign_in(
             &manager(),
+            &Attempt::default(),
             &server.uri(),
             "kc",
             |_| Ok(()),
@@ -578,6 +655,7 @@ mod tests {
         .await;
         let err = sign_in(
             &manager(),
+            &Attempt::default(),
             &server.uri(),
             "kc",
             |_| Ok(()),
@@ -601,6 +679,7 @@ mod tests {
             .await;
         let err = sign_in(
             &manager(),
+            &Attempt::default(),
             &server.uri(),
             "kc",
             |_| Ok(()),
@@ -622,6 +701,7 @@ mod tests {
             .await;
         let err = sign_in(
             &manager(),
+            &Attempt::default(),
             &server.uri(),
             "kc",
             |_| Ok(()),
@@ -652,9 +732,16 @@ mod tests {
             .mount(&server)
             .await;
         let m = manager();
-        let answer = request_factor(&m, &server.uri(), "kc", |_| Ok(()), Duration::from_secs(5))
-            .await
-            .unwrap();
+        let answer = request_factor(
+            &m,
+            &Attempt::default(),
+            &server.uri(),
+            "kc",
+            |_| Ok(()),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
         // Only the code reaches the webview.
         assert_eq!(answer, json!({"oidc_code": "factor-code"}));
         let (challenge, client, bound) = {
@@ -692,6 +779,158 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_connection_failure_names_no_callback_path() {
+        // Codex review m6: the request URL (with `callback_path`) never
+        // crosses IPC in an error.
+        let err = sign_in(
+            &manager(),
+            &Attempt::default(),
+            "http://127.0.0.1:1",
+            "kc",
+            |_| Ok(()),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.starts_with("Connection failed"), "{err}");
+        for leak in [
+            "callback_path",
+            "loopback_port",
+            "client_challenge",
+            "127.0.0.1:1/",
+        ] {
+            assert!(!err.contains(leak), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_flow_opens_no_browser() {
+        // Argon review part 7 #2: a flow the webview gave up during the start
+        // opens nothing and keeps nothing.
+        let server = MockServer::start().await;
+        mount_start(
+            &server,
+            "GET",
+            "/auth/oidc/authorize/kc",
+            None,
+            "https://idp.example.com/a",
+        )
+        .await;
+        let id = "oidc-test-cancel-before-open";
+        let attempt = crate::commands::reauth::registry().register(id).unwrap();
+        crate::commands::reauth::registry().cancel(id);
+        let opened = AtomicBool::new(false);
+        let err = sign_in(
+            &manager(),
+            &attempt,
+            &server.uri(),
+            "kc",
+            |_| {
+                opened.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        crate::commands::reauth::registry().finish(id);
+        assert_eq!(err, CANCELLED);
+        assert!(!opened.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_flow_cancelled_while_the_browser_is_open_redeems_nothing() {
+        let server = MockServer::start().await;
+        mount_start(
+            &server,
+            "GET",
+            "/auth/oidc/authorize/kc",
+            Some(("code", "late-code")),
+            "https://idp.example.com/a",
+        )
+        .await;
+        let id = "oidc-test-cancel-while-open";
+        let attempt = crate::commands::reauth::registry().register(id).unwrap();
+        let err = sign_in(
+            &manager(),
+            &attempt,
+            &server.uri(),
+            "kc",
+            |_| {
+                // The user gives up while the provider page is open.
+                crate::commands::reauth::registry().cancel(id);
+                Ok(())
+            },
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        crate::commands::reauth::registry().finish(id);
+        assert_eq!(err, CANCELLED);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let exchanged = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .any(|r| r.url.path() == "/auth/oidc/desktop/exchange");
+        assert!(!exchanged);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_request_factor_keeps_no_verifier() {
+        let server = MockServer::start().await;
+        mount_start(
+            &server,
+            "POST",
+            "/auth/account-requests/oidc/authorize/kc",
+            Some(("code", "factor-late")),
+            "https://idp.example.com/auth",
+        )
+        .await;
+        let id = "oidc-test-cancel-factor";
+        let attempt = crate::commands::reauth::registry().register(id).unwrap();
+        let m = manager();
+        let err = request_factor(
+            &m,
+            &attempt,
+            &server.uri(),
+            "kc",
+            |_| {
+                crate::commands::reauth::registry().cancel(id);
+                Ok(())
+            },
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        crate::commands::reauth::registry().finish(id);
+        assert_eq!(err, CANCELLED);
+        Mock::given(method("POST"))
+            .and(path("/auth/account-requests"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"request": {
+                "id": ATTEMPT, "purpose": "recovery", "state": "waiting"
+            }, "request_secret": "rs"})))
+            .mount(&server)
+            .await;
+        let _ = m
+            .account_request_start(
+                &server.uri(),
+                json!({"username": "a", "purpose": "recovery", "first": {"type": "oidc", "oidc_code": "factor-late"}}),
+            )
+            .await;
+        let start = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.url.path() == "/auth/account-requests")
+            .unwrap();
+        let sent: Value = serde_json::from_slice(&start.body).unwrap();
+        assert!(sent["first"].get("verifier").is_none());
+    }
+
     #[test]
     fn debug_output_redacts_secrets() {
         let d = Delivered {
@@ -700,7 +939,7 @@ mod tests {
         };
         let s = LoopbackStart {
             port: 1234,
-            callback_path: "path-secret".into(),
+            callback_path: Zeroizing::new("path-secret".into()),
             client_challenge: "c".into(),
         };
         let out = format!("{d:?} {s:?}");

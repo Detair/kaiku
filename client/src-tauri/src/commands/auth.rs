@@ -126,7 +126,8 @@ async fn provider_url(authorize_url: &Url, token: &str, what: &str) -> Result<St
         .bearer_auth(token)
         .send()
         .await
-        .map_err(|e| format!("Failed to get authorize URL: {e}"))?;
+        // Never the URL: its `redirect_uri` carries the per-flow value.
+        .map_err(|e| format!("Failed to get authorize URL: {}", e.without_url()))?;
 
     if response.status().is_redirection() {
         Ok(response
@@ -243,28 +244,41 @@ const LINK_FAILED_PAGE: &str = "<html><body><h2>Linking failed</h2><p>You can cl
 /// redeemed with the verifier; the answer is the `LoginStep` (confirmed like a
 /// password), the verifier stays in Rust as the attempt's collection secret.
 /// See [`super::oidc_delivery`].
+/// `attempt_id` names the flow for `oidc_cancel`.
 #[command]
 pub async fn oidc_authorize(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
     server_url: String,
     provider_slug: String,
+    attempt_id: String,
 ) -> Result<serde_json::Value, String> {
     info!("Starting OIDC flow for provider: {}", provider_slug);
     let browser = super::settings::load_settings(&app_handle)
         .await
         .map(|s| s.passkey_browser)
         .unwrap_or_default();
-    let step = super::oidc_delivery::sign_in(
-        &state.session,
-        server_url.trim_end_matches('/'),
-        &provider_slug,
-        |url| open_browser_with(&app_handle, url, browser),
-        super::oidc_delivery::OIDC_LISTEN_MAX,
-    )
+    let step = super::oidc_delivery::with_attempt(&attempt_id, async |attempt| {
+        super::oidc_delivery::sign_in(
+            &state.session,
+            attempt,
+            server_url.trim_end_matches('/'),
+            &provider_slug,
+            |url| open_browser_with(&app_handle, url, browser),
+            super::oidc_delivery::OIDC_LISTEN_MAX,
+        )
+        .await
+    })
     .await?;
     info!("OIDC sign-in needs its confirmation step");
     Ok(step)
+}
+
+/// Cancel a running desktop OIDC flow (sign-in or request factor): it opens
+/// no browser, redeems nothing and keeps nothing after this.
+#[command]
+pub fn oidc_cancel(attempt_id: String) {
+    super::reauth::registry().cancel(&attempt_id);
 }
 
 /// Link an additional external (OIDC) identity to the signed-in account (desktop).

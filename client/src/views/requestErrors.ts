@@ -21,5 +21,6 @@ export function requestStartError(err: unknown): string {
     NO_INDEPENDENT_CANCELLER: "auth.recover.noCanceller",
     PASSKEY_BROWSER_FAILED: "passkeys.error.browserFailed",
     OIDC_TIMEOUT: "auth.sso.timeout",
+    SERVER_OUTDATED: "auth.login.serverOutdated",
   });
 }

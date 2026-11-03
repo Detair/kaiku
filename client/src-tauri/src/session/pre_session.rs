@@ -11,7 +11,8 @@
 //! ticket lives in memory for at most its 30 minutes, until something is
 //! bound or the server no longer knows it.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -19,7 +20,7 @@ use serde_json::{json, Value};
 use tracing::warn;
 use zeroize::Zeroizing;
 
-use super::attempts::{code_error, json_body, DESKTOP_CLIENT};
+use super::attempts::{code_error, json_body, refuse_token_answer, DESKTOP_CLIENT};
 use super::{network, normalize_server_url, RegisterRequest, SessionError, SessionManager};
 
 /// Which secret a pre-session request carries.
@@ -56,13 +57,62 @@ struct Held {
     base: String,
     secret: Zeroizing<String>,
     at: Instant,
+    /// The OIDC verifier's one-time code: the verifier goes only into the
+    /// start that names this code (Argon review, part 7).
+    bound_to: Option<Zeroizing<String>>,
+    /// Tells this secret from a later one in the same slot (expiry timer).
+    seq: u64,
+}
+
+type Slot = Arc<Mutex<Option<Held>>>;
+
+fn lock_slot(slot: &Mutex<Option<Held>>) -> std::sync::MutexGuard<'_, Option<Held>> {
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Secrets held for the pre-session flows.
 #[derive(Default)]
 pub struct PreSessionSecrets {
-    ticket: Mutex<Option<Held>>,
-    oidc_verifier: Mutex<Option<Held>>,
+    ticket: Slot,
+    oidc_verifier: Slot,
+    next_seq: AtomicU64,
+}
+
+impl PreSessionSecrets {
+    /// Hold `secret` in `slot`; a timer drops (and so zeroizes) it at
+    /// `ttl`, even if nothing asks for it again (Codex review m7). Without a
+    /// runtime (plain unit tests) the TTL is still checked on every read.
+    fn hold(
+        &self,
+        slot: &Slot,
+        base: String,
+        secret: Zeroizing<String>,
+        bound_to: Option<Zeroizing<String>>,
+        ttl: Duration,
+    ) {
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        *lock_slot(slot) = Some(Held {
+            base,
+            secret,
+            at: Instant::now(),
+            bound_to,
+            seq,
+        });
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let weak = Arc::downgrade(slot);
+        let deadline = tokio::time::Instant::now() + ttl;
+        runtime.spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            if let Some(slot) = weak.upgrade() {
+                let mut held = lock_slot(&slot);
+                if held.as_ref().is_some_and(|h| h.seq == seq) {
+                    *held = None;
+                }
+            }
+        });
+    }
 }
 
 impl std::fmt::Debug for PreSessionSecrets {
@@ -74,12 +124,31 @@ impl std::fmt::Debug for PreSessionSecrets {
     }
 }
 
-fn take_fresh(slot: &Mutex<Option<Held>>, base: &str, ttl: Duration) -> Option<Zeroizing<String>> {
-    let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
-    match held.take() {
-        Some(h) if h.base == base && h.at.elapsed() < ttl => Some(h.secret),
-        _ => None,
+/// Take the secret if it is for `base`, younger than `ttl` and (when it is
+/// bound to a code) bound to `code`. A secret for another code stays.
+fn take_fresh(
+    slot: &Mutex<Option<Held>>,
+    base: &str,
+    ttl: Duration,
+    code: Option<&str>,
+) -> Option<Zeroizing<String>> {
+    let mut held = lock_slot(slot);
+    let expired = held.as_ref().is_some_and(|h| h.at.elapsed() >= ttl);
+    let matches = held.as_ref().is_some_and(|h| {
+        let bound = match (&h.bound_to, code) {
+            (Some(b), Some(c)) => b.as_str() == c,
+            (Some(_), None) => false,
+            (None, _) => true,
+        };
+        h.base == base && !expired && bound
+    });
+    if !matches {
+        if expired {
+            *held = None;
+        }
+        return None;
     }
+    held.take().map(|h| h.secret)
 }
 
 fn is_uuid(segment: &str) -> bool {
@@ -134,6 +203,29 @@ fn no_secret() -> SessionError {
     SessionError::Server(404, "NO_PRE_SESSION_SECRET".to_string())
 }
 
+fn keyring_unavailable() -> SessionError {
+    SessionError::Server(503, "KEYRING_UNAVAILABLE".to_string())
+}
+
+/// A 2xx answer without the secret it must carry.
+fn invalid_answer(field: &str) -> SessionError {
+    warn!(field, "The server's answer lacks its pre-session secret");
+    SessionError::Server(502, "INVALID_SERVER_RESPONSE".to_string())
+}
+
+/// Move a non-empty string field out of `answer` (the buffer itself goes
+/// into `Zeroizing`, no copy stays behind).
+fn take_secret(answer: &mut Value, field: &str) -> Option<Zeroizing<String>> {
+    match answer.as_object_mut()?.remove(field)? {
+        Value::String(s) if !s.is_empty() => Some(Zeroizing::new(s)),
+        Value::String(s) => {
+            drop(Zeroizing::new(s));
+            None
+        }
+        _ => None,
+    }
+}
+
 impl SessionManager {
     fn forget_request_secret(&self, base: &str) {
         for entry in [request_entry(base), REQUEST_SERVER_ENTRY.to_string()] {
@@ -144,48 +236,49 @@ impl SessionManager {
     }
 
     fn request_secret(&self) -> Result<(String, Zeroizing<String>), SessionError> {
+        // A keyring failure is a stable code, never the backend's own text.
+        let keyring = |e: super::store::StoreError| {
+            warn!(error = %e, "Could not read the account-request secret from the OS keyring");
+            keyring_unavailable()
+        };
         let base = self
             .store
             .load_secret(REQUEST_SERVER_ENTRY)
-            .map_err(|e| SessionError::Network(e.to_string()))?
+            .map_err(keyring)?
             .ok_or_else(no_secret)?;
         let secret = self
             .store
             .load_secret(&request_entry(&base))
-            .map_err(|e| SessionError::Network(e.to_string()))?
+            .map_err(keyring)?
             .ok_or_else(no_secret)?;
         Ok((base, Zeroizing::new(secret)))
     }
 
     fn ticket(&self) -> Result<(String, Zeroizing<String>), SessionError> {
-        let held = self
-            .pre_session
-            .ticket
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let held = lock_slot(&self.pre_session.ticket);
         match held.as_ref() {
             Some(h) if h.at.elapsed() < TICKET_TTL => Ok((h.base.clone(), h.secret.clone())),
             _ => Err(no_secret()),
         }
     }
 
-    /// Keep the verifier of a request OIDC factor until the start sends it
-    /// (used by `request_oidc_factor`; single use, two minutes).
+    /// Keep the verifier of a request OIDC factor until the start that
+    /// names its one-time `code` sends it (used by `request_oidc_factor`;
+    /// single use, two minutes).
     pub fn keep_request_oidc_verifier(
         &self,
         server_url: &str,
+        code: &str,
         verifier: Zeroizing<String>,
     ) -> Result<(), SessionError> {
         let base = normalize_server_url(server_url)?;
-        *self
-            .pre_session
-            .oidc_verifier
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(Held {
+        self.pre_session.hold(
+            &self.pre_session.oidc_verifier,
             base,
-            secret: verifier,
-            at: Instant::now(),
-        });
+            verifier,
+            Some(Zeroizing::new(code.to_string())),
+            OIDC_FACTOR_TTL,
+        );
         Ok(())
     }
 
@@ -207,18 +300,23 @@ impl SessionManager {
             .and_then(|()| self.store.clear_secret(KEYRING_PROBE_ENTRY))
         {
             warn!(error = %e, "The OS keyring cannot keep an account-request secret");
-            return Err(SessionError::Server(503, "KEYRING_UNAVAILABLE".to_string()));
+            return Err(keyring_unavailable());
         }
         for key in ["first", "second"] {
-            let is_oidc = body
-                .get(key)
-                .and_then(|f| f.get("type"))
+            let factor = body.get(key);
+            let is_oidc =
+                factor.and_then(|f| f.get("type")).and_then(Value::as_str) == Some("oidc");
+            let code = factor
+                .and_then(|f| f.get("oidc_code"))
                 .and_then(Value::as_str)
-                == Some("oidc");
+                .map(str::to_owned);
             if is_oidc {
-                if let Some(verifier) =
-                    take_fresh(&self.pre_session.oidc_verifier, &base, OIDC_FACTOR_TTL)
-                {
+                if let Some(verifier) = take_fresh(
+                    &self.pre_session.oidc_verifier,
+                    &base,
+                    OIDC_FACTOR_TTL,
+                    code.as_deref(),
+                ) {
                     body[key]["verifier"] = json!(verifier.as_str());
                 }
             }
@@ -235,27 +333,22 @@ impl SessionManager {
             return Err(code_error(response).await);
         }
         let mut answer = json_body(response).await?;
-        let secret = answer
-            .as_object_mut()
-            .and_then(|o| o.remove("request_secret"))
-            .and_then(|v| v.as_str().map(|s| Zeroizing::new(s.to_string())));
-        if let Some(secret) = secret {
-            // Only one request is followed: a secret for another server goes.
-            if let Ok(Some(old_base)) = self.store.load_secret(REQUEST_SERVER_ENTRY) {
-                if old_base != base {
-                    if let Err(e) = self.store.clear_secret(&request_entry(&old_base)) {
-                        warn!(error = %e, "Could not remove an older account-request secret");
-                    }
-                }
-            }
-            let saved = self
-                .store
-                .save_secret(&request_entry(&base), &secret)
-                .and_then(|()| self.store.save_secret(REQUEST_SERVER_ENTRY, &base));
-            if let Err(e) = saved {
-                warn!(error = %e, "Could not keep the account-request secret in the OS keyring");
-                return Err(SessionError::Server(503, "KEYRING_UNAVAILABLE".to_string()));
-            }
+        refuse_token_answer(&answer)?;
+        // Only one request is followed: an older secret (any server) goes,
+        // also when this answer lacks one (Argon review, part 9 #2).
+        if let Ok(Some(old_base)) = self.store.load_secret(REQUEST_SERVER_ENTRY) {
+            self.forget_request_secret(&old_base);
+        }
+        let Some(secret) = take_secret(&mut answer, "request_secret") else {
+            return Err(invalid_answer("request_secret"));
+        };
+        let saved = self
+            .store
+            .save_secret(&request_entry(&base), &secret)
+            .and_then(|()| self.store.save_secret(REQUEST_SERVER_ENTRY, &base));
+        if let Err(e) = saved {
+            warn!(error = %e, "Could not keep the account-request secret in the OS keyring");
+            return Err(keyring_unavailable());
         }
         Ok(answer)
     }
@@ -281,21 +374,15 @@ impl SessionManager {
             return Err(code_error(response).await);
         }
         let mut answer = json_body(response).await?;
-        if let Some(ticket) = answer
-            .as_object_mut()
-            .and_then(|o| o.remove("registration_ticket"))
-            .and_then(|v| v.as_str().map(|s| Zeroizing::new(s.to_string())))
-        {
-            *self
-                .pre_session
-                .ticket
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(Held {
-                base,
-                secret: ticket,
-                at: Instant::now(),
-            });
-        }
+        refuse_token_answer(&answer)?;
+        // A new account replaces an older ticket, also when this answer
+        // lacks one (Argon review, part 9 #2).
+        *lock_slot(&self.pre_session.ticket) = None;
+        let Some(ticket) = take_secret(&mut answer, "registration_ticket") else {
+            return Err(invalid_answer("registration_ticket"));
+        };
+        self.pre_session
+            .hold(&self.pre_session.ticket, base, ticket, None, TICKET_TTL);
         Ok(answer)
     }
 
@@ -338,6 +425,7 @@ impl SessionManager {
             return Err(code_error(response).await);
         }
         let answer = json_body(response).await?;
+        refuse_token_answer(&answer)?;
         let state = answer.get("state").and_then(Value::as_str);
         let ended = match kind {
             PreSessionKind::Request => {
@@ -363,13 +451,7 @@ impl SessionManager {
     fn forget(&self, kind: PreSessionKind, base: &str) {
         match kind {
             PreSessionKind::Request => self.forget_request_secret(base),
-            PreSessionKind::Ticket => {
-                *self
-                    .pre_session
-                    .ticket
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = None;
-            }
+            PreSessionKind::Ticket => *lock_slot(&self.pre_session.ticket) = None,
         }
     }
 
@@ -448,13 +530,15 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/auth/account-requests"))
             .respond_with(
-                ResponseTemplate::new(201).set_body_json(json!({"request": request("waiting")})),
+                ResponseTemplate::new(201).set_body_json(
+                    json!({"request": request("waiting"), "request_secret": "rs-1"}),
+                ),
             )
             .mount(&server)
             .await;
         let store = Arc::new(MemoryTokenStore::new());
         let m = manager(&store);
-        m.keep_request_oidc_verifier(&server.uri(), Zeroizing::new("ver-1".into()))
+        m.keep_request_oidc_verifier(&server.uri(), "c", Zeroizing::new("ver-1".into()))
             .unwrap();
         m.account_request_start(
             &server.uri(),
@@ -466,7 +550,13 @@ mod tests {
             serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
         assert_eq!(sent["first"]["verifier"], "ver-1");
         // Single use.
-        assert!(take_fresh(&m.pre_session.oidc_verifier, &server.uri(), OIDC_FACTOR_TTL).is_none());
+        assert!(take_fresh(
+            &m.pre_session.oidc_verifier,
+            &server.uri(),
+            OIDC_FACTOR_TTL,
+            Some("c")
+        )
+        .is_none());
     }
 
     #[tokio::test]
@@ -775,7 +865,7 @@ mod tests {
         let server = MockServer::start().await;
         let store = Arc::new(MemoryTokenStore::new());
         let m = manager(&store);
-        m.keep_request_oidc_verifier(&server.uri(), Zeroizing::new("ver-1".into()))
+        m.keep_request_oidc_verifier(&server.uri(), "c", Zeroizing::new("ver-1".into()))
             .unwrap();
         store.set_fail_save(true);
         let err = m
@@ -786,7 +876,13 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), "KEYRING_UNAVAILABLE");
-        assert!(take_fresh(&m.pre_session.oidc_verifier, &server.uri(), OIDC_FACTOR_TTL).is_some());
+        assert!(take_fresh(
+            &m.pre_session.oidc_verifier,
+            &server.uri(),
+            OIDC_FACTOR_TTL,
+            Some("c")
+        )
+        .is_some());
     }
 
     async fn registered(server: &MockServer) -> SessionManager {
@@ -923,14 +1019,233 @@ mod tests {
         assert_eq!(err.to_string(), "EMAIL_TAKEN");
     }
 
+    fn token_body() -> Value {
+        json!({"access_token": "at-secret-1", "refresh_token": "rt-secret-1",
+               "expires_in": 900, "token_type": "Bearer"})
+    }
+
+    #[tokio::test]
+    async fn a_pre_l1b_token_answer_to_register_is_server_outdated() {
+        // Fable review M1: the token pair never reaches the webview.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/register"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(token_body()))
+            .mount(&server)
+            .await;
+        let m = manager(&Arc::new(MemoryTokenStore::new()));
+        let err = m
+            .register(RegisterRequest {
+                server_url: server.uri(),
+                username: "neu".into(),
+                email: None,
+                password: "pw-123456".into(),
+                display_name: None,
+            })
+            .await
+            .unwrap_err();
+        let text = format!("{err} {err:?}");
+        assert_eq!(err.to_string(), "SERVER_OUTDATED");
+        assert!(
+            !text.contains("at-secret-1") && !text.contains("rt-secret-1"),
+            "{text}"
+        );
+        assert!(!m.has_ticket());
+    }
+
+    #[tokio::test]
+    async fn a_token_answer_to_a_pre_session_request_is_refused() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = started(&server, &store).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/account-requests/current/finish"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(token_body()))
+            .mount(&server)
+            .await;
+        let err = m
+            .pre_session_request(
+                PreSessionKind::Request,
+                "POST",
+                "/auth/account-requests/current/finish",
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "SERVER_OUTDATED");
+    }
+
+    #[tokio::test]
+    async fn a_start_without_request_secret_fails_and_drops_the_old_one() {
+        // Argon review part 9 #2: never follow an older request silently.
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = started(&server, &store).await;
+        server.reset().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/account-requests"))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(json!({"request": request("waiting")})),
+            )
+            .mount(&server)
+            .await;
+        let err = m
+            .account_request_start(
+                &server.uri(),
+                json!({"username": "bob", "purpose": "recovery"}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "INVALID_SERVER_RESPONSE");
+        assert!(store.load_secret(REQUEST_SERVER_ENTRY).unwrap().is_none());
+        assert!(store
+            .load_secret(&request_entry(&server.uri()))
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_register_without_ticket_fails_and_drops_the_old_ticket() {
+        let server = MockServer::start().await;
+        let m = registered(&server).await;
+        server.reset().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/register"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(
+                json!({"user_id": "u2", "username": "zwei", "ticket_expires_at": "t"}),
+            ))
+            .mount(&server)
+            .await;
+        let err = m
+            .register(RegisterRequest {
+                server_url: server.uri(),
+                username: "zwei".into(),
+                email: None,
+                password: "pw-123456".into(),
+                display_name: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "INVALID_SERVER_RESPONSE");
+        assert!(!m.has_ticket());
+    }
+
+    #[tokio::test]
+    async fn a_keyring_read_failure_is_a_stable_code() {
+        // Argon review part 9 #5: no backend text reaches the webview.
+        let store = Arc::new(MemoryTokenStore::new());
+        store.set_fail_load_secret(true);
+        let m = manager(&store);
+        let err = m
+            .pre_session_request(
+                PreSessionKind::Request,
+                "GET",
+                "/auth/account-requests/current",
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "KEYRING_UNAVAILABLE");
+    }
+
+    #[tokio::test]
+    async fn the_oidc_verifier_goes_only_to_the_start_naming_its_code() {
+        // Argon review part 7: a stale code gets no verifier, the newer one stays.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/account-requests"))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(
+                    json!({"request": request("waiting"), "request_secret": "rs-1"}),
+                ),
+            )
+            .mount(&server)
+            .await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = manager(&store);
+        m.keep_request_oidc_verifier(&server.uri(), "new-code", Zeroizing::new("ver-new".into()))
+            .unwrap();
+        m.account_request_start(
+            &server.uri(),
+            json!({"username": "alice", "purpose": "bootstrap", "first": {"type": "oidc", "oidc_code": "old-code"}, "totp_code": "123456"}),
+        )
+        .await
+        .unwrap();
+        let sent: Value =
+            serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+        assert!(sent["first"].get("verifier").is_none());
+        assert!(take_fresh(
+            &m.pre_session.oidc_verifier,
+            &server.uri(),
+            OIDC_FACTOR_TTL,
+            Some("new-code")
+        )
+        .is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn held_secrets_are_dropped_at_their_deadline() {
+        // Codex review m7: not only when read again.
+        let s = PreSessionSecrets::default();
+        s.hold(
+            &s.ticket,
+            "b".into(),
+            Zeroizing::new("tick".into()),
+            None,
+            TICKET_TTL,
+        );
+        s.hold(
+            &s.oidc_verifier,
+            "b".into(),
+            Zeroizing::new("ver".into()),
+            Some(Zeroizing::new("c".into())),
+            OIDC_FACTOR_TTL,
+        );
+        tokio::time::advance(OIDC_FACTOR_TTL + Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(lock_slot(&s.oidc_verifier).is_none());
+        assert!(lock_slot(&s.ticket).is_some());
+        tokio::time::advance(TICKET_TTL).await;
+        tokio::task::yield_now().await;
+        assert!(lock_slot(&s.ticket).is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_newer_secret_outlives_the_older_ones_timer() {
+        let s = PreSessionSecrets::default();
+        s.hold(
+            &s.ticket,
+            "b".into(),
+            Zeroizing::new("old".into()),
+            None,
+            TICKET_TTL,
+        );
+        tokio::time::advance(TICKET_TTL - Duration::from_secs(5)).await;
+        s.hold(
+            &s.ticket,
+            "b".into(),
+            Zeroizing::new("new".into()),
+            None,
+            TICKET_TTL,
+        );
+        tokio::time::advance(Duration::from_secs(10)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            lock_slot(&s.ticket).as_ref().map(|h| h.secret.as_str()),
+            Some("new")
+        );
+    }
+
     #[test]
     fn debug_output_redacts_secrets() {
         let s = PreSessionSecrets::default();
-        *s.ticket.lock().unwrap() = Some(Held {
-            base: "b".into(),
-            secret: Zeroizing::new("tick-secret".into()),
-            at: Instant::now(),
-        });
+        s.hold(
+            &s.ticket,
+            "b".into(),
+            Zeroizing::new("tick-secret".into()),
+            None,
+            TICKET_TTL,
+        );
         assert!(!format!("{s:?}").contains("tick-secret"));
     }
 }

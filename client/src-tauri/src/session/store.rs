@@ -136,6 +136,7 @@ pub struct MemoryTokenStore {
     session: std::sync::Mutex<Option<StoredSession>>,
     secrets: std::sync::Mutex<std::collections::HashMap<String, String>>,
     fail_save: std::sync::atomic::AtomicBool,
+    fail_load_secret: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
@@ -155,6 +156,11 @@ impl MemoryTokenStore {
 
     pub fn set_fail_save(&self, fail: bool) {
         self.fail_save
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn set_fail_load_secret(&self, fail: bool) {
+        self.fail_load_secret
             .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -186,6 +192,12 @@ impl TokenStore for MemoryTokenStore {
     }
 
     fn load_secret(&self, name: &str) -> Result<Option<String>, StoreError> {
+        if self
+            .fail_load_secret
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(StoreError::Backend("secret backend text /dev/x".into()));
+        }
         Ok(self.secrets.lock().unwrap().get(name).cloned())
     }
 

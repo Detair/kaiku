@@ -76,3 +76,19 @@ pub async fn login_attempt_cancel(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// End the session a sign-in step installed at `generation`
+/// (`AuthResult.session_generation`) if it is still the current one: a
+/// sign-in the webview gave up while Rust adopted it. A newer session is
+/// never signed out (Codex review M2). `true` if it signed out.
+#[command]
+pub async fn login_attempt_discard_session(
+    state: State<'_, AppState>,
+    generation: u64,
+) -> Result<bool, String> {
+    state
+        .session
+        .logout_if_current(generation)
+        .await
+        .map_err(|e| e.to_string())
+}

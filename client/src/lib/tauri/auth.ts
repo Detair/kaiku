@@ -584,6 +584,31 @@ export async function fetchServerSettings(
 }
 
 /**
+ * Desktop OIDC command under its own attempt id: an abort of `signal`
+ * cancels it in Rust (`oidc_cancel`), so a flow the user gave up opens no
+ * browser, redeems nothing and keeps nothing (Argon review, part 7 #2).
+ */
+export async function invokeCancellableOidc<T>(
+  run: (invoke: typeof import("@tauri-apps/api/core").invoke, attemptId: string) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  if (signal?.aborted) throw new HttpError(400, "OIDC_CANCELLED", "OIDC_CANCELLED");
+  const attemptId = crypto.randomUUID();
+  const onAbort = () => {
+    void invoke("oidc_cancel", { attemptId }).catch(() => undefined);
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await run(invoke, attemptId);
+  } catch (error) {
+    throw nativeSsoError(error);
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/**
  * Initiate an SSO sign-in (F3 OIDC variant). Never a session by itself: the
  * answer is a `LoginStep`, confirmed by the phone or the TOTP step (C27).
  *
@@ -596,6 +621,8 @@ export async function fetchServerSettings(
 export async function oidcAuthorize(
   serverUrl: string,
   providerSlug: string,
+  /** Desktop: aborting cancels the Rust flow (`oidc_cancel`), browser: unused. */
+  signal?: AbortSignal,
 ): Promise<
   | { mode: "tauri"; step: LoginStep }
   | { mode: "browser"; authUrl: string }
@@ -603,16 +630,11 @@ export async function oidcAuthorize(
   const baseUrl = serverUrl.replace(/\/+$/, "");
 
   if (isTauri()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const raw = await invoke<unknown>("oidc_authorize", {
-        serverUrl: baseUrl,
-        providerSlug,
-      });
-      return { mode: "tauri", step: decodeLoginStep(raw) };
-    } catch (error) {
-      throw nativeSsoError(error);
-    }
+    const raw = await invokeCancellableOidc(
+      (invoke, attemptId) => invoke<unknown>("oidc_authorize", { serverUrl: baseUrl, providerSlug, attemptId }),
+      signal,
+    );
+    return { mode: "tauri", step: decodeLoginStep(raw) };
   }
 
   // Browser: return the authorize endpoint URL for popup flow

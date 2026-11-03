@@ -115,6 +115,10 @@ pub struct AuthResult {
     /// `false` when the OS keyring refused the refresh token: the user stays
     /// signed in for this run but has to sign in again after a restart.
     pub persisted: bool,
+    /// The session's identity generation when it was installed: the
+    /// webview names it to end exactly this session if it turns out to be
+    /// unwanted (`logout_if_current`, Codex review M2). Not a secret.
+    pub session_generation: u64,
 }
 
 /// Result of a session restore attempt (`get_current_user`).
@@ -742,18 +746,35 @@ impl SessionManager {
             self.end_unwanted(&base, &tokens).await;
             return Ok(None);
         }
-        let user = self.fetch_me(&base, &tokens.access_token).await?;
+        // A sign-in or sign-out that lands while the profile loads wins: this
+        // pair is ended instead of replacing it (Argon review, part 8 #2).
+        let generation = self.generation();
+        let user = match self.fetch_me(&base, &tokens.access_token).await {
+            Ok(user) => user,
+            Err(e) => {
+                self.end_unwanted(&base, &tokens).await;
+                return Err(e);
+            }
+        };
         if let Some(expected) = expected_user_id {
             if user.get("id").and_then(Value::as_str) != Some(expected) {
+                // Another account's session is never kept, nor left running.
+                self.end_unwanted(&base, &tokens).await;
                 return Err(SessionError::InvalidRequest("ACCOUNT_MISMATCH".to_string()));
             }
         }
-        let legacy_user = parse_user(&user)?;
+        let legacy_user = match parse_user(&user) {
+            Ok(u) => u,
+            Err(e) => {
+                self.end_unwanted(&base, &tokens).await;
+                return Err(e);
+            }
+        };
         let password_change_required =
             tokens.password_change_required || flag(&user, "password_change_required");
 
         let guard = self.lock().await;
-        if !wanted() {
+        if !wanted() || self.generation() != generation {
             drop(guard);
             self.end_unwanted(&base, &tokens).await;
             return Ok(None);
@@ -765,6 +786,7 @@ impl SessionManager {
         session.password_change_required = password_change_required;
         let persisted = self.persist(&session);
         self.set_session(Some(session), true);
+        let session_generation = self.generation();
         {
             let mut auth = self.legacy.write().await;
             auth.server_url = Some(base.clone());
@@ -781,6 +803,7 @@ impl SessionManager {
             setup_required: tokens.setup_required,
             password_change_required,
             persisted,
+            session_generation,
         }))
     }
 
@@ -1001,8 +1024,27 @@ impl SessionManager {
 
     /// Sign out: revoke the refresh token on the server (best effort), forget
     /// it locally.
+    /// Sign out only if the session installed at `generation` is still the
+    /// current one. A sign-in result the webview no longer wants is ended
+    /// this way, never a newer session that replaced it (which already ended
+    /// the old one, `end_previous_session`). `true` if it signed out.
+    pub async fn logout_if_current(&self, generation: u64) -> Result<bool, SessionError> {
+        self.logout_matching(Some(generation)).await
+    }
+
     pub async fn logout(&self) -> Result<(), SessionError> {
+        self.logout_matching(None).await.map(|_| ())
+    }
+
+    /// Sign out (under the token lock, so the check and the sign-out see the
+    /// same session); with `Some(generation)` only that session.
+    async fn logout_matching(&self, generation: Option<u64>) -> Result<bool, SessionError> {
         let guard = self.lock().await;
+        if let Some(g) = generation {
+            if g != self.generation() || self.snapshot().is_none() {
+                return Ok(false);
+            }
+        }
         if let Some(session) = self.snapshot() {
             let result = self
                 .http
@@ -1025,7 +1067,7 @@ impl SessionManager {
             }
         }
         info!("Signed out");
-        Ok(())
+        Ok(true)
     }
 
     /// Session-management requests that need the refresh token as
@@ -1063,11 +1105,12 @@ impl SessionManager {
                 self.refresh_locked(&guard, session).await?;
                 continue;
             }
-            let text = response.text().await.map_err(|e| network(&e))?;
             if !(200..300).contains(&status) {
-                // Bare code with its fields (STEP_UP_REQUIRED, PASSWORD_REJECTED {reason}).
-                return Err(attempts::code_error_from(status, None, &text));
+                // Bare code with `Retry-After` and its fields (STEP_UP_REQUIRED,
+                // PASSWORD_REJECTED {reason}, TOO_MANY_ATTEMPTS:<secs>).
+                return Err(attempts::code_error(response).await);
             }
+            let text = response.text().await.map_err(|e| network(&e))?;
             if text.trim().is_empty() {
                 return Ok(Value::Null);
             }
@@ -1254,6 +1297,79 @@ mod tests {
         let m = manager(store);
         sign_in(&m, server, tokens("at-1", "rt-1")).await;
         m
+    }
+
+    #[tokio::test]
+    async fn an_account_mismatch_ends_the_minted_session() {
+        // Argon review part 8 #2: another account's session is not left running.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/auth/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(me()))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/logout"))
+            .and(header("authorization", "Bearer at-other"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let m = manager(&Arc::new(MemoryTokenStore::new()));
+        let err = m
+            .adopt_tokens_for(
+                &server.uri(),
+                serde_json::from_value(tokens("at-other", "rt-other")).unwrap(),
+                Some("0192f0c0-0000-7000-8000-00000000ffff"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "ACCOUNT_MISMATCH");
+        assert!(m.auth_info().is_none());
+    }
+
+    #[tokio::test]
+    async fn logout_if_current_never_signs_out_a_newer_session() {
+        // Codex review M2: the webview discards an abandoned sign-in by its
+        // generation; a session that replaced it stays.
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        mount_login(&server, "at-a", "rt-a").await;
+        Mock::given(method("POST"))
+            .and(path("/auth/logout"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        let m = manager(&store);
+        let a = sign_in(&m, &server, tokens("at-a", "rt-a")).await;
+        let b = sign_in(&m, &server, tokens("at-b", "rt-b")).await;
+        assert_ne!(a.session_generation, b.session_generation);
+        assert!(!m.logout_if_current(a.session_generation).await.unwrap());
+        assert_eq!(m.auth_info().unwrap().access_token, "at-b");
+        assert!(m.logout_if_current(b.session_generation).await.unwrap());
+        assert!(m.auth_info().is_none());
+    }
+
+    #[tokio::test]
+    async fn session_request_keeps_retry_after() {
+        // Argon review part 8 #3.
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = logged_in(&server, &store).await;
+        Mock::given(method("DELETE"))
+            .and(path("/auth/sessions"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("retry-after", "120")
+                    .set_body_json(json!({"error": "TOO_MANY_ATTEMPTS", "message": "x"})),
+            )
+            .mount(&server)
+            .await;
+        let err = m
+            .session_request("DELETE", "/auth/sessions", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "TOO_MANY_ATTEMPTS:120");
     }
 
     #[tokio::test]

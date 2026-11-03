@@ -17,6 +17,7 @@ import {
 } from "../types/login";
 import { httpRequest, isTauri } from "./common";
 import { baseOf, invokeNative, preSessionRequest, useBrowserServer } from "./preSession";
+import { invokeCancellableOidc } from "./auth";
 
 const CURRENT = "/auth/account-requests/current";
 
@@ -45,10 +46,14 @@ export async function startAccountRequest(
 export async function requestOidcAuthorize(
   serverUrl: string,
   providerId: string,
+  /** Desktop: aborting cancels the Rust flow (`oidc_cancel`). */
+  signal?: AbortSignal,
 ): Promise<{ mode: "tauri"; oidcCode: string } | { mode: "browser"; url: string }> {
   if (isTauri()) {
-    const r = await invokeNative((invoke) =>
-      invoke<{ oidc_code: string }>("request_oidc_factor", { serverUrl: baseOf(serverUrl), providerId }),
+    const r = await invokeCancellableOidc(
+      (invoke, attemptId) =>
+        invoke<{ oidc_code: string }>("request_oidc_factor", { serverUrl: baseOf(serverUrl), providerId, attemptId }),
+      signal,
     );
     return { mode: "tauri", oidcCode: r.oidc_code };
   }

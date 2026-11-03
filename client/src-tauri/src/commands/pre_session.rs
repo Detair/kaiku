@@ -39,19 +39,24 @@ pub async fn request_oidc_factor(
     app: tauri::AppHandle,
     server_url: String,
     provider_id: String,
+    attempt_id: String,
 ) -> Result<Value, String> {
     info!(provider = %provider_id, "Starting a request OIDC factor");
     let browser = super::settings::load_settings(&app)
         .await
         .map(|s| s.passkey_browser)
         .unwrap_or_default();
-    super::oidc_delivery::request_factor(
-        &state.session,
-        server_url.trim_end_matches('/'),
-        &provider_id,
-        |url| super::auth::open_browser_with(&app, url, browser),
-        super::oidc_delivery::OIDC_LISTEN_MAX,
-    )
+    super::oidc_delivery::with_attempt(&attempt_id, async |attempt| {
+        super::oidc_delivery::request_factor(
+            &state.session,
+            attempt,
+            server_url.trim_end_matches('/'),
+            &provider_id,
+            |url| super::auth::open_browser_with(&app, url, browser),
+            super::oidc_delivery::OIDC_LISTEN_MAX,
+        )
+        .await
+    })
     .await
 }
 

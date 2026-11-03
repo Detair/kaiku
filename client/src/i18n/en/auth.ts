@@ -174,6 +174,7 @@ export const auth = {
   "auth.sso.alreadyLinked": "That account is already linked to another Kaiku account.",
   "auth.sso.linkFailed": "Linking failed. Please try again.",
   "auth.sso.timeout": "The sign-in in your browser took too long. Please try again.",
+  "auth.login.serverOutdated": "This server is older than this app and cannot sign you in yet. Ask your admin to update it.",
   "auth.login.mfaInvalid": "That code didn't work. If you just used it, wait for the next code and try again.",
   "auth.register.pageTitle": "Create Account",
   "auth.register.heading": "Create an account",

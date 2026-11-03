@@ -17,6 +17,9 @@ export const LOGIN_ERRORS: Partial<Record<string, MessageKey>> = {
   LOGIN_ATTEMPT_ENDED: "auth.login.attemptEnded",
   LOGIN_ATTEMPT_UNKNOWN: "auth.login.attemptEnded",
   TOTP_UNAVAILABLE: "auth.login.totpUnavailable",
+  // Desktop: a server without the v1.0 sign-in steps answered with tokens,
+  // which Rust refuses (Fable review M1).
+  SERVER_OUTDATED: "auth.login.serverOutdated",
 };
 
 /** Server codes the sign-up form words specifically (used with `errorText`). */
@@ -24,6 +27,7 @@ export const REGISTER_ERRORS: Partial<Record<string, MessageKey>> = {
   USER_EXISTS: "auth.register.usernameTaken",
   EMAIL_TAKEN: "auth.register.emailTaken",
   REGISTRATION_DISABLED: "auth.register.closed",
+  SERVER_OUTDATED: "auth.login.serverOutdated",
 };
 
 /** A 409 without a code (a proxy, or a server without a JSON body). */

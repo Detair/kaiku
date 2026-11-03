@@ -119,6 +119,7 @@
   "auth.login.registerLink": "",
   "auth.login.reload": "",
   "auth.login.secureAccount": "",
+  "auth.login.serverOutdated": "",
   "auth.login.ssoFailed": "",
   "auth.login.submitting": "",
   "auth.login.subtitle": "",

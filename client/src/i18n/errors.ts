@@ -66,6 +66,7 @@ export const SSO_ERRORS: { byCode: ByCode } = {
     // Desktop delivery (C29 step 8): the browser of "Browser for passkey sign-in".
     PASSKEY_BROWSER_FAILED: "passkeys.error.browserFailed",
     OIDC_TIMEOUT: "auth.sso.timeout",
+    SERVER_OUTDATED: "auth.login.serverOutdated",
   },
 };
 
