@@ -8,6 +8,7 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.session.SessionTeardownRunner
 import io.wolftown.kaiku.domain.model.AuthResponse
+import io.wolftown.kaiku.domain.model.RegistrationTicket
 import io.wolftown.kaiku.domain.model.User
 import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.ui.auth.MfaRequiredException
@@ -299,30 +300,23 @@ class AuthRepository @Inject constructor(
         invalidateLogin()
     }
 
+    /**
+     * F8: registration makes an account without a session; the answer is a
+     * 30-minute ticket that binds this phone as the account's key (the setup
+     * flow claims with it and then signs in with the key).
+     */
     suspend fun register(
         username: String,
         password: String,
         email: String?,
         displayName: String?
-    ): Result<User> {
-        signedInRefusal()?.let { return it }
-        // Fetch the profile from the server that issued the token.
-        val serverUrl = tokenStorage.getServerUrl()
+    ): Result<RegistrationTicket> {
+        signedInRefusal()?.let { return Result.failure(it.exceptionOrNull()!!) }
         return try {
-            val authResponse = authApi.register(username, password, email, displayName)
-
-            val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
-
-            // The previous session's teardown finishes before this one starts.
-            sessionTeardown.awaitIdle()
-            if (!installSession(authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id)) {
-                return Result.failure(AlreadySignedInException())
-            }
-            Result.success(user)
+            Result.success(authApi.register(username, password, email, displayName))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            tokenStorage.clear()
             Result.failure(e)
         }
     }

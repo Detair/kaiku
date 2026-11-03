@@ -5,8 +5,14 @@ import io.mockk.coEvery
 import io.mockk.mockk
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.api.ApiException
+import io.mockk.coVerify
+import io.mockk.every
+import io.wolftown.kaiku.data.api.EnrollmentApi
+import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
-import io.wolftown.kaiku.domain.model.User
+import io.wolftown.kaiku.domain.model.EnrollmentIssued
+import io.wolftown.kaiku.domain.model.RegistrationTicket
+import io.wolftown.kaiku.ui.auth.setup.SetupEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -25,13 +31,16 @@ import org.junit.Test
 class RegisterViewModelTest {
 
     private lateinit var authRepository: AuthRepository
+    private lateinit var enrollmentApi: EnrollmentApi
     private lateinit var viewModel: RegisterViewModel
 
     @Before
     fun setUp() {
         Dispatchers.setMain(StandardTestDispatcher())
         authRepository = mockk(relaxed = true)
-        viewModel = RegisterViewModel(authRepository)
+        enrollmentApi = mockk()
+        val tokenStorage: TokenStorage = mockk { every { getServerUrl() } returns "https://chat.example.com" }
+        viewModel = RegisterViewModel(authRepository, enrollmentApi, tokenStorage)
     }
 
     @After
@@ -70,16 +79,22 @@ class RegisterViewModelTest {
     }
 
     @Test
-    fun `successful registration sets the success flag`() = runTest {
+    fun `register binds this phone with the ticket and no code`() = runTest {
         coEvery { authRepository.register("anna", "pw", null, null) } returns
-            Result.success(User(id = "u", username = "anna", displayName = "Anna"))
+            Result.success(RegistrationTicket("u", "anna", "2026-11-03T12:30:00Z", "ticket-secret"))
+        coEvery { enrollmentApi.issueWithTicket("ticket-secret") } returns
+            EnrollmentIssued("e1", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", "https://chat.example.com/setup#v=1&t=x", "t")
 
         viewModel.onUsernameChanged("anna")
         viewModel.onPasswordChanged("pw")
         viewModel.onRegisterClicked()
         advanceUntilIdle()
 
-        assertTrue(viewModel.uiState.value.registerSuccess)
+        coVerify { enrollmentApi.issueWithTicket("ticket-secret") }
+        assertEquals(
+            SetupEntry("https://chat.example.com", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", SetupEntry.Source.TICKET, ticket = "ticket-secret"),
+            viewModel.uiState.value.setupEntry,
+        )
         assertNull(viewModel.uiState.value.errorRes)
     }
 }

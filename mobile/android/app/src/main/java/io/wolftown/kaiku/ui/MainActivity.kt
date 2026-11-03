@@ -28,6 +28,9 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.navigation.DeepLinks
+import io.wolftown.kaiku.navigation.PendingSetupLinks
+import io.wolftown.kaiku.navigation.SetupLinks
+import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.navigation.PendingNavigation
 import io.wolftown.kaiku.push.AndroidNotificationPresenter
 import io.wolftown.kaiku.ui.auth.LoginViewModel
@@ -136,6 +139,12 @@ class MainActivity : FragmentActivity() {
             loginViewModel.onOidcDeepLink(uri)
             return
         }
+        // A setup link (kaiku://setup/v1 or the https App Link, L2-A15); its token stays in memory.
+        SetupLinks.parse(uri.toString())?.let {
+            PendingSetupLinks.post(it)
+            intent.data = null
+            return
+        }
         DeepLinks.parseChannelId(uri.toString())?.let {
             // A notification tap names the account it was posted for; other links
             // belong to whoever is signed in now.
@@ -157,8 +166,12 @@ class MainActivity : FragmentActivity() {
      */
     private fun resolveStartDestination(): String {
         if (authState.isLoggedIn.value) return "home"
-        // A key device outlives its session: it signs in again with its screen lock (L2-A11).
+        // A key device outlives its session: it signs in again with its screen lock (L2-A11);
+        // a waiting setup resumes its wait (L2-A13).
         if (keyDevices.current() is KeyDeviceState.Lapsed) return CONFIRM_ROUTE
+        if (keyDevices.current() is KeyDeviceState.Pending || keyDevices.phase() == KeyDevicePhase.CLAIMED) {
+            return SETUP_PENDING_ROUTE
+        }
         if (tokenStorage.getServerUrl() == null) {
             val default = normalizeServerAddress(BuildConfig.DEFAULT_SERVER_URL).getOrNull()
                 ?: return "server_url"

@@ -19,7 +19,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.api.EnrollmentApi
+import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
+import io.wolftown.kaiku.domain.KaikuPayloads
+import io.wolftown.kaiku.ui.auth.setup.SetupEntry
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,12 +40,15 @@ data class RegisterUiState(
     val isLoading: Boolean = false,
     /** `@StringRes` of the current error, or null. Server message text is never shown. */
     @StringRes val errorRes: Int? = null,
-    val registerSuccess: Boolean = false
+    /** F8: the account exists; this phone's own setup (bound by the ticket) comes next. */
+    val setupEntry: SetupEntry? = null,
 )
 
 @HiltViewModel
 class RegisterViewModel @Inject constructor(
-    private val authRepository: AuthRepository
+    private val authRepository: AuthRepository,
+    private val enrollmentApi: EnrollmentApi,
+    private val tokenStorage: TokenStorage,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(RegisterUiState())
@@ -76,21 +84,22 @@ class RegisterViewModel @Inject constructor(
                 displayName
             )
 
-            result.fold(
-                onSuccess = {
-                    _uiState.update {
-                        it.copy(isLoading = false, registerSuccess = true)
-                    }
-                },
-                onFailure = { exception ->
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            errorRes = AuthErrorMapper.register(exception)
-                        )
-                    }
-                }
-            )
+            val ticket = result.getOrElse { exception ->
+                _uiState.update { it.copy(isLoading = false, errorRes = AuthErrorMapper.register(exception)) }
+                return@launch
+            }
+            // F8: no session; the ticket binds this phone's own key (claim without a code).
+            try {
+                val origin = tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin)
+                    ?: throw IllegalStateException("no server")
+                val issued = enrollmentApi.issueWithTicket(ticket.ticket)
+                val entry = SetupEntry(origin, issued.setupToken, SetupEntry.Source.TICKET, ticket = ticket.ticket)
+                _uiState.update { it.copy(isLoading = false, setupEntry = entry) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isLoading = false, errorRes = AuthErrorMapper.register(e)) }
+            }
         }
     }
 
@@ -102,15 +111,13 @@ class RegisterViewModel @Inject constructor(
 @Composable
 fun RegisterScreen(
     onNavigateToLogin: () -> Unit,
-    onRegisterSuccess: () -> Unit,
+    onRegistered: (SetupEntry) -> Unit,
     viewModel: RegisterViewModel = androidx.hilt.navigation.compose.hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
-    LaunchedEffect(uiState.registerSuccess) {
-        if (uiState.registerSuccess) {
-            onRegisterSuccess()
-        }
+    LaunchedEffect(uiState.setupEntry) {
+        uiState.setupEntry?.let(onRegistered)
     }
 
     Column(

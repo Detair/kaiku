@@ -71,6 +71,10 @@ object ApprovalModule {
     fun provideDeviceIdProvider(store: DeviceIdStore): DeviceIdProvider = store
 
     @Provides
+    fun provideSetupEnvironment(impl: io.wolftown.kaiku.ui.auth.setup.AndroidSetupEnvironment):
+        io.wolftown.kaiku.ui.auth.setup.SetupEnvironment = impl
+
+    @Provides
     fun provideDeviceSigner(
         keyStore: ApprovalKeyStore,
         verifier: UserVerifier,

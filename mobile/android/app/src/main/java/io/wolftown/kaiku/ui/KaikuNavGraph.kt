@@ -25,6 +25,11 @@ import io.wolftown.kaiku.domain.ScanMode
 import io.wolftown.kaiku.navigation.ScanHandoff
 import io.wolftown.kaiku.ui.scan.ScanScreen
 import io.wolftown.kaiku.ui.approval.LoginApprovalScreen
+import io.wolftown.kaiku.navigation.PendingSetupLinks
+import io.wolftown.kaiku.ui.auth.setup.SetupEntry
+import io.wolftown.kaiku.ui.auth.setup.SetupFlowScreen
+import io.wolftown.kaiku.ui.auth.setup.SetupPendingScreen
+import io.wolftown.kaiku.ui.auth.setup.SetupScanScreen
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import io.wolftown.kaiku.navigation.PendingNavigationRules
@@ -65,7 +70,7 @@ fun KaikuNavGraph(
     // Auth guard: redirect to login when logged out from an authenticated screen
     val authRoutes = setOf(
         "server_url", "login", "register", "change_password", SCAN_SETUP_ROUTE,
-        CONFIRM_ROUTE,
+        CONFIRM_ROUTE, SETUP_FLOW_ROUTE, SETUP_PENDING_ROUTE,
     )
     LaunchedEffect(isLoggedIn) {
         if (!isLoggedIn && currentRoute != null && currentRoute !in authRoutes) {
@@ -75,10 +80,23 @@ fun KaikuNavGraph(
         }
     }
 
-    // A lapsed key device never sees the password form: it confirms with its screen lock (L2-A11).
+    // A key device never sees the password form: a lapsed one confirms with its screen lock
+    // (L2-A11), a pending one keeps showing when it will be ready (L2-A13).
     LaunchedEffect(isLoggedIn, keyState, currentRoute) {
-        if (!isLoggedIn && keyState is KeyDeviceState.Lapsed && currentRoute == "login") {
-            navController.navigate(CONFIRM_ROUTE) { popUpTo(0) { inclusive = true } }
+        if (!isLoggedIn && currentRoute == "login") {
+            when (keyState) {
+                is KeyDeviceState.Lapsed -> navController.navigate(CONFIRM_ROUTE) { popUpTo(0) { inclusive = true } }
+                is KeyDeviceState.Pending -> navController.navigate(SETUP_PENDING_ROUTE) { popUpTo(0) { inclusive = true } }
+                else -> Unit
+            }
+        }
+    }
+
+    // A setup code from a link, the scanner or this app's own registration (L2-A15).
+    val pendingSetup by PendingSetupLinks.pending.collectAsState()
+    LaunchedEffect(pendingSetup, currentRoute) {
+        if (pendingSetup != null && currentRoute != null && currentRoute != SETUP_FLOW_ROUTE) {
+            navController.navigate(SETUP_FLOW_ROUTE) { launchSingleTop = true }
         }
     }
 
@@ -184,11 +202,7 @@ fun KaikuNavGraph(
                         onNavigateToLogin = {
                             navController.popBackStack()
                         },
-                        onRegisterSuccess = {
-                            navController.navigate("home") {
-                                popUpTo("register") { inclusive = true }
-                            }
-                        }
+                        onRegistered = { entry -> PendingSetupLinks.post(entry) }
                     )
                 }
 
@@ -275,8 +289,7 @@ fun KaikuNavGraph(
                             navController.navigate(APPROVE_LOGIN_ROUTE) { popUpTo(SCAN_ROUTE) { inclusive = true } }
                         },
                         onSetup = { payload ->
-                            ScanHandoff.putSetup(payload)
-                            navController.navigate(SETUP_FLOW_ROUTE) { popUpTo(SCAN_ROUTE) { inclusive = true } }
+                            PendingSetupLinks.post(SetupEntry(payload.origin, payload.tokenB64u, SetupEntry.Source.SCAN))
                         },
                         onBack = { navController.popBackStack() },
                     )
@@ -293,14 +306,26 @@ fun KaikuNavGraph(
                 }
 
                 composable(SCAN_SETUP_ROUTE) {
-                    ScanScreen(
-                        mode = ScanMode.SETUP_ONLY,
-                        onLogin = {},
-                        onSetup = { payload ->
-                            ScanHandoff.putSetup(payload)
-                            navController.navigate(SETUP_FLOW_ROUTE) { popUpTo(SCAN_SETUP_ROUTE) { inclusive = true } }
-                        },
+                    SetupScanScreen(
+                        onSignedIn = { navController.navigate("home") { popUpTo(0) { inclusive = true } } },
                         onBack = { navController.popBackStack() },
+                    )
+                }
+
+                composable(SETUP_FLOW_ROUTE) {
+                    // Taken once; a recreated screen keeps its ViewModel, which already started.
+                    val entry = androidx.compose.runtime.remember { PendingSetupLinks.take() }
+                    SetupFlowScreen(
+                        entry = entry,
+                        onSignedIn = { navController.navigate("home") { popUpTo(0) { inclusive = true } } },
+                        onBack = { if (!navController.popBackStack()) navController.navigate("login") },
+                    )
+                }
+
+                composable(SETUP_PENDING_ROUTE) {
+                    SetupPendingScreen(
+                        onSignedIn = { navController.navigate("home") { popUpTo(0) { inclusive = true } } },
+                        onEnded = { navController.navigate("login") { popUpTo(0) { inclusive = true } } },
                     )
                 }
             }
@@ -338,5 +363,8 @@ const val SCAN_SETUP_ROUTE = "scan_setup"
 /** Confirming a PC sign-in after a scan (Task B8). */
 const val APPROVE_LOGIN_ROUTE = "approve_login"
 
-/** Setting up this phone from a setup code or link (Task B9). */
+/** Setting up this phone from a setup code or link (L2-A1). */
 const val SETUP_FLOW_ROUTE = "setup_flow"
+
+/** A setup that waits for its ready time (L2-A13; E1's start destination for `Pending`). */
+const val SETUP_PENDING_ROUTE = "setup_pending"

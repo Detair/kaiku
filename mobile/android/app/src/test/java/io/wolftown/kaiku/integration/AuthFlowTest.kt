@@ -111,16 +111,15 @@ class AuthFlowTest {
     }
 
     @Test
-    fun `register cleans up tokens when getMe fails`() = runTest {
+    fun `register returns the ticket and installs no session`() = runTest {
         coEvery {
             authApi.register("newuser", "pass", null, null)
-        } returns testAuthResponse
-        coEvery { authApi.authenticatedGetMe(any(), any()) } throws RuntimeException("Network error")
+        } returns io.wolftown.kaiku.domain.model.RegistrationTicket("u", "newuser", "2026-11-03T12:30:00Z", "ticket")
 
         val result = authRepository.register("newuser", "pass", null, null)
 
-        assertTrue(result.isFailure)
-        verify { tokenStorage.clear() }
+        assertEquals("ticket", result.getOrThrow().ticket)
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
     }
 
     // ========================================================================

@@ -5,6 +5,7 @@ import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.wolftown.kaiku.domain.model.AuthResponse
+import io.wolftown.kaiku.domain.model.RegistrationTicket
 import io.wolftown.kaiku.domain.model.User
 import kotlinx.serialization.Serializable
 import java.util.Locale
@@ -21,12 +22,13 @@ data class OidcProvider(
 
 interface AuthApi {
     suspend fun login(username: String, password: String, mfaCode: String? = null): AuthResponse
+    /** C27/F8: no session, a registration ticket that binds this phone's key ([RegistrationTicket]). */
     suspend fun register(
         username: String,
         password: String,
         email: String? = null,
         displayName: String? = null
-    ): AuthResponse
+    ): RegistrationTicket
     suspend fun refresh(refreshToken: String): AuthResponse
     /**
      * `POST /auth/logout` on [serverUrl] (absolute) for one captured session,
@@ -141,7 +143,7 @@ class AuthApiImpl @Inject constructor(
         password: String,
         email: String?,
         displayName: String?
-    ): AuthResponse {
+    ): RegistrationTicket {
         val response = httpClient.post("/auth/register") {
             setBody(RegisterRequest(username, password, email, displayName))
         }

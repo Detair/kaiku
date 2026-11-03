@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.domain.model
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 @Serializable(with = EnrollmentStateSerializer::class)
@@ -123,3 +124,14 @@ data class KeyDevice(
 
 @Serializable
 data class KeyDeviceList(val devices: List<KeyDevice> = emptyList())
+
+/** C27 `POST /auth/register` → 201 for a native client: no session, a 30-minute ticket to bind a key. */
+@Serializable
+data class RegistrationTicket(
+    val userId: String,
+    val username: String,
+    val ticketExpiresAt: String,
+    @SerialName("registration_ticket") val ticket: String,
+) {
+    override fun toString(): String = "RegistrationTicket(userId=$userId, username=$username, ticketExpiresAt=$ticketExpiresAt)"
+}
