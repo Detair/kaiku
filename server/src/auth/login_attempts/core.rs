@@ -1179,7 +1179,11 @@ pub async fn totp_tx(
         return Ok(Locked::Retry);
     };
     let kind = row.kind();
-    if kind == AttemptKind::Qr || !matches!(row.state.as_str(), "open" | "claimed") {
+    // A QR attempt has no TOTP step (Fable M4: not "not ready").
+    if kind == AttemptKind::Qr {
+        return Err(AuthError::TotpUnavailable);
+    }
+    if !matches!(row.state.as_str(), "open" | "claimed") {
         return Err(ended(&row));
     }
     if row.expires_at <= Utc::now() {

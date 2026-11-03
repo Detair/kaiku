@@ -80,6 +80,7 @@ mod refresh_rotation;
 mod registration_tickets;
 mod reports;
 mod repudiation;
+mod review_gaps;
 mod role_channel_overrides;
 mod roles_security;
 mod screening_http;

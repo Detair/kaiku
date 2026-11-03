@@ -852,3 +852,71 @@ async fn finish_rechecks_the_recovery_code_generation(pool: PgPool) {
     let (s, b) = finish(&app, &r).await;
     assert_eq!((s, b["state"].as_str()), (409, Some("void")), "{b}");
 }
+
+/// Codex B1 (L1b level): a recovery's pending phone never replaces the
+/// account's live key on the same install; it is refused before any code,
+/// and the live key and its session stay until a completion.
+#[sqlx::test]
+async fn a_recovery_phone_never_replaces_a_live_key(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let r = ready(&app).await;
+    let live = KeyDeviceFixture::insert(&pool, &app.config, r.user, "active").await;
+    let (s, issued) = rc(
+        &app,
+        Method::POST,
+        "/auth/account-requests/current/enrollments",
+        Some(&r.secret),
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 201, "{issued}");
+    let token = issued["setup_token"].as_str().unwrap();
+    let same_install = Phone {
+        key: p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng),
+        device_id: live.device_id,
+    };
+    // By setup link: refused at the proof of possession.
+    let (s, b) = rc(
+        &app,
+        Method::POST,
+        "/auth/enrollments/pop-challenge",
+        None,
+        json!({"setup_token": token, "device_id": same_install.device_id,
+               "public_key": same_install.public_key()}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (400, Some("ENROLLMENT_DEVICE_IN_USE")),
+        "{b}"
+    );
+    let (state, ended): (String, Option<String>) = sqlx::query_as(
+        "SELECT d.state, s.end_reason FROM approval_devices d
+           JOIN sessions s ON s.authenticator_id = d.id WHERE d.id = $1",
+    )
+    .bind(live.row_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((state.as_str(), ended), ("active", None));
+    // A fresh install becomes the pending phone; Finish activates it and
+    // the live key stays (no replacement needed).
+    let (phone, _) = own_phone(&app, &r).await;
+    let (s, b) = finish(&app, &r).await;
+    assert_eq!(s, 200, "{b}");
+    let states: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT device_id, state FROM approval_devices WHERE user_id = $1 ORDER BY created_at",
+    )
+    .bind(r.user)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        states.contains(&(live.device_id, "active".into())),
+        "{states:?}"
+    );
+    assert!(
+        states.contains(&(phone.device_id, "active".into())),
+        "{states:?}"
+    );
+}
