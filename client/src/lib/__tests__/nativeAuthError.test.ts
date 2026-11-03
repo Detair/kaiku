@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { nativeAuthError, nativeSsoError } from "../tauri/auth";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { HttpError } from "../tauri/common";
+import { REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "../authErrors";
 
 describe("nativeAuthError", () => {
   it("maps the Rust invalid-credentials string to INVALID_CREDENTIALS", () => {
@@ -22,11 +23,16 @@ describe("nativeAuthError", () => {
     expect(nativeAuthError("Connection failed: refused")).toBeInstanceOf(TypeError);
   });
 
-  it("maps the duplicate-user string to a 409 without a code", () => {
-    const err = nativeAuthError("Username or email already exists") as HttpError;
-    expect(err).toBeInstanceOf(HttpError);
-    expect(err.status).toBe(409);
-    expect(err.code).toBeUndefined();
+  it("keeps the register conflict codes as 409s with their code (Argon review)", () => {
+    expect(nativeAuthError("USER_EXISTS")).toMatchObject({ status: 409, code: "USER_EXISTS" });
+    expect(nativeAuthError("EMAIL_TAKEN")).toMatchObject({ status: 409, code: "EMAIL_TAKEN" });
+    expect(errorText(nativeAuthError("EMAIL_TAKEN"), "auth.register.failed", REGISTER_ERRORS, REGISTER_STATUS_ERRORS)).toBe(
+      errorText(new HttpError(409, "x", "EMAIL_TAKEN"), "auth.register.failed", REGISTER_ERRORS),
+    );
+    // A 409 without a JSON body still gets the generic "already exists" text.
+    expect(nativeAuthError("Server error (409)")).toMatchObject({ status: 409 });
+    // The old English sentence from Rust is gone.
+    expect(nativeAuthError("Username or email already exists")).toBe("Username or email already exists");
   });
 
   it("turns a bare server code into an HttpError with its code", () => {

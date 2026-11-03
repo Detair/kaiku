@@ -7,8 +7,9 @@
 //! adds the matching header (`X-Kaiku-Request-Secret`, `X-Kaiku-Ticket`) to an
 //! allowlisted set of request-client and ticket routes. The request secret is
 //! kept in the OS keyring (a request waits 24 h or more, across restarts) and
-//! deleted when the request finishes or ends; the ticket lives in memory for
-//! its 30 minutes.
+//! deleted when the request finishes, ends or is unknown to the server; the
+//! ticket lives in memory for at most its 30 minutes, until something is
+//! bound or the server no longer knows it.
 
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -117,6 +118,14 @@ pub fn allowed(kind: PreSessionKind, method: &str, path: &str) -> Option<reqwest
     reqwest::Method::from_bytes(method.as_bytes()).ok()
 }
 
+/// The route of the request or ticket itself (not one of its steps).
+fn is_resource_route(kind: PreSessionKind, path: &str) -> bool {
+    match kind {
+        PreSessionKind::Request => path == "/auth/account-requests/current",
+        PreSessionKind::Ticket => path == "/auth/registration",
+    }
+}
+
 fn path_not_allowed() -> SessionError {
     SessionError::InvalidRequest("PATH_NOT_ALLOWED".to_string())
 }
@@ -189,6 +198,17 @@ impl SessionManager {
         mut body: Value,
     ) -> Result<Value, SessionError> {
         let base = normalize_server_url(server_url)?;
+        // A request whose secret cannot be kept could neither be followed
+        // nor withdrawn (and would block a new one): check the keyring first,
+        // before the single-use OIDC verifier is spent.
+        if let Err(e) = self
+            .store
+            .save_secret(KEYRING_PROBE_ENTRY, "1")
+            .and_then(|()| self.store.clear_secret(KEYRING_PROBE_ENTRY))
+        {
+            warn!(error = %e, "The OS keyring cannot keep an account-request secret");
+            return Err(SessionError::Server(503, "KEYRING_UNAVAILABLE".to_string()));
+        }
         for key in ["first", "second"] {
             let is_oidc = body
                 .get(key)
@@ -202,16 +222,6 @@ impl SessionManager {
                     body[key]["verifier"] = json!(verifier.as_str());
                 }
             }
-        }
-        // A request whose secret cannot be kept could neither be followed
-        // nor withdrawn (and would block a new one): check the keyring first.
-        if let Err(e) = self
-            .store
-            .save_secret(KEYRING_PROBE_ENTRY, "1")
-            .and_then(|()| self.store.clear_secret(KEYRING_PROBE_ENTRY))
-        {
-            warn!(error = %e, "The OS keyring cannot keep an account-request secret");
-            return Err(SessionError::Server(503, "KEYRING_UNAVAILABLE".to_string()));
         }
         let response = self
             .http
@@ -230,6 +240,14 @@ impl SessionManager {
             .and_then(|o| o.remove("request_secret"))
             .and_then(|v| v.as_str().map(|s| Zeroizing::new(s.to_string())));
         if let Some(secret) = secret {
+            // Only one request is followed: a secret for another server goes.
+            if let Ok(Some(old_base)) = self.store.load_secret(REQUEST_SERVER_ENTRY) {
+                if old_base != base {
+                    if let Err(e) = self.store.clear_secret(&request_entry(&old_base)) {
+                        warn!(error = %e, "Could not remove an older account-request secret");
+                    }
+                }
+            }
             let saved = self
                 .store
                 .save_secret(&request_entry(&base), &secret)
@@ -258,13 +276,8 @@ impl SessionManager {
             .send()
             .await
             .map_err(|e| network(&e))?;
-        if response.status().as_u16() == 409 {
-            return Err(SessionError::Server(
-                409,
-                "Username or email already exists".to_string(),
-            ));
-        }
         if !response.status().is_success() {
+            // 409 included: `USER_EXISTS` / `EMAIL_TAKEN` reach the webview as codes.
             return Err(code_error(response).await);
         }
         let mut answer = json_body(response).await?;
@@ -315,23 +328,49 @@ impl SessionManager {
         }
         let response = request.send().await.map_err(|e| network(&e))?;
         if !response.status().is_success() {
+            // The request or ticket itself is unknown, refused or gone: its
+            // secret is worthless. Only the resource's own route decides
+            // (a wrong code elsewhere is 401 too, and keeps the secret).
+            let dead = matches!(response.status().as_u16(), 401 | 404 | 410);
+            if dead && is_resource_route(kind, path) {
+                self.forget(kind, &base);
+            }
             return Err(code_error(response).await);
         }
         let answer = json_body(response).await?;
-        if kind == PreSessionKind::Request {
-            let current = path == "/auth/account-requests/current";
-            let ended = (current && method == "DELETE")
-                || path == "/auth/account-requests/current/finish"
-                || (current
-                    && answer
-                        .get("state")
-                        .and_then(Value::as_str)
-                        .is_some_and(|s| TERMINAL_REQUEST_STATES.contains(&s)));
-            if ended {
-                self.forget_request_secret(&base);
+        let state = answer.get("state").and_then(Value::as_str);
+        let ended = match kind {
+            PreSessionKind::Request => {
+                let current = path == "/auth/account-requests/current";
+                (current && method == "DELETE")
+                    || path == "/auth/account-requests/current/finish"
+                    || (current && state.is_some_and(|s| TERMINAL_REQUEST_STATES.contains(&s)))
             }
+            // Something is bound: the account now signs in by F4, and the
+            // ticket has no further use.
+            PreSessionKind::Ticket => {
+                path == "/auth/registration/totp/verify"
+                    || (path.starts_with("/auth/registration/enrollments") && state == Some("done"))
+            }
+        };
+        if ended {
+            self.forget(kind, &base);
         }
         Ok(answer)
+    }
+
+    /// Drop the secret `kind` names (request secret for `base`, or the ticket).
+    fn forget(&self, kind: PreSessionKind, base: &str) {
+        match kind {
+            PreSessionKind::Request => self.forget_request_secret(base),
+            PreSessionKind::Ticket => {
+                *self
+                    .pre_session
+                    .ticket
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = None;
+            }
+        }
     }
 
     #[cfg(test)]
@@ -633,6 +672,255 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status["bound"], false);
+    }
+
+    async fn current_answers(server: &MockServer, status: u16, body: Value) {
+        Mock::given(method("GET"))
+            .and(path("/auth/account-requests/current"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_dead_request_secret_is_forgotten() {
+        for (status, code) in [
+            (401, "INVALID_TOKEN"),
+            (404, "NOT_FOUND"),
+            (410, "ACCOUNT_REQUEST_ENDED"),
+        ] {
+            let server = MockServer::start().await;
+            let store = Arc::new(MemoryTokenStore::new());
+            let m = started(&server, &store).await;
+            current_answers(&server, status, json!({"error": code, "message": "x"})).await;
+            let err = m
+                .pre_session_request(
+                    PreSessionKind::Request,
+                    "GET",
+                    "/auth/account-requests/current",
+                    None,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(err.to_string(), code);
+            assert!(
+                store
+                    .load_secret(&request_entry(&server.uri()))
+                    .unwrap()
+                    .is_none(),
+                "{status}"
+            );
+            assert!(store.load_secret(REQUEST_SERVER_ENTRY).unwrap().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_step_keeps_the_request_secret() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = started(&server, &store).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/account-requests/current/totp/verify"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error": "INVALID_MFA"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/auth/account-requests/current/enrollments/{ID}"
+            )))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({"error": "NOT_FOUND"})))
+            .mount(&server)
+            .await;
+        m.pre_session_request(
+            PreSessionKind::Request,
+            "POST",
+            "/auth/account-requests/current/totp/verify",
+            Some(json!({"code": "123456"})),
+        )
+        .await
+        .unwrap_err();
+        m.pre_session_request(
+            PreSessionKind::Request,
+            "GET",
+            &format!("/auth/account-requests/current/enrollments/{ID}"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(store
+            .load_secret(&request_entry(&server.uri()))
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn a_new_request_elsewhere_drops_the_old_secret() {
+        let first = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        started(&first, &store).await;
+        let second = MockServer::start().await;
+        started(&second, &store).await;
+        assert!(store
+            .load_secret(&request_entry(&first.uri()))
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store.load_secret(REQUEST_SERVER_ENTRY).unwrap().as_deref(),
+            Some(second.uri().as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn keyring_failure_keeps_the_oidc_verifier() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = manager(&store);
+        m.keep_request_oidc_verifier(&server.uri(), Zeroizing::new("ver-1".into()))
+            .unwrap();
+        store.set_fail_save(true);
+        let err = m
+            .account_request_start(
+                &server.uri(),
+                json!({"username": "alice", "purpose": "bootstrap", "first": {"type": "oidc", "oidc_code": "c"}}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "KEYRING_UNAVAILABLE");
+        assert!(take_fresh(&m.pre_session.oidc_verifier, &server.uri(), OIDC_FACTOR_TTL).is_some());
+    }
+
+    async fn registered(server: &MockServer) -> SessionManager {
+        Mock::given(method("POST"))
+            .and(path("/auth/register"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "user_id": "u1", "username": "neu", "ticket_expires_at": "t", "registration_ticket": "tick-1"
+            })))
+            .mount(server)
+            .await;
+        let m = manager(&Arc::new(MemoryTokenStore::new()));
+        m.register(RegisterRequest {
+            server_url: server.uri(),
+            username: "neu".into(),
+            email: None,
+            password: "pw-123456".into(),
+            display_name: None,
+        })
+        .await
+        .unwrap();
+        assert!(m.has_ticket());
+        m
+    }
+
+    #[tokio::test]
+    async fn the_ticket_is_forgotten_once_something_is_bound() {
+        let server = MockServer::start().await;
+        let m = registered(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/registration/totp/verify"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"recovery_codes": ["A"]})),
+            )
+            .mount(&server)
+            .await;
+        m.pre_session_request(
+            PreSessionKind::Ticket,
+            "POST",
+            "/auth/registration/totp/verify",
+            Some(json!({"code": "123456"})),
+        )
+        .await
+        .unwrap();
+        assert!(!m.has_ticket());
+
+        let server = MockServer::start().await;
+        let m = registered(&server).await;
+        Mock::given(method("GET"))
+            .and(path(format!("/auth/registration/enrollments/{ID}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"enrollment_id": ID, "state": "claimed"})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!("/auth/registration/enrollments/{ID}/confirm")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"enrollment_id": ID, "state": "done"})),
+            )
+            .mount(&server)
+            .await;
+        let enrollment = format!("/auth/registration/enrollments/{ID}");
+        m.pre_session_request(PreSessionKind::Ticket, "GET", &enrollment, None)
+            .await
+            .unwrap();
+        assert!(m.has_ticket());
+        m.pre_session_request(
+            PreSessionKind::Ticket,
+            "POST",
+            &format!("{enrollment}/confirm"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!m.has_ticket());
+    }
+
+    #[tokio::test]
+    async fn a_dead_ticket_is_forgotten_but_a_wrong_code_keeps_it() {
+        let server = MockServer::start().await;
+        let m = registered(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/registration/totp/verify"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error": "INVALID_MFA"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/auth/registration"))
+            .respond_with(
+                ResponseTemplate::new(410).set_body_json(json!({"error": "TICKET_EXPIRED"})),
+            )
+            .mount(&server)
+            .await;
+        m.pre_session_request(
+            PreSessionKind::Ticket,
+            "POST",
+            "/auth/registration/totp/verify",
+            Some(json!({"code": "000000"})),
+        )
+        .await
+        .unwrap_err();
+        assert!(m.has_ticket());
+        m.pre_session_request(PreSessionKind::Ticket, "GET", "/auth/registration", None)
+            .await
+            .unwrap_err();
+        assert!(!m.has_ticket());
+    }
+
+    /// Argon review: a 409 passes its server code (`USER_EXISTS`,
+    /// `EMAIL_TAKEN`) so the webview words it; no English text from Rust.
+    #[tokio::test]
+    async fn register_conflict_passes_the_server_code() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/register"))
+            .respond_with(
+                ResponseTemplate::new(409)
+                    .set_body_json(json!({"error": "EMAIL_TAKEN", "message": "Email taken"})),
+            )
+            .mount(&server)
+            .await;
+        let err = manager(&Arc::new(MemoryTokenStore::new()))
+            .register(RegisterRequest {
+                server_url: server.uri(),
+                username: "neu".into(),
+                email: Some("a@example.com".into()),
+                password: "pw-123456".into(),
+                display_name: None,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "EMAIL_TAKEN");
     }
 
     #[test]

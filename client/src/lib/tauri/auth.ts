@@ -62,9 +62,6 @@ export function nativeAuthError(error: unknown): unknown {
   if (text?.startsWith("Connection failed:")) {
     return new TypeError(text);
   }
-  if (text === "Username or email already exists") {
-    return new HttpError(409, text);
-  }
   // Bare server codes (`SessionError::Server` displays the code), optionally
   // with `:<seconds>` from a Retry-After and `:{json}` with the extra error
   // fields (`ENROLL_CODE_WRONG::{"tries_left":2}`).
@@ -99,6 +96,8 @@ const NATIVE_CODE_STATUS: Partial<Record<string, number>> = {
   INVALID_CREDENTIALS: 401,
   INVALID_MFA: 401,
   ACCOUNT_BANNED: 403,
+  USER_EXISTS: 409,
+  EMAIL_TAKEN: 409,
   LOGIN_ATTEMPT_UNKNOWN: 404,
   LOGIN_ATTEMPT_ENDED: 410,
   TOO_MANY_ATTEMPTS: 429,

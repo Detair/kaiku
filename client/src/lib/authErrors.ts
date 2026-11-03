@@ -25,7 +25,7 @@ export const REGISTER_ERRORS: Partial<Record<string, MessageKey>> = {
   REGISTRATION_DISABLED: "auth.register.closed",
 };
 
-/** A bare 409 (native sign-up cannot tell username from email). */
+/** A 409 without a code (a proxy, or a server without a JSON body). */
 export const REGISTER_STATUS_ERRORS: Partial<Record<number, MessageKey>> = {
   409: "auth.register.alreadyExists",
 };
