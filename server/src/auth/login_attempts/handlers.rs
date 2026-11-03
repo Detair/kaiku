@@ -270,14 +270,17 @@ pub async fn totp(
         }
     };
     match outcome {
-        core::TotpOutcome::Signed(collected) => {
+        core::TotpOutcome::Signed(collected, checked) => {
             if let Some(user) = account {
                 crate::auth::totp_guard::after(
                     &ctx,
                     Some(&state),
                     user,
                     true,
-                    crate::auth::totp_guard::Used::default(),
+                    crate::auth::totp_guard::Used {
+                        totp_generation: checked,
+                        password: None,
+                    },
                 )
                 .await;
             }
@@ -291,7 +294,7 @@ pub async fn totp(
                     user,
                     false,
                     crate::auth::totp_guard::Used {
-                        totp_generation: Some(checked),
+                        totp_generation: checked,
                         password: password_generation,
                     },
                 )

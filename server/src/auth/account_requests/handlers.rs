@@ -300,7 +300,7 @@ async fn start_bootstrap(
                 user.id,
                 ok,
                 crate::auth::totp_guard::Used {
-                    totp_generation: Some(st.totp.generation),
+                    totp_generation: st.totp.generation,
                     password: password_used,
                 },
             )

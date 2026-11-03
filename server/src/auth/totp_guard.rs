@@ -34,12 +34,14 @@ pub async fn pre_check(ctx: &AuthCtx<'_>, user: Uuid) -> AuthResult<()> {
     }
 }
 
-/// What a TOTP check used: the TOTP generation it checked against and the
-/// password generation that came with the code (compromised at the 100th
-/// failure). The effects re-check both under the account lock.
-#[derive(Debug, Clone, Copy, Default)]
+/// What a TOTP check used: the TOTP generation it checked against (always
+/// known: a success or failure counts only on that generation's counter,
+/// Codex r4) and the password generation that came with the code
+/// (compromised at the 100th failure). The effects re-check both under the
+/// account lock.
+#[derive(Debug, Clone, Copy)]
 pub struct Used {
-    pub totp_generation: Option<i64>,
+    pub totp_generation: i64,
     pub password: Option<FactorRef>,
 }
 
@@ -53,26 +55,15 @@ pub async fn after(
     used: Used,
 ) {
     let limiter = AccountLimiter::new(ctx.redis);
-    // Codex/Flash r3: the counter of the generation that was checked; a
-    // renewal's counter is a fresh one (Fable r3).
-    let generation = match used.totp_generation {
-        Some(g) => g,
-        None => match current_generation(ctx, user).await {
-            Ok(g) => g,
-            Err(_) => return,
-        },
-    };
-    let key = CounterKey::totp(user, generation);
+    // Codex/Flash r3, Codex r4: the counter of the generation that was
+    // checked, for a success too; a renewal's counter is a fresh one.
+    let key = CounterKey::totp(user, used.totp_generation);
     if ok {
         let _ = limiter.reset_epoch(&key).await;
         return;
     }
     let Ok((n, epoch)) = limiter.record_failure_epoch(&key).await else {
         return;
-    };
-    let used = Used {
-        totp_generation: Some(generation),
-        ..used
     };
     if !n.is_multiple_of(NOTICE_EVERY) && n != THROTTLE_AT {
         return;
@@ -107,10 +98,7 @@ async fn effects(ctx: &AuthCtx<'_>, user: Uuid, n: u32, epoch: i64, used: Used) 
     // them since) and the TOTP they were made against is still current;
     // else nothing of this applies to the account's present TOTP.
     // Codex r3: the same epoch (no success since) and the count still there.
-    let Some(generation) = used.totp_generation else {
-        tx.commit().await?;
-        return Ok(());
-    };
+    let generation = used.totp_generation;
     let now = AccountLimiter::new(ctx.redis)
         .read(&CounterKey::totp(user, generation))
         .await;
@@ -119,10 +107,7 @@ async fn effects(ctx: &AuthCtx<'_>, user: Uuid, n: u32, epoch: i64, used: Used) 
         return Ok(());
     }
     let st = super::factors::states(&mut tx, user).await?;
-    if used
-        .totp_generation
-        .is_some_and(|g| g != st.totp.generation)
-    {
+    if generation != st.totp.generation {
         tx.commit().await?;
         return Ok(());
     }
@@ -175,7 +160,7 @@ pub async fn verify(
         user,
         ok,
         Used {
-            totp_generation: Some(totp_generation),
+            totp_generation,
             password: None,
         },
     )

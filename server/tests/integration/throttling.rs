@@ -456,7 +456,7 @@ async fn a_stale_totp_failure_does_not_throttle_the_new_totp(pool: PgPool) {
         user,
         false,
         vc_server::auth::totp_guard::Used {
-            totp_generation: Some(old),
+            totp_generation: old,
             password: None,
         },
     )
@@ -476,7 +476,7 @@ async fn a_stale_totp_failure_does_not_throttle_the_new_totp(pool: PgPool) {
         user,
         false,
         vc_server::auth::totp_guard::Used {
-            totp_generation: Some(old + 1),
+            totp_generation: old + 1,
             password: None,
         },
     )
@@ -547,7 +547,7 @@ async fn effects_of_an_old_epoch_never_apply(pool: PgPool) {
         .await
         .unwrap();
     let used = vc_server::auth::totp_guard::Used {
-        totp_generation: Some(generation),
+        totp_generation: generation,
         password: None,
     };
     let key = vc_server::ratelimit::account::CounterKey::totp(user, generation);
@@ -591,4 +591,48 @@ async fn totp_key(app: &TestApp, user: Uuid) -> CounterKey {
         .await
         .unwrap();
     CounterKey::totp(user, g)
+}
+
+/// Codex r4 #2: a success resets only the counter of the generation it was
+/// checked against. The trigger renews the TOTP inside the successful
+/// step's own transaction, so its post-commit reset runs after a renewal
+/// whose counter already holds failures; that count stays.
+#[sqlx::test]
+async fn a_delayed_success_keeps_the_renewed_generations_count(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let old = totp_key(&app, user).await;
+    let CounterKey::Totp(_, g) = old else {
+        unreachable!()
+    };
+    let renewed = CounterKey::totp(user, g + 1);
+    set_count(&app, &renewed, 7).await;
+    for sql in [
+        "CREATE FUNCTION test_renew_totp() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+           UPDATE users SET totp_generation = totp_generation + 1 WHERE id = NEW.user_id;
+           RETURN NEW;
+         END $$",
+        "CREATE TRIGGER test_renew_totp AFTER INSERT ON sessions
+         FOR EACH ROW EXECUTE FUNCTION test_renew_totp()",
+    ] {
+        sqlx::query(sql).execute(&pool).await.unwrap();
+    }
+    let (_, step, secret) = login_native(&app, &name, PASSWORD).await;
+    let id = attempt_id(&step["attempt"]);
+    let (s, b, _) = pc_call(
+        &app,
+        &format!("/auth/login-attempts/{id}/totp"),
+        &secret,
+        json!({"code": totp.generate_current().unwrap()}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(totp_key(&app, user).await, renewed, "the trigger renewed");
+    let (count, _) = vc_server::ratelimit::account::AccountLimiter::new(&app.state.redis)
+        .read(&renewed)
+        .await
+        .unwrap();
+    assert_eq!(count, 7, "the renewed generation's failures stay");
 }

@@ -167,7 +167,7 @@ pub async fn start_recovery(
                     user.id,
                     valid,
                     crate::auth::totp_guard::Used {
-                        totp_generation: Some(st.totp.generation),
+                        totp_generation: st.totp.generation,
                         password: None,
                     },
                 )
