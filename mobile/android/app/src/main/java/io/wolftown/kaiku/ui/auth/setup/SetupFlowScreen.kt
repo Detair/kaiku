@@ -36,7 +36,10 @@ import java.time.format.FormatStyle
 /**
  * L2-A1: setting up this phone from a setup code or link (F5a/F5c). Every step
  * is inside [SecureScreen]. Ends with a full device-key session, or with the
- * pending wait for an existing account.
+ * pending wait for an existing account: then (and when the screen comes back
+ * after process death with a stored setup) it switches to [SetupPendingScreen],
+ * which keeps checking at every resume and every 15 minutes. Restored without
+ * its setup code and with nothing stored, it offers [onRescan].
  */
 @Composable
 fun SetupFlowScreen(
@@ -44,14 +47,35 @@ fun SetupFlowScreen(
     onSignedIn: () -> Unit,
     onBack: (() -> Unit)?,
     viewModel: SetupFlowViewModel = hiltViewModel(),
+    onRescan: (() -> Unit)? = null,
 ) {
-    SecureScreen()
     val ui by viewModel.ui.collectAsState()
-    val activity = currentFragmentActivity()
 
     LaunchedEffect(entry) {
-        if (!viewModel.started && entry != null) viewModel.start(entry)
+        if (!viewModel.started) {
+            if (entry != null) viewModel.start(entry) else viewModel.resumeWithoutEntry()
+        }
     }
+    val u0 = ui
+    if (u0 is SetupUi.Pending || u0 == SetupUi.Resume) {
+        // L2-A13: the wait (and any reconciliation) continues on the pending screen, also while
+        // this screen stays open.
+        SetupPendingScreen(onSignedIn = onSignedIn, onEnded = { onBack?.invoke() })
+        return
+    }
+    SetupFlowSteps(ui = u0, viewModel = viewModel, onSignedIn = onSignedIn, onBack = onBack, onRescan = onRescan)
+}
+
+@Composable
+private fun SetupFlowSteps(
+    ui: SetupUi,
+    viewModel: SetupFlowViewModel,
+    onSignedIn: () -> Unit,
+    onBack: (() -> Unit)?,
+    onRescan: (() -> Unit)?,
+) {
+    SecureScreen()
+    val activity = currentFragmentActivity()
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.recheckScreenLock() }
     LaunchedEffect(ui) {
         when (ui) {
@@ -78,10 +102,15 @@ fun SetupFlowScreen(
                 KeySecondaryButton(stringResource(R.string.common_cancel), onClick = viewModel::cancel)
             }
             is SetupUi.ShowCode -> SetupCode(u.code)
+            SetupUi.Interrupted -> {
+                KeyNotice(stringResource(R.string.setup_interrupted), warning = true)
+                if (onRescan != null) KeyPrimaryButton(stringResource(R.string.scan_setup_title), onClick = onRescan)
+                if (onBack != null) KeySecondaryButton(stringResource(R.string.common_back), onClick = onBack)
+            }
             else -> SetupStatus(
                 ui = u,
                 onSignIn = { activity?.let(viewModel::signIn) },
-                onRetry = entry?.let { e -> { viewModel.start(e) } },
+                onRetry = viewModel::retry,
                 onBack = onBack,
             )
         }
@@ -105,7 +134,12 @@ internal fun SetupStatus(ui: SetupUi, onSignIn: () -> Unit, onRetry: (() -> Unit
         SetupUi.SignInPaused -> KeyPrimaryButton(stringResource(R.string.setup_sign_in_again), onClick = onSignIn)
         is SetupUi.Ended -> {
             KeyNotice(if (ui.arg != null) stringResource(ui.msg, ui.arg) else stringResource(ui.msg), warning = true)
-            if (ui.canRetry && onRetry != null) KeyPrimaryButton(stringResource(R.string.setup_start_again), onClick = onRetry)
+            // An unclear answer or no connection is tried again; anything else starts the setup over.
+            val retryLabel = when (ui.msg) {
+                R.string.setup_claim_unsure, R.string.security_network_error, R.string.errors_rate_limited -> R.string.common_try_again
+                else -> R.string.setup_start_again
+            }
+            if (ui.canRetry && onRetry != null) KeyPrimaryButton(stringResource(retryLabel), onClick = onRetry)
             if (onBack != null) KeySecondaryButton(stringResource(R.string.common_back), onClick = onBack)
         }
         else -> Unit

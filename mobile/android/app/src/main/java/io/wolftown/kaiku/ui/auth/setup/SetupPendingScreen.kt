@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.ui.auth.setup
 
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -7,6 +8,9 @@ import androidx.compose.runtime.getValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.compose.ui.res.stringResource
+import io.wolftown.kaiku.R
+import io.wolftown.kaiku.ui.shared.KeyBody
 import io.wolftown.kaiku.ui.shared.KeyScreen
 import io.wolftown.kaiku.ui.shared.SecureScreen
 import io.wolftown.kaiku.ui.shared.currentFragmentActivity
@@ -45,6 +49,12 @@ fun SetupPendingScreen(
         }
     }
     KeyScreen {
-        SetupStatus(ui = ui, onSignIn = { activity?.let(viewModel::signIn) }, onRetry = null, onBack = onEnded)
+        when (ui) {
+            SetupUi.Opening -> {
+                CircularProgressIndicator()
+                KeyBody(stringResource(R.string.setup_checking))
+            }
+            else -> SetupStatus(ui = ui, onSignIn = { activity?.let(viewModel::signIn) }, onRetry = viewModel::check, onBack = onEnded)
+        }
     }
 }

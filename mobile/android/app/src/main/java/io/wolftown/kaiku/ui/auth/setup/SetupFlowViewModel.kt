@@ -28,7 +28,9 @@ import io.wolftown.kaiku.data.auth.DeviceSignIn
 import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.data.auth.OriginPin
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
+import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+import io.wolftown.kaiku.data.keydevice.ServerKeyState
 import io.wolftown.kaiku.data.keydevice.KeyDeviceState
 import io.wolftown.kaiku.data.keydevice.LocalKeyDevice
 import io.wolftown.kaiku.data.local.AuthState
@@ -36,6 +38,7 @@ import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.domain.CodeFormat
 import io.wolftown.kaiku.domain.KaikuPayloads
 import io.wolftown.kaiku.domain.model.ApprovalChallenge
+import io.wolftown.kaiku.domain.model.EnrollmentClaim
 import io.wolftown.kaiku.domain.model.EnrollmentState
 import io.wolftown.kaiku.domain.model.AccountRef
 import io.wolftown.kaiku.ui.auth.signInResultText
@@ -69,6 +72,13 @@ sealed interface SetupUi {
     /** The UV prompt of the final sign-in was cancelled: one button to try again. */
     data object SignInPaused : SetupUi
     data object Done : SetupUi
+    /**
+     * The setup screen came back without its setup code (process death; the code is
+     * kept in memory only) while this phone has a stored setup: the waiting screen takes over.
+     */
+    data object Resume : SetupUi
+    /** The setup screen came back without its setup code before anything was claimed. */
+    data object Interrupted : SetupUi
     data class Ended(@StringRes val msg: Int, val canRetry: Boolean, val arg: String? = null) : SetupUi
 }
 
@@ -115,6 +125,7 @@ class SetupFlowViewModel internal constructor(
     private val deviceIds: DeviceIdProvider,
     private val deviceSignIn: DeviceSignIn,
     private val env: SetupEnvironment,
+    private val probe: KeyDeviceProbe,
     /** The suitability probe and key generation (StrongBox, attestation) take seconds: never on Main. */
     private val keyDispatcher: CoroutineDispatcher,
 ) : ViewModel() {
@@ -129,7 +140,8 @@ class SetupFlowViewModel internal constructor(
         deviceIds: DeviceIdProvider,
         deviceSignIn: DeviceSignIn,
         env: SetupEnvironment,
-    ) : this(enrollmentApi, suitability, keyStore, signer, keyDevices, deviceIds, deviceSignIn, env, Dispatchers.Default)
+        probe: KeyDeviceProbe,
+    ) : this(enrollmentApi, suitability, keyStore, signer, keyDevices, deviceIds, deviceSignIn, env, probe, Dispatchers.Default)
 
     private companion object {
         val logger: Logger = Logger.getLogger("SetupFlow")
@@ -147,7 +159,14 @@ class SetupFlowViewModel internal constructor(
     private var key: GeneratedKey? = null
     private var pop: ApprovalChallenge? = null
     private var subject: AccountRef? = null
+    private var popEnrollmentId: String? = null
+    /** The signed claim, kept in memory so an unanswered claim can be sent again unchanged. */
+    private var pendingClaim: PendingClaim? = null
     private var signingIn = false
+
+    private class PendingClaim(val request: EnrollmentClaim, val ticket: String?) {
+        override fun toString() = "PendingClaim"
+    }
 
     val started: Boolean get() = entry != null
 
@@ -157,11 +176,13 @@ class SetupFlowViewModel internal constructor(
 
     /** Back to the scanner after an ended or abandoned setup; an unclaimed new key goes. */
     fun reset() {
+        // A claim whose answer is unknown keeps its key and record: the next app start reconciles it.
         if (keyDevices.local() == null && key != null) keyStore.delete()
         entry = null
         key = null
         pop = null
         subject = null
+        pendingClaim = null
         _startedFlow.value = false
         _ui.value = SetupUi.Opening
     }
@@ -197,6 +218,26 @@ class SetupFlowViewModel internal constructor(
         }
     }
 
+    /**
+     * The setup screen was restored without its setup code (L2-A1; the code never goes into
+     * saved state): a stored setup continues on the waiting screen, which reconciles it with the
+     * server; a finished one goes on; otherwise the person scans (or opens) the code again.
+     */
+    fun resumeWithoutEntry() {
+        if (started) return
+        _ui.value = when {
+            keyDevices.current() is KeyDeviceState.Active -> SetupUi.Done
+            keyDevices.local() != null -> SetupUi.Resume
+            else -> SetupUi.Interrupted
+        }
+    }
+
+    /** "Start again" / "Try again": an unanswered claim is reconciled, anything else starts over. */
+    fun retry() {
+        if (keyDevices.phase() == KeyDevicePhase.CLAIMING) return reconcileClaim()
+        entry?.let(::start)
+    }
+
     /** "Yes, set up Kaiku on {server}": the unconfigured app adopts this server. */
     fun confirmServer() {
         if (_ui.value !is SetupUi.ConfirmServer) return
@@ -227,7 +268,8 @@ class SetupFlowViewModel internal constructor(
         try {
             // An unfinished earlier setup is replaced explicitly, never silently re-used.
             val k = withContext(keyDispatcher) {
-                if (keyDevices.phase() == KeyDevicePhase.CLAIMED) keyDevices.forget()
+                val phase = keyDevices.phase()
+                if (phase == KeyDevicePhase.CLAIMED || phase == KeyDevicePhase.CLAIMING) keyDevices.forget()
                 if (keyDevices.local() == null && keyStore.hasKey()) keyStore.delete()
                 keyStore.generate(nonce, d)
             }
@@ -255,6 +297,7 @@ class SetupFlowViewModel internal constructor(
             }
             pop = p.challenge
             subject = p.subject
+            popEnrollmentId = ctx.enrollmentId
             _ui.value = SetupUi.ConfirmSubject(p.subject.displayName.ifEmpty { p.subject.username }, ctx.subjectUsername, serverName)
         } catch (c: CancellationException) {
             throw c
@@ -293,25 +336,36 @@ class SetupFlowViewModel internal constructor(
     }
 
     private suspend fun claim(e: SetupEntry, ch: ApprovalChallenge, signature: String, s: AccountRef, k: GeneratedKey) {
-        try {
-            val res = enrollmentApi.claim(
-                io.wolftown.kaiku.domain.model.EnrollmentClaim(
-                    setupToken = e.tokenB64u,
-                    challengeId = ch.challengeId,
-                    signature = signature,
-                    publicKey = b64u(k.spki),
-                    attestationChain = k.attestationChain.map(::b64u),
-                    label = env.deviceLabel,
-                    uvClass = k.uvClass.wire,
-                    apiLevel = env.apiLevel,
-                ),
-                ticket = e.ticket,
-                origin = origin,
-            )
-            val local = LocalKeyDevice(
+        val request = EnrollmentClaim(
+            setupToken = e.tokenB64u,
+            challengeId = ch.challengeId,
+            signature = signature,
+            publicKey = b64u(k.spki),
+            attestationChain = k.attestationChain.map(::b64u),
+            label = env.deviceLabel,
+            uvClass = k.uvClass.wire,
+            apiLevel = env.apiLevel,
+        )
+        pendingClaim = PendingClaim(request, e.ticket)
+        // Recorded before the claim leaves the phone: a lost answer (or the app dying) must not cost
+        // a key the server may already have enrolled (a self-claim is `done` at once, SM2).
+        keyDevices.saveClaiming(
+            LocalKeyDevice(
                 keyDeviceId = null, userId = s.userId, origin = origin, uvClass = k.uvClass,
-                enrollmentId = res.enrollmentId, claimSecret = res.claimSecret, accountName = nameOf(s),
-            )
+                enrollmentId = popEnrollmentId ?: "", claimSecret = null, accountName = nameOf(s),
+            ),
+        )
+        sendClaim()
+    }
+
+    /** Sends the kept claim; only a definite refusal deletes the key, anything unclear keeps it. */
+    private suspend fun sendClaim() {
+        val pc = pendingClaim ?: return
+        val claiming = keyDevices.local() ?: return
+        try {
+            val res = enrollmentApi.claim(pc.request, ticket = pc.ticket, origin = origin)
+            pendingClaim = null
+            val local = claiming.copy(enrollmentId = res.enrollmentId, claimSecret = res.claimSecret)
             if (res.state == EnrollmentState.DONE.wire) {
                 onDone(local, res.authenticatorState, res.readyAt)
             } else {
@@ -322,8 +376,44 @@ class SetupFlowViewModel internal constructor(
         } catch (c: CancellationException) {
             throw c
         } catch (x: Exception) {
-            keyStore.delete()
-            fail(x)
+            if (isDefiniteRefusal(x)) {
+                pendingClaim = null
+                keyDevices.forget()
+                fail(x)
+            } else {
+                logger.warning("Claim answer unknown: ${x.javaClass.simpleName}")
+                val tooMany = x is ApiException && x.status.value == 429
+                _ui.value = SetupUi.Ended(if (tooMany) R.string.errors_rate_limited else R.string.setup_claim_unsure, canRetry = true)
+            }
+        }
+    }
+
+    /**
+     * After an unanswered claim: the server decides. An active or pending key device goes on
+     * (the claim had landed); none known → the kept claim is sent again unchanged (a second
+     * claim of a used token is a definite refusal); unreachable → the offer to try again stays.
+     */
+    private fun reconcileClaim() {
+        val local = keyDevices.local() ?: return
+        reconcile(local, resend = true)
+    }
+
+    private fun reconcile(local: LocalKeyDevice, resend: Boolean) {
+        _ui.value = SetupUi.Opening
+        viewModelScope.launch {
+            when (val st = probe.probe(local.userId)) {
+                ServerKeyState.Active -> onDone(local, "active", null)
+                is ServerKeyState.Pending -> {
+                    keyDevices.markPending(local, st.readyAt)
+                    _ui.value = SetupUi.Pending(st.readyAt)
+                }
+                ServerKeyState.Gone -> if (resend && pendingClaim != null) {
+                    sendClaim()
+                } else {
+                    forgetAndEnd(R.string.setup_not_finished)
+                }
+                ServerKeyState.Unknown -> _ui.value = SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true)
+            }
         }
     }
 
@@ -359,11 +449,14 @@ class SetupFlowViewModel internal constructor(
 
     private fun onDone(local: LocalKeyDevice, authenticatorState: String?, readyAt: String?) {
         if (authenticatorState == "pending") {
-            val at = parseInstant(readyAt) ?: return end(R.string.setup_failed_generic)
+            // Without its ready time (C27 always sends one) the device-login probe tells it.
+            val at = parseInstant(readyAt) ?: return reconcile(local, resend = false)
             keyDevices.markPending(local, at)
             _ui.value = SetupUi.Pending(at)
         } else {
-            keyDevices.saveClaimed(local)
+            // Active on the server: kept as an active key, so a restart before the sign-in below
+            // opens "Confirm it's you" instead of losing the setup (a self-claim has no claim secret).
+            keyDevices.markEnrolled(local)
             _ui.value = SetupUi.SigningIn
         }
     }
@@ -405,6 +498,14 @@ class SetupFlowViewModel internal constructor(
         _ui.value = setupErrorFor(x)
     }
 }
+
+/**
+ * A claim the server definitely refused (it answered and nothing was enrolled): a 4xx other
+ * than a timeout or rate limit. Network errors, 5xx and unreadable answers are unclear: the
+ * claim may have landed.
+ */
+private fun isDefiniteRefusal(x: Exception): Boolean =
+    x is ApiException && x.status.value in 400..499 && x.status.value != 408 && x.status.value != 429
 
 /** Server refusals during setup (C26) as texts. */
 internal fun setupErrorFor(x: Exception): SetupUi.Ended = when (x) {

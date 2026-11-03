@@ -380,6 +380,10 @@ fun KaikuNavGraph(
                         entry = entry,
                         onSignedIn = { navController.navigate("home") { popUpTo(0) { inclusive = true } } },
                         onBack = { if (!navController.popBackStack()) navController.navigate("login") },
+                        // Restored without its (memory-only) setup code: scan it again.
+                        onRescan = {
+                            navController.navigate(SCAN_SETUP_ROUTE) { popUpTo(SETUP_FLOW_ROUTE) { inclusive = true } }
+                        },
                     )
                 }
 

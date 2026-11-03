@@ -179,7 +179,8 @@ class MainActivity : FragmentActivity() {
         // A key device outlives its session: it signs in again with its screen lock (L2-A11);
         // a waiting setup resumes its wait (L2-A13).
         if (keyDevices.current() is KeyDeviceState.Lapsed) return CONFIRM_ROUTE
-        if (keyDevices.current() is KeyDeviceState.Pending || keyDevices.phase() == KeyDevicePhase.CLAIMED) {
+        val phase = keyDevices.phase()
+        if (keyDevices.current() is KeyDeviceState.Pending || phase == KeyDevicePhase.CLAIMED || phase == KeyDevicePhase.CLAIMING) {
             return SETUP_PENDING_ROUTE
         }
         if (tokenStorage.getServerUrl() == null) {

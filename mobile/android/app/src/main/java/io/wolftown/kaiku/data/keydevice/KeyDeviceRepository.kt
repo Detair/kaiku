@@ -75,7 +75,7 @@ class KeyDeviceRepository @Inject constructor(
 
     private fun derive(s: StoredKeyDevice?, session: AuthSession): KeyDeviceState = when {
         s == null -> KeyDeviceState.None
-        s.phase == KeyDevicePhase.CLAIMED -> KeyDeviceState.None
+        s.phase == KeyDevicePhase.CLAIMING || s.phase == KeyDevicePhase.CLAIMED -> KeyDeviceState.None
         s.phase == KeyDevicePhase.PENDING ->
             s.readyAt?.let { KeyDeviceState.Pending(it, s.device.enrollmentId) } ?: KeyDeviceState.None
         session is AuthSession.LoggedIn && session.userId == s.device.userId -> KeyDeviceState.Active(s.device.userId)
@@ -89,8 +89,22 @@ class KeyDeviceRepository @Inject constructor(
     /** The origin a key ties this app to (B.1 origin pinning); null without a key device. */
     fun pinnedOrigin(): String? = stored.value?.device?.origin
 
+    /**
+     * Written before the claim is sent: if its answer is lost (or the app dies), the key and
+     * this record stay, and the setup is reconciled with the server instead of deleting a key the
+     * server may already have enrolled.
+     */
+    fun saveClaiming(d: LocalKeyDevice) = write(StoredKeyDevice(d, KeyDevicePhase.CLAIMING))
+
     /** A setup claimed a code and waits for its confirmation (not a key yet). */
     fun saveClaimed(d: LocalKeyDevice) = write(StoredKeyDevice(d, KeyDevicePhase.CLAIMED))
+
+    /**
+     * The enrolment is `done` and the key active on the server, before its first device-key
+     * sign-in: without a session this reads as [KeyDeviceState.Lapsed], so a restart opens
+     * "Confirm it's you". No claim secret is needed any more (a self-claim never had one, C26).
+     */
+    fun markEnrolled(d: LocalKeyDevice) = write(StoredKeyDevice(d.copy(claimSecret = null), KeyDevicePhase.ACTIVE))
 
     fun markPending(d: LocalKeyDevice, readyAt: Instant) = write(StoredKeyDevice(d, KeyDevicePhase.PENDING, readyAt))
 

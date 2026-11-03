@@ -386,6 +386,10 @@
     <string name="setup_invalid">This is not a valid setup code.</string>
     <string name="setup_stopped">Setup stopped. Nothing was changed.</string>
     <string name="setup_start_again">Start again</string>
+    <string name="setup_claim_unsure">The connection broke while this phone was being set up. Try again: Kaiku checks what the server already knows.</string>
+    <string name="setup_not_finished">The setup of this phone did not finish. Start again with a new setup code.</string>
+    <string name="setup_interrupted">The setup was interrupted. Scan the setup code again, or open the setup link again.</string>
+    <string name="setup_checking">Checking the setup of this phone…</string>
 
     <!-- Add a phone from the key phone (F5a issuer) and the code keypad -->
     <string name="issuer_title">Add a phone</string>

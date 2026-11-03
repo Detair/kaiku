@@ -5,7 +5,11 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.approval.SigKind
 import io.wolftown.kaiku.approval.UvClass
+import io.wolftown.kaiku.data.api.ApiErrorFields
+import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
+import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
 import io.wolftown.kaiku.data.auth.DeviceSignIn
 import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
@@ -16,9 +20,12 @@ import io.wolftown.kaiku.domain.model.EnrollmentState
 import io.wolftown.kaiku.testutil.FakeEnrollmentApi
 import io.wolftown.kaiku.testutil.InMemoryKeyDeviceStore
 import io.wolftown.kaiku.testutil.KeyDeviceFixture
+import io.wolftown.kaiku.testutil.FakeApprovalApi
 import io.wolftown.kaiku.testutil.SigFixtures
+import io.wolftown.kaiku.testutil.apiError
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -26,6 +33,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.time.Instant
@@ -37,6 +45,8 @@ class SetupPendingViewModelTest {
     private val enroll = FakeEnrollmentApi()
     private val deviceSignIn: DeviceSignIn = mockk()
     private val readyAt = Instant.parse("2026-11-04T12:00:00Z")
+    private val approval = FakeApprovalApi()
+    private val probe = KeyDeviceProbe(approval) { SigFixtures.DEVICE_ID }
 
     @Before fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
     @After fun tearDown() = Dispatchers.resetMain()
@@ -56,7 +66,7 @@ class SetupPendingViewModelTest {
         enroll.statuses += ClaimStatus(EnrollmentState.DONE, "pending", readyAt.toString())
         enroll.statuses += ClaimStatus(EnrollmentState.DONE, "active")
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn)
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
         v.check()
         assertEquals(SetupUi.Pending(readyAt), v.ui.value)
         v.check()
@@ -73,10 +83,87 @@ class SetupPendingViewModelTest {
         repo.markPending(pendingDevice(), readyAt)
         enroll.statuses += ClaimStatus(EnrollmentState.CANCELLED)
 
-        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn)
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
         v.check()
         assertEquals(SetupUi.Ended(R.string.setup_cancelled, canRetry = false), v.ui.value)
         assertEquals(KeyDeviceState.None, repo.current())
         assertFalse(f.keyStore.hasKey())
+    }
+
+    private fun TestScope.repo(): Pair<KeyDeviceRepository, KeyDeviceFixture> {
+        val f = KeyDeviceFixture(backgroundScope, active = false)
+        f.authState.setLoggedOut()
+        return KeyDeviceRepository(InMemoryKeyDeviceStore(), f.keyStore, f.authState, backgroundScope) to f
+    }
+
+    @Test fun `an active setup that has not signed in yet signs in at app start`() = runTest {
+        val (repo, _) = repo()
+        repo.markEnrolled(pendingDevice().copy(claimSecret = null))
+        coEvery { deviceSignIn.signIn(any()) } returns DeviceSignInResult.Success
+
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        v.signIn(activity)
+        assertEquals(SetupUi.Done, v.ui.value)
+    }
+
+    @Test fun `a claim sent before the app closed is reconciled at app start`() = runTest {
+        val (repo, f) = repo()
+        repo.saveClaiming(pendingDevice().copy(claimSecret = null))
+        approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
+
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        v.check()
+
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
+        assertTrue(f.keyStore.hasKey())
+        assertFalse(enroll.calls.contains("status"))
+    }
+
+    @Test fun `a claim that never landed is dropped at app start`() = runTest {
+        val (repo, f) = repo()
+        repo.saveClaiming(pendingDevice().copy(claimSecret = null))
+        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        v.check()
+
+        assertEquals(SetupUi.Ended(R.string.setup_not_finished, canRetry = false), v.ui.value)
+        assertEquals(KeyDeviceState.None, repo.current())
+        assertFalse(f.keyStore.hasKey())
+    }
+
+    @Test fun `offline at app start keeps the claim and checks again`() = runTest {
+        val (repo, f) = repo()
+        repo.saveClaiming(pendingDevice().copy(claimSecret = null))
+        approval.failWith = java.io.IOException("offline")
+
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        v.check()
+        assertEquals(SetupUi.Ended(R.string.security_network_error, canRetry = true), v.ui.value)
+        assertTrue(f.keyStore.hasKey())
+
+        approval.failWith = null
+        approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
+        v.check()
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+    }
+
+    @Test fun `a pending setup without a claim secret keeps waiting and activates`() = runTest {
+        val (repo, _) = repo()
+        repo.markPending(pendingDevice().copy(claimSecret = null), readyAt)
+        approval.failWith = apiError(409, "KEY_DEVICE_PENDING", ApiErrorFields(readyAt = "2026-11-05T08:00:00Z"))
+
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        assertEquals(SetupUi.Pending(readyAt), v.ui.value)
+        v.check()
+        assertEquals(SetupUi.Pending(Instant.parse("2026-11-05T08:00:00Z")), v.ui.value)
+
+        approval.failWith = null
+        approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
+        v.check()
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        assertFalse(enroll.calls.contains("status"))
     }
 }

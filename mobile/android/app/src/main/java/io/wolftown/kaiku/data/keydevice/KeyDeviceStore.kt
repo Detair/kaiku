@@ -4,8 +4,13 @@ import android.content.SharedPreferences
 import io.wolftown.kaiku.approval.UvClass
 import java.time.Instant
 
-/** Where a key device stands on this phone (lapse is derived from the session, see [KeyDeviceRepository]). */
-enum class KeyDevicePhase { CLAIMED, PENDING, ACTIVE }
+/**
+ * Where a key device stands on this phone (lapse is derived from the session, see [KeyDeviceRepository]):
+ * [CLAIMING] the claim was sent and its answer is not known yet (kept so a lost answer is reconciled,
+ * never guessed); [CLAIMED] a code waits for its confirmation; [PENDING] active at `ready_at`;
+ * [ACTIVE] an active key on the server (before or after its first device-key sign-in).
+ */
+enum class KeyDevicePhase { CLAIMING, CLAIMED, PENDING, ACTIVE }
 
 /** Everything the phone keeps about its key device; [LocalKeyDevice.claimSecret] is a secret. */
 data class StoredKeyDevice(

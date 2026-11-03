@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.ui.auth.setup
 
+import androidx.annotation.StringRes
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,7 +11,11 @@ import io.wolftown.kaiku.data.api.EnrollmentApi
 import io.wolftown.kaiku.data.auth.DeviceSignIn
 import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
+import io.wolftown.kaiku.data.keydevice.KeyDeviceProbe
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+import io.wolftown.kaiku.data.keydevice.KeyDeviceState
+import io.wolftown.kaiku.data.keydevice.LocalKeyDevice
+import io.wolftown.kaiku.data.keydevice.ServerKeyState
 import io.wolftown.kaiku.domain.model.EnrollmentState
 import io.wolftown.kaiku.ui.auth.signInResultText
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,61 +27,102 @@ import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * L2-A13: a setup that waits (24 h for an existing account, or a claim whose
- * code was not confirmed before the app closed). Survives restarts: the state
- * lives in [KeyDeviceRepository]. [check] runs at every app open and every
- * 15 minutes in the foreground; active → device-key sign-in, cancelled or
- * void → "Setup cancelled" and the key is forgotten. Never a login form.
+ * L2-A13: a setup that waits (24 h for an existing account, a claim whose code
+ * was not confirmed before the app closed, or a claim whose answer never
+ * arrived). Survives restarts: the state lives in [KeyDeviceRepository].
+ * [check] runs at every app open and every 15 minutes in the foreground;
+ * active → device-key sign-in, cancelled or void → "Setup cancelled" and the
+ * key is forgotten. With a claim secret it asks the enrolment status; without
+ * one (a self-claim, an unanswered claim) it asks the device-login probe
+ * ([KeyDeviceProbe]). Never a login form.
  */
 @HiltViewModel
 class SetupPendingViewModel @Inject constructor(
     private val enrollmentApi: EnrollmentApi,
     private val keyDevices: KeyDeviceRepository,
     private val deviceSignIn: DeviceSignIn,
+    private val probe: KeyDeviceProbe,
 ) : ViewModel() {
 
     private val _ui = MutableStateFlow(initial())
     val ui: StateFlow<SetupUi> = _ui.asStateFlow()
     private var signingIn = false
+    private var checking = false
 
     private fun initial(): SetupUi {
         val s = keyDevices.local() ?: return SetupUi.Ended(R.string.setup_cancelled, canRetry = false)
         return when (keyDevices.phase()) {
-            KeyDevicePhase.PENDING -> (keyDevices.current() as? io.wolftown.kaiku.data.keydevice.KeyDeviceState.Pending)
+            KeyDevicePhase.PENDING -> (keyDevices.current() as? KeyDeviceState.Pending)
                 ?.let { SetupUi.Pending(it.readyAt) } ?: SetupUi.WaitingForCode
             KeyDevicePhase.ACTIVE -> SetupUi.SigningIn
-            else -> if (s.claimSecret != null) SetupUi.WaitingForCode else SetupUi.Ended(R.string.setup_cancelled, canRetry = false)
+            KeyDevicePhase.CLAIMED -> if (s.claimSecret != null) SetupUi.WaitingForCode else SetupUi.Opening
+            KeyDevicePhase.CLAIMING, null -> SetupUi.Opening
         }
     }
 
     fun check() {
         val local = keyDevices.local() ?: return
-        val secret = local.claimSecret ?: return
-        if (_ui.value == SetupUi.SigningIn || _ui.value == SetupUi.Done || _ui.value is SetupUi.Ended) return
+        val now = _ui.value
+        if (now == SetupUi.SigningIn || now == SetupUi.Done || (now is SetupUi.Ended && !now.canRetry)) return
+        if (checking) return
+        checking = true
         viewModelScope.launch {
             try {
-                val s = enrollmentApi.status(local.enrollmentId, secret, 0, local.origin)
-                when (s.state) {
-                    EnrollmentState.DONE -> if (s.authenticatorState == "pending") {
-                        parseInstant(s.readyAt)?.let {
-                            keyDevices.markPending(local, it)
-                            _ui.value = SetupUi.Pending(it)
-                        }
+                val secret = local.claimSecret
+                if (secret != null && keyDevices.phase() != KeyDevicePhase.CLAIMING) checkStatus(local, secret) else checkServer(local)
+            } finally {
+                checking = false
+            }
+        }
+    }
+
+    private suspend fun checkStatus(local: LocalKeyDevice, secret: String) {
+        try {
+            val s = enrollmentApi.status(local.enrollmentId, secret, 0, local.origin)
+            when (s.state) {
+                EnrollmentState.DONE -> if (s.authenticatorState == "pending") {
+                    val at = parseInstant(s.readyAt)
+                    if (at != null) {
+                        keyDevices.markPending(local, at)
+                        _ui.value = SetupUi.Pending(at)
                     } else {
-                        _ui.value = SetupUi.SigningIn
+                        checkServer(local)
                     }
-                    EnrollmentState.CANCELLED -> forget(R.string.setup_cancelled)
-                    EnrollmentState.EXPIRED -> forget(R.string.setup_expired)
-                    EnrollmentState.FAILED -> forget(R.string.setup_code_failed)
-                    else -> Unit
+                } else {
+                    keyDevices.markEnrolled(local)
+                    _ui.value = SetupUi.SigningIn
                 }
-            } catch (c: CancellationException) {
-                throw c
-            } catch (x: ApiException) {
-                // An unknown or void enrolment: the setup is over.
-                if (x.status.value == 404 || x.status.value == 410) forget(R.string.setup_cancelled)
-            } catch (_: IOException) {
-                // Offline: try again at the next check.
+                EnrollmentState.CANCELLED -> forget(R.string.setup_cancelled)
+                EnrollmentState.EXPIRED -> forget(R.string.setup_expired)
+                EnrollmentState.FAILED -> forget(R.string.setup_code_failed)
+                else -> Unit
+            }
+        } catch (c: CancellationException) {
+            throw c
+        } catch (x: ApiException) {
+            // An unknown or void enrolment: the setup is over.
+            if (x.status.value == 404 || x.status.value == 410) forget(R.string.setup_cancelled)
+        } catch (_: IOException) {
+            // Offline: try again at the next check.
+        }
+    }
+
+    /** No claim secret to ask with: the server's view of this phone's key device decides. */
+    private suspend fun checkServer(local: LocalKeyDevice) {
+        val claiming = keyDevices.phase() == KeyDevicePhase.CLAIMING
+        when (val st = probe.probe(local.userId)) {
+            ServerKeyState.Active -> {
+                keyDevices.markEnrolled(local)
+                _ui.value = SetupUi.SigningIn
+            }
+            is ServerKeyState.Pending -> {
+                keyDevices.markPending(local, st.readyAt)
+                _ui.value = SetupUi.Pending(st.readyAt)
+            }
+            // An unanswered claim that never became a key (or whose code was never confirmed) ends here.
+            ServerKeyState.Gone -> forget(if (claiming) R.string.setup_not_finished else R.string.setup_cancelled)
+            ServerKeyState.Unknown -> if (_ui.value !is SetupUi.Pending) {
+                _ui.value = SetupUi.Ended(R.string.security_network_error, canRetry = true)
             }
         }
     }
@@ -98,7 +144,7 @@ class SetupPendingViewModel @Inject constructor(
         }
     }
 
-    private fun forget(msg: Int) {
+    private fun forget(@StringRes msg: Int) {
         keyDevices.forget()
         _ui.value = SetupUi.Ended(msg, canRetry = false)
     }
