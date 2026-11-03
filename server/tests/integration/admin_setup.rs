@@ -690,3 +690,56 @@ async fn request_opened_meanwhile_fails_done(pool: PgPool) {
         .unwrap();
     assert_eq!(n, 0, "no device without its request");
 }
+
+#[sqlx::test]
+async fn admin_role_changes_are_recorded(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    // The first registered account becomes the admin.
+    sqlx::query(
+        "INSERT INTO server_config (key, value) VALUES ('registration_policy', '\"open\"')
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let req = super::helpers::login::peer_request(Method::POST, "/auth/register")
+        .header("Content-Type", "application/json")
+        .header("X-Kaiku-Client", "android")
+        .body(Body::from(json!({"username": "first_admin"}).to_string()))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status().as_u16(), 201);
+    let first: Uuid = body_to_json_lenient(resp).await["user_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (second, _) = create_test_user(&pool).await;
+    vc_server::permissions::queries::grant_system_admin(&pool, second, Some(first))
+        .await
+        .unwrap();
+    assert!(
+        vc_server::permissions::queries::revoke_system_admin(&pool, second)
+            .await
+            .unwrap()
+    );
+    let granted: Vec<(Uuid, Value)> = sqlx::query_as(
+        "SELECT subject_id, details FROM security_events
+          WHERE event_type = 'admin_role_granted' ORDER BY created_at",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(granted.len(), 2, "{granted:?}");
+    assert_eq!(granted[0].0, first);
+    assert_eq!(granted[1], (second, json!({"by_user_id": first})));
+    let removed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_events
+          WHERE event_type = 'admin_role_removed' AND subject_id = $1",
+    )
+    .bind(second)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(removed, 1);
+}

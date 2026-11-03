@@ -32,6 +32,8 @@ pub enum RegistrationVia {
     Ticket,
     /// The client of a `ready` account request (SM3, L1b).
     Request,
+    /// A setup link opened in a browser (C29 enrolment claim, L1b).
+    Enrollment,
 }
 
 /// What the ceremony is bound to besides the account. L1b appends
@@ -49,6 +51,10 @@ pub enum RegistrationBinding {
     Request {
         request_id: Uuid,
     },
+    /// A setup link's enrolment (C29 browser claim, L1b Task 23).
+    Enrollment {
+        enrollment_id: Uuid,
+    },
 }
 
 impl RegistrationVia {
@@ -58,6 +64,7 @@ impl RegistrationVia {
             Self::StepUp => "step_up",
             Self::Ticket => "ticket",
             Self::Request => "request",
+            Self::Enrollment => "enrollment",
         }
     }
 }

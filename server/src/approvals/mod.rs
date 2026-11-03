@@ -72,6 +72,14 @@ pub fn flow_router(state: &AppState) -> Router<AppState> {
         .route("/enrollments/claim", post(enrollments::handlers::claim))
         .route("/enrollments/status", post(enrollments::handlers::status))
         .route(
+            "/enrollments/passkey/start",
+            post(enrollments::handlers::passkey_start),
+        )
+        .route(
+            "/enrollments/passkey/finish",
+            post(enrollments::handlers::passkey_finish),
+        )
+        .route(
             "/device-login/challenge",
             post(device_login::challenge_handler),
         )

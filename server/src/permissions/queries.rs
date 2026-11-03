@@ -63,7 +63,8 @@ pub async fn grant_system_admin(
     user_id: Uuid,
     granted_by: Option<Uuid>,
 ) -> sqlx::Result<SystemAdmin> {
-    sqlx::query_as::<_, SystemAdmin>(
+    let mut tx = pool.begin().await?;
+    let row = sqlx::query_as::<_, SystemAdmin>(
         r"
         INSERT INTO system_admins (user_id, granted_by)
         VALUES ($1, $2)
@@ -72,20 +73,50 @@ pub async fn grant_system_admin(
     )
     .bind(user_id)
     .bind(granted_by)
-    .fetch_one(pool)
-    .await
+    .fetch_one(&mut *tx)
+    .await?;
+    // C28: `admin_role_granted` (high) where `system_admins` rows change.
+    crate::security_events::record(
+        &mut tx,
+        crate::security_events::NewSecurityEvent::new(
+            user_id,
+            crate::security_events::EventType::AdminRoleGranted,
+            granted_by.map_or(
+                crate::security_events::Actor::System,
+                crate::security_events::Actor::Admin,
+            ),
+            serde_json::json!({ "by_user_id": granted_by }),
+        ),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(row)
 }
 
 /// Revoke system admin privileges from a user.
 ///
 /// Returns `true` if an admin was revoked, `false` if user was not an admin.
 pub async fn revoke_system_admin(pool: &PgPool, user_id: Uuid) -> sqlx::Result<bool> {
+    let mut tx = pool.begin().await?;
     let result = sqlx::query("DELETE FROM system_admins WHERE user_id = $1")
         .bind(user_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-
-    Ok(result.rows_affected() > 0)
+    let removed = result.rows_affected() > 0;
+    if removed {
+        crate::security_events::record(
+            &mut tx,
+            crate::security_events::NewSecurityEvent::new(
+                user_id,
+                crate::security_events::EventType::AdminRoleRemoved,
+                crate::security_events::Actor::System,
+                serde_json::json!({ "by_user_id": null }),
+            ),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(removed)
 }
 
 // ============================================================================

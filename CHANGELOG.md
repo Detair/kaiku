@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kaiku-admin` can also reset throttled or compromised passwords and codes, turn phone confirmations on or off, name a recovery contact, remove the admin role, cancel requests, and act on admin accounts.
 - A key phone signs itself in again with its screen lock after its session lapsed, without a password.
 - A phone becomes a key by opening a setup link or code and confirming a 6-digit code shown on it; phones without a screen lock or a hardware key store are refused at the start.
+- A setup link opened in a computer's browser adds a passkey instead: the browser shows a 6-digit code that the person who sent the link types in.
 - Your phone can be a key for your account: it confirms sensitive actions with its screen lock, and you can see and remove your key phones in the security settings.
 - Security notices: sign-ins and changes to how you sign in appear in a read-only chat with **Kaiku** and in a security log in your account settings; admins get a copy of important ones. They cannot be deleted from a signed-in session.
 - Desktop app on Linux: an advanced "Show all ALSA devices" option in the audio settings also lists surround, S/PDIF, raw hardware and plugin devices that the short device list hides. It is off by default, and a device you picked stays listed when you turn it off.

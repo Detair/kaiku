@@ -346,3 +346,122 @@ async fn any_admin_can_cancel_an_admin_enrolment(pool: PgPool) {
         .unwrap();
     assert_eq!(state, "cancelled");
 }
+
+/// `POST` without a bearer token (the browser on a setup link).
+async fn browser(
+    app: &TestApp,
+    uri: &str,
+    cookie: Option<&str>,
+    body: Value,
+) -> (u16, Value, Option<String>) {
+    let mut req = super::helpers::login::peer_request(Method::POST, uri)
+        .header("Content-Type", "application/json");
+    if let Some(c) = cookie {
+        req = req.header("Cookie", c);
+    }
+    let resp = app
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await;
+    let status = resp.status().as_u16();
+    let set_cookie = resp
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|c| c.contains("kaiku_enroll"))
+        .map(|c| c.split(';').next().unwrap_or_default().to_string());
+    (status, body_to_json_lenient(resp).await, set_cookie)
+}
+
+#[sqlx::test]
+async fn browser_setup_link_registers_a_passkey(pool: PgPool) {
+    use super::helpers::login::TEST_ORIGIN;
+    use super::helpers::passkeys::SoftAuthenticator;
+    let app = TestApp::with_passkeys(pool.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let adev = KeyDeviceFixture::insert(&pool, &app.config, admin, "active").await;
+    let (oma, oma_name) = create_test_user(&pool).await;
+    grant_step_up(
+        &pool,
+        adev.session_id.unwrap(),
+        "admin.enrollment.issue",
+        &oma.to_string(),
+    )
+    .await;
+    let (s, issued) = call(
+        &app,
+        Method::POST,
+        &format!("/api/admin/users/{oma}/enrollments"),
+        &adev.access_token,
+        json!({"mode": "setup", "claimant_check": {"method": "in_person", "note": "at home"}}),
+    )
+    .await;
+    assert_eq!(s, 201, "{issued}");
+    let token = issued["setup_token"].as_str().unwrap();
+
+    let (s, start, _) = browser(
+        &app,
+        "/auth/enrollments/passkey/start",
+        None,
+        json!({"setup_token": token}),
+    )
+    .await;
+    assert_eq!(s, 200, "{start}");
+    assert_eq!(start["subject"]["username"], oma_name.as_str());
+    assert!(start["server_name"].as_str().is_some());
+    let mut soft = SoftAuthenticator::new();
+    let credential = soft.register(TEST_ORIGIN, &start["options"]);
+    let (s, claimed, cookie) = browser(
+        &app,
+        "/auth/enrollments/passkey/finish",
+        None,
+        json!({"setup_token": token, "ceremony_id": start["ceremony_id"],
+               "credential": credential, "label": null}),
+    )
+    .await;
+    assert_eq!(s, 201, "{claimed}");
+    assert_eq!(claimed["state"], "claimed");
+    assert_eq!(claimed["code"].as_str().unwrap().len(), 6);
+    let cookie = cookie.expect("the claim-secret cookie");
+    // No passkey row before `done`.
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM passkeys WHERE user_id = $1")
+        .bind(oma)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+    // The browser long-polls with its cookie.
+    let id = claimed["enrollment_id"].as_str().unwrap();
+    let (s, st, _) = browser(
+        &app,
+        "/auth/enrollments/status",
+        Some(&cookie),
+        json!({"enrollment_id": id, "wait": 0}),
+    )
+    .await;
+    assert_eq!((s, st["state"].as_str()), (200, Some("claimed")), "{st}");
+    // The admin types the code on their phone.
+    let (s, b) = type_code_on(&app, &adev, id, claimed["code"].as_str().unwrap()).await;
+    assert_eq!(s, 200, "{b}");
+    let (state, enrollment): (String, Option<Uuid>) =
+        sqlx::query_as("SELECT state, enrollment_id FROM passkeys WHERE user_id = $1")
+            .bind(oma)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(state, "active", "a new account is active at once");
+    assert_eq!(enrollment.map(|e| e.to_string()).as_deref(), Some(id));
+    let (_, st, _) = browser(
+        &app,
+        "/auth/enrollments/status",
+        Some(&cookie),
+        json!({"enrollment_id": id, "wait": 0}),
+    )
+    .await;
+    assert_eq!(
+        (st["state"].as_str(), st["authenticator_state"].as_str()),
+        (Some("done"), Some("active")),
+        "{st}"
+    );
+}

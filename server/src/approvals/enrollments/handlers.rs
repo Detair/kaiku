@@ -130,10 +130,21 @@ pub async fn claim(
 #[tracing::instrument(skip_all, fields(enrollment_id = %body.enrollment_id))]
 pub async fn status(
     State(state): State<AppState>,
+    jar: axum_extra::extract::CookieJar,
     Json(body): Json<StatusRequest>,
 ) -> Result<Json<StatusResponse>, ApprovalError> {
-    let secret =
-        Secret256::from_b64u(&body.claim_secret).ok_or(ApprovalError::EnrollmentTokenInvalid)?;
+    // Native clients send the claim secret; a browser its claim cookie.
+    let raw = body.claim_secret.clone().or_else(|| {
+        jar.get(crate::auth::cookies::cookie_name(
+            ENROLL_COOKIE,
+            &state.config,
+        ))
+        .map(|c| c.value().to_string())
+    });
+    let secret = raw
+        .as_deref()
+        .and_then(Secret256::from_b64u)
+        .ok_or(ApprovalError::EnrollmentTokenInvalid)?;
     Ok(Json(
         status_core(
             &AuthCtx::from(&state),
@@ -371,4 +382,230 @@ pub async fn confirm_pc(
         }
         Err(e) => Err(e),
     }
+}
+
+// ---------------------------------------------------------------------------
+// A setup link opened in a browser: the passkey claim (C29)
+// ---------------------------------------------------------------------------
+
+/// The browser's claim-secret cookie (path `/auth/enrollments`).
+pub const ENROLL_COOKIE: &str = "__Secure-kaiku_enroll";
+const ENROLL_COOKIE_PATH: &str = "/auth/enrollments";
+
+fn enroll_cookie(
+    value: &str,
+    config: &crate::config::Config,
+) -> axum_extra::extract::cookie::Cookie<'static> {
+    use axum_extra::extract::cookie::{Cookie, SameSite};
+    let mut c = Cookie::build((
+        crate::auth::cookies::cookie_name(ENROLL_COOKIE, config),
+        value.to_owned(),
+    ))
+    .http_only(true)
+    .same_site(SameSite::Strict)
+    .path(ENROLL_COOKIE_PATH)
+    .secure(config.cookie_secure)
+    .max_age(time::Duration::minutes(
+        super::SETUP_TOKEN_MINUTES + super::CODE_MINUTES,
+    ))
+    .build();
+    if let Some(domain) = &config.cookie_domain {
+        c.set_domain(domain.clone());
+    }
+    c
+}
+
+/// `POST /auth/enrollments/passkey/start` body.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct PasskeyClaimStartRequest {
+    pub setup_token: String,
+}
+
+/// `POST /auth/enrollments/passkey/start` answer.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PasskeyClaimStart {
+    pub ceremony_id: Uuid,
+    #[schema(value_type = Object)]
+    pub options: serde_json::Value,
+    pub server_name: String,
+    pub subject: PasskeyClaimSubject,
+}
+
+/// `{username, display_name}` of the account the link sets up.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PasskeyClaimSubject {
+    pub username: String,
+    pub display_name: String,
+}
+
+/// Start the browser passkey claim of a setup link (public; consumes
+/// nothing).
+#[utoipa::path(
+    post,
+    path = "/auth/enrollments/passkey/start",
+    tag = "approvals",
+    request_body = PasskeyClaimStartRequest,
+    responses((status = 200, body = PasskeyClaimStart), (status = 404, description = "ENROLLMENT_TOKEN_INVALID")),
+    security(()),
+)]
+#[tracing::instrument(skip_all)]
+pub async fn passkey_start(
+    State(state): State<AppState>,
+    Json(body): Json<PasskeyClaimStartRequest>,
+) -> Result<Json<PasskeyClaimStart>, ApprovalError> {
+    use crate::auth::passkeys::register::{begin, RegistrationBinding};
+    crate::auth::passkeys::rp_of(&state)?;
+    let ctx = AuthCtx::from(&state);
+    let opened = open_core(&ctx, &body.setup_token).await?;
+    let row = super::issued_row(&ctx, &body.setup_token).await?;
+    let (username, display_name): (String, String) =
+        sqlx::query_as("SELECT username, display_name FROM users WHERE id = $1")
+            .bind(row.1)
+            .fetch_one(&state.db)
+            .await?;
+    let (ceremony_id, ccr) = begin(
+        &state,
+        row.1,
+        RegistrationBinding::Enrollment {
+            enrollment_id: row.0,
+        },
+        "Passkey".into(),
+    )
+    .await?;
+    Ok(Json(PasskeyClaimStart {
+        ceremony_id,
+        options: serde_json::to_value(&ccr)
+            .map_err(|e| crate::auth::AuthError::Internal(e.to_string()))?,
+        server_name: opened.server_name,
+        subject: PasskeyClaimSubject {
+            username,
+            display_name,
+        },
+    }))
+}
+
+/// `POST /auth/enrollments/passkey/finish` body.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct PasskeyClaimFinishRequest {
+    pub setup_token: String,
+    pub ceremony_id: Uuid,
+    #[schema(value_type = Object)]
+    pub credential: serde_json::Value,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// `POST /auth/enrollments/passkey/finish` answer (the code goes only here).
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PasskeyClaimed {
+    pub enrollment_id: Uuid,
+    pub state: String,
+    pub code: String,
+    pub code_expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl std::fmt::Debug for PasskeyClaimed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PasskeyClaimed")
+            .field("enrollment_id", &self.enrollment_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Finish the browser passkey claim (C29).
+///
+/// → 201 `{enrollment_id, state: "claimed", code, code_expires_at}` and the
+/// claim-secret cookie; the issuer confirms the code (C26), the `passkeys`
+/// row is created at `done`.
+#[utoipa::path(
+    post,
+    path = "/auth/enrollments/passkey/finish",
+    tag = "approvals",
+    request_body = PasskeyClaimFinishRequest,
+    responses((status = 201, body = PasskeyClaimed), (status = 400, description = "PASSKEY_CEREMONY_INVALID or PASSKEY_INVALID")),
+    security(()),
+)]
+#[tracing::instrument(skip_all)]
+pub async fn passkey_finish(
+    State(state): State<AppState>,
+    jar: axum_extra::extract::CookieJar,
+    Json(body): Json<PasskeyClaimFinishRequest>,
+) -> Result<
+    (
+        StatusCode,
+        axum_extra::extract::CookieJar,
+        Json<PasskeyClaimed>,
+    ),
+    ApprovalError,
+> {
+    use crate::auth::passkeys::ceremony::{self, CeremonyKind, CeremonyState};
+    use crate::auth::passkeys::register::{clean_label, RegistrationBinding};
+    use crate::auth::AuthError;
+    let rp = crate::auth::passkeys::rp_of(&state)?;
+    let label = match body.label.as_deref() {
+        Some(l) => clean_label(Some(l))?,
+        None => "Passkey".to_string(),
+    };
+    let rec = ceremony::take(&state.redis, body.ceremony_id)
+        .await?
+        .ok_or(AuthError::PasskeyCeremonyInvalid)?;
+    let (
+        CeremonyKind::Register {
+            binding: RegistrationBinding::Enrollment { enrollment_id },
+            ..
+        },
+        CeremonyState::Register(st),
+    ) = (rec.kind, rec.state)
+    else {
+        return Err(AuthError::PasskeyCeremonyInvalid.into());
+    };
+    let reg = serde_json::from_value(body.credential).map_err(|_| AuthError::PasskeyInvalid)?;
+    let verified = rp
+        .finish_registration(&reg, &st)
+        .map_err(crate::auth::passkeys::failure)?;
+    let ctx = AuthCtx::from(&state);
+    let mut tx = state.db.begin().await?;
+    let claimed = super::claim_passkey_tx(
+        &mut tx,
+        &ctx,
+        &body.setup_token,
+        enrollment_id,
+        &verified,
+        &label,
+    )
+    .await?;
+    tx.commit().await?;
+    let super::ClaimResponse::Claimed {
+        enrollment_id,
+        state: st,
+        code,
+        code_expires_at,
+        claim_secret,
+    } = claimed
+    else {
+        return Err(ApprovalError::EnrollmentState);
+    };
+    // Tell the issuer's screen (its device's or PC session's account).
+    if let Ok(Some(user)) = sqlx::query_scalar::<_, Uuid>(
+        "SELECT COALESCE(d.user_id, s.user_id) FROM enrollments e
+           LEFT JOIN approval_devices d ON d.id = e.issuer_device_id
+           LEFT JOIN sessions s ON s.id = e.issuer_session_id
+          WHERE e.id = $1",
+    )
+    .bind(enrollment_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        super::enrollment_updated(&state, user, enrollment_id, "claimed").await;
+    }
+    Ok((
+        StatusCode::CREATED,
+        jar.add(enroll_cookie(&claim_secret, &state.config)),
+        Json(PasskeyClaimed {
+            enrollment_id,
+            state: st,
+            code,
+            code_expires_at,
+        }),
+    ))
 }

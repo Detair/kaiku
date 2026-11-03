@@ -50,7 +50,18 @@ pub async fn grant_first_user_admin(
         "INSERT INTO system_admins (user_id, granted_by) VALUES ($1, $1)",
         user_id
     )
-    .execute(conn)
+    .execute(&mut *conn)
+    .await?;
+    // C28: every change of the role is recorded (high).
+    crate::security_events::record(
+        conn,
+        crate::security_events::NewSecurityEvent::new(
+            user_id,
+            crate::security_events::EventType::AdminRoleGranted,
+            crate::security_events::Actor::System,
+            serde_json::json!({ "by_user_id": null }),
+        ),
+    )
     .await?;
     Ok(())
 }
