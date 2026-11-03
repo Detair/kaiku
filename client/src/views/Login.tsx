@@ -329,16 +329,16 @@ const Login: Component = () => {
     }
   };
 
-  const handlePhoneSignIn = () => {
+  const handlePhoneSignIn = async () => {
     setLocalError("");
     clearError();
     stopConditional();
     const starting = startPhoneSignIn(serverUrl());
     const choice = currentSignInChoice();
-    // A start that failed stays on the form: autofill comes back (Fable R4).
-    void starting.then(() => {
-      if (!disposed && onForm() && choice?.isCurrent()) void startConditional();
-    });
+    await starting;
+    // A start that failed stays on the form: autofill comes back (Fable R4;
+    // startConditional itself runs only while the form is shown).
+    if (!disposed && choice?.isCurrent()) void startConditional();
   };
 
   const handleTotp = (code: string) => {
