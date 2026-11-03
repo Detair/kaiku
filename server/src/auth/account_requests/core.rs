@@ -892,6 +892,17 @@ pub async fn complete_locked_tx(
         "admin" => row.state == "waiting" && row.ready_at <= Utc::now(),
         _ => row.state == "ready" && row.expires_at.is_some_and(|t| t > Utc::now()),
     };
+    // Fable m2: a banned account completes nothing (the request waits).
+    let banned: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM global_bans
+                         WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW()))",
+    )
+    .bind(row.user_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if banned {
+        return Err(AuthError::AccountBanned);
+    }
     if !due {
         // Past the Finish deadline before the minute sweep: `expired`.
         let state = if row.state == "ready" {
@@ -906,7 +917,8 @@ pub async fn complete_locked_tx(
     let unchanged = row.factor_refs().iter().all(|f| match f.factor {
         Factor::Password => st.password.generation == f.generation,
         Factor::Totp => st.totp.generation == f.generation,
-        Factor::RecoveryCodes => true,
+        // Fable m3: the code set too, not only through its cascade.
+        Factor::RecoveryCodes => st.recovery_codes_generation == f.generation,
     });
     if !unchanged {
         out.event_ids
@@ -1126,8 +1138,12 @@ pub async fn timers(ctx: &AuthCtx<'_>) -> AuthResult<Vec<Uuid>> {
             if routes_left(&mut tx, &row).await? == 0 {
                 events.extend(void_row_tx(&mut tx, ctx, &row, VoidCause::NoRouteLeft).await?);
             } else if row.kind == "admin" {
-                let out = complete_locked_tx(&mut tx, ctx, &row).await?;
-                events.extend(out.event_ids);
+                // A banned account's admin request waits (Fable m2).
+                match complete_locked_tx(&mut tx, ctx, &row).await {
+                    Ok(out) => events.extend(out.event_ids),
+                    Err(AuthError::AccountBanned) => continue,
+                    Err(e) => return Err(e),
+                }
             } else {
                 sqlx::query(
                     "UPDATE account_requests SET state = 'ready', expires_at = $2 WHERE id = $1",

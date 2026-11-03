@@ -72,7 +72,9 @@ pub fn request_secret(
 pub async fn request_updated(state: &AppState, request_id: Uuid, subject_id: Uuid, st: &str) {
     let mut audience = vec![subject_id];
     if let Ok(rows) = sqlx::query_scalar::<_, Uuid>(
-        "SELECT recovery_contact_id FROM users WHERE id = $1 AND recovery_contact_id IS NOT NULL
+        "SELECT recovery_contact_id FROM users
+          WHERE id = $1 AND recovery_contact_id IS NOT NULL
+            AND recovery_contact_confirmed_at IS NOT NULL
          UNION SELECT user_id FROM system_admins",
     )
     .bind(subject_id)

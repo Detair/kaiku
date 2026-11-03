@@ -361,3 +361,36 @@ async fn contact_copies_have_no_ip_or_place(pool: PgPool) {
     assert!(!text.contains("203.0.113.8"), "{text}");
     assert!(n.events.iter().all(|e| e.ip.is_none() && e.place.is_none()));
 }
+
+#[sqlx::test]
+async fn a_contact_who_became_admin_cannot_confirm(pool: PgPool) {
+    use super::helpers::{create_session_with_token, make_admin};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let (contact, _) = create_test_user(&pool).await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+    let mut tx = pool.begin().await.unwrap();
+    vc_server::auth::recovery_contact::set_tx(
+        &mut tx,
+        &ctx,
+        owner,
+        Some(contact),
+        vc_server::auth::recovery_contact::ContactActor::Cli,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    make_admin(&pool, contact).await;
+    let (_, token) = create_session_with_token(&pool, &app.config, contact).await;
+    let req = TestApp::request(
+        axum::http::Method::POST,
+        &format!("/api/me/recovery-contact-for/{owner}/confirm"),
+    )
+    .header("Authorization", format!("Bearer {token}"))
+    .body(axum::body::Body::empty())
+    .unwrap();
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status().as_u16(), 400);
+    let b = super::helpers::body_to_json_lenient(resp).await;
+    assert_eq!(b["error"], "RECOVERY_CONTACT_INVALID", "{b}");
+}

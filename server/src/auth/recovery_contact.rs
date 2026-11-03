@@ -169,7 +169,11 @@ pub async fn confirm_tx(
     contact: Uuid,
     account: Uuid,
 ) -> AuthResult<Vec<Uuid>> {
-    lock_accounts(conn, &[contact, account]).await?;
+    let locked = lock_accounts(conn, &[contact, account]).await?;
+    // Fable m9: a contact who became an admin is no contact (C28).
+    if locked.get(&contact).is_some_and(|c| c.is_admin) {
+        return Err(AuthError::RecoveryContactInvalid);
+    }
     let updated = sqlx::query(
         "UPDATE users SET recovery_contact_confirmed_at = NOW()
           WHERE id = $1 AND recovery_contact_id = $2 AND recovery_contact_confirmed_at IS NULL",

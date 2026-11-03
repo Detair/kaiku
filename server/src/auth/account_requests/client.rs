@@ -88,14 +88,23 @@ pub async fn stage_password(
     Json(body): Json<PasswordBody>,
 ) -> AuthResult<Json<AccountRequest>> {
     let ctx = AuthCtx::from(&state);
-    let mut tx = state.db.begin().await?;
-    let row = ready_request(&mut tx, &ctx, &headers, &jar).await?;
+    // Fable m8: the policy check and Argon2 run before the account lock.
+    let secret = request_secret(&headers, &jar, ctx.config)?;
+    let seen = {
+        let mut conn = state.db.acquire().await?;
+        core::by_secret(&mut conn, &ctx, &secret, false)
+            .await?
+            .ok_or_else(|| AuthError::NotFound("Unknown request".into()))?
+    };
     let (username, display_name): (String, String) =
         sqlx::query_as("SELECT username, display_name FROM users WHERE id = $1")
-            .bind(row.user_id)
-            .fetch_one(&mut *tx)
+            .bind(seen.user_id)
+            .fetch_one(&state.db)
             .await?;
-    let server_name = crate::approvals::server_name(&mut tx).await?;
+    let server_name = {
+        let mut conn = state.db.acquire().await?;
+        crate::approvals::server_name(&mut conn).await?
+    };
     crate::auth::password_policy::check(
         &body.password,
         &crate::auth::password_policy::PolicyContext {
@@ -110,6 +119,11 @@ pub async fn stage_password(
         .await
         .map_err(|e| AuthError::Internal(format!("password hashing failed: {e}")))?
         .map_err(|_| AuthError::PasswordHash)?;
+    let mut tx = state.db.begin().await?;
+    let row = ready_request(&mut tx, &ctx, &headers, &jar).await?;
+    if row.id != seen.id {
+        return Err(AuthError::NotFound("Unknown request".into()));
+    }
     set_staged(&mut tx, row.id, "password_hash", serde_json::json!(hash)).await?;
     let fresh = core::get(&mut tx, row.id).await?.unwrap_or(row);
     let wire = core::to_wire(&mut tx, &fresh).await?;

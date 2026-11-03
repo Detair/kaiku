@@ -806,3 +806,49 @@ async fn pending_authenticators_cannot_sign_in(pool: PgPool) {
     .await;
     assert_eq!(s, 201, "{b}");
 }
+
+#[sqlx::test]
+async fn a_banned_account_cannot_finish(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let r = ready(&app).await;
+    own_phone(&app, &r).await;
+    let (admin,): (Uuid,) = sqlx::query_as("SELECT user_id FROM system_admins LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO global_bans (user_id, banned_by, reason) VALUES ($1, $2, 'test')")
+        .bind(r.user)
+        .bind(admin)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, b) = finish(&app, &r).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("ACCOUNT_BANNED")),
+        "{b}"
+    );
+    assert_eq!(state_of(&pool, r.id).await, "ready");
+}
+
+#[sqlx::test]
+async fn finish_rechecks_the_recovery_code_generation(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let r = ready(&app).await;
+    // A recovery-code request whose set was replaced since (m3).
+    sqlx::query(
+        "UPDATE account_requests SET factors = factors || '[{\"factor\": \"recovery_codes\", \"generation\": 1}]'::jsonb
+          WHERE id = $1",
+    )
+    .bind(r.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET recovery_codes_generation = 2 WHERE id = $1")
+        .bind(r.user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, b) = finish(&app, &r).await;
+    assert_eq!((s, b["state"].as_str()), (409, Some("void")), "{b}");
+}

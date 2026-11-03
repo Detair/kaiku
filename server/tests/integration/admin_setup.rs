@@ -756,3 +756,26 @@ async fn admin_role_changes_are_recorded(pool: PgPool) {
     .unwrap();
     assert_eq!(removed, 1);
 }
+
+#[sqlx::test]
+async fn lost_devices_only_in_recovery_mode(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_, dev) = admin_phone(&app).await;
+    admin_phone(&app).await;
+    let (oma, _) = create_test_user(&pool).await;
+    existing(&pool, oma).await;
+    let old = KeyDeviceFixture::insert(&pool, &app.config, oma, "active").await;
+    let (s, b) = issue_setup(
+        &app,
+        &dev,
+        oma,
+        json!({"mode": "setup", "claimant_check": {"method": "in_person", "note": "x"},
+               "lost_device_ids": [old.row_id]}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (400, Some("VALIDATION_ERROR")),
+        "{b}"
+    );
+}

@@ -137,6 +137,12 @@ pub async fn issue_admin_enrollment(
             return Err(auth(AuthError::NoIndependentCanceller));
         }
     }
+    // Fable m4: F5c names lost devices only in a recovery.
+    if body.mode != "recovery" && !body.lost_device_ids.is_empty() {
+        return Err(ApprovalError::Validation(
+            "lost_device_ids: only in recovery mode".into(),
+        ));
+    }
     let mut lost = body.lost_device_ids.clone();
     lost.sort_unstable();
     lost.dedup();
