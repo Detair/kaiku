@@ -929,15 +929,28 @@ pub async fn confirm_tx(
     let claimed_device_id = row
         .claimed_device_id
         .ok_or(ApprovalError::EnrollmentState)?;
-    // A device that re-enrols replaces its own earlier (live) row.
-    sqlx::query(
+    // A device that re-enrols replaces its own earlier (live) row, with the
+    // revocation cascade (B.7 rule 2): its sessions end, its grants and open
+    // challenges are void.
+    let replaced: Vec<Uuid> = sqlx::query_scalar(
         "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(), revoke_reason = 'owner'
-          WHERE user_id = $1 AND device_id = $2 AND state <> 'revoked'",
+          WHERE user_id = $1 AND device_id = $2 AND state <> 'revoked'
+          RETURNING id",
     )
     .bind(row.subject_id)
     .bind(claimed_device_id)
-    .execute(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
+    for old in replaced {
+        super::cascade::on_authenticator_revoked(
+            conn,
+            ctx,
+            row.subject_id,
+            AuthenticatorRef::key_device(old),
+        )
+        .await?;
+        super::core::void_for_device(conn, row.subject_id, claimed_device_id).await?;
+    }
     sqlx::query(
         "INSERT INTO approval_devices (id, user_id, device_id, public_key, public_key_hash,
              attestation_chain, attestation_properties, uv_class, api_level, label, state,

@@ -949,3 +949,46 @@ async fn public_routes_never_ip_blocked(pool: PgPool) {
     .await;
     assert_eq!(s, 201);
 }
+
+#[sqlx::test]
+async fn re_enrolment_ends_the_replaced_keys_sessions(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let old = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    // The same install (same per-install id) with a new key.
+    let phone = Phone {
+        key: SigningKey::random(&mut rand::rngs::OsRng),
+        device_id: old.device_id,
+    };
+    let (s, claim) = claim_with(
+        &app,
+        &issued.setup_token,
+        &phone,
+        "Pixel 8",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201, "{claim}");
+    confirm_cli(&app, issued.enrollment_id, claim["code"].as_str().unwrap())
+        .await
+        .unwrap();
+    let (state, reason): (String, Option<String>) = sqlx::query_as(
+        "SELECT d.state, s.end_reason FROM approval_devices d
+           JOIN sessions s ON s.authenticator_id = d.id
+          WHERE d.id = $1",
+    )
+    .bind(old.row_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "revoked");
+    assert_eq!(
+        reason.as_deref(),
+        Some("authenticator_revoked"),
+        "the replaced key's session ends with it"
+    );
+}

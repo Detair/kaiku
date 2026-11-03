@@ -218,7 +218,10 @@ is listed here, per task. "Coordinator" marks items that need a decision.
   `authTimeout` (absent or 0 for `per_use`, 1..=10 for `window_10s`).
 - An empty label after cleaning becomes "Android phone" (the column needs 1..64 characters).
 - A device that re-enrols on the same install replaces its own earlier live row (revoked with
-  `owner`) — the `(user_id, device_id)` live-row index allows one.
+  `owner`) — the `(user_id, device_id)` live-row index allows one. The replaced row goes through
+  the revocation cascade (its sessions end `authenticator_revoked`, grants and open challenges
+  void; fixed after Task 13), without a notice of its own (the `authenticator_added` notice
+  covers it).
 - `≤ 5 open per issuer`: per key device / session / request / ticket; for the CLI per subject
   account.
 - `OwnClaim` (the issuing client's own claim) answers `VALIDATION_ERROR` in L1a; L1b Tasks 19
