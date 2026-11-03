@@ -472,9 +472,13 @@ pub async fn notices_by_message(
     }
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     let mut events: HashMap<Uuid, Vec<EventRow>> = HashMap::new();
-    for (notice_id, ev) in events_of_notices(conn, &ids).await? {
+    // One past the cap, so `events_truncated` still sees more.
+    let per_notice = i64::try_from(MAX_NOTICE_EVENTS + 1).unwrap_or(i64::MAX);
+    for (notice_id, ev) in events_of_notices(conn, &ids, per_notice).await? {
         events.entry(notice_id).or_default().push(ev);
     }
+    // Each authenticator's label is read once per call.
+    let mut labels: HashMap<(Option<String>, Option<Uuid>), Option<String>> = HashMap::new();
     let mut out = HashMap::with_capacity(rows.len());
     for r in rows {
         let own = r.subject_id == reader;
@@ -482,7 +486,14 @@ pub async fn notices_by_message(
         let total = evs.len();
         let mut wire = Vec::with_capacity(total.min(MAX_NOTICE_EVENTS));
         for ev in evs.iter().take(MAX_NOTICE_EVENTS) {
-            let label = authenticator_label(conn, ev).await?;
+            let key = (ev.authenticator_type.clone(), ev.authenticator_id);
+            let label = if let Some(l) = labels.get(&key) {
+                l.clone()
+            } else {
+                let l = authenticator_label(conn, ev).await?;
+                labels.insert(key, l.clone());
+                l
+            };
             wire.push(ev.to_wire(own, label));
         }
         out.insert(
