@@ -766,14 +766,72 @@ async fn failing_events_never_take_the_whole_sweep(pool: PgPool) {
         .unwrap();
     }
     let good = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
-    // A sweep of two: the oldest end alone holds only failing events.
-    let _ = notices::deliver_pending_bounded(&app.state, 2).await;
-    let delivered: Option<chrono::DateTime<chrono::Utc>> =
-        sqlx::query_scalar("SELECT delivered_at FROM security_events WHERE id = $1")
+    // Sweeps of two: the oldest end alone holds only failing events; the
+    // sampled half reaches the newer one (certain within 64 sweeps).
+    let mut delivered: Option<chrono::DateTime<chrono::Utc>> = None;
+    for _ in 0..64 {
+        let _ = notices::deliver_pending_bounded(&app.state, 2).await;
+        delivered = sqlx::query_scalar("SELECT delivered_at FROM security_events WHERE id = $1")
             .bind(good)
             .fetch_one(&pool)
             .await
             .unwrap();
+        if delivered.is_some() {
+            break;
+        }
+    }
     assert!(delivered.is_some(), "the newer event is delivered");
+    assert_eq!(kaiku_notices(&app, u, &token).await.len(), 1);
+}
+
+/// Review round 5 (Codex r4): failing events at both ends of the outbox never
+/// starve one in the middle; the rest of each sweep is a random sample.
+#[sqlx::test]
+async fn failing_events_at_both_ends_never_starve_the_middle(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (u, token) = user_with_token(&app).await;
+    sqlx::raw_sql(
+        "CREATE FUNCTION refuse_poison() RETURNS trigger AS $$
+         BEGIN
+             IF NEW.content LIKE '%poison test%' THEN
+                 RAISE EXCEPTION 'poison';
+             END IF;
+             RETURN NEW;
+         END $$ LANGUAGE plpgsql;
+         CREATE TRIGGER refuse_poison BEFORE INSERT ON messages
+             FOR EACH ROW EXECUTE FUNCTION refuse_poison();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Two failing events older and two newer than the deliverable one.
+    for minutes in [-3, -2, 2, 3] {
+        sqlx::query(
+            "INSERT INTO security_events (id, subject_id, event_type, severity, actor_kind, created_at)
+             VALUES ($1, $2, 'poison_test', 'normal', 'system', NOW() + make_interval(mins => $3))",
+        )
+        .bind(Uuid::new_v4())
+        .bind(u)
+        .bind(minutes)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let good = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
+    let mut delivered: Option<chrono::DateTime<chrono::Utc>> = None;
+    // A sweep of two: one oldest, one sampled. Delivery is certain to come
+    // within 64 sweeps unless the sample never reaches the middle event.
+    for _ in 0..64 {
+        let _ = notices::deliver_pending_bounded(&app.state, 2).await;
+        delivered = sqlx::query_scalar("SELECT delivered_at FROM security_events WHERE id = $1")
+            .bind(good)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        if delivered.is_some() {
+            break;
+        }
+    }
+    assert!(delivered.is_some(), "the middle event is delivered");
     assert_eq!(kaiku_notices(&app, u, &token).await.len(), 1);
 }
