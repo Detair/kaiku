@@ -135,7 +135,7 @@ class EnrollmentIssuerViewModelTest {
         assertEquals(SigFixtures.b64u("123456".toByteArray(Charsets.US_ASCII)), response)
         val m = KaikuSig.message(SigFixtures.unb64u(approvals.nextChallenge!!.signingPrefix), io.wolftown.kaiku.approval.Decision.APPROVE, "123456".toByteArray(Charsets.US_ASCII))
         assertTrue(SigFixtures.verifyP256(SigFixtures.b64u(f.keyStore.publicKeySpki()!!), m, signature))
-        assertEquals(IssuerUi.Done("Pixel 8", null), v.ui.value)
+        assertEquals(IssuerUi.Done("Pixel 8"), v.ui.value)
     }
 
     @Test fun `confirm needs six digits`() = runTest {

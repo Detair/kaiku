@@ -13,6 +13,7 @@ import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.ApprovalApi
 import io.wolftown.kaiku.data.api.SecurityApi
 import io.wolftown.kaiku.data.local.AuthState
+import io.wolftown.kaiku.domain.model.AuthenticatorRef
 import io.wolftown.kaiku.domain.model.EventAction
 import io.wolftown.kaiku.domain.model.NoticeAction
 import io.wolftown.kaiku.domain.model.Part2Factor
@@ -35,7 +36,11 @@ sealed interface NoticeActionUi {
     /** Owner rule part 2: a fresh TOTP or recovery code instead of a step-up (B.2). */
     data object NeedsPart2 : NoticeActionUi
     data object Working : NoticeActionUi
-    data class Result(@StringRes val msg: Int, val offerRemoveDevice: Boolean) : NoticeActionUi
+    /**
+     * [removeDevice]: a cancel lost against the request's completion (409 `ACCOUNT_REQUEST_COMPLETED`);
+     * this is the device the completed request added, offered as "Remove this device" (B12).
+     */
+    data class Result(@StringRes val msg: Int, val removeDevice: AuthenticatorRef? = null) : NoticeActionUi
     data class Error(@StringRes val msg: Int) : NoticeActionUi
 }
 
@@ -100,6 +105,40 @@ class NoticeActionsViewModel internal constructor(
         _ui.value = NoticeActionUi.Idle
     }
 
+    /**
+     * "Remove this device" after a cancel came too late: the same guarded removal as the
+     * notice's "Remove device" (owner `key_device.remove`, admin reader `admin.authenticator.remove`).
+     */
+    fun removeCompletedDevice(activity: FragmentActivity) {
+        val device = (_ui.value as? NoticeActionUi.Result)?.removeDevice ?: return
+        val (_, event, notice) = pending ?: return
+        val remove = EventAction(NoticeAction.REMOVE_DEVICE, via = "step_up")
+        pending = Triple(remove, event.copy(authenticator = device), notice)
+        _ui.value = NoticeActionUi.Working
+        viewModelScope.launch { _ui.value = execute(activity, remove, event.copy(authenticator = device), notice, part2 = null) }
+    }
+
+    /**
+     * The device a completed request added: the one on the notice's event, else (own account) the
+     * newest log entry of that request naming a device. Only key devices of one's own account are
+     * offered here (an own passkey is removed in the passkey settings); an admin reader removes any.
+     */
+    private suspend fun completedRequestDevice(event: SecurityEvent, subjectIsMe: Boolean): AuthenticatorRef? {
+        val known = event.authenticator ?: if (subjectIsMe && event.requestId != null) {
+            try {
+                securityApi.events(null, 50).items
+                    .firstOrNull { it.requestId == event.requestId && it.authenticator != null }?.authenticator
+            } catch (c: CancellationException) {
+                throw c
+            } catch (_: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+        return known?.takeIf { !subjectIsMe || it.type.isEmpty() || it.type == "key_device" }
+    }
+
     private suspend fun execute(
         activity: FragmentActivity,
         action: EventAction,
@@ -129,18 +168,18 @@ class NoticeActionsViewModel internal constructor(
         }
         return try {
             when (action.action) {
-                NoticeAction.REPUDIATE -> NoticeActionUi.Result(repudiatedText(securityApi.repudiate(event.id, part2)), false)
+                NoticeAction.REPUDIATE -> NoticeActionUi.Result(repudiatedText(securityApi.repudiate(event.id, part2)))
                 NoticeAction.CANCEL_REQUEST -> {
                     securityApi.cancelRequest(target, part2)
-                    NoticeActionUi.Result(R.string.security_request_cancelled, false)
+                    NoticeActionUi.Result(R.string.security_request_cancelled)
                 }
                 NoticeAction.REMOVE_DEVICE -> {
                     if (subjectIsMe) approvalApi.removeKeyDevice(target) else adminApi.removeAuthenticator(notice.subject.userId, target)
-                    NoticeActionUi.Result(R.string.security_device_removed, false)
+                    NoticeActionUi.Result(R.string.security_device_removed)
                 }
                 NoticeAction.CONFIRM_CONTACT -> {
                     securityApi.confirmContactFor(notice.subject.userId)
-                    NoticeActionUi.Result(R.string.security_contact_confirmed_done, false)
+                    NoticeActionUi.Result(R.string.security_contact_confirmed_done)
                 }
                 NoticeAction.UNKNOWN -> NoticeActionUi.Idle
             }
@@ -148,8 +187,9 @@ class NoticeActionsViewModel internal constructor(
             throw c
         } catch (e: ApiException) {
             when (e.normalizedCode) {
-                "ACCOUNT_REQUEST_COMPLETED" -> NoticeActionUi.Result(R.string.security_request_too_late, offerRemoveDevice = true)
-                "EVENT_ALREADY_REPUDIATED" -> NoticeActionUi.Result(R.string.security_already_repudiated, false)
+                "ACCOUNT_REQUEST_COMPLETED" ->
+                    NoticeActionUi.Result(R.string.security_request_too_late, removeDevice = completedRequestDevice(event, subjectIsMe))
+                "EVENT_ALREADY_REPUDIATED" -> NoticeActionUi.Result(R.string.security_already_repudiated)
                 "REPUDIATE_NOT_ALLOWED", "CANCEL_NOT_ALLOWED" -> NoticeActionUi.Error(R.string.security_action_not_allowed)
                 "INVALID_MFA", "REQUEST_FACTOR_INVALID" -> NoticeActionUi.Error(R.string.security_part2_wrong)
                 "ADMIN_TARGET_IS_ADMIN" -> NoticeActionUi.Error(R.string.admin_target_is_admin)

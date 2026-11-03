@@ -76,7 +76,7 @@ fun SecurityNoticeCard(notice: SecurityNotice, actions: NoticeActionsViewModel, 
             newest?.actions?.filter { it.action != NoticeAction.UNKNOWN }?.forEach { a ->
                 OutlinedButton(
                     onClick = { activity?.let { actions.run(it, a, newest, notice) } },
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).heightIn(min = KeyScreenSizes.secondaryButton),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).heightIn(min = KeyScreenSizes.otherAction),
                 ) {
                     Text(actionLabel(a, notice), fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurface)
                 }
@@ -124,7 +124,25 @@ internal fun ActionDialogs(ui: NoticeActionUi, actions: NoticeActionsViewModel) 
         is NoticeActionUi.Result -> AlertDialog(
             onDismissRequest = actions::dismiss,
             text = { Text(stringResource(ui.msg), fontSize = 18.sp) },
-            confirmButton = { TextButton(onClick = actions::dismiss) { Text(stringResource(R.string.common_ok)) } },
+            confirmButton = {
+                // B12: a cancel that came too late offers to remove the device the request added (with a step-up).
+                val device = ui.removeDevice
+                if (device != null) {
+                    TextButton(
+                        onClick = { activity?.let(actions::removeCompletedDevice) },
+                        modifier = Modifier.heightIn(min = KeyScreenSizes.otherAction),
+                    ) {
+                        Text(stringResource(R.string.security_remove_this_device, device.label))
+                    }
+                } else {
+                    TextButton(onClick = actions::dismiss) { Text(stringResource(R.string.common_ok)) }
+                }
+            },
+            dismissButton = if (ui.removeDevice != null) {
+                { TextButton(onClick = actions::dismiss) { Text(stringResource(R.string.common_ok)) } }
+            } else {
+                null
+            },
         )
         is NoticeActionUi.Error -> AlertDialog(
             onDismissRequest = actions::dismiss,

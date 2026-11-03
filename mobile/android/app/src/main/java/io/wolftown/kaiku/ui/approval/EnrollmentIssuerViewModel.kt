@@ -68,7 +68,11 @@ sealed interface IssuerUi {
         override fun toString() = "TypeCode(label=$label, triesLeft=$triesLeft, wrong=$wrong)"
     }
     data object Confirming : IssuerUi
-    data class Done(val label: String, val pending: Instant?) : IssuerUi
+    /**
+     * [waits]: an existing account's new phone waits for its admin account request (F5c, SM3);
+     * [readyAt] is that request's `ready_at` from the server, null while unknown.
+     */
+    data class Done(val label: String, val waits: Boolean = false, val readyAt: Instant? = null) : IssuerUi
     data class Ended(@StringRes val msg: Int) : IssuerUi
 }
 
@@ -95,6 +99,8 @@ class EnrollmentIssuerViewModel internal constructor(
     private val issueAdmin: (suspend (IssuerMode.Admin) -> EnrollmentIssued)? = null,
     /** Cancel and deny outlive the screen (Back pops it at once). */
     private val appScope: kotlinx.coroutines.CoroutineScope? = null,
+    /** The admin request's authoritative `ready_at` after an existing account's setup (C27). */
+    private val readyAtFor: (suspend (IssuerMode.Admin, Enrollment?) -> Instant?)? = null,
 ) : ViewModel() {
 
     @Inject
@@ -115,6 +121,12 @@ class EnrollmentIssuerViewModel internal constructor(
         events = socket.events,
         issueAdmin = { m -> adminApi.issueEnrollment(m.userId, m.mode, m.claimantMethod, m.note, m.lostDeviceIds) },
         appScope = appScope,
+        readyAtFor = { m, e ->
+            // C27 admin user view: `open_request` is the admin request this setup started.
+            adminApi.user(m.userId).openRequest
+                ?.takeIf { r -> e?.requestId == null || r.id == e.requestId }
+                ?.readyAt?.let(::parseInstant)
+        },
     )
 
     private companion object {
@@ -252,7 +264,7 @@ class EnrollmentIssuerViewModel internal constructor(
                         try {
                             val r = approvalApi.answer(ch.challengeId, Decision.APPROVE.wire, b64u(digits), out.signatureB64u)
                             openChallengeId = null
-                            _ui.value = IssuerUi.Done(t.label, pendingAfter(r.enrollment))
+                            _ui.value = doneFor(t.label, r.enrollment)
                         } catch (x: ApiException) {
                             openChallengeId = null
                             when (x.normalizedCode) {
@@ -275,11 +287,23 @@ class EnrollmentIssuerViewModel internal constructor(
         is IssuerMode.Admin -> ctx.subjectId == m.userId
     }
 
-    /** F5c: an existing account waits (24 h); a new account is active at once; own phones too. */
-    private fun pendingAfter(e: Enrollment?): Instant? {
-        val m = mode as? IssuerMode.Admin ?: return null
-        if (m.newAccount) return null
-        return Instant.now().plusSeconds(24 * 3600)
+    /**
+     * F5c: an existing account waits for its admin request (24–72 h, `ACCOUNT_REQUEST_DELAY_HOURS`),
+     * shown with the request's own `ready_at` (never a time the phone made up); without it the
+     * screen says that it waits. A new account is active at once; own phones too.
+     */
+    private suspend fun doneFor(label: String, e: Enrollment?): IssuerUi.Done {
+        val m = mode as? IssuerMode.Admin ?: return IssuerUi.Done(label)
+        if (m.newAccount) return IssuerUi.Done(label)
+        val at = try {
+            readyAtFor?.invoke(m, e)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (x: Exception) {
+            logger.info("Ready time not known: ${x.javaClass.simpleName}")
+            null
+        }
+        return IssuerUi.Done(label, waits = true, readyAt = at)
     }
 
     private suspend fun mismatch(challengeId: String) {

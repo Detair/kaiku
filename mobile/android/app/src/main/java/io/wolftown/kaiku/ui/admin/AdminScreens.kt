@@ -90,7 +90,7 @@ fun AdminUsersScreen(onBack: () -> Unit, onOpenUser: (String) -> Unit, viewModel
         )
         ui.users.forEach { u ->
             Row(
-                Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.secondaryButton).clickable { onOpenUser(u.id) }.padding(vertical = 8.dp),
+                Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.otherAction).clickable { onOpenUser(u.id) }.padding(vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
@@ -128,7 +128,7 @@ fun AdminUserScreen(onBack: () -> Unit, onSetUpPhone: (String) -> Unit, viewMode
         Text(stringResource(R.string.security_key_devices), style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.padding(top = 16.dp))
         (u.keyDevices + u.passkeys).forEach { d ->
-            Row(Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.secondaryButton), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.otherAction), verticalAlignment = Alignment.CenterVertically) {
                 Text(d.label, fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.weight(1f))
                 if (ui.canRemoveDevices) {
                     TextButton(onClick = { activity?.let { viewModel.removeNow(it, d) } }, enabled = !ui.working) {
@@ -137,7 +137,7 @@ fun AdminUserScreen(onBack: () -> Unit, onSetUpPhone: (String) -> Unit, viewMode
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.secondaryButton).padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.otherAction).padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(stringResource(R.string.admin_may_approve), fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground)
                 Text(stringResource(R.string.admin_may_approve_explain), fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)

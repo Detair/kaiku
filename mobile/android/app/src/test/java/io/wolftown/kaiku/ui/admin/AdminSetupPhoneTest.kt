@@ -58,6 +58,8 @@ class AdminSetupPhoneTest {
     private fun mode(newAccount: Boolean = false, lost: List<String> = emptyList(), m: String = "setup") =
         IssuerMode.Admin(subject, "Oma", m, "called_back", "Called her back on the landline", lost, newAccount)
 
+    private var readyAt: suspend (IssuerMode.Admin, Enrollment?) -> java.time.Instant? = { _, _ -> null }
+
     private fun TestScope.vm(): EnrollmentIssuerViewModel {
         val f = KeyDeviceFixture(backgroundScope)
         coEvery { stepUp.stepUp(any(), StepUpAction.ADMIN_ENROLLMENT_ISSUE, subject, any()) } returns
@@ -65,7 +67,8 @@ class AdminSetupPhoneTest {
         coEvery { admin.issueEnrollment(any(), any(), any(), any(), any()) } returns issued
         approvals.nextChallenge = SigFixtures.challengeFor(SigKind2.ENROLL, 2, SigFixtures.V02_CONTEXT)
         return EnrollmentIssuerViewModel(stepUp, enroll.api, approvals, f.signer, f.repo, { SigFixtures.DEVICE_ID }, { true }, events,
-            issueAdmin = { m -> admin.issueEnrollment(m.userId, m.mode, m.claimantMethod, m.note, m.lostDeviceIds) }, appScope = backgroundScope)
+            issueAdmin = { m -> admin.issueEnrollment(m.userId, m.mode, m.claimantMethod, m.note, m.lostDeviceIds) }, appScope = backgroundScope,
+            readyAtFor = { m, e -> readyAt(m, e) })
     }
 
     @Test fun `setup records the claimant check and note`() = runTest {
@@ -95,17 +98,42 @@ class AdminSetupPhoneTest {
         assertEquals(IssuerUi.Ended(R.string.admin_no_canceller), v.ui.value)
     }
 
-    @Test fun `existing account done shows the ready time`() = runTest {
-        val v = vm()
-        v.start(activity, mode(newAccount = false))
+    private suspend fun TestScope.confirmCodeOf(v: EnrollmentIssuerViewModel, newAccount: Boolean) {
+        v.start(activity, mode(newAccount = newAccount))
         enroll.enrollment = Enrollment(enrollmentId, "admin", EnrollmentState.CLAIMED, AccountRef(subject, "oma", "Oma"),
             claimed = EnrollmentClaimedBy("key_device", "Pixel 8"), triesLeft = 3)
         events.emit(ServerEvent.EnrollmentUpdated(enrollmentId, "claimed"))
         v.onDigits("123456")
-        approvals.answerResult = AnswerResult("consumed")
+        approvals.answerResult = AnswerResult("consumed", enrollment = Enrollment(enrollmentId, "admin", EnrollmentState.DONE,
+            AccountRef(subject, "oma", "Oma"), requestId = "rq1"))
         v.confirmCode(activity)
-        val done = v.ui.value as IssuerUi.Done
-        assertTrue(done.pending != null)
+    }
+
+    @Test fun `existing account done shows the server's ready time`() = runTest {
+        // ACCOUNT_REQUEST_DELAY_HOURS may be up to 72: the time comes from the request, never "now + 24 h".
+        val at = java.time.Instant.parse("2026-11-06T12:00:00Z")
+        var asked: Pair<String, String?>? = null
+        readyAt = { m, e -> asked = m.userId to e?.requestId; at }
+        val v = vm()
+        confirmCodeOf(v, newAccount = false)
+        assertEquals(IssuerUi.Done("Pixel 8", waits = true, readyAt = at), v.ui.value)
+        assertEquals(subject to "rq1", asked)
+    }
+
+    @Test fun `existing account done without a known ready time says it waits`() = runTest {
+        readyAt = { _, _ -> throw java.io.IOException("offline") }
+        val v = vm()
+        confirmCodeOf(v, newAccount = false)
+        assertEquals(IssuerUi.Done("Pixel 8", waits = true, readyAt = null), v.ui.value)
+    }
+
+    @Test fun `new account done is active at once`() = runTest {
+        var asked = false
+        readyAt = { _, _ -> asked = true; null }
+        val v = vm()
+        confirmCodeOf(v, newAccount = true)
+        assertEquals(IssuerUi.Done("Pixel 8", waits = false), v.ui.value)
+        assertEquals(false, asked)
     }
 
     @Test fun `claimant check note must be 1 to 500 characters`() {

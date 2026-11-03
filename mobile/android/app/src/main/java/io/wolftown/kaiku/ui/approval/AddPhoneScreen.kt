@@ -10,6 +10,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
@@ -59,7 +60,7 @@ fun AddPhoneScreen(
                 QrImage(u.setupUrl, stringResource(R.string.issuer_qr_description), Modifier.fillMaxWidth())
                 u.expiresAt?.let {
                     val minutes = Duration.between(Instant.now(), it).toMinutes().coerceAtLeast(0)
-                    KeyBody(stringResource(R.string.issuer_minutes_left, minutes.toInt()), secondary = true)
+                    KeyBody(pluralStringResource(R.plurals.issuer_minutes_left, minutes.toInt(), minutes.toInt()), secondary = true)
                 }
                 KeySecondaryButton(stringResource(R.string.issuer_share_link), onClick = {
                     val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, u.setupUrl)
@@ -71,7 +72,7 @@ fun AddPhoneScreen(
             is IssuerUi.TypeCode -> {
                 KeyBody(stringResource(R.string.issuer_device_wants, u.label))
                 KeyNotice(stringResource(keypadHint), warning = true)
-                if (u.wrong) KeyNotice(stringResource(R.string.issuer_wrong_code, u.triesLeft), warning = true)
+                if (u.wrong) KeyNotice(pluralStringResource(R.plurals.issuer_wrong_code, u.triesLeft, u.triesLeft), warning = true)
                 CodeKeypad(
                     value = u.digits,
                     onValueChange = viewModel::onDigits,
@@ -81,8 +82,12 @@ fun AddPhoneScreen(
             }
             is IssuerUi.Done -> {
                 KeyNotice(
-                    if (u.pending != null) stringResource(R.string.admin_setup_done_existing, io.wolftown.kaiku.ui.auth.setup.readyText(u.pending))
-                    else stringResource(if (mode is IssuerMode.Admin) R.string.admin_setup_done_new else R.string.issuer_done, u.label),
+                    when {
+                        u.waits && u.readyAt != null ->
+                            stringResource(R.string.admin_setup_done_existing, io.wolftown.kaiku.ui.auth.setup.readyText(u.readyAt))
+                        u.waits -> stringResource(R.string.admin_setup_done_waiting)
+                        else -> stringResource(if (mode is IssuerMode.Admin) R.string.admin_setup_done_new else R.string.issuer_done, u.label)
+                    },
                     warning = false,
                 )
                 KeyPrimaryButton(stringResource(R.string.common_ok), onClick = onDone)

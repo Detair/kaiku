@@ -33,13 +33,16 @@ import androidx.compose.ui.unit.sp
 
 /**
  * Building blocks for the phone-as-key screens, sized for older users (spec
- * Constraints): approval, setup and keypad buttons ≥ 64 dp, other actions
- * ≥ 56 dp, body text ≥ 18 sp, all in sp so the font scale applies. Readable
- * text uses onBackground/onSurfaceVariant, never an accent colour.
+ * Constraints, plan "Accessibility"): every button on the approval, setup,
+ * keypad and issuer screens ≥ 64 dp (also Cancel, Back and "Share link"),
+ * other actions (notice cards in chat) ≥ 56 dp, body text ≥ 18 sp, all in sp
+ * so the font scale applies. Readable text uses onBackground/onSurfaceVariant,
+ * never an accent colour.
  */
 object KeyScreenSizes {
     val primaryButton: Dp = 64.dp
-    val secondaryButton: Dp = 56.dp
+    val secondaryButton: Dp = 64.dp
+    val otherAction: Dp = 56.dp
 }
 
 @Composable
@@ -117,7 +120,7 @@ fun KeyPrimaryButton(
     }
 }
 
-/** A second action: outlined, ≥ 56 dp (≥ 64 dp where [minHeight] says so). */
+/** A second action: outlined, ≥ 64 dp like the main one (setup, approval and keypad screens). */
 @Composable
 fun KeySecondaryButton(
     text: String,

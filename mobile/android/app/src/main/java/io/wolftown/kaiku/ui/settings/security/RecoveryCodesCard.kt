@@ -3,6 +3,7 @@ package io.wolftown.kaiku.ui.settings.security
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.sp
@@ -15,7 +16,7 @@ import io.wolftown.kaiku.ui.shared.SecureScreen
 
 @Composable
 fun RecoveryCodesCard(left: Int, readOnly: Boolean, onCreate: () -> Unit) {
-    Body(stringResource(R.string.security_recovery_codes_left, left))
+    Body(pluralStringResource(R.plurals.security_recovery_codes_left, left, left))
     if (!readOnly) Action(stringResource(R.string.security_recovery_codes_create), onClick = onCreate)
 }
 

@@ -27,7 +27,7 @@ import io.wolftown.kaiku.ui.shared.KeyScreenSizes
 @Composable
 fun SessionsList(sessions: List<SessionItem>, readOnly: Boolean, onEnd: (SessionItem) -> Unit) {
     sessions.forEach { s ->
-        Row(Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.secondaryButton).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.otherAction).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(s.device.ifEmpty { s.clientClass }, fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground)
                 Row(verticalAlignment = Alignment.CenterVertically) {

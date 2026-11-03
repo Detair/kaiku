@@ -107,7 +107,7 @@ fun SecuritySettingsScreen(
 
             Section(stringResource(R.string.security_key_devices))
             ui.keyDevices.forEach { d ->
-                Row(Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.secondaryButton), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.otherAction), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Body(d.label)
                         when {
@@ -179,7 +179,7 @@ fun SecuritySettingsScreen(
                                 picking = null
                                 activity?.let { viewModel.setRecoveryContact(it, c) }
                             },
-                            modifier = Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.secondaryButton),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.otherAction),
                         ) { Text(c.displayName.ifEmpty { c.username }, fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurface) }
                     }
                 }
@@ -250,7 +250,7 @@ internal fun Action(text: String, enabled: Boolean = true, onClick: () -> Unit) 
     OutlinedButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).heightIn(min = KeyScreenSizes.secondaryButton),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).heightIn(min = KeyScreenSizes.otherAction),
     ) {
         Text(text, fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground)
     }

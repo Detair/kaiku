@@ -394,14 +394,20 @@
     <!-- Add a phone from the key phone (F5a issuer) and the code keypad -->
     <string name="issuer_title">Add a phone</string>
     <string name="issuer_show_setup">Scan this code with the new phone, or send it the setup link.</string>
-    <string name="issuer_minutes_left">Valid for %1$d more minutes.</string>
+    <plurals name="issuer_minutes_left">
+        <item quantity="one">Valid for %1$d more minute.</item>
+        <item quantity="other">Valid for %1$d more minutes.</item>
+    </plurals>
     <string name="issuer_share_link">Share link</string>
     <string name="issuer_share_chooser">Send the setup link</string>
     <string name="issuer_qr_description">Setup code for a new phone</string>
     <string name="issuer_waiting">Waiting for the new phone…</string>
     <string name="issuer_device_wants">A device calling itself \'%1$s\' wants to become your key</string>
     <string name="issuer_type_code">Type the code from the device in your hand. Never type a code someone tells you.</string>
-    <string name="issuer_wrong_code">That code is not right. %1$d tries left.</string>
+    <plurals name="issuer_wrong_code">
+        <item quantity="one">That code is not right. %1$d try left.</item>
+        <item quantity="other">That code is not right. %1$d tries left.</item>
+    </plurals>
     <string name="issuer_uv_subtitle">Make \'%1$s\' the key for %2$s</string>
     <string name="issuer_done">\'%1$s\' is now your key.</string>
     <string name="issuer_three_wrong">Three wrong codes. Start again with a new setup code.</string>
@@ -419,7 +425,8 @@
 
     <!-- Admin setup results (F5c) -->
     <string name="admin_setup_done_new">Active now.</string>
-    <string name="admin_setup_done_existing">Ready at %1$s (24 hours). They, their recovery contact and the admins were told.</string>
+    <string name="admin_setup_done_existing">Ready at %1$s. They, their recovery contact and the admins were told.</string>
+    <string name="admin_setup_done_waiting">The new phone becomes active after the waiting time (at least 24 hours). They, their recovery contact and the admins were told.</string>
 
     <!-- Security settings on the key phone -->
     <string name="security_title">Security</string>
@@ -445,7 +452,10 @@
     <string name="security_sessions_others">all other sessions</string>
     <string name="security_sessions_end_others">Sign out everywhere else</string>
     <string name="security_recovery_codes">Recovery codes</string>
-    <string name="security_recovery_codes_left">%1$d recovery codes left</string>
+    <plurals name="security_recovery_codes_left">
+        <item quantity="one">%1$d recovery code left</item>
+        <item quantity="other">%1$d recovery codes left</item>
+    </plurals>
     <string name="security_recovery_codes_create">Create new codes</string>
     <string name="security_recovery_codes_new">Write these codes down and keep them somewhere safe. They are shown only now.</string>
     <string name="security_recovery_codes_done">I\'ve written them down</string>
@@ -574,6 +584,7 @@
     <string name="security_already_repudiated">This was already reported.</string>
     <string name="security_request_cancelled">The request was cancelled.</string>
     <string name="security_request_too_late">Too late: the request already completed.</string>
+    <string name="security_remove_this_device">Remove this device (%1$s)</string>
     <string name="security_device_removed">The device was removed.</string>
     <string name="security_contact_confirmed_done">Thank you. You are now their recovery contact.</string>
     <string name="security_action_not_allowed">You can\'t do this here.</string>

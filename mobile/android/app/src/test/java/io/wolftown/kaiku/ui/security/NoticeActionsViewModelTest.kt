@@ -70,7 +70,7 @@ class NoticeActionsViewModelTest {
         vm.confirmWarning(activity)
         coVerify { stepUp.stepUp(activity, StepUpAction.EVENT_REPUDIATE, "ev1", any()) }
         assertTrue("repudiate:ev1" in security.calls)
-        assertEquals(NoticeActionUi.Result(R.string.security_repudiated_password, offerRemoveDevice = false), vm.ui.value)
+        assertEquals(NoticeActionUi.Result(R.string.security_repudiated_password), vm.ui.value)
     }
 
     @Test fun `part2 cancel sends the recovery code`() = runTest {
@@ -83,7 +83,7 @@ class NoticeActionsViewModelTest {
         assertEquals("recovery_code", security.lastPart2!!.factor.type)
         assertEquals("ABCD-EFGH-IJKL-M", security.lastPart2!!.factor.code)
         coVerify(exactly = 0) { stepUp.stepUp(any(), any(), any(), any()) }
-        assertEquals(NoticeActionUi.Result(R.string.security_request_cancelled, offerRemoveDevice = false), vm.ui.value)
+        assertEquals(NoticeActionUi.Result(R.string.security_request_cancelled), vm.ui.value)
     }
 
     @Test fun `a cancel that lost against completion offers remove this device`() = runTest {
@@ -91,7 +91,39 @@ class NoticeActionsViewModelTest {
         security.failure = apiError(409, "ACCOUNT_REQUEST_COMPLETED")
         val a = EventAction(NoticeAction.CANCEL_REQUEST, "step_up", null)
         vm.run(activity, a, event(a), notice())
-        assertEquals(NoticeActionUi.Result(R.string.security_request_too_late, offerRemoveDevice = true), vm.ui.value)
+        val device = AuthenticatorRef("kd9", "key_device", "Stolen phone")
+        assertEquals(NoticeActionUi.Result(R.string.security_request_too_late, removeDevice = device), vm.ui.value)
+
+        // "Remove this device": the guarded removal of the device the completed request added.
+        security.failure = null
+        grant(StepUpAction.KEY_DEVICE_REMOVE, "kd9")
+        vm.removeCompletedDevice(activity)
+        coVerify { stepUp.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, "kd9", "Stolen phone") }
+        assertTrue("removeKeyDevice:kd9" in approvals.calls)
+        assertEquals(NoticeActionUi.Result(R.string.security_device_removed), vm.ui.value)
+    }
+
+    @Test fun `too late without the device on the notice looks it up in the security log`() = runTest {
+        grant(StepUpAction.REQUEST_CANCEL, "rq1")
+        security.failure = apiError(409, "ACCOUNT_REQUEST_COMPLETED")
+        security.pages += io.wolftown.kaiku.domain.model.CursorPage(listOf(
+            SecurityEvent(id = "ev7", eventType = "request_completed", createdAt = "2026-11-04T12:00:00Z", subjectId = me,
+                authenticator = AuthenticatorRef("kd7", "key_device", "New phone"), requestId = "rq1"),
+        ))
+        val a = EventAction(NoticeAction.CANCEL_REQUEST, "step_up", null)
+        vm.run(activity, a, event(a).copy(authenticator = null), notice())
+        assertEquals(
+            NoticeActionUi.Result(R.string.security_request_too_late, removeDevice = AuthenticatorRef("kd7", "key_device", "New phone")),
+            vm.ui.value,
+        )
+    }
+
+    @Test fun `too late with no known device offers no removal`() = runTest {
+        grant(StepUpAction.REQUEST_CANCEL, "rq1")
+        security.failure = apiError(409, "ACCOUNT_REQUEST_COMPLETED")
+        val a = EventAction(NoticeAction.CANCEL_REQUEST, "step_up", null)
+        vm.run(activity, a, event(a).copy(authenticator = null), notice())
+        assertEquals(NoticeActionUi.Result(R.string.security_request_too_late), vm.ui.value)
     }
 
     @Test fun `admin reader removes with the admin action`() = runTest {

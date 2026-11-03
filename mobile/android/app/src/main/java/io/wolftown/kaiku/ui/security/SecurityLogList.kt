@@ -47,7 +47,7 @@ fun SecurityLogList(modifier: Modifier = Modifier, viewModel: SecurityLogViewMod
         ui.error?.let { Text(stringResource(it), fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground) }
         if (ui.loading) CircularProgressIndicator(Modifier.padding(16.dp))
         if (ui.hasMore && !ui.loading) {
-            OutlinedButton(onClick = viewModel::showOlder, modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp).heightIn(min = KeyScreenSizes.secondaryButton)) {
+            OutlinedButton(onClick = viewModel::showOlder, modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp).heightIn(min = KeyScreenSizes.otherAction)) {
                 Text(stringResource(R.string.security_log_show_older), fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground)
             }
         }
