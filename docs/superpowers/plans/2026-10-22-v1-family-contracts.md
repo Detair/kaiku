@@ -817,15 +817,17 @@ only; registration never runs from the desktop app (B.1 rev 3).
 1. The app (Rust) binds `127.0.0.1:0` (the literal address, never `localhost`) **before** anything
    else and keeps port P; it draws `callback_path` (32 random bytes, b64u, 43 chars) and a verifier.
 2. `POST /auth/passkeys/desktop/flows` with `X-Kaiku-Client: desktop` (bearer only for `step_up`):
-   `{purpose: "sign_in"|"step_up", action|null, target|null, loopback_port: P, callback_path,
-   client_challenge}` → 201 `{flow_id, url, expires_at}`, `url` =
+   `{purpose: "sign_in"|"step_up", action|null, target|null, username|null, loopback_port: P,
+   callback_path, client_challenge}` → 201 `{flow_id, url, expires_at}`, `url` =
    `{PUBLIC_URL}/auth/passkeys/desktop/{flow_id}`; flow ≤ 10 min (Valkey). No header → 400
    `CLIENT_OUTDATED`; `step_up` validates like `step-up/start`.
 3. The app opens `url` in the system browser or the browser chosen in "Browser for passkey sign-in".
    The page names the purpose and the app and says "If someone sent you this link, close this page";
    it uses `POST …/{flow_id}/options` → `{ceremony: "get", options}`, `POST …/{flow_id}/finish`
    (form field `credential`) and `POST …/{flow_id}/cancel`. For `step_up`, an assertion by another
-   account's passkey ends with `PASSKEY_USER_MISMATCH` and no result.
+   account's passkey ends with `PASSKEY_USER_MISMATCH` and no result. For `sign_in` with a
+   `username` (the name typed in the app, compared case-insensitively as in `login/finish`), an
+   assertion by another account's passkey ends the same way; `username` is ignored for `step_up`.
 4. `finish` and `cancel` answer 200 with the **hand-off page**: `Cache-Control: no-store`,
    `Referrer-Policy: no-referrer`, CSP `default-src 'none'; script-src 'sha256-<hash>'; form-action
    http://127.0.0.1:P/callback/<callback_path>; base-uri 'none'; frame-ancestors 'none'`, no
@@ -877,3 +879,8 @@ replaces `PASSKEY_LAST_STRONG_AUTHENTICATOR`, `PASSKEY_PENDING` is new, `PASSKEY
 and `REAUTH_PASSKEY_REQUIRED` are dropped; step-up needs a full session and returns `StepUpGrant`;
 `POST /api/admin/elevate` takes only `{reason|null}` (same interim rule); the rev-2 hook points for "upgrading" a
 probation session and owner evidence are void (CC4).
+
+**C29 amendment (2026-11-03, LP review round 1, all three reviewers):** the desktop `sign_in` flow
+takes an optional `username|null` (step 2) and refuses another account's passkey with
+`PASSKEY_USER_MISMATCH` and no result (step 3), as web and Android already do, so a shared PC does
+not sign in someone else by mistake. Additive; absent means no check.
