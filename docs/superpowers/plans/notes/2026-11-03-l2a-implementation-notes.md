@@ -142,3 +142,37 @@ also for `session_request`; `Server error (NNN)` maps to that status.
 ## Size
 
 ~12.9k insertions incl. ~3.5k test lines (estimate was ~7.7k), Rust ~1.7k.
+
+## Review round 1 (2026-11-03, Codex + Argon)
+
+Reviews: `kaiku-reviews-private/goals/work/codereview-l2a-{codex,argon}.md`. Every finding was
+checked against the code first; fixes are test-first (each new test failed before its fix).
+
+| Finding | Outcome |
+|---|---|
+| Codex M1: part-2 and step-up confirmations render behind the open-request prompt (z 70 under 80) | fixed `15f4d8a4`: `lib/a11y/modalLayer.ts` (`createModalLayer`), used by `DialogShell` and `OpenRequestModal`; a modal opens above every open one. Checked by z-index in jsdom, not in a real browser |
+| Codex M2: a superseded login installs its session and stops the newer flow | fixed `3d586522`: login runs are objects with a fixed server (`applyLoginStep(step, from, serverUrl?)`); browser wrappers take `stillWanted` and check it before and after `/auth/me`, loaded from the collect's own server; Rust `adopt_tokens_if` checks the attempt under the token lock and ends an unwanted pair (`LOGIN_ATTEMPT_ENDED {state: cancelled}`); `cancel_attempt` takes the verifier before the request; the store ends a session that slipped through (`logout`) |
+| Codex M3: the previous account's overview lands under the next account | fixed `15f4d8a4`: `stores/security.ts` generation; a reset detaches the flight, drops its answer, an old `finally` cannot clear a newer flight (also the deferred minor "in-flight `refreshMeSecurity` after `resetMeSecurity`") |
+| Codex m4: expired desktop verifiers kept until the next attempt call | fixed `3d586522`: each verifier has its own 10-min timer (`expire_later`, seq-checked); the UI cancels an attempt that runs out on the PC's clock |
+| Argon M1: collect drops the verifier before checking the outcome | fixed `3d586522`: only success (adopted or ended), 404 and 410 drop it; the store retries a transient collect failure within the 60-s window and goes back to polling on `LOGIN_ATTEMPT_NOT_READY` |
+| Argon M2: `oidc_reauth` / `oidc_reauth_cancel` still registered | fixed `f3dc85ca`: both commands and their loopback listener removed; `commands/reauth.rs` keeps only `Attempt` / `registry` / `run_cancellable`, which LP's `passkey.rs` reuses (LP plan Task 11; `allow(dead_code)` until then). `capabilities/default.json` lists no app commands, so nothing to remove there. Desktop `startOidcReauth` now refuses with `REAUTH_UNAVAILABLE` without an invoke; the C24 browser path in `ReauthDialog` / `lib/reauth.ts` still goes in the LP rebase (A5) |
+| Argon M3: stale pre-session secrets | fixed `f087474b`, narrowed: 401/404/410 forget the secret only on the resource route (`GET`/`DELETE …/current`, `GET /auth/registration`). Not on any path as proposed: a wrong code on `…/totp/verify` is 401 `INVALID_MFA` and a 404 on `…/enrollments/{id}` is about the enrolment, so wiping there would strand a live request. The ticket also goes after `totp/verify` or an enrolment answer with `state: done`; the keyring probe runs before the single-use OIDC verifier is taken; a new request on another server clears the old server's secret |
+| Argon M4: register maps 409 to an English sentence | fixed `f087474b` (pre-existing from main): 409 passes through `code_error`; `USER_EXISTS` / `EMAIL_TAKEN` map to 409 in `NATIVE_CODE_STATUS`; the webview's legacy string mapping is gone |
+| Argon M5: admin panel lacks TOTP state, recovery contact; `may_approve` on admin targets; `meId` unused | fixed `0e3b5a42`: TOTP "Mark as unsafe" / "Allow again" (`admin.factor.set_state`), recovery-contact picker for non-admin accounts (`admin.recovery_contact.set`), `isAdminTarget` = another admin (own account keeps immediate actions), `may_approve` toggle disabled for another admin |
+| Argon M6: create-account contact list offers admins and the system account | fixed `0e3b5a42`: `components/admin/recoveryContacts.ts`; `UserSummary` gains optional `is_system` (C28) and `is_admin` (not in C27; same deviation as the detail view); the creating admin is left out via `meId`. The server's 400 `RECOVERY_CONTACT_INVALID` stays the boundary |
+| Argon M7: probation banner only refreshes on mount; full-session dialog offers passkeys without one | fixed `15f4d8a4`: `createEffect` refreshes whenever the session turns chat-only and reopens the banner for a new chat-only session; the dialog shows "Sign in with a passkey" only with `passkeys > 0` and loads the overview when opened without one |
+| Argon m8: admin requests ignore `account_request_updated`; 409 `ACCOUNT_REQUEST_COMPLETED` offers nothing | fixed `0e3b5a42`: `noteAccountRequestHint` / `accountRequestHints` (websocket) drive the list; the too-late text offers "Open {{name}}" (user panel, where "Remove device now" is); the user panel reloads the account with a toast |
+| Argon m9: raw `a.state`; new views not i18n-guarded | fixed `0e3b5a42`: states through `security.keyDevices.state.*`; `eslint.i18n.mjs` guards the new views, `components/auth` (new files), `auth/login`, `security`, `settings/security`, the two admin panels (no violations); stale `QrLoginModal` / `ChangePasswordModal` entries dropped |
+| Argon m10: chip below 44 px; recovery code field not regrouped | fixed `15f4d8a4`: `min-h-11 text-base`; `RecoveryCodeInput` writes the grouped value back like `CodeEntry` |
+
+Rejected: none. Argon M3 was narrowed as described above. Also closed by these fixes: the
+deferred minor "`adoptBrowserAuth` keeps the token when `/auth/me` fails" (the new session is now
+ended instead). CHANGELOG unchanged: these are fixes inside unreleased L2a features; the A5 line
+on removed password/SSO re-authentication still waits for the LP rebase.
+
+Gates after round 1: `bun run test:run` 176 files / 1742 tests passed; `bunx tsc --noEmit` clean;
+`bun run i18n:check` passes (1191 web keys, 208 Android strings; duplicate-text warnings only);
+`bun run lint` 0 errors (145 warnings); `bun run lint:tauri-commands` 85 commands, all registered;
+`cargo test -p vc-client --lib` 268 passed, 2 ignored; `cargo fmt --check` clean;
+`SQLX_OFFLINE=true cargo clippy -p vc-client --all-targets`: no finding in the files this round
+touches (the known findings in untouched files remain).
