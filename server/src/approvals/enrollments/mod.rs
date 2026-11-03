@@ -646,7 +646,17 @@ pub async fn claim(
         );
     }
     let mut tx = ctx.db.begin().await?;
+    // B.7 rule 1: learn the subject without a lock, take its account lock,
+    // then the enrolment and the challenge (the order of every enrolment
+    // transition and of the revocation cascades).
+    let subject_id = by_token(&mut tx, ctx, &req.setup_token, false)
+        .await?
+        .subject_id;
+    super::transition::lock_accounts(&mut tx, &[subject_id]).await?;
     let row = by_token(&mut tx, ctx, &req.setup_token, true).await?;
+    if row.subject_id != subject_id {
+        return Err(ApprovalError::EnrollmentTokenInvalid);
+    }
     // The pop challenge of this enrolment, answered by the claiming install.
     let challenge: Option<ChallengeRow> = sqlx::query_as("SELECT * FROM approvals WHERE id = $1")
         .bind(req.challenge_id)
