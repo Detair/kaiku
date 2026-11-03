@@ -524,4 +524,4 @@ Gemini 3.8 Flash (High) reviewed the whole package in 9 parts against 35fcadf8, 
 | P9 m2: `grant_system_admin` undelivered | not real: no production caller | — | — |
 | P9 m3: wildcard factor match | **real**: explicit | 172decd3 | — |
 
-Totals: 25 real (P8 M-01 duplicates P6 #3), 22 not real, 0 settled, 5 deferred. P7 #10 (missing tests) is covered by `flash_review` and the round 3 `consume_id_tx` test.
+Totals: 25 real (P8 M-01 duplicates P6 #3), 23 not real, 0 settled, 5 deferred. P7 #10 (missing tests) is covered by `flash_review` and the round 3 `consume_id_tx` test.
