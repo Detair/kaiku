@@ -400,7 +400,7 @@ async fn test_attachment_download_token_respects_revocation(pool: PgPool) {
 
 /// A `?token=` download fails closed when the revocation list cannot be read.
 #[sqlx::test]
-async fn test_attachment_download_token_fails_closed_without_valkey(pool: PgPool) {
+async fn test_attachment_download_token_skips_unreachable_denylist(pool: PgPool) {
     let (server, config) = server_with_failing_valkey(&pool).await;
     let (user_id, _) = create_test_user(&pool).await;
     let token = generate_access_token(&config, user_id);
@@ -410,9 +410,14 @@ async fn test_attachment_download_token_fails_closed_without_valkey(pool: PgPool
         Uuid::now_v7(),
     );
 
+    // The committed session row decides (B.4 rev 5): an unreachable
+    // denylist is skipped, so the live session passes the session check and
+    // the request goes on (here to the missing attachment / storage).
     let resp = reqwest::get(&download).await.expect("download");
-    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(error_code(resp).await, "SERVICE_UNAVAILABLE");
+    assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    let code = error_code(resp).await;
+    assert_ne!(code, "SERVICE_UNAVAILABLE");
+    assert_ne!(code, "INVALID_TOKEN");
 }
 
 /// A ban closes every open socket of the user, also one whose session row is
@@ -421,9 +426,14 @@ async fn test_attachment_download_token_fails_closed_without_valkey(pool: PgPool
 async fn test_ban_closes_socket_without_session_rows(pool: PgPool) {
     let fx = setup(&pool).await;
     let (user_id, _) = create_test_user(&pool).await;
-    // A valid token whose session has no row.
     let token = generate_access_token(&fx.app.config, user_id);
     let mut ws = connect_ready(&fx.server, &token).await;
+    // The session row disappears after the socket went ready.
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE user_id = $1")
         .bind(user_id)
         .fetch_one(&pool)
@@ -434,14 +444,15 @@ async fn test_ban_closes_socket_without_session_rows(pool: PgPool) {
     ban(&fx, user_id).await;
 
     expect_session_revoked(&mut ws).await;
+    // Without a session row the token is refused before the ban check.
     let resp = reqwest::Client::new()
         .get(format!("{}/auth/me", fx.server.url))
         .bearer_auth(&token)
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    assert_eq!(error_code(resp).await, "ACCOUNT_BANNED");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(error_code(resp).await, "INVALID_TOKEN");
 }
 
 #[sqlx::test]
@@ -538,6 +549,7 @@ async fn test_password_change_revoke_others_requires_current_session(pool: PgPoo
         typ: TokenType::Access,
         jti: None,
         sid: None,
+        assurance: None,
     };
     let pem = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
@@ -562,8 +574,10 @@ async fn test_password_change_revoke_others_requires_current_session(pool: PgPoo
         .send()
         .await
         .expect("POST /auth/me/password");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(error_code(resp).await, "VALIDATION_ERROR");
+    // A token without `sid` has no committed session: refused outright
+    // (B.4 rev 5), before the handler sees `revoke_others`.
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(error_code(resp).await, "INVALID_TOKEN");
 
     // Nothing changed: the old password still works, the other session too.
     assert_eq!(

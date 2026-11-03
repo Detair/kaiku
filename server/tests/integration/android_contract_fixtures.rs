@@ -182,6 +182,8 @@ fn android_golden_ws_message_new() {
     );
 }
 
+const SESSION_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_d001);
+
 #[test]
 fn android_golden_auth_response() {
     let response = AuthResponse {
@@ -191,6 +193,9 @@ fn android_golden_auth_response() {
         token_type: "Bearer".to_string(),
         setup_required: false,
         password_change_required: false,
+        session_id: SESSION_ID,
+        assurance: vc_server::auth::assurance::Assurance::Probation,
+        absolute_expires_at: ts("2026-12-03T12:00:00Z"),
     };
 
     check_golden(
@@ -210,6 +215,9 @@ fn android_golden_auth_response_password_change() {
         token_type: "Bearer".to_string(),
         setup_required: false,
         password_change_required: true,
+        session_id: SESSION_ID,
+        assurance: vc_server::auth::assurance::Assurance::Probation,
+        absolute_expires_at: ts("2026-12-03T12:00:00Z"),
     };
 
     check_golden(

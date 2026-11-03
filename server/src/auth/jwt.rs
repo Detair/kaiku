@@ -33,6 +33,11 @@ pub struct Claims {
     /// the still-valid stateless access token via a short-lived denylist.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sid: Option<String>,
+    /// Access tokens only: the session's assurance, for client display. The
+    /// server never reads it; it decides from the committed session row
+    /// (B.4 rev 5). A token without it is probation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assurance: Option<String>,
 }
 
 /// Token type discriminator.
@@ -84,6 +89,7 @@ pub fn generate_token_pair(
         user_id,
         session_id,
         session_id,
+        None,
         private_key,
         access_expiry_seconds,
         refresh_expiry_seconds,
@@ -107,6 +113,32 @@ pub fn generate_token_pair_for_session(
         user_id,
         session_id,
         Uuid::now_v7(),
+        None,
+        private_key,
+        access_expiry_seconds,
+        refresh_expiry_seconds,
+    )
+}
+
+/// Tokens for a session created or renewed by `session_issue` / refresh:
+/// the access token carries `sid` and the session's `assurance` (display
+/// only).
+///
+/// # Errors
+/// The signing key is invalid.
+pub fn generate_session_tokens(
+    user_id: Uuid,
+    session_id: Uuid,
+    assurance: super::assurance::Assurance,
+    private_key: &str,
+    access_expiry_seconds: i64,
+    refresh_expiry_seconds: i64,
+) -> AuthResult<TokenPair> {
+    build_token_pair(
+        user_id,
+        session_id,
+        Uuid::now_v7(),
+        Some(assurance),
         private_key,
         access_expiry_seconds,
         refresh_expiry_seconds,
@@ -117,6 +149,7 @@ fn build_token_pair(
     user_id: Uuid,
     session_id: Uuid,
     refresh_jti: Uuid,
+    assurance: Option<super::assurance::Assurance>,
     private_key: &str,
     access_expiry_seconds: i64,
     refresh_expiry_seconds: i64,
@@ -139,6 +172,7 @@ fn build_token_pair(
         typ: TokenType::Access,
         jti: None,
         sid: Some(refresh_token_id.to_string()),
+        assurance: assurance.map(|a| a.as_str().to_string()),
     };
 
     let access_token = encode(
@@ -155,6 +189,7 @@ fn build_token_pair(
         typ: TokenType::Refresh,
         jti: Some(refresh_jti.to_string()),
         sid: None,
+        assurance: None,
     };
 
     let refresh_token = encode(

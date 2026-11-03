@@ -6,18 +6,18 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use axum_extra::extract::CookieJar;
-use chrono::{Duration, Utc};
 use validator::Validate;
 
+use super::client_class::ClientClass;
+use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
-use super::helpers::{extract_user_agent, should_return_refresh_token};
-use super::jwt::generate_token_pair;
+use super::helpers::should_return_refresh_token;
 use super::password::hash_password;
-use super::queries::{self, InsertSessionParams};
+use super::queries;
+use super::session_issue::{issue_session_tx, NewSession, SessionClient, SignInMethod};
 use super::types::{AuthResponse, RegisterRequest};
-use super::{cookies, geoip, hash_token};
 use crate::api::AppState;
-use crate::db::{self, email_exists, get_auth_methods_allowed, is_setup_complete, username_exists};
+use crate::db::{self, email_exists, get_auth_methods_allowed, username_exists};
 
 /// Register a new local user.
 ///
@@ -104,10 +104,7 @@ pub async fn register(
     crate::presence::validate_unicode_text(display_name, 64)
         .map_err(|e| AuthError::Validation(format!("display_name: {e}")))?;
 
-    // Resolve GeoIP before the transaction to avoid holding a connection during HTTP call
-    let user_agent = extract_user_agent(&headers);
-    let geo =
-        geoip::resolve_location(&state.http_client, &state.config.geoip_api_url, &addr.ip()).await;
+    let client = SessionClient::from_request(&state, &headers, addr);
 
     // Start transaction for atomic first-user detection and admin grant
     let mut tx = state.db.begin().await.map_err(|e| {
@@ -183,40 +180,16 @@ pub async fn register(
         );
     }
 
-    // Generate tokens
-    let tokens = generate_token_pair(
-        user.id,
-        &state.config.jwt_private_key,
-        state.config.jwt_access_expiry,
-        state.config.jwt_refresh_expiry,
-    )
-    .map_err(|e| {
-        tracing::error!(
-            error = %e,
-            user_id = %user.id,
-            "Failed to generate tokens - transaction will rollback"
-        );
-        e
-    })?;
-
-    // Store refresh token session (inline to use transaction)
-    let token_hash = hash_token(&tokens.refresh_token);
-    let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
-    let city = geo.as_ref().and_then(|g| g.city.as_deref());
-    let country = geo.as_ref().and_then(|g| g.country.as_deref());
-
-    let ip_str = Some(addr.ip().to_string());
-    queries::insert_session_tx(
+    // Create the session in the registration transaction (probation).
+    let issued = issue_session_tx(
         &mut tx,
-        &InsertSessionParams {
-            id: tokens.refresh_token_id,
+        &AuthCtx::from(&state),
+        &NewSession {
             user_id: user.id,
-            token_hash: &token_hash,
-            expires_at,
-            ip_address: ip_str.as_deref(),
-            user_agent: user_agent.as_deref(),
-            city,
-            country,
+            method: SignInMethod::LegacyPassword,
+            client: &client,
+            client_class: ClientClass::from_headers(&headers),
+            authenticator: None,
         },
     )
     .await
@@ -240,30 +213,16 @@ pub async fn register(
         e
     })?;
 
-    // Check if setup is complete
-    let setup_complete = is_setup_complete(&state.db).await?;
-
     if !is_first_user {
         tracing::info!(user_id = %user.id, username = %user.username, "User registered");
     }
 
     let include_refresh_token = should_return_refresh_token(&headers);
 
-    let jar = jar.add(cookies::build_refresh_cookie(
-        &tokens.refresh_token,
-        state.config.jwt_refresh_expiry,
-        &state.config,
-    ));
+    let jar = jar.add(issued.refresh_cookie(&state.config));
 
     Ok((
         jar,
-        Json(AuthResponse {
-            access_token: tokens.access_token,
-            refresh_token: include_refresh_token.then_some(tokens.refresh_token),
-            expires_in: tokens.access_expires_in,
-            token_type: "Bearer".to_string(),
-            setup_required: !setup_complete,
-            password_change_required: user.must_change_password,
-        }),
+        Json(issued.into_response(user.must_change_password, include_refresh_token)),
     ))
 }

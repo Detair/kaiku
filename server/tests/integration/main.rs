@@ -61,6 +61,7 @@ mod search;
 mod search_http;
 mod security_events;
 mod security_notices;
+mod session_assurance;
 mod session_revocation;
 mod setup;
 mod setup_concurrent_http;

@@ -644,10 +644,9 @@ async fn check_oidc_reauth(
         crate::admin::queries::is_active_session(&state.db, binding.user_id, binding.session_id)
             .await
             .map_err(|e| AuthError::Internal(format!("Session lookup failed: {e}")))?;
-    // Fails closed: an unreachable denylist is a server fault.
-    let revoked =
-        super::revocation::is_session_revoked(&state.redis, &binding.session_id.to_string())
-            .await?;
+    // The committed row decides; the denylist only rejects earlier.
+    let revoked = super::session_check::denylist(&state.redis, binding.session_id).await
+        == super::session_check::Denylist::Hit;
     if !session_live || revoked {
         return Ok(Err(reauth_code::SESSION_INVALID));
     }

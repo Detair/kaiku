@@ -30,6 +30,7 @@ async fn create_test_user_with_password(
     let user = vc_server::db::create_user(pool, &username, "Gov Test User", None, &hash)
         .await
         .expect("failed to create test user");
+    super::helpers::ensure_test_session(pool, user.id).await;
 
     (user.id, username)
 }
@@ -285,7 +286,10 @@ async fn test_cancel_deletion(pool: PgPool) {
     assert_eq!(resp.status(), 200, "Deletion request should succeed");
 
     // Need a fresh token since sessions were invalidated
-    let token = generate_access_token(&app.config, user_id);
+    // (a new sign-in: the old session has ended)
+    let token = super::helpers::create_session_with_token(&app.pool, &app.config, user_id)
+        .await
+        .1;
 
     // Cancel deletion
     let req = TestApp::request(Method::POST, "/api/me/delete-account/cancel")
@@ -345,7 +349,10 @@ async fn test_duplicate_deletion_request(pool: PgPool) {
     assert_eq!(resp.status(), 200);
 
     // Second request (with fresh token since sessions were invalidated)
-    let token = generate_access_token(&app.config, user_id);
+    // (a new sign-in: the old session has ended)
+    let token = super::helpers::create_session_with_token(&app.pool, &app.config, user_id)
+        .await
+        .1;
     let req = TestApp::request(Method::POST, "/api/me/delete-account")
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
@@ -387,7 +394,10 @@ async fn test_profile_shows_deletion_scheduled(pool: PgPool) {
     assert_eq!(resp.status(), 200);
 
     // Check profile (need fresh token since sessions were cleared)
-    let token = generate_access_token(&app.config, user_id);
+    // (a new sign-in: the old session has ended)
+    let token = super::helpers::create_session_with_token(&app.pool, &app.config, user_id)
+        .await
+        .1;
     let req = TestApp::request(Method::GET, "/auth/me")
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())

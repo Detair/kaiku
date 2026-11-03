@@ -116,51 +116,28 @@ pub async fn insert_oidc_user(
 // Sessions
 // ============================================================================
 
-/// Parameters for inserting a new session row.
-pub struct InsertSessionParams<'a> {
+/// The locked session row a refresh rotates.
+#[derive(Debug, sqlx::FromRow)]
+pub struct RefreshSession {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub token_hash: &'a str,
-    pub expires_at: DateTime<Utc>,
-    pub ip_address: Option<&'a str>,
-    pub user_agent: Option<&'a str>,
-    pub city: Option<&'a str>,
-    pub country: Option<&'a str>,
+    pub assurance: String,
+    pub absolute_expires_at: DateTime<Utc>,
 }
 
-/// Insert a session row inside a transaction.
-pub async fn insert_session_tx(
-    conn: &mut PgConnection,
-    params: &InsertSessionParams<'_>,
-) -> Result<(), AuthError> {
-    sqlx::query(
-        r"INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent, city, country)
-          VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8)",
-    )
-    .bind(params.id)
-    .bind(params.user_id)
-    .bind(params.token_hash)
-    .bind(params.expires_at)
-    .bind(params.ip_address)
-    .bind(params.user_agent)
-    .bind(params.city)
-    .bind(params.country)
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
-/// Lock a session row by `token_hash` for token rotation. Returns `None`
-/// when the session does not exist or has expired.
-pub async fn lock_session_by_token_hash_tx(
+/// Lock a live session row by `token_hash` for token rotation (B.7 rule 1:
+/// refresh locks only its own row). `None` when the session does not exist,
+/// has ended, or is past its inactivity expiry or absolute cap.
+pub async fn lock_live_session_by_token_hash_tx(
     conn: &mut PgConnection,
     token_hash: &str,
-) -> Result<Option<Session>, AuthError> {
-    let session: Option<Session> = sqlx::query_as(
+) -> Result<Option<RefreshSession>, AuthError> {
+    let session: Option<RefreshSession> = sqlx::query_as(
         r"
-        SELECT id, user_id, token_hash, expires_at, host(ip_address) as ip_address, user_agent, city, country, created_at
+        SELECT id, user_id, assurance, absolute_expires_at
         FROM sessions
-        WHERE token_hash = $1 AND expires_at > NOW()
+        WHERE token_hash = $1 AND ended_at IS NULL
+          AND expires_at > NOW() AND absolute_expires_at > NOW()
         FOR UPDATE
         ",
     )
@@ -174,25 +151,26 @@ pub async fn lock_session_by_token_hash_tx(
 ///
 /// The session keeps its id, so the `sid` carried by every access token of
 /// this login stays the same across refreshes: revoking the session reaches
-/// tokens and sockets opened before any refresh.
+/// tokens and sockets opened before any refresh. `expires_at` never passes
+/// the absolute cap (the caller caps it).
 pub async fn rotate_session_tx(
     conn: &mut PgConnection,
     session_id: Uuid,
-    params: &InsertSessionParams<'_>,
+    token_hash: &str,
+    expires_at: DateTime<Utc>,
+    client: &super::session_issue::SessionClient,
 ) -> Result<(), AuthError> {
     sqlx::query(
         r"UPDATE sessions
           SET token_hash = $2, expires_at = $3, ip_address = $4::inet,
-              user_agent = $5, city = $6, country = $7
+              user_agent = $5, last_used_at = NOW()
           WHERE id = $1",
     )
     .bind(session_id)
-    .bind(params.token_hash)
-    .bind(params.expires_at)
-    .bind(params.ip_address)
-    .bind(params.user_agent)
-    .bind(params.city)
-    .bind(params.country)
+    .bind(token_hash)
+    .bind(expires_at)
+    .bind(client.ip.map(|ip| ip.to_string()))
+    .bind(client.user_agent.as_deref())
     .execute(conn)
     .await?;
     Ok(())
@@ -241,13 +219,39 @@ pub async fn is_user_globally_banned(pool: &PgPool, user_id: Uuid) -> sqlx::Resu
     .await
 }
 
-/// List all non-expired sessions belonging to a user.
-pub async fn list_user_sessions(pool: &PgPool, user_id: Uuid) -> Result<Vec<Session>, AuthError> {
-    let sessions: Vec<Session> = sqlx::query_as(
-        r"SELECT id, user_id, token_hash, expires_at, host(ip_address) as ip_address,
-                 user_agent, city, country, created_at
+/// One live session of a user, for `GET /auth/sessions`.
+#[derive(Debug, sqlx::FromRow)]
+pub struct LiveSessionRow {
+    pub id: Uuid,
+    pub token_hash: String,
+    pub expires_at: DateTime<Utc>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub city: Option<String>,
+    pub country: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub assurance: String,
+    pub client_class: String,
+    pub auth_methods: Vec<String>,
+    pub authenticator_type: Option<String>,
+    pub authenticator_id: Option<Uuid>,
+    pub last_used_at: DateTime<Utc>,
+    pub absolute_expires_at: DateTime<Utc>,
+}
+
+/// List the live sessions of a user (ended and expired ones are not
+/// listed), newest first.
+pub async fn list_user_sessions(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<LiveSessionRow>, AuthError> {
+    let sessions: Vec<LiveSessionRow> = sqlx::query_as(
+        r"SELECT id, token_hash, expires_at, host(ip_address) as ip_address,
+                 user_agent, city, country, created_at, assurance, client_class, auth_methods,
+                 authenticator_type, authenticator_id, last_used_at, absolute_expires_at
           FROM sessions
-          WHERE user_id = $1 AND expires_at > NOW()
+          WHERE user_id = $1 AND ended_at IS NULL
+            AND expires_at > NOW() AND absolute_expires_at > NOW()
           ORDER BY created_at DESC",
     )
     .bind(user_id)

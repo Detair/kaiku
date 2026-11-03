@@ -2,12 +2,12 @@
 //!
 //! Handles local authentication, SSO/OIDC, MFA, and session management.
 
+pub mod assurance;
 mod backup_codes;
 pub mod client_class;
 pub(crate) mod cookies;
 pub mod ctx;
 pub(crate) mod error;
-pub mod geoip;
 mod helpers;
 pub(crate) mod identities;
 pub mod jwt;
@@ -22,6 +22,8 @@ pub(crate) mod queries;
 pub(crate) mod reauth;
 pub(crate) mod register;
 pub(crate) mod revocation;
+pub mod session_check;
+pub mod session_issue;
 pub(crate) mod sessions;
 pub mod strong;
 pub mod timers;
@@ -34,7 +36,7 @@ use axum::{middleware as axum_middleware, Router};
 pub use error::{AuthError, AuthResult};
 pub use helpers::hash_token;
 pub use jwt::Claims;
-pub use middleware::{require_auth, require_auth_allow_password_change, AuthUser};
+pub use middleware::{require_auth, require_auth_allow_password_change, AuthUser, SessionMeta};
 pub use password::{hash_password, verify_password};
 
 use crate::api::AppState;

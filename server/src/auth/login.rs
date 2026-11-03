@@ -13,9 +13,11 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::backup_codes::find_matching_backup_code;
+use super::client_class::ClientClass;
+use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
-use super::helpers::{extract_refresh_token, extract_user_agent, should_return_refresh_token};
-use super::jwt::{generate_token_pair, generate_token_pair_for_session, validate_refresh_token};
+use super::helpers::{extract_refresh_token, should_return_refresh_token};
+use super::jwt::validate_refresh_token;
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
 use super::oidc::{
@@ -25,18 +27,18 @@ use super::oidc::{
     OidcUserInfo, OIDC_HANDOFF_TTL_SECS,
 };
 use super::password::{hash_password, verify_password};
-use super::queries::{self, InsertSessionParams};
+use super::session_issue::{issue_session, NewSession, SessionClient, SignInMethod};
 use super::types::{
     AuthResponse, ForgotPasswordRequest, LoginRequest, LogoutRequest, OidcAuthorizeQuery,
     OidcCallbackQuery, OidcHandoffExchangeRequest, RefreshRequest, ResetPasswordRequest,
 };
-use super::{cookies, geoip, hash_token};
+use super::{cookies, hash_token, queries};
 use crate::api::AppState;
 use crate::db::{
-    self, create_password_reset_token, create_session, find_session_by_token_hash,
-    find_user_by_email, find_user_by_id, find_user_by_username, find_user_id_by_identity,
-    find_valid_reset_token, get_auth_methods_allowed, get_unused_mfa_backup_codes,
-    invalidate_user_reset_tokens, is_setup_complete, mark_mfa_backup_code_used,
+    self, create_password_reset_token, find_session_by_token_hash, find_user_by_email,
+    find_user_by_id, find_user_by_username, find_user_id_by_identity, find_valid_reset_token,
+    get_auth_methods_allowed, get_unused_mfa_backup_codes, invalidate_user_reset_tokens,
+    is_setup_complete, mark_mfa_backup_code_used,
 };
 use crate::ratelimit::NormalizedIp;
 
@@ -154,34 +156,23 @@ pub async fn login(
         }
     }
 
-    // Generate tokens
-    let tokens = generate_token_pair(
-        user.id,
-        &state.config.jwt_private_key,
-        state.config.jwt_access_expiry,
-        state.config.jwt_refresh_expiry,
-    )?;
-
-    // Store refresh token session
-    let token_hash = hash_token(&tokens.refresh_token);
-    let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
-    let user_agent = extract_user_agent(&headers);
-
-    let geo =
-        geoip::resolve_location(&state.http_client, &state.config.geoip_api_url, &addr.ip()).await;
-    let city = geo.as_ref().and_then(|g| g.city.as_deref());
-    let country = geo.as_ref().and_then(|g| g.country.as_deref());
-
-    create_session(
-        &state.db,
-        tokens.refresh_token_id,
-        user.id,
-        &token_hash,
-        expires_at,
-        Some(&addr.ip().to_string()),
-        user_agent.as_deref(),
-        city,
-        country,
+    // Create the session (probation: a password, with or without TOTP, is
+    // never a full sign-in, CC4).
+    let method = if user.mfa_secret.is_some() {
+        SignInMethod::LegacyPasswordMfa
+    } else {
+        SignInMethod::LegacyPassword
+    };
+    let client = SessionClient::from_request(&state, &headers, addr);
+    let issued = issue_session(
+        &AuthCtx::from(&state),
+        &NewSession {
+            user_id: user.id,
+            method,
+            client: &client,
+            client_class: ClientClass::from_headers(&headers),
+            authenticator: None,
+        },
     )
     .await?;
 
@@ -190,30 +181,14 @@ pub async fn login(
         let _ = rl.clear_failed_auth(&nip.0).await;
     }
 
-    // Check if setup is complete
-    let setup_complete = is_setup_complete(&state.db).await?;
-
-    tracing::info!(user_id = %user.id, setup_required = !setup_complete, "User logged in");
+    tracing::info!(user_id = %user.id, setup_required = !issued.setup_complete, "User logged in");
     crate::observability::metrics::record_auth_login_attempt(true);
 
     let include_refresh_token = should_return_refresh_token(&headers);
-
-    let jar = jar.add(cookies::build_refresh_cookie(
-        &tokens.refresh_token,
-        state.config.jwt_refresh_expiry,
-        &state.config,
-    ));
-
+    let jar = jar.add(issued.refresh_cookie(&state.config));
     Ok((
         jar,
-        Json(AuthResponse {
-            access_token: tokens.access_token,
-            refresh_token: include_refresh_token.then_some(tokens.refresh_token),
-            expires_in: tokens.access_expires_in,
-            token_type: "Bearer".to_string(),
-            setup_required: !setup_complete,
-            password_change_required: user.must_change_password,
-        }),
+        Json(issued.into_response(user.must_change_password, include_refresh_token)),
     ))
 }
 
@@ -260,18 +235,12 @@ pub async fn refresh_token(
     }
 
     let token_hash = hash_token(&raw_token);
+    let client = SessionClient::from_request(&state, &headers, addr);
 
-    // Resolve GeoIP before the transaction to avoid holding a connection during HTTP call
-    let user_agent = extract_user_agent(&headers);
-    let geo =
-        geoip::resolve_location(&state.http_client, &state.config.geoip_api_url, &addr.ip()).await;
-
-    // Wrap session lookup, deletion, and creation in a transaction with FOR UPDATE
-    // to prevent race conditions in token rotation.
+    // Lock the session row (B.7 rule 1: refresh locks only its own row) and
+    // re-check it live under the lock.
     let mut tx = state.db.begin().await?;
-
-    // Lock the session row to prevent concurrent refresh
-    let session = queries::lock_session_by_token_hash_tx(&mut tx, &token_hash).await?;
+    let session = queries::lock_live_session_by_token_hash_tx(&mut tx, &token_hash).await?;
 
     let Some(session) = session else {
         crate::observability::metrics::record_token_refresh(false);
@@ -284,11 +253,11 @@ pub async fn refresh_token(
         return Err(AuthError::InvalidToken);
     }
 
-    // A session whose id is denylisted has ended even if its row survived
-    // (e.g. ending it in Valkey succeeded but a later step failed): refuse,
-    // since every access token issued for it would be refused anyway. Fails
-    // closed (503) when Valkey cannot answer, like the access-token check.
-    if super::revocation::is_session_revoked(&state.redis, &session.id.to_string()).await? {
+    // A denylisted session has ended: refuse at once. A miss or an
+    // unreachable denylist falls through: the locked row above is live.
+    if super::session_check::denylist(&state.redis, session.id).await
+        == super::session_check::Denylist::Hit
+    {
         crate::observability::metrics::record_token_refresh(false);
         return Err(AuthError::InvalidToken);
     }
@@ -298,39 +267,23 @@ pub async fn refresh_token(
         .await?
         .ok_or(AuthError::UserNotFound)?;
 
-    // Generate the new token pair for the same session: its id (the access
-    // token's `sid`) stays stable, so revoking the session later also reaches
-    // sockets opened before this refresh.
-    let new_tokens = generate_token_pair_for_session(
+    // New tokens for the same session: its id (the access token's `sid`)
+    // stays stable, so revoking the session later also reaches sockets
+    // opened before this refresh. The sliding expiry never passes the
+    // absolute cap.
+    let assurance = super::assurance::Assurance::parse(&session.assurance);
+    let new_tokens = super::jwt::generate_session_tokens(
         user_id,
         session.id,
+        assurance,
         &state.config.jwt_private_key,
         state.config.jwt_access_expiry,
         state.config.jwt_refresh_expiry,
     )?;
-
-    // Rotate the refresh token in place within the transaction
     let new_token_hash = hash_token(&new_tokens.refresh_token);
-    let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
-    let city = geo.as_ref().and_then(|g| g.city.as_deref());
-    let country = geo.as_ref().and_then(|g| g.country.as_deref());
-
-    let ip_str = addr.ip().to_string();
-    queries::rotate_session_tx(
-        &mut tx,
-        session.id,
-        &InsertSessionParams {
-            id: session.id,
-            user_id,
-            token_hash: &new_token_hash,
-            expires_at,
-            ip_address: Some(&ip_str),
-            user_agent: user_agent.as_deref(),
-            city,
-            country,
-        },
-    )
-    .await?;
+    let expires_at = (Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry))
+        .min(session.absolute_expires_at);
+    queries::rotate_session_tx(&mut tx, session.id, &new_token_hash, expires_at, &client).await?;
 
     // Commit the transaction — this is the atomic point
     tx.commit().await?;
@@ -358,6 +311,9 @@ pub async fn refresh_token(
             token_type: "Bearer".to_string(),
             setup_required: !setup_complete,
             password_change_required: user.must_change_password,
+            session_id: session.id,
+            assurance,
+            absolute_expires_at: session.absolute_expires_at,
         }),
     ))
 }
@@ -979,8 +935,10 @@ pub async fn oidc_callback(
         return Ok(desktop_login_hand_back(&state, &flow_state, redirect_url, user.id).await);
     }
 
-    let (tokens, setup_complete) =
-        issue_oidc_session(&state, user.id, &SessionClient::default()).await?;
+    let issued =
+        issue_oidc_session(&state, user.id, &SessionClient::default(), ClientClass::Web).await?;
+    let tokens = &issued.tokens;
+    let setup_complete = issued.setup_complete;
 
     tracing::info!(user_id = %user.id, provider = %flow_state.slug, "User logged in via OIDC");
 
@@ -1012,42 +970,24 @@ if (window.opener) {{
     Ok((jar, axum::response::Html(html)).into_response())
 }
 
-/// Client address and user agent recorded with a new session.
-#[derive(Default)]
-struct SessionClient {
-    ip: Option<String>,
-    user_agent: Option<String>,
-}
-
-/// Start a session for an OIDC login; returns the token pair and whether
-/// server setup is complete.
+/// Start a session for an OIDC login (probation, CC4).
 async fn issue_oidc_session(
     state: &AppState,
     user_id: Uuid,
     client: &SessionClient,
-) -> AuthResult<(super::jwt::TokenPair, bool)> {
-    let tokens = generate_token_pair(
-        user_id,
-        &state.config.jwt_private_key,
-        state.config.jwt_access_expiry,
-        state.config.jwt_refresh_expiry,
-    )?;
-    let token_hash = hash_token(&tokens.refresh_token);
-    let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
-    create_session(
-        &state.db,
-        tokens.refresh_token_id,
-        user_id,
-        &token_hash,
-        expires_at,
-        client.ip.as_deref(),
-        client.user_agent.as_deref(),
-        None,
-        None,
+    client_class: ClientClass,
+) -> AuthResult<super::session_issue::IssuedSession> {
+    issue_session(
+        &AuthCtx::from(state),
+        &NewSession {
+            user_id,
+            method: SignInMethod::LegacyOidc,
+            client,
+            client_class,
+            authenticator: None,
+        },
     )
-    .await?;
-    let setup_complete = is_setup_complete(&state.db).await?;
-    Ok((tokens, setup_complete))
+    .await
 }
 
 /// Generic code: a desktop login state without a client challenge (started by
@@ -1170,21 +1110,16 @@ pub async fn oidc_desktop_exchange(
         return Err(AuthError::AccountBanned);
     }
 
-    let client = SessionClient {
-        ip: Some(addr.ip().to_string()),
-        user_agent: extract_user_agent(&headers),
+    let client = SessionClient::from_request(&state, &headers, addr);
+    // The exchange is the desktop's own call; an Android client says so.
+    let class = match ClientClass::from_headers(&headers) {
+        ClientClass::Web => ClientClass::Desktop,
+        native => native,
     };
-    let (tokens, setup_complete) = issue_oidc_session(&state, user.id, &client).await?;
+    let issued = issue_oidc_session(&state, user.id, &client, class).await?;
     tracing::info!(user_id = %user.id, provider = %grant.slug, "User logged in via OIDC (desktop)");
 
-    Ok(Json(AuthResponse {
-        access_token: tokens.access_token,
-        refresh_token: Some(tokens.refresh_token),
-        expires_in: tokens.access_expires_in,
-        token_type: "Bearer".to_string(),
-        setup_required: !setup_complete,
-        password_change_required: user.must_change_password,
-    }))
+    Ok(Json(issued.into_response(user.must_change_password, true)))
 }
 
 /// Attach a freshly-authenticated external identity to an existing account

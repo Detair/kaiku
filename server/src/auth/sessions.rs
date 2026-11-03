@@ -57,6 +57,19 @@ pub async fn list_sessions(
                 expires_at: s.expires_at,
                 is_current: auth_user.session_id == Some(s.id)
                     || current_hash.as_deref() == Some(&s.token_hash),
+                assurance: super::assurance::Assurance::parse(&s.assurance),
+                client_class: s.client_class.clone(),
+                auth_methods: s.auth_methods.clone(),
+                authenticator: match (&s.authenticator_type, s.authenticator_id) {
+                    (Some(kind), Some(id)) => Some(super::types::SessionAuthenticator {
+                        id,
+                        kind: kind.clone(),
+                        label: None,
+                    }),
+                    _ => None,
+                },
+                last_used_at: s.last_used_at,
+                absolute_expires_at: s.absolute_expires_at,
             }
         })
         .collect();

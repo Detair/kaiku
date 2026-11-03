@@ -199,7 +199,8 @@ pub(crate) async fn is_active_session(
     let exists: bool = sqlx::query_scalar(
         r"SELECT EXISTS(
             SELECT 1 FROM sessions
-            WHERE id = $1 AND user_id = $2 AND expires_at > NOW()
+            WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
+              AND expires_at > NOW() AND absolute_expires_at > NOW()
         )",
     )
     .bind(session_id)

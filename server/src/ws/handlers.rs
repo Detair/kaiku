@@ -148,26 +148,25 @@ pub async fn handler(
             }
         };
 
-        // Reject access tokens whose session was logged out or revoked.
-        if let Some(sid) = claims.sid.as_deref() {
-            match check_session(&state, sid).await {
-                SessionCheck::Active => {}
-                SessionCheck::Revoked => return error_response(401, "Session revoked"),
-                // Fail closed with the shared JSON 503 body.
-                SessionCheck::Unavailable => {
-                    return axum::response::IntoResponse::into_response(
-                        crate::auth::AuthError::ServiceUnavailable,
-                    );
-                }
-            }
-        }
-
         let user_id = match Uuid::parse_str(&claims.sub) {
             Ok(id) => id,
             Err(_) => {
                 return error_response(401, "Invalid user ID in token");
             }
         };
+
+        // The committed session row decides (B.4 rev 5): no `sid`, an
+        // unknown, ended or expired session, or another user's session is
+        // refused; a database outage answers 503.
+        match check_session(&state, claims.sid.as_deref(), user_id).await {
+            SessionCheck::Active => {}
+            SessionCheck::Revoked => return error_response(401, "Session revoked"),
+            SessionCheck::Unavailable => {
+                return axum::response::IntoResponse::into_response(
+                    crate::auth::AuthError::ServiceUnavailable,
+                );
+            }
+        }
 
         // Verify the user still exists, is not banned and has no pending
         // forced password change. Bounded like the frame path, so a stalled
@@ -417,18 +416,16 @@ async fn validate_auth_token(
     let claims = jwt::validate_access_token(token, &state.config.jwt_public_key)
         .map_err(|e| format!("Invalid token: {e}"))?;
 
-    // Reject access tokens whose session was logged out or revoked.
-    if let Some(sid) = claims.sid.as_deref() {
-        match check_session(state, sid).await {
-            SessionCheck::Active => {}
-            SessionCheck::Revoked => return Err(AuthFrameError::Refused(REFUSE_SESSION_REVOKED)),
-            SessionCheck::Unavailable => return Err(AuthFrameError::Unavailable),
-        }
-    }
-    let session_id = claims.sid.as_deref().and_then(|sid| sid.parse().ok());
-
     let user_id =
         Uuid::parse_str(&claims.sub).map_err(|_| "Invalid user ID in token".to_string())?;
+
+    // The committed session row decides (B.4 rev 5).
+    match check_session(state, claims.sid.as_deref(), user_id).await {
+        SessionCheck::Active => {}
+        SessionCheck::Revoked => return Err(AuthFrameError::Refused(REFUSE_SESSION_REVOKED)),
+        SessionCheck::Unavailable => return Err(AuthFrameError::Unavailable),
+    }
+    let session_id = claims.sid.as_deref().and_then(|sid| sid.parse().ok());
 
     // Verify the user exists, is not banned and has no pending forced
     // password change.
@@ -448,21 +445,32 @@ async fn validate_auth_token(
     }
 }
 
-/// Outcome of the session denylist check during WebSocket auth.
+/// Outcome of the session check during WebSocket auth and re-checks.
 enum SessionCheck {
     Active,
     Revoked,
-    /// Valkey errored or did not answer within the command timeout.
+    /// The database errored or did not answer in time.
     Unavailable,
 }
 
-/// Check the session denylist, bounded by the Valkey command timeout. Fails
-/// closed: an error or timeout is [`SessionCheck::Unavailable`].
-async fn check_session(state: &AppState, sid: &str) -> SessionCheck {
-    let check = crate::auth::revocation::is_session_revoked(&state.redis, sid);
-    match tokio::time::timeout(state.config.valkey_command_timeout, check).await {
-        Ok(Ok(false)) => SessionCheck::Active,
-        Ok(Ok(true)) => SessionCheck::Revoked,
+/// The committed-session check (B.4 rev 5): a denylist hit rejects at
+/// once; a miss or an unreachable denylist is skipped; then the session row
+/// must be live and belong to `user_id`. A token without `sid` is refused.
+/// Bounded by [`AUTH_FRAME_TIMEOUT`]; a database error or timeout is
+/// [`SessionCheck::Unavailable`] (close 1013 / 503).
+async fn check_session(state: &AppState, sid: Option<&str>, user_id: Uuid) -> SessionCheck {
+    let Some(sid) = sid.and_then(|s| s.parse::<Uuid>().ok()) else {
+        return SessionCheck::Revoked;
+    };
+    if crate::auth::session_check::denylist(&state.redis, sid).await
+        == crate::auth::session_check::Denylist::Hit
+    {
+        return SessionCheck::Revoked;
+    }
+    let live = crate::auth::session_check::is_live_for_user(&state.db, sid, user_id);
+    match tokio::time::timeout(AUTH_FRAME_TIMEOUT, live).await {
+        Ok(Ok(true)) => SessionCheck::Active,
+        Ok(Ok(false)) => SessionCheck::Revoked,
         Ok(Err(_)) | Err(_) => SessionCheck::Unavailable,
     }
 }
@@ -651,10 +659,8 @@ async fn handle_socket(
     // The denylist check fails closed like the authentication check: an
     // unreachable denylist closes with 1013.
     if exit.is_none() {
-        let session = match session_id {
-            Some(sid) => check_session(&state, &sid.to_string()).await,
-            None => SessionCheck::Active,
-        };
+        let sid = session_id.map(|sid| sid.to_string());
+        let session = check_session(&state, sid.as_deref(), user_id).await;
         let refusal = match session {
             SessionCheck::Revoked => Some((session_revoked_event(), PubsubExit::SessionRevoked)),
             SessionCheck::Unavailable => {
@@ -763,6 +769,14 @@ async fn handle_socket(
         let backstop_trigger = crate::ws::test_hooks::backstop_trigger(user_id);
         presence_backstop.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+        // Re-check the committed session row at least every 60 s (B.4): a
+        // session ended without a notice (or while pub/sub was down) closes
+        // the socket here at the latest.
+        let recheck_every = Duration::from_secs(state.config.session_recheck_secs.clamp(1, 60));
+        let mut session_recheck =
+            tokio::time::interval_at(tokio::time::Instant::now() + recheck_every, recheck_every);
+        session_recheck.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         // Handle incoming messages with heartbeat
         loop {
             tokio::select! {
@@ -824,6 +838,24 @@ async fn handle_socket(
                         }
                         None => break,
                         _ => {}
+                    }
+                }
+
+                _ = session_recheck.tick() => {
+                    let sid = session_id.map(|sid| sid.to_string());
+                    match check_session(&state, sid.as_deref(), user_id).await {
+                        SessionCheck::Active => {}
+                        SessionCheck::Revoked => {
+                            exit = Some(match send_outbound(&tx, session_revoked_event()).await {
+                                Ok(()) => PubsubExit::SessionRevoked,
+                                Err(err) => err.into(),
+                            });
+                            break;
+                        }
+                        SessionCheck::Unavailable => {
+                            exit = Some(PubsubExit::SessionCheckUnavailable);
+                            break;
+                        }
                     }
                 }
 

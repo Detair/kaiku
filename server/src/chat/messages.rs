@@ -1580,6 +1580,7 @@ mod tests {
             deletion_scheduled_at: None,
             must_change_password: false,
             session_id: None,
+            session: None,
         }
     }
 

@@ -99,6 +99,12 @@ pub struct AuthResponse {
     /// Whether the user must set a new password before using the rest of the
     /// API (admin-created account still on its temporary password).
     pub password_change_required: bool,
+    /// The session (stable across refreshes; the access token's `sid`).
+    pub session_id: Uuid,
+    /// The session's assurance, fixed at creation (C27).
+    pub assurance: super::assurance::Assurance,
+    /// When the session ends at the latest (absolute cap, B.4).
+    pub absolute_expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// User profile response.
@@ -125,6 +131,40 @@ pub struct UserProfile {
     pub password_change_required: bool,
     /// The "Kaiku" system account (C28); always false for a signed-in user.
     pub is_system: bool,
+    /// The calling session (C27); absent only outside a session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<CurrentSession>,
+}
+
+/// `GET /auth/me` `session` (C27).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct CurrentSession {
+    pub id: Uuid,
+    pub assurance: super::assurance::Assurance,
+    pub auth_methods: Vec<String>,
+    pub auth_time: chrono::DateTime<chrono::Utc>,
+    /// `web`, `desktop` or `android`.
+    pub client_class: String,
+    pub absolute_expires_at: chrono::DateTime<chrono::Utc>,
+    /// The key device whose own session this is, if any.
+    pub key_device_id: Option<Uuid>,
+}
+
+impl From<&super::SessionMeta> for CurrentSession {
+    fn from(s: &super::SessionMeta) -> Self {
+        Self {
+            id: s.id,
+            assurance: s.assurance,
+            auth_methods: s.auth_methods.clone(),
+            auth_time: s.auth_time,
+            client_class: s.client_class.as_str().to_string(),
+            absolute_expires_at: s.absolute_expires_at,
+            key_device_id: s
+                .authenticator
+                .filter(|a| a.kind == super::strong::AuthenticatorKind::KeyDevice)
+                .map(|a| a.id),
+        }
+    }
 }
 
 /// MFA setup response.
@@ -244,6 +284,29 @@ pub struct SessionInfo {
     pub expires_at: chrono::DateTime<chrono::Utc>,
     /// Whether this is the currently active session.
     pub is_current: bool,
+    /// Assurance fixed at creation (C27).
+    pub assurance: super::assurance::Assurance,
+    /// `web`, `desktop` or `android`.
+    pub client_class: String,
+    /// How the session was created (C27).
+    pub auth_methods: Vec<String>,
+    /// The passkey or key device behind a full session (a key device's own
+    /// session is shown as "Remove device").
+    pub authenticator: Option<SessionAuthenticator>,
+    /// Last sign-in or refresh.
+    pub last_used_at: chrono::DateTime<chrono::Utc>,
+    /// The absolute cap (B.4).
+    pub absolute_expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// `GET /auth/sessions` `authenticator` (C27).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SessionAuthenticator {
+    pub id: Uuid,
+    /// `passkey` or `key_device`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub label: Option<String>,
 }
 
 /// Response containing the list of active auth sessions.

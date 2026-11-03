@@ -1,8 +1,11 @@
 {
+  "absolute_expires_at": "2026-12-03T12:00:00Z",
   "access_token": "fixture-access-token",
+  "assurance": "probation",
   "expires_in": 900,
   "password_change_required": false,
   "refresh_token": "fixture-refresh-token",
+  "session_id": "00000000-0000-4000-8000-00000000d001",
   "setup_required": false,
   "token_type": "Bearer"
 }

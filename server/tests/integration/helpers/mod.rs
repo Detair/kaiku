@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 
 pub mod login;
+pub mod migrations;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -380,7 +381,84 @@ pub fn serve_test_router(listener: tokio::net::TcpListener, router: Router) -> T
 // User & Auth helpers
 // ============================================================================
 
+/// Namespace of the deterministic test session ids (DC7).
+pub const TEST_SESSION_NS: Uuid = Uuid::from_u128(0x6b61_696b_7500_4000_8000_7465_7374_0000);
+
+/// Deterministic UUID from the namespace and a name (SHA-256, version 8),
+/// so tests need no `uuid` v5 feature.
+fn derived_uuid(ns: Uuid, name: &[u8]) -> Uuid {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(ns.as_bytes());
+    h.update(name);
+    let d = h.finalize();
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&d[..16]);
+    b[6] = (b[6] & 0x0f) | 0x80; // version 8 (custom)
+    b[8] = (b[8] & 0x3f) | 0x80; // RFC 9562 variant
+    Uuid::from_bytes(b)
+}
+
+/// The session id [`generate_access_token`] uses for `user_id` (DC7).
+pub fn test_session_id(user_id: Uuid) -> Uuid {
+    derived_uuid(TEST_SESSION_NS, user_id.as_bytes())
+}
+
+/// The fake key device behind the test session (no `approval_devices` row).
+pub fn test_authenticator_id(user_id: Uuid) -> Uuid {
+    derived_uuid(
+        TEST_SESSION_NS,
+        &[user_id.as_bytes().as_slice(), b"authenticator"].concat(),
+    )
+}
+
+/// Insert a live session row `id` for `user_id` with the given assurance.
+/// `full` sessions get a (fake) key-device authenticator, as the CHECK
+/// `full_needs_authenticator` requires.
+pub async fn insert_session_row(pool: &PgPool, id: Uuid, user_id: Uuid, full: bool) {
+    let (assurance, methods, class, kind, auth_id) = if full {
+        (
+            "full",
+            vec!["device_key".to_string()],
+            "android",
+            Some("key_device"),
+            Some(test_authenticator_id(user_id)),
+        )
+    } else {
+        ("probation", vec!["qr".to_string()], "web", None, None)
+    };
+    let token_hash = vc_server::auth::hash_token(&format!("test_session_{}", Uuid::new_v4()));
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, token_hash, expires_at, assurance, auth_methods,
+                               client_class, authenticator_type, authenticator_id,
+                               absolute_expires_at)
+         VALUES ($1, $2, $3, NOW() + INTERVAL '7 days', $4, $5, $6, $7, $8,
+                 NOW() + INTERVAL '30 days')
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(&token_hash)
+    .bind(assurance)
+    .bind(&methods)
+    .bind(class)
+    .bind(kind)
+    .bind(auth_id)
+    .execute(pool)
+    .await
+    .expect("Failed to insert test session");
+}
+
+/// Make sure the deterministic test session of `user_id` exists (for users
+/// created without [`create_test_user`]).
+pub async fn ensure_test_session(pool: &PgPool, user_id: Uuid) {
+    insert_session_row(pool, test_session_id(user_id), user_id, true).await;
+}
+
 /// Create a test user and return `(user_id, username)`.
+///
+/// Also inserts the user's deterministic `full` test session (DC7), so
+/// [`generate_access_token`] works for the new user.
 pub async fn create_test_user(pool: &PgPool) -> (Uuid, String) {
     const MAX_ATTEMPTS: usize = 6;
     let test_id = Uuid::new_v4().to_string()[..8].to_string();
@@ -388,7 +466,10 @@ pub async fn create_test_user(pool: &PgPool) -> (Uuid, String) {
 
     for attempt in 1..=MAX_ATTEMPTS {
         match db::create_user(pool, &username, "HTTP Test User", None, "hash").await {
-            Ok(user) => return (user.id, username),
+            Ok(user) => {
+                ensure_test_session(pool, user.id).await;
+                return (user.id, username);
+            }
             Err(sqlx::Error::PoolTimedOut) if attempt < MAX_ATTEMPTS => {
                 tracing::warn!(
                     attempt,
@@ -413,10 +494,12 @@ pub async fn make_admin(pool: &PgPool, user_id: Uuid) {
         .expect("Failed to grant admin");
 }
 
-/// Generate an access token for the given user.
+/// Generate an access token for the given user, bound to the user's
+/// deterministic test session (DC7; [`create_test_user`] inserts it).
 pub fn generate_access_token(config: &Config, user_id: Uuid) -> String {
-    let pair = jwt::generate_token_pair(
+    let pair = jwt::generate_token_pair_for_session(
         user_id,
+        test_session_id(user_id),
         &config.jwt_private_key,
         config.jwt_access_expiry,
         config.jwt_refresh_expiry,
@@ -485,17 +568,26 @@ pub async fn create_session_with_token(
     config: &Config,
     user_id: Uuid,
 ) -> (Uuid, String) {
+    session_with_token(pool, config, user_id, true).await
+}
+
+/// Like [`create_session_with_token`], but the session is `probation`.
+pub async fn create_probation_session_with_token(
+    pool: &PgPool,
+    config: &Config,
+    user_id: Uuid,
+) -> (Uuid, String) {
+    session_with_token(pool, config, user_id, false).await
+}
+
+async fn session_with_token(
+    pool: &PgPool,
+    config: &Config,
+    user_id: Uuid,
+    full: bool,
+) -> (Uuid, String) {
     let session_id = Uuid::now_v7();
-    let token_hash = vc_server::auth::hash_token(&format!("test_session_{}", Uuid::new_v4()));
-    sqlx::query(
-        "INSERT INTO sessions (id, user_id, token_hash, expires_at) VALUES ($1, $2, $3, NOW() + INTERVAL '1 hour')",
-    )
-    .bind(session_id)
-    .bind(user_id)
-    .bind(&token_hash)
-    .execute(pool)
-    .await
-    .expect("Failed to create session");
+    insert_session_row(pool, session_id, user_id, full).await;
 
     let pair = jwt::generate_token_pair_for_session(
         user_id,

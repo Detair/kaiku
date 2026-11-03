@@ -63,3 +63,28 @@ is listed here, per task. "Coordinator" marks items that need a decision.
 - `SecurityEvent.authenticator.label` is resolved through `auth::strong::authenticator_label`
   (key devices from Task 8, passkeys from LP).
 - The admin log's `user_id` is optional (all accounts when absent).
+
+## Task 5 — assurance, `issue_session()`, committed-session check
+
+- WebSocket with Valkey down: the session check no longer fails closed (the denylist is
+  skipped, B.4 rev 5), so header auth is no longer refused with 503 before the upgrade. The
+  socket still cannot subscribe without Valkey and closes for a resync (1011/1013) without
+  ever becoming ready. `valkey_outage` tests were renamed and updated accordingly
+  (`unreachable_denylist_is_skipped`, `websocket_header_auth_skips_unreachable_denylist`,
+  `websocket_auth_closes_for_resync_when_valkey_hangs`).
+- The identity-link and OIDC re-auth session checks moved to the same rule (row decides,
+  denylist only rejects earlier); the link hand-back code `SERVICE_UNAVAILABLE` for an
+  unreadable denylist is gone.
+- A token without `sid` is refused everywhere (401 `INVALID_TOKEN`), including before
+  `/auth/me/password` (`session_revocation` test updated: it expected 400 there).
+- The OIDC desktop exchange records client class `desktop` unless the request says
+  `X-Kaiku-Client: android` (Android redeems the same code, C27).
+- Interim refresh (until Task 7): locks the live row by token hash, keeps the stable `sid`,
+  caps `expires_at` at the absolute cap, sets `last_used_at`, returns the new
+  `AuthResponse` fields; a denylist hit refuses, an unreachable denylist is skipped.
+- DC7 test harness: `test_session_id` is a deterministic SHA-256-derived UUID (version 8)
+  instead of `Uuid::new_v5` (the workspace `uuid` has no `v5` feature; adding one would add a
+  dependency). Test users created without `create_test_user` call
+  `helpers::ensure_test_session` (governance, identities, admin-created users).
+- `MAX_SESSIONS_PER_USER` is read from the environment (1–1000, default 50) and documented;
+  `session_recheck_secs` is a config field only (60, tests set 1).

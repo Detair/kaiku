@@ -366,10 +366,12 @@ async fn pending_user_can_logout(pool: PgPool) {
 }
 
 async fn pending_user_id(pool: &PgPool) -> Uuid {
-    sqlx::query_scalar("SELECT id FROM users WHERE username = 'oma'")
+    let id = sqlx::query_scalar("SELECT id FROM users WHERE username = 'oma'")
         .fetch_one(pool)
         .await
-        .expect("oma exists")
+        .expect("oma exists");
+    super::helpers::ensure_test_session(pool, id).await;
+    id
 }
 
 #[sqlx::test]

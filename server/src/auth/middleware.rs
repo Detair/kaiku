@@ -6,10 +6,43 @@ use axum::middleware::Next;
 use axum::response::Response;
 use uuid::Uuid;
 
+use super::assurance::Assurance;
+use super::client_class::ClientClass;
 use super::error::AuthError;
 use super::jwt::validate_access_token;
+use super::session_check::{check_claims, Refusal, RequestSession};
+use super::strong::AuthenticatorRef;
 use crate::api::AppState;
-use crate::db::{find_user_by_id, User};
+use crate::db::User;
+
+/// The committed session behind a request (B.4 rev 5), as `require_auth`
+/// read it.
+#[derive(Debug, Clone)]
+pub struct SessionMeta {
+    pub id: Uuid,
+    pub assurance: Assurance,
+    pub auth_methods: Vec<String>,
+    pub auth_time: chrono::DateTime<chrono::Utc>,
+    pub client_class: ClientClass,
+    pub authenticator: Option<AuthenticatorRef>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub absolute_expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl From<&RequestSession> for SessionMeta {
+    fn from(s: &RequestSession) -> Self {
+        Self {
+            id: s.session_id,
+            assurance: s.assurance,
+            auth_methods: s.auth_methods.clone(),
+            auth_time: s.auth_time,
+            client_class: s.client_class,
+            authenticator: s.authenticator,
+            created_at: s.created_at,
+            absolute_expires_at: s.absolute_expires_at,
+        }
+    }
+}
 
 /// Authenticated user injected into request extensions.
 ///
@@ -33,9 +66,24 @@ pub struct AuthUser {
     pub deletion_scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Whether the user must set a new password before using the rest of the API.
     pub must_change_password: bool,
-    /// Session the access token belongs to (`sid` claim); `None` for tokens
-    /// issued without one.
+    /// Session the access token belongs to (`sid` claim). Always set by
+    /// `require_auth`; `None` only for an `AuthUser` built from a `User`
+    /// outside the middleware.
     pub session_id: Option<Uuid>,
+    /// The committed session row (assurance, methods, client class,
+    /// authenticator). `None` only outside the middleware, treated as
+    /// probation.
+    pub session: Option<SessionMeta>,
+}
+
+impl AuthUser {
+    /// The session's assurance; probation without a session.
+    #[must_use]
+    pub fn assurance(&self) -> Assurance {
+        self.session
+            .as_ref()
+            .map_or(Assurance::Probation, |s| s.assurance)
+    }
 }
 
 impl From<User> for AuthUser {
@@ -50,6 +98,7 @@ impl From<User> for AuthUser {
             deletion_scheduled_at: user.deletion_scheduled_at,
             must_change_password: user.must_change_password,
             session_id: None,
+            session: None,
         }
     }
 }
@@ -113,41 +162,28 @@ async fn authenticate(
     // Validate JWT
     let claims = validate_access_token(token, &state.config.jwt_public_key)?;
 
-    // Reject tokens whose session has been logged out or revoked. Access tokens
-    // are stateless, so without this check a token keeps working until it
-    // expires even after the user logs out.
-    if let Some(sid) = claims.sid.as_deref() {
-        // Fails closed: without the denylist the request gets a 503.
-        if super::revocation::is_session_revoked(&state.redis, sid).await? {
-            return Err(AuthError::InvalidToken);
-        }
-    }
+    // The committed session row decides (B.4 rev 5): a denylist hit rejects
+    // at once; a miss or an unreachable denylist falls through to the row,
+    // read by primary key with the user and ban state (DC6). A token without
+    // `sid`, an unknown, ended or expired session, another user's session
+    // and the system account all answer 401 `INVALID_TOKEN`.
+    let session =
+        match check_claims(&state.db, &state.redis, &claims.sub, claims.sid.as_deref()).await {
+            Ok(s) => s,
+            Err(Refusal::Invalid) => return Err(AuthError::InvalidToken),
+            Err(Refusal::Banned) => return Err(AuthError::AccountBanned),
+            Err(Refusal::Db(e)) => return Err(AuthError::Database(e)),
+        };
 
-    // Parse user ID from claims
-    let user_id: Uuid = claims.sub.parse().map_err(|_| AuthError::InvalidToken)?;
-
-    // Load user from database
-    let user = find_user_by_id(&state.db, user_id)
-        .await?
-        .ok_or(AuthError::UserNotFound)?;
-
-    // The system account never has a session (C28).
-    if user.is_system {
-        return Err(AuthError::InvalidToken);
-    }
-
-    // A banned account is refused even with a token that is still valid.
-    if super::queries::is_user_globally_banned(&state.db, user.id).await? {
-        return Err(AuthError::AccountBanned);
-    }
-
-    if user.must_change_password && !allow_password_change {
+    if session.user.must_change_password && !allow_password_change {
         return Err(AuthError::PasswordChangeRequired);
     }
 
     // Inject AuthUser into request extensions
-    let mut auth_user = AuthUser::from(user);
-    auth_user.session_id = claims.sid.as_deref().and_then(|sid| sid.parse().ok());
+    let meta = SessionMeta::from(&session);
+    let mut auth_user = AuthUser::from(session.user);
+    auth_user.session_id = Some(meta.id);
+    auth_user.session = Some(meta);
     request.extensions_mut().insert(auth_user);
 
     // Continue to handler

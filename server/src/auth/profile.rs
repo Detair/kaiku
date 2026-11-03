@@ -46,6 +46,10 @@ pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
         deletion_scheduled_at: auth_user.deletion_scheduled_at.map(|dt| dt.to_rfc3339()),
         password_change_required: auth_user.must_change_password,
         is_system: false,
+        session: auth_user
+            .session
+            .as_ref()
+            .map(super::types::CurrentSession::from),
     })
 }
 
@@ -184,6 +188,10 @@ pub async fn upload_avatar(
         deletion_scheduled_at: user.deletion_scheduled_at.map(|dt| dt.to_rfc3339()),
         password_change_required: user.must_change_password,
         is_system: user.is_system,
+        session: auth_user
+            .session
+            .as_ref()
+            .map(super::types::CurrentSession::from),
     }))
 }
 

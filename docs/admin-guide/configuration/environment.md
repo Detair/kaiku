@@ -30,7 +30,7 @@ variables marked "empty = unset".
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. The desktop app origins `tauri://localhost`, `http://tauri.localhost` and `https://tauri.localhost` are added automatically to an explicit list |
 | `ENABLE_API_DOCS` | `false` in release builds | Serve the OpenAPI docs |
 | `ENABLE_GUILD_DISCOVERY` | `true` | Enable the public server browser (guild discovery). When off, `/api/settings` reports `guild_discovery: false` and clients hide the Explore button and all discovery options |
-| `GEOIP_API_URL` | `http://ip-api.com/json/{ip}?fields=city,country` | GeoIP lookup endpoint for session locations; `{ip}` is replaced |
+| `MAX_SESSIONS_PER_USER` | `50` | At most this many open sessions per account (1–1000); a new sign-in beyond that ends the least recently used session, and the account gets a security notice |
 | `KAIKU_OPTIONAL_FEATURES` | unset (all off) | Comma-separated list of optional features to turn on: `forum` (forum channels), `announcements` (announcement channels and crossposting), `events` (scheduled events and their reminders), `screening` (membership screening). While a feature is off, its routes answer 404 `FEATURE_DISABLED`, new channels of that type are refused, crossposts and event reminders do not run, and members are never held for screening (members already waiting are treated as accepted until screening is turned on again). Existing data is kept and comes back when the feature is turned on again. Unknown names are logged as a warning at startup and ignored |
 | `MAX_GUILDS_PER_USER` | `100` | Guilds a user can join (minimum 1) |
 | `MAX_MEMBERS_PER_GUILD` | `1000` | Members per guild (minimum 1) |

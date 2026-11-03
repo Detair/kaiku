@@ -139,6 +139,18 @@ Config::default()  // Uses OWASP-recommended defaults
 - Audit token expiry changes (longer = more risk)
 - Test auth flows with expired/malformed tokens
 
+### Session check (B.4 rev 5)
+
+The committed `sessions` row is the authority for every authenticated request, every WebSocket handshake and re-check, the `?token=` download path, refresh and device-key sign-in.
+
+- **Live** = `ended_at IS NULL AND expires_at > NOW() AND absolute_expires_at > NOW()`, read by primary key (`session_check::load_live`: session, user and ban state in one query, DC6).
+- **Order:** the Valkey denylist first (`session_check::denylist`): `Hit` rejects at once; `Miss` and `Unavailable` fall through to the row. A missing, empty or unreachable denylist never makes a session valid.
+- **Refusals:** no `sid` claim, no row, not live, another user's session, the system account → 401 `INVALID_TOKEN`; banned → 403 `ACCOUNT_BANNED`.
+- **No positive cache** of live sessions. A cache added later must be invalidated synchronously inside the revoking transaction's commit path and needs a security review.
+- **WebSocket:** the handshake runs the same check (bounded by the auth timeout; a database error closes 1013 / answers 503); the socket loop re-reads the row every `session_recheck_secs` (≤ 60 s): not live → `error SESSION_REVOKED`, close 1008; database error → close 1013.
+- **Assurance** (`full` | `probation`) is stored at creation by `session_issue::issue_session_tx` and never changes. The access JWT's `assurance` claim is for client display only; the server decides from `AuthUser::session` (the row). Sessions from before the upgrade are `probation`, `{legacy}`, web, capped at `created_at + 30 d` (DC3).
+- **Creation:** every sign-in path goes through `issue_session_tx` (account row lock, absolute cap by client class — web 30 d, desktop and Android 90 d — `expires_at = min(now + 7 d, absolute)`, `first_activity_at`). IP and User-Agent are stored for display and audit only; there is no GeoIP lookup.
+
 ### Session end (C25)
 
 A ban (single or bulk), a single-session revoke, "revoke all other sessions", a password change with `revoke_others`, a password reset, logout and the account-deletion logout end the affected sessions right away.

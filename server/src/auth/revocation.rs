@@ -14,11 +14,12 @@
 
 use fred::prelude::*;
 
-use crate::db::{LogThrottle, ValkeyUnavailable};
-
 /// Redis key for a revoked session id.
 fn revoked_key(sid: &str) -> String {
-    format!("canis:revoked_sid:{sid}")
+    sid.parse::<uuid::Uuid>().map_or_else(
+        |_| format!("canis:revoked_sid:{sid}"),
+        super::session_check::denylist_key,
+    )
 }
 
 /// Add a session id to the revocation denylist for `ttl_secs` seconds.
@@ -40,28 +41,6 @@ pub async fn revoke_session(
             false,
         )
         .await
-}
-
-/// Returns `Ok(true)` if the session id has been revoked.
-///
-/// A Valkey error or timeout is returned as [`ValkeyUnavailable`]; callers
-/// fail closed (503 / WebSocket close 1013). The warning is throttled so an
-/// outage does not log once per request.
-pub async fn is_session_revoked(redis: &Client, sid: &str) -> Result<bool, ValkeyUnavailable> {
-    static WARN: LogThrottle = LogThrottle::new();
-
-    match redis.exists::<i64, _>(revoked_key(sid)).await {
-        Ok(count) => Ok(count > 0),
-        Err(e) => {
-            if WARN.allow(std::time::Duration::from_mins(1)) {
-                tracing::warn!(
-                    error = %e,
-                    "Token revocation denylist unavailable; rejecting authenticated requests"
-                );
-            }
-            Err(ValkeyUnavailable(e))
-        }
-    }
 }
 
 /// Extra denylist lifetime beyond the access-token expiry, covering clock

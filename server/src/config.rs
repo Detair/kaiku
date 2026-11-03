@@ -299,9 +299,12 @@ pub struct Config {
     /// Prometheus UI URL (optional)
     pub prometheus_url: Option<String>,
 
-    /// Geo-IP API URL template (optional). Use `{ip}` as placeholder for the IP address.
-    /// Default: `http://ip-api.com/json/{ip}?fields=city,country`
-    pub geoip_api_url: Option<String>,
+    /// At most this many live sessions per account (`MAX_SESSIONS_PER_USER`,
+    /// default 50, B.4); a sign-in beyond ends the least recently used one.
+    pub max_sessions_per_user: i64,
+
+    /// WebSocket session re-check interval in seconds (≤ 60, B.4).
+    pub session_recheck_secs: u64,
 
     /// FCM service account (env: `FCM_SERVICE_ACCOUNT_FILE` or
     /// `FCM_SERVICE_ACCOUNT_JSON`). `None` = FCM off.
@@ -576,9 +579,8 @@ impl Config {
             tempo_url: env_opt("TEMPO_URL"),
             loki_url: env_opt("LOKI_URL"),
             prometheus_url: env_opt("PROMETHEUS_URL"),
-            geoip_api_url: env::var("GEOIP_API_URL")
-                .ok()
-                .or_else(|| Some("http://ip-api.com/json/{ip}?fields=city,country".to_string())),
+            max_sessions_per_user: parse_max_sessions(env_opt("MAX_SESSIONS_PER_USER").as_deref())?,
+            session_recheck_secs: DEFAULT_SESSION_RECHECK_SECS,
             fcm_service_account,
             fcm_api_base,
             optional_features,
@@ -727,13 +729,31 @@ impl Config {
             tempo_url: None,
             loki_url: None,
             prometheus_url: None,
-            geoip_api_url: None,
+            max_sessions_per_user: DEFAULT_MAX_SESSIONS_PER_USER,
+            session_recheck_secs: DEFAULT_SESSION_RECHECK_SECS,
             fcm_service_account: None,
             fcm_api_base: crate::push::fcm::FCM_API_BASE.into(),
             optional_features: crate::features::OptionalFeatures::default(),
             unknown_optional_features: Vec::new(),
             call_ring_timeout_secs: crate::voice::call_service::RING_TIMEOUT_SECS,
         }
+    }
+}
+
+/// Default `MAX_SESSIONS_PER_USER` (B.4).
+pub const DEFAULT_MAX_SESSIONS_PER_USER: i64 = 50;
+/// Default (and maximum) WebSocket session re-check interval (B.4).
+pub const DEFAULT_SESSION_RECHECK_SECS: u64 = 60;
+
+/// `MAX_SESSIONS_PER_USER`: an integer 1..=1000; unset = 50. Anything else
+/// refuses startup.
+fn parse_max_sessions(raw: Option<&str>) -> Result<i64> {
+    let Some(raw) = raw.map(str::trim) else {
+        return Ok(DEFAULT_MAX_SESSIONS_PER_USER);
+    };
+    match raw.parse::<i64>() {
+        Ok(n) if (1..=1000).contains(&n) => Ok(n),
+        _ => anyhow::bail!("MAX_SESSIONS_PER_USER must be an integer from 1 to 1000"),
     }
 }
 

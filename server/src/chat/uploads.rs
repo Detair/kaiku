@@ -660,36 +660,28 @@ pub async fn download(
         // Validate token from query parameter
         let claims = validate_access_token(&token, &state.config.jwt_public_key)
             .map_err(|_| ChatError::Forbidden)?;
-        let user_id = claims
-            .sub
-            .parse::<Uuid>()
-            .map_err(|_| ChatError::Forbidden)?;
-        // This path bypasses `require_auth`, so apply its rules here: ended
-        // sessions, banned accounts and a pending forced password change.
-        // Fails closed: if the denylist cannot be read, refuse with 503
-        // rather than serve a possibly revoked token.
-        if let Some(sid) = claims.sid.as_deref() {
-            match crate::auth::revocation::is_session_revoked(&state.redis, sid).await {
-                Ok(false) => {}
-                Ok(true) => return Err(ChatError::SessionEnded),
-                Err(_) => return Err(ChatError::ServiceUnavailable),
-            }
-        }
-        let caller: Option<(bool, bool)> = sqlx::query_as(
-            "SELECT must_change_password,
-                    EXISTS(SELECT 1 FROM global_bans gb
-                           WHERE gb.user_id = users.id
-                             AND (gb.expires_at IS NULL OR gb.expires_at > NOW()))
-             FROM users WHERE id = $1",
+        // This path bypasses `require_auth`, so apply its rules here: the
+        // committed session row decides (B.4 rev 5), then the ban and a
+        // pending forced password change.
+        let session = match crate::auth::session_check::check_claims(
+            &state.db,
+            &state.redis,
+            &claims.sub,
+            claims.sid.as_deref(),
         )
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await?;
-        match caller {
-            Some((false, false)) => user_id,
-            Some((true, false)) => return Err(ChatError::PasswordChangeRequired),
-            Some((_, true)) | None => return Err(ChatError::Forbidden),
+        .await
+        {
+            Ok(s) => s,
+            Err(crate::auth::session_check::Refusal::Invalid) => {
+                return Err(ChatError::SessionEnded)
+            }
+            Err(crate::auth::session_check::Refusal::Banned) => return Err(ChatError::Forbidden),
+            Err(crate::auth::session_check::Refusal::Db(e)) => return Err(e.into()),
+        };
+        if session.user.must_change_password {
+            return Err(ChatError::PasswordChangeRequired);
         }
+        session.user.id
     } else {
         return Err(ChatError::Forbidden);
     };
