@@ -7,21 +7,35 @@ import { Router, Route } from "@solidjs/router";
 const loginMock = vi.hoisted(() => vi.fn());
 const settingsMock = vi.hoisted(() => vi.fn());
 
+const createQrMock = vi.hoisted(() => vi.fn());
+const pollMock = vi.hoisted(() => vi.fn());
+const cancelMock = vi.hoisted(() => vi.fn());
+
 vi.mock("@/lib/tauri", () => ({
-  login: loginMock,
+  passwordLogin: loginMock,
   fetchServerSettings: settingsMock,
   getDefaultServerUrl: vi.fn().mockResolvedValue(null),
   oidcAuthorize: vi.fn(),
+  createQrAttempt: createQrMock,
+  pollAttempt: pollMock,
+  cancelAttempt: cancelMock,
+  collectAttempt: vi.fn(),
+  attemptTotp: vi.fn(),
 }));
 
 import Login from "../Login";
 import { HttpError } from "@/lib/tauri/common";
 import { setAuthState } from "@/stores/auth";
+import { leaveFlow } from "@/stores/loginFlow";
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  await leaveFlow();
   window.history.pushState({}, "", "/");
-  setAuthState({ error: null, mfaRequired: false, isLoading: false });
+  setAuthState({ error: null, isLoading: false });
+  createQrMock.mockReset();
+  pollMock.mockReset();
+  cancelMock.mockReset();
   loginMock.mockReset();
   settingsMock.mockReset();
   settingsMock.mockResolvedValue(null);
@@ -71,6 +85,67 @@ describe("Login", () => {
         ),
       ).toBeTruthy(),
     );
+  });
+
+  it("TOO_MANY_ATTEMPTS shows the wait from Retry-After", async () => {
+    loginMock.mockRejectedValue(new HttpError(429, "slow", "TOO_MANY_ATTEMPTS", {}, 300));
+    await submit();
+    await waitFor(() => expect(screen.getByText("Too many tries. Try again in 5 minutes.")).toBeTruthy());
+  });
+
+  it("password login shows the confirmation QR on confirmation_required", async () => {
+    pollMock.mockReturnValue(new Promise(() => {}));
+    loginMock.mockResolvedValue({
+      status: "confirmation_required",
+      attempt: {
+        attempt_id: "44444444-4444-4444-8444-444444444444",
+        kind: "password",
+        state: "open",
+        expires_at: new Date(Date.now() + 600_000).toISOString(),
+        qr: { payload: "kaiku://login/v1?o=x&t=a", expires_at: "" },
+        totp_available: true,
+      },
+    });
+    await submit();
+    await waitFor(() => expect(screen.getByText("Open Kaiku on your phone and scan this code.")).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Phone not at hand?" })).toBeTruthy();
+    expect(loginMock).toHaveBeenCalledWith(expect.any(String), "alice", "wrong");
+  });
+
+  it("orders passkey, phone, SSO and password, with the recovery links", async () => {
+    await renderLogin();
+    const phone = screen.getByRole("button", { name: "Sign in with your phone" });
+    const form = screen.getByTestId("login-submit");
+    expect(phone.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.querySelector('a[href="/recover"]')?.textContent).toBe("I lost my phone / forgot my password");
+    expect(document.querySelector('a[href="/secure-account"]')?.textContent).toBe("Secure my account");
+  });
+
+  it("forgot-password link and routes are gone", async () => {
+    await renderLogin();
+    expect(document.querySelector('a[href="/forgot-password"]')).toBeNull();
+    const views = import.meta.glob("../*.tsx");
+    expect(Object.keys(views).some((k) => /ForgotPassword|ResetPassword/.test(k))).toBe(false);
+  });
+
+  it("no typed sign-in code is offered", async () => {
+    pollMock.mockReturnValue(new Promise(() => {}));
+    createQrMock.mockResolvedValue({
+      attempt_id: "44444444-4444-4444-8444-444444444444",
+      kind: "qr",
+      state: "open",
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      qr: { payload: "kaiku://login/v1?o=x&t=a", expires_at: "" },
+      totp_available: false,
+    });
+    await renderLogin();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with your phone" }));
+    await screen.findByRole("heading", { name: "Sign in with your phone" });
+    expect(document.querySelector('input[autocomplete="one-time-code"]')).toBeNull();
+    expect(document.querySelector("input")).toBeNull();
+    // Back leaves the flow and cancels the attempt.
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(cancelMock).toHaveBeenCalledWith("44444444-4444-4444-8444-444444444444"));
   });
 
   it("never shows a bare status line for a proxy error", async () => {

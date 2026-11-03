@@ -16,8 +16,6 @@ import Register from "./views/Register";
 import Main from "./views/Main";
 
 // Views (lazy: not part of main flow)
-const ForgotPassword = lazy(() => import("./views/ForgotPassword"));
-const ResetPassword = lazy(() => import("./views/ResetPassword"));
 const NotFound = lazy(() => import("./views/NotFound"));
 const ThemeDemo = lazy(() => import("./pages/ThemeDemo"));
 const InviteJoin = lazy(() => import("./views/InviteJoin"));
@@ -223,24 +221,6 @@ const RegisterPage = () => (
     <Register />
   </Layout>
 );
-const ForgotPasswordPage = () => (
-  <Layout>
-    <LazyErrorBoundary name="ForgotPassword">
-      <Suspense fallback={<PageFallback />}>
-        <ForgotPassword />
-      </Suspense>
-    </LazyErrorBoundary>
-  </Layout>
-);
-const ResetPasswordPage = () => (
-  <Layout>
-    <LazyErrorBoundary name="ResetPassword">
-      <Suspense fallback={<PageFallback />}>
-        <ResetPassword />
-      </Suspense>
-    </LazyErrorBoundary>
-  </Layout>
-);
 const MainPage = () => (
   <Layout>
     <ProtectedMain />
@@ -302,8 +282,6 @@ export const AppRoutes = (): JSX.Element => (
     {import.meta.env.DEV && <Route path="/demo" component={ThemeDemoPage} />}
     <Route path="/login" component={LoginPage} />
     <Route path="/register" component={RegisterPage} />
-    <Route path="/forgot-password" component={ForgotPasswordPage} />
-    <Route path="/reset-password" component={ResetPasswordPage} />
     <Route path="/invite/:code" component={InvitePage} />
     <Route path="/pages/:slug" component={PagePage} />
     <Route path="/guilds/:guildId/pages/:slug" component={PagePage} />

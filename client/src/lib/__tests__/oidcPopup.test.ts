@@ -7,7 +7,7 @@ const msg = (source: unknown) =>
   new MessageEvent("message", {
     origin: ORIGIN,
     source: source as MessageEventSource,
-    data: { type: "oidc-callback", access_token: "tok", setup_required: true },
+    data: { type: "oidc-callback", status: "confirmation_required", attempt: { attempt_id: "a1", state: "open" } },
   });
 
 describe("watchSsoPopup", () => {
@@ -41,6 +41,17 @@ describe("watchSsoPopup", () => {
     window.dispatchEvent(
       new MessageEvent("message", {
         origin: "https://evil.example",
+        source: popup as unknown as MessageEventSource,
+        data: { type: "oidc-callback", status: "totp_required", attempt: { attempt_id: "a1" } },
+      }),
+    );
+    expect(onResult).not.toHaveBeenCalled();
+  });
+
+  it("ignores a token-style message from older servers (no LoginStep)", () => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        origin: window.location.origin,
         source: popup as unknown as MessageEventSource,
         data: { type: "oidc-callback", access_token: "tok" },
       }),

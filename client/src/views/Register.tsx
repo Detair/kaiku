@@ -1,14 +1,9 @@
 import { Component, createSignal, createResource, Show, For, onCleanup } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
-import {
-  register,
-  loginWithOidc,
-  completeNativeOidcLogin,
-  authState,
-  clearError,
-} from "@/stores/auth";
+import { register, authState, clearError } from "@/stores/auth";
 import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
-import type { OidcProvider } from "@/lib/types";
+import { decodeLoginStep, type OidcProvider } from "@/lib/types";
+import { applyLoginStep, setFlowServer } from "@/stores/loginFlow";
 import { KeyRound, ShieldAlert } from "lucide-solid";
 import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
@@ -54,6 +49,11 @@ const Register: Component = () => {
   });
   const [searchParams] = useSearchParams();
   const afterRegister = () => safeReturnUrl(searchParams.returnUrl) ?? "/";
+  /** The sign-in page keeps the return URL (an SSO sign-up confirms there). */
+  const loginPath = () => {
+    const back = safeReturnUrl(searchParams.returnUrl);
+    return back ? `/login?returnUrl=${encodeURIComponent(back)}` : "/login";
+  };
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const [serverUrl] = createSignal(defaultServerUrl);
   const [username, setUsername] = createSignal("");
@@ -151,10 +151,11 @@ const Register: Component = () => {
       const result = await oidcAuthorize(serverUrl(), provider.slug);
 
       if (result.mode === "tauri") {
-        // Tauri: Rust kept the tokens and returned the user
-        await completeNativeOidcLogin(serverUrl(), result.result);
-        navigate(afterRegister(), { replace: true });
+        // Tauri: the SSO sign-in is confirmed on the sign-in page (C27, F3).
+        setFlowServer(serverUrl());
+        applyLoginStep(result.step, "oidc");
         setOidcLoading(null);
+        navigate(loginPath(), { replace: true });
         return;
       }
 
@@ -170,24 +171,11 @@ const Register: Component = () => {
         popup: popup!,
         expectedOrigin,
         onResult: (data) => {
-          loginWithOidc(
-            serverUrl(),
-            data.access_token,
-            data.refresh_token,
-            data.expires_in || 900,
-            data.setup_required ?? false,
-          )
-            .then(() => {
-              navigate(afterRegister(), { replace: true });
-            })
-            .catch((err) => {
-              if (!authState.error) {
-                setLocalError(errorText(err, "auth.register.ssoFailed"));
-              }
-            })
-            .finally(() => {
-              setOidcLoading(null);
-            });
+          // The callback carries the next sign-in step (C27), never a token.
+          setOidcLoading(null);
+          setFlowServer(serverUrl());
+          applyLoginStep(decodeLoginStep(data), "oidc");
+          navigate(loginPath(), { replace: true });
         },
         onClosedWithoutResult: () => {
           // Closed by the user, or the callback lost its opener (IdP with

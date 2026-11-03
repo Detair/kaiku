@@ -15,11 +15,14 @@ export function openBlankSsoPopup(name: string): Window | null {
   return window.open("about:blank", `${name}-${Date.now()}-${++popupAttempt}`, "width=600,height=700");
 }
 
+/**
+ * The callback page's message (C27): the SSO sign-in's next step, with the
+ * attempt cookie set. Never a token.
+ */
 export interface OidcCallbackData {
-  access_token: string;
-  refresh_token?: string;
-  expires_in?: number;
-  setup_required?: boolean;
+  type: "oidc-callback";
+  status: string;
+  attempt: unknown;
 }
 
 /** How long to keep listening after the popup closes (message vs close race). */
@@ -52,7 +55,7 @@ export function watchSsoPopup(opts: {
     if (settled) return;
     // Validate origin and sender to prevent token injection
     if (event.origin !== opts.expectedOrigin || event.source !== opts.popup) return;
-    if (event.data?.type === "oidc-callback" && event.data.access_token) {
+    if (event.data?.type === "oidc-callback" && typeof event.data.status === "string" && event.data.attempt) {
       stop();
       opts.onResult(event.data as OidcCallbackData);
     }

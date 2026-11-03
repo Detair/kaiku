@@ -1,5 +1,8 @@
-import { t, type MessageKey } from "@/i18n";
+import { plural, t, type MessageKey } from "@/i18n";
+import { errorText } from "@/i18n/errors";
 import { formatTimestamp } from "@/i18n/format";
+import { codeIs } from "@/lib/errorCode";
+import { HttpError } from "@/lib/tauri/common";
 
 /** Server codes the sign-in form words specifically (used with `errorText`). */
 export const LOGIN_ERRORS: Partial<Record<string, MessageKey>> = {
@@ -64,4 +67,24 @@ export function formatPasskeyError(err: { code: string; readyAt?: string }): str
     return t("passkeys.error.readyAt", { time: err.readyAt ? formatTimestamp(err.readyAt) : "" });
   }
   return t(passkeyErrorKey(err.code));
+}
+
+/**
+ * Text for a refused sign-in step: the F3 neutral answer, and for
+ * `TOO_MANY_ATTEMPTS` the wait from `Retry-After` in whole minutes.
+ */
+export function loginErrorText(err: unknown): string {
+  const http =
+    err instanceof HttpError ? err : err instanceof Error && err.cause instanceof HttpError ? err.cause : null;
+  if (http && codeIs(http.code, "TOO_MANY_ATTEMPTS")) {
+    if (http.retryAfter && http.retryAfter > 0) {
+      const minutes = Math.max(1, Math.ceil(http.retryAfter / 60));
+      return plural(minutes, {
+        one: "auth.login.tooManyAttemptsMinutes.one",
+        other: "auth.login.tooManyAttemptsMinutes.other",
+      });
+    }
+    return t("auth.login.tooManyAttempts");
+  }
+  return errorText(err, "auth.login.failed", LOGIN_ERRORS);
 }

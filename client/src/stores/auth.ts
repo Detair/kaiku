@@ -7,7 +7,7 @@
 import { loadServerFeatures, resetServerFeatures } from "@/stores/serverFeatures";
 import { createStore } from "solid-js/store";
 import { codeIs } from "@/lib/errorCode";
-import type { User } from "@/lib/types";
+import type { LoginStep, User } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import {
   initWebSocket,
@@ -27,7 +27,7 @@ import { resetE2EEState } from "./e2ee";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 import { errorText } from "@/i18n/errors";
-import { LOGIN_ERRORS, REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "@/lib/authErrors";
+import { loginErrorText, REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "@/lib/authErrors";
 import {
   isTauri,
   PASSWORD_CHANGE_REQUIRED_EVENT,
@@ -42,7 +42,6 @@ interface AuthState {
   isInitialized: boolean;
   error: string | null;
   setupRequired: boolean;
-  mfaRequired: boolean;
   sessionExpired: boolean;
   /** Why the session ended while `sessionExpired` is set (selects the text). */
   sessionEndReason: tauri.SessionEndReason;
@@ -68,7 +67,6 @@ const [authState, setAuthState] = createStore<AuthState>({
   isInitialized: false,
   error: null,
   setupRequired: false,
-  mfaRequired: false,
   sessionExpired: false,
   sessionEndReason: "expired",
   restorePending: false,
@@ -85,6 +83,19 @@ export const currentUser = () => authState.user;
  * logged; cleared on success, logout and session expiry.
  */
 let pendingTemporaryPassword: string | null = null;
+
+/**
+ * The password of the sign-in step in progress (F3: the session starts only
+ * after the phone confirmation or the TOTP step). Memory only; taken by
+ * `completeSignIn` when the account still has to replace it (C4), and
+ * dropped by every other sign-in, logout and session end.
+ */
+let stepPassword: string | null = null;
+
+/** Forget the password of an abandoned sign-in step. */
+export function forgetStepPassword(): void {
+  stepPassword = null;
+}
 
 /** Whether the change screen can reuse the password from this sign-in. */
 export function hasPendingTemporaryPassword(): boolean {
@@ -258,6 +269,7 @@ async function endSession(reason: tauri.SessionEndReason): Promise<void> {
     console.error("[Auth] Cleanup during session end failed:", err);
   }
   pendingTemporaryPassword = null;
+  stepPassword = null;
   passwordChangeSaved = false;
   setAuthState({
     user: null,
@@ -591,60 +603,29 @@ export async function initAuth(): Promise<void> {
 }
 
 /**
- * Login with username and password.
- * If MFA is required, sets mfaRequired=true and throws — caller should
- * show MFA input, then call login() again with the mfaCode.
+ * Username + password (F3). Never signs in by itself: the answer is the next
+ * step (`confirmation_required` → the phone confirms by scan,
+ * `totp_required` → the TOTP step), or the neutral refusal, worded into
+ * `authState.error`. The session starts in `completeSignIn`.
  */
 export async function login(
   serverUrl: string,
   username: string,
   password: string,
-  mfaCode?: string,
-): Promise<User> {
+): Promise<LoginStep> {
   resetServerFeatures(); // a different server may be chosen
   setAuthState({ isLoading: true, error: null });
   invalidatePasskeySignIns();
-
+  stepPassword = null;
   try {
     await initNativeSession();
-    const result = await tauri.login(serverUrl, username, password, mfaCode);
-    warnIfNotRemembered(result);
-    stopRestoreRetry();
-    const passwordChangeRequired = result.password_change_required === true;
-    // Only a temporary password is remembered, and only until it is replaced.
-    pendingTemporaryPassword = passwordChangeRequired ? password : null;
-    setAuthState({
-      restorePending: false,
-      user: result.user,
-      serverUrl,
-      isLoading: false,
-      isInitialized: true,
-      error: null,
-      setupRequired: result.setup_required,
-      mfaRequired: false,
-      sessionExpired: false,
-      passwordChangeRequired,
-    });
-
-    if (!passwordChangeRequired) await startSessionServices();
-
-    return result.user;
+    const step = await tauri.passwordLogin(serverUrl, username, password);
+    stepPassword = password;
+    setAuthState({ isLoading: false, serverUrl });
+    return step;
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
-
-    // Detect MFA_REQUIRED
-    if (raw === "MFA_REQUIRED") {
-      setAuthState({
-        isLoading: false,
-        error: null,
-        mfaRequired: true,
-        serverUrl,
-      });
-      throw new Error("MFA_REQUIRED", { cause: err });
-    }
-
-    const error = errorText(err, "auth.login.failed", LOGIN_ERRORS);
-    setAuthState({ isLoading: false, error });
+    setAuthState({ isLoading: false, error: loginErrorText(err) });
     throw new Error(raw, { cause: err });
   }
 }
@@ -688,6 +669,7 @@ export async function loginWithPasskey(
     warnIfNotRemembered(result);
     stopRestoreRetry();
     pendingTemporaryPassword = null;
+    stepPassword = null;
     setAuthState({
       restorePending: false,
       user: result.user,
@@ -696,7 +678,6 @@ export async function loginWithPasskey(
       isInitialized: true,
       error: null,
       setupRequired: result.setup_required,
-      mfaRequired: false,
       sessionExpired: false,
       passwordChangeRequired: result.password_change_required === true,
     });
@@ -718,6 +699,39 @@ function invalidatePasskeySignIns(): number {
   passkeyAttempt = null;
   signInGeneration += 1;
   return signInGeneration;
+}
+
+/**
+ * A sign-in step produced a session (attempt collected, TOTP step, and later
+ * LP's passkey sign-in): take it over and start the session services.
+ */
+export async function completeSignIn(
+  serverUrl: string,
+  result: tauri.AuthResult,
+): Promise<User> {
+  invalidatePasskeySignIns();
+  await initNativeSession();
+  warnIfNotRemembered(result);
+  stopRestoreRetry();
+  const passwordChangeRequired = result.password_change_required === true;
+  // Only a temporary password is remembered, and only until it is replaced.
+  pendingTemporaryPassword = passwordChangeRequired ? stepPassword : null;
+  stepPassword = null;
+  setAuthState({
+    restorePending: false,
+    user: result.user,
+    serverUrl: tauri.getServerUrl() || serverUrl,
+    isLoading: false,
+    isInitialized: true,
+    error: null,
+    setupRequired: result.setup_required,
+    sessionExpired: false,
+    passwordChangeRequired,
+  });
+
+  if (!passwordChangeRequired) await startSessionServices();
+
+  return result.user;
 }
 
 /**
@@ -773,82 +787,13 @@ export async function register(
 }
 
 /**
- * Complete a native (Tauri) OIDC login: Rust already holds the tokens and
- * returned the user.
- */
-export async function completeNativeOidcLogin(
-  serverUrl: string,
-  result: tauri.AuthResult,
-): Promise<void> {
-  invalidatePasskeySignIns();
-  await initNativeSession();
-  warnIfNotRemembered(result);
-  stopRestoreRetry();
-  setAuthState({
-    restorePending: false,
-    user: result.user,
-    serverUrl: tauri.getServerUrl() || serverUrl,
-    isLoading: false,
-    isInitialized: true,
-    error: null,
-    setupRequired: result.setup_required,
-    mfaRequired: false,
-    sessionExpired: false,
-    passwordChangeRequired: result.password_change_required === true,
-  });
-  if (!authState.passwordChangeRequired) await startSessionServices();
-}
-
-/**
- * Complete a browser OIDC login after receiving the access token from the
- * callback page. The refresh token is an HttpOnly cookie, so
- * `_refreshToken` is ignored.
- */
-export async function loginWithOidc(
-  serverUrl: string,
-  accessToken: string,
-  _refreshToken: string | undefined,
-  expiresIn: number,
-  setupRequired: boolean = false,
-): Promise<void> {
-  setAuthState({ isLoading: true, error: null });
-  invalidatePasskeySignIns();
-
-  try {
-    await tauri.oidcCompleteLogin(serverUrl, accessToken, expiresIn);
-
-    // Fetch the current user with the new token
-    const result = await tauri.getCurrentUser();
-    if (!result.user) {
-      throw new Error("Failed to fetch user after OIDC login");
-    }
-
-    setAuthState({
-      user: result.user,
-      serverUrl,
-      isLoading: false,
-      isInitialized: true,
-      error: null,
-      setupRequired,
-      sessionExpired: false,
-      passwordChangeRequired: result.password_change_required === true,
-    });
-
-    if (!authState.passwordChangeRequired) await startSessionServices();
-  } catch (err) {
-    const error = errorText(err, "auth.login.ssoFailed");
-    setAuthState({ isLoading: false, error });
-    throw new Error(err instanceof Error ? err.message : String(err), { cause: err });
-  }
-}
-
-/**
  * Logout and clear session.
  */
 export async function logout(): Promise<void> {
   invalidatePasskeySignIns();
   resetServerFeatures();
   pendingTemporaryPassword = null;
+  stepPassword = null;
   passwordChangeSaved = false;
   setAuthState({ isLoading: true, error: null, passwordChangeRequired: false });
 

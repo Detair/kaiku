@@ -13,6 +13,7 @@ import type {
   UserStatus,
 } from "../types";
 import { codeIs, messageHasCode } from "@/lib/errorCode";
+import { decodeLoginStep, type LoginStep } from "../types/login";
 import {
   browserState,
   clearBrowserTokens,
@@ -140,62 +141,6 @@ export async function nativeSessionRequest<T>(
     }
     throw error;
   }
-}
-
-export async function login(
-  serverUrl: string,
-  username: string,
-  password: string,
-  mfaCode?: string,
-): Promise<AuthResult> {
-  if (isTauri()) {
-    try {
-      return await invokeNativeAuth((invoke) =>
-        invoke<AuthResult>("login", {
-          request: {
-            server_url: serverUrl,
-            username,
-            password,
-            mfa_code: mfaCode ?? null,
-          },
-        }),
-      );
-    } catch (error) {
-      throw nativeAuthError(error);
-    }
-  }
-
-  // Browser mode
-  browserState.serverUrl = serverUrl;
-  localStorage.setItem("serverUrl", serverUrl);
-  setSessionRestoreBlocked(false);
-
-  const body: Record<string, unknown> = { username, password };
-  if (mfaCode) {
-    body.mfa_code = mfaCode;
-  }
-
-  const response = await httpRequest<AuthResponse>("POST", "/auth/login", body);
-
-  // Store access token in memory; browser relies on HttpOnly cookie for refresh
-  browserState.accessToken = response.access_token;
-  browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
-
-  // Schedule automatic token refresh
-  scheduleTokenRefresh();
-
-  console.log(
-    `[Auth] Login successful, token expires in ${response.expires_in}s`,
-  );
-
-  // Fetch user profile after login
-  const user = await httpRequest<User>("GET", "/auth/me");
-
-  return {
-    user,
-    setup_required: response.setup_required,
-    password_change_required: response.password_change_required ?? false,
-  };
 }
 
 /**
@@ -766,32 +711,32 @@ export async function fetchServerSettings(
 }
 
 /**
- * Initiate OIDC login flow.
+ * Initiate an SSO sign-in (F3 OIDC variant). Never a session by itself: the
+ * answer is a `LoginStep`, confirmed by the phone or the TOTP step (C27).
  *
- * In Tauri mode: Rust handles the entire flow (opens browser, waits for
- * callback, keeps the tokens). Returns { mode: "tauri", result }.
+ * Tauri: Rust runs the browser flow and redeems the hand-off code; the
+ * verifier stays in Rust. Returns { mode: "tauri", step }.
  *
- * In browser mode: returns the authorize URL for popup flow.
- * Returns { mode: "browser", authUrl }.
+ * Browser: returns the authorize URL for the popup, whose callback page posts
+ * `oidc-callback {status, attempt}`. Returns { mode: "browser", authUrl }.
  */
 export async function oidcAuthorize(
   serverUrl: string,
   providerSlug: string,
 ): Promise<
-  | { mode: "tauri"; result: AuthResult }
+  | { mode: "tauri"; step: LoginStep }
   | { mode: "browser"; authUrl: string }
 > {
   const baseUrl = serverUrl.replace(/\/+$/, "");
 
   if (isTauri()) {
     try {
-      const result = await invokeNativeAuth((invoke) =>
-        invoke<AuthResult>("oidc_authorize", {
-          serverUrl: baseUrl,
-          providerSlug,
-        }),
-      );
-      return { mode: "tauri", result };
+      const { invoke } = await import("@tauri-apps/api/core");
+      const raw = await invoke<unknown>("oidc_authorize", {
+        serverUrl: baseUrl,
+        providerSlug,
+      });
+      return { mode: "tauri", step: decodeLoginStep(raw) };
     } catch (error) {
       throw nativeSsoError(error);
     }
@@ -800,26 +745,4 @@ export async function oidcAuthorize(
   // Browser: return the authorize endpoint URL for popup flow
   const authUrl = `${baseUrl}/auth/oidc/authorize/${encodeURIComponent(providerSlug)}`;
   return { mode: "browser", authUrl };
-}
-
-/**
- * Complete OIDC login after callback (browser mode).
- * The access token arrives via postMessage from the callback page; the
- * refresh token is an HttpOnly cookie.
- */
-export async function oidcCompleteLogin(
-  serverUrl: string,
-  accessToken: string,
-  expiresIn: number,
-): Promise<void> {
-  const baseUrl = serverUrl.replace(/\/+$/, "");
-
-  browserState.serverUrl = baseUrl;
-  browserState.accessToken = accessToken;
-  browserState.tokenExpiresAt = Date.now() + expiresIn * 1000;
-
-  localStorage.setItem("serverUrl", baseUrl);
-  setSessionRestoreBlocked(false);
-
-  scheduleTokenRefresh();
 }

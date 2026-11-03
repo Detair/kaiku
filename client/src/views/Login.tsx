@@ -1,17 +1,9 @@
-import { Component, createEffect, createSignal, createResource, Show, For, on, onCleanup, onMount } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, createResource, Match, Show, Switch, For, on, onCleanup, onMount } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
-import {
-  login,
-  loginWithPasskey,
-  loginWithOidc,
-  completeNativeOidcLogin,
-  authState,
-  clearError,
-  setAuthState,
-} from "@/stores/auth";
+import { authState, clearError, loginWithPasskey } from "@/stores/auth";
 import { fetchServerSettings, getDefaultServerUrl, oidcAuthorize } from "@/lib/tauri";
-import type { OidcProvider } from "@/lib/types";
-import { KeyRound, ShieldCheck } from "lucide-solid";
+import { decodeLoginStep, type OidcProvider } from "@/lib/types";
+import { KeyRound, Smartphone } from "lucide-solid";
 import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
@@ -20,10 +12,27 @@ import { isTauri } from "@/lib/tauri/common";
 import { openBlankSsoPopup, reloadAfterSsoPopup, watchSsoPopup } from "@/lib/oidcPopup";
 import { safeReturnUrl } from "@/lib/returnUrl";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
-import { formatPasskeyError, LOGIN_ERRORS } from "@/lib/authErrors";
+import { formatPasskeyError, LOGIN_ERRORS, loginErrorText } from "@/lib/authErrors";
 import PasskeyButton from "@/components/auth/PasskeyButton";
 import { PasskeyError } from "@/lib/tauri/passkeys";
 import { isConditionalMediationAvailable, isWebAuthnAvailable } from "@/lib/webauthn";
+import {
+  applyLoginStep,
+  leaveFlow,
+  loginFlow,
+  loginFlowBusy,
+  loginFlowError,
+  retryLoginFlow,
+  setFlowServer,
+  startPhoneSignIn,
+  submitPassword,
+  submitTotp,
+  usePhoneNotAtHand,
+} from "@/stores/loginFlow";
+import QrLoginPanel from "@/components/auth/login/QrLoginPanel";
+import ConfirmationPanel from "@/components/auth/login/ConfirmationPanel";
+import TotpStepPanel from "@/components/auth/login/TotpStepPanel";
+import AttemptEnded from "@/components/auth/login/AttemptEnded";
 
 /** A conditional ceremony lives 300 s on the server; restart it before. */
 const CONDITIONAL_RESTART_MS = 270_000;
@@ -61,6 +70,8 @@ const Login: Component = () => {
     disposed = true;
     stopWatching?.();
     ssoPopup?.close();
+    // SM1 "close the screen": a live attempt is cancelled.
+    void leaveFlow();
   });
   const [searchParams] = useSearchParams();
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
@@ -76,7 +87,6 @@ const Login: Component = () => {
   });
   const [username, setUsername] = createSignal("");
   const [password, setPassword] = createSignal("");
-  const [mfaCode, setMfaCode] = createSignal("");
   const [localError, setLocalError] = createSignal("");
   const [oidcLoading, setOidcLoading] = createSignal<string | null>(null);
 
@@ -88,6 +98,13 @@ const Login: Component = () => {
     } catch (err) {
       console.warn("[Login] Failed to fetch server settings:", err instanceof Error ? err.message : err);
       return null;
+    }
+  });
+
+  // A sign-in step produced the session: continue where the user came from.
+  createEffect(() => {
+    if (authState.user && !authState.passwordChangeRequired) {
+      navigate(safeReturnUrl(searchParams.returnUrl) ?? "/", { replace: true });
     }
   });
 
@@ -223,6 +240,21 @@ const Login: Component = () => {
     setPasskeyBusy(false);
   };
 
+  // Autofill belongs to the form: it stops while a sign-in step (QR,
+  // confirmation, TOTP) replaces the form and starts again when the form
+  // comes back.
+  const onForm = createMemo(() => loginFlow().step === "form");
+  createEffect(
+    on(
+      onForm,
+      (shown) => {
+        if (!shown) stopConditional();
+        else if (!disposed) void startConditional();
+      },
+      { defer: true },
+    ),
+  );
+
   const handleLogin = async (e: Event) => {
     e.preventDefault();
     setLocalError("");
@@ -237,41 +269,28 @@ const Login: Component = () => {
       return;
     }
 
-    // If MFA is required and no code provided
-    if (authState.mfaRequired && !mfaCode().trim()) {
-      setLocalError(t("auth.login.mfaRequired"));
-      return;
-    }
-
     stopConditional();
     try {
-      await login(
-        serverUrl(),
-        username(),
-        password(),
-        authState.mfaRequired ? mfaCode() : undefined,
-      );
-      // Navigate to returnUrl if valid (relative path only), otherwise home
-      navigate(safeReturnUrl(searchParams.returnUrl) ?? "/", { replace: true });
+      // Never a session: the answer is the confirmation QR or the TOTP step.
+      await submitPassword(serverUrl(), username(), password());
+      setPassword("");
     } catch (err) {
-      // MFA_REQUIRED is handled by the store — just reset MFA code input
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg === "MFA_REQUIRED") {
-        setMfaCode("");
-        return;
-      }
-      if (!authState.error) {
-        setLocalError(errorText(err, "auth.login.failed", LOGIN_ERRORS));
-      }
+      if (!authState.error) setLocalError(loginErrorText(err));
       // The form stays: so does passkey autofill.
       if (!disposed) void startConditional();
     }
   };
 
-  const handleBackToLogin = () => {
-    setAuthState({ mfaRequired: false, error: null });
-    setMfaCode("");
-    setPassword("");
+  const handlePhoneSignIn = () => {
+    setLocalError("");
+    clearError();
+    void startPhoneSignIn(serverUrl());
+  };
+
+  const handleTotp = (code: string) => {
+    submitTotp(code).catch(() => {
+      // The store keeps the step and words the failure (loginFlowError).
+    });
   };
 
   const handleOidcLogin = async (provider: OidcProvider) => {
@@ -293,9 +312,9 @@ const Login: Component = () => {
       const result = await oidcAuthorize(serverUrl(), provider.slug);
 
       if (result.mode === "tauri") {
-        // Tauri: Rust kept the tokens and returned the user
-        await completeNativeOidcLogin(serverUrl(), result.result);
-        navigate("/", { replace: true });
+        // Tauri: Rust redeemed the hand-off code; the PC confirms next (F3).
+        setFlowServer(serverUrl());
+        applyLoginStep(result.step, "oidc");
         setOidcLoading(null);
         return;
       }
@@ -312,24 +331,10 @@ const Login: Component = () => {
         popup: popup!,
         expectedOrigin,
         onResult: (data) => {
-          loginWithOidc(
-            serverUrl(),
-            data.access_token,
-            data.refresh_token,
-            data.expires_in || 900,
-            data.setup_required ?? false,
-          )
-            .then(() => {
-              navigate("/", { replace: true });
-            })
-            .catch((err) => {
-              if (!authState.error) {
-                setLocalError(errorText(err, "auth.login.ssoFailed"));
-              }
-            })
-            .finally(() => {
-              setOidcLoading(null);
-            });
+          // The callback carries the next step (C27), never a token.
+          setOidcLoading(null);
+          setFlowServer(serverUrl());
+          applyLoginStep(decodeLoginStep(data), "oidc");
         },
         onClosedWithoutResult: () => {
           // Closed by the user, or the callback lost its opener (IdP with
@@ -369,7 +374,7 @@ const Login: Component = () => {
     return policy === "open" || (policy === "invite_only" && cameWithInvite());
   };
 
-  const error = () => localError() || authState.error;
+  const error = () => localError() || authState.error || loginFlowError();
 
   return (
     <div class="flex items-center justify-center min-h-dvh overflow-y-auto bg-background-primary">
@@ -387,83 +392,42 @@ const Login: Component = () => {
           {t("auth.login.subtitle")}
         </p>
 
-        {/* Server URL input hidden during beta — hardcoded to kaiku.pmind.de */}
-
-        {/* MFA Code Step */}
-        <Show when={authState.mfaRequired}>
-          <form onSubmit={handleLogin} method="post" noValidate class="space-y-4">
-            <div class="flex items-center gap-3 p-3 bg-accent-primary/10 border border-accent-primary/20 rounded-lg">
-              <ShieldCheck class="w-5 h-5 text-accent-primary flex-shrink-0" />
-              <p class="text-sm text-text-secondary">
-                {t("auth.login.mfaIntro")}
-              </p>
-            </div>
-
-            <div>
-              <label for="login-mfa-code" class="block text-sm font-medium text-text-secondary mb-1">
-                {t("auth.login.mfaCode")}
-              </label>
-              <input
-                id="login-mfa-code"
-                type="text"
-                class="input-field font-mono text-center text-lg tracking-widest"
-                name="one-time-code"
-                autocomplete="one-time-code"
-                placeholder={"000000"}
-                value={mfaCode()}
-                onInput={(e) =>
-                  setMfaCode(e.currentTarget.value.replace(/\s/g, ""))
-                }
-                disabled={authState.isLoading}
-                maxLength={20}
-                autofocus
-                required
+        <Switch>
+          <Match when={(() => { const f = loginFlow(); return f.step === "qr" ? f : null; })()}>
+            {(f) => (
+              <QrLoginPanel attempt={f().attempt} payload={f().qrPayload} onBack={() => void leaveFlow()} />
+            )}
+          </Match>
+          <Match when={(() => { const f = loginFlow(); return f.step === "confirm" ? f : null; })()}>
+            {(f) => (
+              <ConfirmationPanel
+                attempt={f().attempt}
+                payload={f().qrPayload}
+                via={f().via}
+                onPhoneNotAtHand={usePhoneNotAtHand}
+                onBack={() => void leaveFlow()}
               />
-              <p class="text-xs text-text-muted mt-1">
-                {t("auth.login.mfaHint")}
-              </p>
-            </div>
-
-            <Show when={error()}>
-              <div
-                role="alert"
-                class="p-3 rounded-md text-sm"
-                style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)","color":"var(--color-error-text)"}}
-              >
-                {error()}
-              </div>
-            </Show>
-
-            <button
-              type="submit"
-              class="btn-primary w-full flex items-center justify-center gap-2"
-              disabled={authState.isLoading}
-            >
-              <Show
-                when={!authState.isLoading}
-                fallback={
-                  <>
-                    <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    {t("auth.login.verifying")}
-                  </>
-                }
-              >
-                {t("auth.login.verify")}
-              </Show>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleBackToLogin}
-              class="w-full text-sm text-text-secondary hover:text-text-primary transition-colors"
-            >
-              {t("auth.login.backToLogin")}
-            </button>
-          </form>
-        </Show>
-
-        {/* Normal Login Flow (hidden during MFA) */}
-        <Show when={!authState.mfaRequired}>
+            )}
+          </Match>
+          <Match when={loginFlow().step === "totp"}>
+            <TotpStepPanel
+              error={loginFlowError()}
+              busy={loginFlowBusy()}
+              onSubmit={handleTotp}
+              onBack={() => void leaveFlow()}
+            />
+          </Match>
+          <Match when={(() => { const f = loginFlow(); return f.step === "ended" ? f : null; })()}>
+            {(f) => (
+              <AttemptEnded
+                state={f().state}
+                via={f().via}
+                onRetry={() => void retryLoginFlow()}
+                onBack={() => void leaveFlow()}
+              />
+            )}
+          </Match>
+          <Match when={loginFlow().step === "form"}>
           {/* Passkeys first (F1) */}
           <Show when={showPasskey()}>
             <div class="mb-4 space-y-2">
@@ -483,20 +447,18 @@ const Login: Component = () => {
                   </button>
                 </div>
               </Show>
-              <Show when={showOidc() || showLocalLogin()}>
-                <div class="relative my-5">
-                  <div class="absolute inset-0 flex items-center">
-                    <div class="w-full border-t border-white/10" />
-                  </div>
-                  <div class="relative flex justify-center text-xs">
-                    <span class="bg-background-secondary px-3 text-text-muted">
-                      {t("auth.login.or")}
-                    </span>
-                  </div>
-                </div>
-              </Show>
             </div>
           </Show>
+          <button
+            type="button"
+            class="btn-primary w-full min-h-12 flex items-center justify-center gap-2 text-base mb-4"
+            disabled={authState.isLoading || loginFlowBusy()}
+            onClick={handlePhoneSignIn}
+          >
+            <Smartphone class="w-5 h-5" aria-hidden="true" />
+            {t("auth.phone.signInButton")}
+          </button>
+
           {/* SSO Buttons */}
           <Show when={showOidc()}>
             <div class="space-y-2 mb-4">
@@ -506,7 +468,7 @@ const Login: Component = () => {
                   return (
                     <button
                       type="button"
-                      class="w-full flex items-center justify-center gap-3 px-4 py-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-text-primary text-sm font-medium transition-colors"
+                      class="w-full min-h-12 flex items-center justify-center gap-3 px-4 py-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-text-primary text-base font-medium transition-colors"
                       disabled={authState.isLoading || !!oidcLoading()}
                       onClick={() => handleOidcLogin(provider)}
                     >
@@ -537,19 +499,19 @@ const Login: Component = () => {
                 </span>
               </div>
             </Show>
+          </Show>
 
-            <Show when={showLocalLogin()}>
-              <div class="relative my-5">
-                <div class="absolute inset-0 flex items-center">
-                  <div class="w-full border-t border-white/10" />
-                </div>
-                <div class="relative flex justify-center text-xs">
-                  <span class="bg-background-secondary px-3 text-text-muted">
-                    {t("auth.login.or")}
-                  </span>
-                </div>
+          <Show when={showLocalLogin()}>
+            <div class="relative my-5">
+              <div class="absolute inset-0 flex items-center">
+                <div class="w-full border-t border-white/10" />
               </div>
-            </Show>
+              <div class="relative flex justify-center text-xs">
+                <span class="bg-background-secondary px-3 text-text-secondary">
+                  {t("auth.login.or")}
+                </span>
+              </div>
+            </div>
           </Show>
 
           {/* Local Login Form */}
@@ -592,15 +554,6 @@ const Login: Component = () => {
                 />
               </div>
 
-              <div class="text-right">
-                <A
-                  href="/forgot-password"
-                  class="text-sm text-primary auth-link"
-                >
-                  {t("auth.login.forgotPassword")}
-                </A>
-              </div>
-
               <Show when={error()}>
                 <div
                   role="alert"
@@ -614,7 +567,7 @@ const Login: Component = () => {
 
               <button
                 type="submit"
-                class="btn-primary w-full flex items-center justify-center gap-2"
+                class="btn-primary w-full min-h-12 flex items-center justify-center gap-2 text-base"
                 data-testid="login-submit"
                 disabled={authState.isLoading}
               >
@@ -644,6 +597,15 @@ const Login: Component = () => {
             </div>
           </Show>
 
+          <nav class="mt-5 flex flex-col items-center gap-2 text-base" aria-label={t("auth.login.helpLinks")}>
+            <A href="/recover" class="text-primary auth-link py-2">
+              {t("auth.login.lostPhone")}
+            </A>
+            <A href="/secure-account" class="text-primary auth-link py-2">
+              {t("auth.login.secureAccount")}
+            </A>
+          </nav>
+
           <Show when={showRegisterLink()}>
             <p class="flex justify-center gap-1 text-sm text-text-secondary mt-4">
               <span>{t("auth.login.noAccount")}</span>
@@ -659,7 +621,8 @@ const Login: Component = () => {
               </A>
             </p>
           </Show>
-        </Show>
+          </Match>
+        </Switch>
         </div>
       </div>
     </div>

@@ -3,7 +3,7 @@ import { render, screen, fireEvent, cleanup, waitFor } from "@solidjs/testing-li
 import { Router, Route } from "@solidjs/router";
 
 const authorizeMock = vi.hoisted(() => vi.fn());
-const loginWithOidcMock = vi.hoisted(() => vi.fn());
+const applyStepMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/tauri", () => ({
   login: vi.fn(),
@@ -15,14 +15,23 @@ vi.mock("@/lib/tauri", () => ({
   }),
   getDefaultServerUrl: vi.fn().mockResolvedValue(null),
   oidcAuthorize: authorizeMock,
+  pollAttempt: () => new Promise(() => {}),
+  cancelAttempt: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/stores/auth", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/stores/auth")>()),
-  loginWithOidc: loginWithOidcMock,
-}));
+vi.mock("@/stores/loginFlow", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/stores/loginFlow")>();
+  return {
+    ...orig,
+    applyLoginStep: (...args: Parameters<typeof orig.applyLoginStep>) => {
+      applyStepMock(...args);
+      orig.applyLoginStep(...args);
+    },
+  };
+});
 
 import { isSessionRestoreBlocked, setSessionRestoreBlocked } from "@/lib/tauri/common";
+import { leaveFlow } from "@/stores/loginFlow";
 import Login from "../Login";
 import Register from "../Register";
 
@@ -39,12 +48,13 @@ for (const [name, View, path] of [
     beforeEach(() => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
     });
-    afterEach(() => {
+    afterEach(async () => {
       cleanup();
+      await leaveFlow();
       vi.useRealTimers();
       openSpy?.mockRestore();
       authorizeMock.mockReset();
-      loginWithOidcMock.mockReset();
+      applyStepMock.mockReset();
       window.history.pushState({}, "", "/");
     });
 
@@ -100,7 +110,18 @@ for (const [name, View, path] of [
       new MessageEvent("message", {
         origin: window.location.origin,
         source: source as MessageEventSource,
-        data: { type: "oidc-callback", access_token: "tok", expires_in: 900 },
+        data: {
+          type: "oidc-callback",
+          status: "confirmation_required",
+          attempt: {
+            attempt_id: "44444444-4444-4444-8444-444444444444",
+            kind: "oidc",
+            state: "open",
+            expires_at: "2099-01-01T00:00:00Z",
+            qr: { payload: "kaiku://login/v1?o=x&t=a", expires_at: "" },
+            totp_available: false,
+          },
+        },
       });
 
     it("shows the reload hint when the popup closes without a result", async () => {
@@ -109,7 +130,7 @@ for (const [name, View, path] of [
       await vi.advanceTimersByTimeAsync(2000);
       await waitFor(() => expect(screen.getByText(/Reload this page to continue/)).toBeTruthy());
       expect(btn.disabled).toBe(true);
-      expect(loginWithOidcMock).not.toHaveBeenCalled();
+      expect(applyStepMock).not.toHaveBeenCalled();
     });
 
     it("Reload lifts the logout's restore block, then reloads the page", async () => {
@@ -146,14 +167,28 @@ for (const [name, View, path] of [
       expect(btn.disabled).toBe(false);
     });
 
+    it("oidc callback with confirmation_required shows the confirmation panel", async () => {
+      const { popup } = await openedPopup();
+      window.dispatchEvent(callback(popup));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(applyStepMock).toHaveBeenCalledTimes(1);
+      expect(applyStepMock.mock.calls[0][0]).toMatchObject({ status: "confirmation_required", attempt: { kind: "oidc" } });
+      expect(applyStepMock.mock.calls[0][1]).toBe("oidc");
+      if (name === "Login") {
+        await waitFor(
+          () => expect(screen.getByText("Open Kaiku on your phone and scan this code.")).toBeTruthy(),
+          { timeout: 5000 },
+        );
+      }
+    });
+
     it("a callback message within the close grace still signs in", async () => {
-      loginWithOidcMock.mockResolvedValue(undefined);
       const { popup } = await openedPopup();
       popup.closed = true;
       await vi.advanceTimersByTimeAsync(600);
       window.dispatchEvent(callback(popup));
       await vi.advanceTimersByTimeAsync(2000);
-      expect(loginWithOidcMock).toHaveBeenCalledTimes(1);
+      expect(applyStepMock).toHaveBeenCalledTimes(1);
       expect(screen.queryByText(/Reload this page/)).toBeNull();
     });
 
@@ -161,7 +196,7 @@ for (const [name, View, path] of [
       await openedPopup();
       window.dispatchEvent(callback({}));
       await vi.advanceTimersByTimeAsync(0);
-      expect(loginWithOidcMock).not.toHaveBeenCalled();
+      expect(applyStepMock).not.toHaveBeenCalled();
     });
 
     it("stops watching and closes the popup when the view unmounts", async () => {
@@ -171,7 +206,7 @@ for (const [name, View, path] of [
       window.dispatchEvent(callback(popup));
       popup.closed = true;
       await vi.advanceTimersByTimeAsync(3000);
-      expect(loginWithOidcMock).not.toHaveBeenCalled();
+      expect(applyStepMock).not.toHaveBeenCalled();
     });
 
     it("unmount while the authorize request is pending never starts watching", async () => {
@@ -186,7 +221,7 @@ for (const [name, View, path] of [
       expect(popup.location.href).toBe("");
       window.dispatchEvent(callback(popup));
       await vi.advanceTimersByTimeAsync(0);
-      expect(loginWithOidcMock).not.toHaveBeenCalled();
+      expect(applyStepMock).not.toHaveBeenCalled();
     });
   });
 }
