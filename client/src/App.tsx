@@ -41,6 +41,7 @@ import SetupWizard from "./components/SetupWizard";
 import OnboardingWizard from "./components/OnboardingWizard";
 import SessionExpiredModal from "./components/auth/SessionExpiredModal";
 import FullSessionRequiredDialog from "./components/auth/FullSessionRequiredDialog";
+import StepUpHost from "./components/auth/StepUpDialog";
 import BlockConfirmModal from "./components/modals/BlockConfirmModal";
 import ReportModal from "./components/modals/ReportModal";
 import type { ReportTarget } from "./components/modals/ReportModal";
@@ -108,6 +109,7 @@ const Layout: Component<ParentProps> = (props) => {
       <ToastContainer />
       <SessionExpiredModal />
       <FullSessionRequiredDialog />
+      <StepUpHost />
       <ContextMenuContainer />
 
       <Show when={blockTarget()}>

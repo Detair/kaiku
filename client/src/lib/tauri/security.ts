@@ -147,3 +147,13 @@ export async function cancelAccountRequest(
   });
   return decodeAccountRequestSummary(r);
 }
+
+/**
+ * `GET /auth/reauth/methods` in its C27 form: can this session step up with
+ * a passkey, or with a key device's `device_stepup`? (A PC session never
+ * signs `device_stepup`; `device` tells the UI to point to the phone.)
+ */
+export async function getStepUpMethods(): Promise<{ passkey: boolean; device: boolean }> {
+  const r = await httpRequest<{ passkey?: unknown; device?: unknown }>("GET", "/auth/reauth/methods");
+  return { passkey: r?.passkey === true, device: r?.device === true };
+}
