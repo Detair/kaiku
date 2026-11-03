@@ -128,6 +128,18 @@ pub async fn consume_tx(conn: &mut PgConnection, user_id: Uuid, code: &str) -> A
     Ok(true)
 }
 
+/// The work of checking `code` against a full set, for an account that has
+/// none or is unknown (B.5: the same answer and work).
+pub async fn dummy_check(code: &str) -> AuthResult<()> {
+    let raw = normalise(code);
+    let _ = matching(
+        &raw,
+        vec![super::password::DUMMY_PASSWORD_HASH.clone(); CODE_COUNT],
+    )
+    .await?;
+    Ok(())
+}
+
 /// Index of the hash `raw` matches (every hash is checked: no early exit).
 async fn matching(raw: &str, hashes: Vec<String>) -> AuthResult<Option<usize>> {
     let raw = raw.to_string();

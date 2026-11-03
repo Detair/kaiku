@@ -74,6 +74,7 @@ mod ratelimit_http;
 mod reaction_roles;
 mod reauth;
 mod recovery_contact;
+mod recovery_requests;
 mod refresh_rotation;
 mod registration_tickets;
 mod reports;
