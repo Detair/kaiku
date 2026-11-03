@@ -102,7 +102,29 @@ pub async fn ticket_id_by_secret(
     ctx: &AuthCtx<'_>,
     secret: &Secret256,
 ) -> sqlx::Result<Option<Uuid>> {
-    Ok(ticket_by_secret(conn, ctx, secret).await?.map(|t| t.id))
+    // Codex r2 M9: only an unexpired, unbound ticket proves the issuer, and
+    // its row is locked (the caller holds the account lock).
+    sqlx::query_scalar(
+        "SELECT id FROM registration_tickets
+          WHERE ticket_hash = $1 AND expires_at > NOW() AND bound_at IS NULL
+          FOR UPDATE",
+    )
+    .bind(ticket_hash(ctx, secret).to_vec())
+    .fetch_optional(&mut *conn)
+    .await
+}
+
+/// Under the account lock: ticket `id` is unexpired and unbound (every
+/// binding path; a concurrent bind wins).
+pub async fn ticket_unbound_tx(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT bound_at IS NULL AND expires_at > NOW() FROM registration_tickets
+          WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or(false))
 }
 
 /// The ticket the request presents: `X-Kaiku-Ticket` (native) or the
@@ -161,12 +183,24 @@ async fn still_unbound(conn: &mut PgConnection, ticket_id: Uuid) -> AuthResult<(
 
 /// Mark the account's ticket bound (anything was bound to it).
 pub async fn mark_bound_tx(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<()> {
-    sqlx::query(
-        "UPDATE registration_tickets SET bound_at = COALESCE(bound_at, NOW()) WHERE user_id = $1",
+    let bound: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE registration_tickets SET bound_at = NOW()
+          WHERE user_id = $1 AND bound_at IS NULL RETURNING id",
     )
     .bind(user_id)
-    .execute(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
+    // Codex r2 M9: the ticket's other open setup links end with the bind.
+    if !bound.is_empty() {
+        sqlx::query(
+            "UPDATE enrollments SET state = 'cancelled', ended_at = NOW()
+              WHERE issuer_kind = 'ticket' AND issuer_ticket_id = ANY($1)
+                AND state IN ('issued', 'claimed')",
+        )
+        .bind(&bound)
+        .execute(&mut *conn)
+        .await?;
+    }
     Ok(())
 }
 

@@ -445,3 +445,117 @@ async fn a_bound_ticket_binds_nothing_more(pool: PgPool) {
         .unwrap();
     assert!(!open);
 }
+
+/// Codex r2 M9: one ticket binds one authenticator, also with two setup
+/// links and concurrent confirmations or a later own-key claim.
+#[sqlx::test]
+async fn a_ticket_binds_one_phone_even_with_two_links(pool: PgPool) {
+    let app = std::sync::Arc::new(TestApp::with_pool(pool.clone()).await);
+    open_registration(&pool).await;
+    not_first(&pool).await;
+    for (round, concurrent) in [(0, false), (1, true)] {
+        let (_, body) = register(&app, json!({"username": format!("two_links_{round}")})).await;
+        let ticket = body["registration_ticket"].as_str().unwrap().to_string();
+        let user: Uuid = body["user_id"].as_str().unwrap().parse().unwrap();
+        let mut claimed = Vec::new();
+        for _ in 0..2 {
+            let (s, issued) = with_ticket(
+                &app,
+                Method::POST,
+                "/auth/registration/enrollments",
+                &ticket,
+                json!({}),
+            )
+            .await;
+            assert_eq!(s, 201, "{issued}");
+            let phone = Phone::new();
+            let (s, c) = claim_with(
+                &app,
+                issued["setup_token"].as_str().unwrap(),
+                &phone,
+                "Pixel 8",
+                good(),
+                "per_use",
+            )
+            .await;
+            assert_eq!(s, 201, "{c}");
+            claimed.push((issued["enrollment_id"].as_str().unwrap().to_string(), c));
+        }
+        let confirm = |id: String, code: Value| {
+            let app = app.clone();
+            let ticket = ticket.clone();
+            async move {
+                with_ticket(
+                    &app,
+                    Method::POST,
+                    &format!("/auth/registration/enrollments/{id}/confirm"),
+                    &ticket,
+                    json!({"code": code}),
+                )
+                .await
+                .0
+            }
+        };
+        let statuses = if concurrent {
+            let (a, b) = tokio::join!(
+                confirm(claimed[0].0.clone(), claimed[0].1["code"].clone()),
+                confirm(claimed[1].0.clone(), claimed[1].1["code"].clone())
+            );
+            vec![a, b]
+        } else {
+            vec![
+                confirm(claimed[0].0.clone(), claimed[0].1["code"].clone()).await,
+                confirm(claimed[1].0.clone(), claimed[1].1["code"].clone()).await,
+            ]
+        };
+        assert_eq!(
+            statuses.iter().filter(|s| **s == 200).count(),
+            1,
+            "round {round}: {statuses:?}"
+        );
+        let keys: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM approval_devices WHERE user_id = $1 AND state = 'active'",
+        )
+        .bind(user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(keys, 1, "round {round}");
+    }
+
+    // A bound ticket's open link cannot be own-claimed either.
+    let (_, body) = register(&app, json!({"username": "own_after_bind"})).await;
+    let ticket = body["registration_ticket"].as_str().unwrap().to_string();
+    let user: Uuid = body["user_id"].as_str().unwrap().parse().unwrap();
+    let mut tokens = Vec::new();
+    for _ in 0..2 {
+        let (_, issued) = with_ticket(
+            &app,
+            Method::POST,
+            "/auth/registration/enrollments",
+            &ticket,
+            json!({}),
+        )
+        .await;
+        tokens.push(issued["setup_token"].as_str().unwrap().to_string());
+    }
+    let first =
+        super::enrollments::claim_own(&app, &tokens[0], &Phone::new(), ("X-Kaiku-Ticket", &ticket))
+            .await;
+    assert_eq!(first.0, 201, "{}", first.1);
+    // The bind ended the other link.
+    let req = peer_request(Method::POST, "/auth/enrollments/open")
+        .header("Content-Type", "application/json")
+        .body(Body::from(json!({"setup_token": tokens[1]}).to_string()))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status().as_u16(), 404);
+    let keys: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM approval_devices WHERE user_id = $1 AND state = 'active'",
+    )
+    .bind(user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(keys, 1);
+}

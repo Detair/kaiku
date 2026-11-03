@@ -1246,6 +1246,10 @@ pub async fn confirm_tx(
             if row.issuer_kind != "ticket" || row.issuer_ticket_id != Some(*ticket_id) {
                 return Err(ApprovalError::NotFound);
             }
+            // Codex r2 M9: still unbound under the account lock.
+            if !crate::auth::registration::ticket_unbound_tx(conn, *ticket_id).await? {
+                return Err(ApprovalError::Auth(crate::auth::AuthError::TicketInvalid));
+            }
             None
         }
         Confirmer::Request(request_id) => {
