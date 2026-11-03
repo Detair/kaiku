@@ -1072,8 +1072,8 @@ pub async fn confirm_tx(
     // was replaced by a claim on its install id learns that the phone is no
     // longer a key. The push subscription stays: it is keyed by (account,
     // install id) and now belongs to the new key of the same install.
-    let replaced = replaceable_on_install(conn, &row, claimed_device_id, state, true).await?;
-    if let Some(old) = replaced {
+    let mut event_ids = Vec::with_capacity(2);
+    if let Some(old) = replaceable_on_install(conn, &row, claimed_device_id, state, true).await? {
         sqlx::query(
             "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(), revoke_reason = $2
               WHERE id = $1",
@@ -1082,9 +1082,6 @@ pub async fn confirm_tx(
         .bind(replaced_reason(variant))
         .execute(&mut *conn)
         .await?;
-    }
-    let mut event_ids = Vec::with_capacity(2);
-    for old in replaced {
         let old = AuthenticatorRef::key_device(old);
         super::cascade::on_authenticator_revoked(conn, ctx, row.subject_id, old).await?;
         let mut ev = NewSecurityEvent::new(
@@ -1290,11 +1287,14 @@ pub async fn enrollment_updated(state: &AppState, user_id: Uuid, enrollment_id: 
     }
 }
 
-/// After a wrong code or a deny: tell the issuer the new state.
-pub async fn notify_issuer_after_failure(state: &AppState, enrollment_id: Uuid) {
+/// Tell the issuing account (its key device's or its PC session's) the
+/// enrolment's current state (`enrollment_updated`). Issuers without an
+/// account (CLI, request, ticket) have no socket to tell.
+pub async fn notify_issuer(state: &AppState, enrollment_id: Uuid) {
     let row: Option<(String, Option<Uuid>)> = sqlx::query_as(
-        "SELECT e.state, d.user_id FROM enrollments e
+        "SELECT e.state, COALESCE(d.user_id, s.user_id) FROM enrollments e
            LEFT JOIN approval_devices d ON d.id = e.issuer_device_id
+           LEFT JOIN sessions s ON s.id = e.issuer_session_id
           WHERE e.id = $1",
     )
     .bind(enrollment_id)
@@ -1305,4 +1305,9 @@ pub async fn notify_issuer_after_failure(state: &AppState, enrollment_id: Uuid) 
     if let Some((st, Some(user))) = row {
         enrollment_updated(state, user, enrollment_id, &st).await;
     }
+}
+
+/// After a wrong code or a deny: tell the issuer the new state.
+pub async fn notify_issuer_after_failure(state: &AppState, enrollment_id: Uuid) {
+    notify_issuer(state, enrollment_id).await;
 }

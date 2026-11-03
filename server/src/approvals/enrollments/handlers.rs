@@ -89,16 +89,7 @@ pub async fn claim(
     let ctx = AuthCtx::from(&state);
     let response = claim_core(&ctx, body, None).await?;
     // Tell the issuer's screen that a device claimed the setup.
-    if let Ok(Some(user)) = sqlx::query_scalar::<_, Uuid>(
-        "SELECT d.user_id FROM enrollments e JOIN approval_devices d ON d.id = e.issuer_device_id
-          WHERE e.id = $1",
-    )
-    .bind(response.enrollment_id)
-    .fetch_optional(&state.db)
-    .await
-    {
-        super::enrollment_updated(&state, user, response.enrollment_id, "claimed").await;
-    }
+    super::notify_issuer(&state, response.enrollment_id).await;
     Ok((StatusCode::CREATED, Json(response)))
 }
 

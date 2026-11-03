@@ -1515,3 +1515,55 @@ async fn admin_enroll_answer_never_deadlocks_subject_lower(pool: PgPool) {
 async fn admin_enroll_answer_never_deadlocks_admin_lower(pool: PgPool) {
     admin_enroll_answer_against(pool, false).await;
 }
+
+/// Review round 3 (Argon coverage, part 1 M4): an enrolment issued from a
+/// PC session (`issuer_device_id` NULL) still tells its issuer's sockets.
+#[sqlx::test]
+async fn pc_session_issuer_gets_the_claimed_hint(pool: PgPool) {
+    use fred::prelude::{ClientLike, EventInterface, PubsubInterface};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let issued = issue(
+        &app,
+        user,
+        EnrollmentVariant::Own,
+        Issuer::PcSession {
+            session_id: super::helpers::test_session_id(user),
+            passkey_id: Uuid::new_v4(),
+            grant_id: Uuid::new_v4(),
+        },
+    )
+    .await
+    .unwrap();
+    let subscriber = app.state.redis.clone_new();
+    let _ = subscriber.connect();
+    subscriber.wait_for_connect().await.unwrap();
+    let () = subscriber
+        .subscribe(vc_server::ws::channels::user_events(user))
+        .await
+        .unwrap();
+    let mut rx = subscriber.message_rx();
+    let (s, b) = claim_with(
+        &app,
+        &issued.setup_token,
+        &Phone::new(),
+        "Pixel 9",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201, "{b}");
+    let hint = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let msg = rx.recv().await.unwrap();
+            let v: Value = serde_json::from_str(&msg.value.convert::<String>().unwrap()).unwrap();
+            if v["type"] == "enrollment_updated" {
+                return v;
+            }
+        }
+    })
+    .await
+    .expect("an enrollment_updated hint for the PC issuer");
+    assert_eq!(hint["enrollment_id"], issued.enrollment_id.to_string());
+    assert_eq!(hint["state"], "claimed");
+}
