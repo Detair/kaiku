@@ -49,6 +49,8 @@ import {
   refreshChannelsForGuild,
 } from "../channels";
 import { currentUser } from "../auth";
+import { refreshMeSecurity } from "../security";
+import { ENROLLMENT_UPDATED_EVENT } from "@/lib/types/events";
 import {
   guildsState,
   getGuildIdForChannel,
@@ -757,6 +759,18 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
 
     case "admin_report_resolved":
       await handleAdminReportResolved(event.report_id);
+      break;
+
+    // v1.0 login hints (C26, C27): refetch, never act on a hint alone.
+    case "authenticators_changed":
+    case "account_request_updated":
+      void refreshMeSecurity();
+      break;
+
+    case "enrollment_updated":
+      window.dispatchEvent(
+        new CustomEvent(ENROLLMENT_UPDATED_EVENT, { detail: { enrollment_id: event.enrollment_id } }),
+      );
       break;
 
     // Thread events

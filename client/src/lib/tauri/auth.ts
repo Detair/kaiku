@@ -567,15 +567,6 @@ export interface MfaVerifyResponse {
   backup_codes?: string[];
 }
 
-export interface MfaBackupCodesResponse {
-  codes: string[];
-}
-
-export interface MfaBackupCodeCountResponse {
-  remaining: number;
-  total: number;
-}
-
 /** Setup MFA — returns TOTP secret and QR code URL. */
 export async function mfaSetup(): Promise<MfaSetupResponse> {
   return httpRequest<MfaSetupResponse>("POST", "/auth/mfa/setup");
@@ -589,43 +580,6 @@ export async function mfaVerify(code: string): Promise<MfaVerifyResponse> {
 /** Disable MFA (requires valid TOTP or backup code). */
 export async function mfaDisable(code: string): Promise<void> {
   await httpRequest<unknown>("POST", "/auth/mfa/disable", { code });
-}
-
-/**
- * Generate (or regenerate) MFA backup codes. Needs a current authenticator
- * code; backup codes are not accepted here.
- */
-export async function mfaGenerateBackupCodes(
-  mfaCode: string,
-): Promise<string[]> {
-  const res = await httpRequest<MfaBackupCodesResponse>(
-    "POST",
-    "/auth/mfa/backup-codes",
-    { mfa_code: mfaCode },
-  );
-  return res.codes;
-}
-
-/** Get remaining MFA backup code count. */
-export async function mfaBackupCodeCount(): Promise<MfaBackupCodeCountResponse> {
-  return httpRequest<MfaBackupCodeCountResponse>(
-    "GET",
-    "/auth/mfa/backup-codes/count",
-  );
-}
-
-// ============================================================================
-// QR Login Commands
-// ============================================================================
-
-export interface QrLoginCreateResponse {
-  token: string;
-  expires_in: number;
-}
-
-/** Create a QR login token for mobile scanning. */
-export async function qrLoginCreate(): Promise<QrLoginCreateResponse> {
-  return httpRequest<QrLoginCreateResponse>("POST", "/auth/qr/create");
 }
 
 // ============================================================================

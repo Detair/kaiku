@@ -42,6 +42,7 @@ import OnboardingWizard from "./components/OnboardingWizard";
 import SessionExpiredModal from "./components/auth/SessionExpiredModal";
 import FullSessionRequiredDialog from "./components/auth/FullSessionRequiredDialog";
 import StepUpHost from "./components/auth/StepUpDialog";
+import SignOutOthersPrompt from "./components/settings/security/SignOutOthersPrompt";
 import BlockConfirmModal from "./components/modals/BlockConfirmModal";
 import ReportModal from "./components/modals/ReportModal";
 import type { ReportTarget } from "./components/modals/ReportModal";
@@ -110,6 +111,7 @@ const Layout: Component<ParentProps> = (props) => {
       <SessionExpiredModal />
       <FullSessionRequiredDialog />
       <StepUpHost />
+      <SignOutOthersPrompt />
       <ContextMenuContainer />
 
       <Show when={blockTarget()}>

@@ -8,7 +8,6 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
 }));
 vi.mock("@/lib/tauri", () => ({
   initE2EE: vi.fn(),
-  qrLoginCreate: vi.fn(() => new Promise(() => {})),
   getServerUrl: () => "https://chat.example",
   HttpError: class HttpError extends Error {},
   discoverGuilds: vi.fn(async () => ({ guilds: [] })),
@@ -67,7 +66,6 @@ vi.mock("@/lib/themeImage", () => ({ getThemeImage: () => "" }));
 vi.mock("@/assets/images/floki_onboard_done.webp", () => ({ default: "" }));
 
 import SettingsModal from "../settings/SettingsModal";
-import QrLoginModal from "../settings/QrLoginModal";
 import OnboardingWizard from "../OnboardingWizard";
 import CreateChannelModal from "../channels/CreateChannelModal";
 import ChannelSettingsModal from "../channels/ChannelSettingsModal";
@@ -81,11 +79,6 @@ describe("core modals expose role dialog with a label", () => {
   it("SettingsModal", () => {
     render(() => <SettingsModal onClose={() => {}} />);
     expect(screen.getByRole("dialog", { name: "Settings" })).toBeTruthy();
-  });
-
-  it("QrLoginModal", () => {
-    render(() => <QrLoginModal serverUrl="https://chat.example" onClose={() => {}} />);
-    expect(screen.getByRole("dialog", { name: "Link Mobile Device" })).toBeTruthy();
   });
 
   it("OnboardingWizard", () => {
@@ -122,13 +115,6 @@ describe("Escape handling", () => {
     } finally {
       document.removeEventListener("keydown", markRead);
     }
-  });
-
-  it("QrLoginModal registers only one Escape handler (onClose once)", () => {
-    const onClose = vi.fn();
-    render(() => <QrLoginModal serverUrl="https://chat.example" onClose={onClose} />);
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -14,7 +14,6 @@ vi.mock("../common", async (orig) => ({
 
 import { adminElevate } from "../admin";
 import {
-  mfaGenerateBackupCodes,
   getReauthMethods,
   startOidcReauth,
   isElevationRequiredError,
@@ -86,15 +85,6 @@ describe("re-auth requests", () => {
       mfa_code: null,
       reason: null,
     });
-  });
-
-  it("backup code regeneration sends the code", async () => {
-    httpRequest.mockResolvedValue({ codes: ["a", "b"] });
-    const codes = await mfaGenerateBackupCodes("654321");
-    expect(httpRequest).toHaveBeenCalledWith("POST", "/auth/mfa/backup-codes", {
-      mfa_code: "654321",
-    });
-    expect(codes).toEqual(["a", "b"]);
   });
 
   it("does not call the native command or the server for an aborted attempt", async () => {

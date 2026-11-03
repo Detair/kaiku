@@ -30,7 +30,25 @@ export function refreshMeSecurity(): Promise<void> {
   return inFlight;
 }
 
+const [signOutOthersOffered, setSignOutOthersOffered] = createSignal(false);
+
+/** Whether the "Sign out everywhere else?" prompt is open. */
+export const signOutOthersPrompt = signOutOthersOffered;
+
+/**
+ * After any change of a sign-in method, offer to end every other session
+ * (ASVS 7.4.3). The prompt runs `withStepUp(sessions.end/others)`.
+ */
+export function offerSignOutOthers(): void {
+  setSignOutOthersOffered(true);
+}
+
+export function closeSignOutOthers(): void {
+  setSignOutOthersOffered(false);
+}
+
 /** Forget the overview (sign-out). */
 export function resetMeSecurity(): void {
   setSecurity(null);
+  setSignOutOthersOffered(false);
 }

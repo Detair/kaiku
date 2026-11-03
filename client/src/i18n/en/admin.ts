@@ -19,7 +19,6 @@ export const admin = {
   "admin.createAccount.serversNone": "You are not in any server yet. The account will be created without one.",
   "admin.createAccount.serversMax": "An account can be added to at most 10 servers at once.",
   "admin.reauth.elevateTitle": "Unlock admin actions",
-  "admin.reauth.backupCodesTitle": "Create new backup codes",
   "admin.reauth.intro": "Confirm it is you to continue.",
   "admin.reauth.password": "Your password",
   "admin.reauth.mfaCode": "Authenticator code",

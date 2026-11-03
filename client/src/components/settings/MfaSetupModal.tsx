@@ -12,7 +12,7 @@ import { X, ShieldCheck, QrCode, KeyRound } from "lucide-solid";
 import { mfaSetup, mfaVerify } from "@/lib/tauri";
 import type { MfaSetupResponse } from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
-import BackupCodesDisplay from "./BackupCodesDisplay";
+import RecoveryCodesDisplay from "@/components/auth/RecoveryCodesDisplay";
 import QRCode from "qrcode";
 import { createDialog } from "@/lib/a11y/dialog";
 import { t } from "@/i18n";
@@ -310,13 +310,16 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
                   </p>
                 </div>
 
-                <Show when={backupCodes().length > 0}>
-                  <BackupCodesDisplay codes={backupCodes()} />
+                <Show
+                  when={backupCodes().length > 0}
+                  fallback={
+                    <button onClick={handleComplete} class="btn-primary w-full min-h-12">
+                      Done
+                    </button>
+                  }
+                >
+                  <RecoveryCodesDisplay codes={backupCodes()} onDone={handleComplete} />
                 </Show>
-
-                <button onClick={handleComplete} class="btn-primary w-full">
-                  Done
-                </button>
               </div>
             </Match>
           </Switch>

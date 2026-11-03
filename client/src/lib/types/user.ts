@@ -78,6 +78,14 @@ export interface SessionInfo {
   created_at: string;
   expires_at: string;
   is_current: boolean;
+  /** C27 additions (absent on older servers; missing assurance = chat only). */
+  assurance?: "full" | "probation";
+  client_class?: string;
+  auth_methods?: string[];
+  /** A key device's own session is shown as "Remove device". */
+  authenticator?: { id: string; type: string; label: string } | null;
+  last_used_at?: string | null;
+  absolute_expires_at?: string | null;
 }
 
 export interface SessionListResponse {

@@ -264,6 +264,10 @@ export type ServerEvent =
       name: string;
       updated_by: string;
     }
+  // v1.0 login hints (C26, C27): refetch, never act on a hint alone
+  | { type: "authenticators_changed"; user_id: string }
+  | { type: "account_request_updated"; request_id: string; subject_id: string; state: string }
+  | { type: "enrollment_updated"; enrollment_id: string; state: string }
   // Block events
   | { type: "user_blocked"; user_id: string }
   | { type: "user_unblocked"; user_id: string }
@@ -318,3 +322,6 @@ export type ServerEvent =
       command_name: string;
       channel_id: string;
     };
+
+/** Window event for `enrollment_updated` (C26): issuer panels refetch at once. */
+export const ENROLLMENT_UPDATED_EVENT = "kaiku:enrollment-updated";

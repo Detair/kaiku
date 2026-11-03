@@ -17,7 +17,6 @@ vi.mock("@/lib/featureFlags", () => ({ isE2EEEnabled: () => false }));
 vi.mock("qrcode", () => ({ default: { toDataURL: vi.fn() } }));
 vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 vi.mock("@/lib/clipboard", () => ({ secureCopy: vi.fn() }));
-vi.mock("../settings/BackupCodesDisplay", () => ({ default: () => null }));
 vi.mock("../settings/AccountSettings", () => ({ default: () => null }));
 vi.mock("../settings/AppearanceSettings", () => ({ default: () => null }));
 vi.mock("../settings/NotificationSettings", () => ({ default: () => null }));

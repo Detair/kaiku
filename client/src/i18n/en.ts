@@ -11,7 +11,6 @@ import { common } from "./en/common";
 import { connection } from "./en/connection";
 import { errors } from "./en/errors";
 import { auth } from "./en/auth";
-import { qr } from "./en/qr";
 import { channels } from "./en/channels";
 import { chat } from "./en/chat";
 import { dm } from "./en/dm";
@@ -31,7 +30,6 @@ export const en = {
   ...connection,
   ...errors,
   ...auth,
-  ...qr,
   ...channels,
   ...chat,
   ...dm,
