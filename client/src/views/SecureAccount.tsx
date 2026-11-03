@@ -24,6 +24,10 @@ const SecureAccount: Component = () => {
   // the native override) is the one to ask (Codex review M3).
   const [serverChoice] = createResource(() => resolveSignInServer(isAuthenticated()));
   const server = () => serverChoice() ?? requestServer();
+  // Nothing goes out before the server is known, or without one (Flash r3
+  // p3 #4): a submit while the native override still loads would go to the
+  // fallback server.
+  const serverReady = () => !serverChoice.loading && !!serverChoice();
   const [settings] = createResource(serverChoice, async (url) => {
     try {
       return await fetchServerSettings(url);
@@ -43,12 +47,14 @@ const SecureAccount: Component = () => {
   const submit = async (e: Event) => {
     e.preventDefault();
     setError(null);
+    if (!serverReady()) return;
     const code = totp().replace(/\D+/g, "");
     if (!username().trim()) {
       setError(t("auth.recover.missing"));
       return;
     }
-    if ((first() === "password" && !password()) || code.length < 6) {
+    const providerSlug = provider() || providers()[0]?.slug || "";
+    if ((first() === "password" && !password()) || (first() === "oidc" && !providerSlug) || code.length < 6) {
       setError(t("auth.secure.needBoth"));
       return;
     }
@@ -57,7 +63,7 @@ const SecureAccount: Component = () => {
       const factor: BootstrapStart["first"] =
         first() === "password"
           ? { type: "password", password: password() }
-          : { type: "oidc", oidc_code: await requestOidcCode(server(), provider() || providers()[0]?.slug || "") };
+          : { type: "oidc", oidc_code: await requestOidcCode(server(), providerSlug) };
       await startBootstrap({ username: username().trim(), purpose: "bootstrap", first: factor, totp_code: code });
       navigate("/account-request", { replace: true });
     } catch (err) {
@@ -111,7 +117,7 @@ const SecureAccount: Component = () => {
         <Show when={error()}>
           <p role="alert" class="p-3 rounded-md text-sm" style={errorStyle}>{error()}</p>
         </Show>
-        <button type="submit" class="btn-primary w-full min-h-12 text-base" disabled={busy()}>
+        <button type="submit" class="btn-primary w-full min-h-12 text-base" disabled={busy() || !serverReady()}>
           {t("auth.secure.submit")}
         </button>
       </form>

@@ -27,6 +27,10 @@ const RecoverAccount: Component = () => {
   // the native override) is the one to ask (Codex review M3).
   const [serverChoice] = createResource(() => resolveSignInServer(isAuthenticated()));
   const server = () => serverChoice() ?? requestServer();
+  // Nothing goes out before the server is known, or without one (Flash r3
+  // p3 #4): a submit while the native override still loads would go to the
+  // fallback server.
+  const serverReady = () => !serverChoice.loading && !!serverChoice();
   const [settings] = createResource(serverChoice, async (url) => {
     try {
       return await fetchServerSettings(url);
@@ -48,6 +52,7 @@ const RecoverAccount: Component = () => {
   const submit = async (e: Event) => {
     e.preventDefault();
     setError(null);
+    if (!serverReady()) return;
     if (!username().trim() || code().length < 8) {
       setError(t("auth.recover.missing"));
       return;
@@ -55,7 +60,12 @@ const RecoverAccount: Component = () => {
     // C27: a valid recovery code with a failed second factor is spent (B.5),
     // so an empty factor never goes out with it (Argon review 10 #1).
     const totpDigits = totp().replace(/\D+/g, "");
-    if ((second() === "password" && !password()) || (second() === "totp" && totpDigits.length < 6)) {
+    const providerSlug = provider() || providers()[0]?.slug || "";
+    if (
+      (second() === "password" && !password()) ||
+      (second() === "totp" && totpDigits.length < 6) ||
+      (second() === "oidc" && !providerSlug)
+    ) {
       setError(t("auth.recover.missing"));
       return;
     }
@@ -64,7 +74,7 @@ const RecoverAccount: Component = () => {
       let factor: RecoveryStart["second"];
       if (second() === "password") factor = { type: "password", password: password() };
       else if (second() === "totp") factor = { type: "totp", code: totp().replace(/\D+/g, "") };
-      else factor = { type: "oidc", oidc_code: await requestOidcCode(server(), provider() || providers()[0]?.slug || "") };
+      else factor = { type: "oidc", oidc_code: await requestOidcCode(server(), providerSlug) };
       await startRecovery({
         username: username().trim(),
         purpose: "recovery",
@@ -130,7 +140,7 @@ const RecoverAccount: Component = () => {
         <Show when={error()}>
           <p role="alert" class="p-3 rounded-md text-sm" style={errorStyle}>{error()}</p>
         </Show>
-        <button type="submit" class="btn-primary w-full min-h-12 text-base" disabled={busy()}>
+        <button type="submit" class="btn-primary w-full min-h-12 text-base" disabled={busy() || !serverReady()}>
           {t("auth.recover.submit")}
         </button>
       </form>

@@ -18,6 +18,9 @@ describe("SecureAccount", () => {
   it("bootstrap start needs password and code", async () => {
     api.startAccountRequest.mockResolvedValue(requestOf({ purpose: "bootstrap" }));
     render(routed(SecureAccount, "/secure-account"));
+    // The form sends only once its server is known (Flash r3 p3 #4).
+    const start = screen.getByRole("button", { name: "Start" }) as HTMLButtonElement;
+    await waitFor(() => expect(start.disabled).toBe(false));
     fireEvent.input(screen.getByLabelText("Username"), { target: { value: "alice" } });
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(await screen.findByText("Enter your password and a code from your authenticator app.")).toBeTruthy();
