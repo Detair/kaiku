@@ -511,24 +511,41 @@ pub async fn poll(
     secret: &CollectionSecret,
     wait: u8,
 ) -> AuthResult<LoginAttempt> {
-    let mut conn = ctx.db.acquire().await?;
-    let first = authenticate(&mut conn, ctx, id, secret).await?;
-    let deadline = tokio::time::Instant::now()
-        + std::time::Duration::from_secs(u64::from(wait.min(MAX_WAIT_SECS)));
+    let first = {
+        let mut conn = ctx.db.acquire().await?;
+        authenticate(&mut conn, ctx, id, secret).await?
+    };
+    // Fable M3: a public long-poll never holds a pool connection while it
+    // waits (one per step), and at most LONG_POLLS wait per process; when
+    // they are taken the answer comes at once.
+    let permit = LONG_POLLS.try_acquire().ok();
+    let wait = if permit.is_some() {
+        wait.min(MAX_WAIT_SECS)
+    } else {
+        0
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(u64::from(wait));
     loop {
-        refresh(&mut conn, id).await?;
-        if let Some((row, token)) = rotate(&mut conn, ctx, id).await? {
-            return Ok(to_wire(&mut conn, ctx, &row, Some(&token)).await?);
-        }
-        let row = read(&mut conn, id, false)
-            .await?
-            .ok_or(AuthError::LoginAttemptUnknown)?;
-        if row.state != first.state || tokio::time::Instant::now() >= deadline {
-            return Ok(to_wire(&mut conn, ctx, &row, None).await?);
+        {
+            let mut conn = ctx.db.acquire().await?;
+            refresh(&mut conn, id).await?;
+            if let Some((row, token)) = rotate(&mut conn, ctx, id).await? {
+                return Ok(to_wire(&mut conn, ctx, &row, Some(&token)).await?);
+            }
+            let row = read(&mut conn, id, false)
+                .await?
+                .ok_or(AuthError::LoginAttemptUnknown)?;
+            if row.state != first.state || tokio::time::Instant::now() >= deadline {
+                return Ok(to_wire(&mut conn, ctx, &row, None).await?);
+            }
         }
         tokio::time::sleep(POLL_STEP).await;
     }
 }
+
+/// Concurrent attempt long-polls per process (Fable M3).
+pub const MAX_LONG_POLLS: usize = 32;
+static LONG_POLLS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_LONG_POLLS);
 
 /// `cancel`: `open` or `claimed` → `cancelled` (attempt row only; a claimed
 /// challenge dies at its answer). Terminal attempts are left as they are.

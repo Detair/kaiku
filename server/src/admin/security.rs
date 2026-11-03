@@ -39,6 +39,11 @@ async fn lock_target(
     target: Uuid,
 ) -> AuthResult<LockedAccount> {
     let locked = lock_accounts(conn, &[admin, target]).await?;
+    // Codex M8: the actor is still an admin under the lock (a demotion
+    // committed while this request waited wins).
+    if !locked.get(&admin).is_some_and(|a| a.is_admin && !a.banned) {
+        return Err(AuthError::NotAdmin);
+    }
     let t = locked
         .get(&target)
         .filter(|a| a.exists && !a.is_system)

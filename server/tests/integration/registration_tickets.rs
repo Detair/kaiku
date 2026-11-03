@@ -394,3 +394,54 @@ async fn expired_ticket_is_refused(pool: PgPool) {
         );
     }
 }
+
+#[sqlx::test]
+async fn a_bound_ticket_binds_nothing_more(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool.clone()).await;
+    open_registration(&pool).await;
+    not_first(&pool).await;
+    let (_, body) = register(&app, json!({"username": "bound_once"})).await;
+    let ticket = body["registration_ticket"].as_str().unwrap().to_string();
+    let user: Uuid = body["user_id"].as_str().unwrap().parse().unwrap();
+    let (_, start) = with_ticket(
+        &app,
+        Method::POST,
+        "/auth/registration/passkey/start",
+        &ticket,
+        json!({"label": "Laptop"}),
+    )
+    .await;
+    let mut soft = SoftAuthenticator::new();
+    let credential = soft.register(TEST_ORIGIN, &start["options"]);
+    let (s, _) = with_ticket(
+        &app,
+        Method::POST,
+        "/auth/registration/passkey/finish",
+        &ticket,
+        json!({"ceremony_id": start["ceremony_id"], "credential": credential}),
+    )
+    .await;
+    assert_eq!(s, 201);
+    // The status still answers; every binding route refuses the ticket.
+    let (s, st) = with_ticket(&app, Method::GET, "/auth/registration", &ticket, json!({})).await;
+    assert_eq!((s, st["bound"].as_bool()), (200, Some(true)));
+    for uri in [
+        "/auth/registration/totp",
+        "/auth/registration/passkey/start",
+        "/auth/registration/enrollments",
+    ] {
+        let (s, b) = with_ticket(&app, Method::POST, uri, &ticket, json!({})).await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (404, Some("REGISTRATION_TICKET_INVALID")),
+            "{uri}: {b}"
+        );
+    }
+    // A passkey consumed the bootstrap entitlement (Fable m1).
+    let open: bool = sqlx::query_scalar("SELECT bootstrap_open FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(!open);
+}

@@ -128,6 +128,37 @@ pub async fn ticket_from_request(
         .ok_or(AuthError::TicketInvalid)
 }
 
+/// [`ticket_from_request`] for a route that binds: a bound ticket binds
+/// nothing more (Codex M9; 404 `REGISTRATION_TICKET_INVALID`).
+pub async fn unbound_ticket(
+    ctx: &AuthCtx<'_>,
+    headers: &HeaderMap,
+    jar: &CookieJar,
+) -> AuthResult<TicketRow> {
+    let t = ticket_from_request(ctx, headers, jar).await?;
+    if t.bound_at.is_some() {
+        return Err(AuthError::TicketInvalid);
+    }
+    Ok(t)
+}
+
+/// Under the account lock: the ticket is still unbound (a concurrent bind
+/// wins).
+async fn still_unbound(conn: &mut PgConnection, ticket_id: Uuid) -> AuthResult<()> {
+    let unbound: bool = sqlx::query_scalar(
+        "SELECT bound_at IS NULL FROM registration_tickets WHERE id = $1 FOR UPDATE",
+    )
+    .bind(ticket_id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or(false);
+    if unbound {
+        Ok(())
+    } else {
+        Err(AuthError::TicketInvalid)
+    }
+}
+
 /// Mark the account's ticket bound (anything was bound to it).
 pub async fn mark_bound_tx(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<()> {
     sqlx::query(
@@ -295,7 +326,7 @@ pub async fn totp_start(
     jar: CookieJar,
 ) -> AuthResult<Json<TotpSetup>> {
     let ctx = AuthCtx::from(&state);
-    let t = ticket_from_request(&ctx, &headers, &jar).await?;
+    let t = unbound_ticket(&ctx, &headers, &jar).await?;
     let mut conn = state.db.acquire().await?;
     if is_admin(&mut conn, t.user_id).await? {
         return Err(AuthError::TotpUnavailable);
@@ -349,7 +380,7 @@ pub async fn totp_verify(
     Json(body): Json<CodeRequest>,
 ) -> AuthResult<(CookieJar, Json<RecoveryCodesOnce>)> {
     let ctx = AuthCtx::from(&state);
-    let t = ticket_from_request(&ctx, &headers, &jar).await?;
+    let t = unbound_ticket(&ctx, &headers, &jar).await?;
     let key = format!("mfa:pending:{}", t.user_id);
     let pending: Option<String> = state
         .redis
@@ -372,12 +403,21 @@ pub async fn totp_verify(
     if is_admin(&mut tx, t.user_id).await? {
         return Err(AuthError::TotpUnavailable);
     }
+    still_unbound(&mut tx, t.id).await?;
     super::factors::replace_tx(&mut tx, &ctx, t.user_id, super::factors::Factor::Totp).await?;
-    sqlx::query("UPDATE users SET mfa_secret = $2, bootstrap_open = true WHERE id = $1")
-        .bind(t.user_id)
-        .bind(&encrypted)
-        .execute(&mut *tx)
-        .await?;
+    // Fable m1: the entitlement only while no strong authenticator is active.
+    sqlx::query(
+        "UPDATE users SET mfa_secret = $2,
+                bootstrap_open = NOT EXISTS (SELECT 1 FROM approval_devices
+                                              WHERE user_id = $1 AND state = 'active')
+                             AND NOT EXISTS (SELECT 1 FROM passkeys
+                                              WHERE user_id = $1 AND state = 'active')
+          WHERE id = $1",
+    )
+    .bind(t.user_id)
+    .bind(&encrypted)
+    .execute(&mut *tx)
+    .await?;
     let codes = super::recovery_codes::replace_tx(&mut tx, &ctx, t.user_id).await?;
     super::strong::mark_first_activity(&mut tx, t.user_id).await?;
     mark_bound_tx(&mut tx, t.user_id).await?;
@@ -431,7 +471,7 @@ pub async fn passkey_start(
 ) -> AuthResult<Json<crate::auth::passkeys::types::CeremonyStart>> {
     use crate::auth::passkeys::register::{begin, clean_label, RegistrationBinding};
     crate::auth::passkeys::rp_of(&state)?;
-    let t = ticket_from_request(&AuthCtx::from(&state), &headers, &jar).await?;
+    let t = unbound_ticket(&AuthCtx::from(&state), &headers, &jar).await?;
     let label = clean_label(body.label.as_deref())?;
     let (ceremony_id, ccr) = begin(
         &state,
@@ -472,7 +512,7 @@ pub async fn passkey_finish(
         complete_recorded, RegistrationBinding, RegistrationVia,
     };
     let rp = crate::auth::passkeys::rp_of(&state)?;
-    let t = ticket_from_request(&AuthCtx::from(&state), &headers, &jar).await?;
+    let t = unbound_ticket(&AuthCtx::from(&state), &headers, &jar).await?;
     let rec = ceremony::take(&state.redis, body.ceremony_id)
         .await?
         .ok_or(AuthError::PasskeyCeremonyInvalid)?;
@@ -496,6 +536,7 @@ pub async fn passkey_finish(
         .map_err(crate::auth::passkeys::failure)?;
     let mut tx = state.db.begin().await?;
     crate::approvals::transition::lock_accounts(&mut tx, &[t.user_id]).await?;
+    still_unbound(&mut tx, t.id).await?;
     let (row, added) = complete_recorded(
         &mut tx,
         t.user_id,
@@ -507,6 +548,14 @@ pub async fn passkey_finish(
     )
     .await?;
     mark_bound_tx(&mut tx, t.user_id).await?;
+    // An active passkey consumes the bootstrap entitlement (F8 rev 4).
+    crate::auth::account_requests::core::on_strong_activated(
+        &mut tx,
+        &AuthCtx::from(&state),
+        t.user_id,
+        None,
+    )
+    .await?;
     tx.commit().await?;
     spawn_delivery(&state, vec![added]);
     Ok((
@@ -538,7 +587,7 @@ pub async fn enrollment_issue(
     jar: CookieJar,
 ) -> Result<(StatusCode, Json<enrollments::EnrollmentIssued>), ApprovalError> {
     let ctx = AuthCtx::from(&state);
-    let t = ticket_from_request(&ctx, &headers, &jar)
+    let t = unbound_ticket(&ctx, &headers, &jar)
         .await
         .map_err(approval)?;
     let mut tx = state.db.begin().await?;
@@ -615,7 +664,7 @@ pub async fn enrollment_confirm(
     Json(body): Json<CodeRequest>,
 ) -> Result<Json<enrollments::Enrollment>, ApprovalError> {
     let ctx = AuthCtx::from(&state);
-    let t = ticket_from_request(&ctx, &headers, &jar)
+    let t = unbound_ticket(&ctx, &headers, &jar)
         .await
         .map_err(approval)?;
     ticket_enrollment(&state, &t, id).await?;
@@ -657,7 +706,7 @@ pub async fn enrollment_cancel(
     jar: CookieJar,
 ) -> Result<StatusCode, ApprovalError> {
     let ctx = AuthCtx::from(&state);
-    let t = ticket_from_request(&ctx, &headers, &jar)
+    let t = unbound_ticket(&ctx, &headers, &jar)
         .await
         .map_err(approval)?;
     ticket_enrollment(&state, &t, id).await?;

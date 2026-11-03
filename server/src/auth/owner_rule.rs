@@ -99,6 +99,17 @@ pub async fn authorize(
         if auth.id != t.subject {
             return Err(refused());
         }
+        // Codex M8: the session is still live under the account lock.
+        let live: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sessions
+                             WHERE id = $1 AND ended_at IS NULL AND expires_at > NOW())",
+        )
+        .bind(auth.session_id)
+        .fetch_one(&mut *conn)
+        .await?;
+        if !live {
+            return Err(AuthError::InvalidToken);
+        }
         if super::strong::active_strong_count(conn, t.subject).await? > 0 {
             return Err(refused());
         }
