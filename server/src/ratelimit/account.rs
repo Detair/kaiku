@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use chrono::Utc;
-use fred::interfaces::{HashesInterface, KeysInterface};
+use fred::interfaces::HashesInterface;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -84,6 +84,17 @@ pub struct Delay {
     pub retry_after: u64,
 }
 
+/// One counted failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Failure {
+    /// The consecutive count.
+    pub count: u32,
+    /// The counter's epoch (a success starts a new one).
+    pub epoch: i64,
+    /// This failure claimed the epoch's throttle (count ≥ [`THROTTLE_AT`]).
+    pub throttle: bool,
+}
+
 /// The per-account limiter.
 pub struct AccountLimiter<'a> {
     redis: &'a fred::clients::Client,
@@ -114,19 +125,30 @@ impl<'a> AccountLimiter<'a> {
 
     /// Count a failure; returns the consecutive count.
     pub async fn record_failure(&self, key: &CounterKey) -> Result<u32, RateLimitError> {
-        Ok(self.record_failure_epoch(key).await?.0)
+        Ok(self.count_failure(key).await?.count)
     }
 
     /// Count a failure atomically with the counter's epoch (a success bumps
-    /// it): `(consecutive count, epoch)`. The count, the delay (`next`) and
-    /// the expiry are one script, so a success never interleaves with a
-    /// half-recorded failure and leaves a stale delay (Codex r4 #3).
+    /// it): `(consecutive count, epoch)`.
     pub async fn record_failure_epoch(
         &self,
         key: &CounterKey,
     ) -> Result<(u32, i64), RateLimitError> {
+        let f = self.count_failure(key).await?;
+        Ok((f.count, f.epoch))
+    }
+
+    /// Count a failure. The count, the epoch, the delay (`next`), the
+    /// expiry and the throttle claim are one script, so a success never
+    /// interleaves with a half-recorded failure and leaves a stale delay
+    /// (Codex r4 #3). `throttle` is set for the first failure at or past
+    /// [`THROTTLE_AT`] in this epoch (`HSETNX thr`): the 100th applies once,
+    /// and a count past it still throttles if the 100th's effects were lost
+    /// (Flash r5); [`Self::release_throttle`] gives the claim back when the
+    /// effects fail.
+    pub async fn count_failure(&self, key: &CounterKey) -> Result<Failure, RateLimitError> {
         use fred::interfaces::LuaInterface;
-        let (n, epoch): (i64, i64) = self
+        let (n, epoch, first): (i64, i64, i64) = self
             .redis
             .eval(
                 "local c = redis.call('HINCRBY', KEYS[1], 'count', 1)
@@ -139,8 +161,12 @@ impl<'a> AccountLimiter<'a> {
                    end
                    redis.call('HSET', KEYS[1], 'next', string.format('%d', tonumber(ARGV[4]) + secs))
                  end
+                 local first = 0
+                 if c >= tonumber(ARGV[6]) and redis.call('HSETNX', KEYS[1], 'thr', 1) == 1 then
+                   first = 1
+                 end
                  redis.call('EXPIRE', KEYS[1], ARGV[5])
-                 return {c, e}",
+                 return {c, e, first}",
                 vec![key.redis_key()],
                 vec![
                     FREE_FAILURES.to_string(),
@@ -148,11 +174,25 @@ impl<'a> AccountLimiter<'a> {
                     MAX_DELAY_SECS.to_string(),
                     Utc::now().timestamp().to_string(),
                     COUNTER_TTL_SECS.to_string(),
+                    THROTTLE_AT.to_string(),
                 ],
             )
             .await
             .map_err(|_| RateLimitError::RedisUnavailable)?;
-        Ok((u32::try_from(n).unwrap_or(u32::MAX), epoch))
+        Ok(Failure {
+            count: u32::try_from(n).unwrap_or(u32::MAX),
+            epoch,
+            throttle: first == 1,
+        })
+    }
+
+    /// Give back a throttle claim whose effects did not commit, so the next
+    /// failure applies them.
+    pub async fn release_throttle(&self, key: &CounterKey) -> Result<(), RateLimitError> {
+        self.redis
+            .hdel::<(), _, _>(key.redis_key(), "thr")
+            .await
+            .map_err(|_| RateLimitError::RedisUnavailable)
     }
 
     /// A success starts a new epoch: the count and the delay go, and
@@ -164,7 +204,7 @@ impl<'a> AccountLimiter<'a> {
             .eval(
                 "redis.call('HINCRBY', KEYS[1], 'epoch', 1)
                  redis.call('HSET', KEYS[1], 'count', 0)
-                 redis.call('HDEL', KEYS[1], 'next')
+                 redis.call('HDEL', KEYS[1], 'next', 'thr')
                  redis.call('EXPIRE', KEYS[1], ARGV[1])
                  return 1",
                 vec![key.redis_key()],
@@ -185,12 +225,10 @@ impl<'a> AccountLimiter<'a> {
         Ok((c.unwrap_or(0), e.unwrap_or(0)))
     }
 
-    /// A success resets the counter.
+    /// A success resets the counter: a new epoch, as for TOTP (Flash r5),
+    /// so the epoch never restarts at 0.
     pub async fn record_success(&self, key: &CounterKey) -> Result<(), RateLimitError> {
-        self.redis
-            .del::<(), _>(key.redis_key())
-            .await
-            .map_err(|_| RateLimitError::RedisUnavailable)
+        self.reset_epoch(key).await
     }
 }
 

@@ -435,6 +435,15 @@ mod tests {
             (Password, Compromised, &[Replacement, CompletedRequest, Cli]),
             (Totp, Compromised, &[Replacement, CompletedRequest, Cli]),
         ];
+        // Recovery codes have no throttled or compromised state to leave.
+        for state in [Active, Throttled, Compromised] {
+            for why in all {
+                assert!(
+                    !exits(Factor::RecoveryCodes, state, why),
+                    "{state:?} via {why:?}"
+                );
+            }
+        }
         for (f, state, allowed) in table {
             for why in all {
                 assert_eq!(

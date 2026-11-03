@@ -238,26 +238,20 @@ pub async fn totp(
         .to_string();
     let client = SessionClient::from_request(&state, &headers, addr);
     let ctx = AuthCtx::from(&state);
-    // B.5: the account's TOTP counter (every attempt kind names its account).
-    let account: Option<(Option<Uuid>, Option<String>, Option<i64>)> = sqlx::query_as(
-        "SELECT user_id, first_factor, first_factor_generation FROM login_attempts WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await?;
-    let (account, password_generation) = match account {
-        Some((user, first, generation)) => (
-            user,
-            (first.as_deref() == Some("password"))
-                .then_some(generation)
-                .flatten()
-                .map(|generation| crate::auth::factors::FactorRef {
-                    factor: crate::auth::factors::Factor::Password,
-                    generation,
-                }),
-        ),
-        None => (None, None),
+    // C27: the collection secret first (unknown id or wrong secret → 404),
+    // then the account's TOTP counter (B.5; Flash r5).
+    let seen = {
+        let mut conn = state.db.acquire().await?;
+        core::authenticate(&mut conn, &ctx, id, &secret).await?
     };
+    let account = seen.user_id;
+    let password_generation = (seen.first_factor.as_deref() == Some("password"))
+        .then_some(seen.first_factor_generation)
+        .flatten()
+        .map(|generation| crate::auth::factors::FactorRef {
+            factor: crate::auth::factors::Factor::Password,
+            generation,
+        });
     if let Some(user) = account {
         crate::auth::totp_guard::pre_check(&ctx, user).await?;
     }
@@ -377,6 +371,7 @@ pub fn session_response(
     collected: core::Collected,
 ) -> (CookieJar, Json<AuthResponse>) {
     crate::security_events::spawn_delivery(state, collected.event_ids.clone());
+    crate::security_events::notices::spawn_pending_delivery(state);
     let in_body = crate::auth::helpers::should_return_refresh_token(headers);
     let jar = jar
         .add(collected.issued.refresh_cookie(&state.config))

@@ -241,9 +241,12 @@ pub async fn start_recovery(
 
 async fn password_ok(hash: Option<String>, password: &str) -> AuthResult<bool> {
     let password = password.to_string();
+    // Flash r5: the dummy hash's plaintext is public; only a real hash can
+    // verify (the dummy only spends the same work).
+    let has_real = hash.is_some();
     let hash = hash.unwrap_or_else(|| crate::auth::password::DUMMY_PASSWORD_HASH.clone());
     tokio::task::spawn_blocking(move || {
-        crate::auth::verify_password(&password, &hash).unwrap_or(false)
+        has_real && crate::auth::verify_password(&password, &hash).unwrap_or(false)
     })
     .await
     .map_err(|e| AuthError::Internal(format!("password check failed: {e}")))

@@ -105,8 +105,10 @@ pub async fn request_updated(state: &AppState, request_id: Uuid, subject_id: Uui
 /// Verify a password off the runtime (dummy hash when none).
 async fn password_ok(hash: Option<String>, password: &str) -> AuthResult<bool> {
     let password = password.to_string();
+    // Flash r5: the dummy hash's plaintext is public; only a real hash can
+    // verify (the dummy only spends the same work).
+    let has_real = hash.is_some();
     let hash = hash.unwrap_or_else(|| crate::auth::password::DUMMY_PASSWORD_HASH.clone());
-    let has_real = !hash.is_empty();
     tokio::task::spawn_blocking(move || {
         has_real && crate::auth::verify_password(&password, &hash).unwrap_or(false)
     })
@@ -204,7 +206,12 @@ async fn start_bootstrap(
     let (first_ok, oidc) = match &body.first {
         Some(StartFactor::Password { password }) => {
             let ok = password_ok(verified_hash.clone(), password).await?;
-            if !ok {
+            if ok {
+                // B.5: a correct password resets its counter (Flash r5).
+                let _ = crate::ratelimit::account::AccountLimiter::new(ctx.redis)
+                    .record_success(&password_key)
+                    .await;
+            } else {
                 crate::auth::login::account_failure(
                     state,
                     &password_key,
@@ -344,10 +351,13 @@ async fn start_bootstrap(
             tx.commit().await?;
             Ok(s)
         }
-        Err(e) => {
+        // The counted start stays (B.5), as in recovery; any other error
+        // rolls back (Flash r5).
+        Err(e @ (AuthError::AccountRequestOpen | AuthError::NoIndependentCanceller)) => {
             tx.commit().await?;
             Err(e)
         }
+        Err(e) => Err(e),
     }
 }
 
@@ -495,6 +505,16 @@ pub async fn cancel(
     body: Option<Json<CancelRequest>>,
 ) -> AuthResult<Json<AccountRequestSummary>> {
     let body = body.map(|b| b.0).unwrap_or_default();
+    // Flash r5: the reason lands in events and notices; 500 characters.
+    if body
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.chars().count() > 500)
+    {
+        return Err(AuthError::Validation(
+            "reason: at most 500 characters".into(),
+        ));
+    }
     let ctx = AuthCtx::from(&state);
     let part2 = match body.part2 {
         Some(p) => Some(match p.factor.kind.as_str() {

@@ -202,28 +202,40 @@ pub async fn login(
 }
 
 /// B.5: count a wrong password for `counter`; at every 20th a coalesced
-/// `guessing` notice, at the 100th the password is `throttled`.
+/// `guessing` notice; the first failure at or past the 100th in an epoch
+/// throttles the password (its claim is given back if this fails, Flash r5).
 pub async fn account_failure(
     state: &AppState,
     counter: &crate::ratelimit::account::CounterKey,
     account: Option<Uuid>,
 ) -> AuthResult<()> {
-    use crate::ratelimit::account::{AccountLimiter, NOTICE_EVERY, THROTTLE_AT};
-    let n = AccountLimiter::new(&state.redis)
-        .record_failure(counter)
+    use crate::ratelimit::account::{AccountLimiter, NOTICE_EVERY};
+    let limiter = AccountLimiter::new(&state.redis);
+    let failure = limiter
+        .count_failure(counter)
         .await
         .map_err(|_| AuthError::ServiceUnavailable)?;
     let Some(user) = account else {
         return Ok(());
     };
-    if n % NOTICE_EVERY != 0 && n != THROTTLE_AT {
+    let n = failure.count;
+    if !n.is_multiple_of(NOTICE_EVERY) && !failure.throttle {
         return Ok(());
     }
+    let result = failure_effects(state, user, n, failure.throttle).await;
+    if result.is_err() && failure.throttle {
+        let _ = limiter.release_throttle(counter).await;
+    }
+    result
+}
+
+async fn failure_effects(state: &AppState, user: Uuid, n: u32, throttle: bool) -> AuthResult<()> {
+    use crate::ratelimit::account::NOTICE_EVERY;
     let ctx = AuthCtx::from(state);
     let mut tx = state.db.begin().await?;
     crate::approvals::transition::lock_accounts(&mut tx, &[user]).await?;
     let mut events = Vec::new();
-    if n % NOTICE_EVERY == 0 {
+    if n.is_multiple_of(NOTICE_EVERY) {
         events.push(
             crate::security_events::record(
                 &mut tx,
@@ -237,7 +249,7 @@ pub async fn account_failure(
             .await?,
         );
     }
-    if n == THROTTLE_AT {
+    if throttle {
         tracing::warn!(%user, "password throttled after repeated failures (B.5)");
         super::factors::throttle_tx(&mut tx, &ctx, user, Factor::Password).await?;
     }
@@ -1025,7 +1037,7 @@ pub async fn oidc_callback(
                 "status": step.status,
                 "attempt": step.attempt,
             });
-            Ok((jar, axum::response::Html(popup_result_page(&payload, true))).into_response())
+            Ok((jar, popup_html(&payload, true)).into_response())
         }
     }
 }
@@ -1189,10 +1201,10 @@ async fn request_factor_callback(
             )
         }
         Some(super::oidc::NativeLogin::Android) => android_callback("code", &oidc_code),
-        None => axum::response::Html(popup_result_page(
+        None => popup_html(
             &serde_json::json!({"type": "oidc-request-callback", "oidc_code": oidc_code}),
             true,
-        ))
+        )
         .into_response(),
     }
 }
@@ -1412,7 +1424,7 @@ async fn handle_identity_link(
             "provider_slug": flow_state.slug,
             "error_code": null,
         });
-        Ok(axum::response::Html(popup_result_page(&payload, true)).into_response())
+        Ok(popup_html(&payload, true).into_response())
     }
 }
 
@@ -1440,7 +1452,7 @@ fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Resp
             let payload = serde_json::json!({
                 "type": "oidc-request-callback", "status": "error", "error": code,
             });
-            return axum::response::Html(popup_result_page(&payload, false)).into_response();
+            return popup_html(&payload, false).into_response();
         }
     };
     if let Some(mut redirect_url) = client_return_url(flow_state) {
@@ -1460,12 +1472,24 @@ fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Resp
     };
     // The link UI handles failures itself (closes the popup); the login page
     // only reacts to success, so a failed login keeps the popup open with a hint.
-    axum::response::Html(popup_result_page(&payload, is_link)).into_response()
+    popup_html(&payload, is_link).into_response()
 }
 
 /// Popup page that posts `payload` to the opener (same origin only). With
 /// `close` it closes itself afterwards; otherwise it stays open showing that
 /// sign-in failed.
+/// The popup result page: never cached, never a referrer (it can carry a
+/// one-time `oidc_code`; Flash r5).
+fn popup_html(payload: &serde_json::Value, close: bool) -> impl IntoResponse {
+    (
+        [
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+            (axum::http::header::REFERRER_POLICY, "no-referrer"),
+        ],
+        axum::response::Html(popup_result_page(payload, close)),
+    )
+}
+
 fn popup_result_page(payload: &serde_json::Value, close: bool) -> String {
     let (close_js, fallback) = if close {
         ("window.close();", "You can close this window.")

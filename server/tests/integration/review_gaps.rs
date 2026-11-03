@@ -185,7 +185,6 @@ async fn a_totp_renewal_before_finish_voids(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_success_resets_the_password_counter(pool: PgPool) {
-    use fred::interfaces::KeysInterface;
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, name) = password_user(&pool, "zq8#vT4p-reset").await;
     KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
@@ -193,18 +192,12 @@ async fn a_success_resets_the_password_counter(pool: PgPool) {
         assert_eq!(login_native(&app, &name, "wrong-password-1").await.0, 401);
     }
     assert_eq!(login_native(&app, &name, "zq8#vT4p-reset").await.0, 202);
-    let vc_server::ratelimit::account::CounterKey::Password(h) =
-        vc_server::ratelimit::account::CounterKey::password(&name)
-    else {
-        unreachable!()
-    };
-    let exists: i64 = app
-        .state
-        .redis
-        .exists(format!("ratelimit:acct:password:{h}"))
+    // A success starts a new epoch (count 0, no delay).
+    let (count, _) = vc_server::ratelimit::account::AccountLimiter::new(&app.state.redis)
+        .read(&vc_server::ratelimit::account::CounterKey::password(&name))
         .await
         .unwrap();
-    assert_eq!(exists, 0, "a started attempt resets the counter");
+    assert_eq!(count, 0, "a started attempt resets the counter");
     // Five more wrong ones are needed for a delay again.
     for _ in 0..4 {
         assert_eq!(login_native(&app, &name, "wrong-password-1").await.0, 401);

@@ -2,9 +2,9 @@
 //!
 //! [`pre_check`] answers 429 `TOO_MANY_ATTEMPTS` while the counter's delay
 //! runs; [`after`] records the outcome: a success resets the counter, every
-//! 20th failure records a coalesced `guessing {factor: totp}`, the 100th
-//! throttles TOTP and compromises the password generation that came with it
-//! (F4). The effects run in their own transaction, spawned, because the
+//! 20th failure records a coalesced `guessing {factor: totp}`, the first at
+//! or past the 100th in an epoch throttles TOTP and compromises the password generation that came
+//! with it (F4). The effects run in their own transaction, spawned, because the
 //! caller may hold the account lock in a transaction that rolls back on the
 //! refusal; the spawned one waits for that lock.
 
@@ -13,7 +13,7 @@ use uuid::Uuid;
 use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
 use super::factors::{Factor, FactorRef, StateCause};
-use crate::ratelimit::account::{AccountLimiter, CounterKey, NOTICE_EVERY, THROTTLE_AT};
+use crate::ratelimit::account::{AccountLimiter, CounterKey, NOTICE_EVERY};
 
 /// 429 while the delay of the account's current TOTP generation runs
 /// (fail closed on Valkey errors).
@@ -63,10 +63,11 @@ pub async fn after(
         let _ = limiter.reset_epoch(&key).await;
         return;
     }
-    let Ok((n, epoch)) = limiter.record_failure_epoch(&key).await else {
+    let Ok(failure) = limiter.count_failure(&key).await else {
         return;
     };
-    if !n.is_multiple_of(NOTICE_EVERY) && n != THROTTLE_AT {
+    let (n, epoch, throttle) = (failure.count, failure.epoch, failure.throttle);
+    if !n.is_multiple_of(NOTICE_EVERY) && !throttle {
         return;
     }
     let db = ctx.db.clone();
@@ -79,7 +80,14 @@ pub async fn after(
             redis: &redis,
             config: &config,
         };
-        match effects(&ctx, user, n, epoch, used).await {
+        let result = effects(&ctx, user, n, epoch, throttle, used).await;
+        if result.is_err() && throttle {
+            // Flash r5: the claim goes back, so the next failure throttles.
+            let _ = AccountLimiter::new(&redis)
+                .release_throttle(&CounterKey::totp(user, used.totp_generation))
+                .await;
+        }
+        match result {
             Ok(()) => {
                 if let Some(state) = state {
                     // Flash r2: the guessing / throttle notices now.
@@ -91,7 +99,14 @@ pub async fn after(
     });
 }
 
-async fn effects(ctx: &AuthCtx<'_>, user: Uuid, n: u32, epoch: i64, used: Used) -> AuthResult<()> {
+async fn effects(
+    ctx: &AuthCtx<'_>,
+    user: Uuid,
+    n: u32,
+    epoch: i64,
+    throttle: bool,
+    used: Used,
+) -> AuthResult<()> {
     use crate::security_events::{record, Actor, EventType, NewSecurityEvent};
     let mut tx = ctx.db.begin().await?;
     crate::approvals::transition::lock_accounts(&mut tx, &[user]).await?;
@@ -100,10 +115,12 @@ async fn effects(ctx: &AuthCtx<'_>, user: Uuid, n: u32, epoch: i64, used: Used) 
     // else nothing of this applies to the account's present TOTP.
     // Codex r3: the same epoch (no success since) and the count still there.
     let generation = used.totp_generation;
+    // An unreadable counter is an error (the claim is given back).
     let now = AccountLimiter::new(ctx.redis)
         .read(&CounterKey::totp(user, generation))
-        .await;
-    if !now.is_ok_and(|(c, e)| e == epoch && c >= i64::from(n)) {
+        .await
+        .map_err(|_| AuthError::ServiceUnavailable)?;
+    if !(now.1 == epoch && now.0 >= i64::from(n)) {
         tx.commit().await?;
         return Ok(());
     }
@@ -125,7 +142,8 @@ async fn effects(ctx: &AuthCtx<'_>, user: Uuid, n: u32, epoch: i64, used: Used) 
         )
         .await?;
     }
-    if n == THROTTLE_AT {
+    // The first failure at or past the 100th in this epoch (Flash r5).
+    if throttle {
         tracing::warn!(%user, "TOTP throttled after repeated failures (B.5)");
         super::factors::throttle_tx(&mut tx, ctx, user, Factor::Totp).await?;
         if let Some(p) = password.filter(|p| p.factor == Factor::Password) {
