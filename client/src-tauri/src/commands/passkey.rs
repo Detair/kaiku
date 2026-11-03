@@ -27,18 +27,35 @@ use super::reauth::{registry, run_cancellable, Attempt, CANCELLED};
 use crate::session::{AuthResult, SessionError, SessionManager, TokenResponse};
 use crate::AppState;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Purpose {
-    SignIn,
+    /// With the user name typed in the app, if any (C29 addition,
+    /// coordinator 2026-11-03): the server refuses another account's passkey.
+    SignIn(Option<String>),
     StepUp,
 }
 
 impl Purpose {
-    const fn as_str(self) -> &'static str {
+    const fn as_str(&self) -> &'static str {
         match self {
-            Self::SignIn => "sign_in",
+            Self::SignIn(_) => "sign_in",
             Self::StepUp => "step_up",
         }
+    }
+}
+
+/// A bare `UPPER_SNAKE` server code, else `PASSKEY_FAILED` (nothing else
+/// from the loopback or the server reaches the webview).
+fn bare_code(code: &str) -> String {
+    if !code.is_empty()
+        && code.len() <= 64
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b == b'_' || b.is_ascii_digit())
+    {
+        code.to_string()
+    } else {
+        FAILED.to_string()
     }
 }
 
@@ -52,14 +69,7 @@ const FAILED: &str = "PASSKEY_FAILED";
 
 fn code_of(e: &SessionError) -> String {
     match e {
-        SessionError::Server(_, code)
-            if !code.is_empty()
-                && code
-                    .bytes()
-                    .all(|b| b.is_ascii_uppercase() || b == b'_' || b.is_ascii_digit()) =>
-        {
-            code.clone()
-        }
+        SessionError::Server(_, code) => bare_code(code),
         SessionError::AccountBanned => "ACCOUNT_BANNED".to_string(),
         SessionError::ServerMismatch => "SESSION_SERVER_MISMATCH".to_string(),
         _ => FAILED.to_string(),
@@ -118,7 +128,14 @@ pub async fn run_flow(
             .await
             .map_err(|_| FAILED.to_string())?;
         let verifier = new_secret();
+        let username = match &purpose {
+            Purpose::SignIn(name) => name.as_deref().map(str::trim).filter(|n| !n.is_empty()),
+            Purpose::StepUp => None,
+        };
+        // The session this step-up belongs to (a sign-in in between replaces it).
+        let identity = session.identity_generation();
         let body = json!({
+            "username": username,
             "purpose": purpose.as_str(),
             "action": action,
             "target": target,
@@ -159,7 +176,7 @@ pub async fn run_flow(
         drop(listener);
         let code = match handed {
             HandBack::Code(code) => code,
-            HandBack::Error(error) => return Err(error),
+            HandBack::Error(error) => return Err(bare_code(&error)),
         };
         // 5. Redeem and check what came back.
         attempt.check()?;
@@ -177,18 +194,26 @@ pub async fn run_flow(
             return Err(FAILED.to_string());
         }
         match purpose {
-            Purpose::SignIn => {
+            Purpose::SignIn(_) => {
+                let expected = redeemed["user_id"].as_str().ok_or(FAILED)?.to_string();
                 let tokens: TokenResponse =
                     serde_json::from_value(redeemed).map_err(|_| FAILED.to_string())?;
+                // Only the account the server redeemed for (checked before
+                // anything is stored).
                 let result = session
-                    .adopt_tokens(server_url, tokens)
+                    .adopt_tokens_for(server_url, tokens, Some(&expected))
                     .await
                     .map_err(|e| code_of(&e))?;
                 Ok(FlowResult::SignedIn(result))
             }
             Purpose::StepUp => {
                 let me = session.current_user_id();
-                if me.is_none() || redeemed["user_id"].as_str() != me.as_deref() {
+                if me.is_none()
+                    || redeemed["user_id"].as_str() != me.as_deref()
+                    || session.identity_generation() != identity
+                    || redeemed["grant"]["action"].as_str() != action
+                    || redeemed["grant"]["target"].as_str() != Some(target.unwrap_or(""))
+                {
                     return Err(FAILED.to_string());
                 }
                 Ok(FlowResult::Granted(redeemed["grant"].clone()))
@@ -221,6 +246,7 @@ pub async fn passkey_sign_in(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
     server_url: String,
+    username: Option<String>,
     attempt_id: String,
 ) -> Result<AuthResult, String> {
     let browser = super::settings::load_settings(&app_handle)
@@ -231,7 +257,7 @@ pub async fn passkey_sign_in(
         let result = run_flow(
             &state.session,
             server_url.trim_end_matches('/'),
-            Purpose::SignIn,
+            Purpose::SignIn(username.clone()),
             None,
             None,
             attempt,
@@ -444,7 +470,7 @@ mod tests {
         run_flow(
             m,
             &f.server.uri(),
-            Purpose::SignIn,
+            Purpose::SignIn(None),
             None,
             None,
             &Attempt::default(),
@@ -640,7 +666,7 @@ mod tests {
             let r = run_flow(
                 &manager(),
                 &f.server.uri(),
-                Purpose::SignIn,
+                Purpose::SignIn(None),
                 None,
                 None,
                 &Attempt::default(),
@@ -654,6 +680,71 @@ mod tests {
             assert_eq!(r.unwrap_err(), "PASSKEY_FAILED", "{bad}");
             assert!(!opened.load(Ordering::SeqCst), "{bad}");
         }
+    }
+
+    #[tokio::test]
+    async fn sign_in_sends_the_typed_user_name() {
+        // C29 addition (coordinator, 2026-11-03).
+        let f = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
+        run_flow(
+            &manager(),
+            &f.server.uri(),
+            Purpose::SignIn(Some("alice".into())),
+            None,
+            None,
+            &Attempt::default(),
+            |_| Ok(()),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let seen = f.seen.lock().unwrap().clone().unwrap();
+        assert_eq!(seen["body"]["username"], "alice");
+        let f = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
+        sign_in(&f, &manager()).await.unwrap();
+        assert!(f.seen.lock().unwrap().clone().unwrap()["body"]["username"].is_null());
+    }
+
+    #[tokio::test]
+    async fn loopback_error_codes_are_filtered() {
+        // Review Fable m4: only a bare UPPER_SNAKE code reaches the webview.
+        let f = fixture(Some(("error", "lower%3Cb%3E")), None).await;
+        assert_eq!(sign_in(&f, &manager()).await.unwrap_err(), "PASSKEY_FAILED");
+    }
+
+    #[tokio::test]
+    async fn sign_in_redeemed_for_another_account_is_refused() {
+        // Review Argon M1: the redeemed user_id must be the adopted account.
+        let mut answer = sign_in_answer();
+        answer["user_id"] = json!("0192f0c0-0000-7000-8000-00000000ffff");
+        let f = fixture(Some(("code", "c-1")), Some(answer)).await;
+        let m = manager();
+        assert_eq!(sign_in(&f, &m).await.unwrap_err(), "PASSKEY_FAILED");
+        assert!(m.auth_info().is_none(), "nothing adopted");
+    }
+
+    #[tokio::test]
+    async fn step_up_grant_must_match_the_request() {
+        // Review Argon minor 1.
+        let other = json!({"action": "account.delete", "target": "", "via": "passkey", "expires_at": "2027-01-01T00:00:00Z"});
+        let f = fixture(
+            Some(("code", "c-2")),
+            Some(json!({"purpose": "step_up", "user_id": USER, "grant": other})),
+        )
+        .await;
+        let m = signed_in_at(&f).await;
+        let r = run_flow(
+            &m,
+            &f.server.uri(),
+            Purpose::StepUp,
+            Some("admin.elevate"),
+            Some(""),
+            &Attempt::default(),
+            |_| Ok(()),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(r.unwrap_err(), "PASSKEY_FAILED");
     }
 
     #[tokio::test]
@@ -680,7 +771,7 @@ mod tests {
         let r = run_flow(
             &manager(),
             &f.server.uri(),
-            Purpose::SignIn,
+            Purpose::SignIn(None),
             None,
             None,
             &registered,
@@ -703,7 +794,7 @@ mod tests {
         let r = run_flow(
             &manager(),
             &f.server.uri(),
-            Purpose::SignIn,
+            Purpose::SignIn(None),
             None,
             None,
             &Attempt::default(),
@@ -720,7 +811,7 @@ mod tests {
         let r = run_flow(
             &manager(),
             &f.server.uri(),
-            Purpose::SignIn,
+            Purpose::SignIn(None),
             None,
             None,
             &Attempt::default(),

@@ -720,6 +720,12 @@ impl SessionManager {
             .await
     }
 
+    /// Changes whenever another session replaces this one (sign-in,
+    /// restore, sign-out); token rotations keep it.
+    pub fn identity_generation(&self) -> u64 {
+        self.generation()
+    }
+
     /// The signed-in account's id (`/auth/me` `id`), if any.
     pub fn current_user_id(&self) -> Option<String> {
         self.snapshot()?
@@ -736,8 +742,24 @@ impl SessionManager {
         server_url: &str,
         tokens: TokenResponse,
     ) -> Result<AuthResult, SessionError> {
+        self.adopt_tokens_for(server_url, tokens, None).await
+    }
+
+    /// [`adopt_tokens`](Self::adopt_tokens), refusing (before anything is
+    /// stored) when the token's account is not `expected_user_id`.
+    pub async fn adopt_tokens_for(
+        &self,
+        server_url: &str,
+        tokens: TokenResponse,
+        expected_user_id: Option<&str>,
+    ) -> Result<AuthResult, SessionError> {
         let base = normalize_server_url(server_url)?;
         let user = self.fetch_me(&base, &tokens.access_token).await?;
+        if let Some(expected) = expected_user_id {
+            if user.get("id").and_then(Value::as_str) != Some(expected) {
+                return Err(SessionError::InvalidRequest("ACCOUNT_MISMATCH".to_string()));
+            }
+        }
         let legacy_user = parse_user(&user)?;
         let password_change_required =
             tokens.password_change_required || flag(&user, "password_change_required");

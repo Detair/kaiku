@@ -22,6 +22,8 @@ use super::oidc_loopback::{Acceptor, CallbackTimeout};
 pub const FLOW_LISTEN_MAX: Duration = Duration::from_mins(10);
 /// Request line, headers and body together.
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024;
+/// Connections served at the same time (each bounded by its read deadline).
+const MAX_CONNECTIONS: usize = 16;
 /// Pause after a failed `accept()`.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 
@@ -130,13 +132,20 @@ fn content_length(head: &str) -> Option<usize> {
     len
 }
 
+/// The single value of header `wanted`; `None` when it is missing, sent
+/// twice, or a header line is malformed.
 fn header<'a>(head: &'a str, wanted: &str) -> Option<&'a str> {
-    head.split("\r\n").skip(1).find_map(|line| {
+    let mut found = None;
+    for line in head.split("\r\n").skip(1) {
         let (name, value) = line.split_once(':')?;
-        name.trim()
-            .eq_ignore_ascii_case(wanted)
-            .then_some(value.trim())
-    })
+        if name.trim().eq_ignore_ascii_case(wanted) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(value.trim());
+        }
+    }
+    found
 }
 
 /// The flow's hand-off, if `request` is exactly it (C29 step 5).
@@ -205,18 +214,38 @@ pub async fn wait_for_post(
     read_deadline: Duration,
 ) -> Result<HandBack, CallbackTimeout> {
     let deadline = deadline.min(Instant::now() + FLOW_LISTEN_MAX);
+    // Each connection is served on its own task (bounded), so an idle or slow
+    // one never delays the browser's POST (each still has `read_deadline`).
     let accept = async {
+        let mut tasks: tokio::task::JoinSet<Option<HandBack>> = tokio::task::JoinSet::new();
         loop {
-            let Ok(mut stream) = listener.accept_stream().await else {
-                tokio::time::sleep(ACCEPT_BACKOFF).await;
-                continue;
-            };
-            let request = read_request(&mut stream, read_deadline).await;
-            if let Some(result) = request.as_deref().and_then(|r| parse(r, cb, flow_id)) {
-                reply(&mut stream, true).await;
-                return result;
+            tokio::select! {
+                accepted = listener.accept_stream() => {
+                    let Ok(mut stream) = accepted else {
+                        tokio::time::sleep(ACCEPT_BACKOFF).await;
+                        continue;
+                    };
+                    if tasks.len() >= MAX_CONNECTIONS {
+                        // Too many open at once: refuse this one at once.
+                        reply(&mut stream, false).await;
+                        continue;
+                    }
+                    let cb = cb.clone();
+                    let flow_id = flow_id.to_string();
+                    tasks.spawn(async move {
+                        let request = read_request(&mut stream, read_deadline).await;
+                        let result = request.as_deref().and_then(|r| parse(r, &cb, &flow_id));
+                        reply(&mut stream, result.is_some()).await;
+                        result
+                    });
+                }
+                Some(done) = tasks.join_next(), if !tasks.is_empty() => {
+                    if let Ok(Some(result)) = done {
+                        tasks.abort_all();
+                        return result;
+                    }
+                }
             }
-            reply(&mut stream, false).await;
         }
     };
     tokio::time::timeout_at(deadline, accept)
@@ -348,6 +377,59 @@ mod tests {
         let _idle = TcpStream::connect(("127.0.0.1", cb.port)).await.unwrap();
         let reply = raw(cb.port, &good(&cb, &body)).await;
         assert!(reply.starts_with("HTTP/1.1 200 OK"), "{reply}");
+        assert_eq!(task.await.unwrap(), Ok(HandBack::Code("c".into())));
+    }
+
+    #[tokio::test]
+    async fn idle_connections_never_delay_the_post() {
+        // Review Argon M2: each connection is served on its own.
+        let (listener, cb) = bind().await.unwrap();
+        let cb2 = cb.clone();
+        let task = tokio::spawn(async move {
+            wait_for_post(
+                &listener,
+                &cb2,
+                FLOW,
+                Instant::now() + Duration::from_secs(20),
+                Duration::from_secs(3),
+            )
+            .await
+        });
+        let mut idle = Vec::new();
+        for _ in 0..5 {
+            idle.push(TcpStream::connect(("127.0.0.1", cb.port)).await.unwrap());
+        }
+        let started = std::time::Instant::now();
+        let reply = raw(cb.port, &good(&cb, &format!("flow_id={FLOW}&code=c"))).await;
+        assert!(reply.starts_with("HTTP/1.1 200 OK"), "{reply}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(task.await.unwrap(), Ok(HandBack::Code("c".into())));
+    }
+
+    #[tokio::test]
+    async fn duplicate_host_or_content_type_is_refused() {
+        // Review Argon m6.
+        let (listener, cb) = bind().await.unwrap();
+        let task = spawn_wait(listener, cb.clone(), Duration::from_secs(5));
+        let body = format!("flow_id={FLOW}&code=c");
+        let host = format!("127.0.0.1:{}", cb.port);
+        let path = format!("/callback/{}", cb.callback_path);
+        for extra in [
+            format!("Host: {host}\r\n"),
+            "Content-Type: text/plain\r\n".to_string(),
+        ] {
+            let req = format!(
+                "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/x-www-form-urlencoded\r\n{extra}Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let reply = raw(cb.port, req.as_bytes()).await;
+            assert!(reply.starts_with("HTTP/1.1 204"), "{reply}");
+        }
+        raw(cb.port, &good(&cb, &body)).await;
         assert_eq!(task.await.unwrap(), Ok(HandBack::Code("c".into())));
     }
 
