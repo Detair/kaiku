@@ -374,6 +374,9 @@ class EnrollmentIssuerViewModel internal constructor(
         val id = enrollmentId
         val ch = openChallengeId
         generation++
+        // The running start (step-up prompt or issuance) stops too, so "Try again" can start at once;
+        // a code it may have issued meanwhile is never shown and ends with its setup token.
+        startJob?.cancel()
         watch?.cancel()
         _ui.value = IssuerUi.Ended(R.string.issuer_stopped)
         if (id == null) return

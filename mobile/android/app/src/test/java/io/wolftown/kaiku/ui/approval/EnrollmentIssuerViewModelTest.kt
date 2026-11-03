@@ -265,4 +265,17 @@ class EnrollmentIssuerViewModelTest {
         assertTrue(enroll.calls.none { it == "issueOwn" })
         assertEquals(IssuerUi.Ended(R.string.issuer_stopped), v.ui.value)
     }
+
+    @Test fun `try again right after cancel starts a new issuance`() = runTest {
+        val (v, _) = vm()
+        val first = kotlinx.coroutines.CompletableDeferred<StepUpOutcome>()
+        coEvery { stepUp.stepUp(any(), StepUpAction.ENROLLMENT_ISSUE, "", any()) } coAnswers { first.await() }
+        v.start(activity, IssuerMode.Own)
+        v.cancel() // while the step-up prompt is still open
+        coEvery { stepUp.stepUp(any(), StepUpAction.ENROLLMENT_ISSUE, "", any()) } returns
+            StepUpOutcome.Granted(StepUpGrant("enrollment.issue", "", "device", "t"))
+        v.start(activity, IssuerMode.Own) // "Try again"
+        assertTrue(v.ui.value is IssuerUi.ShowSetup)
+        assertEquals(1, enroll.calls.count { it == "issueOwn" })
+    }
 }
