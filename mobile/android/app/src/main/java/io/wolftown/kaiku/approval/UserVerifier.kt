@@ -34,6 +34,15 @@ interface UserVerifier {
     suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult
 }
 
+/**
+ * Before any prompt (B.1): no key, or a phone without a secure screen lock, is an
+ * invalidated key. Android invalidates a user-authenticated key for good when
+ * the secure lock screen is turned off, so this never needs the key itself
+ * (whose lookup may then fail in other ways) and never prompts. Null: go on.
+ */
+internal fun uvPreflight(hasKey: Boolean, deviceSecure: Boolean): UvResult? =
+    if (!hasKey || !deviceSecure) UvResult.KeyInvalidated else null
+
 /** Initialises, signs and maps key failures; used right after the user was verified (or for a per-use key's CryptoObject). */
 internal fun signNow(keyStore: ApprovalKeyStore, message: ByteArray): UvResult = try {
     finish(keyStore.signature(), message)
@@ -63,8 +72,14 @@ class BiometricUserVerifier(private val keyStore: ApprovalKeyStore) : UserVerifi
 
     override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult =
         withContext(Dispatchers.Main) {
-            if (!keyStore.hasKey()) return@withContext UvResult.KeyInvalidated
-            when (keyStore.keyUvClass()) {
+            val deviceSecure = activity.getSystemService(KeyguardManager::class.java)?.isDeviceSecure == true
+            uvPreflight(keyStore.hasKey(), deviceSecure)?.let { return@withContext it }
+            val uvClass = try {
+                keyStore.keyUvClass()
+            } catch (_: KeyInvalidatedException) {
+                return@withContext UvResult.KeyInvalidated
+            }
+            when (uvClass) {
                 UvClass.WINDOW_10S -> signInWindow(activity, prompt, message)
                 else -> signPerUse(activity, prompt, message)
             }
@@ -142,8 +157,9 @@ class BiometricUserVerifier(private val keyStore: ApprovalKeyStore) : UserVerifi
     private suspend fun confirmCredential(activity: FragmentActivity, prompt: UvPrompt): UvResult? {
         val keyguard = activity.getSystemService(KeyguardManager::class.java)
         @Suppress("DEPRECATION")
+        // No intent means no secure screen lock any more: Android has invalidated the key (B.1).
         val intent = keyguard?.createConfirmDeviceCredentialIntent(activity.getString(prompt.title), prompt.subtitle)
-            ?: return UvResult.Failed("NO_SCREEN_LOCK")
+            ?: return UvResult.KeyInvalidated
         return suspendCancellableCoroutine { cont ->
             val key = "kaiku_uv_" + UUID.randomUUID()
             var launcher: androidx.activity.result.ActivityResultLauncher<android.content.Intent>? = null
@@ -163,9 +179,15 @@ private object BiometricPromptAuthenticators {
     const val DEVICE_CREDENTIAL = androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 }
 
-/** BiometricPrompt error codes → results: lockouts, cancels (user, negative button, system), others failed. */
+/**
+ * BiometricPrompt error codes → results: lockouts, cancels (user, negative button, system),
+ * no screen lock any more (the key is invalidated, B.1), others failed. `ERROR_NO_BIOMETRICS`
+ * stays a failure: with `setInvalidatedByBiometricEnrollment(false)` the key survives the
+ * removal of every fingerprint and works again once one is added.
+ */
 internal fun mapBiometricError(errorCode: Int): UvResult = when (errorCode) {
     BiometricPrompt.ERROR_LOCKOUT, BiometricPrompt.ERROR_LOCKOUT_PERMANENT -> UvResult.LockedOut
     BiometricPrompt.ERROR_USER_CANCELED, BiometricPrompt.ERROR_NEGATIVE_BUTTON, BiometricPrompt.ERROR_CANCELED -> UvResult.Cancelled
+    BiometricPrompt.ERROR_NO_DEVICE_CREDENTIAL -> UvResult.KeyInvalidated
     else -> UvResult.Failed("UV_ERROR_$errorCode")
 }

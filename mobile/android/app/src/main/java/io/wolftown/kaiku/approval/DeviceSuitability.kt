@@ -28,6 +28,9 @@ class AndroidDeviceSuitabilityChecker(private val context: Context) : DeviceSuit
     private companion object {
         const val PROBE = "kaiku_probe"
         val logger: Logger = Logger.getLogger("DeviceSuitability")
+
+        /** One probe at a time: two checks sharing the alias would delete each other's probe key. */
+        val probeLock = Any()
     }
 
     override fun check(): UvDecision {
@@ -39,9 +42,9 @@ class AndroidDeviceSuitabilityChecker(private val context: Context) : DeviceSuit
         return UvPolicy.choose(Build.VERSION.SDK_INT, deviceSecure = true, strongBiometric = strongBiometric)
     }
 
-    private fun hardwareBacked(): Boolean {
+    private fun hardwareBacked(): Boolean = synchronized(probeLock) {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        return try {
+        try {
             val pair = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore").run {
                 initialize(
                     KeyGenParameterSpec.Builder(PROBE, KeyProperties.PURPOSE_SIGN)

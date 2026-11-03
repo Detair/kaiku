@@ -11,6 +11,7 @@ import android.security.keystore.StrongBoxUnavailableException
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.GeneralSecurityException
 import java.security.PrivateKey
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
@@ -20,6 +21,19 @@ class KeyInvalidatedException : Exception("approval key invalidated")
 
 /** No approval key on this phone. */
 class NoApprovalKeyException : Exception("no approval key")
+
+/**
+ * Whether a Keystore lookup failure means Android invalidated the key: keystore2
+ * reports `KEY_PERMANENTLY_INVALIDATED` at `getKey()` as an
+ * [java.security.UnrecoverableKeyException] carrying only the message ("User
+ * changed or deleted their auth credentials"), older Keystores as
+ * [KeyPermanentlyInvalidatedException]. Any other failure (a busy or broken
+ * Keystore) is not an invalidation: the key is never forgotten for it.
+ */
+internal fun isInvalidatedKeyFailure(e: Throwable): Boolean = generateSequence(e) { it.cause }.any { t ->
+    t is KeyPermanentlyInvalidatedException ||
+        t.message?.let { m -> m.contains("invalidated", ignoreCase = true) || m.contains("auth credentials", ignoreCase = true) } == true
+}
 
 /** A new key: its SPKI DER, the attestation chain (leaf first) and how it verifies its user. */
 class GeneratedKey(val spki: ByteArray, val attestationChain: List<ByteArray>, val uvClass: UvClass)
@@ -103,8 +117,8 @@ class AndroidApprovalKeyStore(private val context: Context) : ApprovalKeyStore {
     override fun publicKeySpki(): ByteArray? = keyStore().getCertificate(ALIAS)?.publicKey?.encoded
 
     override fun keyUvClass(): UvClass? {
-        val key = keyStore().getKey(ALIAS, null) as? PrivateKey ?: return null
-        val info = KeyFactory.getInstance(key.algorithm, PROVIDER).getKeySpec(key, KeyInfo::class.java)
+        val key = privateKey() ?: return null
+        val info = invalidationMapped { KeyFactory.getInstance(key.algorithm, PROVIDER).getKeySpec(key, KeyInfo::class.java) }
         val timeout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             info.userAuthenticationValidityDurationSeconds.takeIf { it >= 0 } ?: 0
         } else {
@@ -120,11 +134,20 @@ class AndroidApprovalKeyStore(private val context: Context) : ApprovalKeyStore {
     }
 
     override fun signature(): Signature {
-        val key = keyStore().getKey(ALIAS, null) as? PrivateKey ?: throw NoApprovalKeyException()
-        return try {
-            Signature.getInstance("SHA256withECDSA").apply { initSign(key) }
-        } catch (_: KeyPermanentlyInvalidatedException) {
-            throw KeyInvalidatedException()
-        }
+        val key = privateKey() ?: throw NoApprovalKeyException()
+        return invalidationMapped { Signature.getInstance("SHA256withECDSA").apply { initSign(key) } }
+    }
+
+    /** The key, or null without one; an invalidated key's lookup failure → [KeyInvalidatedException]. */
+    private fun privateKey(): PrivateKey? = invalidationMapped { keyStore().getKey(ALIAS, null) as? PrivateKey }
+
+    /** Turns the Keystore's ways of saying "invalidated" into [KeyInvalidatedException]; other failures stay. */
+    private inline fun <T> invalidationMapped(block: () -> T): T = try {
+        block()
+    } catch (_: KeyPermanentlyInvalidatedException) {
+        throw KeyInvalidatedException()
+    } catch (e: GeneralSecurityException) {
+        if (isInvalidatedKeyFailure(e)) throw KeyInvalidatedException()
+        throw e
     }
 }

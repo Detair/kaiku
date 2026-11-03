@@ -35,6 +35,7 @@ interface KeyDeviceStore {
 class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore {
 
     private companion object {
+        val logger: java.util.logging.Logger = java.util.logging.Logger.getLogger("KeyDeviceStore")
         const val PHASE = "phase"
         const val KEY_DEVICE_ID = "key_device_id"
         const val USER_ID = "user_id"
@@ -73,8 +74,12 @@ class PrefsKeyDeviceStore(private val prefs: SharedPreferences) : KeyDeviceStore
                 lastRenewalPromptAt = prefs.getString(RENEWAL_PROMPT, null)?.let(Instant::parse),
             )
         }
-    } catch (e: java.security.GeneralSecurityException) {
-        // A damaged store reads as "no key device"; the phone is set up again.
+    } catch (e: Exception) {
+        // A damaged or unreadable store (GeneralSecurityException, a Keystore ProviderException, a value of
+        // another type, an unparsable time) reads as "no key device" instead of crashing every app start.
+        // Nothing is deleted here: a passing Keystore failure must not cost the key; a new setup replaces
+        // an orphaned key explicitly (SetupFlowViewModel).
+        logger.warning("Key-device store unreadable: ${e.javaClass.simpleName}")
         null
     }
 
