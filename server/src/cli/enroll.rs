@@ -121,8 +121,11 @@ pub async fn confirm(ctx: &CliCtx, id: Uuid, code: &str) -> anyhow::Result<()> {
     let mut tx = ctx.db.begin().await?;
     match confirm_tx(&mut tx, &auth, id, Confirmer::Cli, digits.as_bytes()).await {
         Ok((_, after)) => {
+            // Built before the commit: a failure here must not skip the
+            // post-commit steps of a committed enrolment.
+            let state = ctx.app_state()?;
             tx.commit().await?;
-            after_done(&ctx.app_state()?, after).await;
+            after_done(&state, after).await;
             Ok(())
         }
         // A spent try, a failed or an expired enrolment are kept.

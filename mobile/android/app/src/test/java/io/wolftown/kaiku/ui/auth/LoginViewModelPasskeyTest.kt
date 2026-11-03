@@ -18,6 +18,7 @@ import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.model.CeremonyStart
 import io.wolftown.kaiku.domain.model.User
 import io.ktor.http.HttpStatusCode
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -116,6 +117,55 @@ class LoginViewModelPasskeyTest {
         assertNotNull(vm.uiState.value.passkeyReadyAt)
         assertEquals(R.string.passkeys_error_ready_at, vm.uiState.value.passkeyErrorRes)
         coVerify(exactly = 0) { credentials.signalRemoved(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `a passkey tap while a password sign-in runs starts nothing`() = runTest(dispatcher) {
+        // L2b review (Argon p5 #6), deferred to LP: the button has its own
+        // `enabled`, and the ViewModel refuses a start while another sign-in runs.
+        // In L2b the password, QR and SSO sign-ins run in LoginAttemptViewModel,
+        // which the login screen reports here.
+        vm.setOtherSignInRunning(true)
+        vm.onPasskeySignIn(activity)
+        advanceUntilIdle()
+        coVerify(exactly = 0) { api.loginStart() }
+        assertFalse(vm.uiState.value.isLoading)
+        assertFalse("the passkey label stays idle", vm.uiState.value.passkeyLoading)
+        // Once it has ended, the passkey starts again.
+        vm.setOtherSignInRunning(false)
+        coEvery { api.loginFinish(any(), any(), any()) } returns mockk(relaxed = true)
+        coEvery { repo.installNativeSignIn(any(), any()) } returns Result.success(mockk(relaxed = true))
+        vm.onPasskeySignIn(activity)
+        advanceUntilIdle()
+        coVerify(exactly = 1) { api.loginStart() }
+    }
+
+    @Test
+    fun `a second passkey tap while one runs starts no second ceremony`() = runTest(dispatcher) {
+        val outcome = CompletableDeferred<PasskeyOutcome>()
+        coEvery { credentials.get(any(), any()) } coAnswers { outcome.await() }
+        vm.onPasskeySignIn(activity)
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.passkeyLoading)
+        vm.onPasskeySignIn(activity)
+        advanceUntilIdle()
+        coVerify(exactly = 1) { api.loginStart() }
+        outcome.complete(PasskeyOutcome.Cancelled)
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.isLoading)
+        assertFalse(vm.uiState.value.passkeyLoading)
+    }
+
+    @Test
+    fun `a password sign-in never starts beside a running passkey sign-in`() = runTest(dispatcher) {
+        // L2b: the other way round; LoginAttemptViewModel refuses while the screen reports a passkey sign-in.
+        val attempts = io.wolftown.kaiku.testutil.FakeLoginAttemptApi()
+        val attemptVm = LoginAttemptViewModel(attempts, repo, tokenStorage, mockk(relaxed = true), appScope = backgroundScope)
+        attemptVm.setPasskeyRunning(true)
+        attemptVm.signInWithPassword("anna", "pw")
+        attemptVm.startQr()
+        advanceUntilIdle()
+        assertTrue(attempts.calls.isEmpty())
     }
 
     @Test

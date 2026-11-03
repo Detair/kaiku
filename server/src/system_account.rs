@@ -35,10 +35,18 @@ pub async fn kaiku_dm_tx(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result
 }
 
 /// [`kaiku_dm_tx`], also telling whether the DM was created just now.
+///
+/// The system account itself has none: for it the lookup below would match
+/// its own participant row of any user's Kaiku DM, so it is refused.
 pub async fn kaiku_dm_created_tx(
     conn: &mut PgConnection,
     user_id: Uuid,
 ) -> sqlx::Result<(Uuid, bool)> {
+    if is_system_user(user_id) {
+        return Err(sqlx::Error::Protocol(
+            "the system account has no Kaiku DM".into(),
+        ));
+    }
     // Per-user advisory key, namespaced by the "kaiku_dm:" prefix.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('kaiku_dm:' || $1::text, 0))")
         .bind(user_id)

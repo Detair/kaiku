@@ -142,7 +142,7 @@ pub async fn invalidated(
     if dev.device.id != id {
         return Err(ApprovalError::KeyDeviceRequired);
     }
-    let (revoked, events) = revoke_tx(
+    let (mut revoked, events) = revoke_tx(
         &mut tx,
         &ctx,
         id,
@@ -151,6 +151,8 @@ pub async fn invalidated(
     )
     .await?;
     tx.commit().await?;
+    // Only the device's own session reports it.
+    revoked.is_current = true;
     let st = state.clone();
     let device_id = dev.device.device_id;
     tokio::spawn(async move { after_revoke(&st, auth.id, device_id, events).await });

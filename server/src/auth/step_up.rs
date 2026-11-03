@@ -285,9 +285,15 @@ pub struct ConsumedGrant {
     pub by: AuthenticatorRef,
 }
 
-/// Lock the caller's session row and re-check it live and full.
+/// Lock the caller's account (B.7 rule 1; a no-op when the caller already
+/// holds it), then its session row, and re-check the session live and full.
+/// Every revocation takes the account first too, so a grant is produced or
+/// used either before a revocation commits or after it (and then sees the
+/// ended session or the revoked authenticator), and the action's own rows
+/// that reference the account (elevation, audit) never wait in a cycle.
 async fn lock_full_session(conn: &mut PgConnection, auth: &AuthUser) -> AuthResult<Uuid> {
     let sid = auth.session_id.ok_or(AuthError::InvalidToken)?;
+    crate::approvals::transition::lock_accounts(conn, &[auth.id]).await?;
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT assurance FROM sessions
           WHERE id = $1 AND user_id = $2 AND ended_at IS NULL

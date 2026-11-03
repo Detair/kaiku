@@ -43,18 +43,21 @@ pub async fn run_once(state: &AppState) -> anyhow::Result<()> {
     }
 
     // 2. Expire challenges past their deadline (B.2).
-    let expired = match state.db.acquire().await {
-        Ok(mut conn) => match crate::approvals::core::expire_due(&mut conn).await {
+    match state.db.acquire().await {
+        Ok(mut conn) => {
+            if let Err(e) = crate::approvals::core::expire_due(&mut conn).await {
+                tracing::warn!(error = %e, "sweep: challenge expiry failed");
+                first_err.get_or_insert_with(|| e.into());
+            }
             // 3. Enrolments whose setup token or code is past due (SM2).
-            Ok(_) => crate::approvals::enrollments::expire_due(&mut conn).await,
-            Err(e) => Err(e),
-        },
-        Err(e) => Err(e),
-    };
-    if let Err(e) = expired {
-        tracing::warn!(error = %e, "sweep: challenge expiry failed");
-        if first_err.is_none() {
-            first_err = Some(e.into());
+            if let Err(e) = crate::approvals::enrollments::expire_due(&mut conn).await {
+                tracing::warn!(error = %e, "sweep: enrolment expiry failed");
+                first_err.get_or_insert_with(|| e.into());
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "sweep: no connection for the expiry steps");
+            first_err.get_or_insert_with(|| e.into());
         }
     }
 

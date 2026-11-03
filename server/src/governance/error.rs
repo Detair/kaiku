@@ -40,6 +40,11 @@ pub enum GovernanceError {
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 
+    /// The database or Valkey could not be used for a step that must
+    /// happen (ending the sessions of a deletion): retry.
+    #[error("Service temporarily unavailable")]
+    ServiceUnavailable,
+
     #[error("Internal server error")]
     Internal(String),
 }
@@ -67,6 +72,11 @@ impl IntoResponse for GovernanceError {
             Self::Validation(_) => (
                 StatusCode::BAD_REQUEST,
                 "VALIDATION_ERROR",
+                self.to_string(),
+            ),
+            Self::ServiceUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
                 self.to_string(),
             ),
             Self::Internal(_) => (

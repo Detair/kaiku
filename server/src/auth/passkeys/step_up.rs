@@ -156,7 +156,12 @@ pub(super) async fn verify(
 }
 
 /// Grant the step-up: audit `auth.passkey.step_up` and L1a's `grant_tx`
-/// (which locks and re-checks the session live and full).
+/// (which re-checks the session live and full).
+///
+/// The account lock comes first (B.7 rule 1): the audit row's `actor_id`
+/// takes a key-share lock on the account, and `grant_tx` then locks the
+/// account for update, so two grants that both hold the key-share lock
+/// would wait for each other.
 pub(super) async fn grant(
     state: &AppState,
     auth: &AuthUser,
@@ -165,6 +170,7 @@ pub(super) async fn grant(
     passkey_id: uuid::Uuid,
 ) -> AuthResult<StepUpGrant> {
     let mut tx = state.db.begin().await?;
+    crate::approvals::transition::lock_accounts(&mut tx, &[auth.id]).await?;
     crate::permissions::write_audit_log(
         &mut *tx,
         auth.id,

@@ -230,11 +230,21 @@ class AuthRepository @Inject constructor(
      * Installs a session from a sign-in that needed no password (a passkey,
      * C29): `GET /auth/me` with the new token, then the same single install
      * point as [completeAttempt], only for the latest attempt and the server it went to.
+     * A result that is not installed (a session runs, the server changed, or
+     * another sign-in came first) ends its session on [serverUrl], so a
+     * second result never leaves an unused session live.
      */
     suspend fun installNativeSignIn(authResponse: AuthResponse, serverUrl: String?): Result<User> {
-        signedInRefusal()?.let { return it }
+        signedInRefusal()?.let { refused ->
+            serverUrl?.let { endUnused(it, authResponse) }
+            return refused
+        }
         val attempt = invalidateLogin()
-        if (serverUrl == null || tokenStorage.getServerUrl() != serverUrl) return supersededResult()
+        if (serverUrl == null) return supersededResult()
+        if (tokenStorage.getServerUrl() != serverUrl) {
+            endUnused(serverUrl, authResponse)
+            return supersededResult()
+        }
         return try {
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
             sessionTeardown.awaitIdle()
@@ -242,11 +252,36 @@ class AuthRepository @Inject constructor(
                 authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id,
                 precondition = { loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl },
             )
-            if (!persisted) supersededResult() else Result.success(user)
+            if (!persisted) {
+                endUnused(serverUrl, authResponse)
+                supersededResult()
+            } else {
+                Result.success(user)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    /**
+     * Ends a minted session that was not installed, on the server that
+     * minted it, with its own tokens only; best effort, bounded, never
+     * cancelled halfway. The one helper for every sign-in that mints a
+     * session: a refused or superseded passkey result ([installNativeSignIn]),
+     * a collected attempt ([completeAttempt]) and a device-key sign-in
+     * ([installDeviceSession]).
+     */
+    private suspend fun endUnused(serverUrl: String, auth: AuthResponse) {
+        withContext(NonCancellable) {
+            try {
+                withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) {
+                    authApi.logoutSession(serverUrl, auth.accessToken, auth.refreshToken)
+                }
+            } catch (e: Exception) {
+                logger.warning("Unused session not ended (best-effort): ${e.javaClass.simpleName}")
+            }
         }
     }
 
@@ -511,17 +546,6 @@ class AuthRepository @Inject constructor(
             throw e
         } catch (e: Exception) {
             Result.failure(e)
-        }
-    }
-
-    /** Ends a device session that was not installed; best effort, bounded, never cancelled halfway. */
-    private suspend fun endUnused(serverUrl: String, auth: AuthResponse) {
-        withContext(NonCancellable) {
-            try {
-                withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) { authApi.logoutSession(serverUrl, auth.accessToken, auth.refreshToken) }
-            } catch (e: Exception) {
-                logger.warning("Unused device session not ended (best-effort): ${e.javaClass.simpleName}")
-            }
         }
     }
 

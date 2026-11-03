@@ -102,24 +102,6 @@ struct EndPayload {
     all: bool,
 }
 
-/// Write `sid` to the denylist (TTL `ttl_secs`, at least 1 s).
-pub async fn revoke_session(
-    redis: &Client,
-    sid: Uuid,
-    ttl_secs: i64,
-) -> Result<(), fred::error::Error> {
-    let ttl = ttl_secs.max(1);
-    redis
-        .set::<(), _, _>(
-            super::session_check::denylist_key(sid),
-            "1",
-            Some(Expiration::EX(ttl)),
-            None,
-            false,
-        )
-        .await
-}
-
 /// End these sessions of `user_id` in the caller's transaction (revocation
 /// order above). Returns the ids actually ended now (live ones of this
 /// user); already ended or foreign ids are skipped.
@@ -190,16 +172,8 @@ async fn after_update(
             .execute(&mut *conn)
             .await?;
     }
-    let ttl = ctx.config.jwt_access_expiry + DENYLIST_LEEWAY_SECS;
-    for sid in ended {
-        if let Err(e) = revoke_session(ctx.redis, *sid, ttl).await {
-            // The commit ends the session; the denylist only rejects earlier.
-            tracing::warn!(error = %e, user_id = %user_id, "Denylist write failed; the session row decides");
-        }
-        // The elevation cache is a positive cache: drop it in the revoking
-        // path (best effort; the listener drops it again after commit, and
-        // an ended session is refused before any elevation check).
-        crate::admin::clear_elevated_cache(ctx.redis, *sid).await;
+    if !ended.is_empty() {
+        denylist_and_drop_elevation(ctx, user_id, ended).await;
     }
     // One notification per chunk: an unbounded payload fails the whole
     // transaction (and with it a ban) once it exceeds 8000 bytes.
@@ -223,6 +197,42 @@ async fn after_update(
     // B.7 rule 2: what the ended sessions issued or hold.
     crate::approvals::cascade::on_sessions_ended(conn, ctx, ended).await?;
     Ok(())
+}
+
+/// Denylist `ended` and drop their elevation cache in ONE Valkey round-trip
+/// (a pipeline), best effort: this runs inside the revoking transaction,
+/// so a hung Valkey costs one command timeout, never two per session. The
+/// commit ends the sessions; the denylist only rejects earlier. The
+/// elevation cache is a positive cache, so it is dropped in the revoking
+/// path too (the listener drops it again after commit, and an ended session
+/// is refused before any elevation check).
+async fn denylist_and_drop_elevation(ctx: &AuthCtx<'_>, user_id: Uuid, ended: &[Uuid]) {
+    let ttl = (ctx.config.jwt_access_expiry + DENYLIST_LEEWAY_SECS).max(1);
+    let pipeline = ctx.redis.pipeline();
+    for sid in ended {
+        // Queued only; nothing is sent until `all()`.
+        let queued = pipeline
+            .set::<(), _, _>(
+                super::session_check::denylist_key(*sid),
+                "1",
+                Some(Expiration::EX(ttl)),
+                None,
+                false,
+            )
+            .await
+            .and(
+                pipeline
+                    .del::<(), _>(crate::admin::shared::elevated_cache_key(*sid))
+                    .await,
+            );
+        if let Err(e) = queued {
+            tracing::warn!(error = %e, user_id = %user_id, "Denylist pipeline failed; the session rows decide");
+            return;
+        }
+    }
+    if let Err(e) = pipeline.all::<Vec<Value>>().await {
+        tracing::warn!(error = %e, user_id = %user_id, count = ended.len(), "Denylist write failed; the session rows decide");
+    }
 }
 
 /// Republish committed session ends to the user's WebSocket channel and

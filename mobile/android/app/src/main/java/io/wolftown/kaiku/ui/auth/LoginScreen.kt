@@ -43,6 +43,11 @@ fun LoginScreen(
     val uiState by viewModel.uiState.collectAsState()
     val attempt by attemptViewModel.state.collectAsState()
     val busy = uiState.isLoading || attempt.busy
+    // Each ViewModel refuses a start while the other's sign-in runs (not only the buttons).
+    SideEffect {
+        viewModel.setOtherSignInRunning(attempt.busy)
+        attemptViewModel.setPasskeyRunning(uiState.isLoading)
+    }
 
     LaunchedEffect(uiState.loginSuccess, attempt.signedIn) {
         if (uiState.loginSuccess || attempt.signedIn) {
@@ -113,7 +118,8 @@ fun LoginScreen(
         Spacer(modifier = Modifier.height(32.dp))
 
         // Passkeys first (F1).
-        PasskeySignInButton(viewModel = viewModel, busy = uiState.isLoading)
+        // Off while a password, QR or SSO sign-in runs, and those are off while it runs (`busy`).
+        PasskeySignInButton(viewModel = viewModel, busy = uiState.passkeyLoading, enabled = !uiState.isLoading && !attempt.busy)
         uiState.passkeyErrorRes?.let { res ->
             Spacer(modifier = Modifier.height(8.dp))
             Text(

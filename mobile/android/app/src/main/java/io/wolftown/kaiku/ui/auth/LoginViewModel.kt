@@ -44,6 +44,8 @@ data class LoginUiState(
     val passkeyReadyAt: java.time.Instant? = null,
     /** The server's single sign-on providers (empty when it has none or could not say). */
     val oidcProviders: List<OidcProvider> = emptyList(),
+    /** A passkey sign-in runs (its button's busy label); [isLoading] is true for any sign-in here. */
+    val passkeyLoading: Boolean = false,
 ) {
     // Never print the password (logs, crash reports).
     override fun toString(): String =
@@ -156,28 +158,43 @@ class LoginViewModel @Inject constructor(
         _uiState.update { it.copy(password = "") }
     }
 
+    /** A password, QR or SSO sign-in runs ([LoginAttemptViewModel]); the screen reports it. */
+    @Volatile
+    private var otherSignInRunning = false
+
+    fun setOtherSignInRunning(running: Boolean) {
+        otherSignInRunning = running
+    }
+
     /**
      * Sign in with a passkey through Credential Manager (C29): a new full
      * session. The typed user name is sent as a hint, so a shared phone never
-     * signs in someone else's account.
+     * signs in someone else's account. Starts nothing while another sign-in
+     * runs (password, SSO callback, or a passkey already: a double tap), so it
+     * never cancels one; the button's `enabled` follows the same state.
      */
     fun onPasskeySignIn(activity: Activity) {
+        // L2b: the password, QR and SSO sign-ins run in LoginAttemptViewModel (setOtherSignInRunning).
+        if (_uiState.value.isLoading || otherSignInRunning) return
         val username = _uiState.value.username.ifBlank { null }
-        _uiState.update { it.copy(isLoading = true, errorRes = null, passkeyErrorRes = null, passkeyReadyAt = null) }
+        _uiState.update {
+            it.copy(isLoading = true, passkeyLoading = true, errorRes = null, passkeyErrorRes = null, passkeyReadyAt = null)
+        }
         loginJob?.cancel()
         loginJob = viewModelScope.launch {
             passkeyAuth.loginWithPasskey(activity, username).fold(
-                onSuccess = { _uiState.update { it.copy(isLoading = false, loginSuccess = true) } },
+                onSuccess = { _uiState.update { it.copy(isLoading = false, passkeyLoading = false, loginSuccess = true) } },
                 onFailure = { e ->
                     _uiState.update {
                         when (e) {
-                            PasskeyFailure.Cancelled -> it.copy(isLoading = false)
+                            PasskeyFailure.Cancelled -> it.copy(isLoading = false, passkeyLoading = false)
                             is PasskeyFailure.Pending -> it.copy(
                                 isLoading = false,
+                                passkeyLoading = false,
                                 passkeyErrorRes = R.string.passkeys_error_ready_at,
                                 passkeyReadyAt = e.readyAt?.let { t -> runCatching { java.time.Instant.parse(t) }.getOrNull() },
                             )
-                            else -> it.copy(isLoading = false, passkeyErrorRes = passkeyErrorRes(e))
+                            else -> it.copy(isLoading = false, passkeyLoading = false, passkeyErrorRes = passkeyErrorRes(e))
                         }
                     }
                 },

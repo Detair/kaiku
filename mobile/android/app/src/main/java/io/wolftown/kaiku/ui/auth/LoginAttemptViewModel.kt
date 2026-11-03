@@ -197,6 +197,7 @@ class LoginAttemptViewModel @Inject constructor(
 
     /** F3 OIDC variant: the Custom Tab start carries this attempt's `client_challenge`. */
     fun startOidc(context: Context, providerSlug: String) {
+        if (_state.value.busy || passkeyRunning) return
         dropAttempt()
         val secret = AttemptSecret.create()
         try {
@@ -309,9 +310,17 @@ class LoginAttemptViewModel @Inject constructor(
         super.onCleared()
     }
 
+    /** A passkey sign-in runs ([LoginViewModel]); the screen reports it. Nothing starts beside it. */
+    @Volatile
+    private var passkeyRunning = false
+
+    fun setPasskeyRunning(running: Boolean) {
+        passkeyRunning = running
+    }
+
     private fun begin(map: (Throwable) -> Int = AuthErrorMapper::login, block: suspend () -> Unit) {
-        // One start at a time: a double tap never sends a second sign-in.
-        if (_state.value.busy) return
+        // One start at a time: a double tap, or a passkey sign-in already running, never sends a second.
+        if (_state.value.busy || passkeyRunning) return
         dropAttempt()
         _state.update { it.copy(busy = true, screen = null, formError = null, retryMinutes = null) }
         stepJob = viewModelScope.launch {

@@ -87,7 +87,7 @@ CREATE TABLE security_events (
 );
 
 CREATE INDEX idx_security_events_subject ON security_events (subject_id, created_at DESC, id DESC);
-CREATE INDEX idx_security_events_undelivered ON security_events (created_at) WHERE delivered_at IS NULL;
+CREATE INDEX idx_security_events_undelivered ON security_events (created_at, id) WHERE delivered_at IS NULL;
 
 -- Append-only: only `repudiated_at` and `delivered_at` may change, each
 -- only once (NULL → a time).
