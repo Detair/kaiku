@@ -13,5 +13,9 @@ data class Message(
     val replyTo: String? = null,
     val editedAt: String? = null,
     val createdAt: String = "",
-    val reactions: List<Reaction>? = null
+    val reactions: List<Reaction>? = null,
+    /** C28: `security` for Kaiku notices (older clients show [content]). */
+    val messageType: String = "user",
+    /** C28: the notice of a `security` message. */
+    val securityNotice: SecurityNotice? = null,
 )

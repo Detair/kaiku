@@ -308,14 +308,38 @@ class AuthApiImpl @Inject constructor(
 @Serializable
 internal data class ApiErrorResponse(
     val error: String? = null,
-    val message: String? = null
+    val message: String? = null,
+    // C26–C28 fields listed next to some codes.
+    val triesLeft: Int? = null,
+    val readyAt: String? = null,
+    val state: String? = null,
+    val reason: String? = null,
+    val recoveryCodesLeft: Int? = null,
+) {
+    fun fields(): ApiErrorFields = ApiErrorFields(triesLeft, readyAt, state, reason, recoveryCodesLeft)
+}
+
+/**
+ * The extra fields some error codes carry (`ENROLL_CODE_WRONG {tries_left}`,
+ * `KEY_DEVICE_PENDING {ready_at}`, `LOGIN_ATTEMPT_ENDED {state}`, …) and the
+ * `Retry-After` seconds of a 429. Never user text.
+ */
+data class ApiErrorFields(
+    val triesLeft: Int? = null,
+    val readyAt: String? = null,
+    val state: String? = null,
+    val reason: String? = null,
+    val recoveryCodesLeft: Int? = null,
+    val retryAfterSeconds: Long? = null,
 )
 
 open class ApiException(
     val status: HttpStatusCode,
     override val message: String,
     /** Server error code (`error` field), e.g. `VALIDATION_ERROR`; null if absent. */
-    val code: String? = null
+    val code: String? = null,
+    /** Fields listed next to [code] (C26–C28). */
+    val fields: ApiErrorFields = ApiErrorFields(),
 ) : Exception(message) {
     /** [code] upper-cased, for matching: the server may send lowercase codes. */
     val normalizedCode: String? get() = normalizeErrorCode(code)

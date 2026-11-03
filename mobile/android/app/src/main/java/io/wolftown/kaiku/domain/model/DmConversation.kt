@@ -22,6 +22,13 @@ data class DmConversation(
     val participants: List<DmParticipant> = emptyList(),
     val lastMessage: LastMessagePreview? = null,
     val unreadCount: Int = 0,
+    /**
+     * C28: the Kaiku DM, set only from the `is_system` flags of the item or its
+     * participants (see `DmApiImpl.getDms`), never from an id or a name.
+     */
+    val isSystem: Boolean = false,
+    /** C28 `read_only`: true only for the Kaiku DM. */
+    val readOnly: Boolean = false,
 )
 
 @Serializable
@@ -31,6 +38,8 @@ data class DmParticipant(
     val displayName: String,
     val avatarUrl: String? = null,
     val joinedAt: String = "",
+    /** C28: the "Kaiku" system account. */
+    val isSystem: Boolean = false,
 )
 
 @Serializable
