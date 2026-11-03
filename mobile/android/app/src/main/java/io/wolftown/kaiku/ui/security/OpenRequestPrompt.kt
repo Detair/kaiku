@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.ui.security
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -28,7 +29,10 @@ fun OpenRequestPrompt(onDone: () -> Unit, viewModel: OpenRequestViewModel = hilt
     val working by viewModel.working.collectAsState()
     val activity = currentFragmentActivity()
     var askPart2 by remember { mutableStateOf(false) }
-    LaunchedEffect(pending) { if (pending == null && !working) onDone() }
+    // Keyed on both: the prompt closes when the request is gone and nothing runs any more.
+    LaunchedEffect(pending, working) { if (pending == null && !working) onDone() }
+    // Back is "That's right" (shown again at the next app run), never a silent loop back here.
+    BackHandler(enabled = true) { viewModel.dismiss() }
     val r = pending ?: return
     KeyScreen {
         val admin = r.startedBy

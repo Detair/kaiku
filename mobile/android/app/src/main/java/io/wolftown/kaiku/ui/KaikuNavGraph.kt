@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -14,6 +15,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -29,6 +33,7 @@ import io.wolftown.kaiku.ui.approval.AddPhoneScreen
 import io.wolftown.kaiku.ui.approval.IssuerMode
 import io.wolftown.kaiku.ui.settings.security.SecuritySettingsScreen
 import io.wolftown.kaiku.ui.security.OpenRequestPrompt
+import io.wolftown.kaiku.ui.security.OpenRequestRules
 import io.wolftown.kaiku.ui.security.OpenRequestViewModel
 import io.wolftown.kaiku.ui.security.SecurityLogScreen
 import io.wolftown.kaiku.ui.admin.AdminEntryViewModel
@@ -119,12 +124,27 @@ fun KaikuNavGraph(
         }
     }
 
-    // L2-A10: at app open, a waiting or ready account request is shown full screen.
+    // L2-A10: a waiting or ready account request is shown full screen. It is read again at
+    // every foreground and every account change, for that account only (signed out: cleared),
+    // and shown over any signed-in screen except a running ceremony.
     val openRequestViewModel: OpenRequestViewModel = hiltViewModel()
     val openRequest by openRequestViewModel.pending.collectAsState()
-    LaunchedEffect(isLoggedIn) { if (isLoggedIn) openRequestViewModel.load() }
-    LaunchedEffect(openRequest, currentRoute) {
-        if (openRequest != null && currentRoute == "home") navController.navigate(OPEN_REQUEST_ROUTE) { launchSingleTop = true }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val openRequestAccount = if (isLoggedIn) currentUserId else null
+    DisposableEffect(lifecycleOwner, openRequestAccount) {
+        openRequestViewModel.refresh(openRequestAccount)
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) openRequestViewModel.refresh(openRequestAccount)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(openRequest, currentRoute, isLoggedIn) {
+        if (openRequest != null && isLoggedIn &&
+            OpenRequestRules.showOver(currentRoute, authRoutes, CEREMONY_ROUTES, OPEN_REQUEST_ROUTE)
+        ) {
+            navController.navigate(OPEN_REQUEST_ROUTE) { launchSingleTop = true }
+        }
     }
 
     // Any transition into logged-out clears a pending link, whatever the route.
@@ -446,6 +466,11 @@ const val SECURITY_LOG_ROUTE = "security_log"
 
 /** The full-screen open-request prompt (L2-A10). */
 const val OPEN_REQUEST_ROUTE = "open_request"
+
+/** Running ceremonies the open-request prompt never interrupts (it follows once they end). */
+val CEREMONY_ROUTES = setOf(
+    SCAN_ROUTE, APPROVE_LOGIN_ROUTE, ADD_PHONE_ROUTE, CONFIRM_RENEW_ROUTE, "admin/user/{userId}/setup",
+)
 
 /** The small admin area on the admin's own key phone (F5c, coordinator call 1). */
 const val ADMIN_ROUTE = "admin"

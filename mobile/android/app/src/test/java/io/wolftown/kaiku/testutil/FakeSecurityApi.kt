@@ -29,7 +29,10 @@ class FakeSecurityApi : SecurityApi {
         failure?.let { throw it }
     }
 
-    override suspend fun meSecurity(): MeSecurity { calls += "meSecurity"; return me }
+    /** Thrown by [meSecurity] only (the reads stay separate from [failure]). */
+    var meFailure: Exception? = null
+
+    override suspend fun meSecurity(): MeSecurity { calls += "meSecurity"; meFailure?.let { throw it }; return me }
     override suspend fun events(before: String?, limit: Int): CursorPage<SecurityEvent> {
         calls += "events:${before ?: ""}"
         return pages.removeFirstOrNull() ?: CursorPage(emptyList())
