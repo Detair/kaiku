@@ -1,6 +1,13 @@
 import { Component, createEffect, createMemo, createSignal, createResource, lazy, Match, Show, Switch, For, on, onCleanup, onMount } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
-import { authState, beginSignInChoice, clearError, currentSignInChoice, loginWithPasskey } from "@/stores/auth";
+import {
+  authState,
+  beginSignInChoice,
+  clearError,
+  currentSignInChoice,
+  loginWithPasskey,
+  type SignInChoice,
+} from "@/stores/auth";
 import { cancelAttempt, fetchServerSettings, getDefaultServerUrl, oidcAuthorize } from "@/lib/tauri";
 import { decodeLoginStep, type LoginStep, type OidcProvider } from "@/lib/types";
 import { KeyRound, Smartphone } from "lucide-solid";
@@ -150,6 +157,14 @@ const Login: Component = () => {
   /** A pending autofill start after a server change. */
   let serverChangeTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /**
+   * The last sign-in choice this page began that is not autofill (the
+   * button, password, phone, SSO). While it is current it is in flight: every
+   * way it ends without a session starts autofill, which begins a newer one.
+   */
+  let explicitChoice: SignInChoice | null = null;
+  const explicitInFlight = () => explicitChoice?.isCurrent() === true;
+
   // Bumped by every start and stop: a start still waiting for
   // `isConditionalMediationAvailable` gives way to anything later (Argon B R2).
   let conditionalGeneration = 0;
@@ -222,10 +237,14 @@ const Login: Component = () => {
     on(
       serverUrl,
       () => {
-        if (modalCtl) return;
+        // Not beside another choice: autofill would begin a newer one and
+        // end it (an SSO popup closes; Fable r2 follow-up a).
+        if (modalCtl || explicitInFlight()) return;
         stopConditional();
         conditionalBackoff = FIRST_BACKOFF_MS;
-        serverChangeTimer = setTimeout(() => void startConditional(), SERVER_CHANGE_DEBOUNCE_MS);
+        serverChangeTimer = setTimeout(() => {
+          if (!explicitInFlight()) void startConditional();
+        }, SERVER_CHANGE_DEBOUNCE_MS);
       },
       { defer: true },
     ),
@@ -258,6 +277,7 @@ const Login: Component = () => {
       username: username().trim() || undefined,
     });
     const choice = currentSignInChoice();
+    explicitChoice = choice;
     try {
       await signingIn;
       afterPasskey();
@@ -319,6 +339,7 @@ const Login: Component = () => {
     // Never a session: the answer is the confirmation QR or the TOTP step.
     const submitting = submitPassword(serverUrl(), username(), password());
     const choice = currentSignInChoice();
+    explicitChoice = choice;
     try {
       await submitting;
       setPassword("");
@@ -335,6 +356,7 @@ const Login: Component = () => {
     stopConditional();
     const starting = startPhoneSignIn(serverUrl());
     const choice = currentSignInChoice();
+    explicitChoice = choice;
     await starting;
     // A start that failed stays on the form: autofill comes back (Fable R4;
     // startConditional itself runs only while the form is shown).
@@ -358,6 +380,7 @@ const Login: Component = () => {
     // other one stale, and it is stale itself once another starts. Its
     // server is the one chosen now, not when the answer arrives.
     const choice = beginSignInChoice();
+    explicitChoice = choice;
     const server = serverUrl();
     oidcCtl?.abort();
     const ctl = new AbortController();

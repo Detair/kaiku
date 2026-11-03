@@ -340,6 +340,32 @@ describe("Login with a passkey", () => {
     }
   });
 
+  it("a server change during an SSO sign-in leaves the popup and starts no autofill (Fable r2 follow-up a)", async () => {
+    const tauri = await import("@/lib/tauri");
+    const override = deferred<string | null>();
+    vi.mocked(tauri.getDefaultServerUrl).mockReturnValueOnce(override.promise);
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue(ssoSettings as never);
+    vi.mocked(tauri.oidcAuthorize).mockReturnValue(new Promise(() => {}));
+    const close = vi.fn();
+    const open = vi
+      .spyOn(window, "open")
+      .mockReturnValue({ closed: false, close, location: { href: "" } } as unknown as Window);
+    try {
+      pendingUntilAbort();
+      await renderLogin();
+      await waitFor(() => expect(conditionalCalls()).toBe(1));
+      fireEvent.click(await screen.findByRole("button", { name: /Continue with Keycloak/ }));
+      await waitFor(() => expect(tauri.oidcAuthorize).toHaveBeenCalled());
+      override.resolve("https://other.example.com");
+      await new Promise((r) => setTimeout(r, 700));
+      expect(close).not.toHaveBeenCalled();
+      expect(conditionalCalls()).toBe(1);
+    } finally {
+      open.mockRestore();
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValue(null as never);
+    }
+  });
+
   it("a failed phone start that stays on the form brings autofill back (Fable R4)", async () => {
     const tauri = await import("@/lib/tauri");
     const { HttpError } = await import("@/lib/tauri/common");
