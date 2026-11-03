@@ -14,11 +14,10 @@
     <string name="auth_login_title">Welcome to Kaiku</string>
     <string name="auth_login_subtitle">Login to continue to Kaiku</string>
     <string name="auth_login_password">Password</string>
-    <string name="auth_login_mfa_code">MFA Code</string>
     <string name="auth_sign_in">Sign in</string>
     <string name="auth_go_to_register">Don\'t have an account? Register</string>
     <string name="auth_or_sign_in_with">Or sign in with</string>
-    <string name="auth_login_invalid_credentials">Invalid username or password.</string>
+    <string name="auth_login_invalid_credentials">Wrong username or password, or password sign-in is not available for this account. Use a passkey or \'Sign in with phone\', or ask an admin.</string>
     <string name="auth_login_mfa_invalid">That code didn\'t work. If you just used it, wait for the next code and try again.</string>
     <string name="auth_login_banned">This account has been suspended. Ask the server admin.</string>
     <string name="auth_login_failed">Login failed. Please try again.</string>
@@ -28,6 +27,38 @@
     <string name="auth_register_check_retry">Couldn\'t check if you can register. Try again</string>
     <string name="auth_storage_reset">Please sign in again.</string>
     <string name="auth_change_server">Change server</string>
+
+    <!-- Signing in on a phone that is not a key (F2, F3, F4; Task B14) -->
+    <string name="auth_login_other_phone">Sign in with your other phone</string>
+    <string name="auth_login_set_up_phone">Set up this phone with a setup code</string>
+    <string name="auth_login_lost_phone">I lost my phone / forgot my password</string>
+    <string name="auth_login_secure_account">Secure my account</string>
+    <string name="auth_login_client_outdated">This sign-in needs a newer Kaiku. Update Kaiku on this phone.</string>
+    <plurals name="auth_login_too_many_minutes">
+        <item quantity="one">Too many tries. Try again in %d minute.</item>
+        <item quantity="other">Too many tries. Try again in %d minutes.</item>
+    </plurals>
+    <string name="auth_phone_title_other">Sign in with your other phone</string>
+    <string name="auth_phone_title_confirm">Confirm on your phone</string>
+    <string name="auth_phone_scan_other">Open Kaiku on your other phone and scan this code.</string>
+    <string name="auth_phone_scan_confirm">Open Kaiku on your phone and scan this code.</string>
+    <string name="auth_phone_qr_description">Sign-in code for your key phone</string>
+    <plurals name="auth_phone_minutes_left">
+        <item quantity="one">%d minute left</item>
+        <item quantity="other">%d minutes left</item>
+    </plurals>
+    <string name="auth_phone_not_at_hand">Phone not at hand?</string>
+    <string name="auth_phone_try_again">Try again</string>
+    <string name="auth_phone_ended_denied">The sign-in was not confirmed on your phone.</string>
+    <string name="auth_phone_ended_reported">The sign-in was stopped on your phone (\"I didn\'t start this\").</string>
+    <string name="auth_phone_ended_cancelled">The sign-in was cancelled.</string>
+    <string name="auth_phone_ended_expired">The sign-in code ran out of time.</string>
+    <string name="auth_phone_ended_failed">The sign-in did not finish. Please try again.</string>
+    <string name="auth_totp_title">Authenticator code</string>
+    <string name="auth_totp_body">Type the code from your authenticator app.</string>
+    <string name="auth_totp_label">Code</string>
+    <string name="auth_totp_hint">If you just used a code, wait for the next one.</string>
+    <string name="auth_totp_unavailable">Authenticator codes can\'t be used for this account right now. Use your phone or ask an admin.</string>
 
     <!-- Account creation -->
     <string name="auth_register_heading">Create an account</string>

@@ -15,7 +15,7 @@ sealed interface ScanPayload {
     data class OtherServer(val origin: String) : ScanPayload
     /** A newer payload version: "Update Kaiku". */
     data object NeedsUpdate : ScanPayload
-    /** `kaiku://qr/login?…` from an older desktop app. */
+    /** The pre-v1.0 QR sign-in link (host `qr`, path `/login`) of an older desktop app: refused. */
     data object OldKaikuCode : ScanPayload
     data object NotKaiku : ScanPayload
 }

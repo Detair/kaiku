@@ -14,6 +14,7 @@ import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.AuthApiImpl
 import io.wolftown.kaiku.data.api.KaikuHttpClient
+import io.wolftown.kaiku.data.api.LoginAttemptApiImpl
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
@@ -83,7 +84,7 @@ class AuthRepositoryPasswordChangeTest {
         )
         val json = headersOf(HttpHeaders.ContentType, "application/json")
         when (path) {
-            "/auth/login" -> {
+            "/auth/login-attempts/a-1/collect" -> {
                 duringLoginRequest()
                 respond(Golden.load("auth_response_password_change.json"), HttpStatusCode.OK, json)
             }
@@ -99,13 +100,20 @@ class AuthRepositoryPasswordChangeTest {
         }
     }
 
+    private val client = KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()
+    private val attempts = LoginAttemptApiImpl(client)
+
     private val repository = AuthRepository(
-        AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
+        AuthApiImpl(client),
         tokenStorage,
         authState,
         mockk<PushRegistrar>(relaxed = true),
         noTeardown(authState)
     )
+
+    /** A password attempt confirmed on the key phone and collected (C27), typed password kept for C4. */
+    private suspend fun signIn() =
+        repository.completeAttempt("https://kaiku.example.com", "temp-pass-1") { attempts.collect("a-1", "verifier") }
 
     private companion object {
         const val TEMP_ACCESS = "fixture-temporary-access-token"
@@ -124,23 +132,23 @@ class AuthRepositoryPasswordChangeTest {
 
     @Test
     fun `login requiring password change persists no tokens`() = runTest {
-        val result = repository.login("anna", "temp-pass-1")
+        val result = signIn()
 
         assertIs<PasswordChangeRequiredException>(result.exceptionOrNull())
         assertTrue(repository.hasPendingPasswordChange())
-        assertEquals(listOf("/auth/login"), requests.map { it.path }) // no GET /auth/me
+        assertEquals(listOf("/auth/login-attempts/a-1/collect"), requests.map { it.path }) // no GET /auth/me
         verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
         assertEquals(AuthSession.LoggedOut, authState.session.value)
     }
 
     @Test
     fun `complete password change posts with bearer then logs in`() = runTest {
-        repository.login("anna", "temp-pass-1")
+        signIn()
 
         val result = repository.completePasswordChange("my-own-password")
 
         assertEquals("user-42", result.getOrThrow().id)
-        assertEquals(listOf("/auth/login", "/auth/me/password", "/auth/me"), requests.map { it.path })
+        assertEquals(listOf("/auth/login-attempts/a-1/collect", "/auth/me/password", "/auth/me"), requests.map { it.path })
 
         val change = requests[1]
         assertEquals("kaiku.example.com", change.host)
@@ -175,25 +183,25 @@ class AuthRepositoryPasswordChangeTest {
 
     @Test
     fun `cancel clears pending state`() = runTest {
-        repository.login("anna", "temp-pass-1")
+        signIn()
         assertTrue(repository.hasPendingPasswordChange())
 
         repository.cancelPasswordChange()
 
         assertFalse(repository.hasPendingPasswordChange())
         assertIs<IllegalStateException>(repository.completePasswordChange("my-own-password").exceptionOrNull())
-        assertEquals(listOf("/auth/login"), requests.map { it.path })
+        assertEquals(listOf("/auth/login-attempts/a-1/collect"), requests.map { it.path })
     }
 
     @Test
     fun `cancel while the password change is in flight does not log in`() = runTest {
-        repository.login("anna", "temp-pass-1")
+        signIn()
         duringPasswordRequest = { repository.cancelPasswordChange() }
 
         val result = repository.completePasswordChange("my-own-password")
 
         assertIs<IllegalStateException>(result.exceptionOrNull())
-        assertEquals(listOf("/auth/login", "/auth/me/password"), requests.map { it.path })
+        assertEquals(listOf("/auth/login-attempts/a-1/collect", "/auth/me/password"), requests.map { it.path })
         verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
         assertEquals(AuthSession.LoggedOut, authState.session.value)
         assertFalse(repository.hasPendingPasswordChange())
@@ -201,7 +209,7 @@ class AuthRepositoryPasswordChangeTest {
 
     @Test
     fun `cancel during getMe does not persist the session`() = runTest {
-        repository.login("anna", "temp-pass-1")
+        signIn()
         // The pending state is cleared while GET /auth/me is in flight.
         duringMeRequest = { repository.cancelPasswordChange() }
 
@@ -214,20 +222,20 @@ class AuthRepositoryPasswordChangeTest {
 
     @Test
     fun `server change while pending sends nothing and fails`() = runTest {
-        repository.login("anna", "temp-pass-1")
+        signIn()
         serverUrl = "https://other.example.com"
 
         val result = repository.completePasswordChange("my-own-password")
 
         assertIs<IllegalStateException>(result.exceptionOrNull())
-        assertEquals(listOf("/auth/login"), requests.map { it.path }) // neither host got the passwords
+        assertEquals(listOf("/auth/login-attempts/a-1/collect"), requests.map { it.path }) // neither host got the passwords
         assertFalse(repository.hasPendingPasswordChange())
         verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
     }
 
     @Test
     fun `explicit bearer survives a different stored token`() = runTest {
-        repository.login("anna", "temp-pass-1")
+        signIn()
         // E.g. another session got stored meanwhile: the interceptor must not swap tokens.
         storedAccessToken = "other-stored-token"
 
@@ -241,7 +249,7 @@ class AuthRepositoryPasswordChangeTest {
     fun `cancel while the login is in flight installs no pending change`() = runTest {
         duringLoginRequest = { repository.cancelPasswordChange() }
 
-        val result = repository.login("anna", "temp-pass-1")
+        val result = signIn()
 
         assertIs<IllegalStateException>(result.exceptionOrNull())
         assertFalse(repository.hasPendingPasswordChange())
@@ -253,7 +261,7 @@ class AuthRepositoryPasswordChangeTest {
     fun `rejected password change keeps pending state and persists nothing`() = runTest {
         passwordStatus = HttpStatusCode.BadRequest
         passwordBody = """{"error":"VALIDATION_ERROR","message":"new_password: must differ"}"""
-        repository.login("anna", "temp-pass-1")
+        signIn()
 
         val error = repository.completePasswordChange("temp-pass-1").exceptionOrNull()
 

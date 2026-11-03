@@ -122,4 +122,15 @@ class AuthErrorMapperTest {
         assertEquals(R.string.auth_login_already_signed_in, AuthErrorMapper.register(e))
         assertEquals(R.string.auth_login_already_signed_in, AuthErrorMapper.oidc(e))
     }
+
+    @Test
+    fun `C27 sign-in codes map to their own text and SSO's 401 is the neutral answer`() {
+        assertEquals(R.string.auth_login_client_outdated,
+            AuthErrorMapper.login(ApiException(HttpStatusCode.BadRequest, "server text", "CLIENT_OUTDATED")))
+        assertEquals(R.string.auth_totp_unavailable,
+            AuthErrorMapper.login(ApiException(HttpStatusCode.Forbidden, "server text", "TOTP_UNAVAILABLE")))
+        assertEquals(R.string.auth_login_invalid_credentials,
+            AuthErrorMapper.oidc(ApiException(HttpStatusCode.Unauthorized, "server text", "INVALID_CREDENTIALS")))
+        assertEquals(R.string.auth_login_sso_failed, AuthErrorMapper.oidc(IllegalStateException("no server")))
+    }
 }

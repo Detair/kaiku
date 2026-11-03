@@ -117,6 +117,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Channel sidebar shows dot indicator for unread channels instead of count badge
 - "New Messages" divider shows where you left off when returning to a channel
 - Opening a channel with unreads scrolls to your last read position
+- Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
 ### Security
 - A session ends automatically when its refresh token is used twice, browser sessions end after 30 days and app sessions after 90 days, and an account can have at most 50 open sessions.
@@ -166,6 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: bumped `dompurify` (XSS in HTML sanitization), `uuid` (buffer-bounds check via mermaid), and added transitive overrides for `postcss` (XSS) and `dompurify` (mermaid's nested copy). `bun audit` reduced from 12 → 6 advisories; the 6 remaining are vite dev-server paths via vitest, already accepted as dev-only exceptions per PR #517 and pending the vitest 4.x → 4.x compat work in Phase 6c of the dep-update sweep.
 - Frontend: update `dompurify` 3.4.2 → 3.4.11 (eight HTML-sanitizer XSS advisories — the markdown preview's runtime sanitizer), `vite` 8.0.0 → 8.0.16 (the `server.fs.deny` bypass and `__open-in-editor` NTLM dev-server CVEs), and add transitive overrides for `undici` → 7.28.0 (seven HTTP-client advisories via jsdom) and `@babel/core` → 7.29.6 (via vite-plugin-solid). The remaining flagged instance is the test-only vite 7.3.1 nested under vitest, whose fix is blocked by a JSX-transform incompatibility (documented as a justified, dev-server-only exception); the production bundle is built with the patched vite 8.0.16. This restores the weekly OSV scanner to green.
 - Android: the app keeps its sign-in tokens under a key in the phone's secure hardware; existing sign-ins are moved over once, without signing in again.
+- The Android app no longer accepts sign-in tokens from a link; single sign-on returns only a one-time code.
 
 ### Removed
 - `GEOIP_API_URL`.

@@ -21,7 +21,6 @@ data class OidcProvider(
 )
 
 interface AuthApi {
-    suspend fun login(username: String, password: String, mfaCode: String? = null): AuthResponse
     /** C27/F8: no session, a registration ticket that binds this phone's key ([RegistrationTicket]). */
     suspend fun register(
         username: String,
@@ -64,15 +63,7 @@ interface AuthApi {
         newPassword: String
     )
     suspend fun getOidcProviders(): List<OidcProvider>
-    suspend fun exchangeOidcCode(code: String, state: String, redirectUri: String, codeVerifier: String? = null): AuthResponse
 }
-
-@Serializable
-private data class LoginRequest(
-    val username: String,
-    val password: String,
-    val mfaCode: String? = null
-)
 
 @Serializable
 private data class RegisterRequest(
@@ -90,14 +81,6 @@ private data class RefreshTokenRequest(
 }
 
 @Serializable
-private data class OidcCallbackRequest(
-    val code: String,
-    val state: String,
-    val redirectUri: String,
-    val codeVerifier: String? = null
-)
-
-@Serializable
 private data class ChangePasswordRequest(
     val currentPassword: String,
     val newPassword: String,
@@ -111,31 +94,6 @@ class AuthApiImpl @Inject constructor(
 ) : AuthApi {
     companion object {
         private val logger = Logger.getLogger("AuthApi")
-    }
-
-    override suspend fun login(
-        username: String,
-        password: String,
-        mfaCode: String?
-    ): AuthResponse {
-        val response = httpClient.post("/auth/login") {
-            setBody(LoginRequest(username, password, mfaCode))
-        }
-
-        if (response.status == HttpStatusCode.Forbidden) {
-            val errorBody = response.body<ApiErrorResponse>()
-            if (normalizeErrorCode(errorBody.error) == "MFA_REQUIRED") {
-                throw MfaRequiredApiException(errorBody.message ?: "MFA required")
-            }
-            throw ApiException(response.status, errorBody.message ?: "Forbidden", code = errorBody.error)
-        }
-
-        if (!response.status.isSuccess()) {
-            val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(response.status, errorBody?.message ?: "Login failed", code = errorBody?.error)
-        }
-
-        return response.body()
     }
 
     override suspend fun register(
@@ -251,36 +209,6 @@ class AuthApiImpl @Inject constructor(
 
         return response.body()
     }
-
-    override suspend fun exchangeOidcCode(
-        code: String,
-        state: String,
-        redirectUri: String,
-        codeVerifier: String?
-    ): AuthResponse {
-        // Fallback: call the server's OIDC callback directly via GET.
-        // The server exchanges the authorization code internally and returns tokens.
-        val response = httpClient.get("/auth/oidc/callback") {
-            url {
-                parameters.append("code", code)
-                parameters.append("state", state)
-                if (codeVerifier != null) {
-                    parameters.append("code_verifier", codeVerifier)
-                }
-            }
-        }
-
-        if (!response.status.isSuccess()) {
-            val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(
-                response.status,
-                errorBody?.message ?: "OIDC code exchange failed",
-                code = errorBody?.error
-            )
-        }
-
-        return response.body()
-    }
 }
 
 @Serializable
@@ -325,7 +253,3 @@ open class ApiException(
 
 /** Server error codes are UPPER_SNAKE; older responses may be lowercase. */
 fun normalizeErrorCode(code: String?): String? = code?.uppercase(Locale.ROOT)
-
-class MfaRequiredApiException(
-    message: String
-) : ApiException(HttpStatusCode.Forbidden, message)

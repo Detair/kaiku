@@ -8,7 +8,6 @@ import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.normalizeServerAddress
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.material3.MaterialTheme
@@ -32,7 +31,7 @@ import io.wolftown.kaiku.navigation.SetupLinks
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
 import io.wolftown.kaiku.navigation.PendingNavigation
 import io.wolftown.kaiku.push.AndroidNotificationPresenter
-import io.wolftown.kaiku.ui.auth.LoginViewModel
+import io.wolftown.kaiku.ui.auth.PendingOidcCallback
 import io.wolftown.kaiku.ui.auth.OidcHandler
 import io.wolftown.kaiku.ui.shared.KaikuTheme
 import io.wolftown.kaiku.ui.shared.LocalServerBaseUrl
@@ -70,8 +69,6 @@ class MainActivity : FragmentActivity() {
     private val pendingRoute = MutableStateFlow<String?>(null)
 
     private val renewalGate = io.wolftown.kaiku.data.auth.RenewalGate()
-
-    private val loginViewModel: LoginViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -135,8 +132,9 @@ class MainActivity : FragmentActivity() {
     }
 
     /**
-     * Checks whether the intent contains an OIDC callback deep link
-     * (`kaiku://auth/callback`) and forwards it to the [LoginViewModel].
+     * Routes a deep link. An OIDC callback (`kaiku://auth/callback`) goes, in
+     * memory only, to the sign-in screen that started the flow and holds its
+     * verifier ([PendingOidcCallback]); it never carries tokens (C27).
      */
     private fun handleIntent(intent: Intent?) {
         // Recorded before the consumed link is stripped below: no renewal prompt after a notification tap.
@@ -145,7 +143,9 @@ class MainActivity : FragmentActivity() {
         )
         val uri = intent?.data ?: return
         if (oidcHandler.isOidcCallback(uri)) {
-            loginViewModel.onOidcDeepLink(uri)
+            PendingOidcCallback.post(uri)
+            // Strip the consumed link so a recreation never replays it.
+            intent.data = null
             return
         }
         // A setup link (kaiku://setup/v1 or the https App Link, L2-A15); its token stays in memory.

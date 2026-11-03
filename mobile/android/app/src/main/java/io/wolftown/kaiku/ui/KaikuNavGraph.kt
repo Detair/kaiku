@@ -200,7 +200,8 @@ fun KaikuNavGraph(
                             navController.navigate("server_url") {
                                 popUpTo("login") { inclusive = true }
                             }
-                        }
+                        },
+                        onSetUpPhone = { navController.navigate(SCAN_SETUP_ROUTE) },
                     )
                 }
 

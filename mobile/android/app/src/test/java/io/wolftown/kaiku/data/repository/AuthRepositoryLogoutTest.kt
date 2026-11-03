@@ -301,7 +301,7 @@ class AuthRepositoryLogoutTest {
             authState,
             appScope(),
         )
-        coEvery { authApi.login("b", "pw", null) } returns io.wolftown.kaiku.domain.model.AuthResponse(
+        val collected = io.wolftown.kaiku.domain.model.AuthResponse(
             accessToken = "session-b-access",
             refreshToken = "session-b-refresh",
             expiresIn = 900,
@@ -317,7 +317,7 @@ class AuthRepositoryLogoutTest {
         // teardown keeps running while the login screen is already reachable.
         authState.setLoggedOut()
         runCurrent() // session a's teardown is in step 10
-        val login = async { repository.login("b", "pw") }
+        val login = async { repository.completeAttempt("https://kaiku.example.com", "pw") { collected } }
         runCurrent()
         assertTrue(authState.session.value is AuthSession.LoggedOut) // login b is waiting
         assertTrue(log.none { it == "teardown-20" })

@@ -78,3 +78,85 @@ class FakeApprovalApi : ApprovalApi {
         return KeyDevice(id = id, label = "Pixel 8", state = KeyDeviceStatus.REVOKED)
     }
 }
+
+/**
+ * Scripted C27 [io.wolftown.kaiku.data.api.LoginAttemptApi]. Every call is recorded with the
+ * verifier it carried; a poll with nothing scripted hangs like a long-poll until cancelled.
+ */
+class FakeLoginAttemptApi : io.wolftown.kaiku.data.api.LoginAttemptApi {
+    val calls = mutableListOf<String>()
+    val challenges = mutableListOf<String>()
+    val verifiers = mutableListOf<String>()
+    var created: io.wolftown.kaiku.domain.model.LoginAttempt = attempt("a-qr", "qr", qr = "kaiku://login/v1?o=https%3A%2F%2Fchat.example.com&t=T1")
+    var loginStep: io.wolftown.kaiku.domain.model.LoginStep? = null
+    var loginFailure: Exception? = null
+    var exchangeStep: io.wolftown.kaiku.domain.model.LoginStep? = null
+    var exchangeFailure: Exception? = null
+    var collectFailure: Exception? = null
+    var totpFailure: Exception? = null
+    var session: AuthResponse = AuthResponse(
+        accessToken = "attempt-access", refreshToken = "attempt-refresh", expiresIn = 900, tokenType = "Bearer",
+        sessionId = "55555555-5555-4555-8555-555555555555", assurance = "probation",
+    )
+    /** Answers for the next polls, in order. */
+    val polls = ArrayDeque<suspend () -> io.wolftown.kaiku.domain.model.LoginAttempt>()
+
+    override suspend fun createQr(clientChallenge: String): io.wolftown.kaiku.domain.model.LoginAttempt {
+        calls += "createQr"; challenges += clientChallenge
+        return created
+    }
+
+    override suspend fun login(username: String, password: String, clientChallenge: String): io.wolftown.kaiku.domain.model.LoginStep {
+        calls += "login:$username"; challenges += clientChallenge
+        loginFailure?.let { throw it }
+        return loginStep ?: error("no login step scripted")
+    }
+
+    override suspend fun poll(id: String, verifier: String, waitSeconds: Int): io.wolftown.kaiku.domain.model.LoginAttempt {
+        calls += "poll:$id"; verifiers += verifier
+        val next = polls.removeFirstOrNull() ?: kotlinx.coroutines.awaitCancellation()
+        return next()
+    }
+
+    override suspend fun collect(id: String, verifier: String): AuthResponse {
+        calls += "collect:$id"; verifiers += verifier
+        collectFailure?.let { throw it }
+        return session
+    }
+
+    override suspend fun totp(id: String, verifier: String, code: String): AuthResponse {
+        calls += "totp:$id:$code"; verifiers += verifier
+        totpFailure?.let { throw it }
+        return session
+    }
+
+    override suspend fun cancel(id: String, verifier: String) {
+        calls += "cancel:$id"; verifiers += verifier
+    }
+
+    override suspend fun exchangeOidc(code: String, verifier: String): io.wolftown.kaiku.domain.model.LoginStep {
+        calls += "exchangeOidc:$code"; verifiers += verifier
+        exchangeFailure?.let { throw it }
+        return exchangeStep ?: error("no exchange step scripted")
+    }
+
+    companion object {
+        fun attempt(
+            id: String,
+            kind: String,
+            state: io.wolftown.kaiku.domain.model.AttemptState = io.wolftown.kaiku.domain.model.AttemptState.OPEN,
+            qr: String? = null,
+            totpAvailable: Boolean = false,
+            expiresAt: String = java.time.Instant.now().plusSeconds(600).toString(),
+        ) = io.wolftown.kaiku.domain.model.LoginAttempt(
+            attemptId = id, kind = kind, state = state, expiresAt = expiresAt,
+            qr = qr?.let { io.wolftown.kaiku.domain.model.AttemptQr(it, java.time.Instant.now().plusSeconds(60).toString()) },
+            totpAvailable = totpAvailable,
+        )
+    }
+}
+
+/** S256 as C27 defines it: unpadded base64url SHA-256 of the verifier's ASCII bytes. */
+fun s256(verifier: String): String = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+    java.security.MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)),
+)
