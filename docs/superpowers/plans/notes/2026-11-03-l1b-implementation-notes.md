@@ -406,3 +406,29 @@ decision. "For L2" marks interface facts the clients need.
   on success; TOTP-step refusals (a QR attempt now answers 403 `TOTP_UNAVAILABLE` instead of
   409 `LOGIN_ATTEMPT_NOT_READY` — for L2), compromised TOTP, claimed challenge voided; probation
   Cancel/repudiation without part 2 → 403 `FULL_SESSION_REQUIRED`.
+
+## Review round 2 (Codex, Fable, Flash) at 166c35cc
+
+| Finding | Verdict | Commit | Test |
+|---|---|---|---|
+| Codex M9 — bound ticket / two links / own claim after bind | fixed: own claim and ticket confirmer require an unexpired, unbound ticket under the account lock; a bind cancels the ticket's other open links | 2b73b7d4 | `registration_tickets::a_ticket_binds_one_phone_even_with_two_links` (sequential, concurrent, own claim; RED seen) |
+| Fable M-A — Argon2 under every admin's lock | fixed: code found without a lock with constant `CODE_COUNT` work, then `lock_for_start`, consumed by id while unused and current | a6821e02 | `recovery_requests::*` |
+| Codex M6 (rest) — 429 before code verification | fixed: an invalid code is neutral also while delayed; bootstrap's delay answers neutrally (Fable i) | a6821e02 | `throttling::an_invalid_code_is_neutral_while_delayed`, `bootstrap_totp_is_throttled` (now neutral) |
+| Fable m-d — OIDC code spent before the checks | fixed: TOTP delay and budget before redeeming | a6821e02 | — |
+| Fable M-B — same-install re-enrolment cascades first | fixed: the old key leaves the live index, the new row exists, then the cascade; `confirm_tx` takes `lock_route_change` when a live key is on the claimed install | 44312523 | `review_gaps::same_install_re_enrolment_keeps_the_admin_route` (RED seen) |
+| Codex M7 / Fable / Flash — admin at `done` | fixed: `confirm_tx` takes `lock_for_start` for `admin` enrolments (key device and passkey claims); route discovery includes `admin` requests the admin or the device started | 44312523 | `admin_setup::*`, `enrollment_issuers::existing_account_browser_passkey_waits_for_its_request` |
+| Codex M7 — a restored route resurrecting a request | verified: route losses void at once under the locks (cascades), so no request survives a loss to be revived | — | `review_gaps::the_only_routes_gone_voids_the_request` |
+| Codex — stale TOTP failure throttles a new TOTP | fixed: the effects carry the TOTP generation and re-check it and the counter under the lock | f3ccce12 | `throttling::a_stale_totp_failure_does_not_throttle_the_new_totp` |
+| Codex M8 (rest) — session predicate | fixed: `absolute_expires_at` too | f3ccce12 | — |
+| Codex M11 / Flash — CLI and role events | fixed: a delay-only throttle reset records `throttle_reset`; `revoke_system_admin` records the admin; CLI demote already recorded `admin_role_removed` | f3ccce12 | `cli_recovery::a_delay_only_reset_is_recorded`, `admin_setup::admin_role_changes_are_recorded` |
+| Flash — TOTP notices | fixed: the effects deliver pending notices when the caller has a server state (part 2 has none: minute sweep) | f3ccce12 | — |
+| Flash / Fable m-c — RequestFactor native failures | verified: `flow_failure_response` routes by `flow_state.native` first (hand-off page / Android error) | — | `recovery_requests::oidc_factor::a_desktop_provider_error_reaches_the_app` |
+| Codex minor — auth_time at redemption | fixed: re-checked at redemption (≤ 300 s) | cbb62665 | `oidc_factor::a_code_whose_sign_in_aged_is_refused` |
+| Flash verdict 1 — OIDC subject vs target | verified (no gap): the redeemed identity must be the typed account's | — | `oidc_factor::an_identity_of_another_account_is_refused` |
+| Flash verdict 2 — passkey finish binding | verified: another link's token → 404 | — | `existing_account_browser_passkey_waits_for_its_request` |
+| Fable m-a / m-b / Flash banned start | fixed: claim-time duplicate and limit checks; admin actor on `authenticator_added`; banned subject refused at passkey start | 5df23b23 | `existing_account_browser_passkey_waits_for_its_request` (actor; RED seen) |
+| Fable tests — OIDC bootstrap, single redeem, reused ceremony | added | cbb62665, 5df23b23 | `oidc_factor::{bootstrap_with_oidc_as_the_first_factor, a_code_redeems_once}`, reused ceremony → 400 |
+| Fable m-e — notes line | the QR attempt's TOTP step answers 403 `TOTP_UNAVAILABLE` (C27 lists it; L2a/L2b map the text) | — | `review_gaps::totp_step_refusals` |
+
+Tests written after the fix (RED not observed): the neutral-delay, stale-TOTP, aged-code, delay-only reset
+and existing-account passkey tests; the M-A and session-predicate changes have no dedicated test.
