@@ -225,7 +225,8 @@ pub async fn admin_demote(ctx: &CliCtx, username: &str, io: &mut impl CliIo) -> 
     let auth = ctx.auth();
     let mut tx = ctx.db.begin().await?;
     let user = account(&mut tx, username).await?;
-    lock_accounts(&mut tx, &[user]).await?;
+    // The admin route of every request that records this admin (Codex M7).
+    crate::approvals::transition::lock_route_change(&mut tx, user, &[], &[]).await?;
     let n = sqlx::query("DELETE FROM system_admins WHERE user_id = $1")
         .bind(user)
         .execute(&mut *tx)

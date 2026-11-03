@@ -81,7 +81,13 @@ pub async fn start_recovery(
         _ => {}
     }
     let mut tx = state.db.begin().await?;
-    crate::approvals::transition::lock_accounts(&mut tx, &[user.id]).await?;
+    // The subject with every possible canceller (Codex M7).
+    crate::approvals::transition::lock_for_start(&mut tx, user.id, &[])
+        .await
+        .map_err(|e| match e {
+            crate::approvals::transition::TransitionError::Db(d) => AuthError::Database(d),
+            _ => AuthError::ServiceUnavailable,
+        })?;
     // The credentials under the lock (Codex B2).
     let (hash_now, secret_now): (Option<String>, Option<String>) =
         sqlx::query_as("SELECT password_hash, mfa_secret FROM users WHERE id = $1")

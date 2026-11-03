@@ -19,7 +19,6 @@ use crate::approvals::enrollments::{
     issue_tx, EnrollmentIssued, EnrollmentVariant, IssueParams, Issuer,
 };
 use crate::approvals::error::ApprovalError;
-use crate::approvals::transition::lock_accounts;
 use crate::auth::ctx::AuthCtx;
 use crate::auth::error::AuthError;
 use crate::auth::step_up::{self, StepUpAction, StepUpTarget};
@@ -104,7 +103,9 @@ pub async fn issue_admin_enrollment(
     let sid = admin.session_id.ok_or(ApprovalError::KeyDeviceRequired)?;
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
-    let locked = lock_accounts(&mut tx, &[admin.id, account]).await?;
+    // The subject, the admin and every possible canceller (Codex M7).
+    let locked =
+        crate::approvals::transition::lock_for_start(&mut tx, account, &[admin.id]).await?;
     let target = locked
         .get(&account)
         .filter(|a| a.exists && !a.is_system)

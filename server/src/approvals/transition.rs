@@ -189,6 +189,71 @@ where
     Err(TransitionError::Contended)
 }
 
+/// Lock a change of `user`'s routes (an authenticator removed, the role gone).
+///
+/// `user` and `actors` are locked together with every account whose open
+/// requests record `user` as admin or contact or one of `authenticators`,
+/// in one ascending statement, re-read under the locks and retried if the
+/// set grew (B.7 cross-account serialisation, Codex M7). Call it first in
+/// the transaction.
+pub async fn lock_route_change(
+    conn: &mut PgConnection,
+    user: Uuid,
+    actors: &[Uuid],
+    authenticators: &[AuthenticatorRef],
+) -> Result<BTreeMap<Uuid, LockedAccount>, TransitionError> {
+    let mut affected = vec![AffectedRoute::Admin(user), AffectedRoute::Contact(user)];
+    affected.extend(
+        authenticators
+            .iter()
+            .copied()
+            .map(AffectedRoute::Authenticator),
+    );
+    lock_scope(
+        conn,
+        &LockScope {
+            subject: user,
+            actors: actors.to_vec(),
+            affected,
+        },
+    )
+    .await
+}
+
+/// Lock a request start with every account that could cancel it.
+///
+/// The subject (and `actors`) together with each admin and the subject's
+/// contact, re-read
+/// under the locks and retried if that set changed (Codex M7). Call it
+/// first in the transaction.
+pub async fn lock_for_start(
+    conn: &mut PgConnection,
+    subject: Uuid,
+    actors: &[Uuid],
+) -> Result<BTreeMap<Uuid, LockedAccount>, TransitionError> {
+    lock_scope_with(
+        conn,
+        &LockScope {
+            subject,
+            actors: actors.to_vec(),
+            affected: Vec::new(),
+        },
+        move |c, _| Box::pin(potential_cancellers(c, subject)),
+    )
+    .await
+}
+
+async fn potential_cancellers(conn: &mut PgConnection, subject: Uuid) -> sqlx::Result<Vec<Uuid>> {
+    sqlx::query_scalar(
+        "SELECT user_id FROM system_admins
+         UNION SELECT recovery_contact_id FROM users
+                WHERE id = $1 AND recovery_contact_id IS NOT NULL",
+    )
+    .bind(subject)
+    .fetch_all(&mut *conn)
+    .await
+}
+
 /// The accounts whose open account requests record one of `affected` as an
 /// independent canceller (GIN containment on `cancellers`).
 pub async fn accounts_recording(

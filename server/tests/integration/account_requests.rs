@@ -643,3 +643,75 @@ async fn concurrent_starts_one_open(pool: PgPool) {
     .unwrap();
     assert_eq!(open, 1);
 }
+
+/// Codex M7: a start and the loss of its only route never both commit
+/// with an open request left without a live route (B.7: the start locks
+/// every possible canceller, the removal every account recording its
+/// routes, both ascending in one statement), and nothing deadlocks.
+#[sqlx::test]
+async fn start_vs_route_loss_serialise(pool: PgPool) {
+    struct Quiet;
+    impl vc_server::cli::CliIo for Quiet {
+        fn print(&mut self, _s: &str) {}
+        async fn read_line(&mut self, _p: &str) -> std::io::Result<String> {
+            Err(std::io::ErrorKind::UnexpectedEof.into())
+        }
+    }
+    let app = TestApp::with_pool(pool.clone()).await;
+    let cli = vc_server::cli::CliCtx {
+        db: pool.clone(),
+        redis: app.state.redis.clone(),
+        config: (*app.config).clone(),
+    };
+    for round in 0..12 {
+        let (admin, adev) = admin_with_device(&app).await;
+        let admin_name: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+            .bind(admin)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let (user, name, totp) = bootstrap_user(&app).await;
+        let remove = vc_server::cli::Command::parse(&[
+            "devices".into(),
+            "remove".into(),
+            admin_name.clone(),
+            adev.row_id.to_string(),
+        ])
+        .unwrap();
+        let (started, removed) = tokio::join!(start_bootstrap(&app, user, &name, &totp), async {
+            vc_server::cli::run(&cli, remove, &mut Quiet).await
+        });
+        assert!(
+            removed.is_ok(),
+            "round {round}: removal failed: {removed:?}"
+        );
+        assert!(
+            matches!(started.0, 201 | 409),
+            "round {round}: start answered {} {}",
+            started.0,
+            started.1
+        );
+        let open: Vec<(Uuid, Value)> = sqlx::query_as(
+            "SELECT id, cancellers FROM account_requests
+              WHERE user_id = $1 AND state IN ('waiting', 'ready')",
+        )
+        .bind(user)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        for (id, _) in &open {
+            let mut conn = pool.acquire().await.unwrap();
+            let row = vc_server::auth::account_requests::core::get(&mut conn, *id)
+                .await
+                .unwrap()
+                .unwrap();
+            let left = vc_server::auth::account_requests::core::routes_left(&mut conn, &row)
+                .await
+                .unwrap();
+            assert!(
+                left > 0,
+                "round {round}: an open request without a live route"
+            );
+        }
+    }
+}

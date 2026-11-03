@@ -54,7 +54,13 @@ pub async fn remove(
     let mut tx = ctx.db.begin().await?;
     let user_id = account(&mut tx, username).await?;
     // B.7: the account lock first, as every revoking route.
-    crate::approvals::transition::lock_accounts(&mut tx, &[user_id]).await?;
+    crate::approvals::transition::lock_route_change(
+        &mut tx,
+        user_id,
+        &[],
+        &[crate::auth::strong::AuthenticatorRef::key_device(device)],
+    )
+    .await?;
     let row = find(&mut tx, device)
         .await?
         .filter(|d| d.user_id == user_id)

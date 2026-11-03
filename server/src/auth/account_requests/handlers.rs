@@ -225,7 +225,10 @@ async fn start_bootstrap(
     }
     crate::auth::totp_guard::pre_check(ctx, user.id).await?;
     let mut tx = state.db.begin().await?;
-    crate::approvals::transition::lock_accounts(&mut tx, &[user.id]).await?;
+    // The subject with every possible canceller (Codex M7).
+    crate::approvals::transition::lock_for_start(&mut tx, user.id, &[])
+        .await
+        .map_err(transition_err)?;
     // The credentials under the lock (Codex B2).
     let (hash_now, secret_now): (Option<String>, Option<String>) =
         sqlx::query_as("SELECT password_hash, mfa_secret FROM users WHERE id = $1")
@@ -496,4 +499,11 @@ pub async fn cancel(
     crate::security_events::notices::spawn_pending_delivery(&state);
     request_updated(&state, row.id, row.user_id, "cancelled").await;
     Ok(Json(summary))
+}
+
+fn transition_err(e: crate::approvals::transition::TransitionError) -> AuthError {
+    match e {
+        crate::approvals::transition::TransitionError::Db(d) => AuthError::Database(d),
+        _ => AuthError::ServiceUnavailable,
+    }
 }

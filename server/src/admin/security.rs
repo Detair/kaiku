@@ -37,8 +37,20 @@ async fn lock_target(
     conn: &mut PgConnection,
     admin: Uuid,
     target: Uuid,
+    removing: &[AuthenticatorRef],
 ) -> AuthResult<LockedAccount> {
-    let locked = lock_accounts(conn, &[admin, target]).await?;
+    let locked = if removing.is_empty() {
+        lock_accounts(conn, &[admin, target]).await?
+    } else {
+        // Removing a strong authenticator changes routes of other accounts'
+        // requests: lock them in the same ascending statement (Codex M7).
+        crate::approvals::transition::lock_route_change(conn, target, &[admin], removing)
+            .await
+            .map_err(|e| match e {
+                crate::approvals::transition::TransitionError::Db(d) => AuthError::Database(d),
+                _ => AuthError::ServiceUnavailable,
+            })?
+    };
     // Codex M8: the actor is still an admin under the lock (a demotion
     // committed while this request waited wins).
     if !locked.get(&admin).is_some_and(|a| a.is_admin && !a.banned) {
@@ -91,7 +103,7 @@ pub async fn set_may_approve(
 ) -> AuthResult<Json<MayApprove>> {
     crate::auth::guards::require_full(&auth)?;
     let mut tx = state.db.begin().await?;
-    lock_target(&mut tx, auth.id, account).await?;
+    lock_target(&mut tx, auth.id, account, &[]).await?;
     let ev = consume(
         &mut tx,
         &auth,
@@ -184,7 +196,7 @@ pub async fn set_factor_state(
     }
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
-    lock_target(&mut tx, auth.id, account).await?;
+    lock_target(&mut tx, auth.id, account, &[]).await?;
     let st = factors::states(&mut tx, account).await?;
     // Validate everything before the grant: a refusal leaves the grant.
     for (f, want) in &wanted {
@@ -300,7 +312,16 @@ pub async fn remove_authenticator_now(
     crate::auth::guards::require_full(&auth)?;
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
-    lock_target(&mut tx, auth.id, account).await?;
+    lock_target(
+        &mut tx,
+        auth.id,
+        account,
+        &[
+            AuthenticatorRef::key_device(id),
+            AuthenticatorRef::passkey(id),
+        ],
+    )
+    .await?;
     let device: Option<Uuid> = sqlx::query_scalar(
         "SELECT device_id FROM approval_devices
           WHERE id = $1 AND user_id = $2 AND state <> 'revoked'",

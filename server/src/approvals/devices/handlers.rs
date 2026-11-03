@@ -76,7 +76,13 @@ pub async fn remove(
     crate::auth::guards::require_full(&auth)?;
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
-    crate::approvals::transition::lock_accounts(&mut tx, &[auth.id]).await?;
+    crate::approvals::transition::lock_route_change(
+        &mut tx,
+        auth.id,
+        &[],
+        &[AuthenticatorRef::key_device(id)],
+    )
+    .await?;
     let device = find(&mut tx, id)
         .await?
         .filter(|d| d.user_id == auth.id)
@@ -137,7 +143,13 @@ pub async fn invalidated(
 ) -> Result<Json<KeyDevice>, ApprovalError> {
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
-    crate::approvals::transition::lock_accounts(&mut tx, &[auth.id]).await?;
+    crate::approvals::transition::lock_route_change(
+        &mut tx,
+        auth.id,
+        &[],
+        &[AuthenticatorRef::key_device(id)],
+    )
+    .await?;
     let dev = key_device_session(&mut tx, &auth).await?;
     if dev.device.id != id {
         return Err(ApprovalError::KeyDeviceRequired);

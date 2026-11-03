@@ -524,12 +524,24 @@ async fn lock_request(
     let Some(seen) = by_id(conn, id, false).await? else {
         return Ok(None);
     };
+    // A completion revokes the devices named lost: the requests that record
+    // them (or the subject as admin or contact) are locked too (Codex M7).
+    let mut affected = Vec::new();
+    if !seen.lost_device_ids.is_empty() {
+        affected.push(AffectedRoute::Admin(seen.user_id));
+        affected.push(AffectedRoute::Contact(seen.user_id));
+        affected.extend(
+            seen.lost_device_ids
+                .iter()
+                .map(|d| AffectedRoute::Authenticator(AuthenticatorRef::key_device(*d))),
+        );
+    }
     lock_scope(
         conn,
         &LockScope {
             subject: seen.user_id,
             actors: actors.to_vec(),
-            affected: Vec::new(),
+            affected,
         },
     )
     .await

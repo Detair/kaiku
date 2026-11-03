@@ -344,8 +344,22 @@ pub async fn repudiate(
 ) -> AuthResult<Json<RepudiationOutcome>> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let ctx = AuthCtx::from(&state);
+    let seen = {
+        let mut conn = state.db.acquire().await?;
+        event_row(&mut conn, id, false).await?
+    };
+    let routes: Vec<AuthenticatorRef> = seen
+        .as_ref()
+        .and_then(authenticator_of)
+        .into_iter()
+        .collect();
     let mut tx = state.db.begin().await?;
-    crate::approvals::transition::lock_accounts(&mut tx, &[auth.id]).await?;
+    crate::approvals::transition::lock_route_change(&mut tx, auth.id, &[], &routes)
+        .await
+        .map_err(|e| match e {
+            crate::approvals::transition::TransitionError::Db(d) => AuthError::Database(d),
+            _ => AuthError::ServiceUnavailable,
+        })?;
     let ev = event_row(&mut tx, id, false)
         .await?
         .filter(|e| e.subject_id == auth.id)
