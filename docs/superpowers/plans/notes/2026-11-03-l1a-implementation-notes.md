@@ -557,3 +557,14 @@ Corrections and notes on the round 3 answers:
 - `cargo +nightly fmt --all -- --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server --
   -D warnings` clean; `cargo deny check`: advisories, bans, licenses, sources ok. No `query!`
   macro changed (`.sqlx` unchanged).
+
+## Review round 5 (Codex r4 on 690df404..b2391e08; 2026-11-03)
+
+Codex: gate, SPKI and 503 FIXED; two PARTLY, fixed by the coordinator. Gemini Flash (Argon stand-in): APPROVE.
+
+| Finding | Verdict | Commit | Test |
+|---|---|---|---|
+| Own-issuer collision still `VALIDATION_ERROR`; the C26 amendment (09fa5da1) names `ENROLLMENT_DEVICE_IN_USE` for it too | fixed | see `git log` ("issuer's own phone") | `enrollments::own_enrolment_cannot_replace_its_issuer` (red before) |
+| Notice sweep: failing events at both ends starve a middle one forever | fixed: the second half is a random sample of all undelivered events | see `git log` ("random sample") | `security_notices::failing_events_at_both_ends_never_starve_the_middle` (red before); the round-4 test now loops |
+
+Gates: `enrollments::`, `security_notices::`, `approvals*` integration 72 passed; fmt and `clippy -p vc-server -D warnings` clean.
