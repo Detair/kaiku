@@ -7,7 +7,13 @@
 import { loadServerFeatures, resetServerFeatures } from "@/stores/serverFeatures";
 import { createStore } from "solid-js/store";
 import { codeIs } from "@/lib/errorCode";
-import { decodeAuthSession, type AuthSession, type LoginStep, type User } from "@/lib/types";
+import {
+  decodeAuthSession,
+  type AuthSession,
+  type LoginStep,
+  type RegistrationStarted,
+  type User,
+} from "@/lib/types";
 import { passkeyCeremonies } from "@/lib/passkeySeam";
 import { resetMeSecurity } from "./security";
 import * as tauri from "@/lib/tauri";
@@ -747,7 +753,8 @@ export async function completeSignIn(
 }
 
 /**
- * Register a new account.
+ * Create an account (F8). No session: the next step is binding a passkey, a
+ * phone or an authenticator app within 30 minutes (`/register/bind`).
  */
 export async function register(
   serverUrl: string,
@@ -755,37 +762,14 @@ export async function register(
   password: string,
   email?: string,
   displayName?: string,
-): Promise<User> {
+): Promise<RegistrationStarted> {
   setAuthState({ isLoading: true, error: null });
 
   try {
     await initNativeSession();
-    const result = await tauri.register(
-      serverUrl,
-      username,
-      password,
-      email,
-      displayName,
-    );
-    warnIfNotRemembered(result);
-    stopRestoreRetry();
-    setAuthState({
-      restorePending: false,
-      user: result.user,
-      serverUrl,
-      isLoading: false,
-      isInitialized: true,
-      error: null,
-      setupRequired: result.setup_required,
-      sessionExpired: false,
-      passwordChangeRequired: result.password_change_required === true,
-    });
-
-    if (!authState.passwordChangeRequired) {
-      await startSessionServices({ showWsError: false });
-    }
-
-    return result.user;
+    const result = await tauri.register(serverUrl, username, password, email, displayName);
+    setAuthState({ isLoading: false, serverUrl });
+    return result;
   } catch (err) {
     const error = errorText(
       err,

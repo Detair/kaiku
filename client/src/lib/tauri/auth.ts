@@ -13,7 +13,7 @@ import type {
   UserStatus,
 } from "../types";
 import { codeIs, messageHasCode } from "@/lib/errorCode";
-import { decodeLoginStep, type LoginStep } from "../types/login";
+import { decodeLoginStep, type LoginStep, type RegistrationStarted } from "../types/login";
 import {
   browserState,
   clearBrowserTokens,
@@ -27,12 +27,9 @@ import {
   loadNativeAuthInfo,
   NATIVE_SESSION_EXPIRED,
   refreshAccessToken,
-  scheduleTokenRefresh,
   setNativeAuthInfo,
   setSessionRestoreBlocked,
   validateFileSize,
-  type AuthResponse,
-  type AuthResult,
   type SessionRestoreResult,
 } from "./common";
 import { getBrowserWebSocket, wsSend } from "./websocket";
@@ -164,62 +161,45 @@ export async function updateStatus(
   getBrowserWebSocket()?.send(JSON.stringify(message));
 }
 
+/**
+ * Create an account (F8). Never a session: the answer names the account and
+ * when its registration ticket ends (30 min). Browser: the ticket is the
+ * `__Secure-kaiku_ticket` cookie; desktop: Rust keeps it.
+ */
 export async function register(
   serverUrl: string,
   username: string,
   password: string,
   email?: string,
   displayName?: string,
-): Promise<AuthResult> {
+): Promise<RegistrationStarted> {
   if (isTauri()) {
     try {
-      return await invokeNativeAuth((invoke) =>
-        invoke<AuthResult>("register", {
-          request: {
-            server_url: serverUrl,
-            username,
-            email,
-            password,
-            display_name: displayName,
-          },
-        }),
-      );
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<RegistrationStarted>("register", {
+        request: {
+          server_url: serverUrl,
+          username,
+          email,
+          password,
+          display_name: displayName,
+        },
+      });
     } catch (error) {
       throw nativeAuthError(error);
     }
   }
 
-  // Browser mode
   browserState.serverUrl = serverUrl;
   localStorage.setItem("serverUrl", serverUrl);
   setSessionRestoreBlocked(false);
 
-  const response = await httpRequest<AuthResponse>("POST", "/auth/register", {
+  return httpRequest<RegistrationStarted>("POST", "/auth/register", {
     username,
     password,
     email,
     display_name: displayName,
   });
-
-  // Store access token in memory; browser relies on HttpOnly cookie for refresh
-  browserState.accessToken = response.access_token;
-  browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
-
-  // Schedule automatic token refresh
-  scheduleTokenRefresh();
-
-  console.log(
-    `[Auth] Registration successful, token expires in ${response.expires_in}s`,
-  );
-
-  // Fetch user profile after registration
-  const user = await httpRequest<User>("GET", "/auth/me");
-
-  return {
-    user,
-    setup_required: response.setup_required,
-    password_change_required: response.password_change_required ?? false,
-  };
 }
 
 export async function logout(): Promise<void> {

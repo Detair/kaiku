@@ -48,7 +48,6 @@ const Register: Component = () => {
     ssoPopup?.close();
   });
   const [searchParams] = useSearchParams();
-  const afterRegister = () => safeReturnUrl(searchParams.returnUrl) ?? "/";
   /** The sign-in page keeps the return URL (an SSO sign-up confirms there). */
   const loginPath = () => {
     const back = safeReturnUrl(searchParams.returnUrl);
@@ -117,7 +116,9 @@ const Register: Component = () => {
         email() || undefined,
         displayName() || undefined,
       );
-      navigate(afterRegister(), { replace: true });
+      // F8: no session yet; bind a sign-in method within 30 minutes.
+      const back = safeReturnUrl(searchParams.returnUrl);
+      navigate(back ? `/register/bind?returnUrl=${encodeURIComponent(back)}` : "/register/bind", { replace: true });
     } catch (err) {
       if (!authState.error) {
         setLocalError(

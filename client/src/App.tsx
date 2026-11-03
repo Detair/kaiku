@@ -244,7 +244,9 @@ const lazyPage = (name: string, View: Component) => () => (
     </LazyErrorBoundary>
   </Layout>
 );
+const RegistrationBind = lazy(() => import("./views/RegistrationBind"));
 const RecoverPage = lazyPage("RecoverAccount", RecoverAccount);
+const RegistrationBindPage = lazyPage("RegistrationBind", RegistrationBind);
 const SecureAccountPage = lazyPage("SecureAccount", SecureAccount);
 const AccountRequestPage = lazyPage("AccountRequest", AccountRequestView);
 const RegisterPage = () => (
@@ -313,6 +315,7 @@ export const AppRoutes = (): JSX.Element => (
     {import.meta.env.DEV && <Route path="/demo" component={ThemeDemoPage} />}
     <Route path="/login" component={LoginPage} />
     <Route path="/register" component={RegisterPage} />
+    <Route path="/register/bind" component={RegistrationBindPage} />
     <Route path="/setup" component={SetupLinkPage} />
     <Route path="/recover" component={RecoverPage} />
     <Route path="/secure-account" component={SecureAccountPage} />

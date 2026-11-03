@@ -404,21 +404,19 @@ describe("auth store", () => {
         expect(tauri.getCurrentUser).toHaveBeenCalledTimes(2);
       });
 
-      it.each(["login", "register"] as const)(
+      it.each(["login"] as const)(
         "a successful %s while restore is pending stops the retry timer and listeners",
         async (kind) => {
           const user = createUser();
           vi.mocked(tauri.getCurrentUser).mockResolvedValue(offline);
           const result = { user, setup_required: false, password_change_required: false };
           vi.mocked(tauri.collectAttempt).mockResolvedValue(result);
-          vi.mocked(tauri.register).mockResolvedValue(result);
 
           await initAuth();
           expect(authState.restorePending).toBe(true);
           const calls = vi.mocked(tauri.getCurrentUser).mock.calls.length;
 
           if (kind === "login") await signIn("https://server.com", "a", "p");
-          else await register("https://server.com", "a", "p");
 
           expect(authState.restorePending).toBe(false);
           await vi.advanceTimersByTimeAsync(120_000);
@@ -500,38 +498,19 @@ describe("auth store", () => {
   });
 
   describe("register", () => {
-    it("registers and inits subsystems", async () => {
-      const user = createUser();
+    it("register shows the bind step instead of signing in", async () => {
       vi.mocked(tauri.register).mockResolvedValue({
-        user,
-        setup_required: false,
-        password_change_required: false,
+        user_id: "u-new",
+        username: "alice",
+        ticket_expires_at: "2026-11-03T12:30:00Z",
       });
-      vi.mocked(initWebSocket).mockResolvedValue(undefined);
-      vi.mocked(initPresence).mockResolvedValue(undefined);
-      vi.mocked(wsConnect).mockResolvedValue(undefined);
-      vi.mocked(initPreferences).mockResolvedValue(undefined);
 
       const result = await register("https://server.com", "alice", "password");
 
-      expect(result.id).toBe(user.id);
-      expect(authState.user).toEqual(user);
-    });
-
-    it("passes setupRequired flag", async () => {
-      vi.mocked(tauri.register).mockResolvedValue({
-        user: createUser(),
-        setup_required: true,
-        password_change_required: false,
-      });
-      vi.mocked(initWebSocket).mockResolvedValue(undefined);
-      vi.mocked(initPresence).mockResolvedValue(undefined);
-      vi.mocked(wsConnect).mockResolvedValue(undefined);
-      vi.mocked(initPreferences).mockResolvedValue(undefined);
-
-      await register("https://server.com", "alice", "password");
-
-      expect(authState.setupRequired).toBe(true);
+      expect(result.user_id).toBe("u-new");
+      expect(authState.user).toBeNull();
+      expect(initWebSocket).not.toHaveBeenCalled();
+      expect(authState.isLoading).toBe(false);
     });
 
     it("sets error and re-throws on failure", async () => {
