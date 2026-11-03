@@ -644,6 +644,75 @@ impl SessionManager {
         self.adopt_tokens(&base, tokens).await
     }
 
+    /// A desktop passkey flow request (C29 steps 2 and 6): `POST {base}{path}`
+    /// with `X-Kaiku-Client: desktop`, plus the current session's bearer when
+    /// `bearer` (step-up). Answers the JSON body; a refusal is
+    /// `Server(status, CODE)` with the bare server code.
+    async fn passkey_flow_post(
+        &self,
+        server_url: &str,
+        path: &str,
+        body: &Value,
+        bearer: bool,
+    ) -> Result<Value, SessionError> {
+        let base = normalize_server_url(server_url)?;
+        let mut request = self
+            .http
+            .post(format!("{base}{path}"))
+            .header("X-Kaiku-Client", "desktop")
+            .json(body);
+        if bearer {
+            let session = self.snapshot().ok_or(SessionError::Expired)?;
+            request = request.bearer_auth(&session.access_token);
+        }
+        let response = request.send().await.map_err(|e| network(&e))?;
+        let status = response.status().as_u16();
+        let text = response.text().await.map_err(|e| network(&e))?;
+        if !(200..300).contains(&status) {
+            return Err(match error_code(&text) {
+                Some(code) => SessionError::Server(status, code),
+                None => server_error(status, &text),
+            });
+        }
+        serde_json::from_str(&text).map_err(|e| invalid_response(status, &e))
+    }
+
+    /// Start a desktop passkey flow (`POST /auth/passkeys/desktop/flows`).
+    pub async fn start_passkey_flow(
+        &self,
+        server_url: &str,
+        body: &Value,
+        bearer: bool,
+    ) -> Result<Value, SessionError> {
+        self.passkey_flow_post(server_url, "/auth/passkeys/desktop/flows", body, bearer)
+            .await
+    }
+
+    /// Redeem a desktop passkey hand-off with the flow's verifier
+    /// (`POST /auth/passkeys/desktop/redeem`). The answer is returned as is;
+    /// the caller checks `purpose` and `user_id` before adopting anything.
+    pub async fn redeem_passkey_flow(
+        &self,
+        server_url: &str,
+        flow_id: &str,
+        code: &str,
+        verifier: &str,
+        bearer: bool,
+    ) -> Result<Value, SessionError> {
+        let body = json!({ "flow_id": flow_id, "code": code, "verifier": verifier });
+        self.passkey_flow_post(server_url, "/auth/passkeys/desktop/redeem", &body, bearer)
+            .await
+    }
+
+    /// The signed-in account's id (`/auth/me` `id`), if any.
+    pub fn current_user_id(&self) -> Option<String> {
+        self.snapshot()?
+            .user?
+            .get("id")?
+            .as_str()
+            .map(str::to_owned)
+    }
+
     /// Take over a fresh token pair (login, registration, OIDC): fetch the
     /// profile, store the refresh token, publish the session.
     pub async fn adopt_tokens(

@@ -45,7 +45,7 @@ impl Acceptor for TcpListener {
 }
 
 /// Length-checked comparison that does not stop at the first difference.
-fn constant_time_eq(a: &str, b: &str) -> bool {
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())

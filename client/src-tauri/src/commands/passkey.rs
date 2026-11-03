@@ -1,0 +1,636 @@
+//! Desktop passkey sign-in and step-up through the system browser (F1 rev 4,
+//! C29 steps 1–7). There is no registration command: the desktop app never
+//! adds a passkey (B.1 rev 3).
+//!
+//! 1. Bind the loopback listener (`127.0.0.1:0`) and draw the callback path and a verifier — before
+//!    anything else.
+//! 2. Start the flow (`X-Kaiku-Client: desktop`, bearer for `step_up`).
+//! 3. Open the ceremony URL in the system browser (or the chosen one).
+//! 4. Wait for the hand-off POST on the loopback.
+//! 5. Redeem code + verifier; check `purpose` (and the account for `step_up`). Sign-in tokens go to
+//!    the session manager and never reach the webview.
+//!
+//! Errors are bare server codes or `PASSKEY_TIMEOUT`, `PASSKEY_CANCELLED`,
+//! `PASSKEY_FAILED`, `PASSKEY_BROWSER_FAILED`. Verifier, code and callback
+//! path are never logged.
+
+use std::time::Duration;
+
+use serde_json::{json, Value};
+use tauri::{command, State};
+use tokio::time::Instant;
+use tracing::info;
+
+use super::loopback_post::{self, HandBack, FLOW_LISTEN_MAX};
+use super::oidc_loopback::{new_secret, s256_challenge, READ_DEADLINE};
+use super::reauth::{registry, run_cancellable, Attempt, CANCELLED};
+use crate::session::{AuthResult, SessionError, SessionManager, TokenResponse};
+use crate::AppState;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    SignIn,
+    StepUp,
+}
+
+impl Purpose {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::SignIn => "sign_in",
+            Self::StepUp => "step_up",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum FlowResult {
+    SignedIn(AuthResult),
+    Granted(Value),
+}
+
+const FAILED: &str = "PASSKEY_FAILED";
+
+fn code_of(e: &SessionError) -> String {
+    match e {
+        SessionError::Server(_, code)
+            if !code.is_empty()
+                && code
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b == b'_' || b.is_ascii_digit()) =>
+        {
+            code.clone()
+        }
+        SessionError::AccountBanned => "ACCOUNT_BANNED".to_string(),
+        _ => FAILED.to_string(),
+    }
+}
+
+/// The shared desktop flow; `open` launches the browser (stubbed in tests),
+/// `listen_cap` bounds the wait (the flow's own expiry is the other bound).
+#[allow(clippy::too_many_arguments)]
+pub async fn run_flow(
+    session: &SessionManager,
+    server_url: &str,
+    purpose: Purpose,
+    action: Option<&str>,
+    target: Option<&str>,
+    attempt: &Attempt,
+    open: impl FnOnce(&str) -> Result<(), String>,
+    listen_cap: Duration,
+) -> Result<FlowResult, String> {
+    let flow = async {
+        // 1. Listener first (C29 step 1).
+        let (listener, cb) = loopback_post::bind()
+            .await
+            .map_err(|_| FAILED.to_string())?;
+        let verifier = new_secret();
+        let body = json!({
+            "purpose": purpose.as_str(),
+            "action": action,
+            "target": target,
+            "loopback_port": cb.port,
+            "callback_path": cb.callback_path,
+            "client_challenge": s256_challenge(&verifier),
+        });
+        attempt.check()?;
+        // 2. Start.
+        let started = session
+            .start_passkey_flow(server_url, &body, purpose == Purpose::StepUp)
+            .await
+            .map_err(|e| code_of(&e))?;
+        let flow_id = started["flow_id"].as_str().ok_or(FAILED)?.to_string();
+        let url = started["url"].as_str().ok_or(FAILED)?.to_string();
+        let expires_in = started["expires_at"]
+            .as_str()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map_or(FLOW_LISTEN_MAX, |t| {
+                (t.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                    .to_std()
+                    .unwrap_or_default()
+            });
+        let deadline = Instant::now() + expires_in.min(listen_cap);
+        // 3. Browser.
+        attempt.check()?;
+        open(&url).map_err(|_| "PASSKEY_BROWSER_FAILED".to_string())?;
+        info!(
+            purpose = purpose.as_str(),
+            "Opened the browser for a passkey"
+        );
+        // 4. Hand-off.
+        let handed =
+            loopback_post::wait_for_post(&listener, &cb, &flow_id, deadline, READ_DEADLINE)
+                .await
+                .map_err(|_| "PASSKEY_TIMEOUT".to_string())?;
+        drop(listener);
+        let code = match handed {
+            HandBack::Code(code) => code,
+            HandBack::Error(error) => return Err(error),
+        };
+        // 5. Redeem and check what came back.
+        attempt.check()?;
+        let redeemed = session
+            .redeem_passkey_flow(
+                server_url,
+                &flow_id,
+                &code,
+                &verifier,
+                purpose == Purpose::StepUp,
+            )
+            .await
+            .map_err(|e| code_of(&e))?;
+        if redeemed["purpose"].as_str() != Some(purpose.as_str()) {
+            return Err(FAILED.to_string());
+        }
+        match purpose {
+            Purpose::SignIn => {
+                let tokens: TokenResponse =
+                    serde_json::from_value(redeemed).map_err(|_| FAILED.to_string())?;
+                let result = session
+                    .adopt_tokens(server_url, tokens)
+                    .await
+                    .map_err(|e| code_of(&e))?;
+                Ok(FlowResult::SignedIn(result))
+            }
+            Purpose::StepUp => {
+                let me = session.current_user_id();
+                if me.is_none() || redeemed["user_id"].as_str() != me.as_deref() {
+                    return Err(FAILED.to_string());
+                }
+                Ok(FlowResult::Granted(redeemed["grant"].clone()))
+            }
+        }
+    };
+    run_cancellable(attempt, flow).await.map_err(|e| {
+        if e == CANCELLED {
+            "PASSKEY_CANCELLED".to_string()
+        } else {
+            e
+        }
+    })
+}
+
+async fn with_attempt<T>(
+    attempt_id: &str,
+    run: impl AsyncFnOnce(&Attempt) -> Result<T, String>,
+) -> Result<T, String> {
+    let attempt = registry().register(attempt_id)?;
+    let result = run(&attempt).await;
+    registry().finish(attempt_id);
+    result
+}
+
+/// Sign in with a passkey in the browser; returns the session result
+/// without tokens.
+#[command]
+pub async fn passkey_sign_in(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    server_url: String,
+    attempt_id: String,
+) -> Result<AuthResult, String> {
+    let browser = super::settings::load_settings(&app_handle)
+        .await
+        .map(|s| s.passkey_browser)
+        .unwrap_or_default();
+    with_attempt(&attempt_id, async |attempt| {
+        let result = run_flow(
+            &state.session,
+            server_url.trim_end_matches('/'),
+            Purpose::SignIn,
+            None,
+            None,
+            attempt,
+            |url| super::auth::open_browser_with(&app_handle, url, browser),
+            FLOW_LISTEN_MAX,
+        )
+        .await?;
+        match result {
+            FlowResult::SignedIn(r) => Ok(r),
+            FlowResult::Granted(_) => Err(FAILED.to_string()),
+        }
+    })
+    .await
+}
+
+/// Confirm `action` on `target` with a passkey in the browser; returns the
+/// `StepUpGrant` JSON.
+#[command]
+pub async fn passkey_step_up(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    server_url: String,
+    action: String,
+    target: Option<String>,
+    attempt_id: String,
+) -> Result<Value, String> {
+    let browser = super::settings::load_settings(&app_handle)
+        .await
+        .map(|s| s.passkey_browser)
+        .unwrap_or_default();
+    with_attempt(&attempt_id, async |attempt| {
+        let result = run_flow(
+            &state.session,
+            server_url.trim_end_matches('/'),
+            Purpose::StepUp,
+            Some(&action),
+            Some(target.as_deref().unwrap_or("")),
+            attempt,
+            |url| super::auth::open_browser_with(&app_handle, url, browser),
+            FLOW_LISTEN_MAX,
+        )
+        .await?;
+        match result {
+            FlowResult::Granted(g) => Ok(g),
+            FlowResult::SignedIn(_) => Err(FAILED.to_string()),
+        }
+    })
+    .await
+}
+
+/// Cancel a running (or about to start) passkey attempt.
+#[command]
+pub fn passkey_cancel(attempt_id: String) {
+    registry().cancel(&attempt_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use tokio::sync::RwLock;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    use super::*;
+    use crate::commands::settings::PasskeyBrowser;
+    use crate::session::store::MemoryTokenStore;
+    use crate::AuthState;
+
+    const FLOW_ID: &str = "4f1c5c43-6a0e-4f9a-9a3e-1f2d3c4b5a69";
+    const USER: &str = "0192f0c0-0000-7000-8000-000000000001";
+
+    fn manager() -> SessionManager {
+        SessionManager::new(
+            reqwest::Client::new(),
+            Arc::new(MemoryTokenStore::new()),
+            Arc::new(RwLock::new(AuthState::default())),
+        )
+    }
+
+    /// Answers the start, checks the listener is already bound, and (after
+    /// a moment) posts `field` to the loopback like the hand-off page.
+    struct StartResponder {
+        field: Option<(&'static str, &'static str)>,
+        seen: Arc<Mutex<Option<Value>>>,
+        bound: Arc<AtomicBool>,
+    }
+
+    impl Respond for StartResponder {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let port = u16::try_from(body["loopback_port"].as_u64().unwrap()).unwrap();
+            let path = body["callback_path"].as_str().unwrap().to_string();
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                self.bound.store(true, Ordering::SeqCst);
+            }
+            *self.seen.lock().unwrap() = Some(json!({
+                "body": body,
+                "client": request.headers.get("x-kaiku-client").map(|v| v.to_str().unwrap().to_string()),
+                "bearer": request.headers.get("authorization").is_some(),
+            }));
+            if let Some((name, value)) = self.field {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let form = format!("flow_id={FLOW_ID}&{name}={value}");
+                    let req = format!(
+                        "POST /callback/{path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n\r\n{form}",
+                        form.len()
+                    );
+                    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+                    s.write_all(req.as_bytes()).unwrap();
+                    let mut out = Vec::new();
+                    let _ = s.read_to_end(&mut out);
+                });
+            }
+            let expires = (chrono::Utc::now() + chrono::Duration::minutes(10)).to_rfc3339();
+            ResponseTemplate::new(201).set_body_json(json!({
+                "flow_id": FLOW_ID,
+                "url": format!("https://chat.example.com/auth/passkeys/desktop/{FLOW_ID}"),
+                "expires_at": expires,
+            }))
+        }
+    }
+
+    struct Fixture {
+        server: MockServer,
+        seen: Arc<Mutex<Option<Value>>>,
+        bound: Arc<AtomicBool>,
+    }
+
+    async fn fixture(
+        field: Option<(&'static str, &'static str)>,
+        redeemed: Option<Value>,
+    ) -> Fixture {
+        let server = MockServer::start().await;
+        let seen = Arc::new(Mutex::new(None));
+        let bound = Arc::new(AtomicBool::new(false));
+        Mock::given(method("POST"))
+            .and(path("/auth/passkeys/desktop/flows"))
+            .respond_with(StartResponder {
+                field,
+                seen: Arc::clone(&seen),
+                bound: Arc::clone(&bound),
+            })
+            .mount(&server)
+            .await;
+        if let Some(r) = redeemed {
+            Mock::given(method("POST"))
+                .and(path("/auth/passkeys/desktop/redeem"))
+                .and(header("x-kaiku-client", "desktop"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(r))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/auth/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": USER, "username": "alice", "display_name": "Alice", "email": null,
+                "avatar_url": null, "status": "online", "mfa_enabled": false
+            })))
+            .mount(&server)
+            .await;
+        Fixture {
+            server,
+            seen,
+            bound,
+        }
+    }
+
+    fn sign_in_answer() -> Value {
+        json!({
+            "purpose": "sign_in", "user_id": USER,
+            "access_token": "at-1", "refresh_token": "rt-1", "expires_in": 900,
+            "token_type": "Bearer", "setup_required": false, "password_change_required": false,
+            "session_id": "0192f0c0-0000-7000-8000-0000000000aa", "assurance": "full",
+            "absolute_expires_at": "2027-01-01T00:00:00Z"
+        })
+    }
+
+    async fn sign_in(f: &Fixture, m: &SessionManager) -> Result<FlowResult, String> {
+        run_flow(
+            m,
+            &f.server.uri(),
+            Purpose::SignIn,
+            None,
+            None,
+            &Attempt::default(),
+            |_| Ok(()),
+            Duration::from_secs(5),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn listener_is_bound_before_the_start_request() {
+        let f = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
+        sign_in(&f, &manager()).await.unwrap();
+        assert!(f.bound.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn start_request_carries_header_port_path_and_challenge() {
+        let f = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
+        let m = manager();
+        sign_in(&f, &m).await.unwrap();
+        let seen = f.seen.lock().unwrap().clone().unwrap();
+        assert_eq!(seen["client"], "desktop");
+        assert_eq!(seen["bearer"], false, "sign_in sends no bearer");
+        let body = &seen["body"];
+        assert_eq!(body["purpose"], "sign_in");
+        assert!(body["loopback_port"].as_u64().unwrap() > 0);
+        assert_eq!(body["callback_path"].as_str().unwrap().len(), 43);
+        assert_eq!(body["client_challenge"].as_str().unwrap().len(), 43);
+        // step_up carries the session's bearer.
+        let f2 = fixture(Some(("error", "PASSKEY_CANCELLED")), None).await;
+        let r = run_flow(
+            &m,
+            &f2.server.uri(),
+            Purpose::StepUp,
+            Some("admin.elevate"),
+            Some(""),
+            &Attempt::default(),
+            |_| Ok(()),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(r.unwrap_err(), "PASSKEY_CANCELLED");
+        let seen = f2.seen.lock().unwrap().clone().unwrap();
+        assert_eq!(seen["bearer"], true);
+        assert_eq!(seen["body"]["action"], "admin.elevate");
+    }
+
+    #[tokio::test]
+    async fn redeem_verifier_matches_the_start_challenge() {
+        let f = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
+        sign_in(&f, &manager()).await.unwrap();
+        let requests = f.server.received_requests().await.unwrap();
+        let start: Value = serde_json::from_slice(
+            &requests
+                .iter()
+                .find(|r| r.url.path().ends_with("/flows"))
+                .unwrap()
+                .body,
+        )
+        .unwrap();
+        let redeem: Value = serde_json::from_slice(
+            &requests
+                .iter()
+                .find(|r| r.url.path().ends_with("/redeem"))
+                .unwrap()
+                .body,
+        )
+        .unwrap();
+        assert_eq!(redeem["flow_id"], FLOW_ID);
+        assert_eq!(redeem["code"], "c-1");
+        assert_eq!(
+            s256_challenge(redeem["verifier"].as_str().unwrap()),
+            start["client_challenge"].as_str().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn error_post_returns_bare_code() {
+        let f = fixture(Some(("error", "PASSKEY_USER_MISMATCH")), None).await;
+        assert_eq!(
+            sign_in(&f, &manager()).await.unwrap_err(),
+            "PASSKEY_USER_MISMATCH"
+        );
+    }
+
+    #[tokio::test]
+    async fn redeem_checks_purpose_and_user() {
+        let mut wrong = sign_in_answer();
+        wrong["purpose"] = json!("step_up");
+        let f = fixture(Some(("code", "c-1")), Some(wrong)).await;
+        assert_eq!(sign_in(&f, &manager()).await.unwrap_err(), "PASSKEY_FAILED");
+        // A step-up for another account.
+        let m = manager();
+        let f1 = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
+        sign_in(&f1, &m).await.unwrap();
+        let f2 = fixture(
+            Some(("code", "c-2")),
+            Some(json!({"purpose": "step_up", "user_id": "0192f0c0-0000-7000-8000-00000000ffff",
+                        "grant": {"action": "admin.elevate", "target": "", "via": "passkey", "expires_at": "2027-01-01T00:00:00Z"}})),
+        )
+        .await;
+        let r = run_flow(
+            &m,
+            &f2.server.uri(),
+            Purpose::StepUp,
+            Some("admin.elevate"),
+            Some(""),
+            &Attempt::default(),
+            |_| Ok(()),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(r.unwrap_err(), "PASSKEY_FAILED");
+    }
+
+    #[tokio::test]
+    async fn step_up_returns_the_grant() {
+        let m = manager();
+        let f1 = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
+        sign_in(&f1, &m).await.unwrap();
+        let grant = json!({"action": "admin.elevate", "target": "", "via": "passkey", "expires_at": "2027-01-01T00:00:00Z"});
+        let f2 = fixture(
+            Some(("code", "c-2")),
+            Some(json!({"purpose": "step_up", "user_id": USER, "grant": grant})),
+        )
+        .await;
+        let r = run_flow(
+            &m,
+            &f2.server.uri(),
+            Purpose::StepUp,
+            Some("admin.elevate"),
+            Some(""),
+            &Attempt::default(),
+            |_| Ok(()),
+            Duration::from_secs(5),
+        )
+        .await;
+        match r.unwrap() {
+            FlowResult::Granted(g) => assert_eq!(g, grant),
+            FlowResult::SignedIn(_) => panic!("expected a grant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sign_in_tokens_stay_in_rust() {
+        let f = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
+        let m = manager();
+        let FlowResult::SignedIn(result) = sign_in(&f, &m).await.unwrap() else {
+            panic!("expected a session");
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(!json.contains("at-1") && !json.contains("rt-1"), "{json}");
+        assert_eq!(m.auth_info().unwrap().access_token, "at-1");
+    }
+
+    #[tokio::test]
+    async fn cancel_before_browser_never_opens_it() {
+        let f = fixture(None, None).await;
+        let attempt = Attempt::default();
+        let id = "cancel-test-attempt";
+        let registered = registry().register(id).unwrap();
+        registry().cancel(id);
+        assert!(registered.is_cancelled());
+        let opened = AtomicBool::new(false);
+        let r = run_flow(
+            &manager(),
+            &f.server.uri(),
+            Purpose::SignIn,
+            None,
+            None,
+            &registered,
+            |_| {
+                opened.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+        registry().finish(id);
+        drop(attempt);
+        assert_eq!(r.unwrap_err(), "PASSKEY_CANCELLED");
+        assert!(!opened.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn timeout_is_reported() {
+        let f = fixture(None, None).await;
+        let r = run_flow(
+            &manager(),
+            &f.server.uri(),
+            Purpose::SignIn,
+            None,
+            None,
+            &Attempt::default(),
+            |_| Ok(()),
+            Duration::from_millis(200),
+        )
+        .await;
+        assert_eq!(r.unwrap_err(), "PASSKEY_TIMEOUT");
+    }
+
+    #[tokio::test]
+    async fn browser_failure_is_reported() {
+        let f = fixture(None, None).await;
+        let r = run_flow(
+            &manager(),
+            &f.server.uri(),
+            Purpose::SignIn,
+            None,
+            None,
+            &Attempt::default(),
+            |_| Err("no browser".into()),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(r.unwrap_err(), "PASSKEY_BROWSER_FAILED");
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn browser_setting_selects_the_program() {
+        use tauri_plugin_shell::open::Program;
+
+        use super::super::auth::browser_program;
+        assert!(browser_program(PasskeyBrowser::System).is_none());
+        assert!(matches!(
+            browser_program(PasskeyBrowser::Chromium),
+            Some(Program::Chromium)
+        ));
+        assert!(matches!(
+            browser_program(PasskeyBrowser::Chrome),
+            Some(Program::Chrome)
+        ));
+        assert!(matches!(
+            browser_program(PasskeyBrowser::Firefox),
+            Some(Program::Firefox)
+        ));
+        if cfg!(target_os = "macos") {
+            assert_eq!(PasskeyBrowser::Safari.validated(), PasskeyBrowser::Safari);
+        } else {
+            assert_eq!(PasskeyBrowser::Safari.validated(), PasskeyBrowser::System);
+            assert!(browser_program(PasskeyBrowser::Safari).is_none());
+        }
+        let s: crate::commands::settings::Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.passkey_browser, PasskeyBrowser::System);
+        let s: crate::commands::settings::Settings =
+            serde_json::from_str(r#"{"passkey_browser": "chromium"}"#).unwrap();
+        assert_eq!(s.passkey_browser, PasskeyBrowser::Chromium);
+    }
+}

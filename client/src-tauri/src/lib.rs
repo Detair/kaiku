@@ -140,6 +140,9 @@ pub fn run() {
             commands::auth::oidc_link_identity,
             commands::reauth::oidc_reauth,
             commands::reauth::oidc_reauth_cancel,
+            commands::passkey::passkey_sign_in,
+            commands::passkey::passkey_step_up,
+            commands::passkey::passkey_cancel,
             // Voice commands
             commands::voice::join_voice,
             commands::voice::leave_voice,

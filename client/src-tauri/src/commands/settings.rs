@@ -78,6 +78,30 @@ impl Default for VoiceSettings {
     }
 }
 
+/// "Browser for passkey sign-in" (F1, DC14): which browser the desktop app
+/// opens for passkey ceremonies. Safari exists on macOS only.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PasskeyBrowser {
+    #[default]
+    System,
+    Chromium,
+    Chrome,
+    Firefox,
+    Safari,
+}
+
+impl PasskeyBrowser {
+    /// Safari off macOS falls back to the system default.
+    #[must_use]
+    pub const fn validated(self) -> Self {
+        match self {
+            Self::Safari if !cfg!(target_os = "macos") => Self::System,
+            other => other,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct Settings {
@@ -85,6 +109,7 @@ pub struct Settings {
     pub voice: VoiceSettings,
     pub theme: String,
     pub notifications_enabled: bool,
+    pub passkey_browser: PasskeyBrowser,
 }
 
 impl Default for Settings {
@@ -94,6 +119,7 @@ impl Default for Settings {
             voice: VoiceSettings::default(),
             theme: "dark".into(),
             notifications_enabled: true,
+            passkey_browser: PasskeyBrowser::System,
         }
     }
 }
@@ -127,6 +153,7 @@ impl Settings {
         // Clamp release delays
         self.voice.push_to_talk_release_delay = self.voice.push_to_talk_release_delay.min(1000);
         self.voice.push_to_mute_release_delay = self.voice.push_to_mute_release_delay.min(1000);
+        self.passkey_browser = self.passkey_browser.validated();
         self
     }
 }
@@ -215,7 +242,12 @@ fn save_ui_state_to_file(path: &PathBuf, state: &UiState) -> Result<(), String> 
 
 #[command]
 pub async fn get_settings(app_handle: tauri::AppHandle) -> Result<Settings, String> {
-    let path = get_settings_path(&app_handle)?;
+    load_settings(&app_handle).await
+}
+
+/// The validated settings (also for the passkey browser choice).
+pub async fn load_settings(app_handle: &tauri::AppHandle) -> Result<Settings, String> {
+    let path = get_settings_path(app_handle)?;
     tokio::task::spawn_blocking(move || load_settings_from_file(&path).validated())
         .await
         .map_err(|e| format!("Task join error: {e}"))
