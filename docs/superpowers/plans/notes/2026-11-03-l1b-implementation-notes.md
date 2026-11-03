@@ -463,3 +463,65 @@ Fable and Flash approved. Codex requested changes for narrow TOTP counter races 
 | Codex #1 — a reset racing effects that already read (100, E) | decision (coordinator), no code change; see below | — | — |
 
 **Decision (Codex r4 #1).** Effects that read (count ≥ 100, epoch E) under the account lock apply even if a success commits concurrently. Crossing 100 wrong codes is decisive on its own. A concurrent success does not cancel the effects, because that success may be the attacker's own lucky code. In bootstrap, 100 TOTP failures after a correct password also mean the password is known, so throttling the TOTP and marking that password generation compromised is the intended outcome. The epoch check covers only effects scheduled before a success that committed earlier; it is not meant to undo this.
+
+## Review round 5 (Gemini Flash full review) at 58b0347a
+
+Gemini 3.8 Flash (High) reviewed the whole package in 9 parts against 35fcadf8, without tools: 7 parts REQUEST CHANGES, 2 APPROVE WITH FIXES. Every claim was checked against the code, the spec (rev 5) and C26–C29. Commits: c2bbe4bc (admin setup), edf96727 (factors, counters, throttling), 172decd3 (locks, authority, hints, events). RED tests are in `flash_review` (17); each was seen failing before its fix.
+
+| Finding | Verdict | Commit | Test or reason |
+|---|---|---|---|
+| P1 B1: "existing" by `first_activity_at` alone | **real**, narrower than claimed: every session and strong-authenticator activation already marks it. The gap was a registration with a password (F8) whose ticket is still unbound, which had a password but no marker. Fix: one B.0 predicate `strong::is_new_account` (marker, password, TOTP, non-pending key device or passkey, recovery codes, session, identity), used at issue and at `done`; a registration with a password marks the first activity | c2bbe4bc | `a_registered_password_account_is_existing_for_an_admin_setup` (RED 201). Tests that meant a new account use `helpers::make_new_account` (a test user has a password hash and a session) |
+| P1 #2: demoted or banned admin issues a setup link | **real**: the actor is re-checked under `lock_for_start`. Completion was already blocked by the round 3 `done` check | c2bbe4bc | `a_demoted_admin_issues_no_setup_link` (RED 201) |
+| P1 #3: unlabelled passkey cannot be removed | not real: `passkeys.label TEXT NOT NULL CHECK (1..64)` (migration `20261120000700_passkeys.sql:10`) | — | — |
+| P1 #4: index on `bootstrap_reminded_at` | deferred: family-sized `users` table; the sweep scans a few rows | — | — |
+| P2 #1: cancel hint goes to the subject | **real** (C26: the issuer): `notify_issuer` | 172decd3 | `cancelling_an_admin_link_tells_its_issuer` (RED timeout) |
+| P2 #2: savepoint left open on a scope error | not real: the error rolls the transaction back, and a COMMIT ends open savepoints | — | — |
+| P2 #3: OpenAPI lacks `KEY_DEVICE_REQUIRED` | **real** (doc): added | 172decd3 | — |
+| P3 #1: Argon2 before the state check | **real**, and the wrong answer: a waiting request with a weak password got 400 instead of 409. State and deadline are now checked first; the locked re-check stays | 172decd3 | `a_waiting_request_stages_no_password` (RED 400) |
+| P3 #2: `enrollment_get` ignores `ready` | not real: a read of the request's own enrolment under the same secret. C27 gates only the staging actions on `ready` (contracts C27 "Request client"), and `GET current` also answers in any state. The module doc is corrected | 172decd3 | — |
+| P3 m1: request cookie kept after a void Finish | deferred: the cookie names a void request, so every route answers 404/409, and it expires | — | — |
+| P3 m2: summary offers Cancel to any reader | not real: its readers are only the owner and the confirmed contact (`list_own`, handlers.rs:432-434) and elevated admins | — | — |
+| P4 B (a): bootstrap counts a failed start | not real: spec B.5 "Request starts (rev 4): … every outcome counted" (spec 1212-1214). A start counts only after a valid first factor (`!first_ok` → neutral, uncounted), which plays the recovery code's role in C27's "nothing counted per account before a valid code" | — | — |
+| P4 B (b): code consumed on 409 | not real: spec B.5 "A valid code is consumed even when the second factor then fails" and the SM3 start row "checked first and consumed" (spec 1208-1211, 1406). The 409s come after the code and the factor; the start counts | — | — |
+| P4: bootstrap commits on any `insert_tx` error | **real** (minor): only the two 409s commit, as in recovery | edf96727 | — (DB-error path) |
+| P4: `has_real` against the dummy hash | **real**, worse than claimed: the dummy plaintext is public, so a passwordless account's recovery started on a recovery code alone, and its bootstrap counted a start. Both checks now need a real hash | edf96727 | `the_dummy_hash_is_no_password` (RED 201) |
+| P4: bootstrap success keeps the password counter | **real** (B.5): reset on a correct password | edf96727 | `a_correct_bootstrap_password_resets_its_counter` (RED 3) |
+| P4: `clear_throttle_tx` keeps the Valkey delay | not real: B.5 resets the counter on a password success only. A sign-in by another method clears the B.1 state, and the at most 1 h delay keeps bounding the guesser | — | — |
+| P4 m: `list_admin` elevation | not real: mounted in the elevated router (`admin/mod.rs:102`) | — | — |
+| P4 m: unbounded cancel reason | **real**: at most 500 characters (400) | edf96727 | — |
+| P4 m: B.1 exit test lacks recovery codes | **real**: added | edf96727 | `factors::tests::exit_rules_follow_b1` |
+| P5 B1: `totp_tx` vs answer/deny/release deadlock | not real: both sides lock the account row first. The PC side's `lock_for_pc` locks it before the attempt row (`login_attempts/core.rs:584`; `authenticate` reads unlocked). The device side's `lock_challenge` locks approver and subject before the device, challenge and attempt (`approvals/handlers.rs:205`). A TOTP step exists only for password/OIDC attempts, whose user is the challenge's subject | — | — |
+| P5 #2: TOTP counter checked before the secret | **real** (C27): the secret is authenticated first | edf96727 | `a_wrong_collection_secret_is_unknown_while_totp_waits` (RED 429) |
+| P5 #3: unlocked `may_approve` re-check | not real: `answer_tx` runs under the account lock taken by `lock_challenge` (`approvals/handlers.rs:205`) | — | — |
+| P5 m4: no pending delivery after collect | **real**: added | edf96727 | — |
+| P6 #1: banned account answers 403 after a correct password | deferred (policy): unchanged from the base (35fcadf8 `login.rs:113`). F3's neutral set is a wrong password, an unknown user and a closed path, and `ACCOUNT_BANNED` is the contract answer; wrong guesses still count | — | — |
+| P6 #2: banned account through the OIDC callback | not real: the ban is checked before `next_step` (`login.rs:983`) | — | — |
+| P6 #3 / P8 M-01: `n == THROTTLE_AT` | **real**: the failure script's `HSETNX thr` claim throttles at the first failure at or past 100 in an epoch, once. The claim is given back when the effects fail, and a success (new epoch) clears it. Password and TOTP | edf96727 | `throttling_applies_past_a_missed_hundredth` (RED active) |
+| P6 #4: popup pages cacheable | **real**: `no-store`, `no-referrer` | edf96727 | — |
+| P6 #5: `mfa/verify` spends the code before the grant | **real**: the grant is peeked first | 172decd3 | — |
+| P7 B1: contact or admin repudiates | not real on the route: repudiation drops events whose subject is not the caller, so the owner rule sees `subject == caller` (part 1/2 only). Hardened: the owner rule gives contact and admin authority only for `request.cancel` (spec B.0, owner-action table) | 172decd3 | `an_admin_is_no_owner_for_a_repudiation` (RED `Ok(Admin)`) |
+| P7 #2: part 1 accepts revoked or foreign authenticators | not real: a grant is used only while its authenticator is active (`step_up.rs:396`, B.7 rule 4), and grants are bound to the caller's session and made by its own authenticators | — | — |
+| P7 #3: session age from memory | not real: `AuthUser.session` is `None` only outside the middleware (`middleware.rs:74`); `created_at` never changes | — | — |
+| P7 #4: part-2 error codes; throttled TOTP | not real: C27/C28 define no code for a wrong part-2 factor, and `INVALID_MFA`/`INVALID_CREDENTIALS` are what L2a/L2b map (wire compatibility). Spec B.2 part 2 accepts a TOTP "not compromised" (spec 681) | — | — |
+| P7 #5: admin contact actor not re-checked | **real**: re-checked under the lock | 172decd3 | `a_demoted_admin_names_no_recovery_contact` (RED 200) |
+| P7 #6: contact promoted to admin keeps the role | deferred: any admin may cancel anyway, so authority is unchanged; the spec constrains only the naming | — | — |
+| P7 #7: new recovery codes lack `step_up_action` | **real**: recorded | 172decd3 | `new_recovery_codes_record_the_step_up_action` (RED 0) |
+| P7 #8: no `authenticators_changed` on a password change | **real** (C26): password set/remove and TOTP set/remove | 172decd3 | `a_password_change_hints_authenticators_changed` (RED timeout) |
+| P7 #9: first admin's role event undelivered | not real: the minute sweep delivers undelivered events (`timers.rs:36`); it is now delivered at once | c2bbe4bc | — |
+| P8 B-01: repudiation locks another account's routes | not real as stated: `lock_route_change` locks accounts in one ascending statement with savepoint retry, held only until the 404, and event ids are random. Hardened with an early filter (P7 B1) | 172decd3 | — |
+| P8 M-02: `enrollment_issue` without the account lock | **real**: lock, then the ticket re-checked | 172decd3 | `a_ticket_bound_meanwhile_issues_no_setup_link` (RED 201) |
+| P8 M-03: `still_unbound` ignores expiry | **real**: uses `ticket_unbound_tx` | 172decd3 | `a_ticket_expired_meanwhile_binds_no_totp` (RED 200) |
+| P8 m-01: passwordless registration binds TOTP | **real** (F8: then F4 has no first factor): 403 `TOTP_UNAVAILABLE` | 172decd3 | `a_passwordless_registration_binds_no_totp` (RED 200) |
+| P8 m-02: `repudiated` carries the repudiated session | not real: C28 leaves `session_id` open; it links the reported session and the actor is in the actor fields | — | — |
+| P8 m-03: ticket cookie kept after a confirm | deferred: a bound ticket binds nothing more, and the cookie expires with it (30 min) | — | — |
+| P9 #1: no `cancel_request` action | **real** (C28): open requests' events offer it to the owner (`step_up`/`part2`), the confirmed contact and admins (`step_up`) | 172decd3 | `a_request_event_offers_cancel` (RED none) |
+| P9 #2: `record_success` deletes the epoch | not real (password effects are not epoch-gated); changed to `reset_epoch` for consistency | edf96727 | `review_gaps::a_success_resets_the_password_counter` (now reads the count) |
+| P9 #3: unlink ignores a compromised password | not real in practice: unlinking needs a full session (`identities.rs:234`), which ends with its strong authenticator (`cascade.rs:90`). With an active strong authenticator, no lockout is possible | — | — |
+| P9 #4: `throttle reset` needs a second connection | **real**: the generation comes from its transaction | 172decd3 | `throttle_reset_runs_on_one_connection` (RED timeout) |
+| P9 #5: `revoke_system_admin` incomplete | not real: no production caller. The CLI demote does the full path (`cli/recovery.rs:286`) | — | — |
+| P9 #6: CLI `request_cancel` lock order | not real: `lock_by_id` → `lock_request` locks the account scope before the request row (`account_requests/core.rs:539`) | — | — |
+| P9 m1: CLI counter reset errors swallowed | **real**: warned | 172decd3 | — |
+| P9 m2: `grant_system_admin` undelivered | not real: no production caller | — | — |
+| P9 m3: wildcard factor match | **real**: explicit | 172decd3 | — |
+
+Totals: 25 real (P8 M-01 duplicates P6 #3), 22 not real, 0 settled, 5 deferred. P7 #10 (missing tests) is covered by `flash_review` and the round 3 `consume_id_tx` test.
