@@ -198,3 +198,45 @@ server receives no request). The web/desktop step-up wrapper passes the session'
   Step 3 was not run. Proposal: one headless Chromium run with a CDP virtual authenticator before
   merge, or keep D4/D6 as the gate.
 - Minors deferred (reviewer m1–m14): see the final report.
+
+## Task 14 — Android
+
+- `PasskeyAuth` (sign-in) and `PasskeyStepUp` (LP's `StepUpProvider`) live in `data/auth/`;
+  `AuthRepository` gains only `installNativeSignIn` (the single install point), so its
+  constructor (used by seven test files) is unchanged. The plan's
+  `AuthRepository.loginWithPasskey` is `PasskeyAuth.loginWithPasskey`.
+- `StepUpProvider` has L2b's exact signature and package (`data/auth/StepUpProvider.kt`);
+  `StepUpGrant` is L2b's model (`domain/model/StepUp.kt`). The key device's provider is an
+  optional binding (`@BindsOptionalOf @DeviceStepUp`); when L2 binds it, Settings uses it to add a
+  passkey (the first one, DC1), else a passkey step-up when the account has an active passkey.
+- String names mirror the web keys (`passkeys_error_removed`, …); the two Android-only texts are
+  `passkeys_android_none_on_device` / `passkeys_android_not_set_up_for_app`. `values-de` stays
+  empty (the i18n check wants each locale folder empty or complete).
+- Credential Manager signals (`SignalUnknownCredentialRequest`,
+  `SignalAllAcceptedCredentialIdsRequest`) are sent best effort.
+- The Android tests were written together with the code (no failing run observed first).
+  `:app:lintDebug` and `:app:assembleDebug` were not run.
+
+## Task 15 — gate results (2026-11-03)
+
+- `cargo test --no-fail-fast -p vc-server --lib --bins --tests` (Postgres and Valkey in local
+  containers, lib Valkey tests on `127.0.0.1:6379`): lib 692 passed; `--test integration`
+  1154 passed, 11 failed, 33 ignored. The 11 (pending-member/screening family, optional-features
+  screening cases, `dm_calls::test_recall_after_decline_succeeds_immediately`,
+  `oidc_mock::test_login_flow_does_not_force_a_fresh_login`,
+  `session_revocation::test_ban_closes_socket_without_session_rows`) pass on rerun (6 together, the
+  other 5 with `--test-threads=1`); none touches passkey code. The passkey suites
+  (`passkeys_{profile,schema,step_up,register,login,manage,desktop,assetlinks}`, 122 tests) pass.
+- `cargo +nightly fmt --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server -- -D warnings`
+  clean; `cargo deny check`: `advisories ok, bans ok, licenses ok, sources ok`; no `query!` macros
+  were added, so `.sqlx` is unchanged.
+- `cargo test -p vc-client --lib`: 268 passed, 2 ignored. `cargo clippy -p vc-client`: LP's files
+  clean; the crate still fails on the pre-existing `voice/` warnings (as on L1a).
+- Client: `bun run test:run` 148 files / 1586 tests passed; `bunx tsc --noEmit` clean;
+  `bun run i18n:check` ok; `bun run lint` 0 errors (141 warnings, pre-existing kinds);
+  `bun run lint:tauri-commands` ok (82 commands).
+- Android: `./gradlew :app:testDebugUnitTest` 889 tests, 0 failures.
+- Not done here: the Chromium hand check of `ceremony.js` (Task 9 Step 3), the spike B browser
+  matrix, D1–D6, the external reviews (Fable, Codex, Gemini Argon), the PR.
+- Size: `git diff --stat c07f402e..HEAD` ≈ 13.4k insertions (server ≈ 8.2k, clients ≈ 4.7k), above
+  the 7k threshold: the split point is the commit marked "LP-1 boundary" (Tasks 1–10, 28e4ee38).
