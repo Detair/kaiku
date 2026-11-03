@@ -120,7 +120,7 @@ pub async fn authorize(
                     return Err(refused());
                 };
                 if state == "compromised"
-                    || !super::reauth::accept_totp_ctx(ctx, t.subject, &secret, &username, &code)
+                    || !super::totp_guard::verify(ctx, t.subject, &secret, &username, &code, None)
                         .await?
                 {
                     return Err(AuthError::InvalidMfaCode);

@@ -142,13 +142,23 @@ async fn totp_100_after_correct_password_compromises_password(pool: PgPool) {
     )
     .await;
     assert_eq!((s, b["error"].as_str()), (401, Some("INVALID_MFA")), "{b}");
-    let (pw, totp): (String, String) =
-        sqlx::query_as("SELECT password_state, totp_state FROM users WHERE id = $1")
+    // The effects run in their own transaction after the answer.
+    let mut states = (String::new(), String::new());
+    for _ in 0..50 {
+        states = sqlx::query_as("SELECT password_state, totp_state FROM users WHERE id = $1")
             .bind(user)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!((pw.as_str(), totp.as_str()), ("compromised", "throttled"));
+        if states.1 == "throttled" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        (states.0.as_str(), states.1.as_str()),
+        ("compromised", "throttled")
+    );
 }
 
 #[sqlx::test]
@@ -173,4 +183,209 @@ async fn strong_paths_unaffected(pool: PgPool) {
         .body(Body::empty())
         .unwrap();
     assert_eq!(app.oneshot(req).await.status().as_u16(), 200);
+}
+
+// ---------------------------------------------------------------------------
+// Every TOTP check counts and waits (review round 1: Fable B1, Codex M3)
+// ---------------------------------------------------------------------------
+
+async fn retry_after_on_sixth<F, Fut>(mut call: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = (u16, Value, Option<String>)>,
+{
+    for i in 0..5 {
+        let (s, b, _) = call().await;
+        assert_ne!(s, 429, "try {i}: {b}");
+    }
+    let (s, b, retry) = call().await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (429, Some("TOO_MANY_ATTEMPTS")),
+        "{b}"
+    );
+    assert!(retry.is_some(), "Retry-After");
+}
+
+async fn post_raw(
+    app: &TestApp,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: Value,
+) -> (u16, Value, Option<String>) {
+    let mut req = peer_request(Method::POST, uri).header("Content-Type", "application/json");
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let resp = app
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await;
+    let status = resp.status().as_u16();
+    let retry = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    (status, body_to_json_lenient(resp).await, retry)
+}
+
+#[sqlx::test]
+async fn oidc_attempt_totp_step_is_throttled(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let (_, step, secret) = login_native(&app, &name, PASSWORD).await;
+    let id = attempt_id(&step["attempt"]);
+    // The same attempt as an OIDC one (no password generation).
+    sqlx::query(
+        "UPDATE login_attempts SET kind = 'oidc', first_factor = 'oidc' WHERE id = $1::uuid",
+    )
+    .bind(&id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    retry_after_on_sixth(|| async {
+        let (s, b, h) = pc_call(
+            &app,
+            &format!("/auth/login-attempts/{id}/totp"),
+            &secret,
+            json!({"code": "000000"}),
+        )
+        .await;
+        let retry = h
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        (s, b, retry)
+    })
+    .await;
+}
+
+#[sqlx::test]
+async fn bootstrap_totp_is_throttled(pool: PgPool) {
+    use super::account_requests::{admin_with_device, bootstrap_user, PASSWORD as BP};
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    let (user, name, _) = bootstrap_user(&app).await;
+    // Five wrong codes already counted (the start budget would stop the
+    // starts themselves at three).
+    set_count(&app, &CounterKey::Totp(user), 5).await;
+    let _: () = app
+        .state
+        .redis
+        .hset(
+            format!("ratelimit:acct:totp:{user}"),
+            ("next", chrono::Utc::now().timestamp() + 30),
+        )
+        .await
+        .unwrap();
+    let (s, b, retry) = post_raw(
+        &app,
+        "/auth/account-requests",
+        &[("X-Kaiku-Client", "android")],
+        json!({"username": name, "purpose": "bootstrap",
+               "first": {"type": "password", "password": BP}, "totp_code": "000000"}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (429, Some("TOO_MANY_ATTEMPTS")),
+        "{b}"
+    );
+    assert!(retry.is_some());
+}
+
+#[sqlx::test]
+async fn recovery_totp_is_throttled_before_a_code_is_consumed(pool: PgPool) {
+    use super::account_requests::admin_with_device;
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+    let mut tx = pool.begin().await.unwrap();
+    let codes = vc_server::auth::recovery_codes::replace_tx(&mut tx, &ctx, user)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    set_count(&app, &CounterKey::Totp(user), 5).await;
+    let _: () = app
+        .state
+        .redis
+        .hset(
+            format!("ratelimit:acct:totp:{user}"),
+            ("next", chrono::Utc::now().timestamp() + 30),
+        )
+        .await
+        .unwrap();
+    let (s, b, retry) = post_raw(
+        &app,
+        "/auth/account-requests",
+        &[("X-Kaiku-Client", "android")],
+        json!({"username": name, "purpose": "recovery", "recovery_code": codes[0],
+               "second": {"type": "totp", "code": "000000"}, "lost": "none"}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (429, Some("TOO_MANY_ATTEMPTS")),
+        "{b}"
+    );
+    assert!(retry.is_some());
+    let mut conn = pool.acquire().await.unwrap();
+    assert_eq!(
+        vc_server::auth::recovery_codes::left_conn(&mut conn, user)
+            .await
+            .unwrap(),
+        10,
+        "no code consumed"
+    );
+}
+
+#[sqlx::test]
+async fn part2_totp_is_throttled(pool: PgPool) {
+    use super::account_requests::{admin_with_device, bootstrap_user, start_bootstrap};
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    let (user, name, totp) = bootstrap_user(&app).await;
+    let (s, b) = start_bootstrap(&app, user, &name, &totp).await;
+    assert_eq!(s, 201, "{b}");
+    let id = b["request"]["id"].as_str().unwrap().to_string();
+    let (_, token) =
+        super::helpers::create_probation_session_with_token(&pool, &app.config, user).await;
+    retry_after_on_sixth(|| async {
+        let auth = format!("Bearer {token}");
+        post_raw(
+            &app,
+            &format!("/api/account-requests/{id}/cancel"),
+            &[("Authorization", auth.as_str())],
+            json!({"reason": null, "part2": {"factor": {"type": "totp", "code": "000000"}}}),
+        )
+        .await
+    })
+    .await;
+}
+
+#[sqlx::test]
+async fn bootstrap_starts_share_the_budget(pool: PgPool) {
+    use super::account_requests::{admin_with_device, bootstrap_user, start_bootstrap};
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    let (user, name, totp) = bootstrap_user(&app).await;
+    for i in 0..3 {
+        let (s, b) = start_bootstrap(&app, user, &name, &totp).await;
+        assert_eq!(s, 201, "start {i}: {b}");
+        let secret = b["request_secret"].as_str().unwrap().to_string();
+        let req = peer_request(Method::DELETE, "/auth/account-requests/current")
+            .header("X-Kaiku-Request-Secret", &secret)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(app.oneshot(req).await.status().as_u16(), 204);
+    }
+    let (s, b) = start_bootstrap(&app, user, &name, &totp).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (401, Some("INVALID_CREDENTIALS")),
+        "{b}"
+    );
 }

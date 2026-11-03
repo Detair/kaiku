@@ -186,7 +186,7 @@ pub async fn login(
 
 /// B.5: count a wrong password for `counter`; at every 20th a coalesced
 /// `guessing` notice, at the 100th the password is `throttled`.
-async fn account_failure(
+pub async fn account_failure(
     state: &AppState,
     counter: &crate::ratelimit::account::CounterKey,
     account: Option<Uuid>,

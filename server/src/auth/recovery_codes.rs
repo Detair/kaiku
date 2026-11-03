@@ -112,13 +112,18 @@ pub async fn consume_tx(conn: &mut PgConnection, user_id: Uuid, code: &str) -> A
     .bind(user_id)
     .fetch_all(&mut *conn)
     .await?;
+    // Always exactly CODE_COUNT Argon2 checks (padded with the dummy hash):
+    // the time reveals neither the shape, nor how many codes are left, nor
+    // whether the account exists (B.5; `dummy_check` does the same work).
+    let dummy = super::password::DUMMY_PASSWORD_HASH.clone();
     if raw.len() != CODE_CHARS || !raw.bytes().all(|b| ALPHABET.contains(&b)) {
-        // Same Argon2 work as a real miss (no early answer for a bad shape).
-        let _ = matching(&raw, vec![super::password::DUMMY_PASSWORD_HASH.clone()]).await?;
+        let _ = matching(&raw, vec![dummy; CODE_COUNT]).await?;
         return Ok(false);
     }
-    let hashes: Vec<String> = rows.iter().map(|(_, h)| h.clone()).collect();
-    let Some(i) = matching(&raw, hashes).await? else {
+    let mut hashes: Vec<String> = rows.iter().map(|(_, h)| h.clone()).collect();
+    let real = hashes.len();
+    hashes.resize(CODE_COUNT.max(real), dummy);
+    let Some(i) = matching(&raw, hashes).await?.filter(|i| *i < real) else {
         return Ok(false);
     };
     sqlx::query("UPDATE recovery_codes SET used_at = NOW() WHERE id = $1")

@@ -37,13 +37,7 @@ pub async fn start_recovery(
 ) -> AuthResult<StartedRequest> {
     let neutral = || AuthError::InvalidCredentials;
     let code = body.recovery_code.as_deref().unwrap_or("");
-    let user = crate::db::find_user_by_username(&state.db, &body.username)
-        .await?
-        .filter(|u| !u.is_system);
-    let Some(user) = user else {
-        crate::auth::recovery_codes::dummy_check(code).await?;
-        return Err(neutral());
-    };
+    // The request's shape first: no answer depends on the account (B.5).
     let lost_all = match body.lost.as_deref() {
         None | Some("none") => false,
         Some("all_key_devices") => true,
@@ -53,8 +47,47 @@ pub async fn start_recovery(
             ))
         }
     };
+    let user = crate::db::find_user_by_username(&state.db, &body.username)
+        .await?
+        .filter(|u| !u.is_system);
+    let Some(user) = user else {
+        crate::auth::recovery_codes::dummy_check(code).await?;
+        return Err(neutral());
+    };
+    // A banned account starts nothing (the neutral answer and work).
+    if crate::auth::queries::is_user_globally_banned(&state.db, user.id).await? {
+        crate::auth::recovery_codes::dummy_check(code).await?;
+        return Err(neutral());
+    }
+    // The second factor's counter waits before any code is consumed (B.5).
+    match &body.second {
+        Some(StartFactor::Totp { .. }) => crate::auth::totp_guard::pre_check(ctx, user.id).await?,
+        Some(StartFactor::Password { .. }) => {
+            match crate::ratelimit::account::AccountLimiter::new(ctx.redis)
+                .check(&crate::ratelimit::account::CounterKey::password(
+                    &user.username,
+                ))
+                .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(d)) => {
+                    return Err(AuthError::TooManyAttempts {
+                        retry_after: d.retry_after,
+                    })
+                }
+                Err(_) => return Err(AuthError::ServiceUnavailable),
+            }
+        }
+        _ => {}
+    }
     let mut tx = state.db.begin().await?;
     crate::approvals::transition::lock_accounts(&mut tx, &[user.id]).await?;
+    // The credentials under the lock (Codex B2).
+    let (hash_now, secret_now): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT password_hash, mfa_secret FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(&mut *tx)
+            .await?;
     // 1. The start budget, before any code is consumed.
     let starts: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM account_request_starts
@@ -86,17 +119,15 @@ pub async fn start_recovery(
     let mut oidc = false;
     let ok = match &body.second {
         Some(StartFactor::Password { password }) => {
-            let hash = st
-                .has_password
-                .then(|| user.password_hash.clone())
-                .flatten();
+            let hash = st.has_password.then(|| hash_now.clone()).flatten();
             let valid = password_ok(hash, password).await?;
-            if !valid {
-                count_failure(
-                    state,
-                    &crate::ratelimit::account::CounterKey::password(&user.username),
-                )
-                .await;
+            let key = crate::ratelimit::account::CounterKey::password(&user.username);
+            if valid {
+                let _ = crate::ratelimit::account::AccountLimiter::new(ctx.redis)
+                    .record_success(&key)
+                    .await;
+            } else {
+                count_failure(state, &key, user.id);
             }
             used.push(FactorRef {
                 factor: Factor::Password,
@@ -104,7 +135,7 @@ pub async fn start_recovery(
             });
             valid && st.password.state == FactorState::Active
         }
-        Some(StartFactor::Totp { code }) => match &user.mfa_secret {
+        Some(StartFactor::Totp { code }) => match &secret_now {
             // Any state (B.1: a throttled or compromised TOTP still proves
             // possession for a delayed request); the replay store applies.
             Some(secret) => {
@@ -116,10 +147,7 @@ pub async fn start_recovery(
                     code.trim(),
                 )
                 .await?;
-                if !valid {
-                    count_failure(state, &crate::ratelimit::account::CounterKey::Totp(user.id))
-                        .await;
-                }
+                crate::auth::totp_guard::after(ctx, user.id, valid, None).await;
                 used.push(FactorRef {
                     factor: Factor::Totp,
                     generation: st.totp.generation,
@@ -197,11 +225,16 @@ async fn password_ok(hash: Option<String>, password: &str) -> AuthResult<bool> {
     .map_err(|e| AuthError::Internal(format!("password check failed: {e}")))
 }
 
-/// A failed second factor counts on its per-account counter (Task 26).
-async fn count_failure(state: &AppState, key: &crate::ratelimit::account::CounterKey) {
-    let _ = crate::ratelimit::account::AccountLimiter::new(&state.redis)
-        .record_failure(key)
-        .await;
+/// A failed password counts on its per-account counter with its 20/100
+/// effects (Task 26; spawned: the caller holds the account lock).
+fn count_failure(state: &AppState, key: &crate::ratelimit::account::CounterKey, user: Uuid) {
+    let state = state.clone();
+    let key = key.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::auth::login::account_failure(&state, &key, Some(user)).await {
+            tracing::warn!(error = %e, "password failure effects failed");
+        }
+    });
 }
 
 /// A sign-in counts as fresh this long after its `auth_time` (C27).

@@ -160,22 +160,46 @@ pub async fn start(
 
 /// Bootstrap (F8 "Secure my account"): `bootstrap_open`, the password
 /// (`active`) and an `active` TOTP code; every failure is the neutral 401.
+///
+/// Review round 1: the password and TOTP counters (B.5) apply, the start
+/// counts on the shared budget of three per delay period (SM3), the
+/// credentials are re-read under the account lock (an old one is never
+/// recorded as a newer generation), and a banned account gets the neutral
+/// answer.
 async fn start_bootstrap(
     state: &AppState,
     ctx: &AuthCtx<'_>,
     body: &StartRequest,
 ) -> AuthResult<core::StartedRequest> {
-    let user = crate::db::find_user_by_username(&state.db, &body.username).await?;
+    use crate::ratelimit::account::{AccountLimiter, CounterKey};
     let neutral = || AuthError::InvalidCredentials;
+    let password_key = CounterKey::password(&body.username);
+    if matches!(body.first, Some(StartFactor::Password { .. })) {
+        match AccountLimiter::new(ctx.redis).check(&password_key).await {
+            Ok(Ok(())) => {}
+            Ok(Err(d)) => {
+                return Err(AuthError::TooManyAttempts {
+                    retry_after: d.retry_after,
+                })
+            }
+            Err(_) => return Err(AuthError::ServiceUnavailable),
+        }
+    }
+    let user = crate::db::find_user_by_username(&state.db, &body.username).await?;
+    let verified_hash = user.as_ref().and_then(|u| u.password_hash.clone());
     let (first_ok, oidc) = match &body.first {
-        Some(StartFactor::Password { password }) => (
-            password_ok(
-                user.as_ref().and_then(|u| u.password_hash.clone()),
-                password,
-            )
-            .await?,
-            false,
-        ),
+        Some(StartFactor::Password { password }) => {
+            let ok = password_ok(verified_hash.clone(), password).await?;
+            if !ok {
+                crate::auth::login::account_failure(
+                    state,
+                    &password_key,
+                    user.as_ref().filter(|u| !u.is_system).map(|u| u.id),
+                )
+                .await?;
+            }
+            (ok, false)
+        }
         Some(StartFactor::Oidc {
             oidc_code,
             verifier,
@@ -194,30 +218,65 @@ async fn start_bootstrap(
     let Some(user) = user.filter(|u| !u.is_system) else {
         return Err(neutral());
     };
+    if !first_ok || crate::auth::queries::is_user_globally_banned(&state.db, user.id).await? {
+        return Err(neutral());
+    }
+    crate::auth::totp_guard::pre_check(ctx, user.id).await?;
     let mut tx = state.db.begin().await?;
     crate::approvals::transition::lock_accounts(&mut tx, &[user.id]).await?;
+    // The credentials under the lock (Codex B2).
+    let (hash_now, secret_now): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT password_hash, mfa_secret FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if !oidc && hash_now != verified_hash {
+        return Err(neutral());
+    }
+    // The shared start budget, before the second factor (SM3, B.5).
+    let starts: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM account_request_starts
+          WHERE user_id = $1 AND started_at > NOW() - make_interval(hours => $2)",
+    )
+    .bind(user.id)
+    .bind(i32::try_from(ctx.config.account_request_delay_hours).unwrap_or(24))
+    .fetch_one(&mut *tx)
+    .await?;
+    if starts >= super::recovery::STARTS_PER_PERIOD {
+        tracing::warn!(user_id = %user.id, "bootstrap start budget exhausted (B.5)");
+        return Err(neutral());
+    }
+    sqlx::query("INSERT INTO account_request_starts (user_id) VALUES ($1)")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
     let st = factors::states(&mut tx, user.id).await?;
-    let totp_ok = match (&body.totp_code, &user.mfa_secret) {
+    let password_used = (!oidc).then_some(FactorRef {
+        factor: Factor::Password,
+        generation: st.password.generation,
+    });
+    let totp_ok = match (&body.totp_code, &secret_now) {
         (Some(code), Some(secret)) if st.totp.state == factors::FactorState::Active => {
-            crate::auth::reauth::accept_totp_ctx(ctx, user.id, secret, &user.username, code).await?
+            let ok =
+                crate::auth::reauth::accept_totp_ctx(ctx, user.id, secret, &user.username, code)
+                    .await?;
+            crate::auth::totp_guard::after(ctx, user.id, ok, password_used).await;
+            ok
         }
         _ => false,
     };
     let password_active =
         oidc || (st.has_password && st.password.state == factors::FactorState::Active);
-    if !(st.bootstrap_open && first_ok && password_active && totp_ok) {
+    if !(st.bootstrap_open && password_active && totp_ok) {
+        // The start stays counted.
+        tx.commit().await?;
         return Err(neutral());
     }
     let mut used = vec![FactorRef {
         factor: Factor::Totp,
         generation: st.totp.generation,
     }];
-    if !oidc {
-        used.push(FactorRef {
-            factor: Factor::Password,
-            generation: st.password.generation,
-        });
-    }
+    used.extend(password_used);
     let started = core::insert_tx(
         &mut tx,
         ctx,
@@ -235,9 +294,17 @@ async fn start_bootstrap(
             with_secret: true,
         },
     )
-    .await?;
-    tx.commit().await?;
-    Ok(started)
+    .await;
+    match started {
+        Ok(s) => {
+            tx.commit().await?;
+            Ok(s)
+        }
+        Err(e) => {
+            tx.commit().await?;
+            Err(e)
+        }
+    }
 }
 
 /// The request client's view (request secret).

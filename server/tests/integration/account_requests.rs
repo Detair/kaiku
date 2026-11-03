@@ -603,21 +603,37 @@ async fn bootstrap_entitlement_consumed_by_cli_device_voids_request(pool: PgPool
 async fn concurrent_starts_one_open(pool: PgPool) {
     let app = std::sync::Arc::new(TestApp::with_pool(pool.clone()).await);
     admin_with_device(&app).await;
-    let (user, name, _) = bootstrap_user(&app).await;
-    // Distinct accepted codes: the replay store allows one per step, so the
-    // race is on the open-request rule only for the codes that pass.
+    let (user, name, totp) = bootstrap_user(&app).await;
+    // One secret and one code for all: the account lock serialises the
+    // starts; the replay store lets only one code through.
+    let code = totp.generate_current().unwrap();
     let mut tasks = Vec::new();
     for _ in 0..10 {
         let app = app.clone();
         let name = name.clone();
+        let code = code.clone();
         tasks.push(tokio::spawn(async move {
-            let totp = enable_totp(&app.pool, &app.config, user, &name).await;
-            start_bootstrap(&app, user, &name, &totp).await.0
+            post(
+                &app,
+                "/auth/account-requests",
+                None,
+                &[("X-Kaiku-Client", "android")],
+                json!({"username": name, "purpose": "bootstrap",
+                       "first": {"type": "password", "password": PASSWORD}, "totp_code": code}),
+            )
+            .await
         }));
     }
+    let mut created = 0;
     for t in tasks {
-        t.await.unwrap();
+        let (s, b) = t.await.unwrap();
+        match s {
+            201 => created += 1,
+            401 | 409 | 429 => {}
+            _ => panic!("unexpected {s}: {b}"),
+        }
     }
+    assert_eq!(created, 1);
     let open: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM account_requests WHERE user_id = $1 AND state IN ('waiting', 'ready')",
     )

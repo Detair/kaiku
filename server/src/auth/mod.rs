@@ -40,6 +40,7 @@ pub(crate) mod sessions;
 pub mod step_up;
 pub mod strong;
 pub mod timers;
+pub mod totp_guard;
 pub mod types;
 pub mod ua_parser;
 
