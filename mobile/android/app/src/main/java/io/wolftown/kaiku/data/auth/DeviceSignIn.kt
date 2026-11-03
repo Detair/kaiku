@@ -59,7 +59,7 @@ class DeviceSignIn @Inject constructor(
             )
             when (out) {
                 is SignOutcome.Rejected -> DeviceSignInResult.Failed("CHALLENGE_${out.reason}")
-                is SignOutcome.Uv -> onUv(out.result, local.keyDeviceId)
+                is SignOutcome.Uv -> onUv(out.result)
                 is SignOutcome.Signed -> {
                     val auth = approvalApi.deviceLogin(ch.challengeId, out.signatureB64u)
                     val user = authRepository.installDeviceSession(auth, local.userId).getOrElse {
@@ -96,25 +96,13 @@ class DeviceSignIn @Inject constructor(
         }
     }
 
-    private suspend fun onUv(r: UvResult, keyDeviceId: String?): DeviceSignInResult = when (r) {
+    private fun onUv(r: UvResult): DeviceSignInResult = when (r) {
         UvResult.Cancelled -> DeviceSignInResult.Cancelled
         UvResult.LockedOut -> DeviceSignInResult.Failed("UV_LOCKED_OUT")
         is UvResult.Failed -> DeviceSignInResult.Failed(r.code)
         is UvResult.Signed -> DeviceSignInResult.Failed("UNEXPECTED")
-        UvResult.KeyInvalidated -> {
-            // Unsigned report (it only removes); without a live session the app just shows setup again.
-            if (keyDeviceId != null && authRepository.hasLiveSession()) {
-                try {
-                    approvalApi.reportInvalidated(keyDeviceId)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    logger.warning("Invalidated key not reported: ${e.javaClass.simpleName}")
-                }
-            }
-            keyDevices.forget()
-            DeviceSignInResult.KeyInvalidated
-        }
+        // DeviceSigner already reported (with a live session) and forgot the device (KeyInvalidation).
+        UvResult.KeyInvalidated -> DeviceSignInResult.KeyInvalidated
     }
 }
 

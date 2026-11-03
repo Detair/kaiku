@@ -2,6 +2,7 @@ package io.wolftown.kaiku.approval
 
 import androidx.fragment.app.FragmentActivity
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.auth.DeviceStepUpProvider
@@ -110,5 +111,24 @@ class DeviceStepUpTest {
         assertEquals(22, StepUpAction.entries.size)
         assertEquals(StepUpAction.ADMIN_RECOVERY_CONTACT_SET, StepUpAction.fromWire("admin.recovery_contact.set"))
         assertEquals(null, StepUpAction.fromWire("admin.unknown"))
+    }
+
+    @Test fun `an invalidated key during a step-up reports and forgets the device`() = runTest {
+        stepUp()
+        keyStore.invalidated = true
+        val authRepository: io.wolftown.kaiku.data.repository.AuthRepository = mockk { every { hasLiveSession() } returns true }
+        val invalidation = io.wolftown.kaiku.data.keydevice.KeyInvalidation(api, repo, authRepository)
+        val s = DeviceStepUp(api, DeviceSigner(keyStore, FakeUserVerifier(keyStore), checks, invalidation::handle), repo, { SigFixtures.DEVICE_ID }, authApi)
+        assertEquals(StepUpOutcome.Failed("KEY_INVALIDATED"), s.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, "99999999-9999-4999-8999-999999999999", ""))
+        assertTrue("reportInvalidated:kd1" in api.calls)
+        assertEquals(io.wolftown.kaiku.data.keydevice.KeyDeviceState.None, repo.current())
+    }
+
+    @Test fun `the prompt shows only the signed target label`() = runTest {
+        val s = stepUp()
+        api.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_STEPUP, 4, SigFixtures.V04_CONTEXT.replace("\"target_label\":\"Pixel 8\"", "\"target_label\":\"\""))
+        every { activity.getString(any(), any()) } answers { "label=" + (secondArg<Array<Any>>().firstOrNull() ?: "") }
+        s.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, "99999999-9999-4999-8999-999999999999", "Evil label")
+        assertEquals("label=", verifier.prompts.single().subtitle)
     }
 }

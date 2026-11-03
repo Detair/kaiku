@@ -67,7 +67,7 @@ class EnrollmentIssuerViewModelTest {
         approvals.nextChallenge = enrollChallenge()
         val v = EnrollmentIssuerViewModel(
             stepUp, enroll.api, approvals, f.signer, f.repo, { SigFixtures.DEVICE_ID }, { mayApprove }, events,
-            pollMs = 3_000L,
+            pollMs = 3_000L, appScope = backgroundScope,
         )
         return v to f
     }
@@ -192,6 +192,7 @@ class EnrollmentIssuerViewModelTest {
         val (v, _) = vm()
         v.start(activity, IssuerMode.Own)
         v.cancel()
+        testScheduler.runCurrent()
         assertTrue(enroll.calls.contains("cancel:$enrollmentId"))
         assertEquals(IssuerUi.Ended(R.string.issuer_stopped), v.ui.value)
     }

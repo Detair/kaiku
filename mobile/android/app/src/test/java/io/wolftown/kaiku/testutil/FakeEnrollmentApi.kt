@@ -27,6 +27,7 @@ class FakeEnrollmentApi {
     var lastClaim: EnrollmentClaim? = null
     var lastTicket: String? = null
     val statuses = ArrayDeque<ClaimStatus>()
+    val statusFailures = ArrayDeque<Exception>()
     var lastOrigin: String? = null
     var issued = EnrollmentIssued("55555555-5555-4555-8555-555555555555", "setup-token-from-ticket",
         "https://chat.example.com/setup#v=1&t=x", "2026-11-03T12:10:00Z")
@@ -68,6 +69,7 @@ class FakeEnrollmentApi {
         }
         override suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String?): ClaimStatus {
             calls += "status"
+            statusFailures.pollFirst()?.let { throw it }
             // A long-poll with nothing new waits (until the test ends).
             return statuses.pollFirst() ?: kotlinx.coroutines.awaitCancellation()
         }

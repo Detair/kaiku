@@ -3,6 +3,7 @@ package io.wolftown.kaiku.approval
 import androidx.fragment.app.FragmentActivity
 import io.wolftown.kaiku.domain.model.ApprovalChallenge
 import java.util.Base64
+import kotlin.coroutines.cancellation.CancellationException
 
 sealed interface SignOutcome {
     /** [signatureB64u]: b64u ASN.1 DER ECDSA over M; [verified] is what the screen showed and signed. */
@@ -22,6 +23,8 @@ class DeviceSigner(
     private val keyStore: ApprovalKeyStore,
     private val verifier: UserVerifier,
     private val checks: ChallengeVerifier,
+    /** Runs once whenever the key turns out to be invalidated or missing (report + forget). */
+    private val onKeyInvalidated: suspend () -> Unit = {},
 ) {
     /** Runs only the checks, for screens that show the context before asking to confirm. */
     fun check(ch: ApprovalChallenge, expected: SigKind, userId: String, deviceId: String): VerifiedChallenge =
@@ -42,9 +45,18 @@ class DeviceSigner(
         } catch (e: ChallengeRejected) {
             return SignOutcome.Rejected(e.reason)
         }
-        if (!keyStore.hasKey()) return SignOutcome.Uv(UvResult.KeyInvalidated)
         val message = KaikuSig.message(verified.prefix, decision, response)
-        return when (val r = verifier.sign(activity, prompt, message)) {
+        val r = try {
+            if (!keyStore.hasKey()) UvResult.KeyInvalidated else verifier.sign(activity, prompt, message)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Any other Keystore failure (ProviderException, UnrecoverableKeyException, …) fails the
+            // signature instead of crashing the app.
+            UvResult.Failed("KEYSTORE_" + e.javaClass.simpleName)
+        }
+        if (r == UvResult.KeyInvalidated) onKeyInvalidated()
+        return when (r) {
             is UvResult.Signed -> SignOutcome.Signed(Base64.getUrlEncoder().withoutPadding().encodeToString(r.der), verified)
             else -> SignOutcome.Uv(r)
         }

@@ -65,7 +65,7 @@ class AdminSetupPhoneTest {
         coEvery { admin.issueEnrollment(any(), any(), any(), any(), any()) } returns issued
         approvals.nextChallenge = SigFixtures.challengeFor(SigKind2.ENROLL, 2, SigFixtures.V02_CONTEXT)
         return EnrollmentIssuerViewModel(stepUp, enroll.api, approvals, f.signer, f.repo, { SigFixtures.DEVICE_ID }, { true }, events,
-            issueAdmin = { m -> admin.issueEnrollment(m.userId, m.mode, m.claimantMethod, m.note, m.lostDeviceIds) })
+            issueAdmin = { m -> admin.issueEnrollment(m.userId, m.mode, m.claimantMethod, m.note, m.lostDeviceIds) }, appScope = backgroundScope)
     }
 
     @Test fun `setup records the claimant check and note`() = runTest {

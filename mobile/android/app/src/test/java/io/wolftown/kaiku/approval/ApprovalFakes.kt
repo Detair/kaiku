@@ -12,11 +12,13 @@ class SoftwareApprovalKeyStore : ApprovalKeyStore {
     var uvClass: UvClass? = null
     var invalidated = false
     var generatedChallenges = mutableListOf<ByteArray>()
+    var onGenerate: (() -> Unit)? = null
 
     override fun hasKey(): Boolean = pair != null
 
     override fun generate(attestationChallenge: ByteArray, d: UvDecision.Use): GeneratedKey {
         check(pair == null) { "key exists" }
+        onGenerate?.invoke()
         generatedChallenges += attestationChallenge
         pair = KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
         uvClass = d.uvClass

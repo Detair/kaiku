@@ -57,7 +57,8 @@ class DeviceStepUp @Inject constructor(
                 return StepUpOutcome.Failed("CONTEXT_MISMATCH")
             }
             val (res, takesLabel) = StepUpText.prompt(action)
-            val label = ctx.targetLabel.ifEmpty { targetLabel }
+            // Only the signed label is shown (C26: display only the parsed context); [targetLabel] is not.
+            val label = ctx.targetLabel
             val subtitle = if (takesLabel) activity.getString(res, label) else activity.getString(res)
             val out = signer.sign(
                 activity, ch, SigKind.DEVICE_STEPUP, local.userId, deviceIds.id(), Decision.APPROVE, ByteArray(0),

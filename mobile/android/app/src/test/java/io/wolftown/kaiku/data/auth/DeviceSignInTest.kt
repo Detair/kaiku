@@ -62,7 +62,8 @@ class DeviceSignInTest {
             )
         }
         coEvery { authRepository.hasLiveSession() } returns loggedIn
-        val signer = DeviceSigner(keyStore, FakeUserVerifier(keyStore, uv), checks)
+        val invalidation = io.wolftown.kaiku.data.keydevice.KeyInvalidation(api, repo, authRepository)
+        val signer = DeviceSigner(keyStore, FakeUserVerifier(keyStore, uv), checks, invalidation::handle)
         return DeviceSignIn(api, signer, repo, { SigFixtures.DEVICE_ID }, authRepository) to repo
     }
 

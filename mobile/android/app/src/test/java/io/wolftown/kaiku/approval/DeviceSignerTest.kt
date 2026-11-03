@@ -74,4 +74,25 @@ class DeviceSignerTest {
             .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.REPORT, ByteArray(0), prompt)
         assertEquals(SignOutcome.Uv(UvResult.Cancelled), out)
     }
+
+    @Test fun `an unexpected keystore failure is a failed result, not a crash`() = runTest {
+        keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
+        val throwing = object : UserVerifier {
+            override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult =
+                throw java.security.ProviderException("Keystore operation failed")
+        }
+        val out = DeviceSigner(keyStore, throwing, checks)
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt)
+        assertTrue(out is SignOutcome.Uv && out.result is UvResult.Failed)
+    }
+
+    @Test fun `an invalidated key runs the invalidation hook once`() = runTest {
+        keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
+        keyStore.invalidated = true
+        var hooked = 0
+        val out = DeviceSigner(keyStore, FakeUserVerifier(keyStore), checks, onKeyInvalidated = { hooked++ })
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, ByteArray(0), prompt)
+        assertEquals(SignOutcome.Uv(UvResult.KeyInvalidated), out)
+        assertEquals(1, hooked)
+    }
 }

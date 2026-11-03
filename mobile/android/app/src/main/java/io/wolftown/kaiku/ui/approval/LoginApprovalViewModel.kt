@@ -50,6 +50,8 @@ class LoginApprovalViewModel @Inject constructor(
     private val signer: DeviceSigner,
     private val keyDevices: KeyDeviceRepository,
     private val deviceIds: DeviceIdProvider,
+    /** Releases outlive the screen: they must reach the server after the ViewModel is cleared. */
+    @io.wolftown.kaiku.di.AuthCoroutineScope private val appScope: kotlinx.coroutines.CoroutineScope,
 ) : ViewModel() {
 
     private companion object {
@@ -173,7 +175,7 @@ class LoginApprovalViewModel @Inject constructor(
         val ch = challenge ?: return
         if (!open) return
         open = false
-        viewModelScope.launch { releaseQuietly(ch.challengeId) }
+        appScope.launch { releaseQuietly(ch.challengeId) }
     }
 
     override fun onCleared() {

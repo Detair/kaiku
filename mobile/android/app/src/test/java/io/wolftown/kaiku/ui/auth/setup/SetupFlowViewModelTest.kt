@@ -50,6 +50,15 @@ class SetupFlowViewModelTest {
     private val deviceSignIn: DeviceSignIn = mockk()
     private val env = FakeSetupEnvironment()
 
+    /** Runs inline but marks that key work went through the key dispatcher (never Main). */
+    private var onKeyDispatcher = false
+    private val keyDispatcher = object : kotlinx.coroutines.CoroutineDispatcher() {
+        override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+            onKeyDispatcher = true
+            try { block.run() } finally { onKeyDispatcher = false }
+        }
+    }
+
     class FakeSetupEnvironment : SetupEnvironment {
         var pinned: String? = null
         var signedInUser: String? = null
@@ -70,7 +79,8 @@ class SetupFlowViewModelTest {
         f.keyStore.delete()
         f.authState.setLoggedOut()
         coEvery { deviceSignIn.signIn(any()) } returns DeviceSignInResult.Success
-        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env)
+        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
+            keyDispatcher = keyDispatcher)
         return v to f
     }
 
@@ -85,7 +95,8 @@ class SetupFlowViewModelTest {
     @Test fun `phone that is already a key refuses another setup`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         val f = KeyDeviceFixture(backgroundScope)
-        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env)
+        val v = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
+            keyDispatcher = keyDispatcher)
         v.start(entry)
         assertEquals(SetupUi.Ended(R.string.setup_already_key, canRetry = false), v.ui.value)
         assertTrue(enroll.calls.isEmpty())
@@ -220,5 +231,50 @@ class SetupFlowViewModelTest {
         assertEquals("ticket-secret", enroll.lastTicket)
         assertFalse(enroll.calls.contains("status"))
         assertEquals(SetupUi.SigningIn, v.ui.value)
+    }
+
+    @Test fun `a server hiccup during the code wait keeps the key and polls again`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.statusFailures += apiError(503, "SERVICE_UNAVAILABLE")
+        enroll.statuses += ClaimStatus(EnrollmentState.DONE, "active")
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        assertEquals(2, enroll.calls.count { it == "status" })
+    }
+
+    @Test fun `an unknown enrolment during the code wait ends the setup`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.statusFailures += apiError(404, "ENROLLMENT_TOKEN_INVALID")
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        runCurrent()
+        assertFalse(f.keyStore.hasKey())
+        assertTrue(v.ui.value is SetupUi.Ended)
+    }
+
+    @Test fun `a new code after an ended setup starts again`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (v, _) = vm()
+        v.start(entry.copy(origin = "https://evil.example.com"))
+        assertTrue(v.ui.value is SetupUi.Ended)
+        v.reset()
+        assertFalse(v.started)
+        v.start(entry)
+        assertEquals(SetupUi.ConfirmSubject("Oma", "oma", "Familie Müller"), v.ui.value)
+    }
+
+    @Test fun `key work runs off the main thread`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (v, f) = vm()
+        var generatedOffMain = false
+        f.keyStore.onGenerate = { generatedOffMain = onKeyDispatcher }
+        v.start(entry)
+        assertTrue(generatedOffMain)
     }
 }

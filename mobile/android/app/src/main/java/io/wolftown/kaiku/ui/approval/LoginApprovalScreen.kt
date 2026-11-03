@@ -80,8 +80,8 @@ fun LoginApprovalScreen(
             }
             is LoginApprovalUi.Error -> {
                 KeyNotice(stringResource(u.msg), warning = true)
-                if (u.rescan) KeyPrimaryButton(stringResource(R.string.scan_again), onClick = onRescan)
-                KeySecondaryButton(stringResource(R.string.common_back), onClick = onDone)
+                if (u.rescan) KeyPrimaryButton(stringResource(R.string.scan_again), onClick = { viewModel.back(); onRescan() })
+                KeySecondaryButton(stringResource(R.string.common_back), onClick = { viewModel.back(); onDone() })
             }
         }
     }

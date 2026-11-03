@@ -14,7 +14,9 @@ import io.wolftown.kaiku.testutil.FakeApprovalApi
 import io.wolftown.kaiku.testutil.KeyDeviceFixture
 import io.wolftown.kaiku.testutil.SigFixtures
 import io.wolftown.kaiku.testutil.apiError
+import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -41,7 +43,7 @@ class LoginApprovalViewModelTest {
     private fun TestScope.vm(uv: UvResult? = null, context: String = SigFixtures.V01_CONTEXT): Pair<LoginApprovalViewModel, KeyDeviceFixture> {
         val f = KeyDeviceFixture(backgroundScope, uv)
         api.nextChallenge = SigFixtures.challengeFor(SigKind.LOGIN, 1, context, "qr")
-        return LoginApprovalViewModel(api, f.signer, f.repo, { SigFixtures.DEVICE_ID }) to f
+        return LoginApprovalViewModel(api, f.signer, f.repo, { SigFixtures.DEVICE_ID }, appScope = backgroundScope) to f
     }
 
     @Test fun `context shows client first and only verified context fields`() = runTest {
@@ -100,6 +102,7 @@ class LoginApprovalViewModelTest {
         val (v, _) = vm()
         v.start(payload)
         v.back()
+        testScheduler.runCurrent()
         assertEquals("release:${SigFixtures.challengeId(1)}", api.calls.last())
         // After a decision there is nothing to release.
         val (v2, _) = vm()
@@ -107,6 +110,7 @@ class LoginApprovalViewModelTest {
         v2.start(payload)
         v2.deny()
         v2.back()
+        testScheduler.runCurrent()
         assertTrue(api.calls.none { it.startsWith("release") })
     }
 
@@ -152,5 +156,15 @@ class LoginApprovalViewModelTest {
         api.answerFailure = apiError(410, "APPROVAL_EXPIRED")
         v.approve(activity)
         assertEquals(LoginApprovalUi.Error(R.string.approval_expired, rescan = true), v.ui.value)
+    }
+
+    @Test fun `leaving releases the claim even after the screen's scope ended`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        // The ViewModel is being cleared: its own scope is already cancelled.
+        v.viewModelScope.cancel()
+        v.back()
+        testScheduler.runCurrent()
+        assertEquals("release:${SigFixtures.challengeId(1)}", api.calls.last())
     }
 }

@@ -19,6 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.model.Part2Factor
 
@@ -29,6 +31,8 @@ fun Part2FactorDialog(onSubmit: (Part2Factor) -> Unit, onDismiss: () -> Unit) {
     var code by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
+        // A recovery or authenticator code is typed here: no screenshots, not cast (B.1).
+        properties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn),
         title = { Text(stringResource(R.string.security_part2_title)) },
         text = {
             Column {

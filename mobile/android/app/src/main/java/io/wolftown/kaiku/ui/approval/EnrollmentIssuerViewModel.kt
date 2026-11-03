@@ -93,6 +93,8 @@ class EnrollmentIssuerViewModel internal constructor(
     private val events: Flow<ServerEvent>,
     private val pollMs: Long = 3_000L,
     private val issueAdmin: (suspend (IssuerMode.Admin) -> EnrollmentIssued)? = null,
+    /** Cancel and deny outlive the screen (Back pops it at once). */
+    private val appScope: kotlinx.coroutines.CoroutineScope? = null,
 ) : ViewModel() {
 
     @Inject
@@ -106,11 +108,13 @@ class EnrollmentIssuerViewModel internal constructor(
         flags: AccountFlags,
         socket: RealtimeSocket,
         adminApi: io.wolftown.kaiku.data.api.AdminApi,
+        @io.wolftown.kaiku.di.AuthCoroutineScope appScope: kotlinx.coroutines.CoroutineScope,
     ) : this(
         stepUp, enrollmentApi, approvalApi, signer, keyDevices, deviceIds,
         mayApprove = { flags.refresh(); flags.mayApprove() },
         events = socket.events,
         issueAdmin = { m -> adminApi.issueEnrollment(m.userId, m.mode, m.claimantMethod, m.note, m.lostDeviceIds) },
+        appScope = appScope,
     )
 
     private companion object {
@@ -296,7 +300,7 @@ class EnrollmentIssuerViewModel internal constructor(
         watch?.cancel()
         _ui.value = IssuerUi.Ended(R.string.issuer_stopped)
         if (id == null) return
-        viewModelScope.launch {
+        (appScope ?: viewModelScope).launch {
             try {
                 if (ch != null) approvalApi.deny(ch) else enrollmentApi.cancel(id)
             } catch (c: CancellationException) {

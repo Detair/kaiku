@@ -21,7 +21,6 @@ import androidx.compose.ui.Modifier
 import androidx.fragment.app.FragmentActivity
 import androidx.navigation.compose.rememberNavController
 import dagger.hilt.android.AndroidEntryPoint
-import io.wolftown.kaiku.data.auth.RenewalPolicy
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.KeyDeviceState
 import io.wolftown.kaiku.data.local.AuthState
@@ -70,6 +69,8 @@ class MainActivity : FragmentActivity() {
     /** A route the running app should open next (the B.4 renewal prompt). */
     private val pendingRoute = MutableStateFlow<String?>(null)
 
+    private val renewalGate = io.wolftown.kaiku.data.auth.RenewalGate()
+
     private val loginViewModel: LoginViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -113,11 +114,10 @@ class MainActivity : FragmentActivity() {
      * cap, at most once a day, never when opened from a notification or a call.
      */
     private fun checkRenewal() {
-        if (keyDevices.current() !is KeyDeviceState.Active) return
-        val fromNotification = intent?.hasExtra(AndroidNotificationPresenter.EXTRA_USER_ID) == true ||
-            intent?.data != null
         val now = Instant.now()
-        if (RenewalPolicy.shouldRenew(now, keyDevices.sessionCap(), keyDevices.lastRenewalPromptAt(), fromNotification)) {
+        val prompt = renewalGate.shouldPrompt(now, keyDevices.sessionCap(), keyDevices.lastRenewalPromptAt())
+        if (keyDevices.current() !is KeyDeviceState.Active) return
+        if (prompt) {
             keyDevices.markRenewalPrompted(now)
             pendingRoute.value = CONFIRM_RENEW_ROUTE
         }
@@ -134,6 +134,10 @@ class MainActivity : FragmentActivity() {
      * (`kaiku://auth/callback`) and forwards it to the [LoginViewModel].
      */
     private fun handleIntent(intent: Intent?) {
+        // Recorded before the consumed link is stripped below: no renewal prompt after a notification tap.
+        renewalGate.onIntent(
+            intent?.hasExtra(AndroidNotificationPresenter.EXTRA_USER_ID) == true || intent?.data != null,
+        )
         val uri = intent?.data ?: return
         if (oidcHandler.isOidcCallback(uri)) {
             loginViewModel.onOidcDeepLink(uri)

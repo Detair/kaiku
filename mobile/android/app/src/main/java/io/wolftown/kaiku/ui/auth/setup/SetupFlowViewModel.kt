@@ -39,7 +39,10 @@ import io.wolftown.kaiku.domain.model.ApprovalChallenge
 import io.wolftown.kaiku.domain.model.EnrollmentState
 import io.wolftown.kaiku.domain.model.AccountRef
 import io.wolftown.kaiku.ui.auth.signInResultText
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -103,7 +106,7 @@ class AndroidSetupEnvironment @Inject constructor(
  * own (no code).
  */
 @HiltViewModel
-class SetupFlowViewModel @Inject constructor(
+class SetupFlowViewModel internal constructor(
     private val enrollmentApi: EnrollmentApi,
     private val suitability: DeviceSuitabilityChecker,
     private val keyStore: ApprovalKeyStore,
@@ -112,11 +115,26 @@ class SetupFlowViewModel @Inject constructor(
     private val deviceIds: DeviceIdProvider,
     private val deviceSignIn: DeviceSignIn,
     private val env: SetupEnvironment,
+    /** The suitability probe and key generation (StrongBox, attestation) take seconds: never on Main. */
+    private val keyDispatcher: CoroutineDispatcher,
 ) : ViewModel() {
+
+    @Inject
+    constructor(
+        enrollmentApi: EnrollmentApi,
+        suitability: DeviceSuitabilityChecker,
+        keyStore: ApprovalKeyStore,
+        signer: DeviceSigner,
+        keyDevices: KeyDeviceRepository,
+        deviceIds: DeviceIdProvider,
+        deviceSignIn: DeviceSignIn,
+        env: SetupEnvironment,
+    ) : this(enrollmentApi, suitability, keyStore, signer, keyDevices, deviceIds, deviceSignIn, env, Dispatchers.Default)
 
     private companion object {
         val logger: Logger = Logger.getLogger("SetupFlow")
         const val RETRY_MS = 2_000L
+        const val RETRY_MAX_MS = 30_000L
     }
 
     private val _ui = MutableStateFlow<SetupUi>(SetupUi.Opening)
@@ -133,8 +151,24 @@ class SetupFlowViewModel @Inject constructor(
 
     val started: Boolean get() = entry != null
 
+    /** For hosts that switch between the scanner and this flow (SetupScanScreen). */
+    private val _startedFlow = MutableStateFlow(false)
+    val startedFlow: StateFlow<Boolean> = _startedFlow.asStateFlow()
+
+    /** Back to the scanner after an ended or abandoned setup; an unclaimed new key goes. */
+    fun reset() {
+        if (keyDevices.local() == null && key != null) keyStore.delete()
+        entry = null
+        key = null
+        pop = null
+        subject = null
+        _startedFlow.value = false
+        _ui.value = SetupUi.Opening
+    }
+
     fun start(e: SetupEntry) {
         entry = e
+        _startedFlow.value = true
         val o = KaikuPayloads.canonicalOrigin(e.origin) ?: return end(R.string.setup_invalid)
         origin = o
         val pinned = env.pinnedOrigin()
@@ -176,14 +210,14 @@ class SetupFlowViewModel @Inject constructor(
     }
 
     private fun checkSuitability() {
-        when (val d = suitability.check()) {
-            is UvDecision.Unsuitable -> _ui.value = when (d.reason) {
-                UnsuitableReason.NO_SCREEN_LOCK -> SetupUi.ScreenLockNeeded(d.reason)
-                UnsuitableReason.NO_HARDWARE_KEYSTORE -> SetupUi.Ended(R.string.setup_cannot_be_key, canRetry = false)
-            }
-            is UvDecision.Use -> {
-                _ui.value = SetupUi.Opening
-                viewModelScope.launch { prepareKey(d) }
+        _ui.value = SetupUi.Opening
+        viewModelScope.launch {
+            when (val d = withContext(keyDispatcher) { suitability.check() }) {
+                is UvDecision.Unsuitable -> _ui.value = when (d.reason) {
+                    UnsuitableReason.NO_SCREEN_LOCK -> SetupUi.ScreenLockNeeded(d.reason)
+                    UnsuitableReason.NO_HARDWARE_KEYSTORE -> SetupUi.Ended(R.string.setup_cannot_be_key, canRetry = false)
+                }
+                is UvDecision.Use -> prepareKey(d)
             }
         }
     }
@@ -192,9 +226,11 @@ class SetupFlowViewModel @Inject constructor(
         val e = entry ?: return
         try {
             // An unfinished earlier setup is replaced explicitly, never silently re-used.
-            if (keyDevices.phase() == KeyDevicePhase.CLAIMED) keyDevices.forget()
-            if (keyDevices.local() == null && keyStore.hasKey()) keyStore.delete()
-            val k = keyStore.generate(nonce, d)
+            val k = withContext(keyDispatcher) {
+                if (keyDevices.phase() == KeyDevicePhase.CLAIMED) keyDevices.forget()
+                if (keyDevices.local() == null && keyStore.hasKey()) keyStore.delete()
+                keyStore.generate(nonce, d)
+            }
             key = k
             val p = enrollmentApi.popChallenge(e.tokenB64u, deviceIds.id(), b64u(k.spki), origin)
             val signedIn = env.signedInUserId()
@@ -293,17 +329,23 @@ class SetupFlowViewModel @Inject constructor(
 
     private suspend fun poll(local: LocalKeyDevice) {
         val secret = local.claimSecret ?: return end(R.string.setup_failed_generic)
+        var backoff = RETRY_MS
         while (_ui.value is SetupUi.ShowCode) {
             val s = try {
-                enrollmentApi.status(local.enrollmentId, secret, 25, origin)
+                enrollmentApi.status(local.enrollmentId, secret, 25, origin).also { backoff = RETRY_MS }
             } catch (c: CancellationException) {
                 throw c
-            } catch (_: IOException) {
-                delay(RETRY_MS)
+            } catch (x: Exception) {
+                // Only a gone enrolment ends the setup; the issuer may still confirm the code
+                // through an outage, and the key must then still exist.
+                if (x is ApiException && (x.status.value == 404 || x.status.value == 410)) {
+                    keyDevices.forget()
+                    return fail(x)
+                }
+                val retryAfterMs = (x as? ApiException)?.fields?.retryAfterSeconds?.times(1000)
+                delay(retryAfterMs ?: backoff)
+                backoff = (backoff * 2).coerceAtMost(RETRY_MAX_MS)
                 continue
-            } catch (x: ApiException) {
-                keyDevices.forget()
-                return fail(x)
             }
             when (s.state) {
                 EnrollmentState.DONE -> return onDone(local, s.authenticatorState, s.readyAt)

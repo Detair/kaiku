@@ -79,5 +79,6 @@ object ApprovalModule {
         keyStore: ApprovalKeyStore,
         verifier: UserVerifier,
         checks: ChallengeVerifier,
-    ): DeviceSigner = DeviceSigner(keyStore, verifier, checks)
+        invalidation: io.wolftown.kaiku.data.keydevice.KeyInvalidation,
+    ): DeviceSigner = DeviceSigner(keyStore, verifier, checks, invalidation::handle)
 }
