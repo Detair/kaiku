@@ -180,4 +180,33 @@ class LegacyTokenMigrationTest {
         assertNull(TokenStorage(store).getAccessToken())
         assertNull(TokenStorage(store).getRefreshToken())
     }
+
+    @Test fun `a failed sign-in that clears an empty store keeps the pending move`() {
+        val legacy = InMemorySharedPreferences().apply {
+            edit().putString("access_token", "old-access").putString("refresh_token", "old-refresh").putString("user_id", "u1").commit()
+        }
+        var failNow = true
+        val flaky = object : ValueCipher {
+            private val ok = testValueCipher()
+            override fun encrypt(plain: ByteArray, aad: ByteArray): ByteArray =
+                if (failNow) throw java.security.ProviderException("keystore busy") else ok.encrypt(plain, aad)
+            override fun decrypt(blob: ByteArray, aad: ByteArray): ByteArray = ok.decrypt(blob, aad)
+        }
+        val store = KeystoreWrappedPreferences(InMemorySharedPreferences(), flaky)
+        var legacyExists = true
+        var failedWrites = 0
+        fun start() = LegacyTokenMigration.run(legacyExists, { legacy }, { legacyExists = false }, store, TokenStorage.STORED_KEYS, failedWrites) { failedWrites = it }
+
+        assertFalse(start()) // the write failed: the old store is kept for the next start
+
+        val storage = TokenStorage(store, null) {
+            LegacyTokenMigration.discardPending(legacyExists, { legacyExists = false }, failedWrites) { failedWrites = it }
+        }
+        storage.clear() // a sign-in attempt failed before any session was stored: cleanup only
+
+        assertTrue(legacyExists)
+        failNow = false // the Keystore works again
+        assertTrue(start()) // the next start moves the old session in
+        assertEquals("old-access", TokenStorage(store).getAccessToken())
+    }
 }

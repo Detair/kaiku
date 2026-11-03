@@ -329,6 +329,7 @@ for Argon until 2026-11-08) APPROVE / APPROVE WITH FIXES.
 | Flash A #1: Cancel leaves `startJob` running, "Try again" blocked | fixed: `cancel()` cancels it | f2bdc55d | `try again right after cancel starts a new issuance` |
 | Flash A #2: `signOutAndRemovePhone` swallows cancellation | **rejected (no change needed):** the chain already rethrows `CancellationException` first (`KeyDeviceSignOut.kt:36`); pinned by a test. Grep of the L2b code: every other catch-all is in non-suspending code or deliberately inside `NonCancellable` (`AuthRepository` replaced-session logout and `endUnused`, `KeyInvalidation`) | f0f15840 | `a cancelled removal propagates the cancellation` |
 | Fable (optional): one alias, two setup ViewModels | fixed: only the key this instance generated, if it is still the stored one, is deleted | af7dc965 | `leaving one setup screen never deletes another one's unclaimed key` |
+| Codex r4: cleaning an empty store after a failed sign-in (`AuthRepository` → `clear()`) voided the pending move | fixed: only removing a stored session (access or refresh token present) reports a change | (this commit) | `a failed sign-in that clears an empty store keeps the pending move` (fails without the fix: checked) |
 
 Gates after round 2 (`--rerun-tasks`): BUILD SUCCESSFUL; `:app:testDebugUnitTest` 1241 tests in 140
 classes, 0 failures; `:lint-rules:test` 11, 0 failures; `lintDebug` 0 errors, 54 warnings; APK built;

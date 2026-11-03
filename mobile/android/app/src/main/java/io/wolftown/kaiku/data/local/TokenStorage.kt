@@ -283,7 +283,9 @@ class TokenStorage internal constructor(
     }
 
     private fun removeTokens() {
-        sessionChanged()
+        // Only ending a stored session voids a pending move; clearing an empty store
+        // (cleanup after a failed sign-in) keeps the move for the next start (Codex r4).
+        if (prefs.contains(KEY_ACCESS_TOKEN) || prefs.contains(KEY_REFRESH_TOKEN)) sessionChanged()
         val success = prefs.edit()
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
