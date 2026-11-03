@@ -96,7 +96,11 @@ pub async fn grant_system_admin(
 /// Revoke system admin privileges from a user.
 ///
 /// Returns `true` if an admin was revoked, `false` if user was not an admin.
-pub async fn revoke_system_admin(pool: &PgPool, user_id: Uuid) -> sqlx::Result<bool> {
+pub async fn revoke_system_admin(
+    pool: &PgPool,
+    user_id: Uuid,
+    revoked_by: Option<Uuid>,
+) -> sqlx::Result<bool> {
     let mut tx = pool.begin().await?;
     let result = sqlx::query("DELETE FROM system_admins WHERE user_id = $1")
         .bind(user_id)
@@ -109,8 +113,11 @@ pub async fn revoke_system_admin(pool: &PgPool, user_id: Uuid) -> sqlx::Result<b
             crate::security_events::NewSecurityEvent::new(
                 user_id,
                 crate::security_events::EventType::AdminRoleRemoved,
-                crate::security_events::Actor::System,
-                serde_json::json!({ "by_user_id": null }),
+                revoked_by.map_or(
+                    crate::security_events::Actor::System,
+                    crate::security_events::Actor::Admin,
+                ),
+                serde_json::json!({ "by_user_id": revoked_by }),
             ),
         )
         .await?;

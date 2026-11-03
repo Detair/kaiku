@@ -258,8 +258,13 @@ pub async fn totp(
         ),
         None => (None, None),
     };
+    let mut totp_generation = None;
     if let Some(user) = account {
         crate::auth::totp_guard::pre_check(&ctx, user).await?;
+        totp_generation = sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_optional(&state.db)
+            .await?;
     }
     let mut tries = 0;
     let outcome = loop {
@@ -272,13 +277,30 @@ pub async fn totp(
     match outcome {
         core::TotpOutcome::Signed(collected) => {
             if let Some(user) = account {
-                crate::auth::totp_guard::after(&ctx, user, true, None).await;
+                crate::auth::totp_guard::after(
+                    &ctx,
+                    Some(&state),
+                    user,
+                    true,
+                    crate::auth::totp_guard::Used::default(),
+                )
+                .await;
             }
             Ok(session_response(&state, &headers, jar, collected))
         }
         core::TotpOutcome::WrongCode(events) => {
             if let Some(user) = account {
-                crate::auth::totp_guard::after(&ctx, user, false, password_generation).await;
+                crate::auth::totp_guard::after(
+                    &ctx,
+                    Some(&state),
+                    user,
+                    false,
+                    crate::auth::totp_guard::Used {
+                        totp_generation,
+                        password: password_generation,
+                    },
+                )
+                .await;
             }
             crate::security_events::spawn_delivery(&state, events);
             crate::security_events::notices::spawn_pending_delivery(&state);

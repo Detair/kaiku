@@ -248,3 +248,30 @@ async fn every_cli_action_is_audited_and_notified(pool: PgPool) {
         assert_eq!(n, 1, "{t} to the other admin");
     }
 }
+
+/// Codex r2 M11: a throttle reset that only clears a Valkey delay is an
+/// event too.
+#[sqlx::test]
+async fn a_delay_only_reset_is_recorded(pool: PgPool) {
+    use fred::interfaces::HashesInterface;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = create_test_user(&pool).await;
+    let _: () = app
+        .state
+        .redis
+        .hset(format!("ratelimit:acct:totp:{user}"), ("count", 7))
+        .await
+        .unwrap();
+    cli(&app, &["throttle", "reset", &name]).await.unwrap();
+    let details: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT details FROM security_events WHERE subject_id = $1 AND event_type = 'throttle_reset'",
+    )
+    .bind(user)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        details,
+        vec![serde_json::json!({"factor": "totp", "by": "cli"})]
+    );
+}

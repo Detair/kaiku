@@ -164,7 +164,17 @@ pub async fn start_recovery(
                     code.trim(),
                 )
                 .await?;
-                crate::auth::totp_guard::after(ctx, user.id, valid, None).await;
+                crate::auth::totp_guard::after(
+                    ctx,
+                    Some(state),
+                    user.id,
+                    valid,
+                    crate::auth::totp_guard::Used {
+                        totp_generation: Some(st.totp.generation),
+                        password: None,
+                    },
+                )
+                .await;
                 used.push(FactorRef {
                     factor: Factor::Totp,
                     generation: st.totp.generation,

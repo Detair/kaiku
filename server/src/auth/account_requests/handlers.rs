@@ -281,7 +281,17 @@ async fn start_bootstrap(
             let ok =
                 crate::auth::reauth::accept_totp_ctx(ctx, user.id, secret, &user.username, code)
                     .await?;
-            crate::auth::totp_guard::after(ctx, user.id, ok, password_used).await;
+            crate::auth::totp_guard::after(
+                ctx,
+                Some(state),
+                user.id,
+                ok,
+                crate::auth::totp_guard::Used {
+                    totp_generation: Some(st.totp.generation),
+                    password: password_used,
+                },
+            )
+            .await;
             ok
         }
         _ => false,

@@ -78,6 +78,8 @@ pub async fn throttle_reset(
     let user = account(&mut tx, username).await?;
     lock_accounts(&mut tx, &[user]).await?;
     let st = factors::states(&mut tx, user).await?;
+    // Codex r2 M11: a delay held only in Valkey is a reset too.
+    let delayed = counters_present(ctx, username, user).await;
     let mut cleared = Vec::new();
     for (f, state) in [
         (Factor::Password, st.password.state),
@@ -96,6 +98,11 @@ pub async fn throttle_reset(
         serde_json::json!({ "cleared": cleared }),
     )
     .await?;
+    for f in delayed {
+        if !cleared.contains(&f) {
+            cleared.push(f);
+        }
+    }
     let mut events = Vec::new();
     for f in &cleared {
         events.push(
@@ -123,6 +130,33 @@ pub async fn throttle_reset(
         }
     ));
     Ok(())
+}
+
+/// The factors whose per-account counter exists in Valkey.
+async fn counters_present(ctx: &CliCtx, username: &str, user: Uuid) -> Vec<&'static str> {
+    use fred::interfaces::KeysInterface;
+
+    use crate::ratelimit::account::CounterKey;
+    let mut out = Vec::new();
+    if let CounterKey::Password(h) = CounterKey::password(username) {
+        let n: i64 = ctx
+            .redis
+            .exists(format!("ratelimit:acct:password:{h}"))
+            .await
+            .unwrap_or(0);
+        if n > 0 {
+            out.push("password");
+        }
+    }
+    let n: i64 = ctx
+        .redis
+        .exists(format!("ratelimit:acct:totp:{user}"))
+        .await
+        .unwrap_or(0);
+    if n > 0 {
+        out.push("totp");
+    }
+    out
 }
 
 async fn reset_counters(ctx: &CliCtx, username: &str, user: Uuid, only: Option<Factor>) {

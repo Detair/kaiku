@@ -102,7 +102,8 @@ pub async fn authorize(
         // Codex M8: the session is still live under the account lock.
         let live: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM sessions
-                             WHERE id = $1 AND ended_at IS NULL AND expires_at > NOW())",
+                             WHERE id = $1 AND ended_at IS NULL AND expires_at > NOW()
+                               AND absolute_expires_at > NOW())",
         )
         .bind(auth.session_id)
         .fetch_one(&mut *conn)
@@ -121,18 +122,25 @@ pub async fn authorize(
         }
         return match factor {
             Part2Factor::Totp(code) => {
-                let row: (Option<String>, String, String) = sqlx::query_as(
-                    "SELECT mfa_secret, totp_state, username FROM users WHERE id = $1",
+                let row: (Option<String>, String, String, i64) = sqlx::query_as(
+                    "SELECT mfa_secret, totp_state, username, totp_generation FROM users WHERE id = $1",
                 )
                 .bind(t.subject)
                 .fetch_one(&mut *conn)
                 .await?;
-                let (Some(secret), state, username) = row else {
+                let (Some(secret), state, username, totp_generation) = row else {
                     return Err(refused());
                 };
                 if state == "compromised"
-                    || !super::totp_guard::verify(ctx, t.subject, &secret, &username, &code, None)
-                        .await?
+                    || !super::totp_guard::verify(
+                        ctx,
+                        t.subject,
+                        &secret,
+                        &username,
+                        &code,
+                        totp_generation,
+                    )
+                    .await?
                 {
                     return Err(AuthError::InvalidMfaCode);
                 }

@@ -32,9 +32,24 @@ pub async fn pre_check(ctx: &AuthCtx<'_>, user: Uuid) -> AuthResult<()> {
     }
 }
 
-/// Record the outcome of a TOTP check; `password` is the password
-/// generation that came with the code (compromised at the 100th failure).
-pub async fn after(ctx: &AuthCtx<'_>, user: Uuid, ok: bool, password: Option<FactorRef>) {
+/// What a TOTP check used: the TOTP generation it checked against and the
+/// password generation that came with the code (compromised at the 100th
+/// failure). The effects re-check both under the account lock.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Used {
+    pub totp_generation: Option<i64>,
+    pub password: Option<FactorRef>,
+}
+
+/// Record the outcome of a TOTP check. With `state` the notices of the
+/// effects are delivered at once (else by the minute sweep).
+pub async fn after(
+    ctx: &AuthCtx<'_>,
+    state: Option<&crate::api::AppState>,
+    user: Uuid,
+    ok: bool,
+    used: Used,
+) {
     let limiter = AccountLimiter::new(ctx.redis);
     let key = CounterKey::Totp(user);
     if ok {
@@ -50,27 +65,46 @@ pub async fn after(ctx: &AuthCtx<'_>, user: Uuid, ok: bool, password: Option<Fac
     let db = ctx.db.clone();
     let redis = ctx.redis.clone();
     let config = ctx.config.clone();
+    let state = state.cloned();
     tokio::spawn(async move {
         let ctx = AuthCtx {
             db: &db,
             redis: &redis,
             config: &config,
         };
-        if let Err(e) = effects(&ctx, user, n, password).await {
-            tracing::warn!(error = %e, %user, "TOTP guessing effects failed");
+        match effects(&ctx, user, n, used).await {
+            Ok(()) => {
+                if let Some(state) = state {
+                    // Flash r2: the guessing / throttle notices now.
+                    crate::security_events::notices::spawn_pending_delivery(&state);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, %user, "TOTP guessing effects failed"),
         }
     });
 }
 
-async fn effects(
-    ctx: &AuthCtx<'_>,
-    user: Uuid,
-    n: u32,
-    password: Option<FactorRef>,
-) -> AuthResult<()> {
+async fn effects(ctx: &AuthCtx<'_>, user: Uuid, n: u32, used: Used) -> AuthResult<()> {
     use crate::security_events::{record, Actor, EventType, NewSecurityEvent};
     let mut tx = ctx.db.begin().await?;
     crate::approvals::transition::lock_accounts(&mut tx, &[user]).await?;
+    // Codex r2: under the lock, the failures still count (no success reset
+    // them since) and the TOTP they were made against is still current;
+    // else nothing of this applies to the account's present TOTP.
+    let still: Option<i64> = redis_count(ctx, user).await;
+    if still.is_none_or(|c| c < i64::from(n)) {
+        tx.commit().await?;
+        return Ok(());
+    }
+    let st = super::factors::states(&mut tx, user).await?;
+    if used
+        .totp_generation
+        .is_some_and(|g| g != st.totp.generation)
+    {
+        tx.commit().await?;
+        return Ok(());
+    }
+    let password = used.password;
     if n.is_multiple_of(NOTICE_EVERY) {
         record(
             &mut tx,
@@ -109,10 +143,29 @@ pub async fn verify(
     encrypted_secret: &str,
     username: &str,
     code: &str,
-    password: Option<FactorRef>,
+    totp_generation: i64,
 ) -> AuthResult<bool> {
     pre_check(ctx, user).await?;
     let ok = super::reauth::accept_totp_ctx(ctx, user, encrypted_secret, username, code).await?;
-    after(ctx, user, ok, password).await;
+    after(
+        ctx,
+        None,
+        user,
+        ok,
+        Used {
+            totp_generation: Some(totp_generation),
+            password: None,
+        },
+    )
+    .await;
     Ok(ok)
+}
+
+async fn redis_count(ctx: &AuthCtx<'_>, user: Uuid) -> Option<i64> {
+    use fred::interfaces::HashesInterface;
+    ctx.redis
+        .hget::<Option<i64>, _, _>(format!("ratelimit:acct:totp:{user}"), "count")
+        .await
+        .ok()
+        .flatten()
 }

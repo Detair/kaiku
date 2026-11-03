@@ -761,7 +761,7 @@ async fn admin_role_changes_are_recorded(pool: PgPool) {
         .await
         .unwrap();
     assert!(
-        vc_server::permissions::queries::revoke_system_admin(&pool, second)
+        vc_server::permissions::queries::revoke_system_admin(&pool, second, Some(first))
             .await
             .unwrap()
     );

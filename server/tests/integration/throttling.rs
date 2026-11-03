@@ -432,3 +432,69 @@ async fn an_invalid_code_is_neutral_while_delayed(pool: PgPool) {
     assert_eq!((known.0, &known.1), (unknown.0, &unknown.1));
     assert_eq!(known.0, 401, "{}", known.1);
 }
+
+/// Codex r2: the 100th failure against a TOTP replaced since throttles
+/// nothing (its generation is re-checked under the account lock).
+#[sqlx::test]
+async fn a_stale_totp_failure_does_not_throttle_the_new_totp(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let old: i64 = sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET totp_generation = $2 WHERE id = $1")
+        .bind(user)
+        .bind(old + 1)
+        .execute(&pool)
+        .await
+        .unwrap();
+    set_count(&app, &CounterKey::Totp(user), 99).await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+    vc_server::auth::totp_guard::after(
+        &ctx,
+        None,
+        user,
+        false,
+        vc_server::auth::totp_guard::Used {
+            totp_generation: Some(old),
+            password: None,
+        },
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let state: String = sqlx::query_scalar("SELECT totp_state FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "active");
+    // The same failure against the current TOTP throttles it.
+    set_count(&app, &CounterKey::Totp(user), 99).await;
+    vc_server::auth::totp_guard::after(
+        &ctx,
+        None,
+        user,
+        false,
+        vc_server::auth::totp_guard::Used {
+            totp_generation: Some(old + 1),
+            password: None,
+        },
+    )
+    .await;
+    let mut state = String::new();
+    for _ in 0..40 {
+        state = sqlx::query_scalar("SELECT totp_state FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        if state == "throttled" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(state, "throttled");
+}
