@@ -192,15 +192,12 @@ class TokenStorageTest {
         val s = TokenStorage(prefs)
         s.saveServerUrl("https://kaiku.example.com")
         s.saveTokens("a", "r", 900, "user-1")
-        s.saveOidcPkceState("verifier", "state")
 
         prefs.failure = ThrowingReadPreferences.decryptFailure()
         prefs.failures = 2 // the failed read and its retry; later reads work
         assertNull(s.getAccessToken())
 
         assertEquals("https://kaiku.example.com", s.getServerUrl())
-        assertNull(s.getOidcCodeVerifier())
-        assertNull(s.getOidcState())
         assertNull(s.getRefreshToken())
     }
 

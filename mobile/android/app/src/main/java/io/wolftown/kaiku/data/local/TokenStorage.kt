@@ -42,13 +42,13 @@ class TokenStorage internal constructor(
         private const val KEY_EXPIRES_AT = "expires_at"
         private const val KEY_USER_ID = "user_id"
         private const val KEY_SERVER_URL = "server_url"
-        private const val KEY_OIDC_CODE_VERIFIER = "oidc_code_verifier"
-        private const val KEY_OIDC_STATE = "oidc_state"
 
-        /** Every key this class stores, for the one-time move out of the old store. */
+        /**
+         * Every key this class stores, for the one-time move out of the old store. The old
+         * OIDC PKCE values are not among them: a sign-in verifier lives in memory only (C27).
+         */
         val STORED_KEYS = listOf(
             KEY_ACCESS_TOKEN, KEY_REFRESH_TOKEN, KEY_EXPIRES_AT, KEY_USER_ID, KEY_SERVER_URL,
-            KEY_OIDC_CODE_VERIFIER, KEY_OIDC_STATE,
         )
 
         /** Key in the notice store; also set by the module when the store was recreated at open. */
@@ -129,8 +129,6 @@ class TokenStorage internal constructor(
                 .remove(KEY_REFRESH_TOKEN)
                 .remove(KEY_EXPIRES_AT)
                 .remove(KEY_USER_ID)
-                .remove(KEY_OIDC_CODE_VERIFIER)
-                .remove(KEY_OIDC_STATE)
             // The server address stays so the person lands on sign-in, unless it is itself unreadable.
             if (!isReadable { prefs.getString(KEY_SERVER_URL, null) }) editor.remove(KEY_SERVER_URL)
             editor.commit()
@@ -240,32 +238,6 @@ class TokenStorage internal constructor(
         return System.currentTimeMillis() >= expiresAt
     }
 
-    fun saveOidcPkceState(codeVerifier: String, state: String) {
-        val success = prefs.edit()
-            .putString(KEY_OIDC_CODE_VERIFIER, codeVerifier)
-            .putString(KEY_OIDC_STATE, state)
-            .commit()
-        if (!success) {
-            logger.warning("Failed to persist OIDC PKCE state to storage")
-        }
-    }
-
-    fun getOidcCodeVerifier(): String? = readOr(null) { prefs.getString(KEY_OIDC_CODE_VERIFIER, null) }
-
-    fun getOidcState(): String? = readOr(null) { prefs.getString(KEY_OIDC_STATE, null) }
-
-    fun clearOidcPkceState() {
-        val success = prefs.edit()
-            .remove(KEY_OIDC_CODE_VERIFIER)
-            .remove(KEY_OIDC_STATE)
-            .commit()
-        if (!success) {
-            logger.warning("Failed to clear OIDC PKCE state from storage")
-        }
-    }
-
-    /** Removes the session tokens (logout). Starts a new session generation. */
-    @Synchronized
     fun clear() {
         sessionGeneration++
         removeTokens()

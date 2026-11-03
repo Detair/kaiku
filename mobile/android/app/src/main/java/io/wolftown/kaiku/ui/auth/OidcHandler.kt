@@ -62,8 +62,6 @@ class OidcHandler @Inject constructor(
     fun launchOidcLogin(context: Context, providerSlug: String, clientChallenge: String) {
         val serverUrl = tokenStorage.getServerUrl()
             ?: throw IllegalStateException("Server URL not configured")
-        // A verifier an older version wrote to disk is never used again.
-        tokenStorage.clearOidcPkceState()
         try {
             CustomTabsIntent.Builder().build()
                 .launchUrl(context, Uri.parse(authorizeUrl(serverUrl, providerSlug, clientChallenge)))

@@ -122,7 +122,5 @@ class OidcHandlerTest {
         )
         assertFalse(url.contains("state="))
         assertFalse(url.contains("code_challenge"))
-        // Nothing about the flow is written to storage (the verifier lives in memory only).
-        verify(exactly = 0) { tokenStorage.saveOidcPkceState(any(), any()) }
     }
 }

@@ -28,6 +28,9 @@ object StorageModule {
 
     private const val APP_STATE_FILE = "kaiku_app_state"
 
+    /** Starts whose session move failed on the write side (bounded retry, LegacyTokenMigration). */
+    private const val KEY_MIGRATION_FAILED_WRITES = "legacy_migration_failed_writes"
+
     /**
      * The session store: values encrypted under the AndroidKeyStore key
      * `kaiku_storage_v1`. On first open after the upgrade, an existing
@@ -45,12 +48,15 @@ object StorageModule {
             context.getSharedPreferences(SESSION_FILE, Context.MODE_PRIVATE),
             KeystoreValueCipher(context),
         )
+        val appState = context.getSharedPreferences(APP_STATE_FILE, Context.MODE_PRIVATE)
         val migrated = LegacyTokenMigration.run(
             legacyExists = File(context.applicationInfo.dataDir, "shared_prefs/$LEGACY_FILE.xml").exists(),
             openLegacy = { openLegacy(context) },
             deleteLegacy = { context.deleteSharedPreferences(LEGACY_FILE) },
             target = prefs,
             keys = TokenStorage.STORED_KEYS,
+            failedWrites = appState.getInt(KEY_MIGRATION_FAILED_WRITES, 0),
+            recordFailedWrites = { n -> appState.edit().putInt(KEY_MIGRATION_FAILED_WRITES, n).apply() },
         )
         if (!migrated) {
             // Flag for the UI to say "Please sign in again" on next launch.

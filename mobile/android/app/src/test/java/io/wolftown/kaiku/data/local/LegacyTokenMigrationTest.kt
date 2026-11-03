@@ -75,7 +75,57 @@ class LegacyTokenMigrationTest {
         val ok = LegacyTokenMigration.run(true, { legacy }, { deleted = true }, KeystoreWrappedPreferences(InMemorySharedPreferences(), broken), TokenStorage.STORED_KEYS)
 
         assertFalse(ok)
+        // A write-side failure keeps the old store for the next start (Fable m7).
+        assertFalse(deleted)
+    }
+
+    @Test fun `a passing write failure is retried at the next start and then moves the session`() {
+        val legacy = InMemorySharedPreferences().apply { edit().putString("access_token", "a").putString("refresh_token", "r").commit() }
+        var failNow = true
+        val flaky = object : ValueCipher {
+            private val ok = testValueCipher()
+            override fun encrypt(plain: ByteArray, aad: ByteArray): ByteArray =
+                if (failNow) throw java.security.ProviderException("keystore busy") else ok.encrypt(plain, aad)
+            override fun decrypt(blob: ByteArray, aad: ByteArray): ByteArray = ok.decrypt(blob, aad)
+        }
+        val store = KeystoreWrappedPreferences(InMemorySharedPreferences(), flaky)
+        var deleted = false
+        var failedWrites = 0
+
+        assertFalse(LegacyTokenMigration.run(true, { legacy }, { deleted = true }, store, TokenStorage.STORED_KEYS, failedWrites) { failedWrites = it })
+        assertFalse(deleted)
+        assertEquals(1, failedWrites)
+
+        failNow = false // the next start
+        assertTrue(LegacyTokenMigration.run(true, { legacy }, { deleted = true }, store, TokenStorage.STORED_KEYS, failedWrites) { failedWrites = it })
         assertTrue(deleted)
+        assertEquals(0, failedWrites)
+        assertEquals("a", TokenStorage(store).getAccessToken())
+    }
+
+    @Test fun `the retry is bounded`() {
+        val legacy = InMemorySharedPreferences().apply { edit().putString("access_token", "a").commit() }
+        val broken = object : ValueCipher {
+            override fun encrypt(plain: ByteArray, aad: ByteArray): ByteArray = throw java.security.ProviderException("keystore")
+            override fun decrypt(blob: ByteArray, aad: ByteArray): ByteArray = throw java.security.ProviderException("keystore")
+        }
+        val store = KeystoreWrappedPreferences(InMemorySharedPreferences(), broken)
+        var deleted = false
+        var failedWrites = 0
+        repeat(LegacyTokenMigration.MAX_WRITE_ATTEMPTS) {
+            LegacyTokenMigration.run(true, { legacy }, { deleted = true }, store, TokenStorage.STORED_KEYS, failedWrites) { failedWrites = it }
+        }
+        assertTrue(deleted)
+        assertEquals(0, failedWrites)
+    }
+
+    @Test fun `old OIDC verifiers are not moved`() {
+        val legacy = InMemorySharedPreferences().apply {
+            edit().putString("access_token", "a").putString("oidc_code_verifier", "v").putString("oidc_state", "s").commit()
+        }
+        assertTrue(LegacyTokenMigration.run(true, { legacy }, {}, target, TokenStorage.STORED_KEYS))
+        assertFalse(target.contains("oidc_code_verifier"))
+        assertFalse(target.contains("oidc_state"))
     }
 
     @Test fun `a legacy store left behind never overwrites tokens already moved`() {

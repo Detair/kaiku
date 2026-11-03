@@ -82,10 +82,9 @@ class ServerUrlViewModel @Inject constructor(
             when (serverProbe.probe(address)) {
                 is ProbeResult.Ok -> {
                     // Nothing from the old server may carry over: drop its pending
-                    // password change, any stored session and PKCE state, then save.
+                    // password change and any stored session, then save.
                     authRepository.cancelPasswordChange()
                     tokenStorage.clear()
-                    tokenStorage.clearOidcPkceState()
                     tokenStorage.saveServerUrl(address)
                     _uiState.update { it.copy(isChecking = false, connectSuccess = true) }
                 }
