@@ -378,6 +378,9 @@ pub async fn ban_user(
     // is involved: every request re-checks the ban, so a Valkey failure (500)
     // cannot undo it, and a retry is safe.
     let mut tx = state.db.begin().await?;
+    // B.7 rule 1: the accounts first, so a sign-in holding the subject's
+    // lock commits before (its session is ended here) or sees the ban.
+    crate::approvals::transition::lock_accounts(&mut tx, &[admin.user_id, user_id]).await?;
     queries::upsert_global_ban(
         &mut tx,
         user_id,
@@ -615,6 +618,10 @@ pub async fn delete_user(
     // commit), then delete the user (cascades to guild_members, messages,
     // sessions, global_bans, etc.), in one transaction.
     let mut tx = state.db.begin().await?;
+    // B.7 rule 1: the accounts before the sessions (ending the sessions and
+    // then deleting the user row was sessions → users, the reverse of every
+    // transition, and deadlocked with them).
+    crate::approvals::transition::lock_accounts(&mut tx, &[admin.user_id, user_id]).await?;
     crate::auth::revocation::end_all_sessions_tx(
         &mut tx,
         &crate::auth::ctx::AuthCtx::from(&state),
@@ -737,6 +744,7 @@ async fn end_all_sessions_tx(
 /// ban after a failure still closes them).
 async fn retell_banned(state: &AppState, user_id: Uuid) -> Result<(), AdminError> {
     let mut tx = state.db.begin().await?;
+    crate::approvals::transition::lock_accounts(&mut tx, &[user_id]).await?;
     end_all_sessions_tx(state, &mut tx, user_id).await?;
     tx.commit().await?;
     Ok(())
@@ -751,6 +759,7 @@ async fn ban_and_end_sessions(
     body: &BulkBanRequest,
 ) -> Result<(), AdminError> {
     let mut tx = state.db.begin().await?;
+    crate::approvals::transition::lock_accounts(&mut tx, &[banned_by, user_id]).await?;
     queries::insert_global_ban(&mut tx, user_id, banned_by, &body.reason, body.expires_at).await?;
     end_all_sessions_tx(state, &mut tx, user_id).await?;
     tx.commit().await?;

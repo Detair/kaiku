@@ -50,19 +50,20 @@ All operations are logged to the system audit log for compliance and security tr
 
 **Two-tier privilege escalation:**
 ```
-User → JWT Auth → SystemAdminUser → MFA Verification → ElevatedAdmin
+User → JWT Auth → SystemAdminUser (full session) → step-up grant `admin.elevate` → ElevatedAdmin
 ```
 
-- `SystemAdminUser` is extracted from `system_admins` table via `require_system_admin` middleware
-- `ElevatedAdmin` requires active `elevated_sessions` entry (15-minute TTL)
-- Elevation requires valid TOTP code from user's MFA device
+- `SystemAdminUser` is extracted from `system_admins` table via `require_system_admin` middleware, which also requires a `full` session (C27: `/api/admin/*` is in the full row; probation sessions get 403 `FULL_SESSION_REQUIRED`, non-admins `NOT_ADMIN`). `/api/admin/status` is outside the guard.
+- `ElevatedAdmin` requires active `elevated_sessions` entry (15-minute TTL) for the request's own session
+- Elevation consumes an `admin.elevate` step-up grant (key phone or passkey, F7); no password or TOTP
 - All destructive operations require elevation
+- Ban, bulk ban and deletion lock the admin's and the subject's account rows first (B.7 rule 1), before the ban row and the sessions
 
 ### Critical Security Paths
 
-- `middleware.rs:require_system_admin` - Verifies admin status from database
+- `middleware.rs:require_system_admin` - Verifies admin status from database and a full session
 - `middleware.rs:require_elevated` - Checks for active elevated session
-- `system.rs:elevate_session` - MFA verification flow (decrypt secret, validate TOTP)
+- `system.rs:elevate_session` - consumes the `admin.elevate` step-up grant
 
 ### Audit Logging
 

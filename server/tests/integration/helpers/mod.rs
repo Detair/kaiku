@@ -472,6 +472,26 @@ pub fn test_authenticator_id(user_id: Uuid) -> Uuid {
     )
 }
 
+/// Wait (≤ 5 s) until at least `n` backends of this test database wait for
+/// a lock: a request that blocked inside its transaction. Panics otherwise,
+/// so a test can prove that a transaction takes a lock it should take.
+pub async fn wait_for_lock_waiters(pool: &PgPool, n: i64) {
+    for _ in 0..250 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_stat_activity
+              WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("read pg_stat_activity");
+        if waiting >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("no transaction waited for a lock within 5 s");
+}
+
 /// Insert a live session row `id` for `user_id` with the given assurance.
 /// `full` sessions get a (fake) key-device authenticator, as the CHECK
 /// `full_needs_authenticator` requires.

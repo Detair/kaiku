@@ -218,11 +218,12 @@ pub async fn elevate_session(
     headers: HeaderMap,
     body: Result<Json<ElevateRequest>, JsonRejection>,
 ) -> Result<Json<ElevateResponse>, AdminError> {
+    // Assurance before the body (the router's admin guard checks it too).
+    crate::auth::guards::require_full(&auth)?;
     let Json(body) = body.map_err(|e| AuthError::Validation(e.body_text()))?;
     body.validate()
         .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
 
-    crate::auth::guards::require_full(&auth)?;
     let session_id = auth.session_id.ok_or(AuthError::InvalidToken)?;
     let client_ip = crate::auth::reauth::client_ip(&state, &headers, addr).to_string();
 

@@ -287,3 +287,109 @@ async fn auth_me_reports_may_approve(pool: PgPool) {
         .unwrap();
     assert_eq!(me(token).await["may_approve"], false);
 }
+
+async fn admin_call(
+    app: &TestApp,
+    method: Method,
+    uri: &str,
+    token: &str,
+    body: &str,
+) -> (u16, serde_json::Value) {
+    let req = super::helpers::login::peer_request(method, uri)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    let status = resp.status().as_u16();
+    (status, body_to_json(resp).await)
+}
+
+/// Review round 1 (Argon M3): an admin deletion takes the account lock
+/// before it ends the sessions. Ending them first and then deleting the
+/// user row is sessions → users, the reverse of every B.7 transition
+/// (users → sessions, e.g. a device-key sign-in superseding a session).
+#[sqlx::test]
+async fn admin_delete_and_a_transition_never_deadlock(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let token = super::helpers::create_elevated_session(&pool, &app.config, admin).await;
+    let (target, _) = create_test_user(&pool).await;
+    // A B.7 transition of the target: account lock, then its sessions.
+    let mut transition = pool.begin().await.unwrap();
+    lock_accounts(&mut transition, &[target]).await.unwrap();
+    let touch_sessions = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        let r = sqlx::query("UPDATE sessions SET last_used_at = NOW() WHERE user_id = $1")
+            .bind(target)
+            .execute(&mut *transition)
+            .await;
+        match r {
+            Ok(_) => transition.commit().await.map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    let uri = format!("/api/admin/users/{target}");
+    let ((status, body), touched) = tokio::join!(
+        admin_call(&app, Method::DELETE, &uri, &token, ""),
+        touch_sessions
+    );
+    assert!(touched.is_ok(), "the transition commits: {touched:?}");
+    assert_eq!(status, 200, "the deletion completes after it: {body}");
+}
+
+/// Review round 1 (Argon M3): a ban takes the account lock, so a sign-in
+/// that holds it either commits first (and its session is ended by the
+/// ban) or sees the ban. Renewing a lapsed ban updates the ban row in
+/// place, so no foreign-key check locks the account for it.
+#[sqlx::test]
+async fn ban_takes_the_account_lock(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let token = super::helpers::create_elevated_session(&pool, &app.config, admin).await;
+    let (target, _) = create_test_user(&pool).await;
+    sqlx::query(
+        "INSERT INTO global_bans (user_id, banned_by, reason, expires_at)
+         VALUES ($1, $2, 'old', NOW() - INTERVAL '1 day')",
+    )
+    .bind(target)
+    .bind(admin)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut holder = pool.begin().await.unwrap();
+    lock_accounts(&mut holder, &[target]).await.unwrap();
+    // A session minted under the lock (as a sign-in would).
+    let sid = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, token_hash, expires_at, absolute_expires_at)
+         VALUES ($1, $2, 'minted-under-lock', NOW() + INTERVAL '7 days', NOW() + INTERVAL '30 days')",
+    )
+    .bind(sid)
+    .bind(target)
+    .execute(&mut *holder)
+    .await
+    .unwrap();
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        holder.commit().await.unwrap();
+    };
+    let uri = format!("/api/admin/users/{target}/ban");
+    let ((status, body), ()) = tokio::join!(
+        admin_call(&app, Method::POST, &uri, &token, r#"{"reason":"again"}"#),
+        release
+    );
+    assert_eq!(status, 200, "{body}");
+    let ended: Option<String> = sqlx::query_scalar("SELECT end_reason FROM sessions WHERE id = $1")
+        .bind(sid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        ended.as_deref(),
+        Some("ban"),
+        "the session minted under the lock ends with the ban"
+    );
+}
