@@ -118,6 +118,11 @@ pub enum AuthError {
     #[error("This account has been banned")]
     AccountBanned,
 
+    /// The caller is not a system admin (same 403 `NOT_ADMIN` body as the
+    /// admin middleware); e.g. an `admin.*` step-up.
+    #[error("System admin privileges required")]
+    NotAdmin,
+
     /// A system admin must use an elevated session for this action (same
     /// 403 `ELEVATION_REQUIRED` body as the admin middleware).
     #[error("This action requires an elevated session")]
@@ -275,6 +280,7 @@ impl AuthError {
             Self::AuthMethodDisabled => (StatusCode::FORBIDDEN, "AUTH_METHOD_DISABLED"),
             Self::PasswordChangeRequired => (StatusCode::FORBIDDEN, "PASSWORD_CHANGE_REQUIRED"),
             Self::AccountBanned => (StatusCode::FORBIDDEN, "ACCOUNT_BANNED"),
+            Self::NotAdmin => (StatusCode::FORBIDDEN, "NOT_ADMIN"),
             Self::ElevationRequired => (StatusCode::FORBIDDEN, "ELEVATION_REQUIRED"),
             Self::CannotUnlinkLastIdentity => (StatusCode::CONFLICT, "CANNOT_UNLINK_LAST_IDENTITY"),
             Self::ServiceUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),

@@ -16,17 +16,21 @@ use crate::auth::strong::AuthenticatorRef;
 use crate::auth::{AuthError, AuthResult, AuthUser};
 
 /// The `step-up/start` checks, shared with the desktop `step_up` start:
-/// a full session, a registry action and target, an own active passkey as
-/// a `passkey.remove` target, at least one active passkey.
+/// a system admin for `admin.*` actions, a full session, a registry action
+/// and target, an own active passkey as a `passkey.remove` target, at least
+/// one active passkey.
 pub(super) async fn check_start(
     state: &AppState,
     auth: &AuthUser,
     action: &str,
     target: Option<&str>,
 ) -> AuthResult<(StepUpAction, StepUpTarget, Vec<PasskeyRow>)> {
+    let parsed = StepUpAction::parse(action);
+    if let Some(action) = parsed {
+        crate::auth::guards::require_admin_for_step_up(&state.db, auth, action).await?;
+    }
     require_full(auth)?;
-    let action = StepUpAction::parse(action)
-        .ok_or_else(|| AuthError::Validation("unknown step-up action".into()))?;
+    let action = parsed.ok_or_else(|| AuthError::Validation("unknown step-up action".into()))?;
     let target = StepUpTarget::parse(action, target.unwrap_or(""))?;
     if let (StepUpAction::PasskeyRemove, StepUpTarget::Id(id)) = (action, &target) {
         let own = queries::find_own(&state.db, auth.id, *id).await?;
@@ -54,7 +58,7 @@ pub(super) async fn check_start(
     responses(
         (status = 200, body = CeremonyStart),
         (status = 400, description = "VALIDATION_ERROR"),
-        (status = 403, description = "FULL_SESSION_REQUIRED"),
+        (status = 403, description = "FULL_SESSION_REQUIRED, or NOT_ADMIN for an admin.* action"),
         (status = 404, description = "passkey.remove target is not an own active passkey"),
         (status = 503, description = "PASSKEYS_UNAVAILABLE or SERVICE_UNAVAILABLE"),
     ),

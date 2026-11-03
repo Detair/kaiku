@@ -148,6 +148,20 @@ impl StepUpAction {
         Self::ALL.into_iter().find(|a| a.as_str() == s)
     }
 
+    /// An `admin.*` action: only a system admin may ask for its step-up.
+    #[must_use]
+    pub const fn is_admin(self) -> bool {
+        matches!(
+            self,
+            Self::AdminElevate
+                | Self::AdminEnrollmentIssue
+                | Self::AdminAuthenticatorRemove
+                | Self::AdminMayApprove
+                | Self::AdminFactorSetState
+                | Self::AdminRecoveryContactSet
+        )
+    }
+
     /// The action's target rule (C27).
     #[must_use]
     pub const fn target_rule(self) -> TargetRule {

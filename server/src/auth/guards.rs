@@ -22,6 +22,26 @@ pub fn require_full(auth: &AuthUser) -> AuthResult<()> {
     }
 }
 
+/// An `admin.*` step-up is only for a system admin with a full session.
+///
+/// Checked like `/api/admin/*` (`NOT_ADMIN` first, then
+/// `FULL_SESSION_REQUIRED`) and before any target label is resolved, so a
+/// non-admin never learns another account's authenticator labels or user
+/// names this way. Other actions pass unchanged.
+pub async fn require_admin_for_step_up(
+    db: &sqlx::PgPool,
+    auth: &AuthUser,
+    action: super::step_up::StepUpAction,
+) -> AuthResult<()> {
+    if !action.is_admin() {
+        return Ok(());
+    }
+    if !crate::permissions::queries::is_system_admin(db, auth.id).await? {
+        return Err(AuthError::NotAdmin);
+    }
+    require_full(auth)
+}
+
 /// Route layer after `require_auth`: only full sessions pass.
 pub async fn require_full_session(request: Request, next: Next) -> Result<Response, AuthError> {
     let auth = request

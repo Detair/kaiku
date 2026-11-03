@@ -13,7 +13,7 @@ use vc_server::auth::passkeys::queries::{self, PasskeyRow, PasskeyState};
 
 use crate::helpers::login::{peer_request, TEST_ORIGIN};
 use crate::helpers::passkeys::{limited_router, seed_passkey, SoftAuthenticator};
-use crate::helpers::{create_session_with_token, create_test_user, TestApp};
+use crate::helpers::{create_session_with_token, create_test_user, make_admin, TestApp};
 
 const CALLBACK_PATH: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 const PORT: u16 = 49_152;
@@ -311,6 +311,7 @@ async fn start_without_desktop_header_is_client_outdated(pool: PgPool) {
 async fn start_validation(pool: PgPool) {
     let app = TestApp::with_passkeys(pool).await;
     let (user, _) = create_test_user(&app.pool).await;
+    make_admin(&app.pool, user).await;
     seed_passkey(&app, user, PasskeyState::Active).await;
     let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
     let mut cases = Vec::new();
@@ -497,6 +498,7 @@ async fn forwarded_link_code_is_useless(pool: PgPool) {
 async fn step_up_by_another_accounts_passkey_is_user_mismatch(pool: PgPool) {
     let app = TestApp::with_passkeys(pool).await;
     let (user, _) = create_test_user(&app.pool).await;
+    make_admin(&app.pool, user).await;
     let (other, _) = create_test_user(&app.pool).await;
     seed_passkey(&app, user, PasskeyState::Active).await;
     let (mut theirs_auth, theirs) = seed_passkey(&app, other, PasskeyState::Active).await;
@@ -656,6 +658,7 @@ async fn redeem_rechecks_account_passkey_and_session(pool: PgPool) {
     assert_invalid(&redeem(&app.router, &flow.id, &code, VERIFIER, None).await);
     // 3. step_up: the starting session ended.
     let (user, _) = create_test_user(&app.pool).await;
+    make_admin(&app.pool, user).await;
     let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
     let (sid, token) = create_session_with_token(&app.pool, &app.config, user).await;
     let flow = start(
@@ -1138,6 +1141,7 @@ async fn options_without_active_passkeys_end_the_flow(pool: PgPool) {
     // Review Argon-a m3: no reload loop on a live flow that cannot proceed.
     let app = TestApp::with_passkeys(pool).await;
     let (user, _) = create_test_user(&app.pool).await;
+    make_admin(&app.pool, user).await;
     let (_, row) = seed_passkey(&app, user, PasskeyState::Active).await;
     let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
     let flow = start(
@@ -1168,6 +1172,7 @@ async fn every_desktop_step_up_page_names_its_action(pool: PgPool) {
     // Review Codex m4: never a generic "security change".
     let app = TestApp::with_passkeys(pool).await;
     let (user, _) = create_test_user(&app.pool).await;
+    make_admin(&app.pool, user).await;
     let (_, row) = seed_passkey(&app, user, PasskeyState::Active).await;
     let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
     let cases: Vec<(&str, String, &str, &str)> = vec![
@@ -1235,4 +1240,45 @@ async fn every_desktop_step_up_page_names_its_action(pool: PgPool) {
     .await;
     let p = page(&app.router, &flow.path, None).await;
     assert!(p.body.contains("&lt;b&gt;Laptop&lt;/b&gt;"), "{}", p.body);
+}
+
+#[sqlx::test]
+async fn admin_step_up_pages_are_for_admins_only(pool: PgPool) {
+    // Review round 2 (Codex 2.1, Fable R1): a non-admin cannot start an
+    // admin.* flow and so never sees a foreign label; an admin does.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (other, _) = create_test_user(&app.pool).await;
+    seed_passkey(&app, user, PasskeyState::Active).await;
+    let (_, theirs) = seed_passkey(&app, other, PasskeyState::Active).await;
+    sqlx::query("UPDATE passkeys SET label = 'Their secret key' WHERE id = $1")
+        .bind(theirs.id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
+    let body = start_body(
+        "step_up",
+        Some("admin.authenticator.remove"),
+        Some(&theirs.id.to_string()),
+    );
+    let r = api(
+        &app.router,
+        "/auth/passkeys/desktop/flows",
+        body.clone(),
+        true,
+        Some(&token),
+    )
+    .await;
+    assert_eq!(
+        (r.status, r.json()["error"].as_str()),
+        (403, Some("NOT_ADMIN")),
+        "{}",
+        r.body
+    );
+    assert!(!r.body.contains("Their secret key"), "{}", r.body);
+    make_admin(&app.pool, user).await;
+    let flow = start(&app.router, body, Some(&token)).await;
+    let p = page(&app.router, &flow.path, None).await;
+    assert!(p.body.contains("Their secret key"), "{}", p.body);
 }

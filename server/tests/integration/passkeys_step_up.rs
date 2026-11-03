@@ -729,3 +729,99 @@ async fn device_step_up_label_names_active_passkeys_only(pool: PgPool) {
     assert_eq!(s, 201, "{c}");
     assert_eq!(c["context"]["target_label"], "", "{c}");
 }
+
+/// The `admin.*` actions with a target of another account (review round 2).
+fn admin_actions(other: Uuid, device: Uuid) -> Vec<(&'static str, String)> {
+    vec![
+        ("admin.elevate", String::new()),
+        ("admin.enrollment.issue", other.to_string()),
+        ("admin.authenticator.remove", device.to_string()),
+        ("admin.may_approve", other.to_string()),
+        ("admin.factor.set_state", other.to_string()),
+        ("admin.recovery_contact.set", other.to_string()),
+    ]
+}
+
+#[sqlx::test]
+async fn admin_step_ups_need_an_admin(pool: PgPool) {
+    // Review round 2 (Codex 2.1, Fable R1): a non-admin starts no admin.*
+    // step-up (NOT_ADMIN, as on /api/admin/*); an admin still does.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (other, _) = create_test_user(&app.pool).await;
+    seed_passkey(&app, user, PasskeyState::Active).await;
+    let (_, theirs) = seed_passkey(&app, other, PasskeyState::Active).await;
+    let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
+    for (action, target) in admin_actions(other, theirs.id) {
+        let (s, b) = post(
+            &app,
+            "/auth/passkeys/step-up/start",
+            Some(&token),
+            json!({"action": action, "target": target}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (403, Some("NOT_ADMIN")),
+            "{action}: {b}"
+        );
+    }
+    make_admin(&app.pool, user).await;
+    let (s, b) = post(
+        &app,
+        "/auth/passkeys/step-up/start",
+        Some(&token),
+        json!({"action": "admin.authenticator.remove", "target": theirs.id.to_string()}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+}
+
+#[sqlx::test]
+async fn device_admin_step_up_needs_an_admin(pool: PgPool) {
+    // Review round 2: the key-device step-up resolves no foreign label for
+    // a non-admin; an admin's challenge names the foreign key device.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (other, _) = create_test_user(&app.pool).await;
+    let dev =
+        crate::helpers::approvals::KeyDeviceFixture::insert(&app.pool, &app.config, user, "active")
+            .await;
+    let theirs = crate::helpers::approvals::KeyDeviceFixture::insert(
+        &app.pool,
+        &app.config,
+        other,
+        "active",
+    )
+    .await;
+    sqlx::query("UPDATE approval_devices SET label = 'Their secret phone' WHERE id = $1")
+        .bind(theirs.row_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    for (action, target) in admin_actions(other, theirs.row_id) {
+        let (s, b) = post(
+            &app,
+            "/api/approvals/step-up",
+            Some(&dev.access_token),
+            json!({"action": action, "target": target}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (403, Some("NOT_ADMIN")),
+            "{action}: {b}"
+        );
+        assert!(!b.to_string().contains("Their secret phone"), "{b}");
+    }
+    make_admin(&app.pool, user).await;
+    let (s, c) = post(
+        &app,
+        "/api/approvals/step-up",
+        Some(&dev.access_token),
+        json!({"action": "admin.authenticator.remove", "target": theirs.row_id.to_string()}),
+    )
+    .await;
+    assert_eq!(s, 201, "{c}");
+    assert_eq!(c["context"]["target_label"], "Their secret phone", "{c}");
+}

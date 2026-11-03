@@ -218,7 +218,7 @@ pub struct DesktopFlowStarted {
         (status = 201, body = DesktopFlowStarted),
         (status = 400, description = "CLIENT_OUTDATED or VALIDATION_ERROR"),
         (status = 401, description = "step_up without a bearer"),
-        (status = 403, description = "FULL_SESSION_REQUIRED"),
+        (status = 403, description = "FULL_SESSION_REQUIRED, or NOT_ADMIN for an admin.* action"),
     ),
     security(()),
 )]
@@ -354,14 +354,18 @@ async fn heading(state: &AppState, purpose: &FlowPurpose) -> AuthResult<PageHead
             None => Ok(String::new()),
         }
     };
+    // Another account's names only for a system admin (the start refuses
+    // admin.* flows of non-admins; checked again here, at page time).
+    let admin = action.is_admin()
+        && crate::permissions::queries::is_system_admin(&state.db, *user_id).await?;
     let other = |sql: &'static str| async move {
         match id {
-            Some(id) => sqlx::query_scalar::<_, String>(sql)
+            Some(id) if admin || !action.is_admin() => sqlx::query_scalar::<_, String>(sql)
                 .bind(id)
                 .fetch_optional(&state.db)
                 .await
                 .map(Option::unwrap_or_default),
-            None => Ok(String::new()),
+            _ => Ok(String::new()),
         }
     };
     let label = match action {
