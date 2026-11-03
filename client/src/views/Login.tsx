@@ -1,6 +1,6 @@
 import { Component, createEffect, createMemo, createSignal, createResource, lazy, Match, Show, Switch, For, on, onCleanup, onMount } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
-import { authState, beginSignInChoice, clearError, loginWithPasskey } from "@/stores/auth";
+import { authState, beginSignInChoice, clearError, currentSignInChoice, loginWithPasskey } from "@/stores/auth";
 import { cancelAttempt, fetchServerSettings, getDefaultServerUrl, oidcAuthorize } from "@/lib/tauri";
 import { decodeLoginStep, type LoginStep, type OidcProvider } from "@/lib/types";
 import { KeyRound, Smartphone } from "lucide-solid";
@@ -227,7 +227,7 @@ const Login: Component = () => {
     clearError();
     // A new sign-in choice: an SSO wait, a password or phone attempt in
     // flight are stale now (Codex review M1).
-    beginSignInChoice();
+    const choice = beginSignInChoice();
     stopConditional();
     modalCtl?.abort();
     const ctl = new AbortController();
@@ -246,7 +246,9 @@ const Login: Component = () => {
       if (modalCtl === ctl) {
         modalCtl = undefined;
         setPasskeyBusy(false);
-        if (!disposed) void startConditional();
+        // Autofill comes back only for this choice: a newer one (SSO) that
+        // aborted the ceremony keeps the page to itself (Codex r3).
+        if (!disposed && choice.isCurrent()) void startConditional();
       }
     }
   };
@@ -293,14 +295,16 @@ const Login: Component = () => {
     }
 
     stopConditional();
+    // Never a session: the answer is the confirmation QR or the TOTP step.
+    const submitting = submitPassword(serverUrl(), username(), password());
+    const choice = currentSignInChoice();
     try {
-      // Never a session: the answer is the confirmation QR or the TOTP step.
-      await submitPassword(serverUrl(), username(), password());
+      await submitting;
       setPassword("");
     } catch (err) {
       if (!authState.error) setLocalError(loginErrorText(err));
-      // The form stays: so does passkey autofill.
-      if (!disposed) void startConditional();
+      // The form stays: so does passkey autofill, unless another choice runs.
+      if (!disposed && choice?.isCurrent()) void startConditional();
     }
   };
 
@@ -308,7 +312,12 @@ const Login: Component = () => {
     setLocalError("");
     clearError();
     stopConditional();
-    void startPhoneSignIn(serverUrl());
+    const starting = startPhoneSignIn(serverUrl());
+    const choice = currentSignInChoice();
+    // A start that failed stays on the form: autofill comes back (Fable R4).
+    void starting.then(() => {
+      if (!disposed && onForm() && choice?.isCurrent()) void startConditional();
+    });
   };
 
   const handleTotp = (code: string) => {
@@ -342,6 +351,7 @@ const Login: Component = () => {
     ssoPopup = popup;
     if (!isTauri() && !popup) {
       setLocalError(t("auth.login.popupBlocked"));
+      void startConditional();
       return;
     }
     setOidcLoading(provider.slug);
@@ -406,7 +416,9 @@ const Login: Component = () => {
         onClosedWithoutResult: () => {
           // Closed by the user, or the callback lost its opener (IdP with
           // COOP) after the sign-in already set the refresh cookie.
-          if (!stale()) setPopupClosed(true);
+          if (stale()) return;
+          setPopupClosed(true);
+          void startConditional();
         },
       });
       popup!.location.href = result.authUrl;
@@ -416,6 +428,8 @@ const Login: Component = () => {
       if (stale()) return;
       setLocalError(errorText(err, "auth.login.ssoFailed", SSO_ERRORS.byCode));
       setOidcLoading(null);
+      // The SSO start failed and the form stays: autofill comes back (Fable R4).
+      void startConditional();
     }
   };
 

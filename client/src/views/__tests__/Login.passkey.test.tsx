@@ -303,6 +303,73 @@ describe("Login with a passkey", () => {
     expect(last.signal.aborted).toBe(false);
   });
 
+  const ssoSettings = {
+    oidc_enabled: true,
+    oidc_providers: [{ slug: "kc", display_name: "Keycloak", icon_hint: null }],
+    auth_methods: { local: true },
+    registration_policy: "closed",
+  };
+  /** A popup the SSO flow can point at the provider. */
+  function fakePopup() {
+    return vi
+      .spyOn(window, "open")
+      .mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as unknown as Window);
+  }
+  const conditionalCalls = () =>
+    passkeySignInMock.mock.calls.filter(([, o]) => (o as { mediation: string }).mediation === "conditional").length;
+
+  it("a modal sign-in aborted by a newer SSO choice does not bring autofill back (Codex r3)", async () => {
+    const tauri = await import("@/lib/tauri");
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue(ssoSettings as never);
+    vi.mocked(tauri.oidcAuthorize).mockReturnValue(new Promise(() => {}));
+    const open = fakePopup();
+    try {
+      pendingUntilAbort();
+      await renderLogin();
+      await waitFor(() => expect(conditionalCalls()).toBe(1));
+      fireEvent.click(screen.getByRole("button", { name: "Sign in with passkey" }));
+      await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(2));
+      fireEvent.click(await screen.findByRole("button", { name: /Continue with Keycloak/ }));
+      await waitFor(() => expect(tauri.oidcAuthorize).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 30));
+      // Only the first autofill: nothing runs beside the SSO sign-in.
+      expect(conditionalCalls()).toBe(1);
+    } finally {
+      open.mockRestore();
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValue(null as never);
+    }
+  });
+
+  it("a failed phone start that stays on the form brings autofill back (Fable R4)", async () => {
+    const tauri = await import("@/lib/tauri");
+    const { HttpError } = await import("@/lib/tauri/common");
+    vi.mocked(tauri.createQrAttempt).mockRejectedValueOnce(new HttpError(503, "x", "SERVICE_UNAVAILABLE"));
+    pendingUntilAbort();
+    await renderLogin();
+    await waitFor(() => expect(conditionalCalls()).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with your phone" }));
+    await waitFor(() => expect(tauri.createQrAttempt).toHaveBeenCalled());
+    await waitFor(() => expect(conditionalCalls()).toBe(2));
+  });
+
+  it("a failed SSO start that stays on the form brings autofill back (Fable R4)", async () => {
+    const tauri = await import("@/lib/tauri");
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue(ssoSettings as never);
+    vi.mocked(tauri.oidcAuthorize).mockRejectedValueOnce(new Error("OIDC_FAILED"));
+    const open = fakePopup();
+    try {
+      pendingUntilAbort();
+      await renderLogin();
+      await waitFor(() => expect(conditionalCalls()).toBe(1));
+      fireEvent.click(await screen.findByRole("button", { name: /Continue with Keycloak/ }));
+      await waitFor(() => expect(tauri.oidcAuthorize).toHaveBeenCalled());
+      await waitFor(() => expect(conditionalCalls()).toBe(2));
+    } finally {
+      open.mockRestore();
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValue(null as never);
+    }
+  });
+
   it("PASSKEY_UNKNOWN shows the removed message", async () => {
     conditional.available = false;
     passkeySignInMock.mockRejectedValue(

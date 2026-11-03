@@ -755,7 +755,20 @@ export function beginSignInChoice(): SignInChoice {
   choiceCtl?.abort();
   const ctl = new AbortController();
   choiceCtl = ctl;
+  return choiceHandle(ctl);
+}
+
+function choiceHandle(ctl: AbortController): SignInChoice {
   return { signal: ctl.signal, isCurrent: () => !ctl.signal.aborted };
+}
+
+/**
+ * The choice begun last, if one is pending: a caller that started a choice
+ * through a store (`submitPassword`, `startPhoneSignIn`) captures it right
+ * after the call, to act later only while it is still the current one.
+ */
+export function currentSignInChoice(): SignInChoice | null {
+  return choiceCtl ? choiceHandle(choiceCtl) : null;
 }
 
 /** A session began or ended: every pending choice is stale. */
