@@ -842,8 +842,9 @@ async fn redeem_inner(
             }
             crate::auth::guards::require_full(auth)?;
             let target = StepUpTarget::parse(action, &target)?;
-            // `grant_tx` locks the session row and re-checks it live and
-            // full, and re-checks the passkey active and the caller's own.
+            // `grant` locks the account, then `grant_tx` the session row; it
+            // re-checks the session live and full, and the passkey active
+            // and the caller's own.
             let grant = step_up::grant(state, auth, action, &target, passkey_id).await?;
             Ok(Json(DesktopStepUpRedeemed {
                 purpose: "step_up",

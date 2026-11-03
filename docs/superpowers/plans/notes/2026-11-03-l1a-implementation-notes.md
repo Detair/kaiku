@@ -402,3 +402,178 @@ bot and incoming-webhook token creation behind `full` (C27 same row), the own-ac
 
 - Codex m6 (PARTLY in round 2): the `kaiku` rename no longer aborts after five taken hex candidates; it falls back to `kaiku_` + 20 hex + `_` + counter within `username_format`. Test `pre_existing_kaiku_rename_survives_all_hex_candidates_taken` (red before, green after).
 - Argon: APPROVE (all three rejections accepted).
+
+## Review round 3 (Argon coverage, 2026-11-03)
+
+Argon's first full review had seen only the first ~190 KB of the diff (58 of 150 files); it
+reviewed the 92 missed files in six parts against `267e4c78`. Argon saw only a diff, so every
+finding was checked against the code first; each "real" fix is test-first (the test failed before
+the fix) unless the row says otherwise. Every claimed deadlock was tried with a concurrent test:
+four reproduced `40P01` (or the 500 it causes) before the fix (P2 M1, P4 M1, P5 M2, P6 M1), the
+refresh pool self-deadlock (P3 M1) reproduced as `PoolTimedOut`, and P1 M3 deadlocked only with
+the existing up-front lock removed, which shows the code already prevents it.
+
+**Blocker verdict (part 1 B1): real, fixed.** `confirm_tx` revoked any live row with the subject's
+`(user_id, device_id)`, and the install id is the claimant's own choice (listed to every session of
+the account). In L1a only the CLI reaches `confirm_tx` in production (the issuer routes are L1b),
+so the live effect was the wrong `revoke_reason`; L1b's `admin` and `request` routes would have
+inherited the immediate removal of another account's key.
+
+| Finding | Verdict | Commit | Test or reason |
+|---|---|---|---|
+| P1 B1 `confirm_tx` replaces a live key for `pending` enrolments, its own issuer, reason always `owner` | real | `b8814823` | `pending_admin_enrolment_never_replaces_a_live_key`, `…_another_admins_key`, `pending_request_enrolment_never_replaces_a_live_key`, `own_enrolment_cannot_replace_its_issuer`, `replaced_key_carries_the_variants_reason`. A `pending` key on a live install and the issuer's own install answer 400 `VALIDATION_ERROR` at `pop-challenge` and again in `confirm_tx` under the lock; replacement only for an `active` key, reason by variant |
+| P1 M2 attestation: `userAuthType` from `softwareEnforced` or 0, unreadable `authTimeout` read as absent | real | `003dfbd4` | unit tests `attestation::tests::*` (4 red before) |
+| P1 M2 leaf SPKI not compared with the claimed key | deferred | – | same as round 1 Fable m6 (fixtures certify another key; L1b with the L2 fixtures); no new path |
+| P1 M3 lock order in `answer_enroll_tx`/`confirm_tx` for cross-account enrolments | not real | `7256fdaa` (test) | `approvals/handlers.rs` `lock_challenge` locks `[auth.id, subject_id]` in one statement before `key_device_session`; later `lock_accounts` calls re-lock held rows. `admin_enroll_answer_never_deadlocks_{subject,admin}_lower`; with the up-front lock removed the lower-subject case deadlocks |
+| P1 M4 no `enrollment_updated` for PC-session issuers | real | `cddbed4c` | `pc_session_issuer_gets_the_claimed_hint` (`notify_issuer` falls back to the issuing session's account) |
+| P1 m5 `after_revoke` deletes the push subscription even if the last notice failed | deferred | – | keeping it would keep pushing to a removed phone until something deletes it; the correct fix is an outbox-driven clean-up after the sweep delivers the notice (L1b) |
+| P1 m6 open count uses `expires_at` for claimed rows; `status` of an overdue claim | real | `fbd042b1` | `claimed_enrolment_is_open_while_its_code_is` |
+| P1 m7 `invalidated` answers `is_current: false` | real | `4bb42264` | `invalidated_device_is_revoked_with_notice` (new assertion) |
+| P1 m7 `cancel_tx` ignores `_by`, leaves open challenges | not real | – | callers authorise first (`handlers.rs` `deny` → `lock_issued_by`); `enroll`/`enroll_pop` effects re-check the enrolment state under the lock (round 1 decision on challenges) |
+| P2 M1 `lock_scope` retry takes a lower account after a higher one | real (dormant until L1b Task 21) | `c66f7ae5` | `lock_scope_retry_never_takes_a_lower_account_after_a_higher_one` (40P01 before) via the new `lock_scope_with` reader seam; a savepoint per attempt |
+| P2 M2 cross-account labels in `step_up`/`target_label` | fixed in LP `6c8a4444` | – | the `admin.*` gate runs before `key_device_session` there |
+| P2 M2 passkey fallback for `admin.authenticator.remove`; `passkey.remove` unscoped | LP | – | real gap (C27: the target is "key device or passkey id"); LP adds the passkey arms, scoped to the caller for `passkey.remove` (round 1 Fable m1) |
+| P2 m3 `identity.unlink` has no `target_label` | deferred | – | L1b Task 16 puts the route behind the step-up; add the arm there (avoids a conflict with LP in `target_label`) |
+| P2 m4 logout leaves the legacy cookie | real | `aaccc72c` | `logout_clears_the_legacy_cookie` |
+| P3 M1 `rotate` takes a second pool connection under its row lock; Valkey under the lock | real | `b34b3561` | `rotation_needs_only_its_own_connection` (pool of one: `PoolTimedOut` before). The ban check runs in the transaction; a `sid` token's denylist is read before the lock, its verdict still after the ban (pinned order) |
+| P3 M2 two Valkey round-trips per ended session inside the transaction | real | `7c1bd642` | `ending_many_sessions_waits_for_a_hung_valkey_once` (48 s for 8 sessions before; one pipeline now) |
+| P3 m1 `reauth/methods` `device` from `active_strong_count` | real (latent for LP) | `62143ccf` | no test: identical in L1a; becomes wrong once LP counts passkeys |
+| P3 m2 `is_live`/`is_live_for_user` skip bans and `is_system` | not real | – | the WS handshake and re-check also run `account_status` (`ws/handlers.rs:174`, `:432`, `:671`); a ban ends the session rows in its transaction; the system account has no sessions |
+| P3 m3 expiry checked before reuse detection | not real | – | the documented order (Task 7); a lapsed row authenticates nothing, so a presented predecessor gains nothing |
+| P4 M1 grant operations without the account lock | real | `9b41b012` | `elevation_and_revocation_never_deadlock` (40P01 before: elevation held the session row and waited for the key-share lock its `elevated_sessions`/audit rows take on `users`). `lock_full_session` locks the account first. The `is_active` snapshot read is serialisable (first commit wins) and the account lock now orders it anyway |
+| P4 M1 `grant_tx` does not check `by`'s owner or kind | deferred to LP | – | round 1 Fable m7 |
+| P4 M2 `/auth/sessions` `authenticator.label` always null | real | `08716983` | `session_list_names_the_key_device` (LP adds passkey labels) |
+| P4 m1 pin/unpin reveal another user's Kaiku DM | real | `101c4e19` | `pin_never_reveals_another_users_kaiku_dm` |
+| P4 m2 CLI builds its state after the commit | real | `a686cd10` | no test (the voice setup cannot be made to fail from the CLI suite) |
+| P4 m2 CLI exits before spawned deliveries; no audit row at confirm | not real | – | the CLI awaits `notices::deliver` (no spawn); `record` writes `security.authenticator_added` in the same transaction (`security_events/record.rs:54`) |
+| P4 m3 session-ending routes without the account lock | not real | – | by design (approvals AGENTS.md): they touch sessions, grants and enrolments only; a session committed after the end-all statement is a later sign-in |
+| P4 m3 `is_current` true for two sessions | real | `08716983` | `session_list_marks_only_the_tokens_session_current` |
+| P4 m4 sweep skips enrolment expiry when challenge expiry fails | real | `ab65c651` | no test (a failing step 2 cannot be produced without a fault hook) |
+| P5 M1 concurrent deliveries race past coalescing | not real | `9b7ce5d4` (test) | `kaiku_dm_created_tx` takes the recipient's advisory lock before the notice lookup (`notices.rs` `deliver_one`); `concurrent_deliveries_coalesce` |
+| P5 M2 deadlock between two admins' high-severity deliveries | real | `9b7ce5d4` | `admin_deliveries_never_deadlock` (40P01 before; recipients sorted by id) |
+| P5 M3 coalescing window has no upper bound | real | `9b7ce5d4` | `coalescing_window_is_bounded_both_ways` |
+| P5 M4 one failing event blocks the outbox | real | `9b7ce5d4` | `one_failing_event_never_blocks_the_outbox` (test-only trigger as the failing event) |
+| P5 m1 system account as notice subject | real | `5ad67620` | `system_account_event_never_reaches_another_users_dm` (with P6 M1) |
+| P5 m2 deletion maps end-all errors to 500 with the error text | not real | – | `GovernanceError::Internal` renders only "Internal server error" (`governance/error.rs:72-82`); a Valkey outage never fails `end_all_sessions_tx` (best effort) |
+| P5 m3 unbounded event fetch and N+1 labels per notice | real (performance) | `2397f951` | covered by `coalesced_events_truncate_at_50` and the notice tests |
+| P6 M1 system-account self-lookup returns another user's Kaiku DM | real | `5ad67620` | the same test: the event was posted into the user's DM before |
+| P6 M1 multi-recipient advisory lock order | real | `9b7ce5d4` | as P5 M2 |
+| P6 M1 FK key-share vs `FOR UPDATE` on `users` | partly | `c6d2e493` | Argon's scenario (notices created inside a transition) does not exist: deliveries run in their own transaction after the commit. A related cycle did: admin deletion (account lock, then cascade into the account's events) vs a delivery holding that event and waiting for the account; `notice_delivery_and_account_deletion_never_deadlock` (deletion 500 before). `deliver_one` now key-share-locks the event's accounts in id order before the event row |
+| P6 m1 Typing read-only check without a timeout | not real | – | the same handler's subscribe checks (`find_channel_by_id`, `require_channel_access`) are equally unbounded; the pool's 5 s acquire timeout applies to all; bounding `handle_client_message` as a whole is out of scope |
+| P6 m2 `DmCreated` doc comment detached | real | `7d615893` | – |
+
+Also in this round (coordinator, CI only): `d566b740` raises the "Run tests" step of the Rust
+Tests job to 40 minutes (no job-level timeout exists).
+
+### Interface changes (LP, L1b, L2)
+
+- Wire: `POST /auth/enrollments/pop-challenge` (and the confirm) answers 400 `VALIDATION_ERROR`
+  when the install id is the issuer's own key device, or a live key of the account while the new
+  key would be `pending` (`admin` of an existing account, `request`). L2: a phone whose stale row
+  is still live sets up again with a new install id, or the row is removed first. L1b: replacing
+  a live install at the request's completion needs `approval_devices_live` to allow a `pending`
+  row beside the `active` one (and device-key sign-in to pick the active row).
+- Wire: `GET /auth/sessions` fills `authenticator.label` (key devices); `is_current` follows the
+  token's `sid`. `POST /api/approval-devices/{id}/invalidated` answers `is_current: true`. Pin and
+  unpin in someone else's Kaiku DM answer like any other DM. Enrolment `status` reads `expired`
+  for a code past due. Logout clears the legacy refresh cookie.
+- Attestation: `userAuthType` must be hardware-enforced and non-zero; an unreadable
+  `authTimeout` → `DEVICE_UNSUITABLE {reason: "attestation_missing"}`.
+- Rust: `transition::lock_scope_with` (reader seam); `step_up::{grant_tx, peek_tx, consume_tx}`
+  take the caller's account lock (a no-op for callers that hold it); `enrollments::notify_issuer`;
+  `queries::events_of_notices(conn, ids, per_notice)`; `revocation::revoke_session` removed;
+  `system_account::kaiku_dm_created_tx` refuses the system account; `notices::deliver` returns
+  the first error after trying every event. L1b Task 21: `accounts_recording` plugs into
+  `lock_scope`'s savepoint retry as is.
+
+### Gate results (round 3, 2026-11-03)
+
+- `cargo test -p vc-server --lib`: 688 passed (the Valkey lib tests hard-code `localhost:6379`;
+  they ran through a local forwarder to the L1a test Valkey).
+- Approvals, enrolment, device sign-in, step-up, transition locks, session (assurance, end,
+  revocation, refresh), Valkey outage, security events and notices, system account, CLI,
+  elevation, guarded routes and re-auth suites: 210 passed, 0 failed.
+- Full `--test integration`: 1061 passed, 2 failed, 33 ignored. The two
+  (`role_channel_overrides::pending_member_ignores_everyone_override_allow`,
+  `unread::test_viewable_filter_matches_require_channel_access`) are the known flaky
+  pending-member family (rounds 1 and 2) and pass 3/3 with `--test-threads=1`.
+- `cargo +nightly fmt --all -- --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server --
+  -D warnings` clean; `cargo deny check`: advisories, bans, licenses, sources ok; `git diff
+  --check` clean. No `query!` macro changed, so `.sqlx` is unchanged.
+
+## Review round 4 (2026-11-03)
+
+Round 3 confirmations: Fable APPROVE, Gemini Flash (for Argon) APPROVE, Codex REQUEST CHANGES (the
+`admin.*` gate and the leaf SPKI). Every fix is test-first (the test failed before the fix).
+
+| Item | Verdict | Commit | Test or note |
+|---|---|---|---|
+| `admin.*` step-up gate before `key_device_session` and `target_label` (Codex r3 P2 M2: L1a merges first, so LP's fix must be here) | real | `23450390` | Ported from LP `6c8a4444` + `e03bdb27`, L1a files only and textually identical (`git apply` of LP's hunks): `StepUpAction::is_admin`, `guards::require_admin_for_step_up` (403 `NOT_ADMIN`, then `FULL_SESSION_REQUIRED`), `AuthError::NotAdmin`, the gate in `step_up`, unit test `every_admin_action_is_gated`, admin `admin.elevate` fixtures in `approvals_core`. `device_admin_step_up_needs_an_admin` lives in `approvals_core` here (its LP file is passkey-only; the body is LP's with the L1a helpers). Beyond LP: `AuthError::NotAdmin` in `error_code_tests` (AGENTS.md rule). Passkey files untouched |
+| Leaf SPKI bound to the claimed key (Codex r3 P1 M2, round 1 Fable m6) | real | `6bbaefad` | `attestation_leaf_must_certify_the_claimed_key`. `check` takes the claimed SPKI DER; a different leaf SPKI → 400 `DEVICE_UNSUITABLE` `attestation_properties` (after the extension check, so a leaf without it stays `attestation_missing`). Fixtures: `chain_for` signs the leaf with the phone's own key; `chain` keeps a key of its own for the mismatch case |
+| Dedicated code for a pending claim on a live install id (Fable) | done | `b573c898` | 400 `ENROLLMENT_DEVICE_IN_USE` (no fields) at pop-challenge and confirm; the three `pending_*_never_replaces_*` tests assert it. The issuer's own install keeps 400 `VALIDATION_ERROR` (an app bug: the issuing app never claims its own link). Coordinator amends C26 (additive) |
+| Deletion: a DB or Valkey failure ending the sessions answers 500 (Codex r3 P5 m2) | real | `edbae8d3` | `deletion_answers_503_when_its_sessions_cannot_end` (test-only trigger); begin, end and commit map to the new `GovernanceError::ServiceUnavailable` (503 `SERVICE_UNAVAILABLE`), logged, never echoed |
+| Persistently failing events monopolise the bounded sweep (Codex r3 P5 M4, optional) | real, small | `7052e7f3` | `failing_events_never_take_the_whole_sweep`. Half the batch from the oldest end, half from the newest (no per-event attempt count: `security_events` is append-only, a counter needs a migration and a trigger change); delivery stays oldest first |
+| `refresh.rs` `reuse` holds the session row, then `record()` takes KEY SHARE on `users` (Fable) | closed by L1b | – | A concurrent revocation of the same account (account `FOR UPDATE`, then the session row) can deadlock with it (40P01). L1b's `lock_accounts` with `FOR NO KEY UPDATE` does not conflict with KEY SHARE and closes it. No code here |
+
+Corrections and notes on the round 3 answers:
+
+- P6 m1 (Typing read-only check): Codex rejects the "pool acquire timeout" argument (it does not
+  bound an executing query) and accepts the deferral as existing WebSocket scope. Corrected: the
+  deferral stands because the same handler's other database calls are equally unbounded.
+- P3 M1: a legacy token's one-time denylist read still runs under the session row lock (Codex
+  PARTLY). Accepted residual: once per legacy token, bounded by the 3 s Valkey command timeout.
+- Flash (round 4 part A): the recovery case on the same install now answers
+  `ENROLLMENT_DEVICE_IN_USE`, so the phone offers to sign in with its key; a phone whose key is
+  gone sets up with a new install id (L2), or L1b lets a `pending` row sit beside the live one.
+  For L1b cross-account step-up actions: lock `[auth.id, target]` together before `consume_tx`
+  (its own account lock is then a no-op), never the target alone first. The CI step timeout is
+  the coordinator's call (round 3).
+
+### Interface changes (round 4)
+
+- Wire: `POST /api/approvals/step-up` with an `admin.*` action answers 403 `NOT_ADMIN` to a
+  non-admin (before `KEY_DEVICE_REQUIRED`), then `FULL_SESSION_REQUIRED`; pop-challenge and
+  confirm answer 400 `ENROLLMENT_DEVICE_IN_USE` for a pending claim on a live install id; an
+  attestation leaf for another key → `DEVICE_UNSUITABLE` `attestation_properties`;
+  `POST /api/me/delete-account` (and its retry) answers 503 `SERVICE_UNAVAILABLE` when the
+  sessions cannot be ended.
+- Rust: `attestation::check(chain, nonce, uv_class, public_key)`;
+  `ApprovalError::EnrollmentDeviceInUse`; `GovernanceError::ServiceUnavailable`;
+  `notices::{SWEEP_BATCH, deliver_pending_bounded}`; the LP gate items above (same signatures as
+  LP).
+
+### Gate results (round 4, 2026-11-03)
+
+- `cargo test -p vc-server --lib`: 689 passed (Valkey lib tests through the local forwarder, as
+  in round 3).
+- Approvals, approval devices, enrolment, device sign-in, step-up, transition locks, admin (create
+  user, diagnostics, elevation, reports), guarded routes, CLI, governance, security events and
+  notices: 180 passed, 0 failed.
+- Full `--test integration`: 1064 passed, 3 failed, 33 ignored. The three
+  (`role_channel_overrides::pending_member_ignores_everyone_override_allow`,
+  `screening_http::pending_member_is_blocked_then_unlocked_on_accept`,
+  `unread::test_viewable_filter_matches_require_channel_access`) are the known flaky
+  pending-member family and pass 3/3 with `--test-threads=1`.
+- `cargo +nightly fmt --all -- --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server --
+  -D warnings` clean; `cargo deny check`: advisories, bans, licenses, sources ok. No `query!`
+  macro changed (`.sqlx` unchanged).
+
+## Review round 5 (Codex r4 on 690df404..b2391e08; 2026-11-03)
+
+Codex: gate, SPKI and 503 FIXED; two PARTLY, fixed by the coordinator. Gemini Flash (Argon stand-in): APPROVE.
+
+| Finding | Verdict | Commit | Test |
+|---|---|---|---|
+| Own-issuer collision still `VALIDATION_ERROR`; the C26 amendment (09fa5da1) names `ENROLLMENT_DEVICE_IN_USE` for it too | fixed | see `git log` ("issuer's own phone") | `enrollments::own_enrolment_cannot_replace_its_issuer` (red before) |
+| Notice sweep: failing events at both ends starve a middle one forever | fixed: the second half continues from a rotating cursor (`system_settings` key `security.notice_sweep_cursor`) and wraps around, so every leftover is reached within `ceil(undelivered / half)` sweeps; both halves are index range scans (a first random-sample version was refused by Codex r5: unbounded scan, no fairness bound) | see `git log` ("rotating cursor") | `security_notices::failing_events_at_both_ends_never_starve_the_middle` (red before; deterministic, 5 sweeps); the round-4 test loops 4 sweeps |
+
+Gates: `enrollments::`, `security_notices::`, `approvals*` integration 72 passed; after the cursor change `security_notices::` + `enrollments::` 53 passed; fmt and `clippy -p vc-server -D warnings` clean.
+
+## Review round 6 (Codex r5 on the rotating cursor; 2026-11-03)
+
+| Finding | Verdict | Commit | Test |
+|---|---|---|---|
+| Concurrent sweeps (several processes) can write a stale cursor back | fixed: the rotating half runs in a transaction holding `pg_try_advisory_xact_lock(hashtext('security.notice_sweep_cursor'))`; a sweep without the lock delivers only its oldest half | see `git log` ("advisory lock") | `security_notices::a_concurrent_sweep_never_moves_the_cursor` (red with the lock bypassed: checked) |
+| The nullable `OR` and the `(created_at, id)` comparison do not match the `created_at`-only partial index | fixed: separate queries with and without a cursor; `idx_security_events_undelivered` is now `(created_at, id) WHERE delivered_at IS NULL` (the migration is new in L1a and unreleased, so it is changed in place) | same | covered by the sweep tests |
+
+Gates: `security_notices::` + `enrollments::` 54 passed; fmt and `clippy -p vc-server -D warnings` clean (`--tests` lints in other files are pre-existing).

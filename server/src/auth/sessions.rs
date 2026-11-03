@@ -55,8 +55,12 @@ pub async fn list_sessions(
                 country: s.country.clone(),
                 created_at: s.created_at,
                 expires_at: s.expires_at,
-                is_current: auth_user.session_id == Some(s.id)
+                // The token's `sid` decides; the refresh token only when
+                // there is none (as `current_session_id`).
+                is_current: auth_user.session_id.map_or_else(
                     || current_hash.as_deref() == Some(&s.token_hash),
+                    |sid| sid == s.id,
+                ),
                 assurance: super::assurance::Assurance::parse(&s.assurance),
                 client_class: s.client_class.clone(),
                 auth_methods: s.auth_methods.clone(),
@@ -64,7 +68,7 @@ pub async fn list_sessions(
                     (Some(kind), Some(id)) => Some(super::types::SessionAuthenticator {
                         id,
                         kind: kind.clone(),
-                        label: None,
+                        label: s.authenticator_label.clone(),
                     }),
                     _ => None,
                 },

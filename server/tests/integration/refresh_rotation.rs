@@ -510,3 +510,86 @@ async fn refresh_cookie_renamed_and_strict(pool: PgPool) {
         "{set_cookie:?}"
     );
 }
+
+/// Review round 3 (Argon coverage, part 2 m4): a logout that read the
+/// pre-v1.0 cookie also clears it.
+#[sqlx::test]
+async fn logout_clears_the_legacy_cookie(pool: PgPool) {
+    let mut config = vc_server::config::Config::default_for_test();
+    config.cookie_secure = true;
+    let app = TestApp::with_pool_and_config(pool.clone(), config).await;
+    let (_, username) = password_user(&pool).await;
+    let req = peer_request(Method::POST, "/auth/login")
+        .header("Content-Type", "application/json")
+        .header(header::ORIGIN, TEST_ORIGIN)
+        .body(Body::from(
+            serde_json::json!({"username": username, "password": PASSWORD}).to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 200);
+    let token = resp
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .find_map(|c| {
+            c.strip_prefix("__Secure-kaiku_refresh=")
+                .map(|t| t.split(';').next().unwrap().to_string())
+        })
+        .unwrap();
+    let access = body_to_json(resp).await["access_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let req = peer_request(Method::POST, "/auth/logout")
+        .header(header::ORIGIN, TEST_ORIGIN)
+        .header(header::AUTHORIZATION, format!("Bearer {access}"))
+        .header(header::COOKIE, format!("kaiku_refresh={token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    assert!(resp.status().is_success(), "{}", resp.status());
+    let set_cookie: Vec<String> = resp
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert!(
+        set_cookie
+            .iter()
+            .any(|c| c.starts_with("kaiku_refresh=") && c.contains("Max-Age=0")),
+        "{set_cookie:?}"
+    );
+}
+
+/// Review round 3 (Argon coverage, part 3 M1): a rotation reads everything
+/// through its own transaction. With every pool connection held by
+/// rotations (here: a pool of one), a second connection for the ban check
+/// would never come and the refresh would time out.
+#[sqlx::test]
+async fn rotation_needs_only_its_own_connection(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_, username) = password_user(&pool).await;
+    let tokens = login(&app, &username).await;
+    let raw = tokens["refresh_token"].as_str().unwrap().to_string();
+    let one = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let ctx = vc_server::auth::ctx::AuthCtx {
+        db: &one,
+        redis: &app.state.redis,
+        config: &app.state.config,
+    };
+    let client = vc_server::auth::session_issue::SessionClient {
+        ip: None,
+        user_agent: None,
+    };
+    let outcome = vc_server::auth::refresh::rotate(&ctx, &raw, &client).await;
+    assert!(outcome.is_ok(), "{:?}", outcome.err());
+}

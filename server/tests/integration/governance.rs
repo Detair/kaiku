@@ -412,3 +412,39 @@ async fn test_profile_shows_deletion_scheduled(pool: PgPool) {
         "Profile should include deletion_scheduled_at after deletion request"
     );
 }
+
+/// Review round 4 (Codex r3 P5 m2): when the sessions cannot be ended (a
+/// database failure), the deletion answers 503 SERVICE_UNAVAILABLE (retry;
+/// the retry ends them), never 500 with the error.
+#[sqlx::test]
+async fn deletion_answers_503_when_its_sessions_cannot_end(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let password = "test_password_123!";
+    let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
+    let token = generate_access_token(&app.config, user_id);
+    // A test-only failure: ending a session for the deletion is refused.
+    sqlx::raw_sql(
+        "CREATE FUNCTION refuse_end() RETURNS trigger AS $$
+         BEGIN
+             RAISE EXCEPTION 'refused';
+         END $$ LANGUAGE plpgsql;
+         CREATE TRIGGER refuse_end BEFORE UPDATE ON sessions
+             FOR EACH ROW WHEN (NEW.end_reason = 'account_deleted')
+             EXECUTE FUNCTION refuse_end();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let body = serde_json::json!({"password": password, "confirm": "DELETE"});
+    let req = TestApp::request(Method::POST, "/api/me/delete-account")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    let status = resp.status();
+    let json = body_to_json(resp).await;
+    assert_eq!(status, 503, "{json}");
+    assert_eq!(json["error"], "SERVICE_UNAVAILABLE");
+    assert!(!json.to_string().contains("refused"), "{json}");
+}

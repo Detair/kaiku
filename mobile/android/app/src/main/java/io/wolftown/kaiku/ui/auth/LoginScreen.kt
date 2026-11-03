@@ -87,7 +87,7 @@ fun LoginScreen(
         Spacer(modifier = Modifier.height(32.dp))
 
         // Passkeys first (F1).
-        PasskeySignInButton(viewModel = viewModel, busy = uiState.isLoading)
+        PasskeySignInButton(viewModel = viewModel, busy = uiState.passkeyLoading, enabled = !uiState.isLoading)
         uiState.passkeyErrorRes?.let { res ->
             Spacer(modifier = Modifier.height(8.dp))
             Text(

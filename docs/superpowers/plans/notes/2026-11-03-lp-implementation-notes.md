@@ -482,3 +482,123 @@ browser run was not repeated.
 
 Gates: server lib 696 passed; passkey, approvals and step-up integration suites 173 passed; fmt
 and `clippy -p vc-server` clean; vitest 151 files / 1605 tests; `tsc` clean; lint 0 errors.
+
+## Merge of L1a review round 3 (2026-11-03)
+
+`origin/feat/v1.0-login-l1a` at `690df404` (L1a review round 3, Argon coverage,
+`267e4c78..690df404`, 23 commits) is merged into LP with `--no-ff` (`1d3913be`); no rebase, no
+force push. Safety ref: local branch `lp-pre-l1a-r3-merge` at `203b822c`.
+
+### Conflicts
+
+Four files changed on both sides; one textual conflict:
+
+| File | Resolution |
+|---|---|
+| `server/src/auth/reauth.rs` (`get_reauth_methods`) | conflict: both sides replaced `active_strong_count` with the same `approval_devices … state = 'active'` query (L1a `62143ccf`, LP Task 5). Kept L1a's comment and LP's `passkey` (`passkeys::queries::active_count`) |
+| `server/src/auth/step_up.rs` | auto-merged: L1a's account lock in `lock_full_session` (`9b41b012`) and LP's `strong::belongs_to` check in `grant_tx`, `is_admin` and its test sit side by side |
+| `server/src/auth/AGENTS.md` | auto-merged: L1a's grant lock order and LP's passkey section |
+| `server/tests/integration/approvals_core.rs` | auto-merged: LP's `make_admin` calls and L1a's `elevation_and_revocation_never_deadlock` (which calls `make_admin` itself) |
+
+Kept intact on the L1a side: the lock orders (`lock_scope` savepoint retries, notice delivery,
+refresh rotation), the account lock first in `grant_tx`/`peek_tx`/`consume_tx`, and the
+`pending`-claim refusal at `pop-challenge` and `confirm_tx`. On the LP side: the counter as a
+signal (`GREATEST`), the CAS desktop flows (stale, loser and 503 pages without a loopback
+callback), flow-bound ceremonies, the `admin.*` gate before `key_device_session`
+(`6c8a4444`/`e03bdb27`; L1a's part 2 M2 "fixed in LP"), `strong::is_active` `FOR SHARE`,
+`user_handle` written only when NULL, and the desktop `sign_in` user-name check. None of these
+files changed on the L1a side.
+
+### Adaptations to L1a's API changes
+
+| L1a change | LP code | Result | Commit | Test |
+|---|---|---|---|---|
+| `grant_tx`/`peek_tx`/`consume_tx` lock the caller's account (`FOR UPDATE` on `users`) before the session row | `passkeys::step_up::grant` (web finish and desktop redeem) wrote its `auth.passkey.step_up` audit row first; its `actor_id` FK holds a key-share lock on the account, so two concurrent grants of one account each waited for the other's (40P01, 500). Compiled, wrong order | `grant` takes `lock_accounts` first | `0309dd40` | `passkeys_step_up::concurrent_passkey_step_ups_never_deadlock` (500 before) |
+| same | `register::start` (`peek_tx` alone in its transaction), `register::finish` and `manage::remove` (`lock_accounts` before `consume_tx`), `passkeys::login::issue` (`issue_session_tx` locks the account) | already account first; unchanged | – | existing suites |
+| `GET /auth/sessions` fills `authenticator.label` for key devices ("LP adds passkeys") | passkey sessions answered `label: null` | the list also joins the session's own passkey (`COALESCE`) | `c43e3212` | `passkeys_login::session_list_names_the_passkey` (null before) |
+| `lock_scope_with`, `events_of_notices(conn, ids, per_notice)`, `revocation::revoke_session` removed, `notify_issuer`, `kaiku_dm_created_tx` refusing the system account, `notices::deliver` error | not used by LP | – | – | – |
+| `/auth/reauth/methods` `device` = an active key device | LP had the same query | merged (above) | `1d3913be` | `passkeys_step_up::reauth_methods_report_passkey` |
+
+L1a round 3 rows marked for LP: part 4 M1 "`grant_tx` does not check `by`'s owner" is LP's
+`strong::belongs_to` (rebase onto round 1). Part 2 M2 "passkey fallback for
+`admin.authenticator.remove`" was still open here; it is done in the next section (`8283f662`).
+
+### Android fixes deferred to LP by the L2b review
+
+- (a) `30551dc6` (Argon p3 m1): `installNativeSignIn` ends the session the server minted for a
+  passkey result it does not install (a session already runs, the attempt was superseded by
+  another sign-in, or the server changed), on the server that minted it, with its own tokens
+  only; best effort, bounded by `SERVER_LOGOUT_TIMEOUT_MS`, `NonCancellable`. The private
+  helper is `endUnused`, the same name and body as L2b's device-sign-in helper: when L2b and
+  LP meet, keep one. Test: `AuthRepositoryNativeSignInTest` (3 of 4 red before).
+- (b) `13f2c733` (Argon p5 #6): `PasskeySignInButton(busy, enabled)`: `busy` is the new
+  `LoginUiState.passkeyLoading` (its label), `enabled` is `!isLoading` (any sign-in; L2b passes
+  its combined `busy`). `onPasskeySignIn` starts nothing while a sign-in runs, so it never
+  cancels a password or SSO sign-in and a double tap sends one ceremony; a password sign-in that
+  replaces a passkey job clears its label. Tests in `LoginViewModelPasskeyTest`: "a passkey tap
+  while a password sign-in runs starts nothing", "a second passkey tap while one runs starts no
+  second ceremony", "a password sign-in that replaces a passkey one clears the passkey label"
+  (all red before).
+
+### Gates (merge of L1a review round 3)
+
+- `cargo test -p vc-server --lib`: 702 passed (the Valkey lib tests, `redis_tests` and the voice
+  `ws_handler_test`, hard-code `localhost:6379`: 18 failed for that reason only and passed through
+  a temporary local forwarder to the L1a test Valkey, stopped afterwards).
+- Passkey, approvals, approval devices, step-up grants, enrolment, device sign-in, session
+  (assurance, end, revocation, refresh rotation), transition locks, Valkey outage, security
+  events and notices, system account, CLI, elevation, guarded routes and re-auth suites:
+  369 passed, 0 failed.
+- Full `--test integration`: 1213 passed, 1 failed, 33 ignored. The one
+  (`unread::test_viewable_filter_matches_require_channel_access`) is the known flaky
+  pending-member family and passes 3/3 with `--test-threads=1`.
+- `cargo +nightly fmt --all -- --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server --
+  -D warnings` clean; `cargo deny check`: advisories, bans, licenses, sources ok; `git diff
+  --check` clean. No `query!` macro changed (the session list uses `query_as`), so `.sqlx` is
+  unchanged.
+- Client: vitest 151 files / 1605 tests passed; `tsc --noEmit` clean; `bun run lint` 0 errors
+  (141 warnings, as before); `lint:tauri-commands` ok (82). `cargo test -p vc-client --lib`:
+  277 passed, 2 ignored.
+- Android: `./gradlew lintDebug testDebugUnitTest --no-daemon`: lint 0 errors (47 warnings),
+  900 unit tests passed (88 classes).
+
+## Merge of L1a review rounds 4 and 5 (2026-11-03)
+
+Four `--no-ff` merges of `origin/feat/v1.0-login-l1a`, each pushed normally (no rebase, no
+force): `8a18d06c` (round 4, `b2391e08`), `ae8b4df4` (round 5, `93baf530`), `9de25567` (notice
+sweep cursor, `caa449e2`) and `e09642f7` (the sweep's advisory lock and the
+`idx_security_events_undelivered (created_at, id)` change in the unreleased migration
+20261120000000, `9ba364bf`).
+
+**Conflicts: none.** Round 4 ports LP's `admin.*` step-up gate (`6c8a4444` + `e03bdb27`) into L1a
+(`23450390`) with the same text, so `auth/step_up.rs`, `auth/guards.rs`, `auth/error.rs` and
+`approvals/handlers.rs` merged to LP's version. Their remaining differences from L1a are LP's
+own: `passkey.remove` labels read only the caller's active passkeys, and `grant_tx` checks
+`strong::belongs_to`. L1a also added `device_admin_step_up_needs_an_admin` to
+`approvals_core.rs` with LP's body. The merge commit drops LP's copy in `passkeys_step_up.rs`,
+so the test exists once. LP's `admin_step_ups_need_an_admin` (the passkey start) stays.
+
+**Attestation and enrolment changes.** `attestation::check` now binds the leaf SPKI to the
+claimed key, and `ENROLLMENT_DEVICE_IN_USE` is answered at pop-challenge and confirm (also for
+the issuer's own phone). Neither touches LP: passkeys use attestation `none`, and only L1a's
+`enrollments.rs` builds chains (`helpers/attestation.rs`). The passkey suites pass unchanged.
+
+**Label fallback (`8283f662`).** `target_label` for `admin.authenticator.remove` falls back from
+the key device to the passkey with that id (C27: a key device or passkey id), as the desktop
+ceremony page already did. Only system admins reach it, because the `admin.*` gate runs first.
+Test: `passkeys_step_up::device_admin_step_up_names_a_passkey_target` (an empty label before;
+it also checks a key-device target and an unknown id).
+
+Gates on the final tree (`e09642f7`):
+
+- `cargo test -p vc-server --lib`: 702 passed (the Valkey lib tests run through a temporary
+  local forwarder to the L1a test Valkey, stopped afterwards).
+- Passkey, approvals, approval devices, step-up grants, enrolment, device sign-in, session
+  (assurance, end, revocation, refresh rotation), transition locks, Valkey outage, security
+  events and notices, system account, CLI, elevation, guarded routes, re-auth and governance
+  suites: 387 passed, 0 failed.
+- Full `--test integration`: 1220 passed, 0 failed, 33 ignored.
+- `cargo +nightly fmt --all -- --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server --
+  -D warnings` clean; `cargo deny check`: advisories, bans, licenses, sources ok. No `query!`
+  macro changed (`.sqlx` unchanged). Client and Android were not touched in these merges, so
+  their gates were not run again.

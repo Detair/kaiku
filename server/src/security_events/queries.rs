@@ -135,10 +135,12 @@ pub async fn page(
     .await
 }
 
-/// The events of each notice, newest first.
+/// The newest `per_notice` events of each notice, newest first (a
+/// coalesced notice can hold many more than it shows).
 pub async fn events_of_notices(
     conn: &mut PgConnection,
     notice_ids: &[Uuid],
+    per_notice: i64,
 ) -> sqlx::Result<Vec<(Uuid, EventRow)>> {
     #[derive(sqlx::FromRow)]
     struct Row {
@@ -147,16 +149,22 @@ pub async fn events_of_notices(
         event: EventRow,
     }
     let rows = sqlx::query_as::<_, Row>(concat!(
-        "SELECT ne.notice_id, ",
+        "SELECT n.id AS notice_id, ",
         event_columns!(),
         "
-           FROM security_notice_events ne
-           JOIN security_events e ON e.id = ne.event_id
+           FROM unnest($1::uuid[]) AS n(id)
+          CROSS JOIN LATERAL (
+                SELECT ne.event_id FROM security_notice_events ne
+                  JOIN security_events le ON le.id = ne.event_id
+                 WHERE ne.notice_id = n.id
+                 ORDER BY le.created_at DESC, le.id DESC
+                 LIMIT $2) newest
+           JOIN security_events e ON e.id = newest.event_id
            LEFT JOIN users a ON a.id = e.actor_user_id
-          WHERE ne.notice_id = ANY($1)
           ORDER BY e.created_at DESC, e.id DESC"
     ))
     .bind(notice_ids)
+    .bind(per_notice)
     .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().map(|r| (r.notice_id, r.event)).collect())
