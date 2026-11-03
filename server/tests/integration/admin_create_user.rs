@@ -44,11 +44,13 @@ async fn setup_admin_with(
     (app, server, token)
 }
 
+/// `POST /api/admin/users` (passwordless since v1.0; `_password` is kept so
+/// the callers read as before).
 async fn create_user(
     server: &TestServer,
     token: &str,
     username: &str,
-    password: &str,
+    _password: &str,
 ) -> reqwest::Response {
     reqwest::Client::new()
         .post(format!("{}/api/admin/users", server.url))
@@ -56,7 +58,6 @@ async fn create_user(
         .json(&serde_json::json!({
             "username": username,
             "display_name": "Oma Erna",
-            "temporary_password": password,
         }))
         .send()
         .await
@@ -92,6 +93,11 @@ async fn create_and_login(
 ) -> serde_json::Value {
     let resp = create_user(server, admin_token, "oma", TEMP_PASSWORD).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
+    // The legacy forced change, as on an account from before the upgrade.
+    sqlx::query("UPDATE users SET must_change_password = true WHERE username = 'oma'")
+        .execute(&app.pool)
+        .await
+        .unwrap();
     session_of(app, "oma").await
 }
 
@@ -108,13 +114,20 @@ async fn admin_creates_user_201(pool: PgPool) {
     assert!(body["id"].as_str().is_some());
     assert!(body["created_at"].as_str().is_some());
 
-    let (must_change, auth_method): (bool, String) = sqlx::query_as(
-        "SELECT must_change_password, auth_method::text FROM users WHERE username = 'oma'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("user row");
-    assert!(must_change);
+    assert_eq!(body["is_admin"], false);
+    assert_eq!(body["may_approve"], false);
+    let (must_change, auth_method, passwordless, may_approve): (bool, String, bool, bool) =
+        sqlx::query_as(
+            "SELECT must_change_password, auth_method::text, password_hash IS NULL, may_approve
+               FROM users WHERE username = 'oma'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("user row");
+    // C27: passwordless, no forced change, `may_approve` off.
+    assert!(!must_change);
+    assert!(passwordless);
+    assert!(!may_approve);
     assert_eq!(auth_method, "local");
 
     // Audit entry exists and never contains the password.
@@ -141,7 +154,6 @@ async fn create_user_defaults_display_name_and_validates(pool: PgPool) {
         .json(&serde_json::json!({
             "username": "opa",
             "display_name": null,
-            "temporary_password": TEMP_PASSWORD,
         }))
         .send()
         .await
@@ -151,9 +163,10 @@ async fn create_user_defaults_display_name_and_validates(pool: PgPool) {
     assert_eq!(body["display_name"], "opa");
 
     for bad in [
-        serde_json::json!({"username": "Bad Name", "display_name": null, "temporary_password": TEMP_PASSWORD}),
-        serde_json::json!({"username": "ok_name", "display_name": null, "temporary_password": "short"}),
-        serde_json::json!({"username": "ok_name", "display_name": "x".repeat(65), "temporary_password": TEMP_PASSWORD}),
+        serde_json::json!({"username": "Bad Name", "display_name": null}),
+        // A temporary password is no longer accepted (C27).
+        serde_json::json!({"username": "ok_name", "display_name": null, "temporary_password": TEMP_PASSWORD}),
+        serde_json::json!({"username": "ok_name", "display_name": "x".repeat(65)}),
     ] {
         let resp = client
             .post(format!("{}/api/admin/users", server.url))
@@ -325,6 +338,12 @@ async fn pending_user_id(pool: &PgPool) -> Uuid {
         .fetch_one(pool)
         .await
         .expect("oma exists");
+    // The legacy forced change, as on an account from before the upgrade.
+    sqlx::query("UPDATE users SET must_change_password = true WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
     super::helpers::ensure_test_session(pool, id).await;
     id
 }
@@ -543,7 +562,6 @@ async fn create_user_in_guilds(
         .json(&serde_json::json!({
             "username": username,
             "display_name": null,
-            "temporary_password": TEMP_PASSWORD,
             "guild_ids": guild_ids,
         }))
         .send()

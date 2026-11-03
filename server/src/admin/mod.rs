@@ -10,6 +10,7 @@ pub mod guilds;
 pub mod middleware;
 pub mod observability;
 pub mod queries;
+pub mod security;
 pub(crate) mod shared;
 pub mod system;
 pub mod types;
@@ -115,6 +116,15 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route(
             "/users/{user_id}/recovery-contact",
             put(crate::auth::recovery_contact::put_admin),
+        )
+        .route(
+            "/users/{user_id}/may-approve",
+            put(security::set_may_approve),
+        )
+        .route("/users/{user_id}/factors", put(security::set_factor_state))
+        .route(
+            "/users/{user_id}/authenticators/{id}/remove",
+            post(security::remove_authenticator_now),
         )
         .route("/guilds", get(guilds::list_guilds))
         .route("/guilds/export", get(guilds::export_guilds_csv))

@@ -8,6 +8,7 @@ mod admin_create_user;
 mod admin_diagnostics;
 mod admin_elevation;
 mod admin_reports;
+mod admin_setup;
 mod android_contract_fixtures;
 mod announcements_http;
 mod approval_devices_http;

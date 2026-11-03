@@ -51,8 +51,16 @@ pub(crate) async fn target_label(
                 .await?
         }
         StepUpAction::AdminAuthenticatorRemove => {
-            crate::auth::strong::authenticator_label(conn, AuthenticatorRef::key_device(*id))
+            // A key device or a passkey id (C27 step-up table).
+            match crate::auth::strong::authenticator_label(conn, AuthenticatorRef::key_device(*id))
                 .await?
+            {
+                Some(label) => Some(label),
+                None => {
+                    crate::auth::strong::authenticator_label(conn, AuthenticatorRef::passkey(*id))
+                        .await?
+                }
+            }
         }
         StepUpAction::PasskeyRemove => {
             sqlx::query_scalar(
