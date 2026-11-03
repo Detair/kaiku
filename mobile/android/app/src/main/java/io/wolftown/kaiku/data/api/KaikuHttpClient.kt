@@ -59,6 +59,10 @@ class KaikuHttpClient @Inject constructor(
         /** C4 error code for a session that must change its password first. */
         internal const val PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED"
 
+        /** C27 client-class header and the Android value. */
+        const val CLIENT_HEADER = "X-Kaiku-Client"
+        const val CLIENT_ANDROID = "android"
+
         /**
          * Attribute key to mark requests that skip the auth interceptor: no stored
          * Bearer token is attached (an explicit one stays), no 401 refresh/retry
@@ -115,6 +119,9 @@ class KaikuHttpClient @Inject constructor(
                     url(serverUrl)
                 }
                 contentType(ContentType.Application.Json)
+                // C27 client class: the server answers native sign-ins with body tokens
+                // and records `android` on the session. Sent on every request, refresh included.
+                header(CLIENT_HEADER, CLIENT_ANDROID)
             }
         }
 

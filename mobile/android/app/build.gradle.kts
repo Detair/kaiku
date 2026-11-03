@@ -213,6 +213,12 @@ dependencies {
     // ML Kit Barcode Scanning (QR code login)
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
 
+    // Biometric / screen-lock prompt with a CryptoObject for the approval key (spec B.1)
+    implementation("androidx.biometric:biometric:1.1.0")
+
+    // QR code rendering for setup codes (encoder only)
+    implementation("com.google.zxing:core:3.5.3")
+
     // CameraX (for QR scanner camera preview)
     implementation("androidx.camera:camera-camera2:1.4.1")
     implementation("androidx.camera:camera-lifecycle:1.4.1")

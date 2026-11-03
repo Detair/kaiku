@@ -6,7 +6,6 @@ import android.widget.Toast
 import io.wolftown.kaiku.BuildConfig
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.normalizeServerAddress
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -19,6 +18,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.fragment.app.FragmentActivity
 import androidx.navigation.compose.rememberNavController
 import dagger.hilt.android.AndroidEntryPoint
 import io.wolftown.kaiku.data.local.AuthState
@@ -34,7 +34,11 @@ import io.wolftown.kaiku.ui.shared.LocalServerBaseUrl
 import javax.inject.Inject
 
 @AndroidEntryPoint
-class MainActivity : ComponentActivity() {
+/**
+ * A [FragmentActivity] (still a ComponentActivity) so that `BiometricPrompt`
+ * can host the screen-lock confirmation for the approval key (L2-A2).
+ */
+class MainActivity : FragmentActivity() {
 
     @Inject
     lateinit var oidcHandler: OidcHandler
