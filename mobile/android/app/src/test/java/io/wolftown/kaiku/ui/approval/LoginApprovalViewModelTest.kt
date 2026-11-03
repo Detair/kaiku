@@ -167,4 +167,34 @@ class LoginApprovalViewModelTest {
         testScheduler.runCurrent()
         assertEquals("release:${SigFixtures.challengeId(1)}", api.calls.last())
     }
+
+    @Test fun `leaving while a No is sent never releases the claim`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        approvals_gate()
+        v.deny()
+        v.back() // Back or the screen closing while the deny is on its way
+        v.viewModelScope.cancel()
+        api.denyGate!!.complete(Unit)
+        testScheduler.advanceUntilIdle()
+        assertTrue("deny:${SigFixtures.challengeId(1)}" in api.calls)
+        assertTrue(api.calls.none { it.startsWith("release") })
+    }
+
+    @Test fun `leaving while I didn't start this is sent never releases the claim`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        api.answerGate = kotlinx.coroutines.CompletableDeferred()
+        v.report(activity)
+        v.back()
+        v.viewModelScope.cancel()
+        api.answerGate!!.complete(Unit)
+        testScheduler.advanceUntilIdle()
+        assertTrue("answer:${SigFixtures.challengeId(1)}:report" in api.calls)
+        assertTrue(api.calls.none { it.startsWith("release") })
+    }
+
+    private fun approvals_gate() {
+        api.denyGate = kotlinx.coroutines.CompletableDeferred()
+    }
 }

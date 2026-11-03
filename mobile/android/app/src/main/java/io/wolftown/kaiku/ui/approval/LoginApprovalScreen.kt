@@ -57,7 +57,8 @@ fun LoginApprovalScreen(
             if (payload != null) viewModel.start(payload) else onDone()
         }
     }
-    BackHandler {
+    // No Back while a decision is being sent: it would cut the answer short.
+    BackHandler(enabled = ui != LoginApprovalUi.Working) {
         viewModel.back()
         onDone()
     }
@@ -96,7 +97,7 @@ private fun ContextView(ctx: LoginContext, onYes: () -> Unit, onNo: () -> Unit, 
     ) {
         Column(Modifier.padding(16.dp)) {
             Text(
-                text = if (ctx.clientLabel.isNotEmpty()) stringResource(clientLine(ctx), ctx.clientLabel) else stringResource(clientLine(ctx)),
+                text = if (ctx.clientLabel.isNotBlank()) stringResource(clientLine(ctx), ctx.clientLabel) else stringResource(clientLine(ctx)),
                 fontSize = 22.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,

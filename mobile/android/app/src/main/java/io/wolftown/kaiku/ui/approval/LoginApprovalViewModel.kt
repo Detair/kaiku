@@ -20,6 +20,8 @@ import io.wolftown.kaiku.data.api.ApprovalApi
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.domain.ScanPayload
 import io.wolftown.kaiku.domain.model.ApprovalChallenge
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -96,8 +98,11 @@ class LoginApprovalViewModel @Inject constructor(
                 val ctx = verified.context as LoginContext
                 context = ctx
                 _ui.value = LoginApprovalUi.Context(ctx)
-            } catch (e: ChallengeRejected) {
-                logger.warning("Login challenge refused: ${e.reason}")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // ChallengeRejected, or a context that cannot be read: never shown, never signed.
+                logger.warning("Login challenge refused: ${(e as? ChallengeRejected)?.reason ?: e.javaClass.simpleName}")
                 releaseQuietly(ch.challengeId)
                 _ui.value = LoginApprovalUi.Error(R.string.approval_mismatch, rescan = true)
             }
@@ -138,8 +143,12 @@ class LoginApprovalViewModel @Inject constructor(
                     else -> LoginApprovalUi.Error(R.string.security_sign_in_failed, rescan = true)
                 }
                 is SignOutcome.Signed -> try {
-                    approvalApi.answer(ch.challengeId, decision.wire, p.tokenB64u, out.signatureB64u)
+                    // Committed: leaving now never releases the claim, and the signed answer (an
+                    // approval or "I didn't start this") still reaches the server.
                     open = false
+                    withContext(NonCancellable) {
+                        approvalApi.answer(ch.challengeId, decision.wire, p.tokenB64u, out.signatureB64u)
+                    }
                     _ui.value = LoginApprovalUi.Done(
                         if (decision == Decision.APPROVE) R.string.approval_done else reportedText(ctx.variant),
                     )
@@ -156,11 +165,12 @@ class LoginApprovalViewModel @Inject constructor(
     fun deny() {
         val ch = challenge ?: return
         if (_ui.value !is LoginApprovalUi.Context) return
+        // Committed: a "No" is never turned into a release by leaving the screen meanwhile.
+        open = false
         _ui.value = LoginApprovalUi.Working
         viewModelScope.launch {
             try {
-                approvalApi.deny(ch.challengeId)
-                open = false
+                withContext(NonCancellable) { approvalApi.deny(ch.challengeId) }
                 _ui.value = LoginApprovalUi.Done(R.string.approval_denied)
             } catch (e: CancellationException) {
                 throw e

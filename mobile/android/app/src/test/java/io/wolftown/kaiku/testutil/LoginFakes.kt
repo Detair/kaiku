@@ -48,14 +48,19 @@ class FakeApprovalApi : ApprovalApi {
     override suspend fun stepUp(action: String, target: String) = challenge("stepUp:$action:$target")
     override suspend fun enrollmentChallenge(enrollmentId: String) = challenge("enrollmentChallenge:$enrollmentId")
 
+    /** Holds the next answer / deny until completed (a slow network). */
+    var answerGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    var denyGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     override suspend fun answer(challengeId: String, decision: String, responseB64u: String, signatureB64u: String): AnswerResult {
+        answerGate?.await()
         calls += "answer:$challengeId:$decision"
         lastAnswer = Triple(decision, responseB64u, signatureB64u)
         answerFailure?.let { throw it }
         return answerResult
     }
 
-    override suspend fun deny(challengeId: String) { calls += "deny:$challengeId" }
+    override suspend fun deny(challengeId: String) { denyGate?.await(); calls += "deny:$challengeId" }
     override suspend fun release(challengeId: String) { calls += "release:$challengeId" }
     /** The origin the last device-login challenge was sent to (null: the configured server). */
     var deviceLoginOrigin: String? = null

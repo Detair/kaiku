@@ -17,7 +17,7 @@ import java.util.Locale
  */
 @StringRes
 fun clientLine(ctx: LoginContext): Int = when {
-    ctx.clientLabel.isNotEmpty() -> R.string.approval_client_labelled
+    ctx.clientLabel.isNotBlank() -> R.string.approval_client_labelled
     ctx.clientClass == ClientClass.DESKTOP -> R.string.approval_client_desktop
     ctx.clientClass == ClientClass.WEB -> R.string.approval_client_web
     else -> R.string.approval_client_android
@@ -32,7 +32,7 @@ fun variantLine(ctx: LoginContext): Int? = when (ctx.variant) {
 }
 
 /** The approximate place is shown only when the server has one. */
-fun showPlace(ctx: LoginContext): Boolean = ctx.place.isNotEmpty()
+fun showPlace(ctx: LoginContext): Boolean = ctx.place.isNotBlank()
 
 /** After "I didn't start this": what happened and what to do next (F3). */
 @StringRes

@@ -40,4 +40,17 @@ class LoginContextTextTest {
         assertEquals(R.string.approval_reported_password, reportedText(LoginVariant.PASSWORD))
         assertEquals(R.string.approval_reported_oidc, reportedText(LoginVariant.OIDC))
     }
+
+    @Test fun `a blank label or place is treated as missing`() {
+        val ctx = io.wolftown.kaiku.approval.SigContext.fromJson(
+            io.wolftown.kaiku.approval.SigKind.LOGIN,
+            io.wolftown.kaiku.testutil.SigFixtures.json(
+                io.wolftown.kaiku.testutil.SigFixtures.V01_CONTEXT
+                    .replace("\"client_label\":\"Kaiku desktop on Windows\"", "\"client_label\":\"   \"")
+                    .replace("\"place\":\"Hamburg, DE\"", "\"place\":\"  \""),
+            ),
+        ) as io.wolftown.kaiku.approval.LoginContext
+        assertEquals(false, showPlace(ctx))
+        assertTrue(clientLine(ctx) != io.wolftown.kaiku.R.string.approval_client_labelled)
+    }
 }
