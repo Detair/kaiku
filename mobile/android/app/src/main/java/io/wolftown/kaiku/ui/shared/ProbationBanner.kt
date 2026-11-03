@@ -36,15 +36,22 @@ class ProbationBannerViewModel @Inject constructor(private val authApi: AuthApi)
     private val _visible = MutableStateFlow(false)
     val visible: StateFlow<Boolean> = _visible.asStateFlow()
 
+    private var job: kotlinx.coroutines.Job? = null
+
     init {
-        viewModelScope.launch {
-            _visible.value = try {
-                isProbation(authApi.getMe())
+        refresh()
+    }
+
+    /** Read again at every resume of home: a passing network error does not hide it for good. */
+    fun refresh() {
+        job?.cancel()
+        job = viewModelScope.launch {
+            try {
+                _visible.value = isProbation(authApi.getMe())
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                // Unknown is not shown: the banner never claims what it could not read.
-                false
+                // Unknown keeps what was known (nothing at first): the banner never claims what it could not read.
             }
         }
     }
@@ -57,6 +64,7 @@ class ProbationBannerViewModel @Inject constructor(private val authApi: AuthApi)
 @Composable
 fun ProbationBanner(modifier: Modifier = Modifier, viewModel: ProbationBannerViewModel = hiltViewModel()) {
     val visible by viewModel.visible.collectAsState()
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_RESUME) { viewModel.refresh() }
     if (!visible) return
     Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = modifier.fillMaxWidth()) {
         KeyNotice(

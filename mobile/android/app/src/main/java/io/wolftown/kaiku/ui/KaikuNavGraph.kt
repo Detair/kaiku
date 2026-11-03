@@ -118,7 +118,8 @@ fun KaikuNavGraph(
     // The renewal prompt (B.4) and other routes the activity asks for.
     LaunchedEffect(nextRoute, isLoggedIn, currentRoute) {
         val route = nextRoute ?: return@LaunchedEffect
-        if (isLoggedIn && currentRoute != null && currentRoute !in authRoutes) {
+        // Never on top of a running ceremony (approving, scanning, adding a phone): it waits for it.
+        if (isLoggedIn && OpenRequestRules.showOver(currentRoute, authRoutes, CEREMONY_ROUTES, OPEN_REQUEST_ROUTE)) {
             onPendingRouteConsumed()
             navController.navigate(route) { launchSingleTop = true }
         }

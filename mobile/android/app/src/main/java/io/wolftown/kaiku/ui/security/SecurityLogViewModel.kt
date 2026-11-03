@@ -28,8 +28,18 @@ class SecurityLogViewModel @Inject constructor(private val securityApi: Security
     private val _ui = MutableStateFlow(SecurityLogUi())
     val ui: StateFlow<SecurityLogUi> = _ui.asStateFlow()
     private var cursor: String? = null
+    private var job: kotlinx.coroutines.Job? = null
+    private var loaded = false
+
+    /** The first page; a recreated screen (rotation) keeps the pages already shown. */
+    fun loadOnce() {
+        if (loaded) return
+        load()
+    }
 
     fun load() {
+        loaded = true
+        job?.cancel() // an older page still on its way never lands in the new list
         cursor = null
         _ui.value = SecurityLogUi(loading = true)
         fetch()
@@ -42,7 +52,7 @@ class SecurityLogViewModel @Inject constructor(private val securityApi: Security
     }
 
     private fun fetch() {
-        viewModelScope.launch {
+        job = viewModelScope.launch {
             try {
                 val page = securityApi.events(cursor, PAGE)
                 cursor = page.nextCursor

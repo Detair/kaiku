@@ -30,7 +30,7 @@ import io.wolftown.kaiku.ui.shared.KeyScreenSizes
 @Composable
 fun SecurityLogList(modifier: Modifier = Modifier, viewModel: SecurityLogViewModel = hiltViewModel()) {
     val ui by viewModel.ui.collectAsState()
-    LaunchedEffect(Unit) { viewModel.load() }
+    LaunchedEffect(Unit) { viewModel.loadOnce() }
     Column(modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         if (ui.items.isEmpty() && !ui.loading) {
             Text(stringResource(R.string.security_log_empty), fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground,

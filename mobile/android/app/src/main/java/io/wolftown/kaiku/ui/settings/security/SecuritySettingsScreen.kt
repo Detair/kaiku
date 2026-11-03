@@ -174,7 +174,7 @@ fun SecuritySettingsScreen(
             onDismissRequest = { picking = null },
             title = { Text(stringResource(R.string.security_contact_pick_title)) },
             text = {
-                Column {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
                     if (list.isEmpty()) Text(stringResource(R.string.security_contact_pick_empty))
                     list.forEach { c ->
                         TextButton(
@@ -183,7 +183,7 @@ fun SecuritySettingsScreen(
                                 activity?.let { viewModel.setRecoveryContact(it, c) }
                             },
                             modifier = Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.otherAction),
-                        ) { Text(c.displayName.ifEmpty { c.username }, fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurface) }
+                        ) { Text(contactName(c.displayName, c.username), fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurface) }
                     }
                 }
             },

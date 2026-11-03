@@ -36,4 +36,16 @@ class SecurityLogViewModelTest {
         assertEquals(listOf("e3", "e2", "e1"), v.ui.value.items.map { it.id })
         assertFalse(v.ui.value.hasMore)
     }
+
+    @Test fun `a recreated screen keeps the pages already shown`() = runTest {
+        val api = FakeSecurityApi()
+        api.pages.addLast(CursorPage(listOf(ev("e3"), ev("e2")), hasMore = true, nextCursor = "e2"))
+        api.pages.addLast(CursorPage(listOf(ev("e1")), hasMore = false))
+        val v = SecurityLogViewModel(api)
+        v.loadOnce()
+        v.showOlder()
+        v.loadOnce() // rotation: the screen's effect runs again
+        assertEquals(listOf("e3", "e2", "e1"), v.ui.value.items.map { it.id })
+        assertEquals(2, api.calls.count { it.startsWith("events") })
+    }
 }

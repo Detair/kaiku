@@ -57,4 +57,15 @@ class ProbationBannerTest {
         advanceUntilIdle()
         assertFalse(vm.visible.value)
     }
+
+    @Test fun `a passing network error does not hide the banner for good`() = runTest {
+        coEvery { authApi.getMe() } throws IOException("offline")
+        val vm = ProbationBannerViewModel(authApi)
+        advanceUntilIdle()
+        assertFalse(vm.visible.value)
+        coEvery { authApi.getMe() } returns me(SessionInfo("s-1", assurance = "probation"))
+        vm.refresh() // home resumed
+        advanceUntilIdle()
+        assertTrue(vm.visible.value)
+    }
 }
