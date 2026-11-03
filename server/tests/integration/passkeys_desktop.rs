@@ -1282,3 +1282,161 @@ async fn admin_step_up_pages_are_for_admins_only(pool: PgPool) {
     let p = page(&app.router, &flow.path, None).await;
     assert!(p.body.contains("Their secret key"), "{}", p.body);
 }
+
+/// Wait until a query of this test database waits for a row lock.
+async fn wait_for_lock_waiter(pool: &PgPool) {
+    for _ in 0..250 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_stat_activity
+              WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("no finish waited for the passkey row");
+}
+
+#[sqlx::test]
+async fn a_finish_that_loses_the_race_hands_back_nothing(pool: PgPool) {
+    // Review round 2 (Codex 2.2, Argon A R1): finish A has taken its
+    // ceremony when a reloaded page gets ceremony B. A loses the final
+    // compare-and-set and gets the stale page, never an error for the
+    // app's listener; B still hands back a code that redeems.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let handle = queries::user_handle(&app.pool, user).await.unwrap();
+    let flow = start(&app.router, start_body("sign_in", None, None), None).await;
+    let a = options_of(&app, &flow).await;
+    let cred_a = auth.assert(
+        TEST_ORIGIN,
+        &a["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    // Hold the passkey row: A stops in `record_use`, after its take.
+    let mut lock = app.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM passkeys WHERE id = $1 FOR UPDATE")
+        .bind(row.id)
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    let finish_a = {
+        let router = app.router.clone();
+        let path = format!("{}/finish", flow.path);
+        let id = a["ceremony_id"].as_str().unwrap().to_string();
+        tokio::spawn(async move {
+            form(
+                &router,
+                &path,
+                &[("credential", &cred_a.to_string()), ("ceremony_id", &id)],
+            )
+            .await
+        })
+    };
+    wait_for_lock_waiter(&app.pool).await;
+    let b = options_of(&app, &flow).await;
+    lock.rollback().await.unwrap();
+    let ha = finish_a.await.unwrap();
+    assert_eq!(ha.status, 400, "{}", ha.body);
+    assert!(
+        hidden(&ha.body, "error").is_none() && hidden(&ha.body, "code").is_none(),
+        "{}",
+        ha.body
+    );
+    let cred_b = auth.assert(
+        TEST_ORIGIN,
+        &b["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    let hb = form(
+        &app.router,
+        &format!("{}/finish", flow.path),
+        &[
+            ("credential", &cred_b.to_string()),
+            ("ceremony_id", b["ceremony_id"].as_str().unwrap()),
+        ],
+    )
+    .await;
+    let code = hidden(&hb.body, "code").unwrap_or_else(|| panic!("{}", hb.body));
+    let r = redeem(&app.router, &flow.id, &code, VERIFIER, None).await;
+    assert_eq!(r.status, 200, "{}", r.body);
+}
+
+#[sqlx::test]
+async fn a_foreign_ceremony_id_consumes_nothing(pool: PgPool) {
+    // Review round 2 (Argon A R1): a finish naming another ceremony (a web
+    // one, or garbage) gets the stale page, takes no ceremony and leaves
+    // the flow as it is.
+    use fred::interfaces::KeysInterface;
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let handle = queries::user_handle(&app.pool, user).await.unwrap();
+    let flow = start(&app.router, start_body("sign_in", None, None), None).await;
+    let current = options_of(&app, &flow).await;
+    let web = api(
+        &app.router,
+        "/auth/passkeys/login/start",
+        json!({}),
+        false,
+        None,
+    )
+    .await
+    .json();
+    let web_id = web["ceremony_id"].as_str().unwrap().to_string();
+    let cred = auth.assert(
+        TEST_ORIGIN,
+        &web["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    for id in [web_id.as_str(), "not-a-uuid"] {
+        let h = form(
+            &app.router,
+            &format!("{}/finish", flow.path),
+            &[("credential", &cred.to_string()), ("ceremony_id", id)],
+        )
+        .await;
+        assert_eq!(h.status, 400, "{id}: {}", h.body);
+        assert!(
+            hidden(&h.body, "error").is_none() && hidden(&h.body, "code").is_none(),
+            "{id}: {}",
+            h.body
+        );
+    }
+    let still: bool = app
+        .state
+        .redis
+        .exists(format!("passkey:ceremony:{web_id}"))
+        .await
+        .unwrap();
+    assert!(still, "the web ceremony was not taken");
+    // The flow's own ceremony still finishes.
+    let cred = auth.assert(
+        TEST_ORIGIN,
+        &current["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    let h = form(
+        &app.router,
+        &format!("{}/finish", flow.path),
+        &[
+            ("credential", &cred.to_string()),
+            ("ceremony_id", current["ceremony_id"].as_str().unwrap()),
+        ],
+    )
+    .await;
+    assert!(hidden(&h.body, "code").is_some(), "{}", h.body);
+}

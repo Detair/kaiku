@@ -532,11 +532,23 @@ pub struct FinishForm {
     pub ceremony_id: Option<String>,
 }
 
-/// End a flow after a failed finish and hand back the code.
-async fn fail(state: &AppState, flow_id: Uuid, stored: &Stored, e: &AuthError) -> Response {
-    // A failed finish ends the flow; the app starts a new one.
-    if let Err(err) = cas(state, flow_id, &stored.raw, None, None).await {
-        tracing::warn!(error = %err, "could not end a passkey flow");
+/// End a flow after a failed finish and hand back the error code.
+///
+/// Only while the flow is still the one this finish read: when another
+/// page changed it meanwhile (a newer ceremony, a result), this finish lost
+/// and gets the stale page. A terminal error for the app's listener would
+/// end the app's wait and so break the winner's hand-off.
+async fn fail(
+    state: &AppState,
+    lang: Lang,
+    flow_id: Uuid,
+    stored: &Stored,
+    e: &AuthError,
+) -> Response {
+    match cas(state, flow_id, &stored.raw, None, None).await {
+        Ok(true) => {}
+        Ok(false) => return stale_page(lang),
+        Err(err) => tracing::warn!(error = %err, "could not end a passkey flow"),
     }
     let (_, code) = e.status_and_code();
     tracing::info!(code, "desktop passkey finish refused");
@@ -561,17 +573,15 @@ pub async fn finish(
     if stored.flow.result.is_some() {
         return stale_page(lang);
     }
-    // The ceremony the page ran; an old page (no field) means the current one.
+    // The ceremony the page ran; an old page (no field) means the current
+    // one. Anything but the flow's current ceremony (a stale tab's, another
+    // flow's, a web one, garbage) gets the stale page before any ceremony is
+    // taken: it consumes nothing and leaves the flow as it is.
     let submitted = match form.ceremony_id.as_deref().filter(|c| !c.is_empty()) {
-        Some(raw) => match Uuid::parse_str(raw) {
-            Ok(id) => Some(id),
-            Err(_) => {
-                return fail(&state, flow_id, &stored, &AuthError::PasskeyCeremonyInvalid).await
-            }
-        },
+        Some(raw) => Uuid::parse_str(raw).ok(),
         None => stored.flow.ceremony_id,
     };
-    let Some(ceremony_id) = submitted else {
+    let Some(ceremony_id) = submitted.filter(|id| stored.flow.ceremony_id == Some(*id)) else {
         return stale_page(lang);
     };
     // GETDEL: of two racing finishes only one proceeds.
@@ -586,9 +596,16 @@ pub async fn finish(
         }
         CeremonyKind::Register { .. } => false,
     };
-    if !bound || stored.flow.ceremony_id != Some(ceremony_id) {
-        // Another flow's or a web ceremony, or a stale tab's.
-        return fail(&state, flow_id, &stored, &AuthError::PasskeyCeremonyInvalid).await;
+    if !bound {
+        // The flow named a ceremony that is not its own: it cannot go on.
+        return fail(
+            &state,
+            lang,
+            flow_id,
+            &stored,
+            &AuthError::PasskeyCeremonyInvalid,
+        )
+        .await;
     }
     let credential = serde_json::from_str::<serde_json::Value>(&form.credential)
         .unwrap_or(serde_json::Value::Null);
@@ -615,7 +632,7 @@ pub async fn finish(
     };
     let outcome = match verified {
         Ok(o) => o,
-        Err(e) => return fail(&state, flow_id, &stored, &e).await,
+        Err(e) => return fail(&state, lang, flow_id, &stored, &e).await,
     };
     let code = new_handoff_code();
     let ctx = AuthCtx::from(&state);
@@ -641,7 +658,9 @@ pub async fn finish(
     .await
     {
         Ok(true) => handoff_page(&flow.loopback, flow_id, HandoffField::Code(&code)),
-        Ok(false) => fail(&state, flow_id, &stored, &AuthError::PasskeyCeremonyInvalid).await,
+        // Another page changed the flow meanwhile: this finish lost; the
+        // winner's hand-off must not be cut short by an error here.
+        Ok(false) => stale_page(lang),
         Err(_) => handoff_page(
             &flow.loopback,
             flow_id,
