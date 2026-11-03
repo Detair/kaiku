@@ -148,9 +148,14 @@ async fn counters_present(ctx: &CliCtx, username: &str, user: Uuid) -> Vec<&'sta
             out.push("password");
         }
     }
+    let generation: i64 = sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&ctx.db)
+        .await
+        .unwrap_or(1);
     let n: i64 = ctx
         .redis
-        .exists(format!("ratelimit:acct:totp:{user}"))
+        .exists(CounterKey::totp(user, generation).redis_key())
         .await
         .unwrap_or(0);
     if n > 0 {
@@ -168,7 +173,14 @@ async fn reset_counters(ctx: &CliCtx, username: &str, user: Uuid, only: Option<F
             .await;
     }
     if only.is_none_or(|f| f == Factor::Totp) {
-        let _ = limiter.record_success(&CounterKey::Totp(user)).await;
+        let generation: i64 = sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap_or(1);
+        let _ = limiter
+            .record_success(&CounterKey::totp(user, generation))
+            .await;
     }
 }
 

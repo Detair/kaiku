@@ -1156,8 +1156,9 @@ pub async fn record_unfinished(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::R
 /// Outcome of a TOTP step.
 pub enum TotpOutcome {
     Signed(Collected),
-    /// A wrong or replayed code: `second_factor_failed` was recorded.
-    WrongCode(Vec<Uuid>),
+    /// A wrong or replayed code: `second_factor_failed` was recorded; the
+    /// TOTP generation the code was checked against (Codex r3).
+    WrongCode(Vec<Uuid>, i64),
 }
 
 /// The TOTP step (SM1, F4).
@@ -1222,9 +1223,10 @@ pub async fn totp_tx(
         );
         ev.client = ClientClass::parse(&row.client_class).map(|c| (c, row.client_label.clone()));
         ev.ip = client.ip;
-        return Ok(Locked::Done(TotpOutcome::WrongCode(vec![
-            record(conn, ev).await?,
-        ])));
+        return Ok(Locked::Done(TotpOutcome::WrongCode(
+            vec![record(conn, ev).await?],
+            st.totp.generation,
+        )));
     }
     // "Phone not at hand?" while a phone holds the claim: that challenge is
     // void (the claimer is this account; its lock is held).

@@ -259,7 +259,10 @@ async fn a_delay_only_reset_is_recorded(pool: PgPool) {
     let _: () = app
         .state
         .redis
-        .hset(format!("ratelimit:acct:totp:{user}"), ("count", 7))
+        .hset(
+            vc_server::ratelimit::account::CounterKey::totp(user, 1).redis_key(),
+            ("count", 7),
+        )
         .await
         .unwrap();
     cli(&app, &["throttle", "reset", &name]).await.unwrap();

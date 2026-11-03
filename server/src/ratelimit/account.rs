@@ -33,7 +33,9 @@ const COUNTER_TTL_SECS: i64 = 24 * 3600;
 pub enum CounterKey {
     /// `sha256(lower(username))` hex.
     Password(String),
-    Totp(Uuid),
+    /// Per account and TOTP generation: a renewal starts a fresh counter,
+    /// and failures against an old secret never touch the new one.
+    Totp(Uuid, i64),
 }
 
 impl CounterKey {
@@ -45,10 +47,18 @@ impl CounterKey {
         )))
     }
 
-    fn redis_key(&self) -> String {
+    /// The TOTP counter of `user`'s generation `generation`.
+    #[must_use]
+    pub const fn totp(user: Uuid, generation: i64) -> Self {
+        Self::Totp(user, generation)
+    }
+
+    /// The Valkey key.
+    #[must_use]
+    pub fn redis_key(&self) -> String {
         match self {
             Self::Password(h) => format!("ratelimit:acct:password:{h}"),
-            Self::Totp(u) => format!("ratelimit:acct:totp:{u}"),
+            Self::Totp(u, g) => format!("ratelimit:acct:totp:{u}:{g}"),
         }
     }
 }
@@ -123,6 +133,70 @@ impl<'a> AccountLimiter<'a> {
             .await
             .map_err(|_| RateLimitError::RedisUnavailable)?;
         Ok(n)
+    }
+
+    /// Count a failure atomically with the counter's epoch (a success bumps
+    /// it): `(consecutive count, epoch)`.
+    pub async fn record_failure_epoch(
+        &self,
+        key: &CounterKey,
+    ) -> Result<(u32, i64), RateLimitError> {
+        use fred::interfaces::LuaInterface;
+        let k = key.redis_key();
+        let (n, epoch): (i64, i64) = self
+            .redis
+            .eval(
+                "local c = redis.call('HINCRBY', KEYS[1], 'count', 1)
+                 local e = tonumber(redis.call('HGET', KEYS[1], 'epoch') or '0')
+                 return {c, e}",
+                vec![k.clone()],
+                Vec::<String>::new(),
+            )
+            .await
+            .map_err(|_| RateLimitError::RedisUnavailable)?;
+        let n = u32::try_from(n).unwrap_or(u32::MAX);
+        if let Some(d) = delay_after(n) {
+            let next = Utc::now().timestamp() + i64::try_from(d.as_secs()).unwrap_or(0);
+            self.redis
+                .hset::<(), _, _>(&k, ("next", next))
+                .await
+                .map_err(|_| RateLimitError::RedisUnavailable)?;
+        }
+        self.redis
+            .expire::<(), _>(&k, COUNTER_TTL_SECS, None)
+            .await
+            .map_err(|_| RateLimitError::RedisUnavailable)?;
+        Ok((n, epoch))
+    }
+
+    /// A success starts a new epoch: the count and the delay go, and
+    /// effects scheduled in the old epoch no longer apply.
+    pub async fn reset_epoch(&self, key: &CounterKey) -> Result<(), RateLimitError> {
+        use fred::interfaces::LuaInterface;
+        let _: i64 = self
+            .redis
+            .eval(
+                "redis.call('HINCRBY', KEYS[1], 'epoch', 1)
+                 redis.call('HSET', KEYS[1], 'count', 0)
+                 redis.call('HDEL', KEYS[1], 'next')
+                 redis.call('EXPIRE', KEYS[1], ARGV[1])
+                 return 1",
+                vec![key.redis_key()],
+                vec![COUNTER_TTL_SECS.to_string()],
+            )
+            .await
+            .map_err(|_| RateLimitError::RedisUnavailable)?;
+        Ok(())
+    }
+
+    /// `(count, epoch)` of a counter now.
+    pub async fn read(&self, key: &CounterKey) -> Result<(i64, i64), RateLimitError> {
+        let (c, e): (Option<i64>, Option<i64>) = self
+            .redis
+            .hmget(key.redis_key(), vec!["count", "epoch"])
+            .await
+            .map_err(|_| RateLimitError::RedisUnavailable)?;
+        Ok((c.unwrap_or(0), e.unwrap_or(0)))
     }
 
     /// A success resets the counter.

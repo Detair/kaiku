@@ -36,10 +36,7 @@ async fn login(app: &TestApp, username: &str, password: &str) -> (u16, Value, Op
 }
 
 async fn set_count(app: &TestApp, key: &CounterKey, n: i64) {
-    let k = match key {
-        CounterKey::Password(h) => format!("ratelimit:acct:password:{h}"),
-        CounterKey::Totp(u) => format!("ratelimit:acct:totp:{u}"),
-    };
+    let k = key.redis_key();
     let _: () = app.state.redis.del(&k).await.unwrap();
     let _: () = app.state.redis.hset(&k, ("count", n)).await.unwrap();
 }
@@ -133,7 +130,7 @@ async fn totp_100_after_correct_password_compromises_password(pool: PgPool) {
     let (s, step, secret) = login_native(&app, &name, PASSWORD).await;
     assert_eq!(s, 202, "{step}");
     let id = attempt_id(&step["attempt"]);
-    set_count(&app, &CounterKey::Totp(user), 99).await;
+    set_count(&app, &totp_key(&app, user).await, 99).await;
     let (s, b, _) = pc_call(
         &app,
         &format!("/auth/login-attempts/{id}/totp"),
@@ -269,12 +266,12 @@ async fn bootstrap_totp_is_throttled(pool: PgPool) {
     let (user, name, _) = bootstrap_user(&app).await;
     // Five wrong codes already counted (the start budget would stop the
     // starts themselves at three).
-    set_count(&app, &CounterKey::Totp(user), 5).await;
+    set_count(&app, &totp_key(&app, user).await, 5).await;
     let _: () = app
         .state
         .redis
         .hset(
-            format!("ratelimit:acct:totp:{user}"),
+            totp_key(&app, user).await.redis_key(),
             ("next", chrono::Utc::now().timestamp() + 30),
         )
         .await
@@ -309,12 +306,12 @@ async fn recovery_totp_is_throttled_before_a_code_is_consumed(pool: PgPool) {
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    set_count(&app, &CounterKey::Totp(user), 5).await;
+    set_count(&app, &totp_key(&app, user).await, 5).await;
     let _: () = app
         .state
         .redis
         .hset(
-            format!("ratelimit:acct:totp:{user}"),
+            totp_key(&app, user).await.redis_key(),
             ("next", chrono::Utc::now().timestamp() + 30),
         )
         .await
@@ -401,12 +398,12 @@ async fn an_invalid_code_is_neutral_while_delayed(pool: PgPool) {
     admin_with_device(&app).await;
     let (user, name) = password_user(&pool, PASSWORD).await;
     enable_totp(&pool, &app.config, user, &name).await;
-    set_count(&app, &CounterKey::Totp(user), 5).await;
+    set_count(&app, &totp_key(&app, user).await, 5).await;
     let _: () = app
         .state
         .redis
         .hset(
-            format!("ratelimit:acct:totp:{user}"),
+            totp_key(&app, user).await.redis_key(),
             ("next", chrono::Utc::now().timestamp() + 30),
         )
         .await
@@ -451,7 +448,7 @@ async fn a_stale_totp_failure_does_not_throttle_the_new_totp(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
-    set_count(&app, &CounterKey::Totp(user), 99).await;
+    set_count(&app, &totp_key(&app, user).await, 99).await;
     let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
     vc_server::auth::totp_guard::after(
         &ctx,
@@ -472,7 +469,7 @@ async fn a_stale_totp_failure_does_not_throttle_the_new_totp(pool: PgPool) {
         .unwrap();
     assert_eq!(state, "active");
     // The same failure against the current TOTP throttles it.
-    set_count(&app, &CounterKey::Totp(user), 99).await;
+    set_count(&app, &totp_key(&app, user).await, 99).await;
     vc_server::auth::totp_guard::after(
         &ctx,
         None,
@@ -497,4 +494,101 @@ async fn a_stale_totp_failure_does_not_throttle_the_new_totp(pool: PgPool) {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert_eq!(state, "throttled");
+}
+
+/// Fable r3: a TOTP renewal starts a fresh counter (the old secret's
+/// failures do not delay the new one).
+#[sqlx::test]
+async fn a_totp_renewal_starts_a_fresh_counter(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let (_, step, secret) = login_native(&app, &name, PASSWORD).await;
+    let id = attempt_id(&step["attempt"]);
+    for _ in 0..5 {
+        let (s, b, _) = pc_call(
+            &app,
+            &format!("/auth/login-attempts/{id}/totp"),
+            &secret,
+            json!({"code": "000000"}),
+        )
+        .await;
+        assert_eq!(s, 401, "{b}");
+    }
+    // Renewed (a new secret, a new generation).
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    sqlx::query("UPDATE users SET totp_generation = totp_generation + 1 WHERE id = $1")
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, step, secret) = login_native(&app, &name, PASSWORD).await;
+    let id = attempt_id(&step["attempt"]);
+    let (s, b, _) = pc_call(
+        &app,
+        &format!("/auth/login-attempts/{id}/totp"),
+        &secret,
+        json!({"code": totp.generate_current().unwrap()}),
+    )
+    .await;
+    assert_eq!(s, 200, "the new TOTP is not delayed: {b}");
+}
+
+/// Codex r3: effects scheduled before a success never apply after it, even
+/// when the count is high again (a new epoch).
+#[sqlx::test]
+async fn effects_of_an_old_epoch_never_apply(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let generation: i64 = sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let used = vc_server::auth::totp_guard::Used {
+        totp_generation: Some(generation),
+        password: None,
+    };
+    let key = vc_server::ratelimit::account::CounterKey::totp(user, generation);
+    let _: () = app.state.redis.del(key.redis_key()).await.unwrap();
+    let _: () = app
+        .state
+        .redis
+        .hset(key.redis_key(), ("count", 99))
+        .await
+        .unwrap();
+    // The effects wait for the account lock this test holds.
+    let mut hold = pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut hold, &[user])
+        .await
+        .unwrap();
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+    vc_server::auth::totp_guard::after(&ctx, None, user, false, used).await;
+    // A success, then many new failures (the count is high again).
+    vc_server::auth::totp_guard::after(&ctx, None, user, true, used).await;
+    let _: () = app
+        .state
+        .redis
+        .hset(key.redis_key(), ("count", 150))
+        .await
+        .unwrap();
+    hold.commit().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let state: String = sqlx::query_scalar("SELECT totp_state FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "active");
+}
+
+/// The counter of `user`'s current TOTP generation.
+async fn totp_key(app: &TestApp, user: Uuid) -> CounterKey {
+    let g: i64 = sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    CounterKey::totp(user, g)
 }

@@ -15,10 +15,12 @@ use super::error::{AuthError, AuthResult};
 use super::factors::{Factor, FactorRef, StateCause};
 use crate::ratelimit::account::{AccountLimiter, CounterKey, NOTICE_EVERY, THROTTLE_AT};
 
-/// 429 while the account's TOTP delay runs (fail closed on Valkey errors).
+/// 429 while the delay of the account's current TOTP generation runs
+/// (fail closed on Valkey errors).
 pub async fn pre_check(ctx: &AuthCtx<'_>, user: Uuid) -> AuthResult<()> {
+    let generation = current_generation(ctx, user).await?;
     match AccountLimiter::new(ctx.redis)
-        .check(&CounterKey::Totp(user))
+        .check(&CounterKey::totp(user, generation))
         .await
     {
         Ok(Ok(())) => Ok(()),
@@ -51,13 +53,26 @@ pub async fn after(
     used: Used,
 ) {
     let limiter = AccountLimiter::new(ctx.redis);
-    let key = CounterKey::Totp(user);
+    // Codex/Flash r3: the counter of the generation that was checked; a
+    // renewal's counter is a fresh one (Fable r3).
+    let generation = match used.totp_generation {
+        Some(g) => g,
+        None => match current_generation(ctx, user).await {
+            Ok(g) => g,
+            Err(_) => return,
+        },
+    };
+    let key = CounterKey::totp(user, generation);
     if ok {
-        let _ = limiter.record_success(&key).await;
+        let _ = limiter.reset_epoch(&key).await;
         return;
     }
-    let Ok(n) = limiter.record_failure(&key).await else {
+    let Ok((n, epoch)) = limiter.record_failure_epoch(&key).await else {
         return;
+    };
+    let used = Used {
+        totp_generation: Some(generation),
+        ..used
     };
     if !n.is_multiple_of(NOTICE_EVERY) && n != THROTTLE_AT {
         return;
@@ -72,7 +87,7 @@ pub async fn after(
             redis: &redis,
             config: &config,
         };
-        match effects(&ctx, user, n, used).await {
+        match effects(&ctx, user, n, epoch, used).await {
             Ok(()) => {
                 if let Some(state) = state {
                     // Flash r2: the guessing / throttle notices now.
@@ -84,15 +99,22 @@ pub async fn after(
     });
 }
 
-async fn effects(ctx: &AuthCtx<'_>, user: Uuid, n: u32, used: Used) -> AuthResult<()> {
+async fn effects(ctx: &AuthCtx<'_>, user: Uuid, n: u32, epoch: i64, used: Used) -> AuthResult<()> {
     use crate::security_events::{record, Actor, EventType, NewSecurityEvent};
     let mut tx = ctx.db.begin().await?;
     crate::approvals::transition::lock_accounts(&mut tx, &[user]).await?;
     // Codex r2: under the lock, the failures still count (no success reset
     // them since) and the TOTP they were made against is still current;
     // else nothing of this applies to the account's present TOTP.
-    let still: Option<i64> = redis_count(ctx, user).await;
-    if still.is_none_or(|c| c < i64::from(n)) {
+    // Codex r3: the same epoch (no success since) and the count still there.
+    let Some(generation) = used.totp_generation else {
+        tx.commit().await?;
+        return Ok(());
+    };
+    let now = AccountLimiter::new(ctx.redis)
+        .read(&CounterKey::totp(user, generation))
+        .await;
+    if !now.is_ok_and(|(c, e)| e == epoch && c >= i64::from(n)) {
         tx.commit().await?;
         return Ok(());
     }
@@ -161,11 +183,12 @@ pub async fn verify(
     Ok(ok)
 }
 
-async fn redis_count(ctx: &AuthCtx<'_>, user: Uuid) -> Option<i64> {
-    use fred::interfaces::HashesInterface;
-    ctx.redis
-        .hget::<Option<i64>, _, _>(format!("ratelimit:acct:totp:{user}"), "count")
-        .await
-        .ok()
-        .flatten()
+async fn current_generation(ctx: &AuthCtx<'_>, user: Uuid) -> AuthResult<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_optional(ctx.db)
+            .await?
+            .unwrap_or(1),
+    )
 }
