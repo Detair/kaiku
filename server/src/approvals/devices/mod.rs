@@ -214,22 +214,61 @@ pub struct KeyDeviceSession {
     pub device: KeyDeviceRow,
 }
 
+/// The request's session snapshot names a key device (no lock, no query):
+/// the cheap first check before anything is locked. Else 403
+/// `KEY_DEVICE_REQUIRED`.
+pub fn require_key_device_snapshot(auth: &AuthUser) -> Result<AuthenticatorRef, ApprovalError> {
+    match auth.session.as_ref().and_then(|s| s.authenticator) {
+        Some(a) if a.kind == AuthenticatorKind::KeyDevice => Ok(a),
+        _ => Err(ApprovalError::KeyDeviceRequired),
+    }
+}
+
 /// The caller's session as a key-device session, else 403
 /// `KEY_DEVICE_REQUIRED` (also for `pending` and `revoked` devices).
+///
+/// B.7 rule 1: takes the caller's account lock (a no-op when the caller
+/// already holds it together with other accounts), then locks the device
+/// row and the authorising session row and re-checks both: the snapshot
+/// `require_auth` read may be stale once the request waited for the lock.
+/// An ended session → 401 `INVALID_TOKEN`; a banned account → 403.
+/// Lock order: account → device → session (as every revocation).
 pub async fn key_device_session(
     conn: &mut PgConnection,
     auth: &AuthUser,
 ) -> Result<KeyDeviceSession, ApprovalError> {
-    let Some(a) = auth.session.as_ref().and_then(|s| s.authenticator) else {
-        return Err(ApprovalError::KeyDeviceRequired);
+    let a = require_key_device_snapshot(auth)?;
+    let sid = auth.session_id.ok_or(ApprovalError::KeyDeviceRequired)?;
+    let locked = crate::approvals::transition::lock_accounts(conn, &[auth.id]).await?;
+    if locked.get(&auth.id).is_some_and(|acct| acct.banned) {
+        return Err(ApprovalError::AccountBanned);
+    }
+    let device: KeyDeviceRow =
+        sqlx::query_as("SELECT * FROM approval_devices WHERE id = $1 FOR UPDATE")
+            .bind(a.id)
+            .fetch_optional(&mut *conn)
+            .await?
+            .filter(|d: &KeyDeviceRow| d.user_id == auth.id && d.is_active())
+            .ok_or(ApprovalError::KeyDeviceRequired)?;
+    let session: Option<(String, Option<String>, Option<Uuid>)> = sqlx::query_as(
+        "SELECT assurance, authenticator_type, authenticator_id FROM sessions
+          WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
+            AND expires_at > NOW() AND absolute_expires_at > NOW()
+          FOR UPDATE",
+    )
+    .bind(sid)
+    .bind(auth.id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((assurance, kind, authenticator_id)) = session else {
+        return Err(crate::auth::AuthError::InvalidToken.into());
     };
-    if a.kind != AuthenticatorKind::KeyDevice {
+    if assurance != "full"
+        || kind.as_deref() != Some(AuthenticatorKind::KeyDevice.as_str())
+        || authenticator_id != Some(device.id)
+    {
         return Err(ApprovalError::KeyDeviceRequired);
     }
-    let device = find(conn, a.id)
-        .await?
-        .filter(|d| d.user_id == auth.id && d.is_active())
-        .ok_or(ApprovalError::KeyDeviceRequired)?;
     Ok(KeyDeviceSession {
         auth: auth.clone(),
         device,
@@ -262,7 +301,6 @@ pub async fn revoke_tx(
     .ok_or(ApprovalError::KeyDeviceRevoked)?;
     let a = AuthenticatorRef::key_device(row.id);
     crate::approvals::cascade::on_authenticator_revoked(conn, ctx, row.user_id, a).await?;
-    super::core::void_for_device(conn, row.user_id, row.device_id).await?;
     let (event_type, details) = if reason == RevokeReason::KeyInvalidated {
         (EventType::KeyInvalidated, serde_json::json!({}))
     } else {

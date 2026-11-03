@@ -29,8 +29,14 @@ use super::error::AuthResult;
 const DENYLIST_LEEWAY_SECS: i64 = 60;
 
 /// The `NOTIFY` channel of ended sessions. Payload:
-/// `{"user_id": uuid, "session_ids": [uuid], "all": bool}`.
+/// `{"user_id": uuid, "session_ids": [uuid], "all": bool}`, at most
+/// [`NOTIFY_CHUNK`] ids per notification (several for a larger end; `all`
+/// on the first).
 pub const SESSION_END_CHANNEL: &str = "kaiku_session_ended";
+
+/// Session ids per `NOTIFY` payload: `PostgreSQL` limits a payload to 8000
+/// bytes, and 100 ids (39 bytes each in JSON) stay well below it.
+pub const NOTIFY_CHUNK: usize = 100;
 
 /// Why a session ended (`sessions.end_reason`). Append-only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,17 +201,25 @@ async fn after_update(
         // an ended session is refused before any elevation check).
         crate::admin::clear_elevated_cache(ctx.redis, *sid).await;
     }
-    let payload = serde_json::to_string(&EndPayload {
-        user_id,
-        session_ids: ended.to_vec(),
-        all,
-    })
-    .map_err(|e| super::AuthError::Internal(format!("JSON error: {e}")))?;
-    sqlx::query("SELECT pg_notify($1, $2)")
-        .bind(SESSION_END_CHANNEL)
-        .bind(payload)
-        .execute(&mut *conn)
-        .await?;
+    // One notification per chunk: an unbounded payload fails the whole
+    // transaction (and with it a ban) once it exceeds 8000 bytes.
+    let mut chunks: Vec<&[Uuid]> = ended.chunks(NOTIFY_CHUNK).collect();
+    if chunks.is_empty() {
+        chunks.push(&[]);
+    }
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let payload = serde_json::to_string(&EndPayload {
+            user_id,
+            session_ids: chunk.to_vec(),
+            all: all && i == 0,
+        })
+        .map_err(|e| super::AuthError::Internal(format!("JSON error: {e}")))?;
+        sqlx::query("SELECT pg_notify($1, $2)")
+            .bind(SESSION_END_CHANNEL)
+            .bind(payload)
+            .execute(&mut *conn)
+            .await?;
+    }
     // B.7 rule 2: what the ended sessions issued or hold.
     crate::approvals::cascade::on_sessions_ended(conn, ctx, ended).await?;
     Ok(())

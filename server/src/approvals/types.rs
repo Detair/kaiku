@@ -30,8 +30,9 @@ pub struct StepUpChallengeRequest {
     pub target: String,
 }
 
-/// `POST /api/approvals/{id}/answer` body.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+/// `POST /api/approvals/{id}/answer` body. `response` can be a typed code:
+/// its `Debug` shows only the decision.
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct AnswerRequest {
     /// `approve` or `report`.
     pub decision: String,
@@ -40,6 +41,14 @@ pub struct AnswerRequest {
     pub response: String,
     /// b64u ASN.1 DER ECDSA signature over M.
     pub signature: String,
+}
+
+impl std::fmt::Debug for AnswerRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnswerRequest")
+            .field("decision", &self.decision)
+            .finish_non_exhaustive()
+    }
 }
 
 /// `POST /api/approvals/{id}/answer` result.

@@ -191,6 +191,17 @@ async fn main() -> Result<()> {
                 _ => {}
             }
 
+            // Finished approval challenges and enrolments after 30 days
+            match db::cleanup_finished_approvals(&db_pool_clone).await {
+                Ok(count) if count > 0 => {
+                    tracing::debug!(count, "Cleaned up finished approvals and enrolments");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to cleanup finished approvals");
+                }
+                _ => {}
+            }
+
             // Cleanup claimed prekeys older than 7 days
             match db::cleanup_claimed_prekeys(&db_pool_clone).await {
                 Ok(count) if count > 0 => {

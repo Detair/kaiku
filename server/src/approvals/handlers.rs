@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use super::context::{CanonicalContext, DeviceStepupContext};
 use super::core::{
-    issue, lock_for_answer, set_state, verify, ChallengeState, NewChallenge, Requester,
+    head, issue, lock_for_answer, set_state, verify, ChallengeRow, ChallengeState, NewChallenge,
+    Requester,
 };
 use super::devices::{key_device_session, KeyDeviceSession};
 use super::error::ApprovalError;
@@ -25,9 +26,12 @@ use crate::auth::AuthUser;
 const STEPUP_TTL_SECS: i64 = 120;
 
 /// The server's display label for a step-up target (signed as
-/// `target_label`, so the phone shows exactly what it confirms).
+/// `target_label`, so the phone shows exactly what it confirms). Targets of
+/// the caller's own account (its sessions and key devices) are read only
+/// from that account; admin targets name any account.
 async fn target_label(
     conn: &mut sqlx::PgConnection,
+    user_id: uuid::Uuid,
     action: StepUpAction,
     target: &StepUpTarget,
 ) -> Result<String, ApprovalError> {
@@ -38,7 +42,14 @@ async fn target_label(
         });
     };
     let label: Option<String> = match action {
-        StepUpAction::KeyDeviceRemove | StepUpAction::AdminAuthenticatorRemove => {
+        StepUpAction::KeyDeviceRemove => {
+            sqlx::query_scalar("SELECT label FROM approval_devices WHERE id = $1 AND user_id = $2")
+                .bind(id)
+                .bind(user_id)
+                .fetch_optional(&mut *conn)
+                .await?
+        }
+        StepUpAction::AdminAuthenticatorRemove => {
             crate::auth::strong::authenticator_label(conn, AuthenticatorRef::key_device(*id))
                 .await?
         }
@@ -55,14 +66,15 @@ async fn target_label(
                 .fetch_optional(&mut *conn)
                 .await?
         }
-        StepUpAction::SessionsEnd => {
-            sqlx::query_scalar::<_, Option<String>>("SELECT user_agent FROM sessions WHERE id = $1")
-                .bind(id)
-                .fetch_optional(&mut *conn)
-                .await?
-                .flatten()
-                .map(|ua| crate::auth::ua_parser::parse_device_name(&ua))
-        }
+        StepUpAction::SessionsEnd => sqlx::query_scalar::<_, Option<String>>(
+            "SELECT user_agent FROM sessions WHERE id = $1 AND user_id = $2",
+        )
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .flatten()
+        .map(|ua| crate::auth::ua_parser::parse_device_name(&ua)),
         _ => None,
     };
     Ok(label.unwrap_or_default())
@@ -96,7 +108,7 @@ pub async fn step_up(
         sid,
         action: action.as_str().to_string(),
         target: target.canonical(),
-        target_label: target_label(&mut tx, action, &target).await?,
+        target_label: target_label(&mut tx, auth.id, action, &target).await?,
     });
     let challenge = issue(
         &mut tx,
@@ -127,6 +139,30 @@ fn decision(s: &str) -> Result<Decision, ApprovalError> {
     }
 }
 
+/// B.7 rule 1 for answer, deny and release: learn the challenge's accounts
+/// without a lock, lock the caller's and the subject's accounts in one
+/// statement, then the device and session rows (`key_device_session`), then
+/// the challenge, bound to this device row's account and install id.
+/// Revocations take the same order (accounts → device → sessions →
+/// challenges), so neither side can wait for the other in a cycle.
+async fn lock_challenge(
+    conn: &mut sqlx::PgConnection,
+    auth: &AuthUser,
+    id: Uuid,
+) -> Result<(KeyDeviceSession, ChallengeRow), ApprovalError> {
+    super::devices::require_key_device_snapshot(auth)?;
+    let Some((approver_id, subject_id)) = head(conn, id).await? else {
+        return Err(ApprovalError::NotFound);
+    };
+    if approver_id != auth.id {
+        return Err(ApprovalError::NotFound);
+    }
+    super::transition::lock_accounts(conn, &[auth.id, subject_id]).await?;
+    let dev = key_device_session(conn, auth).await?;
+    let row = lock_for_answer(conn, id, dev.device.user_id, dev.device.device_id).await?;
+    Ok((dev, row))
+}
+
 /// Answer a challenge with a UV signature (C26 answer results).
 #[utoipa::path(
     post,
@@ -155,9 +191,8 @@ pub async fn answer(
         .ok_or_else(|| ApprovalError::Validation("response must be base64url".into()))?;
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
-    let dev = key_device_session(&mut tx, &auth).await?;
-    let row = match lock_for_answer(&mut tx, id, dev.device.device_id).await {
-        Ok(row) => row,
+    let (dev, row) = match lock_challenge(&mut tx, &auth, id).await {
+        Ok(locked) => locked,
         Err(ApprovalError::Expired) => {
             tx.commit().await?;
             return Err(ApprovalError::Expired);
@@ -272,9 +307,8 @@ pub async fn deny(
 ) -> Result<StatusCode, ApprovalError> {
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
-    let dev = key_device_session(&mut tx, &auth).await?;
-    let row = match lock_for_answer(&mut tx, id, dev.device.device_id).await {
-        Ok(row) => row,
+    let (dev, row) = match lock_challenge(&mut tx, &auth, id).await {
+        Ok(locked) => locked,
         Err(ApprovalError::Expired) => {
             tx.commit().await?;
             return Err(ApprovalError::Expired);
@@ -284,6 +318,8 @@ pub async fn deny(
     // Only `enroll` and `login` (L1b) can be denied.
     match row.kind() {
         Some(Kind::Enroll) => {
+            // Only the issuing device says "No" to its enrolment.
+            super::enrollments::lock_issued_by(&mut tx, row.requester_id, &dev).await?;
             set_state(
                 &mut tx,
                 row.id,
@@ -322,7 +358,13 @@ pub async fn release(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApprovalError> {
     let mut tx = state.db.begin().await?;
-    let dev = key_device_session(&mut tx, &auth).await?;
-    let _ = lock_for_answer(&mut tx, id, dev.device.device_id).await?;
-    Err(ApprovalError::NotFound)
+    match lock_challenge(&mut tx, &auth, id).await {
+        // Keep the expiry mark, as answer and deny do.
+        Err(ApprovalError::Expired) => {
+            tx.commit().await?;
+            Err(ApprovalError::Expired)
+        }
+        Err(e) => Err(e),
+        Ok(_) => Err(ApprovalError::NotFound),
+    }
 }

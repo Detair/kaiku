@@ -4,6 +4,11 @@
 //!   [`on_sessions_ended`]);
 //! - revoking an authenticator ends its sessions and voids its open challenges, the grants it
 //!   produced and the enrolments it issued ([`on_authenticator_revoked`]; L1b adds requests).
+//!
+//! The session cascade deliberately leaves challenges alone: a `device_stepup` challenge is
+//! answerable only from its requesting session (re-read live under the account lock), and an
+//! `enroll`/`enroll_pop` effect re-checks its enrolment's state under the lock. Paths that end
+//! sessions without the account lock (logout, refresh) therefore never lock challenge rows.
 
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -58,6 +63,15 @@ pub async fn on_authenticator_revoked(
     crate::auth::step_up::void_for_authenticator(conn, a).await?;
     if a.kind == crate::auth::strong::AuthenticatorKind::KeyDevice {
         super::enrollments::expire_for_device(conn, a.id).await?;
+        // Its open challenges (they name the device by its install id).
+        let install: Option<Uuid> =
+            sqlx::query_scalar("SELECT device_id FROM approval_devices WHERE id = $1")
+                .bind(a.id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        if let Some(install) = install {
+            super::core::void_for_device(conn, user_id, install).await?;
+        }
     }
     Ok(CascadeOutcome { ended_sessions })
 }

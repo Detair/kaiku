@@ -173,7 +173,7 @@ pub async fn sign_in(
         return Err(e);
     }
 
-    let row = match lock_for_answer(&mut tx, challenge_id, device_id).await {
+    let row = match lock_for_answer(&mut tx, challenge_id, user_id, device_id).await {
         Ok(row) => row,
         Err(ApprovalError::Expired) => {
             tx.commit().await?;

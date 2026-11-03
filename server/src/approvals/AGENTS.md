@@ -10,8 +10,8 @@
 
 - `signing.rs`, `context.rs` — the `kaiku-sig-v1` bytes and canonical contexts (C26, golden vectors in `mobile/android/app/src/test/resources/golden/kaiku_sig_v1.json`; never regenerate the signatures).
 - `transition.rs` — B.7 rule 1: `lock_accounts` (one statement, ascending id order), `lock_scope`.
-- `cascade.rs` — B.7 rule 2: `on_sessions_ended` (grants, enrolments), `on_authenticator_revoked` (sessions, grants; devices also void their challenges).
-- `core.rs` — challenges: `issue` (v4 id, 32-byte nonce, ≤ 10 min), `lock_for_answer` (`FOR UPDATE`; another device's → 404; past due → expired, 410; not `issued` → 409), `verify`, `set_state`, `expire_due` (minute sweep).
+- `cascade.rs` — B.7 rule 2: `on_sessions_ended` (grants, enrolments; never challenges, see the lock order), `on_authenticator_revoked` (sessions, grants, enrolments; a key device also voids its open challenges).
+- `core.rs` — challenges: `issue` (v4 id, 32-byte nonce, ≤ 10 min, never already past due), `head` (approver and subject without a lock, to learn which accounts to lock), `lock_for_answer` (`FOR UPDATE` by id + approver + install id; another account's or device's → 404; open and past due → expired, 410, the caller commits the mark; not `issued` → 409), `verify`, `set_state`, `expire_due` (minute sweep).
 - `handlers.rs` — `/api/approvals/*` (`ApprovalLogin` limit per user): `step-up` (key-device session only), `answer` (dispatch by kind), `deny`, `release`.
 - `device_login.rs` — device-key sign-in (B.4, C26 `device_login`): public `POST /auth/device-login/challenge` and `POST /auth/device-login` (`AuthFlow` per IP, never IP-blocked). `sign_in` locks account → device row → challenge, re-checks `active` and the ban, consumes the challenge, ends the device's older sessions (`superseded`), mints a full android session and records `sign_in`.
 - `enrollments/` — SM2: `issue_tx` per issuer, the public `open`/`pop-challenge`/`claim`/`status` routes (`AuthFlow`), `confirm_tx` per confirmer (a re-enrolling install's old row goes through the revocation cascade), `after_done`.
@@ -19,9 +19,11 @@
 
 ## Order of checks (answer)
 
-1. The caller's session is a key-device session (its authenticator is an `active` key device of the same user), else 403 `KEY_DEVICE_REQUIRED`.
-2. Lock the challenge; it must name this device's install id (else 404), be `issued` and not past due.
-3. Per kind: `device_stepup` — approve only, empty response, answered from the session that asked; verify the signature; `consumed`; `grant_tx` in the same transaction. `enroll` — signature first, then the code (B.2 rev 4). `login` — L1b (response compared first).
+1. The session snapshot names a key device, else 403 `KEY_DEVICE_REQUIRED` (no lock yet).
+2. Read the challenge's approver and subject without a lock; another approver's → 404. Lock the caller's and the subject's accounts in one statement.
+3. `key_device_session`: the device row (`FOR UPDATE`, `active`, same user, else 403) and the authorising session row (`FOR UPDATE`, live, full, bound to that device, else 401 `INVALID_TOKEN`).
+4. Lock the challenge by id, approver and install id (else 404); it must be `issued` and not past due.
+5. Per kind: `device_stepup` — approve only, empty response, answered from the session that asked; verify the signature; `consumed`; `grant_tx` in the same transaction. `enroll` — only from the enrolment's issuing device (else 404), signature first, then the code (B.2 rev 4); deny likewise. `login` — L1b (response compared first).
 
 ## Rules
 
@@ -29,5 +31,6 @@
 - Never log a secret, token, code or signature. Errors never echo them.
 - The signature origin is `Config::public_origin.origin` (`PUBLIC_URL`, mandatory). Changing the domain invalidates every device signature.
 - Every core function takes `auth::ctx::AuthCtx` so HTTP handlers, timers and the host CLI (`crate::cli`, `kaiku-admin`) share it.
-- Lock order (B.7): accounts first (`lock_accounts`), then device rows, then challenges and enrolments. Every revoking caller takes the account lock before `revoke_tx`, so a concurrent device-key sign-in either sees `revoked` or its session is ended by the revocation.
+- Lock order (B.7): accounts first (`lock_accounts`, every account of the transition in one statement), then device rows, then session rows, then challenges and enrolments. Every revoking caller and every answer, deny, release, issuer challenge and confirm takes the account lock first, so a concurrent device-key sign-in either sees `revoked` or its session is ended by the revocation, and an answer never waits in a cycle with a revocation (pinned by `answer_and_revocation_never_deadlock` and `enroll_answer_and_revocation_never_deadlock`). Paths that end sessions without the account lock (logout, refresh) touch only sessions, grants and enrolments, never challenges or device rows.
+- A re-enrolment on the same install revokes the earlier key with the full cascade and records `authenticator_removed` for it; its push subscription stays (keyed by account and install id, it now belongs to the new key).
 - 429 on the v1.0 sign-in categories (`ApprovalLogin`, `AuthFlow`) is `TOO_MANY_ATTEMPTS` with `Retry-After`.

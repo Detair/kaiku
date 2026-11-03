@@ -179,6 +179,11 @@ pub async fn issue(
     // Whole seconds: the signed `expires_at` is an i64 of Unix seconds.
     let expires_at =
         DateTime::from_timestamp((now + new.ttl).timestamp(), 0).unwrap_or(now + new.ttl);
+    // Flooring a remaining lifetime under a second can land at or before
+    // now: such a challenge would be past due when issued.
+    if expires_at <= now {
+        return Err(ApprovalError::Expired);
+    }
     let (requester_kind, requester_id) = new.requester.parts();
     let row: ChallengeRow = sqlx::query_as(
         "INSERT INTO approvals (id, kind, variant, approver_id, subject_id, device_id,
@@ -207,26 +212,36 @@ pub async fn issue(
     row.to_wire(ctx.origin())
 }
 
-/// Lock a challenge for answering by `device_id`.
+/// Lock a challenge for answering by the device (`approver_id`, `device_id`).
 ///
-/// Unknown or another device's → 404 `APPROVAL_NOT_FOUND`; past
-/// `expires_at` → marked expired, 410 `APPROVAL_EXPIRED` (the caller commits
-/// that mark); not `issued` → 409 `APPROVAL_STATE`.
+/// Both the approver's account and its per-install id must match, so a
+/// device of another account with the same install id never matches (install
+/// ids are unique only per account).
+///
+/// Unknown or another device's → 404 `APPROVAL_NOT_FOUND`; open (`issued`
+/// or `approved`) and past `expires_at` → marked expired, 410
+/// `APPROVAL_EXPIRED` (the caller commits that mark, as the sweep would);
+/// not `issued` → 409 `APPROVAL_STATE`.
 pub async fn lock_for_answer(
     conn: &mut PgConnection,
     id: Uuid,
+    approver_id: Uuid,
     device_id: Uuid,
 ) -> Result<ChallengeRow, ApprovalError> {
-    let row: ChallengeRow = sqlx::query_as("SELECT * FROM approvals WHERE id = $1 FOR UPDATE")
-        .bind(id)
-        .fetch_optional(&mut *conn)
-        .await?
-        .filter(|r: &ChallengeRow| r.device_id == device_id)
-        .ok_or(ApprovalError::NotFound)?;
+    let row: ChallengeRow = sqlx::query_as(
+        "SELECT * FROM approvals WHERE id = $1 AND approver_id = $2 AND device_id = $3
+            FOR UPDATE",
+    )
+    .bind(id)
+    .bind(approver_id)
+    .bind(device_id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(ApprovalError::NotFound)?;
     if row.state == "expired" {
         return Err(ApprovalError::Expired);
     }
-    if row.state == "issued" && row.expires_at <= Utc::now() {
+    if matches!(row.state.as_str(), "issued" | "approved") && row.expires_at <= Utc::now() {
         sqlx::query("UPDATE approvals SET state = 'expired' WHERE id = $1")
             .bind(id)
             .execute(&mut *conn)
@@ -237,6 +252,15 @@ pub async fn lock_for_answer(
         return Err(ApprovalError::State);
     }
     Ok(row)
+}
+
+/// Who a challenge is addressed to, read without a lock (to learn which
+/// accounts to lock first, B.7 rule 1): `(approver_id, subject_id)`.
+pub async fn head(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<(Uuid, Uuid)>> {
+    sqlx::query_as("SELECT approver_id, subject_id FROM approvals WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await
 }
 
 /// Verify `signature_b64u` over the row's M with `decision` and `response`.

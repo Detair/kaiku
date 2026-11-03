@@ -49,6 +49,10 @@ pub const MAX_TRIES: i16 = 3;
 pub const MAX_OPEN_PER_ISSUER: i64 = 5;
 /// Long-poll bound of `status` (DC13).
 pub const MAX_WAIT_SECS: u8 = 25;
+/// Attestation chain bounds checked before decoding (the reader keeps its
+/// own `MAX_CHAIN` too): at most 8 certificates of at most 8 KiB DER each.
+const MAX_CHAIN_CERTS: usize = 8;
+const MAX_CERT_B64U_LEN: usize = 8 * 1024 * 4 / 3 + 4;
 
 /// SM2 variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,14 +206,23 @@ pub struct Enrollment {
 }
 
 /// `EnrollmentIssued` (C26). The setup token is a secret: only the issuer
-/// gets it, once.
-#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+/// gets it, once (its `Debug` redacts it and the link).
+#[derive(Clone, Serialize, utoipa::ToSchema)]
 pub struct EnrollmentIssued {
     pub enrollment_id: Uuid,
     pub setup_token: String,
     /// `{PUBLIC_URL}/setup#v=1&t=<b64u>` (the token in the fragment).
     pub setup_url: String,
     pub expires_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for EnrollmentIssued {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnrollmentIssued")
+            .field("enrollment_id", &self.enrollment_id)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for ClaimResponse {
@@ -299,8 +312,9 @@ pub enum OwnClaim {
 
 /// Who confirms the code.
 pub enum Confirmer<'a> {
-    /// The issuing key device's signed `enroll` answer (signature checked).
-    KeyDeviceAnswer(&'a ChallengeRow),
+    /// The issuing key device's signed `enroll` answer (signature checked),
+    /// from its key-device session re-checked under the account lock.
+    KeyDeviceAnswer(&'a KeyDeviceSession),
     /// A full PC session with its recorded passkey (L1b/LP).
     Pc(&'a crate::auth::AuthUser),
     Request(Uuid),
@@ -616,6 +630,15 @@ pub async fn claim(
         .ok_or_else(|| ApprovalError::Validation("uv_class".into()))?;
     let der = b64u_decode(&req.public_key)
         .ok_or_else(|| ApprovalError::Validation("public_key".into()))?;
+    // Bounded before anything is decoded (a public route).
+    if req.attestation_chain.len() > MAX_CHAIN_CERTS
+        || req
+            .attestation_chain
+            .iter()
+            .any(|c| c.len() > MAX_CERT_B64U_LEN)
+    {
+        return Err(ApprovalError::Validation("attestation_chain".into()));
+    }
     let mut chain = Vec::with_capacity(req.attestation_chain.len());
     for c in &req.attestation_chain {
         chain.push(
@@ -634,7 +657,15 @@ pub async fn claim(
             c.kind == "enroll_pop" && c.requester_kind == "enrollment" && c.requester_id == row.id
         })
         .ok_or(ApprovalError::NotFound)?;
-    let challenge = lock_for_answer(&mut tx, challenge.id, challenge.device_id).await?;
+    let challenge =
+        match lock_for_answer(&mut tx, challenge.id, row.subject_id, challenge.device_id).await {
+            Ok(c) => c,
+            Err(ApprovalError::Expired) => {
+                tx.commit().await?;
+                return Err(ApprovalError::Expired);
+            }
+            Err(e) => return Err(e),
+        };
     let new_key_hash: [u8; 32] = Sha256::digest(&der).into();
     let ctx_json = CanonicalContext::from_json(Kind::EnrollPop, &challenge.context)
         .map_err(|_| ApprovalError::NotFound)?;
@@ -720,6 +751,20 @@ async fn lock_by_id(conn: &mut PgConnection, id: Uuid) -> Result<EnrollmentRow, 
         .ok_or(ApprovalError::EnrollmentTokenInvalid)
 }
 
+/// Lock an enrolment that `dev` issued (the issuing key device is the only
+/// one that confirms or denies it); another issuer's → 404.
+pub async fn lock_issued_by(
+    conn: &mut PgConnection,
+    id: Uuid,
+    dev: &KeyDeviceSession,
+) -> Result<EnrollmentRow, ApprovalError> {
+    let row = lock_by_id(conn, id).await?;
+    if row.issuer_kind != "key_device" || row.issuer_device_id != Some(dev.device.id) {
+        return Err(ApprovalError::NotFound);
+    }
+    Ok(row)
+}
+
 /// SM2 status for the claiming device (long-poll ≤ 25 s, re-read every 500 ms, DC13).
 ///
 /// Unknown id or wrong claim secret → 404 `ENROLLMENT_TOKEN_INVALID`; a known enrolment
@@ -775,10 +820,7 @@ pub async fn issuer_challenge_tx(
     dev: &KeyDeviceSession,
     id: Uuid,
 ) -> Result<ApprovalChallenge, ApprovalError> {
-    let row = lock_by_id(conn, id).await?;
-    if row.issuer_kind != "key_device" || row.issuer_device_id != Some(dev.device.id) {
-        return Err(ApprovalError::NotFound);
-    }
+    let row = lock_issued_by(conn, id, dev).await?;
     if row.state != "claimed" {
         return Err(ApprovalError::EnrollmentState);
     }
@@ -845,9 +887,21 @@ async fn expire(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<()> {
     Ok(())
 }
 
+/// `authenticator_removed.details.by` for a key replaced by an enrolment (C28).
+const fn removed_by(actor: Actor) -> &'static str {
+    match actor {
+        Actor::Cli => "cli",
+        Actor::Admin(_) => "admin",
+        Actor::System => "request",
+        _ => "self",
+    }
+}
+
 /// Confirm with `code` (SM2 "confirm").
 ///
-/// The issuer is re-checked first (B.7 rule 4), then the code in constant time. A wrong code
+/// B.7 rule 1: the subject's account (and the answering device's) is locked first, in one
+/// statement, then the enrolment row. The issuer is re-checked (B.7 rule 4; a key-device answer
+/// must come from the enrolment's issuing device), then the code in constant time. A wrong code
 /// counts a try (400 `ENROLL_CODE_WRONG {tries_left}`, the third → 410 `ENROLLMENT_FAILED`) —
 /// the caller commits that. At `done` the device row is created in this transaction.
 pub async fn confirm_tx(
@@ -857,8 +911,18 @@ pub async fn confirm_tx(
     by: Confirmer<'_>,
     code: &[u8],
 ) -> Result<(Enrollment, AfterDone), ApprovalError> {
+    // Read without a lock to learn whose account to lock first.
+    let subject_id: Uuid = sqlx::query_scalar("SELECT subject_id FROM enrollments WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(ApprovalError::EnrollmentTokenInvalid)?;
+    let mut accounts = vec![subject_id];
+    if let Confirmer::KeyDeviceAnswer(dev) = &by {
+        accounts.push(dev.auth.id);
+    }
+    let locked = super::transition::lock_accounts(conn, &accounts).await?;
     let row = lock_by_id(conn, id).await?;
-    let locked = super::transition::lock_accounts(conn, &[row.subject_id]).await?;
     match row.state.as_str() {
         "claimed" => {}
         _ => return Err(ApprovalError::EnrollmentState),
@@ -867,18 +931,16 @@ pub async fn confirm_tx(
         expire(conn, row.id).await?;
         return Err(ApprovalError::EnrollmentState);
     }
-    let issuer_user = match by {
-        Confirmer::KeyDeviceAnswer(_) => {
-            let device_id = row.issuer_device_id.ok_or(ApprovalError::NotFound)?;
-            if !crate::auth::strong::is_active(conn, AuthenticatorRef::key_device(device_id))
-                .await?
-            {
+    let issuer_user = match &by {
+        Confirmer::KeyDeviceAnswer(dev) => {
+            // The answering device is the issuer, active under the lock.
+            if row.issuer_kind != "key_device" || row.issuer_device_id != Some(dev.device.id) {
+                return Err(ApprovalError::NotFound);
+            }
+            if !dev.device.is_active() {
                 return Err(ApprovalError::KeyDeviceRequired);
             }
-            sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM approval_devices WHERE id = $1")
-                .bind(device_id)
-                .fetch_optional(&mut *conn)
-                .await?
+            Some(dev.auth.id)
         }
         Confirmer::Cli => {
             if row.issuer_kind != "cli" {
@@ -929,9 +991,19 @@ pub async fn confirm_tx(
     let claimed_device_id = row
         .claimed_device_id
         .ok_or(ApprovalError::EnrollmentState)?;
+    let actor = match (&by, issuer_user) {
+        (Confirmer::Cli, _) => Actor::Cli,
+        (_, Some(u)) if u == row.subject_id => Actor::User(u),
+        (_, Some(u)) => Actor::Admin(u),
+        (_, None) => Actor::System,
+    };
     // A device that re-enrols replaces its own earlier (live) row, with the
     // revocation cascade (B.7 rule 2): its sessions end, its grants and open
-    // challenges are void.
+    // challenges are void. The removal is a notice of its own (B.1: every add
+    // and remove), so an owner whose phone was replaced by a claim on its
+    // install id learns that the phone is no longer a key. The push
+    // subscription stays: it is keyed by (account, install id) and now
+    // belongs to the new key of the same install.
     let replaced: Vec<Uuid> = sqlx::query_scalar(
         "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(), revoke_reason = 'owner'
           WHERE user_id = $1 AND device_id = $2 AND state <> 'revoked'
@@ -941,15 +1013,18 @@ pub async fn confirm_tx(
     .bind(claimed_device_id)
     .fetch_all(&mut *conn)
     .await?;
+    let mut event_ids = Vec::with_capacity(replaced.len() + 1);
     for old in replaced {
-        super::cascade::on_authenticator_revoked(
-            conn,
-            ctx,
+        let old = AuthenticatorRef::key_device(old);
+        super::cascade::on_authenticator_revoked(conn, ctx, row.subject_id, old).await?;
+        let mut ev = NewSecurityEvent::new(
             row.subject_id,
-            AuthenticatorRef::key_device(old),
-        )
-        .await?;
-        super::core::void_for_device(conn, row.subject_id, claimed_device_id).await?;
+            EventType::AuthenticatorRemoved,
+            actor,
+            serde_json::json!({"type": "key_device", "by": removed_by(actor)}),
+        );
+        ev.authenticator = Some(old);
+        event_ids.push(record(conn, ev).await?);
     }
     sqlx::query(
         "INSERT INTO approval_devices (id, user_id, device_id, public_key, public_key_hash,
@@ -992,12 +1067,6 @@ pub async fn confirm_tx(
     .execute(&mut *conn)
     .await?;
     crate::auth::strong::mark_first_activity(conn, row.subject_id).await?;
-    let actor = match (&by, issuer_user) {
-        (Confirmer::Cli, _) => Actor::Cli,
-        (_, Some(u)) if u == row.subject_id => Actor::User(u),
-        (_, Some(u)) => Actor::Admin(u),
-        (_, None) => Actor::System,
-    };
     let mut ev = NewSecurityEvent::new(
         row.subject_id,
         EventType::AuthenticatorAdded,
@@ -1005,7 +1074,7 @@ pub async fn confirm_tx(
         serde_json::json!({"type": "key_device"}),
     );
     ev.authenticator = Some(AuthenticatorRef::key_device(device_row_id));
-    let event_id = record(conn, ev).await?;
+    event_ids.push(record(conn, ev).await?);
     let mut done = row.clone();
     done.state = "done".into();
     let wire = to_wire(conn, &done).await?;
@@ -1015,7 +1084,7 @@ pub async fn confirm_tx(
             subject_id: row.subject_id,
             issuer_user,
             enrollment_id: row.id,
-            event_ids: vec![event_id],
+            event_ids,
         },
     ))
 }
@@ -1037,6 +1106,9 @@ pub async fn answer_enroll_tx(
             "an enrolment is approved or denied".into(),
         ));
     }
+    // Only the issuing device answers (its key, its install id).
+    super::transition::lock_accounts(conn, &[dev.auth.id, challenge.subject_id]).await?;
+    lock_issued_by(conn, challenge.requester_id, dev).await?;
     verify(
         challenge,
         ctx.origin(),
@@ -1056,7 +1128,7 @@ pub async fn answer_enroll_tx(
         conn,
         ctx,
         challenge.requester_id,
-        Confirmer::KeyDeviceAnswer(challenge),
+        Confirmer::KeyDeviceAnswer(dev),
         response,
     )
     .await

@@ -992,3 +992,167 @@ async fn re_enrolment_ends_the_replaced_keys_sessions(pool: PgPool) {
         "the replaced key's session ends with it"
     );
 }
+
+/// Review round 1 (Fable M2 / Codex M2): the `enroll` answer locks the
+/// accounts before the challenge and the enrolment, so it never forms a
+/// cycle with a revocation of the issuing device (accounts → device →
+/// sessions → enrolments → challenges).
+#[sqlx::test]
+async fn enroll_answer_and_revocation_never_deadlock(pool: PgPool) {
+    use vc_server::approvals::devices::{revoke_tx, RevokeReason};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (issued, claimed, _) = own_claimed(&app, &dev).await;
+    let (_, c) = enroll_challenge(&app, &dev, issued.enrollment_id).await;
+    let code = claimed["code"].as_str().unwrap().to_string();
+    let ctx = AuthCtx::from(&app.state);
+    let mut revoker = app.pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut revoker, &[user])
+        .await
+        .unwrap();
+    let revoke = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        let r = revoke_tx(
+            &mut revoker,
+            &ctx,
+            dev.row_id,
+            RevokeReason::Admin,
+            vc_server::security_events::Actor::Cli,
+        )
+        .await;
+        match r {
+            Ok(_) => revoker.commit().await.map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    let ((status, body), revoked) = tokio::join!(
+        super::approvals_core::answer(&app, &dev, &c, code.as_bytes()),
+        revoke
+    );
+    assert!(revoked.is_ok(), "the revocation commits: {revoked:?}");
+    assert_ne!(status, 500, "no deadlock on the answer side: {body}");
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (403, Some("KEY_DEVICE_REQUIRED"))
+    );
+}
+
+/// A key device of another account that carries the same per-install id
+/// (install ids are unique only per account).
+async fn same_install_elsewhere(
+    pool: &PgPool,
+    app: &TestApp,
+    of: &KeyDeviceFixture,
+) -> KeyDeviceFixture {
+    let (other, _) = create_test_user(pool).await;
+    let mut dev = KeyDeviceFixture::insert(pool, &app.config, other, "active").await;
+    sqlx::query("UPDATE approval_devices SET device_id = $1 WHERE id = $2")
+        .bind(of.device_id)
+        .bind(dev.row_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    dev.device_id = of.device_id;
+    dev
+}
+
+/// Review round 1 (Fable M3 / Codex M1 / Argon M1.2): a challenge is bound
+/// to its approver's device row, not only to the self-reported install id;
+/// and an `enroll` answer must come from the enrolment's issuing device.
+#[sqlx::test]
+async fn same_install_id_of_another_account_cannot_answer(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (issued, claimed, phone) = own_claimed(&app, &dev).await;
+    let (_, c) = enroll_challenge(&app, &dev, issued.enrollment_id).await;
+    let intruder = same_install_elsewhere(&pool, &app, &dev).await;
+    let code = claimed["code"].as_str().unwrap();
+    let (s, b) = super::approvals_core::answer(&app, &intruder, &c, code.as_bytes()).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (404, Some("APPROVAL_NOT_FOUND")),
+        "{b}"
+    );
+    let devices: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM approval_devices WHERE device_id = $1")
+            .bind(phone.device_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(devices, 0, "no key was enrolled");
+    // The issuing device still can.
+    let (s, b) = super::approvals_core::answer(&app, &dev, &c, code.as_bytes()).await;
+    assert_eq!(s, 200, "{b}");
+}
+
+#[sqlx::test]
+async fn same_install_id_of_another_account_cannot_deny(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (issued, claimed, _) = own_claimed(&app, &dev).await;
+    let (_, c) = enroll_challenge(&app, &dev, issued.enrollment_id).await;
+    let intruder = same_install_elsewhere(&pool, &app, &dev).await;
+    let req = TestApp::request(
+        Method::POST,
+        &format!(
+            "/api/approvals/{}/deny",
+            c["challenge_id"].as_str().unwrap()
+        ),
+    )
+    .header("Authorization", format!("Bearer {}", intruder.access_token))
+    .body(Body::empty())
+    .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 404);
+    let (_, st) = status(
+        &app,
+        issued.enrollment_id,
+        claimed["claim_secret"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(st["state"], "claimed", "the enrolment is untouched");
+}
+
+/// Review round 1 (Fable M4): a re-enrolment on the same install removes
+/// the earlier key, and that removal is a notice of its own.
+#[sqlx::test]
+async fn re_enrolment_records_the_removed_key(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let old = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let phone = Phone {
+        key: SigningKey::random(&mut rand::rngs::OsRng),
+        device_id: old.device_id,
+    };
+    let (s, claim) = claim_with(
+        &app,
+        &issued.setup_token,
+        &phone,
+        "Pixel 8",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201, "{claim}");
+    confirm_cli(&app, issued.enrollment_id, claim["code"].as_str().unwrap())
+        .await
+        .unwrap();
+    let removed: Vec<(String, Value)> = sqlx::query_as(
+        "SELECT severity, details FROM security_events
+          WHERE subject_id = $1 AND event_type = 'authenticator_removed'
+            AND authenticator_type = 'key_device' AND authenticator_id = $2",
+    )
+    .bind(user)
+    .bind(old.row_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(removed.len(), 1, "one notice for the replaced key");
+    assert_eq!(removed[0].0, "high");
+    assert_eq!(removed[0].1, json!({"type": "key_device", "by": "cli"}));
+}

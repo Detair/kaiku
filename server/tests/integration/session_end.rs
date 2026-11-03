@@ -313,3 +313,53 @@ async fn cleanup_deletes_ended_rows_after_30_days(pool: PgPool) {
     assert!(!left.contains(&old_ended));
     assert!(!left.contains(&long_expired));
 }
+
+/// Codex M4: a `NOTIFY` payload is limited to 8000 bytes; ending many
+/// sessions at once (here 1000, the configurable session limit) must still
+/// commit, and every ended id reaches the listener.
+#[sqlx::test]
+async fn ending_a_thousand_sessions_commits(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let ctx = AuthCtx::from(&app.state);
+    let (user, _) = create_test_user(&pool).await;
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, token_hash, expires_at, absolute_expires_at)
+         SELECT gen_random_uuid(), $1, 'bulk-' || g, NOW() + INTERVAL '7 days',
+                NOW() + INTERVAL '30 days'
+           FROM generate_series(1, 1000) g",
+    )
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let own = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let mut listener = PgListener::connect_with(&own).await.unwrap();
+    listener.listen(SESSION_END_CHANNEL).await.unwrap();
+
+    let mut tx = pool.begin().await.unwrap();
+    let ended = end_all_sessions_tx(&mut tx, &ctx, user, None, EndReason::Ban)
+        .await
+        .expect("ending 1000 sessions does not exceed the NOTIFY payload");
+    tx.commit().await.unwrap();
+    assert_eq!(ended.len(), 1001, "the bulk rows and the test session");
+
+    let mut seen = std::collections::HashSet::new();
+    let mut all = false;
+    while seen.len() < ended.len() {
+        let n = tokio::time::timeout(Duration::from_secs(2), listener.recv())
+            .await
+            .expect("every ended id is announced")
+            .unwrap();
+        let p: serde_json::Value = serde_json::from_str(n.payload()).unwrap();
+        assert_eq!(p["user_id"], user.to_string());
+        all |= p["all"].as_bool().unwrap();
+        for id in p["session_ids"].as_array().unwrap() {
+            seen.insert(id.as_str().unwrap().to_string());
+        }
+    }
+    assert!(all, "the ban still closes every socket of the user");
+}

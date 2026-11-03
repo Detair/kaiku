@@ -428,3 +428,210 @@ async fn db_rejects_long_or_unknown_challenges(pool: PgPool) {
     .await;
     assert!(long.is_err(), "> 10 min refused");
 }
+
+/// B.7 rule 1 (review round 1, Fable M2 / Codex M2): an answer takes the
+/// account lock before the challenge. The revoking order is accounts →
+/// device → sessions → challenges; an answer that held the challenge and
+/// then waited for the session row formed a cycle with it (40P01).
+#[sqlx::test]
+async fn answer_and_revocation_never_deadlock(pool: PgPool) {
+    use vc_server::approvals::devices::{revoke_tx, RevokeReason};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
+    let ctx = AuthCtx::from(&app.state);
+    // The revoker holds the account and the device session's row (as
+    // `end_sessions_tx` does while it ends the session) …
+    let mut revoker = pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut revoker, &[user])
+        .await
+        .unwrap();
+    sqlx::query("SELECT id FROM sessions WHERE id = $1 FOR UPDATE")
+        .bind(dev.session_id.unwrap())
+        .execute(&mut *revoker)
+        .await
+        .unwrap();
+    // … and revokes the device once the answer waits for a lock.
+    let revoke = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        let r = revoke_tx(
+            &mut revoker,
+            &ctx,
+            dev.row_id,
+            RevokeReason::Admin,
+            vc_server::security_events::Actor::Cli,
+        )
+        .await;
+        match r {
+            Ok(_) => revoker.commit().await.map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    let ((status, body), revoked) = tokio::join!(answer(&app, &dev, &c, b""), revoke);
+    assert!(revoked.is_ok(), "the revocation commits: {revoked:?}");
+    assert_ne!(status, 500, "no deadlock on the answer side: {body}");
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (403, Some("KEY_DEVICE_REQUIRED")),
+        "the answer sees the revoked device"
+    );
+}
+
+/// Codex M3: the authorising session is re-read under the account lock. A
+/// device whose session ended while its request waited is no longer
+/// authorised (here `/invalidated`, which revokes the key).
+#[sqlx::test]
+async fn ended_session_cannot_act_after_waiting_for_the_lock(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let mut holder = pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut holder, &[user])
+        .await
+        .unwrap();
+    let logout = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        sqlx::query("UPDATE sessions SET ended_at = NOW(), end_reason = 'logout' WHERE id = $1")
+            .bind(dev.session_id.unwrap())
+            .execute(&mut *holder)
+            .await
+            .unwrap();
+        holder.commit().await.unwrap();
+    };
+    let uri = format!("/api/approval-devices/{}/invalidated", dev.row_id);
+    let ((status, body), ()) =
+        tokio::join!(post(&app, &uri, &dev.access_token, json!({}),), logout);
+    assert_eq!(status, 401, "{body}");
+    let state: String = sqlx::query_scalar("SELECT state FROM approval_devices WHERE id = $1")
+        .bind(dev.row_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "active", "nothing was revoked by the ended session");
+}
+
+/// Argon m1: a remaining lifetime under a second never issues a challenge
+/// that is already past due (the signed `expires_at` is whole seconds).
+#[sqlx::test]
+async fn sub_second_lifetime_never_issues_a_past_due_challenge(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let ctx = AuthCtx::from(&app.state);
+    for _ in 0..5 {
+        let mut tx = pool.begin().await.unwrap();
+        let before = chrono::Utc::now();
+        let r = issue(
+            &mut tx,
+            &ctx,
+            NewChallenge {
+                context: CanonicalContext::DeviceLogin {
+                    client_class: ClientClass::Android,
+                },
+                approver_id: user,
+                subject_id: user,
+                device_id: Uuid::new_v4(),
+                requester: Requester::Device(Uuid::new_v4()),
+                display: json!({}),
+                transfer_hash: None,
+                ttl: chrono::Duration::milliseconds(1),
+            },
+        )
+        .await;
+        tx.rollback().await.unwrap();
+        match r {
+            Ok(c) => assert!(c.expires_at > before, "issued past due"),
+            Err(e) => assert!(
+                matches!(e, vc_server::approvals::error::ApprovalError::Expired),
+                "{e:?}"
+            ),
+        }
+    }
+}
+
+/// Fable m9: `lock_for_answer` and the sweep agree that an `approved`
+/// challenge past its deadline is expired (410), not merely "answered".
+#[sqlx::test]
+async fn approved_past_due_is_expired(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
+    let id = c["challenge_id"].as_str().unwrap();
+    age_challenge(&pool, id).await;
+    sqlx::query("UPDATE approvals SET state = 'approved' WHERE id = $1")
+        .bind(Uuid::parse_str(id).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, body) = answer(&app, &dev, &c, b"").await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (410, Some("APPROVAL_EXPIRED"))
+    );
+    let state: String = sqlx::query_scalar("SELECT state FROM approvals WHERE id = $1")
+        .bind(Uuid::parse_str(id).unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "expired", "the mark is committed");
+}
+
+/// Fable m5: finished challenges and enrolments are deleted 30 days after
+/// they ended; open ones and recent ones stay.
+#[sqlx::test]
+async fn finished_challenges_and_enrolments_are_cleaned_up(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let old = stepup_challenge(&app, &dev, "admin.elevate", "").await;
+    let recent = stepup_challenge(&app, &dev, "admin.elevate", "").await;
+    let open = stepup_challenge(&app, &dev, "admin.elevate", "").await;
+    let id = |c: &Value| Uuid::parse_str(c["challenge_id"].as_str().unwrap()).unwrap();
+    sqlx::query(
+        "UPDATE approvals SET state = 'consumed', created_at = NOW() - INTERVAL '31 days',
+                expires_at = NOW() - INTERVAL '31 days' + INTERVAL '2 minutes'
+          WHERE id = $1",
+    )
+    .bind(id(&old))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE approvals SET state = 'consumed' WHERE id = $1")
+        .bind(id(&recent))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let enrolment = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO enrollments (id, variant, subject_id, issuer_kind, setup_token_hash, nonce,
+                                  claimant_check, state, created_at, expires_at, ended_at)
+         VALUES ($1, 'cli', $2, 'cli', $3, $3, 'none', 'expired', NOW() - INTERVAL '40 days',
+                 NOW() - INTERVAL '40 days' + INTERVAL '10 minutes', NOW() - INTERVAL '31 days')",
+    )
+    .bind(enrolment)
+    .bind(user)
+    .bind(vec![7u8; 32])
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let n = vc_server::db::cleanup_finished_approvals(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 2, "the old challenge and the old enrolment");
+    let left: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM approvals ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    let mut want = vec![id(&recent), id(&open)];
+    want.sort();
+    assert_eq!(left, want);
+    let gone: bool =
+        sqlx::query_scalar("SELECT NOT EXISTS (SELECT 1 FROM enrollments WHERE id = $1)")
+            .bind(enrolment)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(gone);
+}

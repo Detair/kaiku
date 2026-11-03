@@ -20,13 +20,22 @@ use crate::approvals::error::ApprovalError;
 /// How often [`wait_for_claim`] looks at the enrolment.
 const POLL: Duration = Duration::from_millis(500);
 
-/// An issued CLI enrolment.
-#[derive(Debug, Clone)]
+/// An issued CLI enrolment. Its `Debug` redacts the setup link.
+#[derive(Clone)]
 pub struct CliEnrollment {
     pub enrollment_id: Uuid,
     /// The setup link (carries the setup token; printed once).
     pub setup_url: String,
     pub expires_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for CliEnrollment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CliEnrollment")
+            .field("enrollment_id", &self.enrollment_id)
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the claiming phone said about itself.

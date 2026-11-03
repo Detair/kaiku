@@ -471,6 +471,31 @@ pub async fn cleanup_expired_sessions(pool: &PgPool) -> sqlx::Result<u64> {
     Ok(result.rows_affected())
 }
 
+/// Delete finished challenges and ended enrolments after 30 days (for background job).
+///
+/// Open challenges are swept to `expired` by the minute timer first; step-up
+/// grants go with their session rows.
+pub async fn cleanup_finished_approvals(pool: &PgPool) -> sqlx::Result<u64> {
+    let mut tx = pool.begin().await?;
+    let challenges = sqlx::query(
+        "DELETE FROM approvals
+          WHERE state IN ('consumed', 'denied', 'reported', 'expired')
+            AND expires_at < NOW() - INTERVAL '30 days'",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    let enrollments = sqlx::query(
+        "DELETE FROM enrollments
+          WHERE ended_at IS NOT NULL AND ended_at < NOW() - INTERVAL '30 days'",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
+    Ok(challenges + enrollments)
+}
+
 /// Clean up claimed prekeys older than 7 days (for background job).
 ///
 /// Prekeys are one-time use keys for establishing E2EE sessions.
