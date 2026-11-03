@@ -278,3 +278,51 @@ async fn a_delay_only_reset_is_recorded(pool: PgPool) {
         vec![serde_json::json!({"factor": "totp", "by": "cli"})]
     );
 }
+
+/// Fable r4 (b): a CLI reset starts a new epoch instead of deleting the
+/// counter, so effects scheduled before it (epoch 0) never match again.
+#[sqlx::test]
+async fn a_cli_reset_starts_a_new_epoch(pool: PgPool) {
+    use fred::interfaces::{HashesInterface, KeysInterface};
+    use vc_server::ratelimit::account::{AccountLimiter, CounterKey};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = create_test_user(&pool).await;
+    let key = CounterKey::totp(user, 1);
+    let _: () = app.state.redis.del(key.redis_key()).await.unwrap();
+    let _: () = app
+        .state
+        .redis
+        .hset(key.redis_key(), ("count", 99))
+        .await
+        .unwrap();
+    cli(&app, &["throttle", "reset", &name]).await.unwrap();
+    let (count, epoch) = AccountLimiter::new(&app.state.redis)
+        .read(&key)
+        .await
+        .unwrap();
+    assert_eq!((count, epoch), (0, 1), "a new epoch, not a fresh counter");
+}
+
+/// Fable r4 (c): a counter whose failures a success already cleared (count
+/// 0, a later epoch, no delay) is no delay, so no `throttle_reset`.
+#[sqlx::test]
+async fn a_cleared_counter_is_no_reset_event(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+    use vc_server::ratelimit::account::{AccountLimiter, CounterKey};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = create_test_user(&pool).await;
+    let key = CounterKey::totp(user, 1);
+    let _: () = app.state.redis.del(key.redis_key()).await.unwrap();
+    let limiter = AccountLimiter::new(&app.state.redis);
+    limiter.record_failure_epoch(&key).await.unwrap();
+    limiter.reset_epoch(&key).await.unwrap();
+    cli(&app, &["throttle", "reset", &name]).await.unwrap();
+    let resets: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_events WHERE subject_id = $1 AND event_type = 'throttle_reset'",
+    )
+    .bind(user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(resets, 0);
+}

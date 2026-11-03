@@ -132,45 +132,48 @@ pub async fn throttle_reset(
     Ok(())
 }
 
-/// The factors whose per-account counter exists in Valkey.
+/// The factors whose per-account counter holds failures or a delay (a
+/// counter a success cleared is none, Fable r4 c).
 async fn counters_present(ctx: &CliCtx, username: &str, user: Uuid) -> Vec<&'static str> {
-    use fred::interfaces::KeysInterface;
-
     use crate::ratelimit::account::CounterKey;
-    let mut out = Vec::new();
-    if let CounterKey::Password(h) = CounterKey::password(username) {
-        let n: i64 = ctx
-            .redis
-            .exists(format!("ratelimit:acct:password:{h}"))
-            .await
-            .unwrap_or(0);
-        if n > 0 {
-            out.push("password");
-        }
-    }
     let generation: i64 = sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
         .bind(user)
         .fetch_one(&ctx.db)
         .await
         .unwrap_or(1);
-    let n: i64 = ctx
-        .redis
-        .exists(CounterKey::totp(user, generation).redis_key())
-        .await
-        .unwrap_or(0);
-    if n > 0 {
-        out.push("totp");
+    let mut out = Vec::new();
+    for (name, key) in [
+        ("password", CounterKey::password(username)),
+        ("totp", CounterKey::totp(user, generation)),
+    ] {
+        if counter_holds_something(ctx, &key).await {
+            out.push(name);
+        }
     }
     out
 }
 
+/// `count > 0` or a `next` delay (fail open: an unreadable counter is
+/// reset anyway, only its event is skipped).
+async fn counter_holds_something(
+    ctx: &CliCtx,
+    key: &crate::ratelimit::account::CounterKey,
+) -> bool {
+    use fred::interfaces::HashesInterface;
+    let got: Result<(Option<i64>, Option<i64>), _> = ctx
+        .redis
+        .hmget(key.redis_key(), vec!["count", "next"])
+        .await;
+    got.is_ok_and(|(count, next)| count.unwrap_or(0) > 0 || next.is_some())
+}
+
+/// A CLI reset starts a new epoch on each counter instead of deleting it,
+/// so effects scheduled before it never match again (Fable r4 b).
 async fn reset_counters(ctx: &CliCtx, username: &str, user: Uuid, only: Option<Factor>) {
     use crate::ratelimit::account::{AccountLimiter, CounterKey};
     let limiter = AccountLimiter::new(&ctx.redis);
     if only.is_none_or(|f| f == Factor::Password) {
-        let _ = limiter
-            .record_success(&CounterKey::password(username))
-            .await;
+        let _ = limiter.reset_epoch(&CounterKey::password(username)).await;
     }
     if only.is_none_or(|f| f == Factor::Totp) {
         let generation: i64 = sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
@@ -179,7 +182,7 @@ async fn reset_counters(ctx: &CliCtx, username: &str, user: Uuid, only: Option<F
             .await
             .unwrap_or(1);
         let _ = limiter
-            .record_success(&CounterKey::totp(user, generation))
+            .reset_epoch(&CounterKey::totp(user, generation))
             .await;
     }
 }
