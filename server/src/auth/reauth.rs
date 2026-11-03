@@ -304,8 +304,14 @@ pub async fn get_reauth_methods(
     // F7: a step-up is a passkey assertion (LP sets `passkey`) or a
     // `device_stepup` from an active key device; never a password, TOTP or
     // OIDC.
-    let mut conn = state.db.acquire().await?;
-    let device = super::strong::active_strong_count(&mut conn, auth_user.id).await? > 0;
+    // `device` means an active key device (not any strong authenticator: a
+    // passkey-only account has no device step-up).
+    let device: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE user_id = $1 AND state = 'active')",
+    )
+    .bind(auth_user.id)
+    .fetch_one(&state.db)
+    .await?;
     Ok(Json(ReauthMethodsResponse {
         passkey: false,
         device,
