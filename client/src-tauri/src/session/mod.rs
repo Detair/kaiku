@@ -226,8 +226,14 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// A transport failure, without the request URL (it crosses IPC; Codex
+/// review m6: no URL, whatever it carries, reaches the webview).
 fn network(e: &reqwest::Error) -> SessionError {
-    SessionError::Network(e.to_string())
+    let text = e.to_string();
+    SessionError::Network(match e.url() {
+        Some(url) => text.replace(url.as_str(), "[url]"),
+        None => text,
+    })
 }
 
 /// The `error` code of a JSON error body, e.g. `MFA_REQUIRED`. Trimmed and
@@ -1297,6 +1303,18 @@ mod tests {
         let m = manager(store);
         sign_in(&m, server, tokens("at-1", "rt-1")).await;
         m
+    }
+
+    #[tokio::test]
+    async fn a_transport_error_names_no_url() {
+        let m = manager(&Arc::new(MemoryTokenStore::new()));
+        let err = m
+            .login("http://127.0.0.1:1/secret-path-segment", "alice", "pw")
+            .await
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(text.starts_with("Connection failed"), "{text}");
+        assert!(!text.contains("secret-path-segment"), "{text}");
     }
 
     #[tokio::test]
