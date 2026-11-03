@@ -45,6 +45,7 @@ import RecoveryCodesSection from "./security/RecoveryCodesSection";
 import RecoveryContactSection from "./security/RecoveryContactSection";
 import { ReadOnlyNote, secondaryButton as setupPhoneButton } from "./security/SectionCard";
 import SetupPhoneModal from "./security/SetupPhoneModal";
+import PasskeyFirstSteps from "./security/PasskeyFirstSteps";
 import SecurityLogSection from "./security/SecurityLogSection";
 import { t } from "@/i18n";
 import { securityErrorText } from "./security/securityErrors";
@@ -299,7 +300,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
       </Show>
       {/* Passkeys (C29) */}
       <div class="pt-6 border-t border-white/10 space-y-4">
-        <PasskeysSection />
+        <PasskeysSection empty={<PasskeyFirstSteps onSetUpPhone={() => setShowSetupPhone(true)} />} />
         <PasskeyBrowserSetting />
       </div>
       <PasswordSection />

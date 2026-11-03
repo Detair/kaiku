@@ -1,11 +1,12 @@
 /**
  * Passkeys in the security settings (C29): list, add (browser only, after a
  * passkey step-up), rename and remove (after a step-up for that passkey).
- * The first passkey of an account comes from a key device (DC1), which L2
- * adds here; without a passkey there is no Add button.
+ * The first passkey of an account comes from a key device (DC1); without a
+ * passkey there is no Add button, and the empty state shows `empty` (L2's
+ * "Set up a phone" and "Secure my account").
  */
 
-import { Component, createResource, createSignal, For, onCleanup, Show } from "solid-js";
+import { Component, createResource, createSignal, For, JSX, onCleanup, Show } from "solid-js";
 import { t } from "@/i18n";
 import { formatRelativeTime, formatTimestamp } from "@/i18n/format";
 import { formatPasskeyError } from "@/lib/authErrors";
@@ -57,7 +58,7 @@ const quiet = (err: unknown) =>
 const btn =
   "min-h-12 px-3 rounded-lg bg-white/10 hover:bg-white/20 text-text-primary text-sm state-disabled";
 
-const PasskeysSection: Component = () => {
+const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
   const desktop = isTauri();
   const [data, { refetch }] = createResource(listPasskeys);
   const [error, setError] = createSignal("");
@@ -122,7 +123,15 @@ const PasskeysSection: Component = () => {
 
       <Show when={!data.loading} fallback={null}>
         <Show when={!data.error} fallback={<p role="alert" class="text-sm text-text-primary">{t("passkeys.settings.loadFailed")}</p>}>
-          <Show when={passkeys().length > 0} fallback={<p class="text-sm text-text-secondary">{t("passkeys.settings.empty")}</p>}>
+          <Show
+            when={passkeys().length > 0}
+            fallback={
+              <div class="space-y-2">
+                <p class="text-sm text-text-secondary">{t("passkeys.settings.empty")}</p>
+                {props.empty}
+              </div>
+            }
+          >
             <ul class="space-y-2">
               <For each={passkeys()}>
                 {(p) => (
