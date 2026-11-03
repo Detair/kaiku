@@ -649,3 +649,64 @@ async fn finished_challenges_and_enrolments_are_cleaned_up(pool: PgPool) {
             .unwrap();
     assert!(gone);
 }
+
+/// Review round 3 (Argon coverage, part 4 M1): consuming a grant takes the
+/// account lock before the session row (B.7 rule 1). The elevation row and
+/// its audit entry reference `users`, so without it the elevation held the
+/// session row and waited for a key-share lock on the account, while a
+/// revocation held the account and waited to end that session (40P01).
+#[sqlx::test]
+async fn elevation_and_revocation_never_deadlock(pool: PgPool) {
+    use vc_server::approvals::devices::{revoke_tx, RevokeReason};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    super::helpers::make_admin(&pool, user).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
+    assert_eq!(answer(&app, &dev, &c, b"").await.0, 200);
+
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+    let mut revoker = app.pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut revoker, &[user])
+        .await
+        .unwrap();
+    let revoke = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        let r = revoke_tx(
+            &mut revoker,
+            &ctx,
+            dev.row_id,
+            RevokeReason::Admin,
+            vc_server::security_events::Actor::Cli,
+        )
+        .await;
+        match r {
+            Ok(_) => revoker.commit().await.map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    let elevate = async {
+        let req = super::helpers::login::peer_request(Method::POST, "/api/admin/elevate")
+            .header("Authorization", format!("Bearer {}", dev.access_token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json!({"reason": "test"}).to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await;
+        let status = resp.status().as_u16();
+        (status, body_to_json(resp).await)
+    };
+    let ((status, body), revoked) = tokio::join!(elevate, revoke);
+    assert!(revoked.is_ok(), "the revocation commits: {revoked:?}");
+    assert_ne!(status, 500, "no deadlock on the elevation side: {body}");
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (401, Some("INVALID_TOKEN"))
+    );
+    let elevated: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM elevated_sessions WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(elevated, 0);
+}

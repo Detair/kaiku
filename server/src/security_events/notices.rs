@@ -75,16 +75,21 @@ pub struct SecurityNotice {
 ///
 /// The subject's own copy, and for `high` every admin other than the subject
 /// (L1b Task 20 adds the confirmed recovery contact). Never the system
-/// account, never twice.
+/// account, never twice. Sorted by user id: a delivery takes each
+/// recipient's Kaiku DM lock in this order, so two deliveries (two admins'
+/// events, each the other's copy) never wait for each other in a cycle.
 pub async fn recipients(
     conn: &mut PgConnection,
     subject_id: Uuid,
     severity: Severity,
 ) -> sqlx::Result<Vec<Recipient>> {
-    let mut out = vec![Recipient {
-        user_id: subject_id,
-        role: RecipientRole::Subject,
-    }];
+    let mut out = Vec::new();
+    if !crate::system_account::is_system_user(subject_id) {
+        out.push(Recipient {
+            user_id: subject_id,
+            role: RecipientRole::Subject,
+        });
+    }
     if severity == Severity::High {
         let admins: Vec<Uuid> = sqlx::query_scalar(
             "SELECT sa.user_id FROM system_admins sa
@@ -100,6 +105,7 @@ pub async fn recipients(
             role: RecipientRole::Admin,
         }));
     }
+    out.sort_by_key(|r| r.user_id);
     Ok(out)
 }
 
@@ -120,7 +126,6 @@ struct PendingEvent {
     id: Uuid,
     subject_id: Uuid,
     event_type: String,
-    severity: String,
     actor_kind: String,
     actor_user_id: Option<Uuid>,
     created_at: DateTime<Utc>,
@@ -136,6 +141,10 @@ struct NoticeRow {
 
 /// Deliver these events (idempotent: an event already delivered, or being
 /// delivered by someone else, is skipped).
+///
+/// Each event is its own transaction; one that fails is logged and stays in
+/// the outbox, the others are still delivered, and the first error is
+/// returned at the end (so one bad event never holds back the sweep).
 #[tracing::instrument(skip(state, event_ids), fields(count = event_ids.len()))]
 pub async fn deliver(state: &AppState, event_ids: &[Uuid]) -> anyhow::Result<()> {
     let mut ordered: Vec<(DateTime<Utc>, Uuid)> =
@@ -144,17 +153,48 @@ pub async fn deliver(state: &AppState, event_ids: &[Uuid]) -> anyhow::Result<()>
             .fetch_all(&state.db)
             .await?;
     ordered.sort();
+    let mut first_err: Option<anyhow::Error> = None;
     for (_, id) in ordered {
-        let outcomes = deliver_one(state, id).await?;
-        after_commit(state, outcomes).await;
+        match deliver_one(state, id).await {
+            Ok(outcomes) => after_commit(state, outcomes).await,
+            Err(e) => {
+                tracing::warn!(event_id = %id, error = %e, "notice delivery of one event failed");
+                first_err.get_or_insert(e);
+            }
+        }
     }
-    Ok(())
+    first_err.map_or(Ok(()), Err)
 }
 
 async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>> {
     let mut tx = state.db.begin().await?;
+    // The event's fields never change: read them without a lock to learn its
+    // accounts, and lock those first (B.7 rule 1; key-share, the lock the
+    // notice rows' foreign keys take anyway, in id order). A deletion locks
+    // the account and then cascades into its events, so the delivery must
+    // never hold the event while it waits for the account.
+    let head: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT subject_id, severity FROM security_events WHERE id = $1 AND delivered_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((subject_id, severity)) = head else {
+        tx.commit().await?;
+        return Ok(Vec::new());
+    };
+    let severity = Severity::parse(&severity).unwrap_or(Severity::High);
+    let recipients = recipients(&mut tx, subject_id, severity).await?;
+    let mut accounts: Vec<Uuid> = recipients.iter().map(|r| r.user_id).collect();
+    accounts.push(subject_id);
+    accounts.sort_unstable();
+    accounts.dedup();
+    sqlx::query("SELECT id FROM users WHERE id = ANY($1) ORDER BY id FOR KEY SHARE")
+        .bind(&accounts)
+        .execute(&mut *tx)
+        .await?;
     let Some(ev) = sqlx::query_as::<_, PendingEvent>(
-        "SELECT id, subject_id, event_type, severity, actor_kind, actor_user_id, created_at
+        "SELECT id, subject_id, event_type, actor_kind, actor_user_id, created_at
            FROM security_events
           WHERE id = $1 AND delivered_at IS NULL
           FOR UPDATE SKIP LOCKED",
@@ -166,19 +206,21 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
         tx.commit().await?;
         return Ok(Vec::new());
     };
-    let severity = Severity::parse(&ev.severity).unwrap_or(Severity::High);
     let event_type = EventType::parse(&ev.event_type);
     let actor_id = match ev.actor_kind.as_str() {
         "admin" | "recovery_contact" => ev.actor_user_id,
         _ => None,
     };
     let mut outcomes = Vec::new();
-    for r in recipients(&mut tx, ev.subject_id, severity).await? {
+    for r in recipients {
         let (channel_id, created_dm) = kaiku_dm_created_tx(&mut tx, r.user_id).await?;
+        // Within the window around the notice's first event, both ways: an
+        // event delivered late joins only a notice near its own time.
         let existing = sqlx::query_as::<_, NoticeRow>(
             "SELECT id, message_id, count, last_pushed_at FROM security_notices
               WHERE recipient_id = $1 AND subject_id = $2 AND event_type = $3
                 AND first_at > $4 - make_interval(secs => $5)
+                AND first_at < $4 + make_interval(secs => $5)
               ORDER BY first_at DESC
               LIMIT 1
               FOR UPDATE",
@@ -430,9 +472,13 @@ pub async fn notices_by_message(
     }
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     let mut events: HashMap<Uuid, Vec<EventRow>> = HashMap::new();
-    for (notice_id, ev) in events_of_notices(conn, &ids).await? {
+    // One past the cap, so `events_truncated` still sees more.
+    let per_notice = i64::try_from(MAX_NOTICE_EVENTS + 1).unwrap_or(i64::MAX);
+    for (notice_id, ev) in events_of_notices(conn, &ids, per_notice).await? {
         events.entry(notice_id).or_default().push(ev);
     }
+    // Each authenticator's label is read once per call.
+    let mut labels: HashMap<(Option<String>, Option<Uuid>), Option<String>> = HashMap::new();
     let mut out = HashMap::with_capacity(rows.len());
     for r in rows {
         let own = r.subject_id == reader;
@@ -440,7 +486,14 @@ pub async fn notices_by_message(
         let total = evs.len();
         let mut wire = Vec::with_capacity(total.min(MAX_NOTICE_EVENTS));
         for ev in evs.iter().take(MAX_NOTICE_EVENTS) {
-            let label = authenticator_label(conn, ev).await?;
+            let key = (ev.authenticator_type.clone(), ev.authenticator_id);
+            let label = if let Some(l) = labels.get(&key) {
+                l.clone()
+            } else {
+                let l = authenticator_label(conn, ev).await?;
+                labels.insert(key, l.clone());
+                l
+            };
             wire.push(ev.to_wire(own, label));
         }
         out.insert(

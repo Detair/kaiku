@@ -351,6 +351,74 @@ pub const fn activation_state(variant: EnrollmentVariant, subject_is_new: bool) 
     }
 }
 
+/// `revoke_reason` of a live key that a `done` enrolment replaces on the
+/// same install (C26 `KeyDevice.revoke_reason`).
+const fn replaced_reason(variant: EnrollmentVariant) -> &'static str {
+    match variant {
+        EnrollmentVariant::Own | EnrollmentVariant::Registration => "owner",
+        EnrollmentVariant::Admin => "admin",
+        EnrollmentVariant::Request => "request",
+        EnrollmentVariant::Cli => "cli",
+    }
+}
+
+/// Whether the account has never had any activity (B.0 "new account").
+async fn subject_is_new(conn: &mut PgConnection, user_id: Uuid) -> Result<bool, ApprovalError> {
+    let first_activity: Option<DateTime<Utc>> =
+        sqlx::query_scalar("SELECT first_activity_at FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&mut *conn)
+            .await?;
+    Ok(first_activity.is_none())
+}
+
+/// The live key device that a `done` of `row` would replace on install
+/// `device_id` (`approval_devices_live` allows one per account and install),
+/// or the refusal (SM4: `active` → `revoked` only by the owner, an admin's
+/// "Remove device now", the CLI, a completed account request, …):
+///
+/// - an enrolment never replaces the key device that issued it;
+/// - a key that will be `pending` (an `admin` enrolment of an existing account, a `request` child)
+///   never replaces a live one: that would skip the account request's wait and its cancellers and,
+///   on another admin's account, `ADMIN_TARGET_IS_ADMIN`. Its replacement belongs to the request's
+///   completion (L1b).
+///
+/// `lock` takes the row `FOR UPDATE` (confirm, under the account lock).
+async fn replaceable_on_install(
+    conn: &mut PgConnection,
+    row: &EnrollmentRow,
+    device_id: Uuid,
+    will_be: DeviceState,
+    lock: bool,
+) -> Result<Option<Uuid>, ApprovalError> {
+    let sql = if lock {
+        "SELECT id FROM approval_devices
+          WHERE user_id = $1 AND device_id = $2 AND state <> 'revoked' FOR UPDATE"
+    } else {
+        "SELECT id FROM approval_devices
+          WHERE user_id = $1 AND device_id = $2 AND state <> 'revoked'"
+    };
+    let live: Option<Uuid> = sqlx::query_scalar(sql)
+        .bind(row.subject_id)
+        .bind(device_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    let Some(live) = live else {
+        return Ok(None);
+    };
+    if row.issuer_device_id == Some(live) {
+        return Err(ApprovalError::Validation(
+            "a key phone cannot set itself up again".into(),
+        ));
+    }
+    if will_be != DeviceState::Active {
+        return Err(ApprovalError::Validation(
+            "this phone is already a key of the account; remove it there first".into(),
+        ));
+    }
+    Ok(Some(live))
+}
+
 fn code_hash(key: &[u8; 32], enrollment_id: Uuid, code: &[u8]) -> [u8; 32] {
     let mut input = enrollment_id.as_bytes().to_vec();
     input.extend_from_slice(code);
@@ -455,7 +523,9 @@ pub async fn issue_tx(
     };
     let open: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM enrollments
-          WHERE issuer_kind = $1 AND state IN ('issued', 'claimed') AND expires_at > NOW()
+          WHERE issuer_kind = $1
+            AND ((state = 'issued' AND expires_at > NOW())
+                 OR (state = 'claimed' AND code_expires_at > NOW()))
             AND issuer_session_id IS NOT DISTINCT FROM $2
             AND issuer_device_id IS NOT DISTINCT FROM $3
             AND issuer_request_id IS NOT DISTINCT FROM $4
@@ -575,6 +645,10 @@ pub async fn pop_challenge(
     let mut tx = ctx.db.begin().await?;
     let row = by_token(&mut tx, ctx, &req.setup_token, true).await?;
     let subject = subject(&mut tx, row.subject_id).await?;
+    // Refused before any code exists; `confirm_tx` checks again under the lock.
+    let variant = EnrollmentVariant::parse(&row.variant).ok_or(ApprovalError::EnrollmentState)?;
+    let will_be = activation_state(variant, subject_is_new(&mut tx, row.subject_id).await?);
+    replaceable_on_install(&mut tx, &row, req.device_id, will_be, false).await?;
     sqlx::query(
         "UPDATE approvals SET state = 'expired'
           WHERE requester_kind = 'enrollment' AND requester_id = $1 AND kind = 'enroll_pop'
@@ -784,8 +858,11 @@ pub async fn status(
     );
     let mut first_state: Option<String> = None;
     loop {
+        // A code past due reads `expired` before the sweep marks it.
         let row: Option<(String, Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
-            "SELECT e.state, e.claim_secret_hash,
+            "SELECT CASE WHEN e.state = 'claimed' AND e.code_expires_at <= NOW()
+                         THEN 'expired' ELSE e.state END,
+                    e.claim_secret_hash,
                     (SELECT d.state FROM approval_devices d WHERE d.enrollment_id = e.id LIMIT 1)
                FROM enrollments e WHERE e.id = $1",
         )
@@ -981,12 +1058,7 @@ pub async fn confirm_tx(
     }
     // Done: the device row, the account's first activity, the notice.
     let variant = EnrollmentVariant::parse(&row.variant).ok_or(ApprovalError::EnrollmentState)?;
-    let first_activity: Option<DateTime<Utc>> =
-        sqlx::query_scalar("SELECT first_activity_at FROM users WHERE id = $1")
-            .bind(row.subject_id)
-            .fetch_one(&mut *conn)
-            .await?;
-    let state = activation_state(variant, first_activity.is_none());
+    let state = activation_state(variant, subject_is_new(conn, row.subject_id).await?);
     let device_row_id = Uuid::new_v4();
     let claimed_device_id = row
         .claimed_device_id
@@ -997,24 +1069,24 @@ pub async fn confirm_tx(
         (_, Some(u)) => Actor::Admin(u),
         (_, None) => Actor::System,
     };
-    // A device that re-enrols replaces its own earlier (live) row, with the
-    // revocation cascade (B.7 rule 2): its sessions end, its grants and open
-    // challenges are void. The removal is a notice of its own (B.1: every add
-    // and remove), so an owner whose phone was replaced by a claim on its
-    // install id learns that the phone is no longer a key. The push
-    // subscription stays: it is keyed by (account, install id) and now
-    // belongs to the new key of the same install.
-    let replaced: Vec<Uuid> = sqlx::query_scalar(
-        "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(), revoke_reason = 'owner'
-          WHERE user_id = $1 AND device_id = $2 AND state <> 'revoked'
-          RETURNING id",
-    )
-    .bind(row.subject_id)
-    .bind(claimed_device_id)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut event_ids = Vec::with_capacity(replaced.len() + 1);
-    for old in replaced {
+    // A device that re-enrols as an `active` key replaces its own earlier
+    // (live) row, with the revocation cascade (B.7 rule 2): its sessions end,
+    // its grants and open challenges are void. Never the issuer's own row and
+    // never for a `pending` key (`replaceable_on_install`). The removal is a
+    // notice of its own (B.1: every add and remove), so an owner whose phone
+    // was replaced by a claim on its install id learns that the phone is no
+    // longer a key. The push subscription stays: it is keyed by (account,
+    // install id) and now belongs to the new key of the same install.
+    let mut event_ids = Vec::with_capacity(2);
+    if let Some(old) = replaceable_on_install(conn, &row, claimed_device_id, state, true).await? {
+        sqlx::query(
+            "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(), revoke_reason = $2
+              WHERE id = $1",
+        )
+        .bind(old)
+        .bind(replaced_reason(variant))
+        .execute(&mut *conn)
+        .await?;
         let old = AuthenticatorRef::key_device(old);
         super::cascade::on_authenticator_revoked(conn, ctx, row.subject_id, old).await?;
         let mut ev = NewSecurityEvent::new(
@@ -1220,11 +1292,14 @@ pub async fn enrollment_updated(state: &AppState, user_id: Uuid, enrollment_id: 
     }
 }
 
-/// After a wrong code or a deny: tell the issuer the new state.
-pub async fn notify_issuer_after_failure(state: &AppState, enrollment_id: Uuid) {
+/// Tell the issuing account (its key device's or its PC session's) the
+/// enrolment's current state (`enrollment_updated`). Issuers without an
+/// account (CLI, request, ticket) have no socket to tell.
+pub async fn notify_issuer(state: &AppState, enrollment_id: Uuid) {
     let row: Option<(String, Option<Uuid>)> = sqlx::query_as(
-        "SELECT e.state, d.user_id FROM enrollments e
+        "SELECT e.state, COALESCE(d.user_id, s.user_id) FROM enrollments e
            LEFT JOIN approval_devices d ON d.id = e.issuer_device_id
+           LEFT JOIN sessions s ON s.id = e.issuer_session_id
           WHERE e.id = $1",
     )
     .bind(enrollment_id)
@@ -1235,4 +1310,9 @@ pub async fn notify_issuer_after_failure(state: &AppState, enrollment_id: Uuid) 
     if let Some((st, Some(user))) = row {
         enrollment_updated(state, user, enrollment_id, &st).await;
     }
+}
+
+/// After a wrong code or a deny: tell the issuer the new state.
+pub async fn notify_issuer_after_failure(state: &AppState, enrollment_id: Uuid) {
+    notify_issuer(state, enrollment_id).await;
 }

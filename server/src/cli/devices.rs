@@ -74,8 +74,11 @@ pub async fn remove(
         serde_json::json!({ "key_device_id": revoked.id }),
     )
     .await?;
+    // Built before the commit: a failure here must not skip the notice and
+    // the push clean-up of a committed revocation.
+    let state = ctx.app_state()?;
     tx.commit().await?;
-    after_revoke(&ctx.app_state()?, user_id, row.device_id, event_ids).await;
+    after_revoke(&state, user_id, row.device_id, event_ids).await;
     io.print(&format!(
         "Removed '{}' from {username}; its sessions have ended.",
         revoked.label

@@ -45,15 +45,6 @@ pub(super) fn extract_refresh_token_with_source(
     Err(AuthError::InvalidToken)
 }
 
-/// [`extract_refresh_token_with_source`] without the source.
-pub(super) fn extract_refresh_token(
-    body_token: Option<String>,
-    jar: &CookieJar,
-    config: &crate::config::Config,
-) -> AuthResult<String> {
-    extract_refresh_token_with_source(body_token, jar, config).map(|(t, _)| t)
-}
-
 /// Returns `true` when the refresh token should be included in the JSON body.
 ///
 /// Browser (CORS) requests include the `Origin` header; for those clients the
