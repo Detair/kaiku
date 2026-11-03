@@ -700,3 +700,35 @@ async fn one_failing_event_never_blocks_the_outbox(pool: PgPool) {
     assert!(delivered.is_some(), "the later event is delivered");
     assert_eq!(kaiku_notices(&app, u, &token).await.len(), 1);
 }
+
+/// Review round 3 (Argon coverage, part 6 M1 / part 5 m1): the system
+/// account has no Kaiku DM of its own. The DM lookup joined its participant
+/// row twice, so for it any user's Kaiku DM matched; an event naming it is
+/// delivered to no one.
+#[sqlx::test]
+async fn system_account_event_never_reaches_another_users_dm(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (u, token) = user_with_token(&app).await;
+    record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO security_events (id, subject_id, event_type, severity, actor_kind)
+         VALUES ($1, $2, 'sign_in', 'normal', 'system')",
+    )
+    .bind(id)
+    .bind(SYSTEM_USER_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+    notices::deliver(&app.state, &[id]).await.unwrap();
+    let items = kaiku_notices(&app, u, &token).await;
+    assert_eq!(items.len(), 1, "only the user's own notice");
+    assert_eq!(items[0]["security_notice"]["count"], 1);
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(
+        vc_server::system_account::kaiku_dm_tx(&mut conn, SYSTEM_USER_ID)
+            .await
+            .is_err(),
+        "no Kaiku DM for the system account"
+    );
+}

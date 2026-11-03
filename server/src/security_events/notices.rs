@@ -83,10 +83,13 @@ pub async fn recipients(
     subject_id: Uuid,
     severity: Severity,
 ) -> sqlx::Result<Vec<Recipient>> {
-    let mut out = vec![Recipient {
-        user_id: subject_id,
-        role: RecipientRole::Subject,
-    }];
+    let mut out = Vec::new();
+    if !crate::system_account::is_system_user(subject_id) {
+        out.push(Recipient {
+            user_id: subject_id,
+            role: RecipientRole::Subject,
+        });
+    }
     if severity == Severity::High {
         let admins: Vec<Uuid> = sqlx::query_scalar(
             "SELECT sa.user_id FROM system_admins sa
