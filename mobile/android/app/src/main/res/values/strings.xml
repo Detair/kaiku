@@ -386,4 +386,34 @@
     <string name="setup_invalid">This is not a valid setup code.</string>
     <string name="setup_stopped">Setup stopped. Nothing was changed.</string>
     <string name="setup_start_again">Start again</string>
+
+    <!-- Add a phone from the key phone (F5a issuer) and the code keypad -->
+    <string name="issuer_title">Add a phone</string>
+    <string name="issuer_show_setup">Scan this code with the new phone, or send it the setup link.</string>
+    <string name="issuer_minutes_left">Valid for %1$d more minutes.</string>
+    <string name="issuer_share_link">Share link</string>
+    <string name="issuer_share_chooser">Send the setup link</string>
+    <string name="issuer_qr_description">Setup code for a new phone</string>
+    <string name="issuer_waiting">Waiting for the new phone…</string>
+    <string name="issuer_device_wants">A device calling itself \'%1$s\' wants to become your key</string>
+    <string name="issuer_type_code">Type the code from the device in your hand. Never type a code someone tells you.</string>
+    <string name="issuer_wrong_code">That code is not right. %1$d tries left.</string>
+    <string name="issuer_uv_subtitle">Make \'%1$s\' the key for %2$s</string>
+    <string name="issuer_done">\'%1$s\' is now your key.</string>
+    <string name="issuer_three_wrong">Three wrong codes. Start again with a new setup code.</string>
+    <string name="issuer_expired">The setup code ran out of time. Start again.</string>
+    <string name="issuer_limit">There are already five open setup codes. Cancel one first.</string>
+    <string name="issuer_key_phone_required">Use your Kaiku key phone for this.</string>
+    <string name="issuer_stopped">Stopped. Nothing was added.</string>
+    <string name="keypad_delete">Delete</string>
+    <string name="keypad_confirm">Confirm</string>
+    <string name="keypad_value_description">Typed code %1$s</string>
+    <string name="security_probation_read_only">Sign in with your key phone or a passkey to change this</string>
+    <string name="admin_request_open">This account already has an open request.</string>
+    <string name="admin_no_canceller">Name and confirm a recovery contact first, or use the host CLI</string>
+    <string name="admin_target_self">You can\'t set up a phone for yourself here. Use \"Add a phone\" on your own key phone.</string>
+
+    <!-- Admin setup results (F5c) -->
+    <string name="admin_setup_done_new">Active now.</string>
+    <string name="admin_setup_done_existing">Ready at %1$s (24 hours). They, their recovery contact and the admins were told.</string>
 </resources>

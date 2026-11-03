@@ -25,6 +25,8 @@ import io.wolftown.kaiku.domain.ScanMode
 import io.wolftown.kaiku.navigation.ScanHandoff
 import io.wolftown.kaiku.ui.scan.ScanScreen
 import io.wolftown.kaiku.ui.approval.LoginApprovalScreen
+import io.wolftown.kaiku.ui.approval.AddPhoneScreen
+import io.wolftown.kaiku.ui.approval.IssuerMode
 import io.wolftown.kaiku.navigation.PendingSetupLinks
 import io.wolftown.kaiku.ui.auth.setup.SetupEntry
 import io.wolftown.kaiku.ui.auth.setup.SetupFlowScreen
@@ -305,6 +307,10 @@ fun KaikuNavGraph(
                     )
                 }
 
+                composable(ADD_PHONE_ROUTE) {
+                    AddPhoneScreen(mode = IssuerMode.Own, onDone = { navController.popBackStack() })
+                }
+
                 composable(SCAN_SETUP_ROUTE) {
                     SetupScanScreen(
                         onSignedIn = { navController.navigate("home") { popUpTo(0) { inclusive = true } } },
@@ -368,3 +374,6 @@ const val SETUP_FLOW_ROUTE = "setup_flow"
 
 /** A setup that waits for its ready time (L2-A13; E1's start destination for `Pending`). */
 const val SETUP_PENDING_ROUTE = "setup_pending"
+
+/** "Add a phone" on a key phone (F5a issuer). */
+const val ADD_PHONE_ROUTE = "add_phone"

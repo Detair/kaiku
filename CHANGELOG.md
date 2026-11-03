@@ -72,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: when your phone is your Kaiku key, it signs you in again with its screen lock ("Confirm it's you"), never a password; "Sign out" keeps the key, "Sign out and remove this phone" removes it.
 - **Android: your phone confirms sign-ins.** Scan the code on the PC, check what is signing in, and confirm with your screen lock. "I didn't start this" stops it and tells you what to do.
 - **Android: set up a phone with a setup code.** Scan the code your admin or your other device shows (or open the setup link); the phone checks its screen lock, shows a 6-digit code to confirm, and becomes your key. New accounts registered in the app bind the phone right away; App Links for `/setup` are enabled per build with `-PkaikuAppLinkHosts`.
+- Android: "Add a phone" on your key phone shows a setup code for a new phone and asks for the 6 digits it shows, on a large keypad that never sends by itself.
 
 ### Changed
 - Admins elevate by confirming on their phone (or with a passkey) instead of typing their password and code.

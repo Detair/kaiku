@@ -91,6 +91,32 @@ sealed class ServerEvent {
     @SerialName("dm_created")
     data class DmCreated(val channel: JsonObject) : ServerEvent()
 
+    // -- Login hints (C26–C28): refetch, never act on a hint alone -------------
+
+    /** C26: an enrolment this user issued changed (claimed, done, …). */
+    @Serializable
+    @SerialName("enrollment_updated")
+    data class EnrollmentUpdated(val enrollmentId: String, val state: String = "") : ServerEvent()
+
+    /** C26: a key device, passkey, TOTP or password of the account changed. */
+    @Serializable
+    @SerialName("authenticators_changed")
+    data class AuthenticatorsChanged(val userId: String = "") : ServerEvent()
+
+    /** C27: an account request the user is subject, contact or admin of changed. */
+    @Serializable
+    @SerialName("account_request_updated")
+    data class AccountRequestUpdated(val requestId: String, val subjectId: String = "", val state: String = "") : ServerEvent()
+
+    /** C28: a coalesced notice in the Kaiku DM was updated. */
+    @Serializable
+    @SerialName("security_notice_updated")
+    data class SecurityNoticeUpdated(
+        val channelId: String,
+        val messageId: String,
+        val securityNotice: io.wolftown.kaiku.domain.model.SecurityNotice,
+    ) : ServerEvent()
+
     // -- Read sync ------------------------------------------------------------
 
     /** A guild channel was read in another session of this user. */

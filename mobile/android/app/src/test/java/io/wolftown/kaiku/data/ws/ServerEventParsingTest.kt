@@ -478,4 +478,32 @@ class ServerEventParsingTest {
         assertTrue(encoded.contains(""""track_source":"screen""""))
         assertTrue(encoded.contains(""""preferred_layer":"medium""""))
     }
+
+    // ========================================================================
+    // Login hints (C26, C27, C28): clients refetch, never act on a hint alone
+    // ========================================================================
+
+    @Test
+    fun `enrollment_updated parses and triggers a refetch`() {
+        val e = WsJson.decodeFromString<ServerEvent>("""{"type":"enrollment_updated","enrollment_id":"e1","state":"claimed"}""")
+        assertIs<ServerEvent.EnrollmentUpdated>(e)
+        assertEquals("e1", e.enrollmentId)
+        assertEquals("claimed", e.state)
+    }
+
+    @Test
+    fun `authenticators_changed account_request_updated and security_notice_updated parse`() {
+        val a = WsJson.decodeFromString<ServerEvent>("""{"type":"authenticators_changed","user_id":"u1"}""")
+        assertIs<ServerEvent.AuthenticatorsChanged>(a)
+        assertEquals("u1", a.userId)
+        val r = WsJson.decodeFromString<ServerEvent>("""{"type":"account_request_updated","request_id":"r1","subject_id":"u2","state":"waiting"}""")
+        assertIs<ServerEvent.AccountRequestUpdated>(r)
+        assertEquals("waiting", r.state)
+        val n = WsJson.decodeFromString<ServerEvent>(
+            """{"type":"security_notice_updated","channel_id":"c1","message_id":"m1","security_notice":{"notice_id":"n1","subject":{"user_id":"u1","username":"alice"},"event_type":"sign_in","count":3}}""",
+        )
+        assertIs<ServerEvent.SecurityNoticeUpdated>(n)
+        assertEquals("m1", n.messageId)
+        assertEquals(3, n.securityNotice.count)
+    }
 }
