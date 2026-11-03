@@ -70,6 +70,9 @@ class NoticeActionsViewModel internal constructor(
 
     private var pending: Triple<EventAction, SecurityEvent, SecurityNotice>? = null
 
+    /** The notice whose action is running or asking (its card alone shows the dialogs). */
+    val activeNoticeId: String? get() = pending?.third?.noticeId
+
     fun run(activity: FragmentActivity, action: EventAction, event: SecurityEvent, notice: SecurityNotice) {
         // One action at a time: a second tap never starts a second step-up.
         if (_ui.value is NoticeActionUi.Working) return

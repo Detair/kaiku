@@ -46,7 +46,9 @@ import io.wolftown.kaiku.ui.shared.currentFragmentActivity
 fun SecurityNoticeCard(notice: SecurityNotice, actions: NoticeActionsViewModel, modifier: Modifier = Modifier, ownUserId: String? = null) {
     val ui by actions.ui.collectAsState()
     val activity = currentFragmentActivity()
-    val subject = if (ownUserId == null || notice.subject.userId == ownUserId) {
+    // "Your account" only when it is known to be: an unknown reader never makes another
+    // account's notice (a contact's, an admin's) look like one's own.
+    val subject = if (ownUserId != null && notice.subject.userId == ownUserId) {
         stringResource(R.string.security_subject_yours)
     } else {
         notice.subject.displayName.ifEmpty { notice.subject.username }
@@ -83,7 +85,8 @@ fun SecurityNoticeCard(notice: SecurityNotice, actions: NoticeActionsViewModel, 
             }
         }
     }
-    ActionDialogs(ui, actions)
+    // One set of dialogs for the notice whose action runs, not one per card on screen.
+    if (actions.activeNoticeId == notice.noticeId) ActionDialogs(ui, actions)
 }
 
 @Composable

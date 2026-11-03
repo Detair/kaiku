@@ -10,6 +10,7 @@ import androidx.annotation.StringRes
 import androidx.core.app.NotificationCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.navigation.DeepLinks
 import io.wolftown.kaiku.ui.MainActivity
@@ -48,9 +49,10 @@ class SecurityNoticePresenter internal constructor(
     private val sink: SecurityNotificationSink,
     private val ownUserId: () -> String?,
 ) {
+    /** Signed out, a key phone still knows its account (it keeps its push subscription, C19 am. 3). */
     @Inject
-    constructor(sink: AndroidSecurityNotificationSink, tokenStorage: TokenStorage) :
-        this(sink, ownUserId = { tokenStorage.getUserId() })
+    constructor(sink: AndroidSecurityNotificationSink, tokenStorage: TokenStorage, keyDevices: KeyDeviceRepository) :
+        this(sink, ownUserId = { tokenStorage.getUserId() ?: keyDevices.local()?.userId })
 
     fun present(w: SecurityWake) {
         sink.post(
@@ -58,7 +60,8 @@ class SecurityNoticePresenter internal constructor(
                 notificationId = ("security-" + w.noticeId).hashCode(),
                 channelId = NotificationChannels.SECURITY,
                 text = NoticeText.push(w.eventType),
-                subject = if (ownUserId().let { it == null || it == w.subjectId }) {
+                // "Your account" only when this phone knows it is the reader's own.
+                subject = if (ownUserId().let { it != null && it == w.subjectId }) {
                     R.string.security_subject_yours
                 } else {
                     R.string.security_subject_other

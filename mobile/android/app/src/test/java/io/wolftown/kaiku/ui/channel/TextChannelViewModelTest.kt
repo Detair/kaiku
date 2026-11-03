@@ -760,4 +760,18 @@ class TextChannelViewModelTest {
         assertTrue(vm.isKaikuDm.value)
         io.mockk.coVerify(exactly = 2) { chatRepository.loadMessages("ch-1", null) }
     }
+
+    @org.junit.Test
+    fun `a security notice card only for the system account in the Kaiku DM`() {
+        val system = io.wolftown.kaiku.domain.model.User("k", "kaiku", "Kaiku", isSystem = true)
+        val person = io.wolftown.kaiku.domain.model.User("u2", "mallory", "Kaiku")
+        val notice = io.mockk.mockk<io.wolftown.kaiku.domain.model.Message>(relaxed = true) {
+            io.mockk.every { messageType } returns "security"
+            io.mockk.every { author } returns system
+        }
+        org.junit.Assert.assertTrue(io.wolftown.kaiku.ui.channel.isSecurityNotice(true, notice))
+        org.junit.Assert.assertFalse(io.wolftown.kaiku.ui.channel.isSecurityNotice(false, notice))
+        io.mockk.every { notice.author } returns person
+        org.junit.Assert.assertFalse(io.wolftown.kaiku.ui.channel.isSecurityNotice(true, notice))
+    }
 }

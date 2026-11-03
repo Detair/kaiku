@@ -44,4 +44,24 @@ class SecurityNoticePresenterTest {
         presenter.present(SecurityWake(notice, "sign_in", "high", 1, "99999999-9999-4999-8999-999999999999", null))
         assertEquals(R.string.security_subject_other, shown.last().subject)
     }
+
+    @Test fun `an unknown reader never makes another account's notice look like its own`() {
+        val signedOut = SecurityNoticePresenter(sink = { shown += it }, ownUserId = { null })
+        signedOut.present(SecurityWake(notice, "sign_in", "high", 1, "99999999-9999-4999-8999-999999999999", null))
+        assertEquals(R.string.security_subject_other, shown.last().subject)
+    }
+
+    @Test fun `a lapsed key phone still knows its own account`() = kotlinx.coroutines.test.runTest {
+        val f = io.wolftown.kaiku.testutil.KeyDeviceFixture(backgroundScope)
+        f.authState.setLoggedOut() // signed out: no session user id, the key's account remains
+        val tokens: io.wolftown.kaiku.data.local.TokenStorage = io.mockk.mockk { io.mockk.every { getUserId() } returns null }
+        val sink: AndroidSecurityNotificationSink = io.mockk.mockk()
+        io.mockk.every { sink.post(any()) } answers { shown += firstArg<SecurityNotification>() }
+        // The injected constructor, as the app builds it.
+        val lapsed = SecurityNoticePresenter(sink, tokens, f.repo)
+        lapsed.present(SecurityWake(notice, "sign_in", "high", 1, io.wolftown.kaiku.testutil.SigFixtures.USER_ID, null))
+        assertEquals(R.string.security_subject_yours, shown.last().subject)
+        lapsed.present(SecurityWake(notice, "sign_in", "high", 1, "99999999-9999-4999-8999-999999999999", null))
+        assertEquals(R.string.security_subject_other, shown.last().subject)
+    }
 }

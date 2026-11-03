@@ -204,7 +204,9 @@ fun TextChannelScreen(
 
                         items(messages, key = { it.id }) { message ->
                             val notice = message.securityNotice
-                            if (message.messageType == "security" && notice != null) {
+                            // C28: notices exist only in the Kaiku DM, from the system account; a
+                            // "security" message anywhere else is shown as an ordinary message.
+                            if (isSecurityNotice(isKaikuDm, message) && notice != null) {
                                 // No long-press menu, no reactions on notices.
                                 io.wolftown.kaiku.ui.security.SecurityNoticeCard(notice, noticeActions, ownUserId = currentUserId)
                                 return@items
@@ -251,3 +253,7 @@ fun TextChannelScreen(
         )
     }
 }
+
+/** A Kaiku notice card: a `security` message from the system account in the Kaiku DM only. */
+internal fun isSecurityNotice(isKaikuDm: Boolean, message: io.wolftown.kaiku.domain.model.Message): Boolean =
+    isKaikuDm && message.author.isSystem && message.messageType == "security"

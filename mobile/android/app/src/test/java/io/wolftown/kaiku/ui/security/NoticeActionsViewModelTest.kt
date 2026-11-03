@@ -205,4 +205,13 @@ class NoticeActionsViewModelTest {
         coVerify(exactly = 1) { stepUp.stepUp(any(), any(), any()) }
         gate.complete(StepUpOutcome.Cancelled)
     }
+
+    @Test fun `only the notice whose action runs owns the dialogs`() = runTest {
+        val a = EventAction(NoticeAction.REPUDIATE, "step_up", "voids_own_request")
+        assertEquals(null, vm.activeNoticeId)
+        vm.run(activity, a, event(a), notice())
+        assertEquals("n1", vm.activeNoticeId)
+        vm.dismiss()
+        assertEquals(null, vm.activeNoticeId)
+    }
 }
