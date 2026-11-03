@@ -1,4 +1,4 @@
-import { Component, createEffect, createMemo, createSignal, createResource, Match, Show, Switch, For, on, onCleanup, onMount } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, createResource, lazy, Match, Show, Switch, For, on, onCleanup, onMount } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import { authState, beginSignInChoice, clearError, loginWithPasskey } from "@/stores/auth";
 import { cancelAttempt, fetchServerSettings, getDefaultServerUrl, oidcAuthorize } from "@/lib/tauri";
@@ -16,6 +16,7 @@ import { errorText, SSO_ERRORS } from "@/i18n/errors";
 import { formatPasskeyError, LOGIN_ERRORS, loginErrorText } from "@/lib/authErrors";
 import PasskeyButton from "@/components/auth/PasskeyButton";
 import LinuxPasskeyHint from "@/components/auth/LinuxPasskeyHint";
+import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import { PasskeyError } from "@/lib/tauri/passkeys";
 import { isConditionalMediationAvailable, isWebAuthnAvailable } from "@/lib/webauthn";
 import {
@@ -31,10 +32,15 @@ import {
   submitTotp,
   usePhoneNotAtHand,
 } from "@/stores/loginFlow";
-import QrLoginPanel from "@/components/auth/login/QrLoginPanel";
-import ConfirmationPanel from "@/components/auth/login/ConfirmationPanel";
-import TotpStepPanel from "@/components/auth/login/TotpStepPanel";
-import AttemptEnded from "@/components/auth/login/AttemptEnded";
+// The sign-in steps after the form (QR, confirmation, TOTP, ended) are not
+// on the startup path (bundle budget): the form preloads them. No Suspense
+// around them, so the form's own resources (server settings, the QR image)
+// never blank the page while they refetch.
+const QrLoginPanel = lazy(() => import("@/components/auth/login/QrLoginPanel"));
+const ConfirmationPanel = lazy(() => import("@/components/auth/login/ConfirmationPanel"));
+const TotpStepPanel = lazy(() => import("@/components/auth/login/TotpStepPanel"));
+const AttemptEnded = lazy(() => import("@/components/auth/login/AttemptEnded"));
+const STEP_PANELS = [QrLoginPanel, ConfirmationPanel, TotpStepPanel, AttemptEnded];
 
 /** A conditional ceremony lives 300 s on the server; restart it before. */
 const CONDITIONAL_RESTART_MS = 270_000;
@@ -207,6 +213,8 @@ const Login: Component = () => {
   );
   onMount(() => {
     void startConditional();
+    // Fetch the step panels' chunks now, so a step shows without a wait.
+    for (const panel of STEP_PANELS) void panel.preload().catch(() => {});
   });
   onCleanup(() => {
     stopConditional();
@@ -455,41 +463,49 @@ const Login: Component = () => {
         <Switch>
           <Match when={(() => { const f = loginFlow(); return f.step === "qr" ? f : null; })()}>
             {(f) => (
-              <QrLoginPanel
-                attempt={f().attempt}
-                payload={f().qrPayload}
-                onBack={() => void leaveFlow()}
-                onUsePasskey={showPasskey() ? usePasskeyInstead : undefined}
-              />
+              <LazyErrorBoundary name="QrLoginPanel">
+                <QrLoginPanel
+                  attempt={f().attempt}
+                  payload={f().qrPayload}
+                  onBack={() => void leaveFlow()}
+                  onUsePasskey={showPasskey() ? usePasskeyInstead : undefined}
+                />
+              </LazyErrorBoundary>
             )}
           </Match>
           <Match when={(() => { const f = loginFlow(); return f.step === "confirm" ? f : null; })()}>
             {(f) => (
-              <ConfirmationPanel
-                attempt={f().attempt}
-                payload={f().qrPayload}
-                via={f().via}
-                onPhoneNotAtHand={usePhoneNotAtHand}
-                onBack={() => void leaveFlow()}
-              />
+              <LazyErrorBoundary name="ConfirmationPanel">
+                <ConfirmationPanel
+                  attempt={f().attempt}
+                  payload={f().qrPayload}
+                  via={f().via}
+                  onPhoneNotAtHand={usePhoneNotAtHand}
+                  onBack={() => void leaveFlow()}
+                />
+              </LazyErrorBoundary>
             )}
           </Match>
           <Match when={loginFlow().step === "totp"}>
-            <TotpStepPanel
-              error={loginFlowError()}
-              busy={loginFlowBusy()}
-              onSubmit={handleTotp}
-              onBack={() => void leaveFlow()}
-            />
+            <LazyErrorBoundary name="TotpStepPanel">
+              <TotpStepPanel
+                error={loginFlowError()}
+                busy={loginFlowBusy()}
+                onSubmit={handleTotp}
+                onBack={() => void leaveFlow()}
+              />
+            </LazyErrorBoundary>
           </Match>
           <Match when={(() => { const f = loginFlow(); return f.step === "ended" ? f : null; })()}>
             {(f) => (
-              <AttemptEnded
-                state={f().state}
-                via={f().via}
-                onRetry={() => void retryLoginFlow()}
-                onBack={() => void leaveFlow()}
-              />
+              <LazyErrorBoundary name="AttemptEnded">
+                <AttemptEnded
+                  state={f().state}
+                  via={f().via}
+                  onRetry={() => void retryLoginFlow()}
+                  onBack={() => void leaveFlow()}
+                />
+              </LazyErrorBoundary>
             )}
           </Match>
           <Match when={loginFlow().step === "form"}>

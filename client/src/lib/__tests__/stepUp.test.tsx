@@ -13,7 +13,7 @@ vi.mock("@/lib/tauri/passkeys", async (orig) => ({
   canUsePasskeys: () => usable.on,
 }));
 const fullSession = vi.hoisted(() => vi.fn());
-vi.mock("@/components/auth/FullSessionRequiredDialog", async (orig) => ({
+vi.mock("@/lib/fullSessionRequired", async (orig) => ({
   ...(await orig<object>()),
   showFullSessionRequired: fullSession,
 }));

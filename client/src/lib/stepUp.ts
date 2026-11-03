@@ -19,7 +19,7 @@ import { getStepUpMethods } from "@/lib/tauri/security";
 import type { StepUpAction } from "@/lib/types";
 import { canUsePasskeys, stepUpWithPasskey } from "@/lib/tauri/passkeys";
 import { isProbation } from "@/stores/auth";
-import { showFullSessionRequired } from "@/components/auth/FullSessionRequiredDialog";
+import { showFullSessionRequired } from "@/lib/fullSessionRequired";
 
 export interface StepUpRequest {
   action: StepUpAction;

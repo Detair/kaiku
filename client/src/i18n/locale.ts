@@ -9,7 +9,7 @@
  */
 import { createSignal } from "solid-js";
 import { isLocaleSwitchEnabled } from "@/lib/featureFlags";
-import { en } from "./en";
+import { enCore } from "./enCore";
 
 export type Locale = "en" | "de";
 export const LOCALES: readonly Locale[] = ["en", "de"];
@@ -20,7 +20,37 @@ export const LOCALE_STORAGE_KEY = "kaiku.locale";
 
 type Dict = Record<string, string>;
 
-const enDict: Dict = { ...en };
+// English: the startup areas now, the on-demand areas once loaded.
+const enDict: Dict = { ...enCore };
+
+/**
+ * English areas kept off the startup path (bundle budget): the
+ * account-security texts (Kaiku DM, notices, security settings, step-ups).
+ * `initLocale` awaits them before the first render, so no screen shows
+ * them missing; `en.ts` lists them too, for the types and the checks.
+ */
+const LAZY_AREAS: ReadonlyArray<() => Promise<Dict>> = [
+  () => import("./en/security").then((m) => m.security),
+];
+let lazyAreas: Promise<boolean> | null = null;
+
+/**
+ * Load the on-demand English areas once and merge them into English.
+ * Resolves `false` (and may be retried) when a chunk fails; never rejects.
+ */
+export function loadLazyAreas(): Promise<boolean> {
+  lazyAreas ??= Promise.all(LAZY_AREAS.map((load) => load()))
+    .then((areas) => {
+      for (const area of areas) Object.assign(enDict, area);
+      return true;
+    })
+    .catch((err: unknown) => {
+      console.warn("[i18n] could not load an English area", err);
+      lazyAreas = null;
+      return false;
+    });
+  return lazyAreas;
+}
 
 // `en` has no JSON: the TS modules are its source.
 const loaders = import.meta.glob<{ default: unknown }>("./locales/*.json");
@@ -103,7 +133,7 @@ function apply(target: Locale, next: Dict, isExplicit: boolean): void {
 async function activate(target: Locale, isExplicit: boolean): Promise<boolean> {
   const id = ++requestId;
   if (target === "en") {
-    apply("en", enDict, isExplicit);
+    apply("en", { ...enDict }, isExplicit);
     return true;
   }
   try {
@@ -113,7 +143,7 @@ async function activate(target: Locale, isExplicit: boolean): Promise<boolean> {
     return true;
   } catch (err) {
     console.warn(`[i18n] could not load locale "${target}", using English`, err);
-    if (id === requestId) apply("en", enDict, false);
+    if (id === requestId) apply("en", { ...enDict }, false);
     return false;
   }
 }
@@ -131,9 +161,11 @@ export async function setLocale(target: Locale): Promise<void> {
 /**
  * Pick the startup locale. Flag off: English, and the stored value is left
  * alone. Flag on: the stored value if it is a known locale, else English.
- * The browser language is not auto-detected in v1.0. Never rejects.
+ * The browser language is not auto-detected in v1.0. Loads the on-demand
+ * English areas first. Never rejects.
  */
 export async function initLocale(): Promise<void> {
+  await loadLazyAreas();
   const stored = isLocaleSwitchEnabled() ? readStored() : null;
   if (isLocale(stored)) {
     await activate(stored, true);

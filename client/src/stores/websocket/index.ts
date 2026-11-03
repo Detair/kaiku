@@ -54,7 +54,6 @@ import { noteAccountRequestHint, refreshMeSecurity } from "../security";
 import { isKaikuDM } from "@/lib/kaikuDm";
 import { sendSecurityNotification } from "@/lib/notifications";
 import { decodeSecurityNotice } from "@/lib/types/login";
-import { pushText } from "@/components/security/noticeText";
 import { AUTHENTICATORS_CHANGED_EVENT, ENROLLMENT_UPDATED_EVENT } from "@/lib/types/events";
 import {
   guildsState,
@@ -368,11 +367,12 @@ function attachBrowserMessageHandler(): void {
 function notifySecurityNotice(message: Message): void {
   const notice = decodeSecurityNotice(message.security_notice);
   if (!notice) return;
-  sendSecurityNotification(
-    t("security.notice.pushTitle"),
-    pushText(notice, currentUser()?.id ?? ""),
-    notice.notice_id,
-  ).catch((err) => console.warn("[WebSocket] Security notification failed:", err));
+  // The notice texts load with the first notice (not on the startup path).
+  void import("@/components/security/noticeText")
+    .then(({ pushText }) =>
+      sendSecurityNotification(t("security.notice.pushTitle"), pushText(notice, currentUser()?.id ?? ""), notice.notice_id),
+    )
+    .catch((err) => console.warn("[WebSocket] Security notification failed:", err));
 }
 
 export async function handleServerEvent(event: ServerEvent): Promise<void> {

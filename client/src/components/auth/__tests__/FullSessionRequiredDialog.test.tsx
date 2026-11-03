@@ -65,6 +65,15 @@ describe("FullSessionRequiredDialog", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  it("a refusal before the dialog is mounted still opens it", async () => {
+    // The dialog is a lazy chunk (bundle budget): the open state is eager.
+    window.dispatchEvent(new CustomEvent(FULL_SESSION_REQUIRED_EVENT));
+    render(() => <FullSessionRequiredDialog />);
+    expect(screen.getByText("This needs a sign-in with a passkey.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("replaceSessionWithPasskey ends the old session with credentials omit", async () => {
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "old-token";

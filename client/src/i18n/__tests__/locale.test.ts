@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { en } from "../en";
 
 type DeMock = { de?: Record<string, string>; fail?: boolean };
 
@@ -56,6 +57,23 @@ describe("locale runtime", () => {
     expect(hasExplicitLocale()).toBe(false);
     expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe("de");
     expect(document.documentElement.lang).toBe("en");
+  });
+
+  it("initLocale loads the on-demand English areas before the first render", async () => {
+    // `security` is kept off the startup path (bundle budget); `index.tsx`
+    // awaits `initLocale` before it renders.
+    const { initLocale, t } = await load();
+    expect(t("security.notice.missing")).not.toBe(en["security.notice.missing"]);
+    await initLocale();
+    expect(t("security.notice.missing")).toBe(en["security.notice.missing"]);
+  });
+
+  it("a stored locale's values for an on-demand area count", async () => {
+    vi.stubEnv("VITE_FEATURE_LOCALE_SWITCH", "true");
+    localStorage.setItem("kaiku.locale", "de");
+    const { initLocale, t } = await load({ de: { "security.notice.missing": "Hinweis fehlt." } });
+    await initLocale();
+    expect(t("security.notice.missing")).toBe("Hinweis fehlt.");
   });
 
   it("initLocale uses the stored choice when the switch is enabled", async () => {

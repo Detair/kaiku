@@ -11,7 +11,7 @@ import { notice } from "@/components/security/__tests__/fixtures";
 afterEach(cleanup);
 
 describe("security messages", () => {
-  it("security message renders the notice card without message actions", () => {
+  it("security message renders the notice card without message actions", async () => {
     const msg = {
       id: "m1",
       channel_id: "k1",
@@ -31,7 +31,8 @@ describe("security messages", () => {
       security_notice: notice(),
     } as unknown as Message;
     render(() => <MessageItem message={msg} />);
-    expect(screen.getByTestId("security-notice")).toBeTruthy();
+    // The card is a lazy chunk (bundle budget).
+    expect(await screen.findByTestId("security-notice")).toBeTruthy();
     // No signed-in user in this test, so the notice is about "Alice's account".
     expect(screen.getByText("New sign-in to Alice's account.")).toBeTruthy();
     expect(screen.queryByTestId("message-item")).toBeNull();

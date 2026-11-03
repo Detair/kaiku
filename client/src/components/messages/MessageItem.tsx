@@ -9,9 +9,12 @@ import {
   createSignal,
   createResource,
   lazy,
+  Suspense,
 } from "solid-js";
 import { marked } from "marked";
-import SecurityNoticeCard from "@/components/security/SecurityNoticeCard";
+// A security notice (C28) only in the Kaiku DM: its card and actions load then.
+const SecurityNoticeCard = lazy(() => import("@/components/security/SecurityNoticeCard"));
+import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import { createIsolatedPurifier } from "@/lib/sanitizer";
 import {
   File,
@@ -269,6 +272,13 @@ function ensureReactionShortcutListener() {
     }
   });
 }
+
+/** A security message whose notice is missing, or whose card cannot load. */
+const SecurityNoticeMissing: Component = () => (
+  <p class="px-4 py-2 text-base text-text-secondary" data-testid="security-notice-missing">
+    {t("security.notice.missing")}
+  </p>
+);
 
 const MessageItem: Component<MessageItemProps> = (props) => {
   let contentRef: HTMLDivElement | undefined;
@@ -617,15 +627,16 @@ const MessageItem: Component<MessageItemProps> = (props) => {
       fallback={
         // A security message never gets the message toolbar, reactions or
         // replies, also when its notice is missing (Fable review m3).
-        <Show
-          when={props.message.security_notice}
-          fallback={
-            <p class="px-4 py-2 text-base text-text-secondary" data-testid="security-notice-missing">
-              {t("security.notice.missing")}
-            </p>
-          }
-        >
-          {(notice) => <SecurityNoticeCard notice={notice()} meId={currentUser()?.id ?? ""} />}
+        <Show when={props.message.security_notice} fallback={<SecurityNoticeMissing />}>
+          {(notice) => (
+            // The card is a lazy chunk: if it cannot load, the notice still
+            // points to the security log.
+            <LazyErrorBoundary name="SecurityNoticeCard" fallback={<SecurityNoticeMissing />}>
+              <Suspense fallback={null}>
+                <SecurityNoticeCard notice={notice()} meId={currentUser()?.id ?? ""} />
+              </Suspense>
+            </LazyErrorBoundary>
+          )}
         </Show>
       }
     >

@@ -129,9 +129,8 @@ export * from "./dms";
 export * from "./webhooks";
 export * from "./passkeys";
 export * from "./loginAttempts";
-export * from "./security";
-export * from "./enrollments";
-export * from "./accountRequests";
-export * from "./registration";
-export * from "./adminSecurity";
+// The account-security modules (`security`, `enrollments`,
+// `accountRequests`, `registration`, `adminSecurity`) are imported directly,
+// not re-exported here: through this barrel they would ride in the startup
+// chunk (bundle budget).
 export { isPreSessionPath, parseRetryAfter } from "./common";

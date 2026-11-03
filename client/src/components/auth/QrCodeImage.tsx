@@ -5,7 +5,6 @@
  */
 
 import { Component, Show, createResource } from "solid-js";
-import QRCode from "qrcode";
 
 export interface QrCodeImageProps {
   payload: string;
@@ -19,7 +18,11 @@ const QrCodeImage: Component<QrCodeImageProps> = (props) => {
   const size = () => Math.max(240, props.size ?? 240);
   const [svg] = createResource(
     () => props.payload || null,
-    (payload) => QRCode.toString(payload, { type: "svg", errorCorrectionLevel: "M", margin: 4 }),
+    // The encoder loads with the first code (not on the startup path).
+    async (payload) => {
+      const { default: QRCode } = await import("qrcode");
+      return QRCode.toString(payload, { type: "svg", errorCorrectionLevel: "M", margin: 4 });
+    },
   );
   return (
     <div

@@ -21,9 +21,8 @@ import {
   onCleanup,
 } from "solid-js";
 import { useLocation } from "@solidjs/router";
-import ProbationBanner from "@/components/auth/ProbationBanner";
-import OpenRequestModal from "@/components/security/OpenRequestModal";
-import SecurityPromptBanner from "@/components/security/SecurityPromptBanner";
+// Account-security overlays: lazy, nothing on the startup path needs them.
+const SecurityHosts = lazy(() => import("@/components/security/SecurityHosts"));
 import { refreshMeSecurity } from "@/stores/security";
 import { Hash, Volume2, Pin } from "lucide-solid";
 import AppShell from "@/components/layout/AppShell";
@@ -161,10 +160,12 @@ const Main: Component = () => {
 
   return (
     <>
-      {/* Chat-only session: what it cannot do, and the way to a full one (B.4) */}
-      <ProbationBanner />
-      <OpenRequestModal />
-      <SecurityPromptBanner />
+      {/* Chat-only banner, open-request prompt, migration prompts (B.4, SM3) */}
+      <LazyErrorBoundary name="SecurityHosts" fallback={null}>
+        <Suspense fallback={null}>
+          <SecurityHosts />
+        </Suspense>
+      </LazyErrorBoundary>
 
       {/* Command Palette (Global) */}
       <CommandPalette />

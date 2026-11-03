@@ -1,33 +1,27 @@
 /**
  * FullSessionRequiredDialog — a request was refused with 403
  * `FULL_SESSION_REQUIRED` (C27): this needs a passkey sign-in (offered when
- * the account has a passkey), or the Kaiku app on the phone. Opened by `FULL_SESSION_REQUIRED_EVENT` (at most once per
- * 2 s) or directly by `withStepUp` for a chat-only session.
+ * the account has a passkey), or the Kaiku app on the phone. Its open state
+ * is `lib/fullSessionRequired` (`FULL_SESSION_REQUIRED_EVENT`, or
+ * `withStepUp` for a chat-only session); mounted by `SessionDialogHosts`.
  */
 
-import { Component, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
+import { Component, Show, createEffect, createSignal, on, onCleanup } from "solid-js";
 import { t } from "@/i18n";
 import { passkeyFailureText } from "@/lib/authErrors";
-import { FULL_SESSION_REQUIRED_EVENT, isTauri } from "@/lib/tauri/common";
+import { isTauri } from "@/lib/tauri/common";
+import { closeFullSessionRequired, fullSessionRequiredOpen as open } from "@/lib/fullSessionRequired";
 import { replaceSessionWithPasskey } from "@/stores/auth";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { meSecurity, refreshMeSecurity } from "@/stores/security";
 import DialogShell from "./DialogShell";
 import LinuxPasskeyHint from "./LinuxPasskeyHint";
 
-const [open, setOpen] = createSignal(false);
-
-/** Open the dialog (used by `withStepUp` for a chat-only session). */
-export function showFullSessionRequired(): void {
-  setOpen(true);
-}
+export { showFullSessionRequired } from "@/lib/fullSessionRequired";
 
 const FullSessionRequiredDialog: Component = () => {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-  const onEvent = () => setOpen(true);
-  onMount(() => window.addEventListener(FULL_SESSION_REQUIRED_EVENT, onEvent));
-  onCleanup(() => window.removeEventListener(FULL_SESSION_REQUIRED_EVENT, onEvent));
   // The passkey sign-in is offered only when the account has a passkey
   // (C27 `sign_in_with_passkey`); without an overview yet, load it.
   createEffect(() => {
@@ -45,7 +39,7 @@ const FullSessionRequiredDialog: Component = () => {
     attempt?.abort();
     attempt = null;
     setBusy(false);
-    setOpen(false);
+    closeFullSessionRequired();
     setError(null);
   };
   const signIn = async () => {

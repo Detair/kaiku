@@ -12,7 +12,8 @@ import { Route } from "@solidjs/router";
 
 // Views (eager: first views users see)
 import Login from "./views/Login";
-import Register from "./views/Register";
+// Registration is not on the startup path: its own chunk.
+const Register = lazy(() => import("./views/Register"));
 import Main from "./views/Main";
 
 // Views (lazy: not part of main flow)
@@ -40,9 +41,8 @@ import { PageFallback, LazyErrorBoundary } from "./components/ui/LazyFallback";
 import SetupWizard from "./components/SetupWizard";
 import OnboardingWizard from "./components/OnboardingWizard";
 import SessionExpiredModal from "./components/auth/SessionExpiredModal";
-import FullSessionRequiredDialog from "./components/auth/FullSessionRequiredDialog";
-import StepUpHost from "./components/auth/StepUpDialog";
-import SignOutOthersPrompt from "./components/settings/security/SignOutOthersPrompt";
+// Full-session, step-up and sign-out-others dialogs: off the startup path.
+const SessionDialogHosts = lazy(() => import("./components/auth/SessionDialogHosts"));
 import BlockConfirmModal from "./components/modals/BlockConfirmModal";
 import ReportModal from "./components/modals/ReportModal";
 import type { ReportTarget } from "./components/modals/ReportModal";
@@ -109,9 +109,11 @@ const Layout: Component<ParentProps> = (props) => {
       </div>
       <ToastContainer />
       <SessionExpiredModal />
-      <FullSessionRequiredDialog />
-      <StepUpHost />
-      <SignOutOthersPrompt />
+      <LazyErrorBoundary name="SessionDialogHosts" fallback={null}>
+        <Suspense fallback={null}>
+          <SessionDialogHosts />
+        </Suspense>
+      </LazyErrorBoundary>
       <ContextMenuContainer />
 
       <Show when={blockTarget()}>
@@ -249,11 +251,7 @@ const RecoverPage = lazyPage("RecoverAccount", RecoverAccount);
 const RegistrationBindPage = lazyPage("RegistrationBind", RegistrationBind);
 const SecureAccountPage = lazyPage("SecureAccount", SecureAccount);
 const AccountRequestPage = lazyPage("AccountRequest", AccountRequestView);
-const RegisterPage = () => (
-  <Layout>
-    <Register />
-  </Layout>
-);
+const RegisterPage = lazyPage("Register", Register);
 const MainPage = () => (
   <Layout>
     <ProtectedMain />

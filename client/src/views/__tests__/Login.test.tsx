@@ -75,6 +75,14 @@ async function submit(): Promise<void> {
 }
 
 describe("Login", () => {
+  it("shows the form while the server settings still load", async () => {
+    // The step panels are lazy chunks; nothing around them may suspend the
+    // form on the settings resource (bundle-budget change).
+    settingsMock.mockReturnValue(new Promise(() => {}));
+    await renderLogin();
+    expect(screen.getByTestId("login-submit")).toBeTruthy();
+  });
+
   it("shows the invalid-credentials sentence for INVALID_CREDENTIALS", async () => {
     loginMock.mockRejectedValue(new HttpError(401, "Invalid credentials", "INVALID_CREDENTIALS"));
     await submit();

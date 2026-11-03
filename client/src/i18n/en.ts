@@ -4,44 +4,19 @@
  * Key convention (contract C15): `area.screen.purpose`, whole sentences per
  * key, `{{name}}` placeholders, plural forms as sibling `….one`/`….other`
  * keys. The first segment is the area, and only `en/<area>.ts` may hold keys
- * for it; a new area is a new file plus one spread line here. The Android
- * client mirrors keys in strings.xml with `.` -> `_`, camelCase -> snake_case.
+ * for it; a new area is a new file plus one spread line in `enCore.ts`. The
+ * Android client mirrors keys in strings.xml with `.` -> `_`, camelCase ->
+ * snake_case.
+ *
+ * The app never imports this at runtime: `locale.ts` starts from `enCore`
+ * and loads the remaining areas (`security`) on demand. This full catalog is
+ * for the `MessageKey` type, `check-i18n` and the tests.
  */
-import { common } from "./en/common";
-import { connection } from "./en/connection";
-import { errors } from "./en/errors";
-import { auth } from "./en/auth";
-import { channels } from "./en/channels";
-import { chat } from "./en/chat";
-import { dm } from "./en/dm";
-import { home } from "./en/home";
-import { time } from "./en/time";
-import { admin } from "./en/admin";
-import { settings } from "./en/settings";
-import { onboarding } from "./en/onboarding";
-import { voice } from "./en/voice";
-import { notifications } from "./en/notifications";
-import { guilds } from "./en/guilds";
-import { passkeys } from "./en/passkeys";
+import { enCore } from "./enCore";
 import { security } from "./en/security";
 
 export const en = {
-  ...common,
-  ...connection,
-  ...errors,
-  ...auth,
-  ...channels,
-  ...chat,
-  ...dm,
-  ...home,
-  ...time,
-  ...admin,
-  ...settings,
-  ...onboarding,
-  ...voice,
-  ...notifications,
-  ...guilds,
-  ...passkeys,
+  ...enCore,
   ...security,
 } as const;
 
