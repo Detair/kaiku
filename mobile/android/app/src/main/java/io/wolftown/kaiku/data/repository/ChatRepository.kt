@@ -635,6 +635,10 @@ class ChatRepository internal constructor(
             is ServerEvent.ReactionRemove -> handleReactionRemove(event)
             is ServerEvent.TypingStart -> handleTypingStart(event)
             is ServerEvent.TypingStop -> handleTypingStop(event)
+            is ServerEvent.SecurityNoticeUpdated -> {
+                val flow = channelMessages[event.channelId]
+                flow?.update { io.wolftown.kaiku.domain.applySecurityNoticeUpdate(it, event) }
+            }
             is ServerEvent.Error -> {
                 logger.warning("Server error: code=${event.code} message=${event.message}")
             }

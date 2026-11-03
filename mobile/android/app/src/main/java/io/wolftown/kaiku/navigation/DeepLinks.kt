@@ -9,6 +9,11 @@ object DeepLinks {
 
     fun channelUri(channelId: String): String = "$SCHEME://$HOST/$channelId"
 
+    /** C28: a security notification opens the security log. */
+    const val SECURITY_URI = "kaiku://security"
+
+    fun isSecurity(uri: String?): Boolean = uri == SECURITY_URI
+
     /** Returns the channel id of a `kaiku://channel/{uuid}` link, or null for anything else. */
     fun parseChannelId(uri: String?): String? {
         if (uri == null) return null

@@ -98,6 +98,7 @@ class WakeScheduler @Inject constructor(
     private val enqueuer: WakeWorkEnqueuer,
     private val sink: NotificationSink,
     private val callIntake: CallWakeIntake,
+    private val securityPresenter: SecurityNoticePresenter = SecurityNoticePresenter(sink = {}, ownUserId = { null }),
 ) {
     companion object {
         private val logger = Logger.getLogger("WakeScheduler")
@@ -117,7 +118,17 @@ class WakeScheduler @Inject constructor(
             // DM call: the quick call path (name lookup + notification), never a fetch.
             // Only wakes that still apply are queued: each one replaces the channel's pending call work.
             WakeKind.CALL -> if (callIntake.accept(signal)) enqueuer.enqueueCall(signal)
-            WakeKind.UNKNOWN -> Unit
+            // Security wakes are SecurityWake, routed by onSecurityWake; never a channel signal.
+            WakeKind.SECURITY, WakeKind.UNKNOWN -> Unit
         }
+    }
+
+    /**
+     * C28 `t=security`: shown at once by [SecurityNoticePresenter], also without a
+     * session (lapsed key devices, devices named lost); no fetch, no gating.
+     */
+    fun onSecurityWake(wake: SecurityWake) {
+        logger.info("security wake received")
+        securityPresenter.present(wake)
     }
 }

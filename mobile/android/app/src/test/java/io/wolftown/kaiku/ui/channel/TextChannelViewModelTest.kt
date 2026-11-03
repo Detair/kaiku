@@ -718,4 +718,46 @@ class TextChannelViewModelTest {
         viewModel.onHidden()
         assertNull(activeChannelTracker.visibleChannelId.value)
     }
+
+    // ========================================================================
+    // Kaiku DM (C28): read-only, recognised by flags only, latest page on reconnect
+    // ========================================================================
+
+    @Test
+    fun `kaiku dm hides the composer`() = runTest {
+        conversationsFlow.value = listOf(
+            io.wolftown.kaiku.domain.model.DmConversation("ch-1", name = "Kaiku", isSystem = true, readOnly = true),
+        )
+        val vm = createViewModel()
+        advanceUntilIdle()
+        assertTrue(vm.isKaikuDm.value)
+    }
+
+    @Test
+    fun `kaiku dm is recognised by flags only`() = runTest {
+        conversationsFlow.value = listOf(
+            io.wolftown.kaiku.domain.model.DmConversation(
+                "ch-1", name = "Kaiku",
+                participants = listOf(io.wolftown.kaiku.domain.model.DmParticipant("6b61696b-7500-4000-8000-000000000001", "kaiku", "Kaiku")),
+            ),
+        )
+        val vm = createViewModel()
+        advanceUntilIdle()
+        assertFalse(vm.isKaikuDm.value)
+    }
+
+    @Test
+    fun `kaiku dm reloads the latest page on reconnect`() = runTest {
+        conversationsFlow.value = listOf(
+            io.wolftown.kaiku.domain.model.DmConversation("ch-1", isSystem = true, readOnly = true),
+        )
+        val vm = createViewModel()
+        advanceUntilIdle()
+        statusFlow.value = RealtimeStatus.Reconnecting
+        advanceUntilIdle()
+        statusFlow.value = RealtimeStatus.Connected
+        advanceUntilIdle()
+        assertTrue(vm.isKaikuDm.value)
+        io.mockk.coVerify(exactly = 2) { chatRepository.loadMessages("ch-1", null) }
+    }
 }

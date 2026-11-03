@@ -28,6 +28,9 @@ import io.wolftown.kaiku.ui.approval.LoginApprovalScreen
 import io.wolftown.kaiku.ui.approval.AddPhoneScreen
 import io.wolftown.kaiku.ui.approval.IssuerMode
 import io.wolftown.kaiku.ui.settings.security.SecuritySettingsScreen
+import io.wolftown.kaiku.ui.security.OpenRequestPrompt
+import io.wolftown.kaiku.ui.security.OpenRequestViewModel
+import io.wolftown.kaiku.ui.security.SecurityLogScreen
 import io.wolftown.kaiku.navigation.PendingSetupLinks
 import io.wolftown.kaiku.ui.auth.setup.SetupEntry
 import io.wolftown.kaiku.ui.auth.setup.SetupFlowScreen
@@ -110,6 +113,14 @@ fun KaikuNavGraph(
             onPendingRouteConsumed()
             navController.navigate(route) { launchSingleTop = true }
         }
+    }
+
+    // L2-A10: at app open, a waiting or ready account request is shown full screen.
+    val openRequestViewModel: OpenRequestViewModel = hiltViewModel()
+    val openRequest by openRequestViewModel.pending.collectAsState()
+    LaunchedEffect(isLoggedIn) { if (isLoggedIn) openRequestViewModel.load() }
+    LaunchedEffect(openRequest, currentRoute) {
+        if (openRequest != null && currentRoute == "home") navController.navigate(OPEN_REQUEST_ROUTE) { launchSingleTop = true }
     }
 
     // Any transition into logged-out clears a pending link, whatever the route.
@@ -314,8 +325,16 @@ fun KaikuNavGraph(
                         onBack = { navController.popBackStack() },
                         onAddPhone = { navController.navigate(ADD_PHONE_ROUTE) },
                         onSignedOut = { navController.navigate("login") { popUpTo(0) { inclusive = true } } },
-                        onOpenSecurityLog = {},
+                        onOpenSecurityLog = { navController.navigate(SECURITY_LOG_ROUTE) },
                     )
+                }
+
+                composable(SECURITY_LOG_ROUTE) {
+                    SecurityLogScreen(onBack = { navController.popBackStack() })
+                }
+
+                composable(OPEN_REQUEST_ROUTE) {
+                    OpenRequestPrompt(onDone = { navController.popBackStack() }, viewModel = openRequestViewModel)
                 }
 
                 composable(ADD_PHONE_ROUTE) {
@@ -391,3 +410,9 @@ const val ADD_PHONE_ROUTE = "add_phone"
 
 /** Security settings on the phone (Task B11). */
 const val SECURITY_SETTINGS_ROUTE = "settings/security"
+
+/** The read-only security log (a security notification opens it). */
+const val SECURITY_LOG_ROUTE = "security_log"
+
+/** The full-screen open-request prompt (L2-A10). */
+const val OPEN_REQUEST_ROUTE = "open_request"

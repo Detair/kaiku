@@ -4,6 +4,8 @@ import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import io.wolftown.kaiku.data.api.AdminApi
+import io.wolftown.kaiku.data.api.AdminApiImpl
 import io.wolftown.kaiku.data.api.ApprovalApi
 import io.wolftown.kaiku.data.api.ApprovalApiImpl
 import io.wolftown.kaiku.data.api.EnrollmentApi
@@ -22,4 +24,5 @@ abstract class LoginApiModule {
     @Binds @Singleton abstract fun bindEnrollmentApi(impl: EnrollmentApiImpl): EnrollmentApi
     @Binds @Singleton abstract fun bindLoginAttemptApi(impl: LoginAttemptApiImpl): LoginAttemptApi
     @Binds @Singleton abstract fun bindSecurityApi(impl: SecurityApiImpl): SecurityApi
+    @Binds @Singleton abstract fun bindAdminApi(impl: AdminApiImpl): AdminApi
 }

@@ -74,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Android: set up a phone with a setup code.** Scan the code your admin or your other device shows (or open the setup link); the phone checks its screen lock, shows a 6-digit code to confirm, and becomes your key. New accounts registered in the app bind the phone right away; App Links for `/setup` are enabled per build with `-PkaikuAppLinkHosts`.
 - Android: "Add a phone" on your key phone shows a setup code for a new phone and asks for the 6 digits it shows, on a large keypad that never sends by itself.
 - Android security settings: your phones, sessions, recovery codes and recovery contact, each change confirmed with your screen lock; password and authenticator app are shown and changed on the web or desktop.
+- Android shows Kaiku's security notices in the read-only "Kaiku" chat (with "That wasn't me", Cancel, Remove device and "I will help" where they apply) and as private lock-screen notifications, also on a key phone that is signed out, with the security log under Settings > Security and a full-screen prompt for an open request to change how you sign in.
 
 ### Changed
 - Admins elevate by confirming on their phone (or with a passkey) instead of typing their password and code.

@@ -28,7 +28,7 @@ class KaikuUnifiedPushService : PushService() {
     }
 
     override fun onMessage(message: PushMessage, instance: String) {
-        handleUnifiedPushMessage(message.content, wakeScheduler::onWake)
+        handleUnifiedPushMessage(message.content, wakeScheduler::onWake, wakeScheduler::onSecurityWake)
     }
 
     override fun onRegistrationFailed(reason: FailedReason, instance: String) {
@@ -46,8 +46,19 @@ class KaikuUnifiedPushService : PushService() {
     }
 }
 
-/** Parses a UnifiedPush body (C20 JSON) and passes a valid wake signal on; returns whether one was found. */
-internal fun handleUnifiedPushMessage(content: ByteArray, onWake: (WakeSignal) -> Unit): Boolean {
+/**
+ * Parses a UnifiedPush body (C20 JSON, or C28 `t=security`) and passes a valid
+ * wake on; returns whether one was found.
+ */
+internal fun handleUnifiedPushMessage(
+    content: ByteArray,
+    onWake: (WakeSignal) -> Unit,
+    onSecurity: (SecurityWake) -> Unit = {},
+): Boolean {
+    SecurityWakeParser.fromUnifiedPushBody(content)?.let {
+        onSecurity(it)
+        return true
+    }
     val signal = WakeSignalParser.fromUnifiedPushBody(content) ?: return false
     onWake(signal)
     return true

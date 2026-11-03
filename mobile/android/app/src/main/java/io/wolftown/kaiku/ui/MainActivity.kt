@@ -145,6 +145,12 @@ class MainActivity : FragmentActivity() {
             intent.data = null
             return
         }
+        // A security notification (C28) opens the security log once signed in.
+        if (DeepLinks.isSecurity(uri.toString())) {
+            pendingRoute.value = SECURITY_LOG_ROUTE
+            intent.data = null
+            return
+        }
         DeepLinks.parseChannelId(uri.toString())?.let {
             // A notification tap names the account it was posted for; other links
             // belong to whoever is signed in now.

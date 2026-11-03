@@ -100,6 +100,14 @@ class TextChannelViewModel @Inject constructor(
     /** Realtime connection state, for the reconnect banner. */
     val connectionStatus: StateFlow<RealtimeStatus> = realtimeConnectionManager.status
 
+    /**
+     * C28: the read-only Kaiku DM, recognised only by `is_system` + `read_only`
+     * (never an id or a name). The screen hides the composer and call buttons.
+     */
+    val isKaikuDm: StateFlow<Boolean> = dmRepository.conversations
+        .map { dms -> dms.any { it.id == channelId && it.isSystem && it.readOnly } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     /** True while the screen is resumed (between [onVisible] and [onHidden]). */
     private var visible = false
 
@@ -109,6 +117,15 @@ class TextChannelViewModel @Inject constructor(
         // While visible, every message the user can see counts as seen for notifications.
         viewModelScope.launch {
             messages.collect { list -> if (visible) markNewestSeen(list) }
+        }
+        // C28: coalescing edits older notices, so the Kaiku DM reloads its latest page on every reconnect.
+        viewModelScope.launch {
+            var wasConnected = connectionStatus.value == RealtimeStatus.Connected
+            connectionStatus.collect { status ->
+                val connected = status == RealtimeStatus.Connected
+                if (connected && !wasConnected && isKaikuDm.value) reloadLatest()
+                wasConnected = connected
+            }
         }
     }
 
@@ -279,6 +296,18 @@ class TextChannelViewModel @Inject constructor(
         guildRepository.clearActiveChannel(channelId)
         dmRepository.clearActiveChannel(channelId)
         super.onCleared()
+    }
+
+    private fun reloadLatest() {
+        viewModelScope.launch {
+            try {
+                _canLoadMore.value = chatRepository.loadMessages(channelId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.log(Level.WARNING, "Failed to reload the Kaiku DM (${e::class.simpleName})")
+            }
+        }
     }
 
     private fun loadInitialMessages() {
