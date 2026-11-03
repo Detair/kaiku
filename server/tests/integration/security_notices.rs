@@ -732,3 +732,48 @@ async fn system_account_event_never_reaches_another_users_dm(pool: PgPool) {
         "no Kaiku DM for the system account"
     );
 }
+
+/// Review round 4 (Codex r3 P5 M4): events that keep failing at the old end
+/// of the outbox never take a whole bounded sweep; newer events still go.
+#[sqlx::test]
+async fn failing_events_never_take_the_whole_sweep(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (u, token) = user_with_token(&app).await;
+    sqlx::raw_sql(
+        "CREATE FUNCTION refuse_poison() RETURNS trigger AS $$
+         BEGIN
+             IF NEW.content LIKE '%poison test%' THEN
+                 RAISE EXCEPTION 'poison';
+             END IF;
+             RETURN NEW;
+         END $$ LANGUAGE plpgsql;
+         CREATE TRIGGER refuse_poison BEFORE INSERT ON messages
+             FOR EACH ROW EXECUTE FUNCTION refuse_poison();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    for minutes in [3, 2, 1] {
+        sqlx::query(
+            "INSERT INTO security_events (id, subject_id, event_type, severity, actor_kind, created_at)
+             VALUES ($1, $2, 'poison_test', 'normal', 'system', NOW() - make_interval(mins => $3))",
+        )
+        .bind(Uuid::new_v4())
+        .bind(u)
+        .bind(minutes)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let good = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
+    // A sweep of two: the oldest end alone holds only failing events.
+    let _ = notices::deliver_pending_bounded(&app.state, 2).await;
+    let delivered: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT delivered_at FROM security_events WHERE id = $1")
+            .bind(good)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(delivered.is_some(), "the newer event is delivered");
+    assert_eq!(kaiku_notices(&app, u, &token).await.len(), 1);
+}

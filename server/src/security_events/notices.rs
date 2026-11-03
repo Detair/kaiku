@@ -415,13 +415,32 @@ pub fn spawn_delivery(state: &AppState, event_ids: Vec<Uuid>) {
     });
 }
 
-/// The sweep step: deliver every undelivered event (oldest first, bounded).
-/// Returns how many events were picked up.
+/// Events one sweep picks up at most.
+pub const SWEEP_BATCH: i64 = 500;
+
+/// The sweep step: deliver undelivered events, bounded. Returns how many
+/// events were picked up.
 pub async fn deliver_pending(state: &AppState) -> anyhow::Result<usize> {
+    deliver_pending_bounded(state, SWEEP_BATCH).await
+}
+
+/// [`deliver_pending`] with the batch bound given (tests).
+///
+/// Half the batch is the oldest undelivered events, half the newest, so
+/// events that keep failing at the old end never take the whole sweep
+/// (`security_events` is append-only, so there is no per-event attempt
+/// count); [`deliver`] still delivers oldest first.
+pub async fn deliver_pending_bounded(state: &AppState, batch: i64) -> anyhow::Result<usize> {
+    let half = (batch / 2).max(1);
     let ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM security_events WHERE delivered_at IS NULL
-          ORDER BY created_at LIMIT 500",
+        "(SELECT id FROM security_events WHERE delivered_at IS NULL
+           ORDER BY created_at, id LIMIT $1)
+         UNION
+         (SELECT id FROM security_events WHERE delivered_at IS NULL
+           ORDER BY created_at DESC, id DESC LIMIT $2)",
     )
+    .bind(half)
+    .bind((batch - half).max(1))
     .fetch_all(&state.db)
     .await?;
     let n = ids.len();

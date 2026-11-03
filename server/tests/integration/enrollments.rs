@@ -20,7 +20,7 @@ use vc_server::auth::ctx::AuthCtx;
 
 use super::approvals_core::post;
 use super::helpers::approvals::{spki_der, KeyDeviceFixture};
-use super::helpers::attestation::{chain, chain_without_extension, Reported};
+use super::helpers::attestation::{chain, chain_for, chain_without_extension, Reported};
 use super::helpers::login::peer_request;
 use super::helpers::{body_to_json, create_test_user, TestApp};
 
@@ -111,7 +111,10 @@ pub(super) async fn claim_with(
             if r.challenge.is_empty() {
                 r.challenge = nonce;
             }
-            chain(&r).iter().map(|d| b64u_encode(d)).collect()
+            chain_for(&r, &phone.key)
+                .iter()
+                .map(|d| b64u_encode(d))
+                .collect()
         }
         None => Vec::new(),
     };
@@ -322,7 +325,7 @@ async fn second_claim_is_already_used(pool: PgPool) {
             "challenge_id": pop["challenge"]["challenge_id"],
             "signature": phone.sign(pop["challenge"]["signing_prefix"].as_str().unwrap(), Decision::Approve, b""),
             "public_key": phone.public_key(),
-            "attestation_chain": chain(&Reported::good(&nonce)).iter().map(|d| b64u_encode(d)).collect::<Vec<_>>(),
+            "attestation_chain": chain_for(&Reported::good(&nonce), &phone.key).iter().map(|d| b64u_encode(d)).collect::<Vec<_>>(),
             "label": "A",
             "uv_class": "per_use",
         });
@@ -1234,7 +1237,7 @@ async fn pending_admin_enrolment_never_replaces(pool: PgPool, target_is_admin: b
     let (s, b) = pop_status(&app, &issued.setup_token, &clone).await;
     assert_eq!(
         (s, b["error"].as_str()),
-        (400, Some("VALIDATION_ERROR")),
+        (400, Some("ENROLLMENT_DEVICE_IN_USE")),
         "{b}"
     );
     assert_key_untouched(&pool, &victim).await;
@@ -1263,7 +1266,7 @@ async fn pending_admin_enrolment_never_replaces(pool: PgPool, target_is_admin: b
     let (s, b) = super::approvals_core::answer(&app, &admin_dev, &c, code.as_bytes()).await;
     assert_eq!(
         (s, b["error"].as_str()),
-        (400, Some("VALIDATION_ERROR")),
+        (400, Some("ENROLLMENT_DEVICE_IN_USE")),
         "{b}"
     );
     assert_key_untouched(&pool, &victim).await;
@@ -1311,7 +1314,7 @@ async fn pending_request_enrolment_never_replaces_a_live_key(pool: PgPool) {
     let (s, b) = pop_status(&app, &issued.setup_token, &clone).await;
     assert_eq!(
         (s, b["error"].as_str()),
-        (400, Some("VALIDATION_ERROR")),
+        (400, Some("ENROLLMENT_DEVICE_IN_USE")),
         "{b}"
     );
     assert_key_untouched(&pool, &victim).await;
@@ -1625,4 +1628,51 @@ async fn claimed_enrolment_is_open_while_its_code_is(pool: PgPool) {
     .unwrap();
     let (_, st) = status(&app, *id, c["claim_secret"].as_str().unwrap()).await;
     assert_eq!(st["state"], "expired");
+}
+
+/// Review round 4 (Codex r3 P1 M2, round 1 Fable m6): the attestation leaf
+/// must certify the key the phone claims with; a leaf for another key is
+/// refused as unsuitable.
+#[sqlx::test]
+async fn attestation_leaf_must_certify_the_claimed_key(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let phone = Phone::new();
+    let (_, opened) = public(
+        &app,
+        "/auth/enrollments/open",
+        json!({"setup_token": issued.setup_token}),
+    )
+    .await;
+    let nonce = b64u_decode(opened["enrollment_nonce"].as_str().unwrap()).unwrap();
+    let (_, pop) = public(&app, "/auth/enrollments/pop-challenge", json!({"setup_token": issued.setup_token, "device_id": phone.device_id, "public_key": phone.public_key()})).await;
+    // Good properties, but the leaf certifies a key of its own.
+    let (s, b) = public(&app, "/auth/enrollments/claim", json!({
+        "setup_token": issued.setup_token, "challenge_id": pop["challenge"]["challenge_id"],
+        "signature": phone.sign(pop["challenge"]["signing_prefix"].as_str().unwrap(), Decision::Approve, b""),
+        "public_key": phone.public_key(),
+        "attestation_chain": chain(&Reported::good(&nonce)).iter().map(|d| b64u_encode(d)).collect::<Vec<_>>(),
+        "label": "A", "uv_class": "per_use",
+    })).await;
+    assert_eq!(
+        (s, b["error"].as_str(), b["reason"].as_str()),
+        (
+            400,
+            Some("DEVICE_UNSUITABLE"),
+            Some("attestation_properties")
+        ),
+        "{b}"
+    );
+    // The same claim with a leaf for the phone's own key passes.
+    let (s, b) = public(&app, "/auth/enrollments/claim", json!({
+        "setup_token": issued.setup_token, "challenge_id": pop["challenge"]["challenge_id"],
+        "signature": phone.sign(pop["challenge"]["signing_prefix"].as_str().unwrap(), Decision::Approve, b""),
+        "public_key": phone.public_key(),
+        "attestation_chain": chain_for(&Reported::good(&nonce), &phone.key).iter().map(|d| b64u_encode(d)).collect::<Vec<_>>(),
+        "label": "A", "uv_class": "per_use",
+    })).await;
+    assert_eq!(s, 201, "{b}");
 }

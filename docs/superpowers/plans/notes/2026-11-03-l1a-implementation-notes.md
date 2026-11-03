@@ -500,3 +500,60 @@ Tests job to 40 minutes (no job-level timeout exists).
 - `cargo +nightly fmt --all -- --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server --
   -D warnings` clean; `cargo deny check`: advisories, bans, licenses, sources ok; `git diff
   --check` clean. No `query!` macro changed, so `.sqlx` is unchanged.
+
+## Review round 4 (2026-11-03)
+
+Round 3 confirmations: Fable APPROVE, Gemini Flash (for Argon) APPROVE, Codex REQUEST CHANGES (the
+`admin.*` gate and the leaf SPKI). Every fix is test-first (the test failed before the fix).
+
+| Item | Verdict | Commit | Test or note |
+|---|---|---|---|
+| `admin.*` step-up gate before `key_device_session` and `target_label` (Codex r3 P2 M2: L1a merges first, so LP's fix must be here) | real | `23450390` | Ported from LP `6c8a4444` + `e03bdb27`, L1a files only and textually identical (`git apply` of LP's hunks): `StepUpAction::is_admin`, `guards::require_admin_for_step_up` (403 `NOT_ADMIN`, then `FULL_SESSION_REQUIRED`), `AuthError::NotAdmin`, the gate in `step_up`, unit test `every_admin_action_is_gated`, admin `admin.elevate` fixtures in `approvals_core`. `device_admin_step_up_needs_an_admin` lives in `approvals_core` here (its LP file is passkey-only; the body is LP's with the L1a helpers). Beyond LP: `AuthError::NotAdmin` in `error_code_tests` (AGENTS.md rule). Passkey files untouched |
+| Leaf SPKI bound to the claimed key (Codex r3 P1 M2, round 1 Fable m6) | real | `6bbaefad` | `attestation_leaf_must_certify_the_claimed_key`. `check` takes the claimed SPKI DER; a different leaf SPKI → 400 `DEVICE_UNSUITABLE` `attestation_properties` (after the extension check, so a leaf without it stays `attestation_missing`). Fixtures: `chain_for` signs the leaf with the phone's own key; `chain` keeps a key of its own for the mismatch case |
+| Dedicated code for a pending claim on a live install id (Fable) | done | `b573c898` | 400 `ENROLLMENT_DEVICE_IN_USE` (no fields) at pop-challenge and confirm; the three `pending_*_never_replaces_*` tests assert it. The issuer's own install keeps 400 `VALIDATION_ERROR` (an app bug: the issuing app never claims its own link). Coordinator amends C26 (additive) |
+| Deletion: a DB or Valkey failure ending the sessions answers 500 (Codex r3 P5 m2) | real | `edbae8d3` | `deletion_answers_503_when_its_sessions_cannot_end` (test-only trigger); begin, end and commit map to the new `GovernanceError::ServiceUnavailable` (503 `SERVICE_UNAVAILABLE`), logged, never echoed |
+| Persistently failing events monopolise the bounded sweep (Codex r3 P5 M4, optional) | real, small | `7052e7f3` | `failing_events_never_take_the_whole_sweep`. Half the batch from the oldest end, half from the newest (no per-event attempt count: `security_events` is append-only, a counter needs a migration and a trigger change); delivery stays oldest first |
+| `refresh.rs` `reuse` holds the session row, then `record()` takes KEY SHARE on `users` (Fable) | closed by L1b | – | A concurrent revocation of the same account (account `FOR UPDATE`, then the session row) can deadlock with it (40P01). L1b's `lock_accounts` with `FOR NO KEY UPDATE` does not conflict with KEY SHARE and closes it. No code here |
+
+Corrections and notes on the round 3 answers:
+
+- P6 m1 (Typing read-only check): Codex rejects the "pool acquire timeout" argument (it does not
+  bound an executing query) and accepts the deferral as existing WebSocket scope. Corrected: the
+  deferral stands because the same handler's other database calls are equally unbounded.
+- P3 M1: a legacy token's one-time denylist read still runs under the session row lock (Codex
+  PARTLY). Accepted residual: once per legacy token, bounded by the 3 s Valkey command timeout.
+- Flash (round 4 part A): the recovery case on the same install now answers
+  `ENROLLMENT_DEVICE_IN_USE`, so the phone offers to sign in with its key; a phone whose key is
+  gone sets up with a new install id (L2), or L1b lets a `pending` row sit beside the live one.
+  For L1b cross-account step-up actions: lock `[auth.id, target]` together before `consume_tx`
+  (its own account lock is then a no-op), never the target alone first. The CI step timeout is
+  the coordinator's call (round 3).
+
+### Interface changes (round 4)
+
+- Wire: `POST /api/approvals/step-up` with an `admin.*` action answers 403 `NOT_ADMIN` to a
+  non-admin (before `KEY_DEVICE_REQUIRED`), then `FULL_SESSION_REQUIRED`; pop-challenge and
+  confirm answer 400 `ENROLLMENT_DEVICE_IN_USE` for a pending claim on a live install id; an
+  attestation leaf for another key → `DEVICE_UNSUITABLE` `attestation_properties`;
+  `POST /api/me/delete-account` (and its retry) answers 503 `SERVICE_UNAVAILABLE` when the
+  sessions cannot be ended.
+- Rust: `attestation::check(chain, nonce, uv_class, public_key)`;
+  `ApprovalError::EnrollmentDeviceInUse`; `GovernanceError::ServiceUnavailable`;
+  `notices::{SWEEP_BATCH, deliver_pending_bounded}`; the LP gate items above (same signatures as
+  LP).
+
+### Gate results (round 4, 2026-11-03)
+
+- `cargo test -p vc-server --lib`: 689 passed (Valkey lib tests through the local forwarder, as
+  in round 3).
+- Approvals, approval devices, enrolment, device sign-in, step-up, transition locks, admin (create
+  user, diagnostics, elevation, reports), guarded routes, CLI, governance, security events and
+  notices: 180 passed, 0 failed.
+- Full `--test integration`: 1064 passed, 3 failed, 33 ignored. The three
+  (`role_channel_overrides::pending_member_ignores_everyone_override_allow`,
+  `screening_http::pending_member_is_blocked_then_unlocked_on_accept`,
+  `unread::test_viewable_filter_matches_require_channel_access`) are the known flaky
+  pending-member family and pass 3/3 with `--test-threads=1`.
+- `cargo +nightly fmt --all -- --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server --
+  -D warnings` clean; `cargo deny check`: advisories, bans, licenses, sources ok. No `query!`
+  macro changed (`.sqlx` unchanged).

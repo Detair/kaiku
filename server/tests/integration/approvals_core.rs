@@ -710,3 +710,72 @@ async fn elevation_and_revocation_never_deadlock(pool: PgPool) {
             .unwrap();
     assert_eq!(elevated, 0);
 }
+
+fn admin_actions(other: Uuid, device: Uuid) -> Vec<(&'static str, String)> {
+    vec![
+        ("admin.elevate", String::new()),
+        ("admin.enrollment.issue", other.to_string()),
+        ("admin.authenticator.remove", device.to_string()),
+        ("admin.may_approve", other.to_string()),
+        ("admin.factor.set_state", other.to_string()),
+        ("admin.recovery_contact.set", other.to_string()),
+    ]
+}
+
+#[sqlx::test]
+async fn device_admin_step_up_needs_an_admin(pool: PgPool) {
+    // Review round 2: the key-device step-up resolves no foreign label for
+    // a non-admin; an admin's challenge names the foreign key device.
+    let app = TestApp::with_pool(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (other, _) = create_test_user(&app.pool).await;
+    let dev = KeyDeviceFixture::insert(&app.pool, &app.config, user, "active").await;
+    let theirs = KeyDeviceFixture::insert(&app.pool, &app.config, other, "active").await;
+    sqlx::query("UPDATE approval_devices SET label = 'Their secret phone' WHERE id = $1")
+        .bind(theirs.row_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    for (action, target) in admin_actions(other, theirs.row_id) {
+        let (s, b) = post(
+            &app,
+            "/api/approvals/step-up",
+            &dev.access_token,
+            json!({"action": action, "target": target}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (403, Some("NOT_ADMIN")),
+            "{action}: {b}"
+        );
+        assert!(!b.to_string().contains("Their secret phone"), "{b}");
+    }
+    // Review round 3 (Codex): NOT_ADMIN comes first, also without a key
+    // device (never KEY_DEVICE_REQUIRED for a non-admin).
+    let (_, plain) = create_session_with_token(&app.pool, &app.config, user).await;
+    for (action, target) in admin_actions(other, theirs.row_id) {
+        let (s, b) = post(
+            &app,
+            "/api/approvals/step-up",
+            &plain,
+            json!({"action": action, "target": target}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (403, Some("NOT_ADMIN")),
+            "{action}: {b}"
+        );
+    }
+    make_admin(&app.pool, user).await;
+    let (s, c) = post(
+        &app,
+        "/api/approvals/step-up",
+        &dev.access_token,
+        json!({"action": "admin.authenticator.remove", "target": theirs.row_id.to_string()}),
+    )
+    .await;
+    assert_eq!(s, 201, "{c}");
+    assert_eq!(c["context"]["target_label"], "Their secret phone", "{c}");
+}

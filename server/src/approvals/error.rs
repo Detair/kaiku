@@ -40,6 +40,10 @@ pub enum ApprovalError {
     EnrollmentState,
     #[error("Too many open setups")]
     EnrollmentLimit,
+    /// The claiming phone's install id is a live key of the account and the
+    /// new key would be `pending`: sign in with that key instead (C26).
+    #[error("This phone is already a key of this account")]
+    EnrollmentDeviceInUse,
     #[error("This phone cannot be used as a key")]
     DeviceUnsuitable { reason: &'static str },
     #[error("This account has been banned")]
@@ -87,6 +91,7 @@ impl IntoResponse for ApprovalError {
             Self::EnrollmentFailed => (StatusCode::GONE, "ENROLLMENT_FAILED"),
             Self::EnrollmentState => (StatusCode::CONFLICT, "ENROLLMENT_STATE"),
             Self::EnrollmentLimit => (StatusCode::CONFLICT, "ENROLLMENT_LIMIT"),
+            Self::EnrollmentDeviceInUse => (StatusCode::BAD_REQUEST, "ENROLLMENT_DEVICE_IN_USE"),
             Self::DeviceUnsuitable { .. } => (StatusCode::BAD_REQUEST, "DEVICE_UNSUITABLE"),
             Self::AccountBanned => (StatusCode::FORBIDDEN, "ACCOUNT_BANNED"),
             Self::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR"),
