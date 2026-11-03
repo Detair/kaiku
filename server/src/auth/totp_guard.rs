@@ -34,11 +34,12 @@ pub async fn pre_check(ctx: &AuthCtx<'_>, user: Uuid) -> AuthResult<()> {
     }
 }
 
-/// What a TOTP check used: the TOTP generation it checked against (always
-/// known: a success or failure counts only on that generation's counter,
-/// Codex r4) and the password generation that came with the code
-/// (compromised at the 100th failure). The effects re-check both under the
-/// account lock.
+/// What a TOTP check used.
+///
+/// The TOTP generation it checked against (always known: a success or
+/// failure counts only on that generation's counter, Codex r4) and the
+/// password generation that came with the code (compromised at the 100th
+/// failure). The effects re-check both under the account lock.
 #[derive(Debug, Clone, Copy)]
 pub struct Used {
     pub totp_generation: i64,
