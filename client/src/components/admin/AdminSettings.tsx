@@ -28,6 +28,7 @@ import type { AuthMethodsConfig, AdminOidcProvider } from "@/lib/types";
 import { adminState, checkAdminStatus } from "@/stores/admin";
 import ElevateDialog from "./ElevateDialog";
 import { t } from "@/i18n";
+import Toggle from "@/components/ui/Toggle";
 
 function providerIcon(hint: string | null) {
   switch (hint) {
@@ -335,23 +336,12 @@ const AdminSettings: Component = () => {
                     Username/password registration and login
                   </div>
                 </div>
-                <button
-                  onClick={handleToggleLocal}
-                  class="relative w-11 h-6 rounded-full transition-colors"
-                  classList={{
-                    "bg-accent-primary": state.authMethods.local,
-                    "bg-white/20": !state.authMethods.local,
-                  }}
+                <Toggle
+                  checked={state.authMethods.local}
+                  onChange={() => handleToggleLocal()}
                   disabled={!adminState.isElevated || state.isSaving}
-                >
-                  <span
-                    class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform"
-                    classList={{
-                      "translate-x-5": state.authMethods.local,
-                      "translate-x-0": !state.authMethods.local,
-                    }}
-                  />
-                </button>
+                  label="Local Authentication"
+                />
               </div>
 
               {/* OIDC Toggle */}
@@ -365,23 +355,12 @@ const AdminSettings: Component = () => {
                     etc.)
                   </div>
                 </div>
-                <button
-                  onClick={handleToggleOidc}
-                  class="relative w-11 h-6 rounded-full transition-colors"
-                  classList={{
-                    "bg-accent-primary": state.authMethods.oidc,
-                    "bg-white/20": !state.authMethods.oidc,
-                  }}
+                <Toggle
+                  checked={state.authMethods.oidc}
+                  onChange={() => handleToggleOidc()}
                   disabled={!adminState.isElevated || state.isSaving}
-                >
-                  <span
-                    class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform"
-                    classList={{
-                      "translate-x-5": state.authMethods.oidc,
-                      "translate-x-0": !state.authMethods.oidc,
-                    }}
-                  />
-                </button>
+                  label="SSO / OIDC"
+                />
               </div>
             </div>
           </section>
@@ -410,11 +389,12 @@ const AdminSettings: Component = () => {
                 {(option) => (
                   <button
                     onClick={() => handlePolicyChange(option.value)}
-                    class="flex-1 p-3 rounded-xl border text-left transition-colors"
+                    aria-pressed={state.registrationPolicy === option.value}
+                    class="flex-1 p-3 rounded-xl border-2 text-left transition-colors state-disabled-quiet"
                     classList={{
-                      "border-accent-primary bg-accent-primary/10":
+                      "border-accent-primary bg-accent-primary/20":
                         state.registrationPolicy === option.value,
-                      "border-white/10 bg-white/5 hover:bg-white/10":
+                      "border-border-solid bg-white/5 hover:bg-white/10":
                         state.registrationPolicy !== option.value,
                     }}
                     disabled={!adminState.isElevated || state.isSaving}
@@ -558,7 +538,7 @@ const AdminSettings: Component = () => {
                     onClick={() => applyPreset("github")}
                     class="flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-colors"
                     classList={{
-                      "border-accent-primary bg-accent-primary/10 text-text-primary":
+                      "border-accent-primary bg-accent-primary/20 text-text-primary":
                         addForm.preset === "github",
                       "border-white/10 bg-white/5 text-text-secondary hover:bg-white/10":
                         addForm.preset !== "github",
@@ -570,7 +550,7 @@ const AdminSettings: Component = () => {
                     onClick={() => applyPreset("google")}
                     class="flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-colors"
                     classList={{
-                      "border-accent-primary bg-accent-primary/10 text-text-primary":
+                      "border-accent-primary bg-accent-primary/20 text-text-primary":
                         addForm.preset === "google",
                       "border-white/10 bg-white/5 text-text-secondary hover:bg-white/10":
                         addForm.preset !== "google",
@@ -582,7 +562,7 @@ const AdminSettings: Component = () => {
                     onClick={() => applyPreset("custom")}
                     class="flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium transition-colors"
                     classList={{
-                      "border-accent-primary bg-accent-primary/10 text-text-primary":
+                      "border-accent-primary bg-accent-primary/20 text-text-primary":
                         addForm.preset === "custom",
                       "border-white/10 bg-white/5 text-text-secondary hover:bg-white/10":
                         addForm.preset !== "custom",
@@ -693,7 +673,7 @@ const AdminSettings: Component = () => {
                 <div class="flex gap-2 pt-2">
                   <button
                     onClick={handleCreateProvider}
-                    class="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent-primary text-on-accent text-sm font-medium hover:bg-accent-primary/90 transition-colors"
+                    class="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent-primary text-on-accent text-sm font-medium hover:bg-accent-primary/90 transition-colors state-disabled"
                     disabled={
                       state.isSaving ||
                       !addForm.slug ||

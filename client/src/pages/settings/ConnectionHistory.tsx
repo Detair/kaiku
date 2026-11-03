@@ -38,7 +38,7 @@ export const ConnectionHistory: Component = () => {
   };
 
   return (
-    <div class="min-h-screen bg-surface-base text-text-primary p-6">
+    <div class="min-h-dvh bg-surface-base text-text-primary p-6">
       <div class="max-w-4xl mx-auto">
         <div class="flex items-center gap-4 mb-6">
           <A href="/settings" class="p-2 hover:bg-surface-layer1 rounded-lg">

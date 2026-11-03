@@ -159,7 +159,7 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                   type="button"
                   onClick={handleDecline}
                   disabled={isLoading()}
-                  class="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors flex items-center justify-center w-10 h-10 disabled:opacity-50"
+                  class="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors flex items-center justify-center w-10 h-10 state-disabled"
                   title={t("voice.call.decline")}
                 >
                   <div style={{ "background-image": "var(--icon-leave)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-90" />
@@ -168,7 +168,7 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                   type="button"
                   onClick={handleAccept}
                   disabled={isLoading()}
-                  class="p-2 rounded-lg bg-green-500/20 hover:bg-green-500/30 transition-colors flex items-center justify-center w-10 h-10 disabled:opacity-50"
+                  class="p-2 rounded-lg bg-green-500/20 hover:bg-green-500/30 transition-colors flex items-center justify-center w-10 h-10 state-disabled"
                   title={t("voice.call.accept")}
                 >
                   <div style={{ "background-image": "var(--icon-pickup)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-90" />
@@ -193,7 +193,7 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                 type="button"
                 onClick={handleCancel}
                 disabled={isLoading()}
-                class="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors flex items-center justify-center w-10 h-10 disabled:opacity-50"
+                class="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors flex items-center justify-center w-10 h-10 state-disabled"
                 title={t("common.cancel")}
               >
                 <div style={{ "background-image": "var(--icon-leave)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-90" />
@@ -248,7 +248,7 @@ const CallBanner: Component<CallBannerProps> = (props) => {
                 type="button"
                 onClick={handleLeave}
                 disabled={isLoading()}
-                class="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors flex items-center justify-center w-10 h-10 disabled:opacity-50"
+                class="p-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 transition-colors flex items-center justify-center w-10 h-10 state-disabled"
                 title={t("voice.call.leave")}
               >
                 <div style={{ "background-image": "var(--icon-leave)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-90" />

@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Desktop app on Linux: an advanced "Show all ALSA devices" option in the audio settings also lists surround, S/PDIF, raw hardware and plugin devices that the short device list hides. It is off by default, and a device you picked stays listed when you turn it off.
+- **Web client image** `ghcr.io/detair/kaiku-web`: Kaiku in the browser, served on the same domain as the server (your reverse proxy sends `/api/`, `/auth/`, `/ws` and `/health` to the server, everything else to the web container). It runs unprivileged with a read-only root filesystem and sends its own security headers, including a Content-Security-Policy. The compose setup now runs it behind Caddy. See `docs/admin-guide/ops/web-client.md`.
 - Admins can add a new account to servers while creating it.
 - API: `GET /api/me/unread` now includes `last_read_message_id` for every channel and DM entry (`null` if it was never read), so apps can notify only for messages newer than the read position.
 - **Mobile push notifications (server side)**: the server can wake the Android app through Firebase Cloud Messaging (when an FCM service account is configured) or UnifiedPush. Phones are now also notified about @mentions, not only DMs (photo and file DMs already pushed before). Bursts of messages are coalesced into one notification, and reading a conversation on another device clears its notification. Wake signals carry only a type, channel and count, never message text, so end-to-end encryption is preserved. Blocked users never trigger a notification, and blocks are enforced for DMs even when cached data has expired. Endpoints are registered per device under `/api/me/push-subscriptions`, and dead endpoints are pruned automatically. (The Android client that consumes this ships separately.)
@@ -61,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Switches, disabled buttons and placeholders are easier to read in every theme: switches always show their knob, sit left with an outlined track when off and right on the accent colour with a check mark when on; disabled buttons keep a readable label with a dashed outline instead of fading into the background, and say why they are disabled (for example "Enter a channel name to continue."); placeholders are dimmer than typed text and read as examples ("e.g. voice-lounge"). Selected cards and options are marked more clearly, keyboard focus is visible on every button, and the Solarized themes reach the documented text contrast.
+- The banner picker when creating a server is a themed "Choose image" button with the file name instead of the browser's unstyled file control.
+- Desktop auto-updates are signed with a new updater key. Builds from before 1.0.0-rc.1 never shipped the previous key in a release, so no installed app is affected.
 - Desktop sign-in with an identity provider needs a server of the same version: update the server and the desktop app together.
 - The desktop app hides forum, announcement, event and screening features when the server has them turned off.
 - The "invisible" status is no longer offered.
@@ -95,6 +100,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- Update `pulldown-cmark` 0.13.1 → 0.13.6 (RUSTSEC-2026-0414, exponential output with the wikilinks option; Kaiku does not enable that option).
 - Bot, webhook and content-filter requests no longer send your sign-in token to a program listening on your own computer; they go only to your Kaiku server.
 - Signing in with an identity provider in the desktop app no longer passes your session tokens through the browser: the browser only receives a one-time code that expires after 60 seconds and that only the app that started the sign-in can redeem. The app also ignores any other requests to its temporary sign-in address. Older desktop apps must be updated to sign in with an identity provider.
 - In server member lists, someone you have blocked or who has blocked you now always appears offline, without a last-seen time.
@@ -143,6 +149,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 'appear offline' status is no longer available.
 
 ### Fixed
+- In the browser, joining a call while muted (or with push-to-talk) and switching to another microphone while muted no longer make you audible.
+- Web app: audio and voice settings (devices, volumes, noise suppression, push-to-talk) are now remembered after a reload, the chosen microphone and speaker are used from the start of a call (also for people who join later), opening Audio settings no longer asks for microphone access until you choose "Show device names", push-to-talk shows that it only works while the Kaiku tab is focused, and the screen share button and speaker picker are hidden in browsers that do not support them.
+- Web app: Kaiku no longer asks for notification permission by itself at login. Notification settings now show whether notifications are allowed, blocked or not supported in your browser and have an "Allow notifications" button; the test button explains when permission is missing.
+- Web app: settings that only work in the desktop app (flash taskbar, activity sharing, auto-activating focus modes) are no longer shown in the browser.
+- In phone browsers the message box and the bottom of the app are no longer hidden behind the browser's address bar.
+- Desktop app on Linux: the microphone and speaker lists show the system default (e.g. "System default (PipeWire)") and each sound card once, instead of a dozen ALSA variants per card, plugins and unused HDMI ports. The chosen device is now remembered by a unique id, so picking one opens exactly that device; a device chosen in an older version is still found. If the chosen microphone or speaker is busy when you join a call, the system default is used instead; choosing a busy device says it is in use.
+- Desktop app: choosing a microphone or speaker in the voice settings and mic test applies the selected device again, and the system default is preselected.
+- Admin Command Center: the CPU value and CPU chart now show data when the server runs without an OTLP exporter (`OBSERVABILITY_ENABLED=false`); CPU is sampled every 15 s by the server itself.
+- Admin Command Center: Top Routes and Top Errors now list the requests behind the error rate (including 401/403/429 from login and other auth endpoints), grouped by route template such as `/api/guilds/{id}/members`; Top Errors also shows the route. Errors count 4xx and 5xx consistently with the error rate.
+- Admin Command Center: the Process Memory chart labels its axis in MiB/GiB without clipping, charts with no data (e.g. Voice Sessions) show a "No data" hint instead of an empty box, and 7d/30d charts of memory, connections and sessions show daily averages instead of daily sums.
+- Admin Command Center: the empty Traces list explains that traces are only captured with `OBSERVABILITY_ENABLED=true`.
+- Switching the theme during first-login onboarding no longer restarts the wizard or overwrites the display name you typed.
+- The desktop app and system tray now show the Kaiku logo instead of a plain turquoise square on Windows, macOS and Linux.
+- The mascot illustrations in the empty states (Friends, direct messages, Discovery, search, unread) no longer show a white box on dark themes.
+- When the server browser is turned off on the instance (`ENABLE_GUILD_DISCOVERY=false`), Create Server no longer offers discovery options (it becomes a single step with a short note), server settings explain why discovery is unavailable, and the Explore button is hidden. `GET /api/settings` now reports `guild_discovery`.
+- Opening a channel with a few unread messages no longer stops scrolling back after about 25 messages: older history loads again.
+- Signing in or registering with SSO in the browser now says so when the pop-up is blocked instead of spinning forever. If the pop-up closes without reporting back (some sign-in providers cut its link to the app), you get a Reload button that picks up the finished sign-in.
+- The browser app no longer talks to a server address remembered from an earlier visit on another host.
 - Picking someone from the @ suggestions now mentions them (and notifies them) even when their display name differs from their username.
 - Pressing Enter sends your message again when the suggestion list has no matches (for example after typing "@" or ":" text that matches nothing).
 - The @mention, emoji and command suggestion list appears next to the message box instead of the top-left corner, and no longer causes errors after it closes.

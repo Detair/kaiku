@@ -13,6 +13,7 @@ import type {
   VoiceError,
   VoiceResult,
   VoiceAdapterEvents,
+  AudioDevice,
   AudioDeviceList,
   ScreenShareOptions,
   WebcamOptions,
@@ -22,6 +23,23 @@ import type {
 } from "./types";
 import { buildConnectionMetrics, deltaLossPercent } from "./types";
 import * as Sentry from "@sentry/browser";
+
+/** Audio device as returned by the `get_audio_devices` command. */
+interface NativeAudioDevice {
+  /** Stable device id (CPAL device id); pass back to the device commands. */
+  device_id: string;
+  label: string;
+  is_default: boolean;
+  /** `false` for ALSA PCMs hidden from the curated list. */
+  curated: boolean;
+  /** Name older versions stored as the selection (device description). */
+  legacy_name?: string;
+}
+
+interface NativeAudioDeviceList {
+  inputs: NativeAudioDevice[];
+  outputs: NativeAudioDevice[];
+}
 
 export class TauriVoiceAdapter implements VoiceAdapter {
   private state: VoiceConnectionState = "disconnected";
@@ -302,8 +320,23 @@ export class TauriVoiceAdapter implements VoiceAdapter {
 
   async getAudioDevices(): Promise<VoiceResult<AudioDeviceList>> {
     try {
-      const devices = await invoke<AudioDeviceList>("get_audio_devices");
-      return { ok: true, value: devices };
+      // The native list uses the snake_case wire format; map it to the
+      // shared AudioDevice shape (same as the browser adapter's).
+      const devices = await invoke<NativeAudioDeviceList>("get_audio_devices");
+      const toDevice = (d: NativeAudioDevice): AudioDevice => ({
+        deviceId: d.device_id,
+        label: d.label,
+        isDefault: d.is_default,
+        curated: d.curated,
+        ...(d.legacy_name ? { legacyName: d.legacy_name } : {}),
+      });
+      return {
+        ok: true,
+        value: {
+          inputs: devices.inputs.map(toDevice),
+          outputs: devices.outputs.map(toDevice),
+        },
+      };
     } catch (err) {
       return { ok: false, error: this.mapTauriError(err) };
     }
@@ -688,17 +721,23 @@ export class TauriVoiceAdapter implements VoiceAdapter {
       };
     }
 
+    // Before the generic "device" match below, which would swallow these.
+    if (message.includes("system default is used")) {
+      // A switch failed and capture fell back to the default: say so.
+      return { type: "unknown", message };
+    }
+
+    if (message.includes("in use") || message.includes("busy")) {
+      return {
+        type: "device_in_use",
+        message: "Audio device is in use",
+      };
+    }
+
     if (message.includes("not found") || message.includes("device")) {
       return {
         type: "device_not_found",
         message: "Audio device not found",
-      };
-    }
-
-    if (message.includes("in use")) {
-      return {
-        type: "device_in_use",
-        message: "Audio device is in use",
       };
     }
 

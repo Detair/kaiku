@@ -331,7 +331,7 @@ const ReportsPanel: Component = () => {
                                 !adminState.isElevated || actionLoading()
                               }
                               title="Claim"
-                              class="p-1.5 rounded-lg text-text-secondary hover:text-blue-400 hover:bg-blue-400/10 transition-colors disabled:opacity-50"
+                              class="p-1.5 rounded-lg text-text-secondary hover:text-blue-400 hover:bg-blue-400/10 transition-colors state-disabled-quiet"
                             >
                               <UserCheck class="w-4 h-4" />
                             </button>
@@ -351,7 +351,7 @@ const ReportsPanel: Component = () => {
                                 !adminState.isElevated || actionLoading()
                               }
                               title="Resolve"
-                              class="p-1.5 rounded-lg text-text-secondary hover:text-status-success hover:bg-status-success/10 transition-colors disabled:opacity-50"
+                              class="p-1.5 rounded-lg text-text-secondary hover:text-status-success hover:bg-status-success/10 transition-colors state-disabled-quiet"
                             >
                               <CheckCircle class="w-4 h-4" />
                             </button>
@@ -376,7 +376,7 @@ const ReportsPanel: Component = () => {
             <button
               onClick={() => handlePageChange(page() - 1)}
               disabled={page() <= 1}
-              class="p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors disabled:opacity-50"
+              class="p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors state-disabled-quiet"
             >
               <ChevronLeft class="w-4 h-4" />
             </button>
@@ -386,7 +386,7 @@ const ReportsPanel: Component = () => {
             <button
               onClick={() => handlePageChange(page() + 1)}
               disabled={page() >= totalPages()}
-              class="p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors disabled:opacity-50"
+              class="p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-white/10 transition-colors state-disabled-quiet"
             >
               <ChevronRight class="w-4 h-4" />
             </button>
@@ -440,7 +440,7 @@ const ReportsPanel: Component = () => {
                   value={resolveNote()}
                   onInput={(e) => setResolveNote(e.currentTarget.value)}
                   placeholder="Resolution notes..."
-                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-primary resize-none text-sm"
+                  class="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary resize-none text-sm"
                   rows={3}
                 />
               </div>
@@ -455,7 +455,7 @@ const ReportsPanel: Component = () => {
                 <button
                   onClick={handleResolve}
                   disabled={actionLoading()}
-                  class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium transition-colors hover:bg-accent-primary/90 disabled:opacity-50"
+                  class="px-4 py-2 rounded-lg bg-accent-primary text-on-accent font-medium transition-colors hover:bg-accent-primary/90 state-disabled"
                 >
                   {actionLoading() ? "Resolving..." : "Resolve"}
                 </button>

@@ -4,7 +4,9 @@
  * Controls for activity sharing and other privacy-related preferences.
  */
 
-import { Component, createSignal, onMount } from "solid-js";
+import { Component, Show, createSignal, onMount } from "solid-js";
+import { t } from "@/i18n";
+import Toggle from "@/components/ui/Toggle";
 import { isTauri } from "@/lib/tauri/common";
 
 const PrivacySettings: Component = () => {
@@ -50,7 +52,8 @@ const PrivacySettings: Component = () => {
     <div class="space-y-6">
       <h3 class="text-lg font-semibold text-text-primary">Privacy</h3>
 
-      {/* Activity Status Section */}
+      {/* Activity detection is native-only (process scanning) */}
+      <Show when={isTauri()} fallback={<p class="text-sm text-text-secondary">{t("settings.privacy.browserNone")}</p>}>
       <div class="bg-surface-base rounded-xl p-4">
         <h4 class="font-medium text-text-primary mb-4">Activity Status</h4>
 
@@ -63,18 +66,12 @@ const PrivacySettings: Component = () => {
               Show what you're playing or doing to friends
             </div>
           </div>
-          <label class="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={activitySharingEnabled()}
-              disabled={isLoading()}
-              onChange={(e) =>
-                handleActivitySharingChange(e.currentTarget.checked)
-              }
-              class="sr-only peer"
-            />
-            <div class="w-11 h-6 bg-white/10 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-accent-primary peer-disabled:opacity-50 peer-disabled:cursor-not-allowed" />
-          </label>
+          <Toggle
+            checked={activitySharingEnabled()}
+            disabled={isLoading()}
+            onChange={(next) => handleActivitySharingChange(next)}
+            label="Display current activity"
+          />
         </div>
 
         <p class="text-xs text-text-secondary mt-4 pt-4 border-t border-white/10">
@@ -82,6 +79,7 @@ const PrivacySettings: Component = () => {
           can still see the activity status of your friends.
         </p>
       </div>
+      </Show>
     </div>
   );
 };

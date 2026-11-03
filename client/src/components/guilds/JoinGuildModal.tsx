@@ -57,7 +57,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
     <Portal>
       <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
         <div
-          class="border border-white/10 rounded-2xl w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100vh-2rem))] flex flex-col shadow-2xl"
+          class="border border-white/10 rounded-2xl w-[480px] max-w-[calc(100vw-2rem)] max-h-[min(600px,calc(100dvh-2rem))] flex flex-col shadow-2xl"
           style={{"background-color":"var(--color-surface-base)"}}
         >
           {/* Header */}
@@ -88,7 +88,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
                     setError(null);
                   }}
                   placeholder="https://example.com/invite/aBcD1234 or aBcD1234"
-                  class="w-full px-4 py-3 border border-white/10 rounded-lg text-text-input placeholder:text-text-secondary focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
+                  class="w-full px-4 py-3 border border-white/10 rounded-lg text-text-input placeholder:text-text-placeholder focus:outline-none focus:ring-2 focus:ring-accent-primary focus:border-transparent"
                   style={{"background-color":"var(--color-surface-layer2)"}}
                   disabled={isJoining()}
                   autofocus
@@ -117,7 +117,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
             <button
               type="button"
               onClick={props.onClose}
-              class="px-4 py-2 text-text-primary hover:bg-surface-layer2 rounded-lg transition-colors"
+              class="px-4 py-2 text-text-primary hover:bg-surface-layer2 rounded-lg transition-colors state-disabled-quiet"
               disabled={isJoining()}
             >
               Cancel
@@ -125,7 +125,7 @@ const JoinGuildModal: Component<JoinGuildModalProps> = (props) => {
             <button
               type="button"
               onClick={handleSubmit}
-              class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-on-accent font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-6 py-2 bg-accent-primary hover:bg-accent-primary/90 text-on-accent font-semibold rounded-lg transition-colors state-disabled"
               disabled={isJoining() || !inviteCode()}
             >
               {isJoining() ? "Joining..." : "Join Server"}

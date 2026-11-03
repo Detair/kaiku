@@ -88,6 +88,17 @@ jobs:
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: docker save kaiku-server:smoke | gzip > image.tar.gz
+  build-docker-web:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/web/Dockerfile
+          load: true
+          push: false
+      - run: docker save kaiku-web:smoke | gzip > web.tar.gz
   build-android:
     needs: prepare-release
     environment: ${{ needs.prepare-release.outputs.publish == 'true' && 'release' || '' }}
@@ -117,7 +128,7 @@ jobs:
       - run: cp artifacts/android-apk/Kaiku-*.apk release-assets/
       - run: python3 scripts/verify_updater_signatures.py --mode publish
   push-image:
-    needs: [prepare-release, build-tauri, build-docker, build-android, publish-release]
+    needs: [prepare-release, build-tauri, build-docker, build-docker-web, build-android, publish-release]
     if: needs.prepare-release.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -350,7 +361,7 @@ class ReleasePublishOrderTest(unittest.TestCase):
         self.assertEqual(self.check(load_release()), [])
 
     def test_image_push_needs_all_builds(self):
-        for need in ("build-tauri", "build-android", "build-docker", "publish-release"):
+        for need in ("build-tauri", "build-android", "build-docker", "build-docker-web", "publish-release"):
             release = load_release()
             release["jobs"]["push-image"]["needs"].remove(need)
             errors = self.check(release)
@@ -381,6 +392,20 @@ class ReleasePublishOrderTest(unittest.TestCase):
         release["jobs"]["build-docker"]["steps"].pop()
         errors = self.check(release)
         self.assertTrue(any("docker save" in e for e in errors), errors)
+
+    def test_web_image_build_follows_the_same_rules(self):
+        release = load_release()
+        release["jobs"]["build-docker-web"]["steps"].insert(0, {"uses": "docker/login-action@v3"})
+        release["jobs"]["build-docker-web"]["steps"].pop()
+        errors = self.check(release)
+        self.assertTrue(any("build-docker-web must not log in" in e for e in errors), errors)
+        self.assertTrue(any("build-docker-web must export" in e for e in errors), errors)
+
+    def test_web_image_build_job_is_required(self):
+        release = load_release()
+        del release["jobs"]["build-docker-web"]
+        errors = self.check(release)
+        self.assertTrue(any("missing image build job 'build-docker-web'" in e for e in errors), errors)
 
     def test_some_job_must_push(self):
         release = load_release()
@@ -518,6 +543,18 @@ class ServerImageTest(unittest.TestCase):
 
     def test_literal_name_passes(self):
         self.assertEqual(self.check("ghcr.io/detair/kaiku-server"), [])
+
+    def test_web_image_is_allowed_next_to_the_server_image(self):
+        wf = yaml.safe_load(IMAGE_WORKFLOW % "${{ env.SERVER_IMAGE }}")
+        web = yaml.safe_load(IMAGE_WORKFLOW % "ghcr.io/detair/kaiku-web")["jobs"]["build-docker"]
+        wf["jobs"]["build-docker-web"] = web
+        errors: list[str] = []
+        check_server_image(wf, "release.yml", errors)
+        self.assertEqual(errors, [])
+
+    def test_web_image_alone_is_not_enough(self):
+        errors = self.check("ghcr.io/detair/kaiku-web")
+        self.assertTrue(any("server image" in e for e in errors), errors)
 
     def test_no_metadata_step_is_an_error(self):
         errors: list[str] = []

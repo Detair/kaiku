@@ -78,10 +78,33 @@ Edit `client/src/styles/themes.css` and add a color block:
   --color-error-bg: rgba(191, 97, 106, 0.15);
   --color-error-border: rgba(191, 97, 106, 0.4);
   --color-error-text: #f0a0a8;
+
+  /* States: placeholder, disabled controls, switches, focus */
+  --color-text-placeholder: #99a3b8;
+  --color-text-placeholder-rgb: 153 163 184;
+  --color-disabled-bg: #434c5e;
+  --color-disabled-text: #a3adbf;
+  --color-disabled-border: #8a94a8;
+  --color-toggle-track-off: #1e1e2e;
+  --color-toggle-border-off: #8a94a8;
+  --color-toggle-knob-off: #c0c8d6;
+  --color-toggle-track-on: var(--color-accent-primary);
+  --color-toggle-knob-on: #1e1e2e;
+  --color-focus-ring: var(--color-accent-primary);
 }
 ```
 
+See the token reference at the top of `themes.css` for what each state token
+is for. Use the shared `Toggle`, `Button` and `FileInput` components
+(`components/ui/`) and the `state-disabled` / `state-disabled-quiet` classes
+(`global.css`) rather than `disabled:opacity-*`.
+
 ### Step 4: Verify Accessibility
+
+`bun run test:run` checks every theme in `themes.css` automatically
+(`styles/__tests__/contrast.test.ts`): text tiers, button labels, disabled
+labels and outlines, switch tracks and knobs, placeholders and focus rings.
+A new theme block is picked up without any test change.
 
 Check contrast ratios using [WebAIM Contrast Checker](https://webaim.org/resources/contrastchecker/):
 

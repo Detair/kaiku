@@ -9,6 +9,10 @@ This guide covers deploying Kaiku on a self-hosted server.
 - Domain name pointing to your server
 - Ports 80, 443 (TCP) and 10000-10100 (UDP) open
 
+The compose setup runs the server, the web client (`kaiku-web`), Caddy and
+the data services. To run the web client behind your own reverse proxy, see
+[Web client](web-client.md) for the path routing and its settings.
+
 ## Quick Start
 
 ```bash

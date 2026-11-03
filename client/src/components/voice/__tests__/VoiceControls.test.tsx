@@ -24,10 +24,14 @@ vi.mock("../ScreenShareSourcePicker", () => ({ default: () => null }));
 
 import VoiceControls from "../VoiceControls";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("VoiceControls", () => {
   it("every voice control button has an accessible name", () => {
+    vi.stubGlobal("navigator", { ...navigator, mediaDevices: { getDisplayMedia: vi.fn() } });
     render(() => <VoiceControls />);
     const buttons = screen.getAllByRole("button");
     expect(buttons.length).toBeGreaterThanOrEqual(5);

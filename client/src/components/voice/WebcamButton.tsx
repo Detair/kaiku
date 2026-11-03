@@ -45,7 +45,7 @@ const WebcamButton: Component = () => {
           voiceState.webcamActive
             ? "bg-success/20 text-success hover:bg-danger/20 hover:text-danger"
             : "bg-background-secondary text-text-secondary hover:bg-background-primary hover:text-text-primary"
-        } ${loading() ? "opacity-50 cursor-wait" : ""}`}
+        } ${loading() ? "opacity-50 cursor-wait" : ""} state-disabled`}
         title={voiceState.webcamActive ? "Stop Camera" : "Start Camera"}
       >
         {voiceState.webcamActive ? (

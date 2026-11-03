@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Deploy Kaiku to VPS by pulling pre-built images and updating the client.
+# Deploy Kaiku to VPS by pulling the pre-built server and web images.
 #
 # Usage:
-#   ./infra/scripts/deploy.sh                    # pull image + rebuild client
-#   ./infra/scripts/deploy.sh --server-only      # pull image only
-#   ./infra/scripts/deploy.sh --client-only      # rebuild client only
+#   ./infra/scripts/deploy.sh                    # pull server + web images
+#   ./infra/scripts/deploy.sh --server-only      # pull server image only
+#   ./infra/scripts/deploy.sh --client-only      # pull web client image only
 
 set -euo pipefail
 
@@ -20,17 +20,8 @@ deploy_server() {
 }
 
 deploy_client() {
-    echo "[+] Building and deploying client on VPS..."
-    ssh "$VPS" 'bash -s' << 'REMOTE'
-set -euo pipefail
-export PATH="$HOME/.bun/bin:$PATH"
-cd /opt/kaiku && git pull
-cd client
-echo "VITE_SERVER_URL=https://kaiku.pmind.de" > .env.production
-bun install --frozen-lockfile
-bun run build
-docker cp dist/. canis-caddy:/srv/kaiku/
-REMOTE
+    echo "[+] Pulling web client image on VPS..."
+    ssh "$VPS" 'cd /opt/kaiku/infra/compose && docker compose pull web && docker compose up -d web'
     echo "[+] Client deployed."
 }
 

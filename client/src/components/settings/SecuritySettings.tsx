@@ -44,6 +44,7 @@ import { showToast } from "@/components/ui/Toast";
 import ReauthDialog from "@/components/auth/ReauthDialog";
 import type { ReauthRequest } from "@/lib/types";
 import { t } from "@/i18n";
+import Toggle from "@/components/ui/Toggle";
 
 const MfaSetupModal = lazy(() => import("./MfaSetupModal"));
 const BackupCodesDisplay = lazy(() => import("./BackupCodesDisplay"));
@@ -409,7 +410,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
               <button
                 onClick={handleRegenerateBackupCodes}
                 disabled={isRegenerating()}
-                class="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-text-primary text-sm disabled:opacity-50"
+                class="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-text-primary text-sm state-disabled"
               >
                 <RefreshCw
                   class="w-4 h-4"
@@ -497,7 +498,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
                 <button
                   type="submit"
                   disabled={isDisabling()}
-                  class="flex-1 px-4 py-2 bg-red-500/80 hover:bg-red-500 rounded-lg transition-colors text-white text-sm font-medium disabled:opacity-50"
+                  class="flex-1 px-4 py-2 bg-red-500/80 hover:bg-red-500 rounded-lg transition-colors text-white text-sm font-medium state-disabled"
                 >
                   {isDisabling() ? "Disabling..." : "Disable"}
                 </button>
@@ -565,7 +566,8 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
               <button
                 onClick={() => handleProtectionLevelChange("minimal")}
                 disabled={isSavingClipboard()}
-                class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                aria-pressed={clipboardSettings()?.protection_level === "minimal"}
+                class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:cursor-wait"
                 classList={{
                   "bg-accent-primary text-on-accent":
                     clipboardSettings()?.protection_level === "minimal",
@@ -578,7 +580,8 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
               <button
                 onClick={() => handleProtectionLevelChange("standard")}
                 disabled={isSavingClipboard()}
-                class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                aria-pressed={clipboardSettings()?.protection_level === "standard"}
+                class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:cursor-wait"
                 classList={{
                   "bg-accent-primary text-on-accent":
                     clipboardSettings()?.protection_level === "standard",
@@ -591,7 +594,8 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
               <button
                 onClick={() => handleProtectionLevelChange("strict")}
                 disabled={isSavingClipboard()}
-                class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                aria-pressed={clipboardSettings()?.protection_level === "strict"}
+                class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:cursor-wait"
                 classList={{
                   "bg-accent-primary text-on-accent":
                     clipboardSettings()?.protection_level === "strict",
@@ -621,37 +625,21 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
           <div class="pt-4 border-t border-white/10">
             <div class="flex items-center justify-between">
               <div class="flex-1">
-                <label class="block text-sm font-medium text-text-primary">
+                <div id="paranoid-mode-label" class="block text-sm font-medium text-text-primary">
                   Paranoid Mode
-                </label>
-                <p class="text-xs text-text-secondary mt-1">
+                </div>
+                <p id="paranoid-mode-desc" class="text-xs text-text-secondary mt-1">
                   Reduces auto-clear timeout to 30 seconds for all sensitive
                   content. Enables clipboard tamper detection.
                 </p>
               </div>
-              <button
-                onClick={() =>
-                  handleParanoidModeChange(
-                    !clipboardSettings()?.paranoid_mode_enabled,
-                  )
-                }
+              <Toggle
+                checked={!!clipboardSettings()?.paranoid_mode_enabled}
+                onChange={(next) => handleParanoidModeChange(next)}
                 disabled={isSavingClipboard()}
-                class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50"
-                classList={{
-                  "bg-accent-primary":
-                    clipboardSettings()?.paranoid_mode_enabled,
-                  "bg-white/20": !clipboardSettings()?.paranoid_mode_enabled,
-                }}
-              >
-                <span
-                  class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-                  classList={{
-                    "translate-x-6": clipboardSettings()?.paranoid_mode_enabled,
-                    "translate-x-1":
-                      !clipboardSettings()?.paranoid_mode_enabled,
-                  }}
-                />
-              </button>
+                labelledBy="paranoid-mode-label"
+                describedBy="paranoid-mode-desc"
+              />
             </div>
           </div>
 

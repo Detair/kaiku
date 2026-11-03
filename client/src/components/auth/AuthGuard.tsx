@@ -64,7 +64,7 @@ const AuthGuard: Component<AuthGuardProps> = (props) => {
  */
 const LoadingScreen: Component = () => {
   return (
-    <div class="flex items-center justify-center min-h-screen bg-background-primary">
+    <div class="flex items-center justify-center min-h-dvh bg-background-primary">
       <div class="flex flex-col items-center gap-4">
         <div class="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
         <p class="text-text-secondary">{t("common.loading")}</p>
@@ -79,7 +79,7 @@ const LoadingScreen: Component = () => {
  */
 const RestorePendingScreen: Component = () => {
   return (
-    <div class="flex items-center justify-center min-h-screen bg-background-primary px-4">
+    <div class="flex items-center justify-center min-h-dvh bg-background-primary px-4">
       <div
         class="flex flex-col items-center gap-4 max-w-sm text-center"
         role="status"

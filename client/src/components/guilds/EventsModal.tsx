@@ -139,7 +139,7 @@ const EventsModal: Component<{
                 <button
                   type="submit"
                   disabled={!name().trim() || !startsAt() || busy()}
-                  class="px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-sm font-medium disabled:opacity-50"
+                  class="px-3 py-1.5 rounded-lg bg-accent-primary text-on-accent text-sm font-medium state-disabled"
                 >
                   Create
                 </button>

@@ -61,6 +61,13 @@ async fn main() -> Result<()> {
     let voice_health_handle =
         vc_server::observability::voice::spawn_voice_health_task(db_pool.clone());
 
+    // Spawn process CPU sampler (every 15s). Independent of the OTLP exporter:
+    // the admin summary and the `kaiku_process_cpu_percent` gauge both read
+    // the value it caches.
+    let cpu_sampler_handle = vc_server::observability::sysinfo::spawn_cpu_sampler(
+        vc_server::observability::sysinfo::CPU_SAMPLE_INTERVAL,
+    );
+
     // Initialize Redis (two clients: one for the app, one for the webhook
     // delivery worker whose BRPOP blocks the connection)
     let redis =
@@ -445,6 +452,7 @@ async fn main() -> Result<()> {
     rtp_flush_handle.abort();
     retention_handle.abort();
     voice_health_handle.abort();
+    cpu_sampler_handle.abort();
     custom_status_sweep_handle.abort();
     presence_sweep_handle.abort();
     let _ = voice_cleanup_handle.await;
@@ -454,6 +462,7 @@ async fn main() -> Result<()> {
     let _ = rtp_flush_handle.await;
     let _ = retention_handle.await;
     let _ = voice_health_handle.await;
+    let _ = cpu_sampler_handle.await;
     let _ = custom_status_sweep_handle.await;
     let _ = presence_sweep_handle.await;
     info!("Background cleanup tasks stopped");

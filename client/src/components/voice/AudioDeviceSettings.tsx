@@ -24,11 +24,24 @@ import {
 import { Portal } from "solid-js/web";
 import { X, Mic, Headphones, Loader2 } from "lucide-solid";
 import { createVoiceAdapter } from "@/lib/webrtc";
-import type { AudioDeviceList, VoiceError, VoiceAdapter } from "@/lib/webrtc";
+import { canSelectOutputDevice } from "@/lib/browserCapabilities";
+import type { AudioDevice, AudioDeviceList, VoiceError, VoiceAdapter } from "@/lib/webrtc";
 import { setSpeaking } from "@/stores/voice";
-import { updateAudioSetting } from "@/stores/settings";
+import { appSettings, updateAudioSetting } from "@/stores/settings";
+import { isTauri } from "@/lib/tauri/common";
 import { showToast } from "@/components/ui/Toast";
+import {
+  FOLLOW_SYSTEM_DEFAULT,
+  isSystemDefaultAlias,
+  pickerDeviceValue,
+  systemDefaultAlias,
+  systemDefaultDevice,
+  showAllAlsaDevices,
+  visibleDevices,
+} from "@/lib/audioDevices";
+import ShowAllAlsaDevicesToggle from "./ShowAllAlsaDevicesToggle";
 import { t, type MessageKey } from "@/i18n";
+import Toggle from "@/components/ui/Toggle";
 
 interface AudioDeviceSettingsProps {
   onClose: () => void;
@@ -56,12 +69,17 @@ function getDeviceErrorMessage(error: VoiceError): string {
 
 /** Device label with the fallback name and the "(Default)" marker applied. */
 function deviceOptionLabel(
-  device: { deviceId: string; label?: string; isDefault?: boolean },
+  device: AudioDevice,
+  index: number,
   fallbackKey: MessageKey,
 ): string {
-  const label =
-    device.label || t(fallbackKey, { id: device.deviceId.slice(0, 8) });
-  return device.isDefault ? t("voice.audio.deviceDefault", { label }) : label;
+  // Unlabeled devices (no mic permission yet) get a generic numbered name.
+  const label = device.label || t(fallbackKey, { id: index + 1 });
+  // An alias entry ("System default (PipeWire)", Chrome's "Default - …")
+  // already says so in its label.
+  return device.isDefault && !isSystemDefaultAlias(device)
+    ? t("voice.audio.deviceDefault", { label })
+    : label;
 }
 
 const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
@@ -121,22 +139,20 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       }
 
       setDevices(result.value);
-      setNoiseSuppression(voiceAdapter.isNoiseSuppressionEnabled());
+      // Browser mode keeps this preference in app settings only; native
+      // reports its own state through the adapter.
+      const stored = appSettings()?.audio?.noise_suppression;
+      setNoiseSuppression(
+        !isTauri() && typeof stored === "boolean"
+          ? stored
+          : voiceAdapter.isNoiseSuppressionEnabled(),
+      );
 
-      // Set default selections (first device or default device)
-      if (result.value.inputs.length > 0) {
-        const defaultInput =
-          result.value.inputs.find((d) => d.isDefault) ||
-          result.value.inputs[0];
-        setSelectedInput(defaultInput.deviceId);
-      }
-
-      if (result.value.outputs.length > 0) {
-        const defaultOutput =
-          result.value.outputs.find((d) => d.isDefault) ||
-          result.value.outputs[0];
-        setSelectedOutput(defaultOutput.deviceId);
-      }
+      // Preselect the saved device (by id), else the system default entry,
+      // else the first device.
+      const audio = appSettings()?.audio;
+      setSelectedInput(pickerDeviceValue(result.value.inputs, audio?.input_device));
+      setSelectedOutput(pickerDeviceValue(result.value.outputs, audio?.output_device));
 
       setIsLoading(false);
     } catch (err) {
@@ -154,6 +170,7 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
     if (voiceAdapter) {
       await voiceAdapter.setNoiseSuppression(newVal);
     }
+    await updateAudioSetting("noise_suppression", newVal);
   };
 
   // ESC key handler
@@ -249,6 +266,20 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
     const voiceAdapter = adapter();
     if (!voiceAdapter) return;
 
+    // "Default Device" is stored as null (follow the system default); the
+    // running session switches to the device that is the default now.
+    if (deviceId === FOLLOW_SYSTEM_DEFAULT) {
+      const current = systemDefaultDevice(devices().inputs);
+      try {
+        const result = current ? await voiceAdapter.setInputDevice(current.deviceId) : null;
+        if (result && !result.ok) console.warn("Switch to the default input failed:", result.error);
+      } catch (err) {
+        console.warn("Switch to the default input failed:", err);
+      }
+      await updateAudioSetting("input_device", null);
+      return;
+    }
+
     try {
       const result = await voiceAdapter.setInputDevice(deviceId);
 
@@ -281,6 +312,20 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
     const voiceAdapter = adapter();
     if (!voiceAdapter) return;
 
+    // "Default Device" is stored as null (follow the system default); the
+    // running session switches to the device that is the default now.
+    if (deviceId === FOLLOW_SYSTEM_DEFAULT) {
+      const current = systemDefaultDevice(devices().outputs);
+      try {
+        const result = current ? await voiceAdapter.setOutputDevice(current.deviceId) : null;
+        if (result && !result.ok) console.warn("Switch to the default output failed:", result.error);
+      } catch (err) {
+        console.warn("Switch to the default output failed:", err);
+      }
+      await updateAudioSetting("output_device", null);
+      return;
+    }
+
     try {
       const result = await voiceAdapter.setOutputDevice(deviceId);
 
@@ -312,7 +357,11 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
     if (!voiceAdapter) return;
 
     try {
-      const result = await voiceAdapter.startMicTest(selectedInput());
+      const result = await voiceAdapter.startMicTest(
+        selectedInput() === FOLLOW_SYSTEM_DEFAULT
+          ? systemDefaultDevice(devices().inputs)?.deviceId
+          : selectedInput(),
+      );
 
       if (!result.ok) {
         showToast({
@@ -325,6 +374,19 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
       }
 
       setIsTesting(true);
+
+      // Permission is granted now: names and ids missing before appear.
+      void voiceAdapter.getAudioDevices().then((list) => {
+        if (!list.ok) return;
+        setDevices(list.value);
+        const audio = appSettings()?.audio;
+        if (!selectedInput() || selectedInput() === FOLLOW_SYSTEM_DEFAULT) {
+          setSelectedInput(pickerDeviceValue(list.value.inputs, audio?.input_device));
+        }
+        if (!selectedOutput() || selectedOutput() === FOLLOW_SYSTEM_DEFAULT) {
+          setSelectedOutput(pickerDeviceValue(list.value.outputs, audio?.output_device));
+        }
+      });
 
       // Poll for mic level every 50ms
       testInterval = window.setInterval(() => {
@@ -566,10 +628,13 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 onChange={(e) => handleInputChange(e.currentTarget.value)}
                 class="w-full px-3 py-2.5 bg-surface-base rounded-xl text-sm text-text-primary border border-white/10 outline-none focus:ring-2 focus:ring-accent-primary/30 transition-all"
               >
-                <For each={devices().inputs}>
-                  {(device) => (
+                <Show when={!systemDefaultAlias(devices().inputs)}>
+                  <option value={FOLLOW_SYSTEM_DEFAULT}>{t("settings.audio.defaultDevice")}</option>
+                </Show>
+                <For each={visibleDevices(devices().inputs, showAllAlsaDevices(), selectedInput())}>
+                  {(device, i) => (
                     <option value={device.deviceId}>
-                      {deviceOptionLabel(device, "voice.audio.microphoneFallback")}
+                      {deviceOptionLabel(device, i(), "voice.audio.microphoneFallback")}
                     </option>
                   )}
                 </For>
@@ -629,25 +694,17 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                     {t("voice.audio.noiseSuppressionHint")}
                   </div>
                 </div>
-                <button
-                  onClick={toggleNoiseSuppression}
-                  class={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-accent-primary focus:ring-offset-2 focus:ring-offset-surface-base ${
-                    noiseSuppression()
-                      ? "bg-accent-primary"
-                      : "bg-surface-highlight"
-                  }`}
-                >
-                  <span
-                    class={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      noiseSuppression() ? "translate-x-6" : "translate-x-1"
-                    }`}
-                  />
-                </button>
+                <Toggle
+                  checked={noiseSuppression()}
+                  onChange={() => void toggleNoiseSuppression()}
+                  label={t("voice.audio.noiseSuppression")}
+                />
               </div>
             </div>
 
             {/* Output Device */}
             <div>
+              <Show when={canSelectOutputDevice()}>
               <label class="flex items-center gap-2 text-sm font-medium text-text-primary mb-2">
                 <div class="w-5 h-5 text-text-secondary">
                   <Headphones />
@@ -659,27 +716,25 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 onChange={(e) => handleOutputChange(e.currentTarget.value)}
                 class="w-full px-3 py-2.5 bg-surface-base rounded-xl text-sm text-text-primary border border-white/10 outline-none focus:ring-2 focus:ring-accent-primary/30 transition-all"
               >
-                <For each={devices().outputs}>
-                  {(device) => (
+                <Show when={!systemDefaultAlias(devices().outputs)}>
+                  <option value={FOLLOW_SYSTEM_DEFAULT}>{t("settings.audio.defaultDevice")}</option>
+                </Show>
+                <For each={visibleDevices(devices().outputs, showAllAlsaDevices(), selectedOutput())}>
+                  {(device, i) => (
                     <option value={device.deviceId}>
-                      {deviceOptionLabel(device, "voice.audio.speakerFallback")}
+                      {deviceOptionLabel(device, i(), "voice.audio.speakerFallback")}
                     </option>
                   )}
                 </For>
               </select>
+              </Show>
 
               {/* Speaker Test */}
               <div class="mt-3">
                 <button
                   onClick={testSpeaker}
                   disabled={isTestingSpeaker()}
-                  class="px-4 py-2 rounded-xl font-medium text-sm transition-all duration-200"
-                  classList={{
-                    "bg-accent-primary text-on-accent hover:bg-accent-primary/90":
-                      !isTestingSpeaker(),
-                    "bg-accent-primary/50 text-on-accent cursor-not-allowed":
-                      isTestingSpeaker(),
-                  }}
+                  class="px-4 py-2 rounded-xl font-medium text-sm transition-all duration-200 bg-accent-primary text-on-accent hover:bg-accent-primary/90 state-disabled"
                 >
                   {isTestingSpeaker() ? t("voice.audio.playing") : t("voice.audio.testSpeaker")}
                 </button>
@@ -688,6 +743,8 @@ const AudioDeviceSettings: Component<AudioDeviceSettingsProps> = (props) => {
                 </p>
               </div>
             </div>
+
+            <ShowAllAlsaDevicesToggle devices={[...devices().inputs, ...devices().outputs]} />
           </Show>
         </div>
 
