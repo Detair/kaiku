@@ -23,17 +23,16 @@ class KeyInvalidatedException : Exception("approval key invalidated")
 class NoApprovalKeyException : Exception("no approval key")
 
 /**
- * Whether a Keystore lookup failure means Android invalidated the key: keystore2
- * reports `KEY_PERMANENTLY_INVALIDATED` at `getKey()` as an
- * [java.security.UnrecoverableKeyException] carrying only the message ("User
- * changed or deleted their auth credentials"), older Keystores as
- * [KeyPermanentlyInvalidatedException]. Any other failure (a busy or broken
- * Keystore) is not an invalidation: the key is never forgotten for it.
+ * Whether a Keystore failure is Android's permanent invalidation of the key: a
+ * [KeyPermanentlyInvalidatedException] anywhere in the cause chain. Only this
+ * forgets the key (Fable R2). `android.security.KeyStoreException` has no public
+ * error code for it (API 33–35 list none), and a message that merely reads like
+ * one ("…invalidated…", "…auth credentials…") is not proof: such failures stay
+ * ordinary, non-destructive Keystore failures. A removed screen lock is caught
+ * before any key use by [uvPreflight] (no secure lock screen).
  */
-internal fun isInvalidatedKeyFailure(e: Throwable): Boolean = generateSequence(e) { it.cause }.any { t ->
-    t is KeyPermanentlyInvalidatedException ||
-        t.message?.let { m -> m.contains("invalidated", ignoreCase = true) || m.contains("auth credentials", ignoreCase = true) } == true
-}
+internal fun isInvalidatedKeyFailure(e: Throwable): Boolean =
+    generateSequence(e) { it.cause }.take(16).any { it is KeyPermanentlyInvalidatedException }
 
 /** A new key: its SPKI DER, the attestation chain (leaf first) and how it verifies its user. */
 class GeneratedKey(val spki: ByteArray, val attestationChain: List<ByteArray>, val uvClass: UvClass)

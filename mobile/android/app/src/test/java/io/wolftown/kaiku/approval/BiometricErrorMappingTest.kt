@@ -35,11 +35,17 @@ class BiometricErrorMappingTest {
         assertNull(uvPreflight(hasKey = true, deviceSecure = true))
     }
 
-    @Test fun `only an invalidated key's lookup failure counts as invalidation`() {
-        // keystore2 turns KEY_PERMANENTLY_INVALIDATED into this UnrecoverableKeyException at getKey().
-        assertTrue(isInvalidatedKeyFailure(UnrecoverableKeyException("User changed or deleted their auth credentials")))
-        assertTrue(isInvalidatedKeyFailure(UnrecoverableKeyException("x").apply { initCause(RuntimeException("Key permanently invalidated")) }))
+    @Test fun `only a real permanent invalidation counts, never a message that reads like one`() {
+        // Fable R2: text is no proof; such failures must not forget the key.
+        assertFalse(isInvalidatedKeyFailure(UnrecoverableKeyException("User changed or deleted their auth credentials")))
+        assertFalse(isInvalidatedKeyFailure(UnrecoverableKeyException("x").apply { initCause(RuntimeException("Key permanently invalidated")) }))
         assertFalse(isInvalidatedKeyFailure(UnrecoverableKeyException("Failed to obtain information about key").apply { initCause(RuntimeException("System error")) }))
         assertFalse(isInvalidatedKeyFailure(UnrecoverableKeyException(null)))
+        // The platform's own exception, also wrapped.
+        val invalidated: android.security.keystore.KeyPermanentlyInvalidatedException = io.mockk.mockk {
+            io.mockk.every { cause } returns null
+        }
+        assertTrue(isInvalidatedKeyFailure(invalidated))
+        assertTrue(isInvalidatedKeyFailure(UnrecoverableKeyException("x").apply { initCause(invalidated) }))
     }
 }

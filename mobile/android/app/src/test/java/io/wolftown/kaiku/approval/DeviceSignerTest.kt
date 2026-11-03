@@ -96,12 +96,29 @@ class DeviceSignerTest {
         assertEquals(1, hooked)
     }
 
-    @Test fun `an invalidated key reported in another shape still counts as invalidated`() = runTest {
+    @Test fun `a failure that only reads like an invalidation never forgets the key`() = runTest {
         keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
         var reported = 0
         val throwing = object : UserVerifier {
             override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult =
                 throw java.security.UnrecoverableKeyException("User changed or deleted their auth credentials")
+        }
+        val out = DeviceSigner(keyStore, throwing, checks) { reported++ }
+            .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT, "qr"), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, bytes(0xa0..0xbf), prompt)
+        assertEquals(SignOutcome.Uv(UvResult.Failed("KEYSTORE_UnrecoverableKeyException")), out)
+        assertEquals(0, reported)
+        assertTrue(keyStore.hasKey())
+    }
+
+    @Test fun `the platform's permanent invalidation forgets the key`() = runTest {
+        keyStore.generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use)
+        var reported = 0
+        val invalidated: android.security.keystore.KeyPermanentlyInvalidatedException = io.mockk.mockk {
+            io.mockk.every { cause } returns null
+        }
+        val throwing = object : UserVerifier {
+            override suspend fun sign(activity: FragmentActivity, prompt: UvPrompt, message: ByteArray): UvResult =
+                throw java.security.UnrecoverableKeyException("x").apply { initCause(invalidated) }
         }
         val out = DeviceSigner(keyStore, throwing, checks) { reported++ }
             .sign(activity, challengeFor(SigKind.LOGIN, 1, V01_CONTEXT, "qr"), SigKind.LOGIN, USER_ID, DEVICE_ID, Decision.APPROVE, bytes(0xa0..0xbf), prompt)
