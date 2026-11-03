@@ -164,6 +164,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - `GEOIP_API_URL`.
 - The 'appear offline' status is no longer available.
+- Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
 - The role editor no longer throws away unsaved name, colour and permission edits when the same role is updated in the background (for example by another admin or a reconnect).

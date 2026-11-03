@@ -27,6 +27,7 @@ fun HomeScreen(
     onNavigateToVoiceChannel: (channelId: String) -> Unit,
     onNavigateToSettings: () -> Unit = {},
     onNavigateToDms: () -> Unit = {},
+    onNavigateToScan: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val guilds by viewModel.guilds.collectAsState()
@@ -80,6 +81,10 @@ fun HomeScreen(
                         }
                     },
                     actions = {
+                        // Labelled, one tap: scan a PC's sign-in code or a setup code (L2-A7).
+                        TextButton(onClick = onNavigateToScan) {
+                            Text(stringResource(R.string.scan_action), color = MaterialTheme.colorScheme.onSurface)
+                        }
                         IconButton(onClick = onNavigateToDms) {
                             Icon(Icons.Default.Email, contentDescription = stringResource(R.string.home_direct_messages))
                         }

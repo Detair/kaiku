@@ -485,37 +485,6 @@ class AuthRepository @Inject constructor(
         }
     }
 
-    /**
-     * Redeems a QR login token scanned from the desktop client.
-     *
-     * Exchanges the token for auth credentials via an absolute URL, then
-     * saves the server URL (needed by KaikuHttpClient for base URL) before
-     * calling getMe. Tokens are only persisted after getMe succeeds.
-     */
-    suspend fun redeemQrToken(serverUrl: String, token: String): Result<User> {
-        signedInRefusal()?.let { return it }
-        return try {
-            val authResponse = authApi.redeemQrToken(serverUrl, token)
-
-            // Save server URL before getMe — KaikuHttpClient needs it for the base URL
-            tokenStorage.saveServerUrl(serverUrl)
-
-            val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
-
-            // The previous session's teardown finishes before this one starts.
-            sessionTeardown.awaitIdle()
-            if (!installSession(authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id)) {
-                return Result.failure(AlreadySignedInException())
-            }
-            Result.success(user)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            tokenStorage.clear()
-            Result.failure(e)
-        }
-    }
-
     /** A session runs and its tokens are stored. */
     fun hasLiveSession(): Boolean =
         authState.session.value is AuthSession.LoggedIn && tokenStorage.getAccessToken() != null

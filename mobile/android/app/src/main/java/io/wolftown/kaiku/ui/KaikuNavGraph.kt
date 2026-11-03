@@ -1,6 +1,5 @@
 package io.wolftown.kaiku.ui
 
-import android.net.Uri
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,13 +21,14 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import io.wolftown.kaiku.data.keydevice.KeyDeviceState
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.ui.auth.ConfirmItsYouScreen
+import io.wolftown.kaiku.domain.ScanMode
+import io.wolftown.kaiku.navigation.ScanHandoff
+import io.wolftown.kaiku.ui.scan.ScanScreen
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import io.wolftown.kaiku.navigation.PendingNavigationRules
 import io.wolftown.kaiku.ui.auth.ChangePasswordScreen
 import io.wolftown.kaiku.ui.auth.LoginScreen
-import io.wolftown.kaiku.ui.auth.QrRedeemScreen
-import io.wolftown.kaiku.ui.auth.QrScannerScreen
 import io.wolftown.kaiku.ui.auth.RegisterScreen
 import io.wolftown.kaiku.ui.auth.ServerUrlScreen
 import io.wolftown.kaiku.ui.channel.TextChannelScreen
@@ -63,7 +63,7 @@ fun KaikuNavGraph(
 
     // Auth guard: redirect to login when logged out from an authenticated screen
     val authRoutes = setOf(
-        "server_url", "login", "register", "change_password", "qr_scanner", "qr_redeem/{serverUrl}/{token}",
+        "server_url", "login", "register", "change_password", SCAN_SETUP_ROUTE,
         CONFIRM_ROUTE,
     )
     LaunchedEffect(isLoggedIn) {
@@ -135,7 +135,7 @@ fun KaikuNavGraph(
                             }
                         },
                         onScanQrCode = {
-                            navController.navigate("qr_scanner")
+                            navController.navigate(SCAN_SETUP_ROUTE)
                         },
                         onBack = {
                             navController.navigate("login") {
@@ -204,7 +204,8 @@ fun KaikuNavGraph(
                         },
                         onNavigateToDms = {
                             navController.navigate("dms")
-                        }
+                        },
+                        onNavigateToScan = { navController.navigate(SCAN_ROUTE) },
                     )
                 }
 
@@ -213,7 +214,8 @@ fun KaikuNavGraph(
                         onOpenDm = { channelId ->
                             navController.navigate("channel/$channelId")
                         },
-                        onNavigateBack = { navController.popBackStack() }
+                        onNavigateBack = { navController.popBackStack() },
+                        onScan = { navController.navigate(SCAN_ROUTE) },
                     )
                 }
 
@@ -264,33 +266,30 @@ fun KaikuNavGraph(
                     )
                 }
 
-                composable("qr_scanner") {
-                    QrScannerScreen(
-                        onQrScanned = { serverUrl, token ->
-                            navController.navigate(
-                                "qr_redeem/${Uri.encode(serverUrl)}/${Uri.encode(token)}"
-                            )
+                composable(SCAN_ROUTE) {
+                    ScanScreen(
+                        mode = ScanMode.SIGN_IN_OR_SETUP,
+                        onLogin = { payload ->
+                            ScanHandoff.putLogin(payload)
+                            navController.navigate(APPROVE_LOGIN_ROUTE) { popUpTo(SCAN_ROUTE) { inclusive = true } }
                         },
-                        onNavigateBack = { navController.popBackStack() }
+                        onSetup = { payload ->
+                            ScanHandoff.putSetup(payload)
+                            navController.navigate(SETUP_FLOW_ROUTE) { popUpTo(SCAN_ROUTE) { inclusive = true } }
+                        },
+                        onBack = { navController.popBackStack() },
                     )
                 }
 
-                composable("qr_redeem/{serverUrl}/{token}") { backStackEntry ->
-                    val serverUrl = Uri.decode(
-                        backStackEntry.arguments?.getString("serverUrl") ?: ""
-                    )
-                    val token = Uri.decode(
-                        backStackEntry.arguments?.getString("token") ?: ""
-                    )
-                    QrRedeemScreen(
-                        serverUrl = serverUrl,
-                        token = token,
-                        onSuccess = {
-                            navController.navigate("home") {
-                                popUpTo(0) { inclusive = true }
-                            }
+                composable(SCAN_SETUP_ROUTE) {
+                    ScanScreen(
+                        mode = ScanMode.SETUP_ONLY,
+                        onLogin = {},
+                        onSetup = { payload ->
+                            ScanHandoff.putSetup(payload)
+                            navController.navigate(SETUP_FLOW_ROUTE) { popUpTo(SCAN_SETUP_ROUTE) { inclusive = true } }
                         },
-                        onError = { navController.popBackStack() }
+                        onBack = { navController.popBackStack() },
                     )
                 }
             }
@@ -318,3 +317,15 @@ const val CONFIRM_ROUTE = "confirm_its_you"
 
 /** The B.4 renewal prompt over a running session. */
 const val CONFIRM_RENEW_ROUTE = "confirm_its_you_renew"
+
+/** The one scanner in the full app (sign-in and setup codes). */
+const val SCAN_ROUTE = "scan"
+
+/** The scanner for setup codes only (before sign-in). */
+const val SCAN_SETUP_ROUTE = "scan_setup"
+
+/** Confirming a PC sign-in after a scan (Task B8). */
+const val APPROVE_LOGIN_ROUTE = "approve_login"
+
+/** Setting up this phone from a setup code or link (Task B9). */
+const val SETUP_FLOW_ROUTE = "setup_flow"

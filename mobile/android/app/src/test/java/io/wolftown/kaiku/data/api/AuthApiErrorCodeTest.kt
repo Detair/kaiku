@@ -44,12 +44,6 @@ class AuthApiErrorCodeTest {
     }
 
     @Test
-    fun `qr redeem error carries the server code`() = runTest {
-        val api = api(HttpStatusCode.Unauthorized, """{"error":"INVALID_TOKEN","message":"Expired"}""")
-        assertEquals("INVALID_TOKEN", codeOf { api.redeemQrToken("https://kaiku.example.com", "t") })
-    }
-
-    @Test
     fun `oidc exchange error carries the server code`() = runTest {
         val api = api(HttpStatusCode.BadRequest, """{"error":"OIDC_FAILED","message":"Bad code"}""")
         assertEquals("OIDC_FAILED", codeOf { api.exchangeOidcCode("c", "s", "kaiku://auth/callback") })

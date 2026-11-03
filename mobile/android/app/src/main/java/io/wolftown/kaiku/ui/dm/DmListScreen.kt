@@ -36,6 +36,7 @@ import io.wolftown.kaiku.ui.shared.resolveServerUrl
 fun DmListScreen(
     onOpenDm: (channelId: String) -> Unit,
     onNavigateBack: () -> Unit,
+    onScan: () -> Unit = {},
     viewModel: DmListViewModel = hiltViewModel()
 ) {
     val conversations by viewModel.conversations.collectAsState()
@@ -53,6 +54,11 @@ fun DmListScreen(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = stringResource(R.string.common_back)
                         )
+                    }
+                },
+                actions = {
+                    TextButton(onClick = onScan) {
+                        Text(stringResource(R.string.scan_action), color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
             )

@@ -22,6 +22,7 @@ import io.wolftown.kaiku.data.keydevice.PrefsKeyDeviceStore
 import io.wolftown.kaiku.data.local.KeystoreValueCipher
 import io.wolftown.kaiku.data.local.KeystoreWrappedPreferences
 import io.wolftown.kaiku.data.local.TokenStorage
+import io.wolftown.kaiku.domain.KaikuPayloads
 import io.wolftown.kaiku.push.DeviceIdStore
 import javax.inject.Singleton
 
@@ -47,7 +48,7 @@ object ApprovalModule {
     @Provides
     fun provideChallengeVerifier(tokenStorage: TokenStorage): ChallengeVerifier =
         ChallengeVerifier(
-            pinnedOrigin = { tokenStorage.getServerUrl() },
+            pinnedOrigin = { tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) },
             nowSeconds = { System.currentTimeMillis() / 1000 },
         )
 

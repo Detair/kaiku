@@ -121,13 +121,5 @@ class AuthErrorMapperTest {
         assertEquals(R.string.auth_login_already_signed_in, AuthErrorMapper.login(e))
         assertEquals(R.string.auth_login_already_signed_in, AuthErrorMapper.register(e))
         assertEquals(R.string.auth_login_already_signed_in, AuthErrorMapper.oidc(e))
-        assertEquals(R.string.auth_login_already_signed_in, AuthErrorMapper.qrRedeem(e))
-    }
-
-    @Test
-    fun `qr redeem maps network and falls back to the qr copy`() {
-        assertEquals(R.string.errors_network, AuthErrorMapper.qrRedeem(IOException("down")))
-        val e = ApiException(HttpStatusCode.Unauthorized, "server text", "INVALID_TOKEN")
-        assertEquals(R.string.qr_redeem_failed, AuthErrorMapper.qrRedeem(e))
     }
 }

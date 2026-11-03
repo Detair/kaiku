@@ -43,13 +43,9 @@
     <string name="auth_register_failed">Registration failed. Please try again.</string>
 
     <!-- QR sign-in -->
-    <string name="qr_scanner_title">Scan QR code</string>
-    <string name="qr_scanner_hint">Point your camera at the QR code</string>
     <string name="qr_scanner_permission_required">Camera permission is required to scan QR codes</string>
     <string name="qr_scanner_grant_permission">Grant permission</string>
     <string name="qr_scanner_camera_failed">Couldn\'t start the camera.</string>
-    <string name="qr_redeem_signing_in">Signing in…</string>
-    <string name="qr_redeem_failed">That QR code has expired or was already used.</string>
 
     <!-- Request errors -->
     <string name="errors_rate_limited">Too many attempts. Please wait a moment and try again.</string>
@@ -63,7 +59,7 @@
     <string name="auth_server_address_label">Server address</string>
     <string name="auth_server_address_hint">kaiku.example.com</string>
     <string name="auth_server_connect">Connect</string>
-    <string name="auth_server_scan_qr">Scan QR code</string>
+    <string name="auth_server_scan_qr">Scan setup code</string>
     <string name="auth_server_invalid_address">That doesn\'t look like a server address. Check it and try again.</string>
     <string name="auth_server_not_secure">Only secure addresses (https) are allowed.</string>
     <string name="auth_server_not_kaiku">That address doesn\'t seem to be a Kaiku server.</string>
@@ -307,4 +303,19 @@
     <string name="security_network_error">No connection to the server. Check the internet connection and try again.</string>
     <string name="security_locked_out">Too many tries. Unlock your phone first, then try again.</string>
     <string name="security_sign_in_failed">That didn\'t work. Try again.</string>
+
+    <!-- Scanner (sign-in and setup codes, L2-A7) -->
+    <string name="scan_title">Scan a Kaiku code</string>
+    <string name="scan_setup_title">Scan the setup code</string>
+    <string name="scan_hint">Hold the phone so the code is inside the camera picture.</string>
+    <string name="scan_setup_hint">Scan the setup code your admin or your other device shows.</string>
+    <string name="scan_again">Scan again</string>
+    <string name="scan_other_server">This code belongs to another Kaiku server. Nothing was sent.</string>
+    <string name="scan_sign_in_code_in_setup">This is a sign-in code. To set up this phone you need a setup code.</string>
+    <string name="scan_not_a_key">This phone is not your Kaiku key yet.</string>
+    <string name="scan_may_approve_off">Your account can\'t confirm sign-ins on other devices. Ask your admin.</string>
+    <string name="scan_needs_update">This code needs a newer Kaiku. Update Kaiku on this phone.</string>
+    <string name="scan_old_kaiku_code">This code comes from an older Kaiku on the PC. Update Kaiku there.</string>
+    <string name="scan_not_kaiku">This is not a Kaiku code.</string>
+    <string name="scan_action">Scan</string>
 </resources>

@@ -41,10 +41,6 @@ object AuthErrorMapper {
     @StringRes
     fun oidc(e: Throwable): Int = common(e) ?: R.string.auth_login_sso_failed
 
-    /** QR sign-in: a rejected or expired code has its own copy. */
-    @StringRes
-    fun qrRedeem(e: Throwable): Int = common(e) ?: R.string.qr_redeem_failed
-
     /** Failures that read the same in every flow, or null when the flow's own fallback applies. */
     @StringRes
     private fun common(e: Throwable): Int? = when {

@@ -26,23 +26,6 @@ class AuthRepositoryAccountSwitchTest {
     }
 
     @Test
-    fun `qr redeem while signed in is refused and changes nothing`() = runTest {
-        val authState = AuthState(backgroundScope)
-        authState.setLoggedIn("user-a")
-        val running = authState.session.value
-        val repository = AuthRepository(authApi, tokenStorage, authState, pushRegistrar, noTeardown(authState))
-
-        val result = repository.redeemQrToken("https://b.example.com", "qr-token-b")
-
-        assertTrue(result.exceptionOrNull() is AlreadySignedInException)
-        coVerify(exactly = 0) { authApi.redeemQrToken(any(), any()) }
-        verify(exactly = 0) { tokenStorage.saveServerUrl(any()) }
-        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
-        verify(exactly = 0) { tokenStorage.clear() }
-        assertEquals(running, authState.session.value)
-    }
-
-    @Test
     fun `oidc and password sign-ins while signed in are refused`() = runTest {
         val authState = AuthState(backgroundScope)
         authState.setLoggedIn("user-a")
