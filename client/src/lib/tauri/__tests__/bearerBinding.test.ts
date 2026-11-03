@@ -34,6 +34,15 @@ describe("the browser bearer stays with its server", () => {
     expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
   });
 
+  it("a token without a bound server is never sent (fail closed, Fable R5)", async () => {
+    browserState.serverUrl = "https://chat.example.com";
+    browserState.accessToken = "at-unbound";
+    browserState.tokenServerUrl = null;
+    await httpRequest("GET", "/api/guilds");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
   it("the session's own server still gets it", async () => {
     setBrowserToken("https://chat.example.com/", "at-session", 900);
     await httpRequest("GET", "/api/guilds");

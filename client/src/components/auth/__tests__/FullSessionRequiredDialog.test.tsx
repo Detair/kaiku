@@ -47,6 +47,7 @@ describe("FullSessionRequiredDialog", () => {
     window.addEventListener(FULL_SESSION_REQUIRED_EVENT, seen);
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "at";
+    browserState.tokenServerUrl = "https://chat.example.com";
     fetchMock.mockImplementation(async () => json(403, { error: "FULL_SESSION_REQUIRED", message: "x" }));
     render(() => <FullSessionRequiredDialog />);
     await expect(httpRequest("DELETE", "/api/approval-devices/x")).rejects.toMatchObject({
@@ -77,6 +78,7 @@ describe("FullSessionRequiredDialog", () => {
   it("replaceSessionWithPasskey ends the old session with credentials omit", async () => {
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "old-token";
+    browserState.tokenServerUrl = "https://chat.example.com";
     const signIn = passkeySignIn.mockImplementation(async () => {
       browserState.accessToken = "new-token";
       return {
@@ -107,6 +109,7 @@ describe("FullSessionRequiredDialog", () => {
     // LP's attempt generations also cover the probation banner's sign-in.
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "old-token";
+    browserState.tokenServerUrl = "https://chat.example.com";
     setAuthState({ user: { id: "u1", username: "a", session: { id: "s1", assurance: "probation" } } as never });
     let finish!: (v: unknown) => void;
     passkeySignIn.mockImplementationOnce(() => new Promise((r) => (finish = r)));
@@ -128,6 +131,7 @@ describe("FullSessionRequiredDialog", () => {
     // Argon review 6 #1 (C29 amendment): the server answers PASSKEY_USER_MISMATCH.
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "old-token";
+    browserState.tokenServerUrl = "https://chat.example.com";
     setAuthState({ user: { id: "u1", username: "oma", session: { id: "s1", assurance: "probation" } } as never });
     passkeySignIn.mockImplementation(() => new Promise(() => {}));
     void replaceSessionWithPasskey();
@@ -142,6 +146,7 @@ describe("FullSessionRequiredDialog", () => {
     resetMeSecurity();
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "at";
+    browserState.tokenServerUrl = "https://chat.example.com";
     setAuthState({ user: { id: "u1", username: "oma", session: { id: "s1", assurance: "probation" } } as never });
     fetchMock.mockImplementation(async () =>
       json(200, {
@@ -182,6 +187,7 @@ describe("FullSessionRequiredDialog", () => {
   it("a passkey of another account reloads the app instead of mixing two accounts", async () => {
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "old-token";
+    browserState.tokenServerUrl = "https://chat.example.com";
     setAuthState({ user: { id: "u1", username: "a", session: { id: "s1", assurance: "probation" } } as never });
     const reload = vi.fn();
     const original = window.location;
@@ -221,6 +227,7 @@ describe("FullSessionRequiredDialog passkey offer (Argon review)", () => {
     resetMeSecurity();
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "at";
+    browserState.tokenServerUrl = "https://chat.example.com";
     fetchMock.mockImplementation(async () => json(200, overview(0)));
     render(() => <FullSessionRequiredDialog />);
     showFullSessionRequired();

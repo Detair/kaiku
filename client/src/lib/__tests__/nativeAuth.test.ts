@@ -299,6 +299,7 @@ describe("browser auth", () => {
     await common.refreshAccessToken();
     fetchMock.mockReset();
     common.browserState.accessToken = "browser-tok";
+    common.browserState.tokenServerUrl = common.browserState.serverUrl;
     fetchMock.mockResolvedValue(respond(200, { ok: true }));
 
     await common.httpRequest("GET", "/api/guilds");

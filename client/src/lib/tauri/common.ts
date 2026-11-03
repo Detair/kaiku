@@ -246,12 +246,16 @@ function trimBase(url: string): string {
   return url.trim().replace(/\/+$/, "");
 }
 
-/** Browser: the access token, only for the server that issued it. */
+/**
+ * Browser: the access token, only for the server that issued it. A token
+ * without a bound server is never sent (fail closed, Fable R5): every setter
+ * binds it (`setBrowserToken`, the refresh).
+ */
 export function browserBearer(serverUrl: string = browserState.serverUrl): string | null {
   const token = browserState.accessToken;
-  if (!token) return null;
   const bound = browserState.tokenServerUrl;
-  return bound === null || bound === trimBase(serverUrl) ? token : null;
+  if (!token || bound === null) return null;
+  return bound === trimBase(serverUrl) ? token : null;
 }
 
 /** Browser: install a session's access token, bound to its server. */

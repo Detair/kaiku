@@ -39,6 +39,7 @@ beforeEach(() => {
   tauriMode.on = false;
   browserState.serverUrl = "https://chat.example.com";
   browserState.accessToken = "at";
+  browserState.tokenServerUrl = "https://chat.example.com";
 });
 
 describe("enrolment wrappers", () => {
