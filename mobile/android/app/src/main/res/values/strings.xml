@@ -416,4 +416,55 @@
     <!-- Admin setup results (F5c) -->
     <string name="admin_setup_done_new">Active now.</string>
     <string name="admin_setup_done_existing">Ready at %1$s (24 hours). They, their recovery contact and the admins were told.</string>
+
+    <!-- Security settings on the key phone -->
+    <string name="security_title">Security</string>
+    <string name="security_this_phone">This phone</string>
+    <string name="security_this_phone_key">This phone is your Kaiku key.</string>
+    <string name="security_this_phone_not_key">This phone is not your Kaiku key. Sign-ins here are for chat only.</string>
+    <string name="security_uv_biometric">Fingerprint or screen lock</string>
+    <string name="security_uv_screen_lock">Screen lock</string>
+    <string name="security_sign_out">Sign out</string>
+    <string name="security_key_devices">Your phones</string>
+    <string name="security_key_device_pending">Ready at %1$s</string>
+    <string name="security_key_device_this">This phone</string>
+    <string name="security_remove">Remove</string>
+    <string name="security_add_phone">Add a phone</string>
+    <string name="security_passkeys">Passkeys</string>
+    <string name="security_passkeys_count">Passkeys on this account: %1$d</string>
+    <string name="security_sessions">Where you\'re signed in</string>
+    <string name="security_session_full">Full sign-in</string>
+    <string name="security_session_probation">Chat only</string>
+    <string name="security_session_last_used">Last used %1$s</string>
+    <string name="security_session_end">End</string>
+    <string name="security_session_remove_device">Remove device</string>
+    <string name="security_sessions_others">all other sessions</string>
+    <string name="security_sessions_end_others">Sign out everywhere else</string>
+    <string name="security_recovery_codes">Recovery codes</string>
+    <string name="security_recovery_codes_left">%1$d recovery codes left</string>
+    <string name="security_recovery_codes_create">Create new codes</string>
+    <string name="security_recovery_codes_new">Write these codes down and keep them somewhere safe. They are shown only now.</string>
+    <string name="security_recovery_codes_done">I\'ve written them down</string>
+    <string name="security_contact">Recovery contact</string>
+    <string name="security_contact_none">No recovery contact yet.</string>
+    <string name="security_contact_waiting">%1$s · Waiting for confirmation</string>
+    <string name="security_contact_confirmed">%1$s · Confirmed</string>
+    <string name="security_contact_choose">Choose</string>
+    <string name="security_contact_pick_title">Choose a recovery contact</string>
+    <string name="security_contact_pick_empty">Nobody from your direct messages can be chosen yet.</string>
+    <string name="security_contact_invalid">Choose someone who is not an admin</string>
+    <string name="security_password_state">Password: %1$s</string>
+    <string name="security_totp_state">Authenticator app: %1$s</string>
+    <string name="security_factor_none">not set</string>
+    <string name="security_factor_active">on</string>
+    <string name="security_factor_disabled">switched off</string>
+    <string name="security_factors_elsewhere">Change these on the web or the desktop app with a passkey.</string>
+    <string name="security_last_strong">This is your only phone or passkey. Add another one first.</string>
+    <string name="security_sign_out_others_title">Sign out everywhere else?</string>
+    <string name="security_sign_out_others_body">You changed how you sign in. Sign out all other sessions now?</string>
+
+    <!-- Security settings: more -->
+    <string name="security_factors_title">Password and authenticator app</string>
+    <string name="security_remove_phone_explain">This phone stops being your Kaiku key and is signed out. You confirm with your screen lock.</string>
+    <string name="security_log_open">Security log</string>
 </resources>

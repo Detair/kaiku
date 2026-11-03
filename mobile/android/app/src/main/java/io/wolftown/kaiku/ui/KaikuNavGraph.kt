@@ -27,6 +27,7 @@ import io.wolftown.kaiku.ui.scan.ScanScreen
 import io.wolftown.kaiku.ui.approval.LoginApprovalScreen
 import io.wolftown.kaiku.ui.approval.AddPhoneScreen
 import io.wolftown.kaiku.ui.approval.IssuerMode
+import io.wolftown.kaiku.ui.settings.security.SecuritySettingsScreen
 import io.wolftown.kaiku.navigation.PendingSetupLinks
 import io.wolftown.kaiku.ui.auth.setup.SetupEntry
 import io.wolftown.kaiku.ui.auth.setup.SetupFlowScreen
@@ -257,7 +258,8 @@ fun KaikuNavGraph(
                             navController.navigate("login") {
                                 popUpTo(0) { inclusive = true }
                             }
-                        }
+                        },
+                        onOpenSecurity = { navController.navigate(SECURITY_SETTINGS_ROUTE) },
                     )
                 }
 
@@ -304,6 +306,15 @@ fun KaikuNavGraph(
                             navController.navigate(SCAN_ROUTE) { popUpTo(APPROVE_LOGIN_ROUTE) { inclusive = true } }
                         },
                         onDone = { navController.popBackStack() },
+                    )
+                }
+
+                composable(SECURITY_SETTINGS_ROUTE) {
+                    SecuritySettingsScreen(
+                        onBack = { navController.popBackStack() },
+                        onAddPhone = { navController.navigate(ADD_PHONE_ROUTE) },
+                        onSignedOut = { navController.navigate("login") { popUpTo(0) { inclusive = true } } },
+                        onOpenSecurityLog = {},
                     )
                 }
 
@@ -377,3 +388,6 @@ const val SETUP_PENDING_ROUTE = "setup_pending"
 
 /** "Add a phone" on a key phone (F5a issuer). */
 const val ADD_PHONE_ROUTE = "add_phone"
+
+/** Security settings on the phone (Task B11). */
+const val SECURITY_SETTINGS_ROUTE = "settings/security"
