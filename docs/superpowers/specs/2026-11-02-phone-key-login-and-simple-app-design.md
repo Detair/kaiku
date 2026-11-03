@@ -1,6 +1,6 @@
 # Kaiku: phone-as-key login (v1.0) and simple Android app (v1.2)
 
-**Status:** Revision 5 — frozen for C26–C29 and implementation planning (2026-11-03); design reviews: Fable READY, Gemini Argon READY, Codex READY WITH FIXES (fix applied).
+**Status:** Revision 5 — frozen for C26–C29 and implementation planning (2026-11-03); design reviews: Fable READY, Gemini Argon READY, Codex READY (fix applied and confirmed).
 
 First draft 2026-11-02. Revision 1 added the maintainer decisions, a standards check and the
 approvals model; revisions 2 and 3 resolved two rounds of three independent design reviews (Fable,
@@ -122,7 +122,7 @@ revisions.
   Android Credential Manager docs). B.1.
 - **CC6 (rev 4): sessions.** Refresh rotation with reuse detection and one idempotent retry a day;
   ending a session takes effect at once (the database is authoritative: every request and every
-  WebSocket re-check reads the committed session state through a commit-invalidated cache; the `sid`
+  WebSocket re-check reads the committed session row by primary key, no positive cache; the `sid`
   denylist, written before commit, only speeds up rejection **(rev 5)**; connections closed);
   absolute caps with the NIST deviation and its consequence stated; a concurrent-session limit;
   device-key sign-in with UV after a lapse, only while active; a plain sign-out keeps the
@@ -1675,10 +1675,11 @@ FIXES. All three confirmed the round-3 resolutions and found no new blocker; Cod
 
 - **Codex, required:** the B.4 restart/rebuild race (Valkey restarts after the denylist write and
   before the revoking commit; the rebuild sees no `ended_at` and the stolen JWT is accepted). Fixed:
-  every authenticated request and every connection re-check reads committed session state, through
-  a per-process positive cache (≤5 s) invalidated by a `NOTIFY` that PostgreSQL delivers at the
-  revoking commit; the denylist only speeds up rejection and its absence never makes a session
-  valid; marker key and fail-closed rebuild removed (B.4, CC6; row 25).
+  every authenticated request and every connection re-check reads the committed session row by
+  primary key, with no positive cache (a first rev-5 draft used a NOTIFY-invalidated cache; Codex
+  showed a post-commit window, so it was removed); the denylist only speeds up rejection and its
+  absence never makes a session valid; marker key and fail-closed rebuild removed (B.4, CC6; row
+  25). Codex confirmation: READY.
 - **Fable, optional, both adopted:** a recovery contact confirmed less than one delay period before
   a request is not a route for it (SM3, Part C, F8 checklist); an owner's own "That wasn't me"
   during their bootstrap voids their request through the rule-2 cascade, documented, with a
@@ -1719,7 +1720,7 @@ cite, C #n, its minors in order as C m1–m6). Overlapping findings are merged.
 | 22 | A `request` child completes the request at once | A M6 | Fixed: `pending` until "Finish" (F6, SM2, SM3) |
 | 23 | "That wasn't me" on a dictated enrolment revokes the deceived approver | A M8 | Fixed (B.2) |
 | 24 | Cross-account authority is not serialised | C M2 | Fixed: id-ordered locks; demotion voids that admin's requests (B.7) |
-| 25 | Database/Valkey revocation order | C M3 | Fixed (B.4). Round 4: C PARTLY (a Valkey restart before the revoking commit loses the entry, and the rebuild cannot see it) → fixed in rev 5: requests and connection re-checks read committed session state through a commit-invalidated positive cache; the denylist only speeds up rejection (B.4, CC6) |
+| 25 | Database/Valkey revocation order | C M3 | Fixed (B.4). Round 4: C PARTLY (a Valkey restart before the revoking commit loses the entry, and the rebuild cannot see it) → fixed in rev 5: requests and connection re-checks read the committed session row by primary key, no positive cache; the denylist only speeds up rejection (B.4, CC6) |
 | 26 | An unacknowledged contact counts as a safeguard | C M6; C #27 | Fixed: confirmation (Part C, SM3); the round-2 rejection is withdrawn |
 | 27 | The session deviation is understated | C M7 | Fixed (B.4, B.6.12) |
 | 28 | The refresh-retry explanation is wrong | C #33; C m1 | Fixed (B.4, B.6.10) |
