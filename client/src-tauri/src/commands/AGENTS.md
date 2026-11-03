@@ -31,7 +31,8 @@ clipboard.
 | File | Purpose | Key Commands |
 |------|---------|--------------|
 | `auth.rs` | Authentication, registration, logout | `login`, `register`, `logout`, `get_current_user` |
-| `oidc_loopback.rs` | Hardened loopback listener + secrets for the OIDC flows | — (used by `oidc_authorize`, `oidc_link_identity`) |
+| `oidc_loopback.rs` | Hardened GET loopback listener + secrets | — (used by `oidc_link_identity`; secrets by every desktop flow) |
+| `oidc_delivery.rs` | Desktop OIDC sign-in and request factor through LP's loopback POST (C29 step 8) | — (used by `oidc_authorize`, `request_oidc_factor`) |
 | `login_flow.rs` | Login attempts (C27, SM1): phone QR, password/OIDC confirmation, TOTP step | `login_attempt_create`, `login_attempt_poll`, `login_attempt_collect`, `login_attempt_totp`, `login_attempt_cancel` |
 | `pre_session.rs` | Account requests and registration tickets (C27) | `account_request_start`, `request_oidc_factor`, `pre_session_request` |
 | `crypto.rs` | E2EE encryption operations (Olm + Megolm) | `init_e2ee`, `encrypt_message`, `decrypt_message`, `create_megolm_session`, `encrypt_group_message`, `decrypt_group_message` |
@@ -45,7 +46,8 @@ clipboard.
 - **Never a session from a password.** `login` returns the `LoginStep` JSON
   (`confirmation_required` / `totp_required`); `mfa_code` is gone. Sessions
   start only at `login_attempt_collect`, `login_attempt_totp` (both probation)
-  and LP's passkey sign-in (full), all through `SessionManager::adopt_tokens`,
+  and LP's passkey sign-in (full, `adopt_tokens_for`), all through
+  `SessionManager::adopt_tokens_checked`,
   which ends a session that was live before (best effort `POST /auth/logout`
   with the old bearer and refresh token).
 - **Attempt verifiers stay in Rust** (`session/attempts.rs`): `login` and
@@ -70,11 +72,17 @@ clipboard.
 - **Refresh end reasons:** 401 `SESSION_REUSED` → `SessionEvent::Expired(Reused)`,
   any other 401/403 → `Expired(Expired)`; the `auth:session_expired` event
   carries `{reason}`.
-- **Waiting for LP** (C29 step 8): the OIDC sign-in still uses the GET
-  hand-back of `oidc_loopback`; after the LP rebase it moves to
-  `loopback_post::{bind, wait_for_post}` and `open_browser(app, url,
-  settings.passkey_browser)`, and `request_oidc_factor` (now refusing with
-  `OIDC_UNAVAILABLE`) gets the same delivery.
+- **OIDC delivery** (C29 step 8, `oidc_delivery.rs`): `oidc_authorize` and
+  `request_oidc_factor` bind LP's `loopback_post` listener first, start with
+  `loopback_port` + `callback_path` + `client_challenge` (no `redirect_uri`;
+  the start answers `{url, flow_id}`), open only an `https` provider URL with
+  `open_browser_with(app, url, settings.passkey_browser)` and wait at most
+  5 min for the hand-off POST. Sign-in redeems the code at
+  `/auth/oidc/desktop/exchange` (→ `LoginStep`, verifier kept under the
+  attempt id); the request factor returns `{oidc_code}` and keeps the
+  verifier for `account_request_start`. Errors: the server's bare code,
+  `OIDC_TIMEOUT`, `PASSKEY_BROWSER_FAILED`, `OIDC_FAILED`. Only
+  `oidc_link_identity` still uses the GET hand-back of `oidc_loopback`.
 
 ## Key Patterns
 
@@ -149,13 +157,13 @@ listen('voice:state_change', (event) => console.log(event.payload));
 4. Store tokens in `AppState.auth`
 5. Store refresh token in OS keyring (keyring-rs)
 
-**Flow (OIDC login, `oidc_authorize`):**
-1. Bind `127.0.0.1:0`; create a random per-flow value and a random verifier (`oidc_loopback::new_secret`)
-2. `GET /auth/oidc/authorize/{slug}?redirect_uri=http://127.0.0.1:PORT/callback?flow=<value>&client_challenge=<S256(verifier)>` with `X-Kaiku-Client: desktop`; the server answers `{"url"}` (a redirect is refused), open the provider URL in the system browser
-3. Wait (60 s overall, 2 s per connection) for `GET /callback` with exactly that `flow`; the server hands back only `?code=` (or `?error=CODE`). Anything else gets 204 and is ignored; the result page sends `Cache-Control: no-store` and `Referrer-Policy: no-referrer`
-4. `SessionManager::exchange_oidc_code` → `POST /auth/oidc/desktop/exchange {code, verifier}` → tokens stay in Rust/keyring
-The link flow (`oidc_link_identity`) uses the same listener and per-flow value (`?linked=` / `?link_error=`).
-Failures with a server code are returned as the bare code (`OIDC_CLIENT_OUTDATED`, `OIDC_HANDOFF_INVALID`, `OIDC_PROVIDER_ERROR`, `OIDC_EXCHANGE_FAILED`, `IDENTITY_ALREADY_LINKED`); the webview maps them with `nativeSsoError` + `SSO_ERRORS`. A failed `accept()` backs off 50 ms.
+**Flow (OIDC login, `oidc_authorize`, C29 step 8, `oidc_delivery.rs`):**
+1. Bind LP's `loopback_post::bind()` (`127.0.0.1:0`, draws `callback_path`), then a verifier (`oidc_loopback::new_secret`)
+2. `GET /auth/oidc/authorize/{slug}?loopback_port=P&callback_path=<path>&client_challenge=<S256(verifier)>` with `X-Kaiku-Client: desktop` (no `redirect_uri`; a redirect is refused); the server answers `{url, flow_id}`; only an `https` provider URL (or `http` on a loopback host, no userinfo) is opened, in the browser of "Browser for passkey sign-in" (`open_browser_with`)
+3. `loopback_post::wait_for_post` (5 min, 2 s per connection) for the hand-off page's form POST with that `flow_id` and `code` (or `error`)
+4. `SessionManager::exchange_oidc_code` → `POST /auth/oidc/desktop/exchange {code, verifier}` → `LoginStep` (the verifier stays as the attempt's collection secret)
+The request OIDC factor (`request_oidc_factor`) runs the same delivery with `POST /auth/account-requests/oidc/authorize/{provider_id}` and returns `{oidc_code}`. The link flow (`oidc_link_identity`) keeps the GET listener and per-flow value of `oidc_loopback` (`?linked=` / `?link_error=`).
+Failures with a server code are returned as the bare code (`OIDC_CLIENT_OUTDATED`, `OIDC_HANDOFF_INVALID`, `OIDC_PROVIDER_ERROR`, `OIDC_EXCHANGE_FAILED`, `IDENTITY_ALREADY_LINKED`), else `OIDC_TIMEOUT`, `PASSKEY_BROWSER_FAILED` or `OIDC_FAILED`; the webview maps them with `nativeSsoError` + `SSO_ERRORS`. A failed `accept()` backs off 50 ms.
 
 **Security:**
 - Access token: In-memory only (15min expiry)

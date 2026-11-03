@@ -100,4 +100,16 @@ describe("nativeSsoError", () => {
       "That account is already linked to another Kaiku account.",
     );
   });
+
+  it("words the loopback delivery's own codes (C29 step 8)", async () => {
+    const text = (code: string) =>
+      errorText(nativeSsoError(code), "auth.login.ssoFailed", SSO_ERRORS.byCode);
+    expect(text("OIDC_TIMEOUT")).toBe("The sign-in in your browser took too long. Please try again.");
+    // The browser of "Browser for passkey sign-in" opens the provider too.
+    expect(text("PASSKEY_BROWSER_FAILED")).toContain("Browser for passkey sign-in");
+    const { requestStartError } = await import("@/views/requestErrors");
+    expect(requestStartError(nativeSsoError("OIDC_TIMEOUT"))).toBe(
+      "The sign-in in your browser took too long. Please try again.",
+    );
+  });
 });

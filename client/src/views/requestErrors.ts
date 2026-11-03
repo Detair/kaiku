@@ -19,6 +19,7 @@ export function requestStartError(err: unknown): string {
   return errorText(err, "auth.recover.failed", {
     ACCOUNT_REQUEST_OPEN: "auth.recover.alreadyOpen",
     NO_INDEPENDENT_CANCELLER: "auth.recover.noCanceller",
-    OIDC_UNAVAILABLE: "auth.recover.providerUnavailable",
+    PASSKEY_BROWSER_FAILED: "passkeys.error.browserFailed",
+    OIDC_TIMEOUT: "auth.sso.timeout",
   });
 }

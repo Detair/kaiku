@@ -7,6 +7,7 @@ pub mod clipboard;
 pub mod crypto;
 pub mod login_flow;
 pub mod loopback_post;
+pub mod oidc_delivery;
 pub mod oidc_loopback;
 pub mod passkey;
 pub mod pre_session;

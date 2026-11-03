@@ -29,12 +29,10 @@ pub async fn account_request_start(
 
 /// The OIDC factor of an account request (C27, C29 step 8) → `{oidc_code}`.
 ///
-/// TODO(LP rebase): run the request OIDC start
-/// (`/auth/account-requests/oidc/authorize/{provider_id}`) with LP's
-/// `loopback_post::bind()` + `wait_for_post` and
-/// `open_browser(app, url, settings.passkey_browser)`, keep the verifier with
-/// `SessionManager::keep_request_oidc_verifier` and return the hand-off code.
-/// Until LP's listener exists this refuses without contacting the server.
+/// The provider sign-in runs through LP's loopback POST delivery
+/// ([`super::oidc_delivery`]) in the browser chosen under "Browser for
+/// passkey sign-in"; the verifier stays in Rust until `account_request_start`
+/// adds it to the factor (single use, two minutes).
 #[command]
 pub async fn request_oidc_factor(
     state: State<'_, AppState>,
@@ -42,9 +40,19 @@ pub async fn request_oidc_factor(
     server_url: String,
     provider_id: String,
 ) -> Result<Value, String> {
-    let _ = (&state, &app);
-    info!(provider = %provider_id, server = %server_url, "Request OIDC factor is not available before LP");
-    Err("OIDC_UNAVAILABLE".to_string())
+    info!(provider = %provider_id, "Starting a request OIDC factor");
+    let browser = super::settings::load_settings(&app)
+        .await
+        .map(|s| s.passkey_browser)
+        .unwrap_or_default();
+    super::oidc_delivery::request_factor(
+        &state.session,
+        server_url.trim_end_matches('/'),
+        &provider_id,
+        |url| super::auth::open_browser_with(&app, url, browser),
+        super::oidc_delivery::OIDC_LISTEN_MAX,
+    )
+    .await
 }
 
 /// A request-client or ticket call with its secret header (allowlisted;

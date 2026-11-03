@@ -8,10 +8,10 @@ use std::time::Duration;
 use serde::Deserialize;
 use tauri::{command, State};
 use tokio::net::TcpListener;
-use tracing::{debug, info};
+use tracing::info;
 use url::Url;
 
-use super::oidc_loopback::{self, LinkCallback, LoginCallback};
+use super::oidc_loopback::{self, LinkCallback};
 use crate::session::{AuthInfo, RegisterRequest, SessionError, SessionRestoreResult};
 use crate::AppState;
 
@@ -110,39 +110,25 @@ pub async fn session_request(
         .map_err(|e| e.to_string())
 }
 
-/// How an SSO start authenticates to the server.
-#[derive(Clone, Copy)]
-enum Start<'a> {
-    /// Public desktop sign-in: `X-Kaiku-Client: desktop`, JSON `{"url"}` only.
-    DesktopLogin,
-    /// Signed-in start (identity link) with a bearer token.
-    Bearer(&'a str),
-}
-
-/// Header the server requires on desktop sign-in starts.
-const DESKTOP_CLIENT_HEADER: (&str, &str) = ("x-kaiku-client", "desktop");
-
-/// Ask the server for the provider URL. A desktop sign-in gets `{"url"}`; a
-/// bearer start may also answer with a redirect we don't follow. A refused
-/// start that names a server code (e.g. `OIDC_CLIENT_OUTDATED`) fails with
-/// that bare code, so the webview can show a matching message.
-async fn provider_url(authorize_url: &Url, start: Start<'_>, what: &str) -> Result<String, String> {
+/// Ask the server for the provider URL of a signed-in start (identity link,
+/// with the bearer); it may answer `{"url"}` or a redirect we don't follow.
+/// A refused start that names a server code fails with that bare code, so
+/// the webview can show a matching message. (The desktop sign-in starts in
+/// `oidc_delivery`.)
+async fn provider_url(authorize_url: &Url, token: &str, what: &str) -> Result<String, String> {
     let no_redirect_client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
-    let mut request = no_redirect_client.get(authorize_url.as_str());
-    request = match start {
-        Start::DesktopLogin => request.header(DESKTOP_CLIENT_HEADER.0, DESKTOP_CLIENT_HEADER.1),
-        Start::Bearer(token) => request.bearer_auth(token),
-    };
-    let response = request
+    let response = no_redirect_client
+        .get(authorize_url.as_str())
+        .bearer_auth(token)
         .send()
         .await
         .map_err(|e| format!("Failed to get authorize URL: {e}"))?;
 
-    if response.status().is_redirection() && matches!(start, Start::Bearer(_)) {
+    if response.status().is_redirection() {
         Ok(response
             .headers()
             .get("location")
@@ -245,22 +231,18 @@ fn authorize_endpoint(
     Ok(url)
 }
 
-const LOGIN_OK_PAGE: &str = "<html><body><h2>Signed in</h2><p>You can close this window and return to the app.</p></body></html>";
-const LOGIN_FAILED_PAGE: &str =
-    "<html><body><h2>Login failed</h2><p>An error occurred. Please try again.</p></body></html>";
 const LINK_OK_PAGE: &str = "<html><body><h2>Account linked!</h2><p>You can close this window and return to the app.</p></body></html>";
 const LINK_FAILED_PAGE: &str = "<html><body><h2>Linking failed</h2><p>You can close this window and return to the app.</p></body></html>";
 
-/// Start OIDC login flow for Tauri desktop.
+/// Desktop SSO sign-in (F3 variant, C27, C29 step 8).
 ///
-/// 1. Binds a loopback listener and creates a per-flow value and a verifier
-/// 2. Requests the provider URL from the server with the loopback return address (carrying the
-///    per-flow value) and the verifier's S256 challenge
-/// 3. Opens the provider URL in the default browser
-/// 4. Waits for the server's hand-back on the loopback: only a one-time code, accepted only on
-///    `/callback` with the per-flow value
-/// 5. Redeems the code with the verifier; the tokens go to the session manager (they never reach
-///    the webview or the browser)
+/// LP's loopback listener is bound first, the start sends `loopback_port`,
+/// `callback_path` and `client_challenge` (no `redirect_uri`), the provider
+/// opens in the browser chosen under "Browser for passkey sign-in", and the
+/// server's hand-off page posts a one-time code to the listener. The code is
+/// redeemed with the verifier; the answer is the `LoginStep` (confirmed like a
+/// password), the verifier stays in Rust as the attempt's collection secret.
+/// See [`super::oidc_delivery`].
 #[command]
 pub async fn oidc_authorize(
     state: State<'_, AppState>,
@@ -269,56 +251,18 @@ pub async fn oidc_authorize(
     provider_slug: String,
 ) -> Result<serde_json::Value, String> {
     info!("Starting OIDC flow for provider: {}", provider_slug);
-
-    let server_url = server_url.trim_end_matches('/');
-    let (listener, flow, redirect_uri) = bind_loopback().await?;
-    // TODO(LP rebase, C29 step 8): bind with `loopback_post::bind()` first, send
-    // `loopback_port` + `callback_path` instead of `redirect_uri`, open with
-    // `open_browser(app, url, settings.passkey_browser)` and wait with
-    // `loopback_post::wait_for_post`; then delete this GET hand-back.
-    let verifier = zeroize::Zeroizing::new(oidc_loopback::new_secret());
-    let challenge = oidc_loopback::s256_challenge(&verifier);
-    debug!("OIDC loopback listener bound");
-
-    let authorize_url = authorize_endpoint(
-        server_url,
-        &["auth", "oidc", "authorize", &provider_slug],
-        &redirect_uri,
-        &[("client_challenge", &challenge)],
-    )?;
-    let auth_url = provider_url(&authorize_url, Start::DesktopLogin, "OIDC authorize").await?;
-
-    open_browser(&app_handle, &auth_url)?;
-    info!("Opened browser for OIDC login, waiting for callback...");
-
-    let callback = oidc_loopback::wait_for_callback(
-        &listener,
-        &flow,
-        oidc_loopback::CALLBACK_TIMEOUT,
-        oidc_loopback::READ_DEADLINE,
-        oidc_loopback::parse_login_callback,
-        |result| match result {
-            LoginCallback::Code(_) => LOGIN_OK_PAGE,
-            LoginCallback::Error(_) => LOGIN_FAILED_PAGE,
-        },
-    )
-    .await
-    .map_err(|_| "OIDC login timed out (60s). Please try again.".to_string())?;
-    drop(listener);
-
-    let code = match callback {
-        LoginCallback::Code(code) => code,
-        // Bare server code (`OIDC_PROVIDER_ERROR`, ...), mapped by the webview.
-        LoginCallback::Error(error) => return Err(error),
-    };
-
-    // C27: the exchange answers a `LoginStep` (confirmed like a password);
-    // the verifier becomes the attempt's collection secret.
-    let step = state
-        .session
-        .exchange_oidc_code(server_url, &code, verifier)
+    let browser = super::settings::load_settings(&app_handle)
         .await
-        .map_err(|e| e.to_string())?;
+        .map(|s| s.passkey_browser)
+        .unwrap_or_default();
+    let step = super::oidc_delivery::sign_in(
+        &state.session,
+        server_url.trim_end_matches('/'),
+        &provider_slug,
+        |url| open_browser_with(&app_handle, url, browser),
+        super::oidc_delivery::OIDC_LISTEN_MAX,
+    )
+    .await?;
     info!("OIDC sign-in needs its confirmation step");
     Ok(step)
 }
@@ -357,12 +301,7 @@ pub async fn oidc_link_identity(
         &redirect_uri,
         &[],
     )?;
-    let auth_url = provider_url(
-        &authorize_url,
-        Start::Bearer(&access_token),
-        "Link authorize",
-    )
-    .await?;
+    let auth_url = provider_url(&authorize_url, &access_token, "Link authorize").await?;
 
     open_browser(&app_handle, &auth_url)?;
     info!("Opened browser for OIDC link, waiting for callback...");
@@ -388,70 +327,5 @@ pub async fn oidc_link_identity(
         }
         // Bare server code (`IDENTITY_ALREADY_LINKED`, ...), mapped by the webview.
         LinkCallback::Error(code) => Err(code),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use wiremock::matchers::{header, method, path, query_param};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    use super::*;
-
-    #[tokio::test]
-    async fn desktop_start_sends_the_client_header_and_reads_json() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/auth/oidc/authorize/g"))
-            .and(header("x-kaiku-client", "desktop"))
-            .and(query_param("client_challenge", "ch"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"url": "https://idp/auth"})),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        let url = authorize_endpoint(
-            &server.uri(),
-            &["auth", "oidc", "authorize", "g"],
-            "http://127.0.0.1:1/callback?flow=f",
-            &[("client_challenge", "ch")],
-        )
-        .unwrap();
-        assert_eq!(
-            provider_url(&url, Start::DesktopLogin, "OIDC authorize").await,
-            Ok("https://idp/auth".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn desktop_start_does_not_follow_or_accept_a_redirect() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(307).insert_header("location", "https://idp/auth"))
-            .mount(&server)
-            .await;
-        let url = Url::parse(&format!("{}/auth/oidc/authorize/g", server.uri())).unwrap();
-        assert!(provider_url(&url, Start::DesktopLogin, "OIDC authorize")
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn refused_start_reports_the_bare_server_code() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
-                "error": "OIDC_CLIENT_OUTDATED",
-                "message": "Update the app to sign in with this provider"
-            })))
-            .mount(&server)
-            .await;
-        let url = Url::parse(&format!("{}/auth/oidc/authorize/g", server.uri())).unwrap();
-        assert_eq!(
-            provider_url(&url, Start::DesktopLogin, "OIDC authorize").await,
-            Err("OIDC_CLIENT_OUTDATED".to_string())
-        );
     }
 }
