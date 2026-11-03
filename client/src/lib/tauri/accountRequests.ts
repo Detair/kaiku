@@ -65,7 +65,13 @@ export async function requestOidcAuthorize(
   return { mode: "browser", url: r.url };
 }
 
-export async function getCurrentRequest(): Promise<AccountRequest> {
+/**
+ * The request this client follows. Browser: read from `serverUrl`, the
+ * server it was started on (Flash r3 p2 #3); the desktop's secret knows its
+ * own server.
+ */
+export async function getCurrentRequest(serverUrl?: string): Promise<AccountRequest> {
+  if (serverUrl && !isTauri()) useBrowserServer(serverUrl);
   return decodeAccountRequest(await preSessionRequest<unknown>("request", "GET", CURRENT));
 }
 

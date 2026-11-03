@@ -36,7 +36,7 @@ export async function startBootstrap(b: BootstrapStart): Promise<void> {
 
 export async function reloadRequest(): Promise<void> {
   try {
-    setCurrent(await getCurrentRequest());
+    setCurrent(await getCurrentRequest(requestServer() || undefined));
   } catch (err) {
     // The request (or its secret) is gone: show nothing of it any more.
     if (err instanceof HttpError && [401, 404, 410].includes(err.status)) setCurrent(null);
