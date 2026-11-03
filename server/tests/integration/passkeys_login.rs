@@ -635,3 +635,39 @@ async fn the_ceremony_page_is_outside_the_passkey_limit(pool: PgPool) {
         }
     }
 }
+
+/// Merge of L1a review round 3: `GET /auth/sessions` fills
+/// `authenticator.label` (C27); a passkey session names its passkey's
+/// current label, as a key-device session names its device.
+#[sqlx::test]
+async fn session_list_names_the_passkey(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let (s, b, _) = signed_in(&app, &mut auth, &row, Some("android")).await;
+    assert_eq!(s, 200, "{b}");
+    sqlx::query("UPDATE passkeys SET label = 'Work laptop' WHERE id = $1")
+        .bind(row.id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let req = TestApp::request(Method::GET, "/auth/sessions")
+        .header(
+            "Authorization",
+            format!("Bearer {}", b["access_token"].as_str().unwrap()),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    assert_eq!(resp.status(), 200);
+    let list = body_to_json(resp).await;
+    let item = list["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == b["session_id"])
+        .cloned()
+        .unwrap();
+    assert_eq!(item["authenticator"]["id"], row.id.to_string(), "{item}");
+    assert_eq!(item["authenticator"]["label"], "Work laptop", "{item}");
+}

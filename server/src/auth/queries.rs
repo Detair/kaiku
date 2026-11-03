@@ -146,7 +146,7 @@ pub struct LiveSessionRow {
     pub authenticator_type: Option<String>,
     pub authenticator_id: Option<Uuid>,
     /// The authenticator's current display label (C27 `authenticator.label`;
-    /// key devices; LP adds passkeys).
+    /// key devices and passkeys).
     pub authenticator_label: Option<String>,
     pub last_used_at: DateTime<Utc>,
     pub absolute_expires_at: DateTime<Utc>,
@@ -162,11 +162,15 @@ pub async fn list_user_sessions(
         r"SELECT s.id, s.token_hash, s.expires_at, host(s.ip_address) as ip_address,
                  s.user_agent, s.city, s.country, s.created_at, s.assurance, s.client_class,
                  s.auth_methods, s.authenticator_type, s.authenticator_id,
-                 d.label AS authenticator_label, s.last_used_at, s.absolute_expires_at
+                 COALESCE(d.label, p.label) AS authenticator_label,
+                 s.last_used_at, s.absolute_expires_at
           FROM sessions s
           LEFT JOIN approval_devices d
                  ON s.authenticator_type = 'key_device' AND d.id = s.authenticator_id
                 AND d.user_id = s.user_id
+          LEFT JOIN passkeys p
+                 ON s.authenticator_type = 'passkey' AND p.id = s.authenticator_id
+                AND p.user_id = s.user_id
           WHERE s.user_id = $1 AND s.ended_at IS NULL
             AND s.expires_at > NOW() AND s.absolute_expires_at > NOW()
           ORDER BY s.created_at DESC",
