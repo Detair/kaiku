@@ -36,11 +36,18 @@ class KeyDeviceSignOut @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
-            return StepUpOutcome.Failed(e.normalizedCode ?: "HTTP_${e.status.value}")
+            // Already gone on the server (revoked between the step-up and the DELETE): the person's
+            // wish is done; the phone forgets the key and signs out like after a removal.
+            if (e.normalizedCode != "KEY_DEVICE_UNKNOWN" && e.normalizedCode != "KEY_DEVICE_REVOKED") {
+                return StepUpOutcome.Failed(e.normalizedCode ?: "HTTP_${e.status.value}")
+            }
         } catch (_: IOException) {
             return StepUpOutcome.Failed("NETWORK")
         }
-        // Forget first, so the sign-out below is a plain one and unregisters push.
+        // Forget first, so the sign-out below is a plain one and unregisters push. Push goes after the
+        // removal on purpose (plan B6, C19 amendment 3): a removal that fails keeps the key and its
+        // subscription, and the removal notice still reaches this phone; the server deletes the
+        // subscription with the revocation, so the client's DELETE afterwards is best effort.
         keyDevices.forget()
         authRepository.logout()
         return out

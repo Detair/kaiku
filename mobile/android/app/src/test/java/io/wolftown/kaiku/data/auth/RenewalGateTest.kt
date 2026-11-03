@@ -17,4 +17,19 @@ class RenewalGateTest {
         // The next normal open prompts.
         assertTrue(gate.shouldPrompt(now, cap, null))
     }
+
+    @Test fun `a notification tapped while the app is in front does not suppress the next normal open`() {
+        val gate = RenewalGate()
+        // onNewIntent without a following onStart: the app was already started.
+        gate.onIntent(fromNotification = true)
+        gate.onStopped()
+        assertTrue(gate.shouldPrompt(now, cap, null))
+    }
+
+    @Test fun `a normal open intent replaces an earlier notification flag`() {
+        val gate = RenewalGate()
+        gate.onIntent(fromNotification = true)
+        gate.onIntent(fromNotification = false)
+        assertTrue(gate.shouldPrompt(now, cap, null))
+    }
 }

@@ -63,4 +63,37 @@ class LegacyTokenMigrationTest {
         assertTrue(deleted)
         assertNull(TokenStorage(target).getAccessToken())
     }
+
+    @Test fun `a failing write does not stop the app from starting`() {
+        val legacy = InMemorySharedPreferences().apply { edit().putString("access_token", "a").putString("refresh_token", "r").commit() }
+        val broken = object : ValueCipher {
+            override fun encrypt(plain: ByteArray, aad: ByteArray): ByteArray = throw java.security.ProviderException("keystore")
+            override fun decrypt(blob: ByteArray, aad: ByteArray): ByteArray = throw java.security.ProviderException("keystore")
+        }
+        var deleted = false
+
+        val ok = LegacyTokenMigration.run(true, { legacy }, { deleted = true }, KeystoreWrappedPreferences(InMemorySharedPreferences(), broken), TokenStorage.STORED_KEYS)
+
+        assertFalse(ok)
+        assertTrue(deleted)
+    }
+
+    @Test fun `a legacy store left behind never overwrites tokens already moved`() {
+        // The move committed, then the app died before the old file was deleted; the session has
+        // rotated its single-use refresh token since (C27 SESSION_REUSED if the old one came back).
+        TokenStorage(target).apply {
+            saveServerUrl("https://chat.example.com")
+            saveTokens("rotated-access", "rotated-refresh", 900, "u")
+        }
+        val legacy = InMemorySharedPreferences().apply {
+            edit().putString("access_token", "old-access").putString("refresh_token", "old-refresh").putString("user_id", "u").commit()
+        }
+        var deleted = false
+
+        assertTrue(LegacyTokenMigration.run(true, { legacy }, { deleted = true }, target, TokenStorage.STORED_KEYS))
+
+        assertTrue(deleted)
+        assertEquals("rotated-access", TokenStorage(target).getAccessToken())
+        assertEquals("rotated-refresh", TokenStorage(target).getRefreshToken())
+    }
 }

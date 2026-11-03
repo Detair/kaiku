@@ -93,4 +93,49 @@ class KeyDeviceSignOutTest {
         assertTrue(api.calls.isEmpty())
         assertEquals(KeyDeviceState.Active("u1"), repo.current())
     }
+
+    private class Harness(scope: kotlinx.coroutines.CoroutineScope) {
+        val keyStore = SoftwareApprovalKeyStore().apply { generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use) }
+        val authState = AuthState(scope)
+        val tokenStorage = TokenStorage(InMemorySharedPreferences()).apply { saveServerUrl("https://chat.example.com") }
+        val repo = KeyDeviceRepository(InMemoryKeyDeviceStore(), keyStore, authState, scope)
+        val pushRegistrar: PushRegistrar = mockk(relaxed = true)
+        val authRepository = AuthRepository(mockk<AuthApi>(relaxed = true), tokenStorage, authState, pushRegistrar, noTeardown(authState))
+            .also { it.keyDevicePolicy = repo }
+        val stepUp: DeviceStepUp = mockk()
+        val api = FakeApprovalApi()
+        val signOut = KeyDeviceSignOut(authRepository, repo, stepUp, api)
+        val grant = StepUpOutcome.Granted(StepUpGrant("key_device.remove", "kd1", "device", "t"))
+
+        init {
+            repo.saveClaimed(LocalKeyDevice("kd1", "u1", "https://chat.example.com", UvClass.PER_USE, "e1", null))
+            tokenStorage.saveTokens("a", "r", 900, "u1")
+            authState.setLoggedIn("u1")
+            repo.markActive("u1", "kd1")
+            coEvery { stepUp.stepUp(any(), StepUpAction.KEY_DEVICE_REMOVE, "kd1", any()) } returns grant
+        }
+    }
+
+    @Test fun `a phone the server already removed is forgotten and signed out`() = runTest {
+        val h = Harness(backgroundScope)
+        // Revoked between the step-up and the DELETE (e.g. "Remove device now" by an admin).
+        h.api.failWith = io.wolftown.kaiku.testutil.apiError(403, "KEY_DEVICE_REVOKED")
+
+        assertEquals(h.grant, h.signOut.signOutAndRemovePhone(activity))
+
+        assertEquals(KeyDeviceState.None, h.repo.current())
+        assertFalse(h.keyStore.hasKey())
+        assertEquals(io.wolftown.kaiku.data.local.AuthSession.LoggedOut, h.authState.session.value)
+    }
+
+    @Test fun `a removal that did not go through keeps the key and the session`() = runTest {
+        val h = Harness(backgroundScope)
+        h.api.failWith = java.io.IOException("offline")
+
+        assertEquals(StepUpOutcome.Failed("NETWORK"), h.signOut.signOutAndRemovePhone(activity))
+
+        assertEquals(KeyDeviceState.Active("u1"), h.repo.current())
+        assertTrue(h.keyStore.hasKey())
+        coVerify(exactly = 0) { h.pushRegistrar.unregisterForLogout(any()) }
+    }
 }

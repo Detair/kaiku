@@ -12,8 +12,18 @@ class RenewalGate {
     @Volatile
     private var fromNotification = false
 
+    /** The intent this open came with; a later intent replaces an earlier one. */
     fun onIntent(fromNotification: Boolean) {
-        if (fromNotification) this.fromNotification = true
+        this.fromNotification = fromNotification
+    }
+
+    /**
+     * The app left the screen: a flag recorded while it was already in front
+     * (a notification tapped there, onNewIntent without onStart) belongs to no
+     * app open and must not suppress the next normal open.
+     */
+    fun onStopped() {
+        fromNotification = false
     }
 
     /** Consumes the recorded open source. */
