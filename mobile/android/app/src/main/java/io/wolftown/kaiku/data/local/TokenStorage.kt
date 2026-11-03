@@ -45,6 +45,12 @@ class TokenStorage internal constructor(
         private const val KEY_OIDC_CODE_VERIFIER = "oidc_code_verifier"
         private const val KEY_OIDC_STATE = "oidc_state"
 
+        /** Every key this class stores, for the one-time move out of the old store. */
+        val STORED_KEYS = listOf(
+            KEY_ACCESS_TOKEN, KEY_REFRESH_TOKEN, KEY_EXPIRES_AT, KEY_USER_ID, KEY_SERVER_URL,
+            KEY_OIDC_CODE_VERIFIER, KEY_OIDC_STATE,
+        )
+
         /** Key in the notice store; also set by the module when the store was recreated at open. */
         const val KEY_RESET_NOTICE = "storage_was_reset"
         private val logger = Logger.getLogger("TokenStorage")
