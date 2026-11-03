@@ -13,8 +13,8 @@ use uuid::Uuid;
 
 use super::models::{
     AuthMethodsConfig, Channel, ChannelMember, ChannelType, ChannelUnread, FileAttachment,
-    GuildUnreadSummary, Message, MfaBackupCode, OidcProviderRow, PasswordResetToken, Session,
-    UnreadAggregate, User, UserIdentity,
+    GuildUnreadSummary, Message, OidcProviderRow, PasswordResetToken, Session, UnreadAggregate,
+    User, UserIdentity,
 };
 
 /// Log and return a database error with context.
@@ -597,106 +597,6 @@ pub async fn cleanup_expired_reset_tokens(pool: &PgPool) -> sqlx::Result<u64> {
         error!(query = "cleanup_expired_reset_tokens", error = %e, "Database query failed");
         e
     })?;
-    Ok(result.rows_affected())
-}
-
-// ============================================================================
-// MFA Backup Code Queries
-// ============================================================================
-
-/// Insert a batch of MFA backup code hashes for a user.
-///
-/// Replaces any existing codes by deleting first, then inserting the new batch.
-/// All 10 codes are inserted in a single transaction.
-pub async fn store_mfa_backup_codes(
-    pool: &PgPool,
-    user_id: Uuid,
-    code_hashes: &[String],
-) -> sqlx::Result<()> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(db_error!("store_mfa_backup_codes", user_id = %user_id))?;
-
-    // Delete existing codes for this user
-    sqlx::query("DELETE FROM mfa_backup_codes WHERE user_id = $1")
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_error!("store_mfa_backup_codes/delete", user_id = %user_id))?;
-
-    // Insert new codes
-    for code_hash in code_hashes {
-        sqlx::query("INSERT INTO mfa_backup_codes (user_id, code_hash) VALUES ($1, $2)")
-            .bind(user_id)
-            .bind(code_hash)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_error!("store_mfa_backup_codes/insert", user_id = %user_id))?;
-    }
-
-    tx.commit()
-        .await
-        .map_err(db_error!("store_mfa_backup_codes/commit", user_id = %user_id))?;
-
-    Ok(())
-}
-
-/// Fetch all unused MFA backup codes for a user.
-pub async fn get_unused_mfa_backup_codes(
-    pool: &PgPool,
-    user_id: Uuid,
-) -> sqlx::Result<Vec<MfaBackupCode>> {
-    sqlx::query_as::<_, MfaBackupCode>(
-        "SELECT * FROM mfa_backup_codes WHERE user_id = $1 AND used_at IS NULL ORDER BY created_at",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await
-    .map_err(db_error!("get_unused_mfa_backup_codes", user_id = %user_id))
-}
-
-/// Mark an MFA backup code as used by its ID.
-pub async fn mark_mfa_backup_code_used(pool: &PgPool, code_id: Uuid) -> sqlx::Result<()> {
-    sqlx::query("UPDATE mfa_backup_codes SET used_at = NOW() WHERE id = $1")
-        .bind(code_id)
-        .execute(pool)
-        .await
-        .map_err(db_error!("mark_mfa_backup_code_used", code_id = %code_id))?;
-    Ok(())
-}
-
-/// Count unused MFA backup codes for a user.
-pub async fn count_unused_mfa_backup_codes(pool: &PgPool, user_id: Uuid) -> sqlx::Result<i64> {
-    let (count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM mfa_backup_codes WHERE user_id = $1 AND used_at IS NULL",
-    )
-    .bind(user_id)
-    .fetch_one(pool)
-    .await
-    .map_err(db_error!("count_unused_mfa_backup_codes", user_id = %user_id))?;
-    Ok(count)
-}
-
-/// Count all MFA backup codes for a user (used and unused).
-/// Used to detect whether backup codes were ever generated (first-time setup detection).
-pub async fn count_all_mfa_backup_codes(pool: &PgPool, user_id: Uuid) -> sqlx::Result<i64> {
-    let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM mfa_backup_codes WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(pool)
-            .await
-            .map_err(db_error!("count_all_mfa_backup_codes", user_id = %user_id))?;
-    Ok(count)
-}
-
-/// Delete all MFA backup codes for a user (e.g. when MFA is disabled).
-pub async fn delete_mfa_backup_codes(pool: &PgPool, user_id: Uuid) -> sqlx::Result<u64> {
-    let result = sqlx::query("DELETE FROM mfa_backup_codes WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .map_err(db_error!("delete_mfa_backup_codes", user_id = %user_id))?;
     Ok(result.rows_affected())
 }
 

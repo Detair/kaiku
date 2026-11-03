@@ -228,6 +228,11 @@ pub enum AuthError {
     #[error("Please update the Kaiku app")]
     ClientOutdated,
 
+    /// A new password failed the policy (B.1): 400 `PASSWORD_REJECTED
+    /// {reason}` (C27).
+    #[error("Choose another password")]
+    PasswordRejected(crate::auth::password_policy::PasswordRejected),
+
     #[error("Internal server error")]
     Internal(String),
 }
@@ -307,6 +312,7 @@ impl AuthError {
             Self::PasskeyLimit => (StatusCode::CONFLICT, "PASSKEY_LIMIT"),
             Self::PasskeyHandoffInvalid => (StatusCode::BAD_REQUEST, "PASSKEY_HANDOFF_INVALID"),
             Self::ClientOutdated => (StatusCode::BAD_REQUEST, "CLIENT_OUTDATED"),
+            Self::PasswordRejected(_) => (StatusCode::BAD_REQUEST, "PASSWORD_REJECTED"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         }
     }
@@ -316,8 +322,19 @@ impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, code) = self.status_and_code();
 
-        // C29: `PASSKEY_PENDING` carries `ready_at` next to `error`.
-        let mut response = if let Self::PasskeyPending { ready_at } = &self {
+        // C29: `PASSKEY_PENDING` carries `ready_at` next to `error`; C27:
+        // `PASSWORD_REJECTED` carries `reason`.
+        let mut response = if let Self::PasswordRejected(reason) = &self {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": self.to_string(),
+                    "reason": reason.as_str(),
+                })),
+            )
+                .into_response()
+        } else if let Self::PasskeyPending { ready_at } = &self {
             (
                 status,
                 Json(serde_json::json!({

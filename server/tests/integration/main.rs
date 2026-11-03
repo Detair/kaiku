@@ -20,6 +20,7 @@ mod channel_pins;
 mod channels_http;
 mod cli;
 mod connectivity_http;
+mod credential_states;
 mod custom_status;
 mod device_login;
 mod dm_calls;

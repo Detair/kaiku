@@ -3,11 +3,11 @@
 //! Handles local authentication, SSO/OIDC, MFA, and session management.
 
 pub mod assurance;
-mod backup_codes;
 pub mod client_class;
 pub(crate) mod cookies;
 pub mod ctx;
 pub(crate) mod error;
+pub mod factors;
 pub mod guards;
 mod helpers;
 pub(crate) mod identities;
@@ -19,9 +19,11 @@ mod middleware;
 pub mod oidc;
 pub mod passkeys;
 mod password;
+pub mod password_policy;
 pub(crate) mod profile;
 pub(crate) mod queries;
 pub(crate) mod reauth;
+pub mod recovery_codes;
 pub mod refresh;
 pub(crate) mod register;
 pub mod revocation;
@@ -77,9 +79,10 @@ use crate::ratelimit::{
 /// - POST /me - Update profile
 /// - POST /me/avatar - Upload avatar
 /// - POST /mfa/setup - Setup MFA
-/// - POST /mfa/verify - Verify MFA (TOTP or backup code; rate limited)
+/// - POST /mfa/verify - Verify MFA (TOTP; rate limited)
 /// - POST /mfa/disable - Disable MFA (rate limited)
-/// - POST /mfa/backup-codes - Generate MFA backup codes (current TOTP code; rate limited)
+/// - POST /recovery-codes - New recovery codes (full session + step-up, C27)
+/// - GET /recovery-codes/count - Unused recovery codes (any session)
 /// - POST /qr/create - Create a one-time QR login token (rate limited)
 /// - GET /reauth/methods - Re-authentication methods of the caller (C24)
 /// - POST /reauth/oidc/authorize/{provider} - Start an OIDC re-authentication that elevates the
@@ -238,7 +241,6 @@ pub fn router(state: AppState) -> Router<AppState> {
         Router::new()
             .route("/mfa/verify", post(mfa::mfa_verify))
             .route("/mfa/disable", post(mfa::mfa_disable))
-            .route("/mfa/backup-codes", post(mfa::mfa_generate_backup_codes))
             .route("/qr/create", post(mfa::qr_create)),
         &state,
     )
@@ -263,7 +265,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/me/identities/{id}", delete(identities::unlink_identity))
         .route("/mfa/setup", post(mfa::mfa_setup))
         .route("/reauth/methods", get(reauth::get_reauth_methods))
-        .route("/mfa/backup-codes/count", get(mfa::mfa_backup_code_count))
+        .route("/recovery-codes", post(recovery_codes::create))
+        .route("/recovery-codes/count", get(recovery_codes::count))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             require_auth,

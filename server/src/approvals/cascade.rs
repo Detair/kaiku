@@ -24,6 +24,21 @@ pub struct CascadeOutcome {
     pub ended_sessions: Vec<Uuid>,
 }
 
+/// The cascade of an ended factor generation (B.7 rule 2).
+///
+/// A password, TOTP secret or recovery-code set was replaced, removed or
+/// marked compromised: login attempts (Task 17) and account requests
+/// (Task 21) that used `used` end here.
+#[tracing::instrument(skip_all)]
+pub async fn on_generation_ended(
+    _conn: &mut PgConnection,
+    _ctx: &AuthCtx<'_>,
+    _user_id: Uuid,
+    _used: crate::auth::factors::FactorRef,
+) -> AuthResult<()> {
+    Ok(())
+}
+
 /// The cascade of ended sessions (called by `end_sessions_tx`).
 pub async fn on_sessions_ended(
     conn: &mut PgConnection,

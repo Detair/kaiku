@@ -726,6 +726,18 @@ pub async fn body_to_json(response: Response<Body>) -> serde_json::Value {
     })
 }
 
+/// Like [`body_to_json`], but an empty or non-JSON body is `Value::Null`
+/// (404s of unknown routes have no body).
+pub async fn body_to_json_lenient(response: Response<Body>) -> serde_json::Value {
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("Failed to collect response body")
+        .to_bytes();
+    serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+}
+
 // ============================================================================
 // Data helpers (guilds, channels, messages)
 // ============================================================================

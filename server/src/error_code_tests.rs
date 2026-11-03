@@ -159,6 +159,7 @@ async fn admin_and_auth_codes_are_upper_snake() {
         AuthError::PasskeyLimit,
         AuthError::PasskeyHandoffInvalid,
         AuthError::ClientOutdated,
+        AuthError::PasswordRejected(crate::auth::password_policy::PasswordRejected::Breached),
         AuthError::NotFound(s()),
         AuthError::Forbidden,
         AuthError::UserAlreadyExists,

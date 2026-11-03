@@ -31,7 +31,6 @@ use super::middleware::AuthUser;
 use super::password::verify_password;
 use super::types::ReauthMethodsResponse;
 use crate::api::AppState;
-use crate::db::find_user_by_id;
 use crate::ratelimit::{extract_client_ip, normalize_ip, RateLimitCategory};
 
 /// Failed-attempt key of an account's re-authentication.
@@ -193,93 +192,6 @@ pub async fn accept_totp(
         tracing::info!(%user_id, "Replayed TOTP code refused");
     }
     Ok(stored == 1)
-}
-
-/// The factors a successful [`verify_reauth`] actually checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReauthFactors {
-    /// The password was verified.
-    pub password: bool,
-    /// A TOTP code was verified.
-    pub totp: bool,
-}
-
-/// Confirm the account again before a sensitive action (C24).
-///
-/// - `require_password`: the account password must be given and match; an account without a local
-///   password gets `REAUTH_UNAVAILABLE` (the elevate handler turns that into `REAUTH_OIDC_REQUIRED`
-///   when a usable linked provider exists).
-/// - When the account has MFA on, `mfa_code` must be a current TOTP code (`MFA_CODE_REQUIRED` when
-///   missing). Backup codes are not accepted, and a code is accepted only once.
-/// - A wrong password or code answers `INVALID_CREDENTIALS` without saying which one was wrong, and
-///   is recorded as a failed attempt.
-/// - While the account is locked after failures the answer is 429.
-///
-/// The missing-code check runs before any secret is verified, so that answer
-/// says nothing about the password. Returns the factors that were verified.
-pub async fn verify_reauth(
-    state: &AppState,
-    user_id: Uuid,
-    password: Option<&str>,
-    mfa_code: Option<&str>,
-    require_password: bool,
-    client_ip: IpAddr,
-) -> Result<ReauthFactors, AuthError> {
-    ensure_not_locked(state, user_id).await?;
-
-    let user = find_user_by_id(&state.db, user_id)
-        .await
-        .map_err(AuthError::Database)?
-        .ok_or(AuthError::UserNotFound)?;
-
-    let password = password.filter(|p| !p.is_empty());
-    let mfa_code = mfa_code.map(str::trim).filter(|c| !c.is_empty());
-
-    let password_check = if require_password {
-        let hash = user
-            .password_hash
-            .as_deref()
-            .ok_or(AuthError::ReauthUnavailable)?;
-        let given =
-            password.ok_or_else(|| AuthError::Validation("password: is required".to_string()))?;
-        Some((given, hash))
-    } else {
-        None
-    };
-
-    let mfa_secret = user.mfa_secret.as_deref();
-    if mfa_secret.is_some() && mfa_code.is_none() {
-        return Err(AuthError::MfaCodeRequired);
-    }
-    if password_check.is_none() && mfa_secret.is_none() {
-        // Nothing to confirm the account with.
-        return Err(AuthError::ReauthUnavailable);
-    }
-
-    let mut confirmed = true;
-    let mut factors = ReauthFactors {
-        password: false,
-        totp: false,
-    };
-    if let Some((given, hash)) = password_check {
-        let ok = password_matches(given, hash).await?;
-        confirmed &= ok;
-        factors.password = ok;
-    }
-    // The TOTP step is only consumed when the password was right.
-    if let (Some(secret), Some(code)) = (mfa_secret, mfa_code) {
-        let ok = confirmed && accept_totp(state, user_id, secret, &user.username, code).await?;
-        confirmed &= ok;
-        factors.totp = ok;
-    }
-
-    if confirmed {
-        Ok(factors)
-    } else {
-        record_failure(state, user_id, client_ip).await?;
-        tracing::info!(%user_id, "Re-authentication failed");
-        Err(AuthError::InvalidCredentials)
-    }
 }
 
 // ============================================================================

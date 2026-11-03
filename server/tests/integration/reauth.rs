@@ -1,9 +1,8 @@
 //! Re-authentication for sensitive actions (C24).
 //!
-//! `POST /api/admin/elevate` asks for the password (and a TOTP code when MFA
-//! is on), `POST /auth/mfa/backup-codes` asks for a current TOTP code, an
-//! elevation belongs to the access token's session, and failed attempts on
-//! these routes and on `POST /auth/me/password` are throttled.
+//! An elevation belongs to the access token's session, a TOTP code is
+//! accepted once, and failed attempts on `POST /auth/me/password` are
+//! throttled.
 //!
 //! Each test runs a real HTTP server (handlers read the peer address) on a
 //! fresh per-test database.
@@ -107,22 +106,6 @@ async fn enable_mfa(pool: &PgPool, config: &Config, user_id: Uuid, username: &st
     .expect("totp")
 }
 
-/// A six-digit code that is not valid in any accepted TOTP step right now.
-fn wrong_code(totp: &TOTP) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_secs();
-    let valid: Vec<String> = [now - 60, now - 30, now, now + 30, now + 60]
-        .iter()
-        .map(|t| totp.generate(*t))
-        .collect();
-    (0..1_000_000u32)
-        .map(|n| format!("{n:06}"))
-        .find(|c| !valid.contains(c))
-        .expect("a wrong code exists")
-}
-
 /// The code of the next 30-second step (valid now within the ±1 window).
 fn next_step_code(totp: &TOTP) -> String {
     let now = std::time::SystemTime::now()
@@ -203,103 +186,6 @@ async fn test_de_elevation_is_bound_to_session(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn test_backup_code_regeneration_requires_totp(pool: PgPool) {
-    let (server, config, _) = plain_server(&pool).await;
-    let (user, username) = create_user_with_password(&pool).await;
-    let totp = enable_mfa(&pool, &config, user, &username).await;
-    let (_, token) = create_session_with_token(&pool, &config, user).await;
-
-    // The first verify hands out the initial backup codes.
-    let code = totp.generate_current().expect("code");
-    let (status, body) = post_json(
-        &server,
-        "/auth/mfa/verify",
-        &token,
-        Some(json!({ "code": code })),
-    )
-    .await;
-    assert_eq!(status, 200, "first verify: {body}");
-    let backup_code = body["backup_codes"][0]
-        .as_str()
-        .expect("initial backup codes")
-        .to_string();
-
-    let (status, body) = post_json(&server, "/auth/mfa/backup-codes", &token, None).await;
-    assert_eq!(status, 400, "no body: {body}");
-
-    let (status, body) = post_json(
-        &server,
-        "/auth/mfa/backup-codes",
-        &token,
-        Some(json!({ "mfa_code": backup_code })),
-    )
-    .await;
-    assert_eq!(status, 401, "backup code is not accepted: {body}");
-    assert_eq!(body["error"], "INVALID_CREDENTIALS");
-
-    // The code used for /mfa/verify cannot be used again; the next step's
-    // code (accepted within the ±1 step window) can.
-    let (status, body) = post_json(
-        &server,
-        "/auth/mfa/backup-codes",
-        &token,
-        Some(json!({ "mfa_code": code })),
-    )
-    .await;
-    assert_eq!(status, 401, "replayed TOTP code: {body}");
-    let code = next_step_code(&totp);
-    let (status, body) = post_json(
-        &server,
-        "/auth/mfa/backup-codes",
-        &token,
-        Some(json!({ "mfa_code": code })),
-    )
-    .await;
-    assert_eq!(status, 200, "valid TOTP: {body}");
-    assert_eq!(body["codes"].as_array().map(Vec::len), Some(10));
-}
-
-#[sqlx::test]
-async fn test_reauth_attempts_are_rate_limited(pool: PgPool) {
-    let (server, config) = rate_limited_server(&pool).await;
-    let (admin, username) = create_user_with_password(&pool).await;
-    make_admin(&pool, admin).await;
-    let totp = enable_mfa(&pool, &config, admin, &username).await;
-    let (_, token) = create_session_with_token(&pool, &config, admin).await;
-    let bad = wrong_code(&totp);
-
-    for attempt in 1..=10 {
-        let (status, body) = post_json(
-            &server,
-            "/auth/mfa/backup-codes",
-            &token,
-            Some(json!({ "mfa_code": bad })),
-        )
-        .await;
-        assert_eq!(status, 401, "attempt {attempt}: {body}");
-    }
-
-    let (status, body) = post_json(
-        &server,
-        "/auth/mfa/backup-codes",
-        &token,
-        Some(json!({ "mfa_code": bad })),
-    )
-    .await;
-    assert_eq!(status, 429, "11th attempt: {body}");
-
-    let code = totp.generate_current().expect("code");
-    let (status, body) = post_json(
-        &server,
-        "/auth/mfa/backup-codes",
-        &token,
-        Some(json!({ "mfa_code": code })),
-    )
-    .await;
-    assert_eq!(status, 429, "a correct attempt is still refused: {body}");
-}
-
-#[sqlx::test]
 async fn test_password_change_is_rate_limited(pool: PgPool) {
     let (server, config) = rate_limited_server(&pool).await;
     let (user, _) = create_user_with_password(&pool).await;
@@ -325,6 +211,7 @@ async fn test_password_change_is_rate_limited(pool: PgPool) {
     assert_eq!(status, 429, "a correct attempt is still refused: {body}");
 }
 
+/// A TOTP code is accepted once on `/auth/mfa/verify` (replay store).
 #[sqlx::test]
 async fn test_totp_code_is_accepted_once(pool: PgPool) {
     let (server, config, _) = plain_server(&pool).await;
@@ -332,17 +219,11 @@ async fn test_totp_code_is_accepted_once(pool: PgPool) {
     let totp = enable_mfa(&pool, &config, user, &username).await;
     let (_, token) = create_session_with_token(&pool, &config, user).await;
     let code = totp.generate_current().expect("code");
-    let body = json!({ "mfa_code": code });
+    let body = json!({ "code": code });
 
-    let (status, first) = post_json(
-        &server,
-        "/auth/mfa/backup-codes",
-        &token,
-        Some(body.clone()),
-    )
-    .await;
+    let (status, first) = post_json(&server, "/auth/mfa/verify", &token, Some(body.clone())).await;
     assert_eq!(status, 200, "{first}");
-    let (status, body) = post_json(&server, "/auth/mfa/backup-codes", &token, Some(body)).await;
+    let (status, body) = post_json(&server, "/auth/mfa/verify", &token, Some(body)).await;
     assert_eq!(status, 401, "replayed code: {body}");
 }
 

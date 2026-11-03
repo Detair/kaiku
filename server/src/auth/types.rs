@@ -180,20 +180,26 @@ pub struct MfaSetupResponse {
     pub qr_code_url: String,
 }
 
-/// MFA backup codes response (shown exactly once upon generation).
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MfaBackupCodesResponse {
-    /// Plaintext backup codes (shown to user once; store them securely).
-    pub codes: Vec<String>,
+/// `POST /auth/recovery-codes` (C27): the new set, shown once.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct RecoveryCodesResponse {
+    /// 10 codes, `ABCDE-FGHIJ-KLM`.
+    pub recovery_codes: Vec<String>,
 }
 
-/// MFA backup code count response.
+impl std::fmt::Debug for RecoveryCodesResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecoveryCodesResponse")
+            .field("recovery_codes", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// `GET /auth/recovery-codes/count` (C27).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MfaBackupCodeCountResponse {
-    /// Number of remaining unused backup codes.
-    pub remaining: i64,
-    /// Total number of codes originally generated.
-    pub total: i64,
+pub struct RecoveryCodesCountResponse {
+    /// Unused codes of the current set.
+    pub left: i64,
 }
 
 /// MFA verification request.
@@ -201,25 +207,6 @@ pub struct MfaBackupCodeCountResponse {
 pub struct MfaVerifyRequest {
     /// 6-digit TOTP code.
     pub code: String,
-}
-
-/// Request to generate new MFA backup codes (C24).
-///
-/// Needs a current TOTP code from the authenticator app; backup codes are
-/// not accepted here.
-#[derive(Deserialize, Validate, utoipa::ToSchema)]
-pub struct BackupCodesRequest {
-    /// Current 6-digit TOTP code.
-    #[validate(length(min = 1, max = 16))]
-    pub mfa_code: String,
-}
-
-impl std::fmt::Debug for BackupCodesRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BackupCodesRequest")
-            .field("mfa_code", &"[REDACTED]")
-            .finish()
-    }
 }
 
 /// Update profile request.

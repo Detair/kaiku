@@ -12,7 +12,6 @@ use fred::prelude::*;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::backup_codes::find_matching_backup_code;
 use super::client_class::ClientClass;
 use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
@@ -36,8 +35,7 @@ use crate::api::AppState;
 use crate::db::{
     self, create_password_reset_token, find_session_by_token_hash, find_user_by_email,
     find_user_by_id, find_user_by_username, find_user_id_by_identity, find_valid_reset_token,
-    get_auth_methods_allowed, get_unused_mfa_backup_codes, invalidate_user_reset_tokens,
-    mark_mfa_backup_code_used,
+    get_auth_methods_allowed, invalidate_user_reset_tokens,
 };
 use crate::ratelimit::NormalizedIp;
 
@@ -130,28 +128,9 @@ pub async fn login(
                 .await?;
 
         if !totp_valid {
-            // TOTP failed — try backup code
-            let backup_codes = get_unused_mfa_backup_codes(&state.db, user.id)
-                .await
-                .map_err(AuthError::Database)?;
-
-            let hashes: Vec<String> = backup_codes.iter().map(|c| c.code_hash.clone()).collect();
-            if let Some(matched_idx) = find_matching_backup_code(mfa_code, &hashes) {
-                // Mark backup code as used
-                let used_code_id = backup_codes[matched_idx].id;
-                mark_mfa_backup_code_used(&state.db, used_code_id)
-                    .await
-                    .map_err(AuthError::Database)?;
-                tracing::info!(
-                    user_id = %user.id,
-                    code_id = %used_code_id,
-                    "MFA backup code used for login"
-                );
-            } else {
-                record_failed_auth!();
-                crate::observability::metrics::record_auth_login_attempt(false);
-                return Err(AuthError::InvalidMfaCode);
-            }
+            record_failed_auth!();
+            crate::observability::metrics::record_auth_login_attempt(false);
+            return Err(AuthError::InvalidMfaCode);
         }
     }
 
