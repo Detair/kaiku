@@ -448,3 +448,18 @@ and existing-account passkey tests; the M-A and session-predicate changes have n
 | Fable — passkey `done` order | fixed: `done` before `mark_bound_tx`, as on the key-device path; no observable difference, since the bind sets only `issued`/`claimed` links to `cancelled` | b9745283 | existing passkey enrolment tests |
 | Fable — banned admin request | notes: the timer skips a banned account's due `admin` request (`complete_locked_tx` → `AccountBanned` → `continue`). The request stays `waiting` and completes on the first tick after the ban ends. Known limit: such requests stay in the timer's `LIMIT 200` selection | — | — |
 | Contract — bootstrap 401 | done by the coordinator | — | — |
+
+## Review round 4 (Codex, Fable, Flash) at b2862725
+
+Fable and Flash approved. Codex requested changes for narrow TOTP counter races only.
+
+| Finding | Verdict | Commit | Test |
+|---|---|---|---|
+| Codex #2 — a delayed success resets the renewed generation's counter | fixed: `TotpOutcome::Signed` carries the generation the code was checked against. `Used.totp_generation` is now required (no "current generation" fallback), so a success resets only that generation's counter | b0404222 | `throttling::a_delayed_success_keeps_the_renewed_generations_count`: a trigger renews the TOTP inside the successful step's transaction (RED: the renewed count went from 7 to 0) |
+| Codex #3 / Fable (a) — the delay write is outside the epoch script | fixed: one Lua script for count, epoch, `next` and expiry; the password counter uses it too | ad44ceb6 | `throttling::the_failure_script_sets_the_schedules_delay` (the schedule matches `delay_after`). No race test: the old window lay between two Valkey round trips inside one call, with no await point a test can reach. Now that the update is a single EVAL, which Valkey runs atomically, no window is left |
+| Fable (b) — the CLI reset deletes the counter (the epoch restarts at 0) | fixed: the CLI throttle reset and factor reset call `reset_epoch` on both counters | a49865dd | `cli_recovery::a_cli_reset_starts_a_new_epoch` (RED: (0, 0)) |
+| Fable (c) — `counters_present` uses `EXISTS` | fixed: a counter counts only with `count > 0` or a `next` | a49865dd | `cli_recovery::a_cleared_counter_is_no_reset_event` (RED: 1 spurious `throttle_reset`) |
+| Fable nit — the cap test has no control | fixed: the same session within its cap → `Ok(Part2 { totp })`; past it → `InvalidToken` | 230074d7 | `review_gaps::part2_refuses_a_session_past_its_absolute_cap` (fails when `live_clause!` drops the cap) |
+| Codex #1 — a reset racing effects that already read (100, E) | decision (coordinator), no code change; see below | — | — |
+
+**Decision (Codex r4 #1).** Effects that read (count ≥ 100, epoch E) under the account lock apply even if a success commits concurrently. Crossing 100 wrong codes is decisive on its own. A concurrent success does not cancel the effects, because that success may be the attacker's own lucky code. In bootstrap, 100 TOTP failures after a correct password also mean the password is known, so throttling the TOTP and marking that password generation compromised is the intended outcome. The epoch check covers only effects scheduled before a success that committed earlier; it is not meant to undo this.
