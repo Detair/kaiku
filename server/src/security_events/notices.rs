@@ -426,8 +426,9 @@ pub async fn deliver_pending(state: &AppState) -> anyhow::Result<usize> {
 
 /// [`deliver_pending`] with the batch bound given (tests).
 ///
-/// Half the batch is the oldest undelivered events, half the newest, so
-/// events that keep failing at the old end never take the whole sweep
+/// Half the batch is the oldest undelivered events, the other half a random
+/// sample of all undelivered ones, so events that keep failing (at either
+/// end) never take every sweep and each leftover is reached eventually
 /// (`security_events` is append-only, so there is no per-event attempt
 /// count); [`deliver`] still delivers oldest first.
 pub async fn deliver_pending_bounded(state: &AppState, batch: i64) -> anyhow::Result<usize> {
@@ -437,7 +438,7 @@ pub async fn deliver_pending_bounded(state: &AppState, batch: i64) -> anyhow::Re
            ORDER BY created_at, id LIMIT $1)
          UNION
          (SELECT id FROM security_events WHERE delivered_at IS NULL
-           ORDER BY created_at DESC, id DESC LIMIT $2)",
+           ORDER BY random() LIMIT $2)",
     )
     .bind(half)
     .bind((batch - half).max(1))
