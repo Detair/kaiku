@@ -81,7 +81,9 @@ fn days_from_now(v: &Value) -> i64 {
 async fn legacy_sessions_backfill_to_probation(pool: PgPool) {
     apply_until(&pool, 20_261_120_000_100).await;
     let user: Uuid = sqlx::query_scalar(
-        "INSERT INTO users (username, display_name, password_hash) VALUES ('legacy_user', 'L', 'x')
+        // With TOTP: the later v1.0 upgrade (L1b) ends password-only sessions.
+        "INSERT INTO users (username, display_name, password_hash, mfa_secret)
+         VALUES ('legacy_user', 'L', 'x', 'enc')
          RETURNING id",
     )
     .fetch_one(&pool)
