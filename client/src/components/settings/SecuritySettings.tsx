@@ -13,6 +13,8 @@ import {
   lazy,
 } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
+import PasskeysSection from "./PasskeysSection";
+import PasskeyBrowserSetting from "./PasskeyBrowserSetting";
 import { isE2EEEnabled } from "@/lib/featureFlags";
 import {
   AlertTriangle,
@@ -315,6 +317,12 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
           </p>
         </div>
       </Show>
+
+      {/* Passkeys (C29), above MFA */}
+      <div class="pt-6 border-t border-white/10 space-y-4">
+        <PasskeysSection />
+        <PasskeyBrowserSetting />
+      </div>
 
       {/* MFA Section */}
       <div class="pt-6 border-t border-white/10">

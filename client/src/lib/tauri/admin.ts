@@ -278,6 +278,14 @@ export async function adminElevate(
 }
 
 /**
+ * Elevate with a step-up grant (C27/F7): the server consumes this
+ * session's `admin.elevate` grant; the body carries only the reason.
+ */
+export async function adminElevateWithStepUp(reason: string | null): Promise<ElevateResponse> {
+  return httpRequest<ElevateResponse>("POST", "/api/admin/elevate", { reason });
+}
+
+/**
  * De-elevate admin session.
  */
 export async function adminDeElevate(): Promise<void> {

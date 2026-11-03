@@ -15,6 +15,7 @@ import {
   type ReauthMethod,
 } from "@/lib/reauth";
 import { createDialog } from "@/lib/a11y/dialog";
+import { PasskeyError } from "@/lib/tauri/passkeys";
 import { t } from "@/i18n";
 
 export interface ReauthDialogProps {
@@ -29,6 +30,8 @@ export interface ReauthDialogProps {
     mfaCode: string | null,
     signal: AbortSignal,
   ) => Promise<void>;
+  /** Called when the user picks the passkey method (F7 step-up). */
+  onPasskey?: (signal: AbortSignal) => Promise<void>;
   onClose: () => void;
 }
 
@@ -64,9 +67,12 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
   // The code is needed on every path (password and provider alike).
   const showCode = () =>
     props.mfaEnabled && (mfaOnly() || showPassword() || oidcMethods().length > 0);
+  const showPasskey = () =>
+    !mfaOnly() && props.onPasskey !== undefined && props.methods.some((m) => m.kind === "passkey");
   const unavailable = () =>
     !mfaOnly() &&
-    (serverUnavailable() || (!showPassword() && oidcMethods().length === 0));
+    (serverUnavailable() ||
+      (!showPassword() && oidcMethods().length === 0 && !showPasskey()));
 
   const run = async (action: () => Promise<void>, sentCode: boolean) => {
     setBusy(true);
@@ -76,6 +82,7 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
       await action();
     } catch (err) {
       if (abort.signal.aborted) return;
+      if (err instanceof PasskeyError && ["PASSKEY_CANCELLED", "ABORTED"].includes(err.code)) return;
       const code = reauthErrorCode(err);
       if (code === "REAUTH_OIDC_REQUIRED" && oidcMethods().length > 0) {
         setPasswordHidden(true);
@@ -158,6 +165,19 @@ const ReauthDialog: Component<ReauthDialogProps> = (props) => {
         >
           <form onSubmit={handleSubmit} class="p-4 space-y-4">
             <p class="text-sm text-text-secondary">{t("admin.reauth.intro")}</p>
+            <Show when={showPasskey()}>
+              <button
+                type="button"
+                disabled={busy()}
+                class="btn-primary w-full min-h-12 state-disabled"
+                onClick={() => {
+                  const { onPasskey } = props;
+                  if (onPasskey) void run(() => onPasskey(abort.signal), false);
+                }}
+              >
+                {t("passkeys.reauth.method")}
+              </button>
+            </Show>
 
             <Show when={showPassword()}>
               <label class="block space-y-1">

@@ -17,8 +17,12 @@ import { normalizeCode } from "@/lib/errorCode";
 import type { ReauthMethodsResponse } from "@/lib/types";
 import type { MessageKey } from "@/i18n";
 import { errorText } from "@/i18n/errors";
+import { t } from "@/i18n";
+import { passkeyErrorKey } from "@/lib/authErrors";
+import { PasskeyError } from "@/lib/tauri/passkeys";
 
 export type ReauthMethod =
+  | { kind: "passkey" }
   | { kind: "password" }
   | { kind: "oidc"; providerId: string; label: string };
 
@@ -40,11 +44,13 @@ export interface ReauthStrategy {
 /** Map the server's method list to what the dialog shows. */
 export function infoFromServer(r: ReauthMethodsResponse): ReauthInfo {
   const methods: ReauthMethod[] = [];
+  // A passkey step-up comes first (F7).
+  if (r.passkey) methods.push({ kind: "passkey" });
   if (r.password) methods.push({ kind: "password" });
-  for (const p of r.oidc) {
+  for (const p of r.oidc ?? []) {
     methods.push({ kind: "oidc", providerId: p.provider_id, label: p.display_name });
   }
-  return { methods, mfaRequired: r.mfa_required };
+  return { methods, mfaRequired: r.mfa_required === true };
 }
 
 /** Error codes raised by the client side of the provider flow. */
@@ -241,6 +247,7 @@ export function isRejectedCode(err: unknown): boolean {
  * One shared mapping (R12): the re-auth codes on top of `errorText()`.
  */
 export function reauthErrorText(err: unknown): string {
+  if (err instanceof PasskeyError) return t(passkeyErrorKey(err.code));
   // Case-insensitive lookup, also for a wrapped HttpError.
   return errorText(normalisedHttpError(err) ?? err, "admin.reauth.error.generic", REAUTH_ERRORS, REAUTH_STATUS_ERRORS);
 }
