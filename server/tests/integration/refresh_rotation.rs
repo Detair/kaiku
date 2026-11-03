@@ -526,30 +526,14 @@ async fn logout_clears_the_legacy_cookie(pool: PgPool) {
     let mut config = vc_server::config::Config::default_for_test();
     config.cookie_secure = true;
     let app = TestApp::with_pool_and_config(pool.clone(), config).await;
-    let (_, username) = password_user(&pool).await;
-    let req = peer_request(Method::POST, "/auth/login")
-        .header("Content-Type", "application/json")
-        .header(header::ORIGIN, TEST_ORIGIN)
-        .body(Body::from(
-            serde_json::json!({"username": username, "password": PASSWORD}).to_string(),
-        ))
-        .unwrap();
-    let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 200);
-    let token = resp
-        .headers()
-        .get_all(header::SET_COOKIE)
-        .iter()
-        .map(|v| v.to_str().unwrap().to_string())
-        .find_map(|c| {
-            c.strip_prefix("__Secure-kaiku_refresh=")
-                .map(|t| t.split(';').next().unwrap().to_string())
-        })
-        .unwrap();
-    let access = body_to_json(resp).await["access_token"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let (user, _) = password_user(&pool).await;
+    // L1b: a password alone mints no session; the session of any flow.
+    let (access, token, _) = super::helpers::login::signed_in(
+        &app.state,
+        user,
+        vc_server::auth::session_issue::SignInMethod::PasswordTotp,
+    )
+    .await;
 
     let req = peer_request(Method::POST, "/auth/logout")
         .header(header::ORIGIN, TEST_ORIGIN)

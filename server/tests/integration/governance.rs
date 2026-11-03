@@ -453,7 +453,10 @@ async fn deletion_answers_503_when_its_sessions_cannot_end(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
-    let token = generate_access_token(&app.config, user_id);
+    // L1b: deleting the account needs a full session and its step-up.
+    let (sid, token) =
+        super::helpers::create_session_with_token(&app.pool, &app.config, user_id).await;
+    super::helpers::grant_step_up(&app.pool, sid, "account.delete", "").await;
     // A test-only failure: ending a session for the deletion is refused.
     sqlx::raw_sql(
         "CREATE FUNCTION refuse_end() RETURNS trigger AS $$
