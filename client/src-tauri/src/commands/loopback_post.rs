@@ -204,8 +204,8 @@ async fn reply(stream: &mut TcpStream, ok: bool) {
 }
 
 /// Wait for the flow's hand-off POST until `deadline` (capped at
-/// [`FLOW_LISTEN_MAX`]). Each connection is served in turn; a slow or idle
-/// one is dropped after `read_deadline`.
+/// [`FLOW_LISTEN_MAX`]). Up to [`MAX_CONNECTIONS`] connections are served at
+/// once; a slow or idle one is dropped after `read_deadline`.
 pub async fn wait_for_post(
     listener: &(impl Acceptor + Sync),
     cb: &LoopbackCallback,
@@ -220,16 +220,14 @@ pub async fn wait_for_post(
         let mut tasks: tokio::task::JoinSet<Option<HandBack>> = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
-                accepted = listener.accept_stream() => {
+                // At the cap, no accept: further connections wait in the
+                // kernel's backlog until a slot frees (read deadline), so
+                // the browser's one-shot POST is never refused.
+                accepted = listener.accept_stream(), if tasks.len() < MAX_CONNECTIONS => {
                     let Ok(mut stream) = accepted else {
                         tokio::time::sleep(ACCEPT_BACKOFF).await;
                         continue;
                     };
-                    if tasks.len() >= MAX_CONNECTIONS {
-                        // Too many open at once: refuse this one at once.
-                        reply(&mut stream, false).await;
-                        continue;
-                    }
                     let cb = cb.clone();
                     let flow_id = flow_id.to_string();
                     tasks.spawn(async move {
@@ -408,6 +406,35 @@ mod tests {
             started.elapsed()
         );
         assert_eq!(task.await.unwrap(), Ok(HandBack::Code("c".into())));
+        drop(idle);
+    }
+
+    #[tokio::test]
+    async fn connections_over_the_cap_wait_for_a_slot() {
+        // Review round 2 (Argon B R3): with every slot held by an idle
+        // connection, the browser's one-shot POST waits in the backlog and
+        // is served once a slot frees (read deadline), never refused.
+        let (listener, cb) = bind().await.unwrap();
+        let cb2 = cb.clone();
+        let task = tokio::spawn(async move {
+            wait_for_post(
+                &listener,
+                &cb2,
+                FLOW,
+                Instant::now() + Duration::from_secs(20),
+                Duration::from_secs(1),
+            )
+            .await
+        });
+        let mut idle = Vec::new();
+        for _ in 0..MAX_CONNECTIONS {
+            idle.push(TcpStream::connect(("127.0.0.1", cb.port)).await.unwrap());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let reply = raw(cb.port, &good(&cb, &format!("flow_id={FLOW}&code=c"))).await;
+        assert!(reply.starts_with("HTTP/1.1 200 OK"), "{reply}");
+        assert_eq!(task.await.unwrap(), Ok(HandBack::Code("c".into())));
+        drop(idle);
     }
 
     #[tokio::test]
