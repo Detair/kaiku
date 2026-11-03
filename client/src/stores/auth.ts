@@ -661,44 +661,45 @@ export async function loginWithPasskey(
     username?: tauri.UsernameHint;
   },
 ): Promise<User> {
-  return runPasskeySignIn(serverUrl, o, async (result) => {
-    resetServerFeatures(); // a different server may have been chosen
-    warnIfNotRemembered(result);
-    stopRestoreRetry();
-    pendingTemporaryPassword = null;
-    stepPassword = null;
-    // The security overview belongs to the account that signed in (L2a).
-    resetMeSecurity();
-    setAuthState({
-      restorePending: false,
-      user: result.user,
-      serverUrl: (isTauri() && tauri.getServerUrl()) || serverUrl,
-      isLoading: false,
-      isInitialized: true,
-      error: null,
-      setupRequired: result.setup_required,
-      sessionExpired: false,
-      passwordChangeRequired: result.password_change_required === true,
-    });
-    if (!authState.passwordChangeRequired) await startSessionServices();
-    return result.user;
+  const attempt = await runPasskeySignIn(serverUrl, o);
+  if (!attempt.isCurrent()) throw new tauri.PasskeyError("ABORTED");
+  const { result } = attempt;
+  resetServerFeatures(); // a different server may have been chosen
+  warnIfNotRemembered(result);
+  stopRestoreRetry();
+  pendingTemporaryPassword = null;
+  stepPassword = null;
+  // The security overview belongs to the account that signed in (L2a).
+  resetMeSecurity();
+  setAuthState({
+    restorePending: false,
+    user: result.user,
+    serverUrl: (isTauri() && tauri.getServerUrl()) || serverUrl,
+    isLoading: false,
+    isInitialized: true,
+    error: null,
+    setupRequired: result.setup_required,
+    sessionExpired: false,
+    passwordChangeRequired: result.password_change_required === true,
   });
+  if (!authState.passwordChangeRequired) await startSessionServices();
+  return result.user;
 }
 
 /**
  * One passkey sign-in attempt (LP): a later sign-in, logout or another
  * passkey attempt makes it stale (Codex M1), so it is aborted and never
- * installs its session; `install` runs only for the current attempt.
+ * installs its session. Resolves only for the current attempt; the caller
+ * checks `isCurrent()` once more before it installs anything.
  */
-async function runPasskeySignIn<T>(
+async function runPasskeySignIn(
   serverUrl: string,
   o: {
     mediation: "conditional" | "optional";
     signal: AbortSignal;
     username?: tauri.UsernameHint;
   },
-  install: (result: tauri.AuthResult) => Promise<T>,
-): Promise<T> {
+): Promise<{ result: tauri.AuthResult; isCurrent: () => boolean }> {
   if (isTauri()) await initNativeSession();
   // Cancelled already (e.g. while the native auth events were set up): the
   // abort event is gone, so check the state; nothing starts.
@@ -717,7 +718,8 @@ async function runPasskeySignIn<T>(
       isCurrent,
     });
     if (!isCurrent()) throw new tauri.PasskeyError("ABORTED");
-    return await install(result);
+    // Checked again by the caller after the hop back (nothing else between).
+    return { result, isCurrent: () => generation === signInGeneration && !o.signal.aborted };
   } finally {
     o.signal.removeEventListener("abort", abort);
     if (passkeyAttempt === ctl) passkeyAttempt = null;
@@ -853,11 +855,12 @@ export async function replaceSessionWithPasskey(signal?: AbortSignal): Promise<U
   const serverUrl = tauri.getServerUrl();
   const previousUserId = authState.user?.id ?? null;
   const oldToken = isTauri() ? null : tauri.getAccessToken();
-  const result = await runPasskeySignIn(
-    serverUrl,
-    { mediation: "optional", signal: signal ?? new AbortController().signal },
-    async (r) => r,
-  );
+  const attempt = await runPasskeySignIn(serverUrl, {
+    mediation: "optional",
+    signal: signal ?? new AbortController().signal,
+  });
+  if (!attempt.isCurrent()) throw new tauri.PasskeyError("ABORTED");
+  const { result } = attempt;
   // Close the old session's socket first: ending that session makes the
   // server send SESSION_REVOKED on it, which must not end the new one.
   await requestStop();

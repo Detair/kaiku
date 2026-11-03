@@ -20,24 +20,23 @@ const ElevateDialog: Component<{ onClose: () => void; onElevated?: () => void }>
   const req: StepUpRequest = { action: "admin.elevate", target: "", targetLabel: "" };
   let done = false;
 
-  onMount(() => {
-    void withStepUp(req, () => elevateWithStepUp(null))
-      .then((response) => {
-        if (response.elevated) props.onElevated?.();
-      })
-      .catch((err: unknown) => {
-        if (err instanceof StepUpCancelled) return;
+  onMount(async () => {
+    try {
+      const response = await withStepUp(req, () => elevateWithStepUp(null));
+      if (response.elevated) props.onElevated?.();
+    } catch (err) {
+      if (!(err instanceof StepUpCancelled)) {
         showToast({
           type: "error",
           title: t("admin.reauth.elevateTitle"),
           message: reauthErrorText(err),
           duration: 6000,
         });
-      })
-      .finally(() => {
-        done = true;
-        props.onClose();
-      });
+      }
+    } finally {
+      done = true;
+      props.onClose();
+    }
   });
 
   onCleanup(() => {
