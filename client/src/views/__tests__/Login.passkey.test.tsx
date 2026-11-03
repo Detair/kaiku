@@ -142,6 +142,22 @@ describe("Login with a passkey", () => {
     await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(2));
   });
 
+  it("autofill comes back after a failed password sign-in", async () => {
+    // Earlier review m2: the password submit stopped autofill for good.
+    const tauri = await import("@/lib/tauri");
+    vi.mocked(tauri.login).mockRejectedValueOnce(new Error("INVALID_CREDENTIALS"));
+    pendingUntilAbort();
+    await renderLogin();
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
+    fireEvent.input(screen.getByPlaceholderText("Enter your username"), { target: { value: "fabian" } });
+    fireEvent.input(screen.getByPlaceholderText("Enter your password"), { target: { value: "wrong" } });
+    fireEvent.click(screen.getByRole("button", { name: "Login" }));
+    await waitFor(() => expect(tauri.login).toHaveBeenCalled());
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(2));
+    const again = passkeySignInMock.mock.calls[1][1] as { mediation: string };
+    expect(again.mediation).toBe("conditional");
+  });
+
   it("PASSKEY_UNKNOWN shows the removed message", async () => {
     conditional.available = false;
     passkeySignInMock.mockRejectedValue(

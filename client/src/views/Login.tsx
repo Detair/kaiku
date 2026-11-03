@@ -208,7 +208,6 @@ const Login: Component = () => {
     e.preventDefault();
     setLocalError("");
     clearError();
-    stopConditional();
 
     if (!username().trim()) {
       setLocalError(t("auth.login.usernameRequired"));
@@ -225,6 +224,7 @@ const Login: Component = () => {
       return;
     }
 
+    stopConditional();
     try {
       await login(
         serverUrl(),
@@ -239,9 +239,13 @@ const Login: Component = () => {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg === "MFA_REQUIRED") {
         setMfaCode("");
-      } else if (!authState.error) {
+        return;
+      }
+      if (!authState.error) {
         setLocalError(errorText(err, "auth.login.failed", LOGIN_ERRORS));
       }
+      // The form stays: so does passkey autofill.
+      if (!disposed) void startConditional();
     }
   };
 
