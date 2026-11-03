@@ -22,7 +22,15 @@ import {
   type AuthResponse,
   type AuthResult,
 } from "./common";
-import { adoptBrowserAuth, baseOf, invokeNative, useBrowserServer, type StillWanted } from "./preSession";
+import {
+  abandonedSignIn,
+  adoptBrowserAuth,
+  baseOf,
+  invokeNative,
+  useBrowserServer,
+  type StillWanted,
+} from "./preSession";
+import { logout as transportLogout } from "./auth";
 
 function attemptPath(attemptId: string, step: "poll" | "collect" | "totp" | "cancel"): string {
   return `/auth/login-attempts/${encodeURIComponent(attemptId)}/${step}`;
@@ -82,11 +90,10 @@ export async function pollAttempt(attemptId: string, wait: number): Promise<Logi
  */
 export async function collectAttempt(attemptId: string, stillWanted?: StillWanted): Promise<AuthResult> {
   if (isTauri()) {
-    const result = await invokeNative((invoke) =>
-      invoke<AuthResult>("login_attempt_collect", { attemptId }),
+    return nativeSessionStep(
+      (invoke) => invoke<AuthResult>("login_attempt_collect", { attemptId }),
+      stillWanted,
     );
-    await loadNativeAuthInfo();
-    return result;
   }
   const base = browserState.serverUrl;
   const response = await httpRequest<AuthResponse>("POST", attemptPath(attemptId, "collect"), {});
@@ -96,15 +103,52 @@ export async function collectAttempt(attemptId: string, stillWanted?: StillWante
 /** The TOTP step of a password or OIDC attempt (F4); `stillWanted` as for collect. */
 export async function attemptTotp(attemptId: string, code: string, stillWanted?: StillWanted): Promise<AuthResult> {
   if (isTauri()) {
-    const result = await invokeNative((invoke) =>
-      invoke<AuthResult>("login_attempt_totp", { attemptId, code }),
+    return nativeSessionStep(
+      (invoke) => invoke<AuthResult>("login_attempt_totp", { attemptId, code }),
+      stillWanted,
     );
-    await loadNativeAuthInfo();
-    return result;
   }
   const base = browserState.serverUrl;
   const response = await httpRequest<AuthResponse>("POST", attemptPath(attemptId, "totp"), { code });
   return adoptBrowserAuth(response, { base, stillWanted });
+}
+
+/**
+ * Desktop collect or TOTP step under `stillWanted` (Argon review 5 #3): an
+ * unwanted step starts nothing, and a session that arrives unwanted is ended
+ * by its generation, never the session that may have replaced it.
+ */
+async function nativeSessionStep(
+  run: (invoke: typeof import("@tauri-apps/api/core").invoke) => Promise<AuthResult>,
+  stillWanted?: StillWanted,
+): Promise<AuthResult> {
+  if (stillWanted && !stillWanted()) throw abandonedSignIn();
+  const result = await invokeNative(run);
+  if (stillWanted && !stillWanted()) {
+    await discardAdoptedSession(result);
+    throw abandonedSignIn();
+  }
+  await loadNativeAuthInfo();
+  return result;
+}
+
+/**
+ * End exactly the session a sign-in step produced, when nobody wants it any
+ * more (Codex review M2). Desktop: Rust signs out only if that session (its
+ * generation) is still the current one; a newer session already ended it.
+ * Browser: the adoption checks `stillWanted` right before it installs the
+ * token, so the adopted session is the current one here.
+ */
+export async function discardAdoptedSession(result: AuthResult): Promise<void> {
+  if (isTauri()) {
+    if (typeof result.session_generation !== "number") return;
+    await invokeNative((invoke) =>
+      invoke<boolean>("login_attempt_discard_session", { generation: result.session_generation }),
+    );
+    await loadNativeAuthInfo();
+    return;
+  }
+  await transportLogout();
 }
 
 /** Give the attempt up (the user left the screen, SM1). */

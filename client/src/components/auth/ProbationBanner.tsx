@@ -5,7 +5,7 @@
  * the app and is never hidden for good.
  */
 
-import { Component, Show, createEffect, createSignal } from "solid-js";
+import { Component, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import { ShieldAlert } from "lucide-solid";
 import { t } from "@/i18n";
 import { isProbation, replaceSessionWithPasskey } from "@/stores/auth";
@@ -25,22 +25,37 @@ const ProbationBanner: Component = () => {
   // The banner stays mounted while sessions change: whenever this turns into
   // a chat-only session, load the overview (passkey button or hint); a full
   // session in between opens the banner again for the next one.
+  /** The running sign-in; it ends with the banner or the session (Fable m6). */
+  let attempt: AbortController | null = null;
+  onCleanup(() => attempt?.abort());
   createEffect(() => {
     if (isProbation()) void refreshMeSecurity();
-    else setCollapsed(false);
+    else {
+      // A full session in between: the next chat-only session starts clean
+      // (Argon review 1 #2).
+      attempt?.abort();
+      setCollapsed(false);
+      setError(null);
+    }
   });
   const hasPasskey = () => (meSecurity()?.passkeys ?? 0) > 0;
   const canSignIn = () => hasPasskey() && canUsePasskeys();
 
   const signIn = async () => {
+    attempt?.abort();
+    const ctl = new AbortController();
+    attempt = ctl;
     setBusy(true);
     setError(null);
     try {
-      await replaceSessionWithPasskey();
+      await replaceSessionWithPasskey(ctl.signal);
     } catch (err) {
-      setError(passkeyFailureText(err, "auth.probation.signInFailed") || null);
+      if (!ctl.signal.aborted) setError(passkeyFailureText(err, "auth.probation.signInFailed") || null);
     } finally {
-      setBusy(false);
+      if (attempt === ctl) {
+        attempt = null;
+        setBusy(false);
+      }
     }
   };
 

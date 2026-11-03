@@ -115,6 +115,61 @@ describe("FullSessionRequiredDialog", () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/auth/logout"))).toBe(false);
   });
 
+  it("the chat-only sign-in names the account, so another account's passkey is refused", async () => {
+    // Argon review 6 #1 (C29 amendment): the server answers PASSKEY_USER_MISMATCH.
+    browserState.serverUrl = "https://chat.example.com";
+    browserState.accessToken = "old-token";
+    setAuthState({ user: { id: "u1", username: "oma", session: { id: "s1", assurance: "probation" } } as never });
+    passkeySignIn.mockImplementation(() => new Promise(() => {}));
+    void replaceSessionWithPasskey();
+    await waitFor(() => expect(passkeySignIn).toHaveBeenCalled());
+    const o = passkeySignIn.mock.calls[0][1] as { username?: unknown };
+    const name = typeof o.username === "function" ? (o.username as () => string)() : o.username;
+    expect(name).toBe("oma");
+  });
+
+  it("closing the dialog aborts its passkey sign-in and no late error shows", async () => {
+    // Fable m6, Argon review 1 #1.
+    resetMeSecurity();
+    browserState.serverUrl = "https://chat.example.com";
+    browserState.accessToken = "at";
+    setAuthState({ user: { id: "u1", username: "oma", session: { id: "s1", assurance: "probation" } } as never });
+    fetchMock.mockImplementation(async () =>
+      json(200, {
+        session: { assurance: "probation", auth_methods: ["qr"] },
+        password: null,
+        totp: null,
+        recovery_codes_left: 0,
+        key_devices: 1,
+        passkeys: 1,
+        may_approve: true,
+        bootstrap_open: false,
+        recovery_contact: null,
+        open_request: null,
+        prompts: [],
+      }),
+    );
+    let signal!: AbortSignal;
+    passkeySignIn.mockImplementation(
+      (_u: string, o: { signal: AbortSignal }) =>
+        new Promise((_r, reject) => {
+          signal = o.signal;
+          o.signal.addEventListener("abort", () => reject(new Error("PASSKEY_FAILED")));
+        }),
+    );
+    render(() => <FullSessionRequiredDialog />);
+    showFullSessionRequired();
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in with a passkey" }));
+    await waitFor(() => expect(passkeySignIn).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(signal.aborted).toBe(true);
+    showFullSessionRequired();
+    await screen.findByRole("button", { name: "Sign in with a passkey" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  });
+
   it("a passkey of another account reloads the app instead of mixing two accounts", async () => {
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "old-token";

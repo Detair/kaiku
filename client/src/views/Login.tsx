@@ -1,8 +1,8 @@
 import { Component, createEffect, createMemo, createSignal, createResource, Match, Show, Switch, For, on, onCleanup, onMount } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
-import { authState, clearError, loginWithPasskey } from "@/stores/auth";
+import { authState, beginSignInChoice, clearError, loginWithPasskey } from "@/stores/auth";
 import { cancelAttempt, fetchServerSettings, getDefaultServerUrl, oidcAuthorize } from "@/lib/tauri";
-import { decodeLoginStep, type OidcProvider } from "@/lib/types";
+import { decodeLoginStep, type LoginStep, type OidcProvider } from "@/lib/types";
 import { KeyRound, Smartphone } from "lucide-solid";
 import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
@@ -151,8 +151,9 @@ const Login: Component = () => {
   const FIRST_BACKOFF_MS = 2_000;
   let conditionalBackoff = FIRST_BACKOFF_MS;
   const startConditional = async () => {
-    // Never beside the button's ceremony (it restarts autofill when done).
-    if (desktop || disposed || modalCtl || !isWebAuthnAvailable()) return;
+    // Never beside the button's ceremony (it restarts autofill when done),
+    // and only while the form (with its user-name field) is shown.
+    if (desktop || disposed || modalCtl || !onForm() || !isWebAuthnAvailable()) return;
     const generation = ++conditionalGeneration;
     const available = await isConditionalMediationAvailable();
     if (!available || disposed || generation !== conditionalGeneration) return;
@@ -206,11 +207,15 @@ const Login: Component = () => {
   onCleanup(() => {
     stopConditional();
     modalCtl?.abort();
+    oidcCtl?.abort();
   });
 
   const handlePasskey = async () => {
     setLocalError("");
     clearError();
+    // A new sign-in choice: an SSO wait, a password or phone attempt in
+    // flight are stale now (Codex review M1).
+    beginSignInChoice();
     stopConditional();
     modalCtl?.abort();
     const ctl = new AbortController();
@@ -290,6 +295,7 @@ const Login: Component = () => {
   const handlePhoneSignIn = () => {
     setLocalError("");
     clearError();
+    stopConditional();
     void startPhoneSignIn(serverUrl());
   };
 
@@ -299,9 +305,23 @@ const Login: Component = () => {
     });
   };
 
+  /** The SSO flow of the current choice (desktop: cancels the Rust wait). */
+  let oidcCtl: AbortController | undefined;
+
   const handleOidcLogin = async (provider: OidcProvider) => {
     setLocalError("");
     clearError();
+    stopConditional();
+    // One choice at a time (Codex review M1): this SSO sign-in makes every
+    // other one stale, and it is stale itself once another starts. Its
+    // server is the one chosen now, not when the answer arrives.
+    const choice = beginSignInChoice();
+    const server = serverUrl();
+    oidcCtl?.abort();
+    const ctl = new AbortController();
+    oidcCtl = ctl;
+    const stale = () => disposed || ctl.signal.aborted || !choice.isCurrent();
+    choice.signal.addEventListener("abort", () => ctl.abort(), { once: true });
 
     // Browser: open the popup inside the click, before any await, or popup
     // blockers reject it. It is pointed at the provider once the server answers.
@@ -313,50 +333,75 @@ const Login: Component = () => {
       return;
     }
     setOidcLoading(provider.slug);
+    ctl.signal.addEventListener(
+      "abort",
+      () => {
+        stopWatching?.();
+        popup?.close();
+        if (oidcLoading() === provider.slug) setOidcLoading(null);
+      },
+      { once: true },
+    );
+
+    /** A step that arrived for a choice the user left: its attempt goes. */
+    const dropStale = (attemptId: string) => {
+      void cancelAttempt(attemptId).catch(() => undefined);
+    };
 
     try {
-      const result = await oidcAuthorize(serverUrl(), provider.slug);
+      const result = await oidcAuthorize(server, provider.slug, ctl.signal);
 
       if (result.mode === "tauri") {
         // Tauri: Rust redeemed the hand-off code; the PC confirms next (F3).
-        setOidcLoading(null);
-        if (disposed) {
-          void cancelAttempt(result.step.attempt.attempt_id).catch(() => undefined);
+        if (stale()) {
+          dropStale(result.step.attempt.attempt_id);
           return;
         }
-        setFlowServer(serverUrl());
-        applyLoginStep(result.step, "oidc");
         setOidcLoading(null);
+        setFlowServer(server);
+        applyLoginStep(result.step, "oidc", server, choice);
         return;
       }
 
-      // The view went away while the server answered: start nothing.
-      if (disposed) {
+      // The view went away, or another sign-in was chosen: start nothing.
+      if (stale()) {
         popup?.close();
         return;
       }
 
       // Browser: send the popup to the provider and wait for its callback
-      const expectedOrigin = new URL(serverUrl()).origin;
+      const expectedOrigin = new URL(server).origin;
       stopWatching = watchSsoPopup({
         popup: popup!,
         expectedOrigin,
         onResult: (data) => {
           // The callback carries the next step (C27), never a token.
           setOidcLoading(null);
-          setFlowServer(serverUrl());
-          applyLoginStep(decodeLoginStep(data), "oidc");
+          let step: LoginStep;
+          try {
+            step = decodeLoginStep(data);
+          } catch (err) {
+            setLocalError(errorText(err, "auth.login.ssoFailed", SSO_ERRORS.byCode));
+            return;
+          }
+          if (stale()) {
+            dropStale(step.attempt.attempt_id);
+            return;
+          }
+          setFlowServer(server);
+          applyLoginStep(step, "oidc", server, choice);
         },
         onClosedWithoutResult: () => {
           // Closed by the user, or the callback lost its opener (IdP with
           // COOP) after the sign-in already set the refresh cookie.
-          setPopupClosed(true);
+          if (!stale()) setPopupClosed(true);
         },
       });
       popup!.location.href = result.authUrl;
     } catch (err) {
       stopWatching?.();
       popup?.close();
+      if (stale()) return;
       setLocalError(errorText(err, "auth.login.ssoFailed", SSO_ERRORS.byCode));
       setOidcLoading(null);
     }

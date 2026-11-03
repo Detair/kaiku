@@ -6,11 +6,23 @@ const api = vi.hoisted(() => ({
   collectAttempt: vi.fn(),
   cancelAttempt: vi.fn(),
   attemptTotp: vi.fn(),
-  logout: vi.fn(),
+  discardAdoptedSession: vi.fn(),
 }));
+/** The real choice semantics: a new choice makes the previous one stale. */
+const choices = vi.hoisted(() => {
+  let ctl: AbortController | null = null;
+  return () => {
+    ctl?.abort();
+    const mine = new AbortController();
+    ctl = mine;
+    return { signal: mine.signal, isCurrent: () => !mine.signal.aborted };
+  };
+});
 const authStore = vi.hoisted(() => ({
   login: vi.fn(),
   completeSignIn: vi.fn(),
+  forgetStepPassword: vi.fn(),
+  beginSignInChoice: vi.fn(),
 }));
 vi.mock("@/lib/tauri", () => api);
 vi.mock("@/stores/auth", () => authStore);
@@ -67,8 +79,9 @@ beforeEach(() => {
   vi.useFakeTimers();
   for (const f of [...Object.values(api), ...Object.values(authStore)]) f.mockReset();
   api.cancelAttempt.mockResolvedValue(undefined);
-  api.logout.mockResolvedValue(undefined);
+  api.discardAdoptedSession.mockResolvedValue(undefined);
   authStore.completeSignIn.mockResolvedValue({ id: "u1" });
+  authStore.beginSignInChoice.mockImplementation(choices);
 });
 
 afterEach(async () => {
@@ -316,7 +329,7 @@ describe("login flow ownership (Codex review)", () => {
     collect.finish(signedIn);
     await vi.advanceTimersByTimeAsync(10);
     expect(authStore.completeSignIn).not.toHaveBeenCalled();
-    expect(api.logout).toHaveBeenCalledTimes(1);
+    expect(api.discardAdoptedSession).toHaveBeenCalledWith(signedIn);
     expect(loginFlow().step).toBe("form");
   });
 
@@ -344,7 +357,7 @@ describe("login flow ownership (Codex review)", () => {
     finish(signedIn);
     await expect(pending).rejects.toBeTruthy();
     expect(authStore.completeSignIn).not.toHaveBeenCalled();
-    expect(api.logout).toHaveBeenCalledTimes(1);
+    expect(api.discardAdoptedSession).toHaveBeenCalledWith(signedIn);
     expect(loginFlow()).toMatchObject({ step: "qr", attempt: { attempt_id: second.attempt_id } });
   });
 
@@ -419,5 +432,54 @@ describe("login flow ownership (Codex review)", () => {
     applyLoginStep({ status: "confirmation_required", attempt: sso }, "oidc");
     expect(api.cancelAttempt).toHaveBeenCalledWith(ID);
     expect(loginFlow()).toMatchObject({ step: "confirm", attempt: { attempt_id: sso.attempt_id } });
+  });
+});
+
+describe("login flow review round (Fable m2, Argon 6 #5-#7, Codex M1)", () => {
+  beforeEach(() => {
+    authStore.forgetStepPassword.mockClear();
+  });
+
+  it("leaving, ending or failing a step forgets the typed password", async () => {
+    api.cancelAttempt.mockResolvedValue(undefined);
+    api.pollAttempt.mockImplementation(() => new Promise(() => undefined));
+    applyLoginStep({ status: "confirmation_required", attempt: attempt({ kind: "password" }) }, "password");
+    await leaveFlow();
+    expect(authStore.forgetStepPassword).toHaveBeenCalled();
+    authStore.forgetStepPassword.mockClear();
+    api.pollAttempt.mockResolvedValueOnce(attempt({ kind: "password", state: "denied" }));
+    applyLoginStep({ status: "confirmation_required", attempt: attempt({ kind: "password" }) }, "password");
+    await vi.waitFor(() => expect(loginFlow().step).toBe("ended"));
+    expect(authStore.forgetStepPassword).toHaveBeenCalled();
+  });
+
+  it("a new phone sign-in gives the old attempt up without waiting for the server", async () => {
+    let releaseCancel!: () => void;
+    api.cancelAttempt.mockImplementation(() => new Promise<void>((r) => (releaseCancel = r)));
+    api.pollAttempt.mockImplementation(() => new Promise(() => undefined));
+    applyLoginStep({ status: "confirmation_required", attempt: attempt({ kind: "password" }) }, "password");
+    const second = attempt({ attempt_id: "55555555-5555-4555-8555-555555555555" });
+    api.createQrAttempt.mockResolvedValue(second);
+    const started = startPhoneSignIn("https://chat.example.com");
+    // The QR attempt is asked for before the old cancel has answered.
+    await vi.waitFor(() => expect(api.createQrAttempt).toHaveBeenCalled());
+    expect(api.cancelAttempt).toHaveBeenCalledWith(ID);
+    await started;
+    releaseCancel();
+    api.cancelAttempt.mockResolvedValue(undefined);
+    expect(loginFlow()).toMatchObject({ step: "qr", attempt: { attempt_id: second.attempt_id } });
+  });
+
+  it("another sign-in choice makes a running password step stale", async () => {
+    let answer!: (v: unknown) => void;
+    authStore.login.mockImplementation(() => new Promise((r) => (answer = r)));
+    api.cancelAttempt.mockResolvedValue(undefined);
+    const pending = submitPassword("https://chat.example.com", "alice", "pw");
+    authStore.beginSignInChoice(); // e.g. the passkey button
+    answer({ status: "confirmation_required", attempt: attempt({ kind: "password" }) });
+    await pending;
+    expect(api.cancelAttempt).toHaveBeenCalledWith(ID);
+    expect(authStore.forgetStepPassword).toHaveBeenCalled();
+    expect(loginFlow().step).toBe("form");
   });
 });

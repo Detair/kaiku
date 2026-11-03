@@ -287,6 +287,9 @@ async function endSession(reason: tauri.SessionEndReason): Promise<void> {
   pendingTemporaryPassword = null;
   stepPassword = null;
   passwordChangeSaved = false;
+  // The ended session's overview and prompts go with it (Argon review 6 #4).
+  resetMeSecurity();
+  endSignInChoices();
   setAuthState({
     user: null,
     sessionExpired: true,
@@ -664,6 +667,8 @@ export async function loginWithPasskey(
   const attempt = await runPasskeySignIn(serverUrl, o);
   if (!attempt.isCurrent()) throw new tauri.PasskeyError("ABORTED");
   const { result } = attempt;
+  // The session is here: an SSO wait or a phone attempt still running is over.
+  endSignInChoices();
   resetServerFeatures(); // a different server may have been chosen
   warnIfNotRemembered(result);
   stopRestoreRetry();
@@ -730,6 +735,35 @@ async function runPasskeySignIn(
 let signInGeneration = 0;
 let passkeyAttempt: AbortController | null = null;
 
+/** One sign-in choice (passkey button, password, phone QR, SSO). */
+export interface SignInChoice {
+  /** Aborted as soon as another choice starts or a session begins. */
+  readonly signal: AbortSignal;
+  readonly isCurrent: () => boolean;
+}
+
+let choiceCtl: AbortController | null = null;
+
+/**
+ * Start a sign-in choice (Codex review M1): every other one becomes stale at
+ * once: a running passkey ceremony is aborted (LP's generation), an SSO wait
+ * is cancelled through its signal, an older password or phone attempt drops
+ * its late answer. Passkey autofill is not a choice until it is picked.
+ */
+export function beginSignInChoice(): SignInChoice {
+  invalidatePasskeySignIns();
+  choiceCtl?.abort();
+  const ctl = new AbortController();
+  choiceCtl = ctl;
+  return { signal: ctl.signal, isCurrent: () => !ctl.signal.aborted };
+}
+
+/** A session began or ended: every pending choice is stale. */
+function endSignInChoices(): void {
+  choiceCtl?.abort();
+  choiceCtl = null;
+}
+
 /** Make every running passkey sign-in stale; returns the new generation. */
 function invalidatePasskeySignIns(): number {
   passkeyAttempt?.abort();
@@ -748,6 +782,7 @@ export async function completeSignIn(
   result: tauri.AuthResult,
 ): Promise<User> {
   invalidatePasskeySignIns();
+  endSignInChoices();
   await initNativeSession();
   warnIfNotRemembered(result);
   stopRestoreRetry();
@@ -808,6 +843,7 @@ export async function register(
  */
 export async function logout(): Promise<void> {
   invalidatePasskeySignIns();
+  endSignInChoices();
   resetServerFeatures();
   resetMeSecurity();
   pendingTemporaryPassword = null;
@@ -855,9 +891,14 @@ export async function replaceSessionWithPasskey(signal?: AbortSignal): Promise<U
   const serverUrl = tauri.getServerUrl();
   const previousUserId = authState.user?.id ?? null;
   const oldToken = isTauri() ? null : tauri.getAccessToken();
+  // C29 (amendment): the signed-in account's name, so a passkey of another
+  // account on a shared PC is refused (PASSKEY_USER_MISMATCH) before any
+  // session is made or the current one ends (Argon review 6 #1).
+  const username = authState.user?.username?.trim() || undefined;
   const attempt = await runPasskeySignIn(serverUrl, {
     mediation: "optional",
     signal: signal ?? new AbortController().signal,
+    username,
   });
   if (!attempt.isCurrent()) throw new tauri.PasskeyError("ABORTED");
   const { result } = attempt;

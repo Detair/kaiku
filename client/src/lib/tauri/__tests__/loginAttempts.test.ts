@@ -308,3 +308,52 @@ describe("login attempt wrappers (desktop)", () => {
     });
   });
 });
+
+describe("desktop session steps (Argon 5 #3, Codex M2)", () => {
+  beforeEach(() => {
+    tauriMode.on = true;
+    invoke.mockReset();
+  });
+  afterEach(() => {
+    tauriMode.on = false;
+  });
+
+  const signedIn = { user: { id: "u1" }, setup_required: false, password_change_required: false, session_generation: 7 };
+
+  it("an unwanted collect starts nothing", async () => {
+    await expect(collectAttempt(attempt.attempt_id, () => false)).rejects.toMatchObject({ code: "LOGIN_ATTEMPT_ENDED" });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("a collect that arrives unwanted ends exactly its own session", async () => {
+    let wanted = true;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "login_attempt_collect") {
+        wanted = false; // the user left meanwhile
+        return signedIn;
+      }
+      if (cmd === "login_attempt_discard_session") return true;
+      return null;
+    });
+    await expect(collectAttempt(attempt.attempt_id, () => wanted)).rejects.toMatchObject({
+      code: "LOGIN_ATTEMPT_ENDED",
+    });
+    expect(invoke).toHaveBeenCalledWith("login_attempt_discard_session", { generation: 7 });
+    expect(invoke).not.toHaveBeenCalledWith("logout");
+  });
+
+  it("a TOTP step that arrives unwanted is discarded the same way", async () => {
+    let wanted = true;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "login_attempt_totp") {
+        wanted = false;
+        return signedIn;
+      }
+      return true;
+    });
+    await expect(attemptTotp(attempt.attempt_id, "123456", () => wanted)).rejects.toMatchObject({
+      code: "LOGIN_ATTEMPT_ENDED",
+    });
+    expect(invoke).toHaveBeenCalledWith("login_attempt_discard_session", { generation: 7 });
+  });
+});

@@ -58,6 +58,8 @@ export interface AuthResult {
   password_change_required: boolean;
   /** Native mode: `false` when the OS keyring could not store the login. */
   persisted?: boolean;
+  /** Native mode: the generation the session was installed with (ends exactly it). */
+  session_generation?: number;
 }
 
 /** Native mode: base URL and access token provided by the Rust session. */

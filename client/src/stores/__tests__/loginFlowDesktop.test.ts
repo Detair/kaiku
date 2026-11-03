@@ -6,7 +6,12 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
   invoke,
   isTauri: () => true,
 }));
-const authStore = vi.hoisted(() => ({ login: vi.fn(), completeSignIn: vi.fn() }));
+const authStore = vi.hoisted(() => ({
+  login: vi.fn(),
+  completeSignIn: vi.fn(),
+  forgetStepPassword: vi.fn(),
+  beginSignInChoice: vi.fn(() => ({ signal: new AbortController().signal, isCurrent: () => true })),
+}));
 vi.mock("@/stores/auth", () => authStore);
 
 import { leaveFlow, loginFlow, startPhoneSignIn } from "../loginFlow";

@@ -4,7 +4,7 @@
  * recovery contact, renew TOTP or recovery codes. "Later" snoozes 7 days.
  */
 
-import { Component, Match, Show, Switch, createSignal } from "solid-js";
+import { Component, Match, Show, Switch, createSignal, onCleanup } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { ShieldCheck } from "lucide-solid";
 import { t, type MessageKey } from "@/i18n";
@@ -13,6 +13,7 @@ import { isProbation, replaceSessionWithPasskey } from "@/stores/auth";
 import { currentPrompt, snoozePrompt } from "@/stores/security";
 import { requestSettings } from "@/stores/settingsNav";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
+import { passkeyFailureText } from "@/lib/authErrors";
 import SetupPhoneModal from "@/components/settings/security/SetupPhoneModal";
 
 const TEXT: Record<SecurityPrompt, MessageKey> = {
@@ -32,6 +33,29 @@ const SecurityPromptBanner: Component = () => {
   const navigate = useNavigate();
   const [setupPhone, setSetupPhone] = createSignal(false);
   const prompt = () => currentPrompt();
+  // "Sign in with a passkey": busy, worded failures, aborted with the banner
+  // (Argon review 2 #5).
+  const [signingIn, setSigningIn] = createSignal(false);
+  const [signInError, setSignInError] = createSignal<string | null>(null);
+  let attempt: AbortController | null = null;
+  onCleanup(() => attempt?.abort());
+  const signIn = async () => {
+    attempt?.abort();
+    const ctl = new AbortController();
+    attempt = ctl;
+    setSigningIn(true);
+    setSignInError(null);
+    try {
+      await replaceSessionWithPasskey(ctl.signal);
+    } catch (err) {
+      if (!ctl.signal.aborted) setSignInError(passkeyFailureText(err, "auth.probation.signInFailed") || null);
+    } finally {
+      if (attempt === ctl) {
+        attempt = null;
+        setSigningIn(false);
+      }
+    }
+  };
 
   return (
     <Show when={prompt()}>
@@ -75,7 +99,7 @@ const SecurityPromptBanner: Component = () => {
               </Match>
               <Match when={p() === "sign_in_with_passkey"}>
                 <Show when={canUsePasskeys()}>
-                  <button type="button" class={action} onClick={() => void replaceSessionWithPasskey().catch(() => undefined)}>
+                  <button type="button" class={action} disabled={signingIn()} onClick={() => void signIn()}>
                     {t("auth.probation.signIn")}
                   </button>
                 </Show>
@@ -94,6 +118,9 @@ const SecurityPromptBanner: Component = () => {
               {t("security.prompt.later")}
             </button>
           </div>
+          <Show when={signInError()}>
+            <p role="alert" class="text-sm text-text-primary">{signInError()}</p>
+          </Show>
           <Show when={setupPhone()}>
             <SetupPhoneModal onClose={() => setSetupPhone(false)} />
           </Show>

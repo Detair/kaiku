@@ -5,7 +5,7 @@
  * 2 s) or directly by `withStepUp` for a chat-only session.
  */
 
-import { Component, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { Component, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
 import { t } from "@/i18n";
 import { passkeyFailureText } from "@/lib/authErrors";
 import { FULL_SESSION_REQUIRED_EVENT, isTauri } from "@/lib/tauri/common";
@@ -34,21 +34,36 @@ const FullSessionRequiredDialog: Component = () => {
     if (open() && meSecurity() === null) void refreshMeSecurity();
   });
   const canSignIn = () => (meSecurity()?.passkeys ?? 0) > 0 && canUsePasskeys();
+  // A fresh dialog shows no error of an earlier attempt (Argon review 1 #1).
+  createEffect(on(open, (o) => o && setError(null)));
+
+  /** The running sign-in; closing the dialog aborts it (Fable m6). */
+  let attempt: AbortController | null = null;
+  onCleanup(() => attempt?.abort());
 
   const close = () => {
+    attempt?.abort();
+    attempt = null;
+    setBusy(false);
     setOpen(false);
     setError(null);
   };
   const signIn = async () => {
+    attempt?.abort();
+    const ctl = new AbortController();
+    attempt = ctl;
     setBusy(true);
     setError(null);
     try {
-      await replaceSessionWithPasskey();
-      close();
+      await replaceSessionWithPasskey(ctl.signal);
+      if (!ctl.signal.aborted) close();
     } catch (err) {
-      setError(passkeyFailureText(err, "auth.probation.signInFailed") || null);
+      if (!ctl.signal.aborted) setError(passkeyFailureText(err, "auth.probation.signInFailed") || null);
     } finally {
-      setBusy(false);
+      if (attempt === ctl) {
+        attempt = null;
+        setBusy(false);
+      }
     }
   };
 
