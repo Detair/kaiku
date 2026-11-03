@@ -32,6 +32,22 @@ Setting up and removing a key phone also posts a security notice to the
 account's Kaiku chat and to every admin, so nobody is changed silently. Ended
 sessions are signed out on their devices within seconds.
 
+### Recovery commands
+
+| Command | Effect |
+|---|---|
+| `kaiku-admin factor reset <username> (password \| totp)` | A throttled or compromised password or authenticator app works again; its sign-in delay is cleared. |
+| `kaiku-admin throttle reset <username>` | Clears throttled states and sign-in delays of password and authenticator app. |
+| `kaiku-admin may-approve <username> (on \| off)` | Turns phone confirmations for the account on or off. |
+| `kaiku-admin recovery-contact <username> (<contact> \| --none)` | Names or removes the recovery contact (they still confirm it in the app). |
+| `kaiku-admin admin demote <username>` | Removes the admin role; the admin's open admin requests are void. |
+| `kaiku-admin request cancel <request-id>` | Cancels an open account request. |
+
+They also work on admin accounts. Every command writes a `cli.*` audit row;
+changes with a security event (contact, sessions ended, devices removed, admin
+role removed, request cancelled) notify the account, its recovery contact and
+every admin.
+
 ## Give the first admin a key phone
 
 On a new server, or when the only admin lost their phone:

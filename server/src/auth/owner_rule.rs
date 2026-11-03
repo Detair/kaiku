@@ -40,10 +40,21 @@ impl std::fmt::Debug for Part2Factor {
 /// How the caller acts for the owner.
 #[derive(Debug, Clone)]
 pub enum OwnerAuthority {
-    Part1 { grant: ConsumedGrant },
-    Part2 { factor: &'static str },
-    Contact { grant: ConsumedGrant },
-    Admin { grant: ConsumedGrant },
+    Part1 {
+        grant: ConsumedGrant,
+    },
+    Part2 {
+        factor: &'static str,
+    },
+    Contact {
+        grant: ConsumedGrant,
+    },
+    Admin {
+        grant: ConsumedGrant,
+    },
+    /// The host CLI (`kaiku-admin request cancel`, F6 item 4); never
+    /// returned by [`authorize`].
+    Cli,
 }
 
 impl OwnerAuthority {
@@ -54,6 +65,7 @@ impl OwnerAuthority {
             Self::Part1 { .. } | Self::Part2 { .. } => "self",
             Self::Contact { .. } => "recovery_contact",
             Self::Admin { .. } => "admin",
+            Self::Cli => "cli",
         }
     }
 }

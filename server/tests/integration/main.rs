@@ -22,6 +22,7 @@ mod channel_permissions;
 mod channel_pins;
 mod channels_http;
 mod cli;
+mod cli_recovery;
 mod connectivity_http;
 mod credential_states;
 mod custom_status;

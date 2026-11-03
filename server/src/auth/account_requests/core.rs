@@ -644,6 +644,7 @@ const fn actor_of(by: &OwnerAuthority, actor: Uuid, subject: Uuid) -> Actor {
         OwnerAuthority::Admin { .. } => Actor::Admin(actor),
         OwnerAuthority::Contact { .. } => Actor::RecoveryContact(actor),
         OwnerAuthority::Part1 { .. } | OwnerAuthority::Part2 { .. } => Actor::User(subject),
+        OwnerAuthority::Cli => Actor::Cli,
     }
 }
 

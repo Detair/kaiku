@@ -1273,7 +1273,11 @@ pub async fn finish_done_tx(
                         row.subject_id,
                         EventType::AdminSetup,
                         issuer_user.map_or(Actor::System, Actor::Admin),
-                        serde_json::json!({"new_account": true, "by_user_id": issuer_user}),
+                        serde_json::json!({
+                            "mode": row.admin_mode.as_deref().unwrap_or("setup"),
+                            "admin_user_id": issuer_user,
+                            "new_account": true,
+                        }),
                     ),
                 )
                 .await?,

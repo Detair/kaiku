@@ -46,12 +46,15 @@ pub enum EventType {
     RecoveryContactChanged,
     SessionEndedReuse,
     SessionEndedLimit,
+    /// Sessions ended on the host (`kaiku-admin sessions end`; appended to
+    /// C28's list, L1b Task 28).
+    SessionsEnded,
     BootstrapReminder,
 }
 
 impl EventType {
     /// Every type, in C28 order.
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 36] = [
         Self::SignIn,
         Self::SignInNotFinished,
         Self::SecondFactorFailed,
@@ -86,6 +89,7 @@ impl EventType {
         Self::RecoveryContactChanged,
         Self::SessionEndedReuse,
         Self::SessionEndedLimit,
+        Self::SessionsEnded,
         Self::BootstrapReminder,
     ];
 
@@ -127,6 +131,7 @@ impl EventType {
             Self::RecoveryContactChanged => "recovery_contact_changed",
             Self::SessionEndedReuse => "session_ended_reuse",
             Self::SessionEndedLimit => "session_ended_limit",
+            Self::SessionsEnded => "sessions_ended",
             Self::BootstrapReminder => "bootstrap_reminder",
         }
     }
@@ -159,7 +164,8 @@ impl EventType {
             | Self::RequestWithdrawn
             | Self::AdminSetup
             | Self::AdminRoleGranted
-            | Self::AdminRoleRemoved => Severity::High,
+            | Self::AdminRoleRemoved
+            | Self::SessionsEnded => Severity::High,
             Self::SignIn
             | Self::SignInNotFinished
             | Self::SecondFactorFailed
