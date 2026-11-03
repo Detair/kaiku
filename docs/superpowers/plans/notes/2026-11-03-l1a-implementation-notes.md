@@ -397,3 +397,8 @@ bot and incoming-webhook token creation behind `full` (C27 same row), the own-ac
   rewrites 38 existing files only with the `origin` metadata of the local sqlx-cli (no semantic
   difference, checked by a JSON comparison without `origin`), so the cache is left as committed.
   `git diff --check` clean.
+
+### Review round 2 (confirmation, 2026-11-03)
+
+- Codex m6 (PARTLY in round 2): the `kaiku` rename no longer aborts after five taken hex candidates; it falls back to `kaiku_` + 20 hex + `_` + counter within `username_format`. Test `pre_existing_kaiku_rename_survives_all_hex_candidates_taken` (red before, green after).
+- Argon: APPROVE (all three rejections accepted).

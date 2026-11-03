@@ -246,3 +246,44 @@ async fn pre_existing_kaiku_is_renamed_to_a_free_name(pool: PgPool) {
         serde_json::json!({"old_username": "kaiku", "new_username": "kaiku_0123abcd4567"})
     );
 }
+
+/// Review round 2 (Codex m6): when every hex candidate is taken, the rename
+/// falls back to a counter instead of aborting the deployment.
+#[sqlx::test(migrations = false)]
+async fn pre_existing_kaiku_rename_survives_all_hex_candidates_taken(pool: PgPool) {
+    use super::helpers::migrations::{apply_from, apply_until};
+    apply_until(&pool, 20_261_120_000_000).await;
+    let owner = Uuid::parse_str("0123abcd-4567-4890-8abc-def012345678").unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, display_name, password_hash)
+         VALUES ($1, 'kaiku', 'K', 'x')",
+    )
+    .bind(owner)
+    .execute(&pool)
+    .await
+    .unwrap();
+    for taken in [
+        "kaiku_0123abcd",
+        "kaiku_0123abcd4567",
+        "kaiku_0123abcd45674890",
+        "kaiku_0123abcd456748908abc",
+        "kaiku_0123abcd456748908abcdef0",
+        "kaiku_0123abcd456748908abc_1",
+    ] {
+        sqlx::query(
+            "INSERT INTO users (id, username, display_name, password_hash)
+             VALUES (gen_random_uuid(), $1, 'Taken', 'x')",
+        )
+        .bind(taken)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    apply_from(&pool, 20_261_120_000_000).await;
+    let name: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+        .bind(owner)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(name, "kaiku_0123abcd456748908abc_2", "counter fallback");
+}

@@ -10,25 +10,32 @@ ALTER TABLE users DROP CONSTRAINT local_user_has_password;
 
 -- `kaiku` is reserved. A pre-existing account with that name keeps its id,
 -- data and sessions but is renamed to `kaiku_` + the first 8 (else 12, 16,
--- ... 24) hex digits of its id, the first that is free (usernames are lower
--- case by `username_format`, so the exact match is complete); its owner
--- signs in with the new name. The rename is in the admin audit log.
+-- 20, 24) hex digits of its id, the first that is free; if all of those are
+-- taken, `kaiku_` + 20 hex digits + `_` + a counter, so the migration always
+-- finds a free name within `username_format` (`^[a-z0-9_]{3,32}$`; usernames
+-- are lower case, so the exact match is complete). Its owner signs in with
+-- the new name. The rename is in the admin audit log.
 DO $$
 DECLARE
     renamed UUID;
     candidate TEXT;
+    hex TEXT;
     digits INT := 8;
+    counter INT := 1;
 BEGIN
     SELECT id INTO renamed FROM users
      WHERE username = 'kaiku' AND id <> '6b61696b-7500-4000-8000-000000000001';
     IF renamed IS NOT NULL THEN
+        hex := replace(renamed::text, '-', '');
         LOOP
-            candidate := 'kaiku_' || left(replace(renamed::text, '-', ''), digits);
-            EXIT WHEN NOT EXISTS (SELECT 1 FROM users WHERE username = candidate);
-            digits := digits + 4;
-            IF digits > 24 THEN
-                RAISE EXCEPTION 'the username kaiku is reserved: rename account % by hand', renamed;
+            IF digits <= 24 THEN
+                candidate := 'kaiku_' || left(hex, digits);
+                digits := digits + 4;
+            ELSE
+                candidate := 'kaiku_' || left(hex, 20) || '_' || counter;
+                counter := counter + 1;
             END IF;
+            EXIT WHEN NOT EXISTS (SELECT 1 FROM users WHERE username = candidate);
         END LOOP;
         UPDATE users SET username = candidate WHERE id = renamed;
     END IF;
