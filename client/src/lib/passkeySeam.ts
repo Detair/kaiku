@@ -9,6 +9,10 @@
  *   in `replaceSessionWithPasskey`.
  * - `stepUp` → `lib/tauri/passkeys.ts::stepUpWithPasskey(action, target, signal)`
  *   (browser ceremony, or the `passkey_step_up` command in the system browser).
+ * - `create` → LP's `lib/webauthn.ts`: `navigator.credentials.create({publicKey:
+ *   creationOptionsFromJSON(options.publicKey)})` then `credentialToJSON(cred)`
+ *   (browser only; registration never runs in the desktop app). Without it,
+ *   `createPasskeyFromJSON` uses the WebAuthn L3 JSON methods when present.
  *
  * Until then nothing is registered and every passkey entry point stays hidden
  * (`passkeyCeremonies()` is null). Tests register fakes.
@@ -20,6 +24,8 @@ import type { StepUpAction, StepUpGrant } from "@/lib/types";
 export interface PasskeyCeremonies {
   signIn(serverUrl: string, o: { mediation: "optional"; signal: AbortSignal }): Promise<AuthResult>;
   stepUp(action: StepUpAction, target: string, signal: AbortSignal): Promise<StepUpGrant>;
+  /** Create a passkey from C29 `options` JSON; resolves the `credential` JSON. */
+  create?(options: unknown, signal: AbortSignal): Promise<unknown>;
 }
 
 let ceremonies: PasskeyCeremonies | null = null;
@@ -32,4 +38,28 @@ export function registerPasskeyCeremonies(c: PasskeyCeremonies | null): void {
 /** The registered ceremonies, or null while LP is not merged. */
 export function passkeyCeremonies(): PasskeyCeremonies | null {
   return ceremonies;
+}
+
+interface JsonCredentialStatics {
+  parseCreationOptionsFromJSON?: (o: unknown) => PublicKeyCredentialCreationOptions;
+}
+
+/**
+ * Browser passkey creation for setup links, requests and tickets (C29):
+ * LP's ceremony when registered, else the WebAuthn L3 JSON helpers. Throws
+ * `PASSKEY_NOT_SUPPORTED` when neither exists.
+ */
+export async function createPasskeyFromJSON(options: unknown, signal: AbortSignal): Promise<unknown> {
+  if (ceremonies?.create) return ceremonies.create(options, signal);
+  const statics = (globalThis as { PublicKeyCredential?: JsonCredentialStatics }).PublicKeyCredential;
+  const publicKey = (options as { publicKey?: unknown } | null)?.publicKey ?? options;
+  if (!statics?.parseCreationOptionsFromJSON || !navigator.credentials?.create) {
+    throw new Error("PASSKEY_NOT_SUPPORTED");
+  }
+  const cred = (await navigator.credentials.create({
+    publicKey: statics.parseCreationOptionsFromJSON(publicKey),
+    signal,
+  })) as (Credential & { toJSON?: () => unknown }) | null;
+  if (!cred?.toJSON) throw new Error("PASSKEY_FAILED");
+  return cred.toJSON();
 }

@@ -222,6 +222,16 @@ const LoginPage = () => (
     <Login />
   </Layout>
 );
+const SetupLink = lazy(() => import("./views/SetupLink"));
+const SetupLinkPage = () => (
+  <Layout>
+    <LazyErrorBoundary name="SetupLink">
+      <Suspense fallback={<PageFallback />}>
+        <SetupLink />
+      </Suspense>
+    </LazyErrorBoundary>
+  </Layout>
+);
 const RegisterPage = () => (
   <Layout>
     <Register />
@@ -288,6 +298,7 @@ export const AppRoutes = (): JSX.Element => (
     {import.meta.env.DEV && <Route path="/demo" component={ThemeDemoPage} />}
     <Route path="/login" component={LoginPage} />
     <Route path="/register" component={RegisterPage} />
+    <Route path="/setup" component={SetupLinkPage} />
     <Route path="/invite/:code" component={InvitePage} />
     <Route path="/pages/:slug" component={PagePage} />
     <Route path="/guilds/:guildId/pages/:slug" component={PagePage} />
