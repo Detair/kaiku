@@ -1,14 +1,17 @@
 # Kaiku: phone-as-key login (v1.0) and simple Android app (v1.2)
 
-**Status:** Revision 4 (2026-11-03), the last targeted revision before contracts C26–C29 are
-frozen. First draft 2026-11-02. Revision 1 added the maintainer decisions, a standards check and the
+**Status:** Revision 5 — frozen for C26–C29 and implementation planning (2026-11-03); design reviews: Fable READY, Gemini Argon READY, Codex READY WITH FIXES (fix applied).
+
+First draft 2026-11-02. Revision 1 added the maintainer decisions, a standards check and the
 approvals model; revisions 2 and 3 resolved two rounds of three independent design reviews (Fable,
 Codex, Gemini Argon), revision 3 by removing mechanism (Trust, network signals, owner evidence,
 dormancy, the separate bootstrap ceremony; four state machines instead of seven). Revision 4
 resolves the third round (Fable and Argon: READY WITH FIXES; Codex: NOT READY) by tightening rules
 instead of adding mechanism: credential states and generations, recorded independent cancellers, a
-stricter owner action rule, and the contracts for revocation, locking and the desktop callback. The
-appendices map every finding to its resolution.
+stricter owner action rule, and the contracts for revocation, locking and the desktop callback.
+Revision 5 applies the fourth round's text fixes: committed session state on every authenticated
+request, the age of a recovery contact's confirmation, and a warning before an owner's
+repudiation voids their own request. The appendices map every finding to its resolution.
 **Target:** split release (maintainer decision 2026-11-02):
 
 - **v1.0** ships the new login: Part B (sign-in with passkeys and the phone as key) and Part C
@@ -19,7 +22,7 @@ appendices map every finding to its resolution.
 
 **How to read this document:** the maintainer decisions bind. Coordinator calls (CC1–CC10) are
 binding for the builder unless the maintainer or a design review overturns them; rules changed in
-revisions 3 and 4 are marked **(rev 3)** and **(rev 4)**. Items marked **(design call)** are
+revisions 3 to 5 are marked **(rev 3)**, **(rev 4)** and **(rev 5)**. Items marked **(design call)** are
 choices made where neither the decisions nor the coordinator calls say anything; reviewers should
 challenge them first. The state machines in B.7 are normative: where prose and a state machine
 disagree, the state machine wins.
@@ -78,7 +81,8 @@ B3 → F2, B4 → F3, B5 → B.5, B6 → F6, C24 → F7):
 ## Coordinator calls 2026-11-03
 
 Each item is a **coordinator call** for the maintainer to review; the detail and the sources live in
-the sections named. **(rev 3)** and **(rev 4)** mark calls changed in those revisions.
+the sections named. **(rev 3)**, **(rev 4)** and **(rev 5)** mark calls changed in those
+revisions.
 
 - **CC1: user verification on every key-device signature.** A key device needs a screen lock (PIN,
   pattern or password) or a Class 3 biometric, checked first at setup; every `K_approve` signature
@@ -117,8 +121,9 @@ the sections named. **(rev 3)** and **(rev 4)** mark calls changed in those revi
   per credential (WebAuthn L3 §5.8.6, §6.1.3, §5.1.10, §5.11; OWASP Passkey Security cheat sheet;
   Android Credential Manager docs). B.1.
 - **CC6 (rev 4): sessions.** Refresh rotation with reuse detection and one idempotent retry a day;
-  ending a session takes effect at once (the database is authoritative; the `sid` denylist, written
-  before commit, is checked on every request and WebSocket, fail closed; connections closed);
+  ending a session takes effect at once (the database is authoritative: every request and every
+  WebSocket re-check reads the committed session state through a commit-invalidated cache; the `sid`
+  denylist, written before commit, only speeds up rejection **(rev 5)**; connections closed);
   absolute caps with the NIST deviation and its consequence stated; a concurrent-session limit;
   device-key sign-in with UV after a lapse, only while active; a plain sign-out keeps the
   key. `K_session` deferred; Keystore-wrapped storage on Android (RFC 9700 §2.2.2, §4.14.2; ASVS
@@ -1061,9 +1066,9 @@ only. None has a key device.
 - **Admin upgrade checklist:** set `PUBLIC_URL` first (the server fails closed without it);
   password-only admins enable TOTP or register a passkey before the upgrade, otherwise only the CLI
   helps; give the first admin a phone with the CLI; name a recovery contact for every account, the
-  sole admin's own included, and have it confirmed (SM3 counts only confirmed contacts); on a
-  single-admin server, set up existing accounts that have no canceller yet with the CLI until
-  confirmed contacts exist; consider a second admin.
+  sole admin's own included, and have it confirmed (SM3 counts only contacts confirmed at least one
+  delay period before a request, rev 5); on a single-admin server, set up existing accounts that
+  have no canceller yet with the CLI until such contacts exist; consider a second admin.
 - **Removed:** `/auth/qr/create`, `/auth/qr/redeem` (a session without confirmation),
   `/auth/forgot-password`, `/auth/reset-password`, and the Android `OidcHandler` branch that accepts
   tokens from a deep link.
@@ -1113,22 +1118,37 @@ part 2.
 
 **Ending sessions (rev 3: at once):** every end (sign-out, "That wasn't me", reuse, revocation of
 its authenticator, recovery clean-up, ban, session limit) goes through `revocation::end_sessions`,
-which puts the `sid` on the existing denylist (checked on every authenticated request and by the
-WebSocket, failing closed) and closes the session's WebSocket and voice connections, so the rest of
-its access JWT's lifetime is useless. Signing out the current session is always allowed; on a key
+which sets `ended_at`, puts the `sid` on the existing denylist and closes the session's WebSocket
+and voice connections, so the rest of its access JWT's lifetime is useless: every authenticated
+request and every connection's re-check reads the committed session state, and the denylist only
+speeds up the rejection (revocation order below) **(rev 5)**. Signing out the current session is always allowed; on a key
 device "Sign out" keeps the key (the next open asks "Confirm it's you"), "Sign out and remove this
 phone" revokes it (UV). Ending other sessions needs a full session and a step-up (ASVS 7.5.2).
 After an authenticator change, the UI offers "Sign out everywhere else" (ASVS 7.4.3).
 
-**Revocation order (rev 4; C27, L1a; ASVS 7.4.1):** `sessions.ended_at` is authoritative. Inside the
-transaction, after its locks and re-checks, `end_sessions` writes the `sid`s to the Valkey denylist
-(TTL ≥ the access-JWT lifetime) and only then commits; a failed Valkey write fails the transition.
-An entry whose commit then fails only over-revokes until it expires, the safe direction. Refresh
-and device-key sign-in read the database row. While the denylist's marker key is missing (Valkey
-restarted without its data), authenticated requests fail closed until the server has rebuilt it
-from the sessions ended within the last access-JWT lifetime. After commit, the session's WebSocket
-and voice connections are closed through pub/sub, and every connection re-checks its `sid` at
-least every 60 s.
+**Revocation order (rev 4, rev 5; C27, L1a; ASVS 7.4.1):** `sessions.ended_at` is authoritative,
+and it is what decides: every authenticated request, every WebSocket and voice connection on its
+periodic re-check, refresh and device-key sign-in accept a session only after checking its
+committed row (directly or through the cache below). The Valkey denylist may only speed up a
+rejection; a missing, empty or unreachable denylist never makes a session valid **(rev 5)**. Inside
+the transaction, after its locks and re-checks, `end_sessions` writes the `sid`s to the Valkey
+denylist (TTL ≥ the access-JWT lifetime), issues a PostgreSQL `NOTIFY` naming them, and only then
+commits; a failed Valkey write does not stop the transition, since the commit is what ends the
+session **(rev 5)**. An entry whose commit then fails only over-revokes until it expires, the safe
+direction. After commit, the session's WebSocket and voice connections are closed through pub/sub,
+and every connection re-checks its `sid` against the committed state at least every 60 s.
+
+**Keeping the check cheap (rev 5; required of the builder):** each server process keeps a positive
+cache of `sid`s whose committed row it has read as live, each entry at most 5 s old **(design
+call)**. PostgreSQL delivers the revoking transaction's `NOTIFY` only when that transaction
+commits; every process listens and drops the named entries on receipt, so a committed end stops
+being served from the cache when the notification arrives, not after the 5 s. A cache fill whose
+row read began before an invalidation of that `sid` arrived is discarded, and a process that loses
+its listener connection empties its cache and reads the row on every check until it listens again.
+A check consults the denylist first (a hit rejects at once; an unreachable denylist is skipped),
+then the cache, then the row: at most one primary-key read per live session per process every
+5 s. A Valkey restart without its data therefore costs only that speed; there is no marker key, no
+fail-closed rebuild and no rebuild barrier, and refilling the denylist after a restart is optional.
 
 **Refresh rotation with reuse detection** (RFC 9700 §2.2.2, §4.14.2):
 
@@ -1248,7 +1268,15 @@ these are the rules.
    bootstrap entitlement) a password plus TOTP, starts a request that completes after 24 h unless
    someone cancels it. A cancel marks the generations used compromised. An owner with recovery codes
    still recovers alone (recovery code + TOTP in any state, B.1); one without needs an admin to
-   regain password or TOTP sign-in.
+   regain password or TOTP sign-in. **The owner's own repudiation (rev 5):** "That wasn't me" marks
+   compromised the password or TOTP generation that produced the event, and rule 2 then voids every
+   open request that used that generation, the owner's own included. During a bootstrap this ends at
+   an admin: someone probes the password (the F4 TOTP step fails), the owner taps "That wasn't me"
+   on the "did not finish signing in" notice (owner rule part 2), the bootstrap request becomes
+   `void`, and a new one needs both factors `active`. The cascade stays, since the same factor in an
+   attacker's request must void it; the screen must warn before the action whenever an open request
+   of the account used a factor it would mark compromised ("This also stops your own request to
+   secure your account"; for a bootstrap request, "afterwards only an admin can help").
 7. **A stolen phone plus a known screen lock** equals the key, as with any phone authenticator: until
    it is removed it can do whatever a key device can, including cancelling a request that names it
    lost. The remedy is immediate removal by an admin ("Remove device now") or by another strong
@@ -1274,7 +1302,9 @@ these are the rules.
 13. **Hostile use of owner rule part 2 (rev 4):** while an account has no active strong
     authenticator, someone with one of its sessions and the TOTP secret or a recovery code can
     cancel the owner's request or repudiate an event, disabling the factors used; the owner then
-    needs an admin. Accepted: otherwise the owner could not object at all.
+    needs an admin. Accepted: otherwise the owner could not object at all. The owner's own part-2
+    "That wasn't me" during their bootstrap voids their own request in the same way, through the
+    rule-2 cascade; the repudiation screen warns first (B.6.6) **(rev 5)**.
 14. **Request-notice fatigue (rev 4):** a holder of request factors can start and withdraw
     requests, at most three notice threads per account per delay period (B.5).
 
@@ -1397,13 +1427,17 @@ States: `waiting`, `ready`, `completed`; terminal: `cancelled`, `withdrawn`, `ex
 - **Independent cancellers (rev 4):** at the start the request records every route by which
   someone other than its requester and acting admin can cancel it: each other admin with an active
   strong authenticator (for a non-admin's `self` request every admin, a sole admin included); the
-  confirmed recovery contact with an active strong authenticator; the account's own active strong
+  confirmed recovery contact with an active strong authenticator, if the confirmation is at least
+  one delay period older than the start **(rev 5)**; the account's own active strong
   authenticators, devices named lost included (a fake loss claim must have a canceller). Part 2 of
   the owner rule does not count. Without a route the start is refused ("Name and confirm a recovery
   contact first, or use the host CLI"). A route is gone when that admin is demoted or loses their
   last strong authenticator, the contact changes or loses theirs, or that authenticator is revoked;
   rule 2, the timer and the completion re-check, and a request with no route left is `void`. A
-  route added later never counts, so a newly named contact always gets a full wait.
+  route added later never counts, so a newly named contact always gets a full wait. A contact
+  confirmed less than one delay period before the start is notified and may cancel, but is not a
+  route for that request: otherwise a deceived admin could set up a new account, make it the
+  contact and start a recovery of the account the same day **(rev 5)**.
 - **Notices:** at the start (high severity, ignoring quiet hours), 1 h before `ready`, and at ready,
   completion, cancel, withdrawal, expiry and void. They go to the account's devices (including
   devices named lost, so an owner who has not lost the phone learns of the claim), the recovery
@@ -1472,7 +1506,9 @@ Session assurance has no state machine: it is set at creation (B.4) and never ch
     at setup and may change a non-admin account's contact with a step-up; the account and all
     admins get a notice. The contact is told when named and **confirms the role** once from a full
     session ("I will help <name>"); a new contact needs a new confirmation **(rev 4)**. Only a
-    confirmed contact with an active strong authenticator counts as an independent canceller (SM3).
+    confirmed contact with an active strong authenticator counts as an independent canceller (SM3),
+    and only for a request that starts at least one delay period after the confirmation
+    **(rev 5)**.
     The contact receives the account's high-severity notices in their own Kaiku DM (event, device
     label, time; never IP or place) and may cancel a pending account request (full session,
     step-up); after an activation the contact's route is an admin ("Remove device now"). The
@@ -1518,7 +1554,7 @@ Session assurance has no state machine: it is set at creation (B.4) and never ch
 v1.0 packages, per the package cut of 2026-11-03 (model-level ownership; task lists live in the
 plans):
 
-- **Gate:** this spec (revision 4, the last targeted revision) → contracts frozen: C26 (signature
+- **Gate:** this spec (revision 5, frozen) → contracts frozen: C26 (signature
   format, kinds, canonical contexts, golden vectors); C27 (login attempts, QR payloads, enrolments,
   setup links, account requests, desktop flows; SM1–SM4 with the B.7 lock order, the credential
   states and generations, and the revocation order of B.4); C28 (security events, the Kaiku DM, the
@@ -1628,6 +1664,25 @@ plans):
   https://developer.android.com/identity/sign-in/credential-manager
 - Android Key Attestation: https://developer.android.com/privacy-and-security/security-key-attestation
 
+## Appendix: Review response (round 4)
+
+Confirmation reviews of revision 4 (e4ddc409): Fable READY, Gemini Argon READY, Codex READY WITH
+FIXES. All three confirmed the round-3 resolutions and found no new blocker; Codex rated M3
+(round-3 row 25) partly fixed. Revision 5 is text only:
+
+- **Codex, required:** the B.4 restart/rebuild race (Valkey restarts after the denylist write and
+  before the revoking commit; the rebuild sees no `ended_at` and the stolen JWT is accepted). Fixed:
+  every authenticated request and every connection re-check reads committed session state, through
+  a per-process positive cache (≤5 s) invalidated by a `NOTIFY` that PostgreSQL delivers at the
+  revoking commit; the denylist only speeds up rejection and its absence never makes a session
+  valid; marker key and fail-closed rebuild removed (B.4, CC6; row 25).
+- **Fable, optional, both adopted:** a recovery contact confirmed less than one delay period before
+  a request is not a route for it (SM3, Part C, F8 checklist); an owner's own "That wasn't me"
+  during their bootstrap voids their request through the rule-2 cascade, documented, with a
+  required warning on the repudiation screen (B.6.6, B.6.13).
+- Fable's two builder notes on part-2 TOTP codes (they pass `accept_totp`'s replay store, so the
+  UI says when to wait for the next code; a failed one counts on the TOTP counter) go to the plan.
+
 ## Appendix: Review response (round 3)
 
 Reviews of revision 3 (3e27b672): Fable (F, READY WITH FIXES, no blocker), Gemini Argon (A, READY
@@ -1661,7 +1716,7 @@ cite, C #n, its minors in order as C m1–m6). Overlapping findings are merged.
 | 22 | A `request` child completes the request at once | A M6 | Fixed: `pending` until "Finish" (F6, SM2, SM3) |
 | 23 | "That wasn't me" on a dictated enrolment revokes the deceived approver | A M8 | Fixed (B.2) |
 | 24 | Cross-account authority is not serialised | C M2 | Fixed: id-ordered locks; demotion voids that admin's requests (B.7) |
-| 25 | Database/Valkey revocation order | C M3 | Fixed (B.4) |
+| 25 | Database/Valkey revocation order | C M3 | Fixed (B.4). Round 4: C PARTLY (a Valkey restart before the revoking commit loses the entry, and the rebuild cannot see it) → fixed in rev 5: requests and connection re-checks read committed session state through a commit-invalidated positive cache; the denylist only speeds up rejection (B.4, CC6) |
 | 26 | An unacknowledged contact counts as a safeguard | C M6; C #27 | Fixed: confirmation (Part C, SM3); the round-2 rejection is withdrawn |
 | 27 | The session deviation is understated | C M7 | Fixed (B.4, B.6.12) |
 | 28 | The refresh-retry explanation is wrong | C #33; C m1 | Fixed (B.4, B.6.10) |
