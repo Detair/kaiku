@@ -29,7 +29,6 @@ export const settings = {
   "settings.account.emailNotSet": "Not set",
   "settings.account.userId": "User ID:",
   "settings.account.passwordSection": "Password & Authentication",
-  "settings.account.changePasswordHint": "Update your password to keep your account secure",
   "settings.account.avatarTooLarge": "File too large ({{size}}). Maximum size is {{max}}.",
   "settings.account.avatarNotImage": "File must be an image",
   "settings.account.avatarUpdatedTitle": "Avatar Updated",

@@ -28,7 +28,6 @@ vi.mock("../settings/VoiceSettings", () => ({ default: () => null }));
 
 import SettingsModal from "../settings/SettingsModal";
 import RecoveryKeyModal from "../settings/RecoveryKeyModal";
-import ChangePasswordModal from "../settings/ChangePasswordModal";
 import MfaSetupModal from "../settings/MfaSetupModal";
 
 const children: Array<[string, Component<{ onClose: () => void }>]> = [
@@ -36,7 +35,6 @@ const children: Array<[string, Component<{ onClose: () => void }>]> = [
     "RecoveryKeyModal",
     (p) => <RecoveryKeyModal keyChunks={["a"]} fullKey="a" onConfirm={() => {}} onClose={p.onClose} />,
   ],
-  ["ChangePasswordModal", (p) => <ChangePasswordModal onClose={p.onClose} />],
   ["MfaSetupModal", (p) => <MfaSetupModal onClose={p.onClose} onComplete={() => {}} />],
 ];
 

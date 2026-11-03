@@ -74,11 +74,11 @@ describe("errorText", () => {
   });
 
   it("gives plain native strings the fallback", () => {
-    expect(errorText("Session expired", "auth.changePassword.failed")).toBe(
-      t("auth.changePassword.failed"),
+    expect(errorText("Session expired", "security.password.failed")).toBe(
+      t("security.password.failed"),
     );
-    expect(errorText(new Error("boom"), "auth.changePassword.failed")).toBe(
-      t("auth.changePassword.failed"),
+    expect(errorText(new Error("boom"), "security.password.failed")).toBe(
+      t("security.password.failed"),
     );
   });
 

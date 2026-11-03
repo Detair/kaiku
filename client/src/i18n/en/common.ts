@@ -19,7 +19,6 @@ export const common = {
   "common.goHome": "Go Home",
   "common.login": "Login",
   "common.username": "Username",
-  "common.changePassword": "Change Password",
   "common.unit.ms": "{{value}}ms",
   "common.unit.percent": "{{value}}%",
   "common.fileInput.choose": "Choose file",
