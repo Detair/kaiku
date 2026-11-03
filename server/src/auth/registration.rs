@@ -164,17 +164,10 @@ pub async fn unbound_ticket(
     Ok(t)
 }
 
-/// Under the account lock: the ticket is still unbound (a concurrent bind
-/// wins).
+/// Under the account lock: the ticket is still unbound and unexpired (a
+/// concurrent bind wins; Flash r5: an expiry while waiting too).
 async fn still_unbound(conn: &mut PgConnection, ticket_id: Uuid) -> AuthResult<()> {
-    let unbound: bool = sqlx::query_scalar(
-        "SELECT bound_at IS NULL FROM registration_tickets WHERE id = $1 FOR UPDATE",
-    )
-    .bind(ticket_id)
-    .fetch_optional(&mut *conn)
-    .await?
-    .unwrap_or(false);
-    if unbound {
+    if ticket_unbound_tx(conn, ticket_id).await? {
         Ok(())
     } else {
         Err(AuthError::TicketInvalid)
@@ -365,10 +358,16 @@ pub async fn totp_start(
     if is_admin(&mut conn, t.user_id).await? {
         return Err(AuthError::TotpUnavailable);
     }
-    let username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
-        .bind(t.user_id)
-        .fetch_one(&mut *conn)
-        .await?;
+    // F8: TOTP binds only with a password (the account then signs in by F4,
+    // which needs a first factor; Flash r5).
+    let (username, has_password): (String, bool) =
+        sqlx::query_as("SELECT username, password_hash IS NOT NULL FROM users WHERE id = $1")
+            .bind(t.user_id)
+            .fetch_one(&mut *conn)
+            .await?;
+    if !has_password {
+        return Err(AuthError::TotpUnavailable);
+    }
     drop(conn);
     Ok(Json(pending_totp(&state, t.user_id, &username).await?))
 }
@@ -626,6 +625,12 @@ pub async fn enrollment_issue(
         .await
         .map_err(approval)?;
     let mut tx = state.db.begin().await?;
+    // B.7: the account lock, then the ticket re-checked (a bind that
+    // committed meanwhile wins; Flash r5).
+    crate::approvals::transition::lock_accounts(&mut tx, &[t.user_id]).await?;
+    if !ticket_unbound_tx(&mut tx, t.id).await? {
+        return Err(approval(AuthError::TicketInvalid));
+    }
     let issued = enrollments::issue_tx(
         &mut tx,
         &ctx,

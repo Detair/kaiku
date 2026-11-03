@@ -172,6 +172,11 @@ pub async fn authorize(
         }
         return Ok(OwnerAuthority::Part1 { grant });
     }
+    // B.2 / spec B.0: a contact and an admin act for an owner only to cancel
+    // a request, never for "That wasn't me" (Flash r5 part 7 #1).
+    if t.action != StepUpAction::RequestCancel {
+        return Err(refused());
+    }
     let contact: Option<Uuid> = sqlx::query_scalar(
         "SELECT recovery_contact_id FROM users
           WHERE id = $1 AND recovery_contact_confirmed_at IS NOT NULL",

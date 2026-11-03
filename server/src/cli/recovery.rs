@@ -26,7 +26,8 @@ pub async fn factor_reset(
     let before = factors::states(&mut tx, user).await?;
     let was = match factor {
         Factor::Password => before.password.state,
-        _ => before.totp.state,
+        Factor::Totp => before.totp.state,
+        Factor::RecoveryCodes => anyhow::bail!("Recovery codes have no throttle to reset."),
     };
     let changed = factors::clear_throttle_tx(&mut tx, user, factor, ExitPath::Cli).await?;
     audit(
@@ -79,7 +80,7 @@ pub async fn throttle_reset(
     lock_accounts(&mut tx, &[user]).await?;
     let st = factors::states(&mut tx, user).await?;
     // Codex r2 M11: a delay held only in Valkey is a reset too.
-    let delayed = counters_present(ctx, username, user).await;
+    let delayed = counters_present(ctx, username, user, st.totp.generation).await;
     let mut cleared = Vec::new();
     for (f, state) in [
         (Factor::Password, st.password.state),
@@ -134,13 +135,15 @@ pub async fn throttle_reset(
 
 /// The factors whose per-account counter holds failures or a delay (a
 /// counter a success cleared is none, Fable r4 c).
-async fn counters_present(ctx: &CliCtx, username: &str, user: Uuid) -> Vec<&'static str> {
+/// The TOTP generation comes from the caller's transaction: no second pool
+/// connection while it holds the account lock (Flash r5).
+async fn counters_present(
+    ctx: &CliCtx,
+    username: &str,
+    user: Uuid,
+    generation: i64,
+) -> Vec<&'static str> {
     use crate::ratelimit::account::CounterKey;
-    let generation: i64 = sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
-        .bind(user)
-        .fetch_one(&ctx.db)
-        .await
-        .unwrap_or(1);
     let mut out = Vec::new();
     for (name, key) in [
         ("password", CounterKey::password(username)),
@@ -173,7 +176,9 @@ async fn reset_counters(ctx: &CliCtx, username: &str, user: Uuid, only: Option<F
     use crate::ratelimit::account::{AccountLimiter, CounterKey};
     let limiter = AccountLimiter::new(&ctx.redis);
     if only.is_none_or(|f| f == Factor::Password) {
-        let _ = limiter.reset_epoch(&CounterKey::password(username)).await;
+        if let Err(e) = limiter.reset_epoch(&CounterKey::password(username)).await {
+            tracing::warn!(error = %e, "the password counter could not be reset");
+        }
     }
     if only.is_none_or(|f| f == Factor::Totp) {
         let generation: i64 = sqlx::query_scalar("SELECT totp_generation FROM users WHERE id = $1")
@@ -181,9 +186,12 @@ async fn reset_counters(ctx: &CliCtx, username: &str, user: Uuid, only: Option<F
             .fetch_one(&ctx.db)
             .await
             .unwrap_or(1);
-        let _ = limiter
+        if let Err(e) = limiter
             .reset_epoch(&CounterKey::totp(user, generation))
-            .await;
+            .await
+        {
+            tracing::warn!(error = %e, "the TOTP counter could not be reset");
+        }
     }
 }
 

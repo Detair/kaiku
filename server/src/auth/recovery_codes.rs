@@ -275,8 +275,17 @@ pub async fn create(
     ev.session_id = auth.session_id;
     ev.authenticator = Some(grant.by);
     let event_id = record(&mut tx, ev).await?;
+    // C28: the consumed grant's `step_up_action` (Flash r5).
+    let action = step_up::record_action_tx(
+        &mut tx,
+        &auth,
+        &grant,
+        StepUpAction::RecoveryCodesCreate,
+        "",
+    )
+    .await?;
     tx.commit().await?;
-    spawn_delivery(&state, vec![event_id]);
+    spawn_delivery(&state, vec![event_id, action]);
     Ok(Json(RecoveryCodesResponse {
         recovery_codes: codes,
     }))

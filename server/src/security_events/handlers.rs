@@ -82,7 +82,7 @@ fn parse_limit(raw: Option<&str>) -> Result<i64, SecurityEventsError> {
 }
 
 /// Actions the reader can take on an event (C28: computed per reader, only
-/// where usable). L1a has none; L1b Tasks 21 and 24 fill this.
+/// where usable).
 pub async fn actions_for(
     conn: &mut sqlx::PgConnection,
     reader: &AuthUser,
@@ -121,6 +121,43 @@ pub async fn actions_for(
                 out.push(Action {
                     action: "remove_device".into(),
                     via: Some("step_up".into()),
+                    warning: None,
+                });
+            }
+        }
+    }
+    // "Cancel" (C28, B.2): an open request's events, for whoever may
+    // cancel it: the owner (step-up, or part 2 without a strong
+    // authenticator), its confirmed recovery contact, any admin (Flash r5).
+    if let Some(request) = ev.request_id {
+        let subject: Option<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM account_requests
+              WHERE id = $1 AND state IN ('waiting', 'ready')",
+        )
+        .bind(request)
+        .fetch_optional(&mut *conn)
+        .await?;
+        if let Some(subject) = subject {
+            let via = if subject == reader.id {
+                let strong = crate::auth::strong::active_strong_count(conn, reader.id).await? > 0;
+                Some(if strong { "step_up" } else { "part2" })
+            } else if reader_is_admin {
+                Some("step_up")
+            } else {
+                let contact: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND recovery_contact_id = $2
+                                       AND recovery_contact_confirmed_at IS NOT NULL)",
+                )
+                .bind(subject)
+                .bind(reader.id)
+                .fetch_one(&mut *conn)
+                .await?;
+                contact.then_some("step_up")
+            };
+            if let Some(via) = via {
+                out.push(Action {
+                    action: "cancel_request".into(),
+                    via: Some(via.into()),
                     warning: None,
                 });
             }

@@ -1,7 +1,9 @@
 //! The request client (C27 "Request client"): staging while `ready`, then Finish.
 //!
-//! Every route needs the request secret (else 404, as an unknown request)
-//! and state `ready` (else 409 `ACCOUNT_REQUEST_NOT_READY {state}`). Staged
+//! Every route needs the request secret (else 404, as an unknown request);
+//! every staging route also needs state `ready` (else 409
+//! `ACCOUNT_REQUEST_NOT_READY {state}`), while the reads (`current`, an
+//! enrolment's status) answer in any state. Staged
 //! values live in `account_requests.staged`; Finish runs the completion
 //! transaction and mints no session.
 
@@ -96,6 +98,16 @@ pub async fn stage_password(
             .await?
             .ok_or_else(|| AuthError::NotFound("Unknown request".into()))?
     };
+    // Flash r5: not `ready` (or past its Finish deadline) → 409 before any
+    // policy or Argon2 work; the locked re-check below still decides.
+    if seen.state != "ready" || seen.expires_at.is_none_or(|t| t <= chrono::Utc::now()) {
+        let state = if seen.state == "ready" {
+            "expired".to_string()
+        } else {
+            seen.state.clone()
+        };
+        return Err(AuthError::AccountRequestNotReady { state });
+    }
     let (username, display_name): (String, String) =
         sqlx::query_as("SELECT username, display_name FROM users WHERE id = $1")
             .bind(seen.user_id)

@@ -104,6 +104,13 @@ pub async fn set_tx(
         ids.push(a);
     }
     let locked = lock_accounts(conn, &ids).await?;
+    // Codex M8 (Flash r5): an admin actor is still an unbanned admin under
+    // the lock.
+    if let ContactActor::Admin(a) = actor {
+        if !locked.get(&a).is_some_and(|x| x.is_admin && !x.banned) {
+            return Err(AuthError::NotAdmin);
+        }
+    }
     // F6 rev 4: no immediate actions on another admin's account.
     if matches!(actor, ContactActor::Admin(_)) && locked.get(&account).is_some_and(|a| a.is_admin) {
         return Err(AuthError::AdminTargetIsAdmin);

@@ -189,7 +189,7 @@ pub async fn issuer_challenge(
     tag = "approvals",
     responses(
         (status = 201, body = super::EnrollmentIssued),
-        (status = 403, description = "FULL_SESSION_REQUIRED, STEP_UP_REQUIRED or APPROVAL_NOT_ALLOWED"),
+        (status = 403, description = "FULL_SESSION_REQUIRED, KEY_DEVICE_REQUIRED, STEP_UP_REQUIRED or APPROVAL_NOT_ALLOWED"),
     ),
     security(("bearer_auth" = [])),
 )]
@@ -326,7 +326,9 @@ pub async fn cancel_issued(
     };
     super::cancel_tx(&mut tx, &ctx, id, by).await?;
     tx.commit().await?;
-    super::enrollment_updated(&state, seen.subject_id, id, "cancelled").await;
+    // C26: the hint goes to the issuer (for an `admin` link, the issuing
+    // admin, not the subject; Flash r5).
+    super::notify_issuer(&state, id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

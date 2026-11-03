@@ -344,15 +344,16 @@ pub async fn repudiate(
 ) -> AuthResult<Json<RepudiationOutcome>> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let ctx = AuthCtx::from(&state);
+    // Only the caller's own events (Flash r5 part 8 B-01): another
+    // account's event is unknown before any lock is taken.
     let seen = {
         let mut conn = state.db.acquire().await?;
-        event_row(&mut conn, id, false).await?
+        event_row(&mut conn, id, false)
+            .await?
+            .filter(|e| e.subject_id == auth.id)
+            .ok_or_else(|| AuthError::NotFound("event".into()))?
     };
-    let routes: Vec<AuthenticatorRef> = seen
-        .as_ref()
-        .and_then(authenticator_of)
-        .into_iter()
-        .collect();
+    let routes: Vec<AuthenticatorRef> = authenticator_of(&seen).into_iter().collect();
     let mut tx = state.db.begin().await?;
     crate::approvals::transition::lock_route_change(&mut tx, auth.id, &[], &routes)
         .await

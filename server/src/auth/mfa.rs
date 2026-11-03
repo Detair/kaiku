@@ -150,6 +150,18 @@ pub async fn mfa_verify(
             "Start the authenticator setup first".to_string(),
         ));
     };
+    // Flash r5: a missing grant answers before the code is spent.
+    {
+        let mut tx = state.db.begin().await?;
+        step_up::peek_tx(
+            &mut tx,
+            &auth_user,
+            StepUpAction::TotpSet,
+            &StepUpTarget::None,
+        )
+        .await?;
+        tx.commit().await?;
+    }
     // Accepted once per step (replay store).
     if !reauth::accept_totp(
         &state,
@@ -194,6 +206,8 @@ pub async fn mfa_verify(
     tx.commit().await?;
     let _ = state.redis.del::<(), _>(&redis_key).await;
     spawn_delivery(&state, events);
+    // C26: `authenticators_changed` on a TOTP change (Flash r5).
+    crate::approvals::devices::notify_authenticators_changed(&state, auth_user.id).await;
     Ok(Json(serde_json::json!({
         "success": true,
         "message": "MFA verification successful"
@@ -254,6 +268,7 @@ pub async fn mfa_disable(
     ];
     tx.commit().await?;
     spawn_delivery(&state, events);
+    crate::approvals::devices::notify_authenticators_changed(&state, auth_user.id).await;
     Ok(Json(serde_json::json!({
         "success": true,
         "message": "MFA disabled successfully"

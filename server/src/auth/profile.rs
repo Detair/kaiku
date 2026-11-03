@@ -399,6 +399,8 @@ pub async fn update_password(
     );
     tx.commit().await?;
     spawn_delivery(&state, events);
+    // C26: `authenticators_changed` on any password change (Flash r5).
+    crate::approvals::devices::notify_authenticators_changed(&state, auth_user.id).await;
     tracing::info!(user_id = %auth_user.id, "Password set");
     Ok(Json(serde_json::json!({
         "success": true,
@@ -464,6 +466,7 @@ pub async fn remove_password(
     );
     tx.commit().await?;
     spawn_delivery(&state, events);
+    crate::approvals::devices::notify_authenticators_changed(&state, auth_user.id).await;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
