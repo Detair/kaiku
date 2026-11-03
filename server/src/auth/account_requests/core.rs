@@ -1372,6 +1372,43 @@ pub async fn lock_by_secret(
         .ok_or_else(|| AuthError::NotFound("Unknown request".into()))
 }
 
+/// F5c: start the `admin` request (SM3) of an existing account at `done`.
+///
+/// The new device stays pending; the caller holds the subject's lock.
+/// `admin_mode` `recovery` → `admin_recovery`.
+pub async fn start_admin_tx(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    e: &crate::approvals::enrollments::EnrollmentRow,
+    admin: Option<Uuid>,
+    pending: AuthenticatorRef,
+) -> AuthResult<Vec<Uuid>> {
+    let purpose = if e.admin_mode.as_deref() == Some("recovery") {
+        Purpose::AdminRecovery
+    } else {
+        Purpose::AdminSetup
+    };
+    let started = insert_tx(
+        conn,
+        ctx,
+        NewRequest {
+            user_id: e.subject_id,
+            kind: RequestKind::Admin,
+            purpose,
+            factors: Vec::new(),
+            oidc: false,
+            lost_device_ids: e.lost_device_ids.clone(),
+            started_by: admin,
+            started_by_device: e.issuer_device_id,
+            enrollment_id: Some(e.id),
+            pending: Some(pending),
+            with_secret: false,
+        },
+    )
+    .await?;
+    Ok(started.event_ids)
+}
+
 /// Lock a `ready` request for Finish: the subject and the staged recovery
 /// contact in ascending id order (B.7), then the row. A contact staged
 /// concurrently after the unlocked read answers 503 (retry).

@@ -252,6 +252,11 @@ pub enum AuthError {
     #[error("This cannot be done to another admin's account")]
     AdminTargetIsAdmin,
 
+    /// An admin sets up their own account (400 `ENROLLMENT_TARGET_SELF`,
+    /// F5c: they use "Add a phone").
+    #[error("Use \"Add a phone\" for your own account")]
+    EnrollmentTargetSelf,
+
     /// The account already has an open request (409 `ACCOUNT_REQUEST_OPEN`).
     #[error("This account already has an open request")]
     AccountRequestOpen,
@@ -399,6 +404,7 @@ impl AuthError {
             Self::EventAlreadyRepudiated => (StatusCode::CONFLICT, "EVENT_ALREADY_REPUDIATED"),
             Self::RecoveryContactInvalid => (StatusCode::BAD_REQUEST, "RECOVERY_CONTACT_INVALID"),
             Self::AdminTargetIsAdmin => (StatusCode::FORBIDDEN, "ADMIN_TARGET_IS_ADMIN"),
+            Self::EnrollmentTargetSelf => (StatusCode::BAD_REQUEST, "ENROLLMENT_TARGET_SELF"),
             Self::TotpUnavailable => (StatusCode::FORBIDDEN, "TOTP_UNAVAILABLE"),
             Self::LoginAttemptUnknown => (StatusCode::NOT_FOUND, "LOGIN_ATTEMPT_UNKNOWN"),
             Self::LoginAttemptNotReady => (StatusCode::CONFLICT, "LOGIN_ATTEMPT_NOT_READY"),

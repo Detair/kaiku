@@ -165,6 +165,8 @@ pub struct EnrollmentRow {
     pub claimant_note: Option<String>,
     pub lost_device_ids: Vec<Uuid>,
     pub request_id: Option<Uuid>,
+    /// `admin` enrolments: `setup` or `recovery` (F5c).
+    pub admin_mode: Option<String>,
     pub state: String,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -1082,9 +1084,31 @@ pub async fn confirm_tx(
             }
             None
         }
-        // L1b Task 23: PC sessions confirm through their route.
-        Confirmer::Pc(_) => {
-            return Err(ApprovalError::NotFound);
+        // The issuing PC session (F5a, rule 4): still live and full, its
+        // recorded passkey still active.
+        Confirmer::Pc(auth) => {
+            if row.issuer_kind != "session" || row.issuer_session_id != auth.session_id {
+                return Err(ApprovalError::NotFound);
+            }
+            let live: Option<bool> = sqlx::query_scalar(
+                "SELECT assurance = 'full' FROM sessions
+                  WHERE id = $1 AND ended_at IS NULL AND expires_at > NOW()
+                  FOR SHARE",
+            )
+            .bind(row.issuer_session_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let passkey_ok = match row.issuer_passkey_id {
+                Some(p) => {
+                    crate::auth::strong::is_active(conn, AuthenticatorRef::passkey(p)).await?
+                }
+                None => false,
+            };
+            if live != Some(true) || !passkey_ok {
+                expire(conn, row.id).await?;
+                return Err(ApprovalError::EnrollmentState);
+            }
+            Some(auth.id)
         }
     };
     if locked.get(&row.subject_id).is_some_and(|a| a.banned) {
@@ -1216,6 +1240,7 @@ pub async fn finish_done_tx(
     .bind(row.id)
     .execute(&mut *conn)
     .await?;
+    let mut admin_events = Vec::new();
     if state == DeviceState::Pending {
         if let Some(request_id) = row.issuer_request_id {
             crate::auth::account_requests::core::stage_authenticator_tx(
@@ -1224,9 +1249,36 @@ pub async fn finish_done_tx(
                 AuthenticatorRef::key_device(device_row_id),
             )
             .await?;
+        } else if variant == EnrollmentVariant::Admin {
+            // F5c: an existing account gets an `admin` request (SM3); a
+            // request opened meanwhile → 409 ACCOUNT_REQUEST_OPEN.
+            admin_events = crate::auth::account_requests::core::start_admin_tx(
+                conn,
+                ctx,
+                row,
+                issuer_user,
+                AuthenticatorRef::key_device(device_row_id),
+            )
+            .await
+            .map_err(ApprovalError::Auth)?;
         }
     } else {
         crate::auth::strong::mark_first_activity(conn, row.subject_id).await?;
+        if variant == EnrollmentVariant::Admin {
+            // F5c: a new account is active at once; the other admins learn.
+            admin_events.push(
+                record(
+                    conn,
+                    NewSecurityEvent::new(
+                        row.subject_id,
+                        EventType::AdminSetup,
+                        issuer_user.map_or(Actor::System, Actor::Admin),
+                        serde_json::json!({"new_account": true, "by_user_id": issuer_user}),
+                    ),
+                )
+                .await?,
+            );
+        }
     }
     crate::auth::registration::mark_bound_tx(conn, row.subject_id).await?;
     // A strong authenticator active by this path consumes the bootstrap
@@ -1243,6 +1295,7 @@ pub async fn finish_done_tx(
     );
     ev.authenticator = Some(AuthenticatorRef::key_device(device_row_id));
     event_ids.push(record(conn, ev).await?);
+    event_ids.extend(admin_events);
     let mut done = row.clone();
     done.state = "done".into();
     let wire = to_wire(conn, &done).await?;

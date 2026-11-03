@@ -175,6 +175,7 @@ async fn admin_and_auth_codes_are_upper_snake() {
         AuthError::RepudiateNotAllowed,
         AuthError::EventAlreadyRepudiated,
         AuthError::AdminTargetIsAdmin,
+        AuthError::EnrollmentTargetSelf,
         AuthError::TotpUnavailable,
         AuthError::LoginAttemptNotReady,
         AuthError::LoginAttemptEnded { state: s() },

@@ -79,6 +79,16 @@ pub fn flow_router(state: &AppState) -> Router<AppState> {
         .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
         .layer(from_fn(with_category(RateLimitCategory::AuthFlow)));
     let bearer = Router::new()
+        .route("/enrollments", post(enrollments::handlers::issue_own))
+        .route(
+            "/enrollments/{id}",
+            axum::routing::get(enrollments::handlers::get_issued)
+                .delete(enrollments::handlers::cancel_issued),
+        )
+        .route(
+            "/enrollments/{id}/confirm",
+            post(enrollments::handlers::confirm_pc),
+        )
         .route(
             "/enrollments/{id}/challenge",
             post(enrollments::handlers::issuer_challenge),

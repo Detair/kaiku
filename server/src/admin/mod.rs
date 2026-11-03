@@ -11,6 +11,7 @@ pub mod middleware;
 pub mod observability;
 pub mod queries;
 pub mod security;
+pub mod setup;
 pub(crate) mod shared;
 pub mod system;
 pub mod types;
@@ -116,6 +117,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route(
             "/users/{user_id}/recovery-contact",
             put(crate::auth::recovery_contact::put_admin),
+        )
+        .route(
+            "/users/{user_id}/enrollments",
+            post(setup::issue_admin_enrollment),
         )
         .route(
             "/users/{user_id}/may-approve",

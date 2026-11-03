@@ -333,3 +333,360 @@ async fn admin_view_fields(pool: PgPool) {
     assert_eq!(me["is_admin"], false);
     assert!(me["may_approve"].is_boolean());
 }
+
+// ---------------------------------------------------------------------------
+// Admin setup (F5c)
+// ---------------------------------------------------------------------------
+
+use super::enrollment_issuers::type_code_on;
+use super::enrollments::{claim_with, good, Phone};
+
+/// An admin with an active key device and its session.
+async fn admin_phone(app: &TestApp) -> (Uuid, KeyDeviceFixture) {
+    let (id, _) = create_test_user(&app.pool).await;
+    make_admin(&app.pool, id).await;
+    let dev = KeyDeviceFixture::insert(&app.pool, &app.config, id, "active").await;
+    (id, dev)
+}
+
+async fn issue_setup(
+    app: &TestApp,
+    dev: &KeyDeviceFixture,
+    target: Uuid,
+    body: Value,
+) -> (u16, Value) {
+    grant_step_up(
+        &app.pool,
+        dev.session_id.unwrap(),
+        "admin.enrollment.issue",
+        &target.to_string(),
+    )
+    .await;
+    call(
+        app,
+        Method::POST,
+        &format!("/api/admin/users/{target}/enrollments"),
+        &dev.access_token,
+        body,
+    )
+    .await
+}
+
+fn setup_body() -> Value {
+    json!({"mode": "setup", "claimant_check": {"method": "in_person", "note": "at the kitchen table"}})
+}
+
+/// Issue, claim with a new phone and type the code on the admin's phone.
+async fn set_up(
+    app: &TestApp,
+    dev: &KeyDeviceFixture,
+    target: Uuid,
+    body: Value,
+) -> (Phone, u16, Value) {
+    let (s, issued) = issue_setup(app, dev, target, body).await;
+    assert_eq!(s, 201, "{issued}");
+    let phone = Phone::new();
+    let (s, claimed) = claim_with(
+        app,
+        issued["setup_token"].as_str().unwrap(),
+        &phone,
+        "Oma's phone",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201, "{claimed}");
+    let (s, b) = type_code_on(
+        app,
+        dev,
+        issued["enrollment_id"].as_str().unwrap(),
+        claimed["code"].as_str().unwrap(),
+    )
+    .await;
+    (phone, s, b)
+}
+
+async fn existing(pool: &PgPool, user: Uuid) {
+    sqlx::query("UPDATE users SET first_activity_at = NOW() - INTERVAL '1 day' WHERE id = $1")
+        .bind(user)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn phone_state(pool: &PgPool, phone: &Phone) -> String {
+    sqlx::query_scalar("SELECT state FROM approval_devices WHERE device_id = $1")
+        .bind(phone.device_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test]
+async fn admin_setup_of_a_new_account_is_active_at_once(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_, dev) = admin_phone(&app).await;
+    let (oma, _) = create_test_user(&pool).await;
+    let (phone, s, b) = set_up(&app, &dev, oma, setup_body()).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(phone_state(&pool, &phone).await, "active");
+    let details: Value = sqlx::query_scalar(
+        "SELECT details FROM security_events WHERE subject_id = $1 AND event_type = 'admin_setup'",
+    )
+    .bind(oma)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(details["new_account"], true);
+    let (claimant, note): (String, Option<String>) = sqlx::query_as(
+        "SELECT claimant_check, claimant_note FROM enrollments WHERE subject_id = $1",
+    )
+    .bind(oma)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (claimant.as_str(), note.as_deref()),
+        ("in_person", Some("at the kitchen table"))
+    );
+}
+
+#[sqlx::test]
+async fn admin_setup_of_an_existing_account_waits(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_, dev) = admin_phone(&app).await;
+    // A second admin is the independent canceller.
+    admin_phone(&app).await;
+    let (oma, _) = create_test_user(&pool).await;
+    existing(&pool, oma).await;
+    let (phone, s, b) = set_up(&app, &dev, oma, setup_body()).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(phone_state(&pool, &phone).await, "pending");
+    let (kind, purpose, state, ready_at): (String, String, String, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as(
+            "SELECT kind, purpose, state, ready_at FROM account_requests WHERE user_id = $1",
+        )
+        .bind(oma)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        (kind.as_str(), purpose.as_str(), state.as_str()),
+        ("admin", "admin_setup", "waiting")
+    );
+    let wait = ready_at - chrono::Utc::now();
+    assert!(wait > chrono::Duration::hours(23), "{wait}");
+    // The new phone sees ready_at when it signs in.
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        "/auth/device-login/challenge",
+        "",
+        json!({"user_id": oma, "device_id": phone.device_id}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("KEY_DEVICE_PENDING")),
+        "{b}"
+    );
+    assert!(b["ready_at"].as_str().is_some());
+    // The timer completes it.
+    sqlx::query(
+        "UPDATE account_requests SET ready_at = NOW() - INTERVAL '1 second' WHERE user_id = $1",
+    )
+    .bind(oma)
+    .execute(&pool)
+    .await
+    .unwrap();
+    vc_server::auth::timers::run_once(&app.state).await.unwrap();
+    assert_eq!(phone_state(&pool, &phone).await, "active");
+}
+
+#[sqlx::test]
+async fn admin_recovery_names_lost_devices_revoked_at_completion(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_, dev) = admin_phone(&app).await;
+    admin_phone(&app).await;
+    let (oma, _) = create_test_user(&pool).await;
+    existing(&pool, oma).await;
+    let old = KeyDeviceFixture::insert(&pool, &app.config, oma, "active").await;
+    let (phone, s, b) = set_up(
+        &app,
+        &dev,
+        oma,
+        json!({"mode": "recovery", "claimant_check": {"method": "called_back", "note": "called her back"},
+               "lost_device_ids": [old.row_id]}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let purpose: String =
+        sqlx::query_scalar("SELECT purpose FROM account_requests WHERE user_id = $1")
+            .bind(oma)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(purpose, "admin_recovery");
+    let still: String = sqlx::query_scalar("SELECT state FROM approval_devices WHERE id = $1")
+        .bind(old.row_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(still, "active", "revoked only at completion");
+    sqlx::query(
+        "UPDATE account_requests SET ready_at = NOW() - INTERVAL '1 second' WHERE user_id = $1",
+    )
+    .bind(oma)
+    .execute(&pool)
+    .await
+    .unwrap();
+    vc_server::auth::timers::run_once(&app.state).await.unwrap();
+    let gone: String = sqlx::query_scalar("SELECT state FROM approval_devices WHERE id = $1")
+        .bind(old.row_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(gone, "revoked");
+    assert_eq!(phone_state(&pool, &phone).await, "active");
+}
+
+#[sqlx::test]
+async fn admin_setup_refusals(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (me, dev) = admin_phone(&app).await;
+    // Own account.
+    let (s, b) = issue_setup(&app, &dev, me, setup_body()).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (400, Some("ENROLLMENT_TARGET_SELF")),
+        "{b}"
+    );
+    // Not from a key device.
+    let (oma, _) = create_test_user(&pool).await;
+    let (_, _, pc_token) = admin(&app).await;
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        &format!("/api/admin/users/{oma}/enrollments"),
+        &pc_token,
+        setup_body(),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("KEY_DEVICE_REQUIRED")),
+        "{b}"
+    );
+    // An existing account without another canceller.
+    existing(&pool, oma).await;
+    let (s, b) = issue_setup(&app, &dev, oma, setup_body()).await;
+    // The PC admin above has no strong authenticator: no route.
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("NO_INDEPENDENT_CANCELLER")),
+        "{b}"
+    );
+    // An open request.
+    admin_phone(&app).await;
+    sqlx::query(
+        "INSERT INTO account_requests (id, user_id, kind, purpose, factors, lost_device_ids,
+             cancellers, staged, state, created_at, ready_at)
+         VALUES (gen_random_uuid(), $1, 'self', 'bootstrap', '[]', '{}', '[]', '{}', 'waiting',
+                 NOW(), NOW() + INTERVAL '1 day')",
+    )
+    .bind(oma)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (s, b) = issue_setup(&app, &dev, oma, setup_body()).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("ACCOUNT_REQUEST_OPEN")),
+        "{b}"
+    );
+    // A bad claimant check.
+    let (fresh, _) = create_test_user(&pool).await;
+    let (s, b) = issue_setup(
+        &app,
+        &dev,
+        fresh,
+        json!({"mode": "setup", "claimant_check": {"method": "none", "note": "x"}}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (400, Some("VALIDATION_ERROR")),
+        "{b}"
+    );
+}
+
+#[sqlx::test]
+async fn one_grant_per_setup_code(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_, dev) = admin_phone(&app).await;
+    let (oma, _) = create_test_user(&pool).await;
+    let (s, _) = issue_setup(&app, &dev, oma, setup_body()).await;
+    assert_eq!(s, 201);
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        &format!("/api/admin/users/{oma}/enrollments"),
+        &dev.access_token,
+        setup_body(),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("STEP_UP_REQUIRED")),
+        "{b}"
+    );
+}
+
+#[sqlx::test]
+async fn request_opened_meanwhile_fails_done(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (_, dev) = admin_phone(&app).await;
+    admin_phone(&app).await;
+    let (oma, _) = create_test_user(&pool).await;
+    existing(&pool, oma).await;
+    let (s, issued) = issue_setup(&app, &dev, oma, setup_body()).await;
+    assert_eq!(s, 201, "{issued}");
+    let phone = Phone::new();
+    let (_, claimed) = claim_with(
+        &app,
+        issued["setup_token"].as_str().unwrap(),
+        &phone,
+        "Oma's phone",
+        good(),
+        "per_use",
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO account_requests (id, user_id, kind, purpose, factors, lost_device_ids,
+             cancellers, staged, state, created_at, ready_at)
+         VALUES (gen_random_uuid(), $1, 'self', 'bootstrap', '[]', '{}', '[]', '{}', 'waiting',
+                 NOW(), NOW() + INTERVAL '1 day')",
+    )
+    .bind(oma)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (s, b) = type_code_on(
+        &app,
+        &dev,
+        issued["enrollment_id"].as_str().unwrap(),
+        claimed["code"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("ACCOUNT_REQUEST_OPEN")),
+        "{b}"
+    );
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM approval_devices WHERE device_id = $1")
+        .bind(phone.device_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "no device without its request");
+}
