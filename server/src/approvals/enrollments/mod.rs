@@ -407,12 +407,9 @@ async fn replaceable_on_install(
     let Some(live) = live else {
         return Ok(None);
     };
-    if row.issuer_device_id == Some(live) {
-        return Err(ApprovalError::Validation(
-            "a key phone cannot set itself up again".into(),
-        ));
-    }
-    if will_be != DeviceState::Active {
+    // C26 amendment: the issuer's own device and a live device a pending
+    // enrolment would replace are both "this phone is already a key".
+    if row.issuer_device_id == Some(live) || will_be != DeviceState::Active {
         return Err(ApprovalError::EnrollmentDeviceInUse);
     }
     Ok(Some(live))

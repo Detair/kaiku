@@ -1323,7 +1323,8 @@ async fn pending_request_enrolment_never_replaces_a_live_key(pool: PgPool) {
     assert_eq!(s, 201, "{b}");
 }
 
-/// An enrolment never removes the key device that issued it.
+/// An enrolment never removes the key device that issued it (C26 amendment:
+/// `ENROLLMENT_DEVICE_IN_USE`).
 #[sqlx::test]
 async fn own_enrolment_cannot_replace_its_issuer(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
@@ -1343,7 +1344,7 @@ async fn own_enrolment_cannot_replace_its_issuer(pool: PgPool) {
     let (s, b) = pop_status(&app, &issued.setup_token, &clone).await;
     assert_eq!(
         (s, b["error"].as_str()),
-        (400, Some("VALIDATION_ERROR")),
+        (400, Some("ENROLLMENT_DEVICE_IN_USE")),
         "{b}"
     );
 
@@ -1369,7 +1370,7 @@ async fn own_enrolment_cannot_replace_its_issuer(pool: PgPool) {
     let (s, b) = super::approvals_core::answer(&app, &dev, &c, code.as_bytes()).await;
     assert_eq!(
         (s, b["error"].as_str()),
-        (400, Some("VALIDATION_ERROR")),
+        (400, Some("ENROLLMENT_DEVICE_IN_USE")),
         "{b}"
     );
     assert_key_untouched(&pool, &dev).await;
