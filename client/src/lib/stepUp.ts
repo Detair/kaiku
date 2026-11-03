@@ -165,6 +165,9 @@ function isStepUpRequired(err: unknown): boolean {
 
 export async function withStepUp<T>(req: StepUpRequest, run: () => Promise<T>): Promise<T> {
   if (isProbation()) {
+    // Without the dialog chunk the full-session dialog cannot show either:
+    // the click gets an error instead of nothing (Fable r2 follow-up b).
+    if (sessionDialogsFailed()) throw new StepUpUnavailable();
     showFullSessionRequired();
     throw new StepUpCancelled("FULL_SESSION_REQUIRED");
   }

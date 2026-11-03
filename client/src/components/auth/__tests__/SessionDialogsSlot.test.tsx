@@ -41,6 +41,15 @@ describe("session dialogs whose chunk cannot load", () => {
     expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
   });
 
+  it("a chat-only session gets an error, not a silent cancel, when the dialogs failed (Fable r2 follow-up b)", async () => {
+    render(() => <SessionDialogsSlot />);
+    await screen.findByRole("alert");
+    setAuthState({
+      user: { id: "u1", username: "a", session: { id: "s1", assurance: "probation" } } as unknown as User,
+    });
+    await expect(withStepUp(req, vi.fn())).rejects.toBeInstanceOf(StepUpUnavailable);
+  });
+
   it("a later step-up fails at once instead of hanging", async () => {
     render(() => <SessionDialogsSlot />);
     await screen.findByRole("alert");
