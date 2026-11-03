@@ -1,0 +1,13 @@
+/* Kaiku desktop passkey ceremony page (served by the server, no third-party content). */
+:root { color-scheme: light dark; --bg: #f6f7f9; --fg: #14161a; --muted: #4a4f59; --accent: #3355dd; --card: #ffffff; }
+@media (prefers-color-scheme: dark) { :root { --bg: #14161a; --fg: #f1f3f6; --muted: #c3c8d2; --accent: #8da2ff; --card: #1f2329; } }
+body { margin: 0; font: 18px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+main { max-width: 34rem; margin: 3rem auto; padding: 1.5rem; background: var(--card); border-radius: 12px; }
+h1 { font-size: 1.4rem; line-height: 1.3; margin: 0 0 1rem; }
+p { margin: 0 0 1rem; }
+.warning { font-weight: 600; }
+.hint { color: var(--muted); }
+button { display: block; width: 100%; min-height: 48px; margin: 0 0 0.75rem; font: inherit; font-weight: 600;
+  border: 2px solid var(--accent); border-radius: 8px; background: var(--accent); color: #ffffff; cursor: pointer; }
+button.secondary { background: transparent; color: var(--fg); }
+button:focus-visible { outline: 3px solid var(--fg); outline-offset: 2px; }

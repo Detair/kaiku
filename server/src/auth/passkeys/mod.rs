@@ -9,6 +9,8 @@
 //! - `step_up`: passkey step-up on L1a's action-bound grants.
 //! - `login`: discoverable sign-in → a new full session.
 //! - `manage`: list, rename and remove (never the last strong authenticator).
+//! - `desktop`, `desktop_page`: the desktop flow in the system browser and the loopback hand-off
+//!   page (F1, C29 steps 1–7).
 //! - `register`: adding a passkey (`passkey.add`) and the core L1b calls.
 //!
 //! Limits (B.5): every passkey route has its own `AuthPasskey` request
@@ -17,6 +19,8 @@
 
 pub mod ceremony;
 pub mod config;
+pub(crate) mod desktop;
+pub mod desktop_page;
 pub(crate) mod login;
 pub(crate) mod manage;
 pub mod queries;
@@ -100,7 +104,31 @@ pub(crate) fn session_limits(router: Router<AppState>, state: &AppState) -> Rout
 pub fn router(state: &AppState) -> Router<AppState> {
     let public = Router::new()
         .route("/passkeys/login/start", post(login::start))
-        .route("/passkeys/login/finish", post(login::finish));
+        .route("/passkeys/login/finish", post(login::finish))
+        .route("/passkeys/desktop/{flow_id}", get(desktop::page))
+        .route(
+            "/passkeys/desktop/{flow_id}/options",
+            post(desktop::options),
+        )
+        .route("/passkeys/desktop/{flow_id}/finish", post(desktop::finish))
+        .route("/passkeys/desktop/{flow_id}/cancel", post(desktop::cancel));
+    // Public for `sign_in`, bearer-bound for `step_up` (C29 steps 2 and 6).
+    let desktop_api = Router::new()
+        .route("/passkeys/desktop/flows", post(desktop::start))
+        .route("/passkeys/desktop/redeem", post(desktop::redeem))
+        .layer(from_fn_with_state(
+            state.clone(),
+            crate::auth::optional_auth,
+        ));
+    let assets = Router::new()
+        .route(
+            "/passkeys/assets/ceremony.js",
+            get(desktop_page::ceremony_js),
+        )
+        .route(
+            "/passkeys/assets/ceremony.css",
+            get(desktop_page::ceremony_css),
+        );
     let session = Router::new()
         .route("/passkeys/step-up/start", post(step_up::start))
         .route("/passkeys/step-up/finish", post(step_up::finish))
@@ -111,5 +139,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
             "/passkeys/{id}",
             patch(manage::rename).delete(manage::remove),
         );
-    public_limits(public, state).merge(session_limits(session, state))
+    public_limits(public.merge(desktop_api), state)
+        .merge(session_limits(session, state))
+        .merge(assets)
 }

@@ -40,7 +40,9 @@ use axum::{middleware as axum_middleware, Router};
 pub use error::{AuthError, AuthResult};
 pub use helpers::hash_token;
 pub use jwt::Claims;
-pub use middleware::{require_auth, require_auth_allow_password_change, AuthUser, SessionMeta};
+pub use middleware::{
+    optional_auth, require_auth, require_auth_allow_password_change, AuthUser, SessionMeta,
+};
 pub use password::{hash_password, verify_password};
 
 use crate::api::AppState;

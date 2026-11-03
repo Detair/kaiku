@@ -51,6 +51,7 @@ mod oidc_handoff;
 mod oidc_mock;
 mod optional_features;
 mod pages;
+mod passkeys_desktop;
 mod passkeys_login;
 mod passkeys_manage;
 mod passkeys_profile;

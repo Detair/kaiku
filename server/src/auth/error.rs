@@ -242,9 +242,12 @@ pub struct ErrorResponse {
     pub message: String,
 }
 
-impl IntoResponse for AuthError {
-    fn into_response(self) -> Response {
-        let (status, code) = match &self {
+impl AuthError {
+    /// The HTTP status and the machine-readable code of this error (the
+    /// desktop passkey hand-off sends the code alone, C29 step 4).
+    #[must_use]
+    pub const fn status_and_code(&self) -> (StatusCode, &'static str) {
+        match self {
             Self::InvalidCredentials => (StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS"),
             Self::UserNotFound => (StatusCode::NOT_FOUND, "USER_NOT_FOUND"),
             Self::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
@@ -299,7 +302,13 @@ impl IntoResponse for AuthError {
             Self::PasskeyHandoffInvalid => (StatusCode::BAD_REQUEST, "PASSKEY_HANDOFF_INVALID"),
             Self::ClientOutdated => (StatusCode::BAD_REQUEST, "CLIENT_OUTDATED"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
-        };
+        }
+    }
+}
+
+impl IntoResponse for AuthError {
+    fn into_response(self) -> Response {
+        let (status, code) = self.status_and_code();
 
         // C29: `PASSKEY_PENDING` carries `ready_at` next to `error`.
         let mut response = if let Self::PasskeyPending { ready_at } = &self {
