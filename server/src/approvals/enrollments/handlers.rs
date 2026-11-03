@@ -452,6 +452,10 @@ pub async fn passkey_start(
     let ctx = AuthCtx::from(&state);
     let opened = open_core(&ctx, &body.setup_token).await?;
     let row = super::issued_row(&ctx, &body.setup_token).await?;
+    // Flash r2: a banned account binds nothing.
+    if crate::auth::queries::is_user_globally_banned(&state.db, row.1).await? {
+        return Err(ApprovalError::AccountBanned);
+    }
     let (username, display_name): (String, String) =
         sqlx::query_as("SELECT username, display_name FROM users WHERE id = $1")
             .bind(row.1)

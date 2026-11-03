@@ -168,6 +168,31 @@ pub async fn complete_recorded(
     ready_at: Option<DateTime<Utc>>,
     via: RegistrationVia,
 ) -> AuthResult<(PasskeyRow, Uuid)> {
+    complete_recorded_by(
+        conn,
+        user_id,
+        label,
+        verified,
+        passkey_state,
+        ready_at,
+        via,
+        Actor::User(user_id),
+    )
+    .await
+}
+
+/// [`complete_recorded`] with the event's actor (an admin who set it up).
+#[allow(clippy::too_many_arguments)]
+pub async fn complete_recorded_by(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    label: &str,
+    verified: &VerifiedRegistration,
+    passkey_state: PasskeyState,
+    ready_at: Option<DateTime<Utc>>,
+    via: RegistrationVia,
+    actor: Actor,
+) -> AuthResult<(PasskeyRow, Uuid)> {
     if queries::active_count(&mut *conn, user_id).await? >= MAX_ACTIVE_PASSKEYS as i64 {
         return Err(AuthError::PasskeyLimit);
     }
@@ -189,7 +214,7 @@ pub async fn complete_recorded(
     let mut ev = NewSecurityEvent::new(
         user_id,
         EventType::AuthenticatorAdded,
-        Actor::User(user_id),
+        actor,
         serde_json::json!({
             "type": "passkey",
             "label": row.label,

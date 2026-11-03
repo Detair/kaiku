@@ -479,3 +479,163 @@ async fn probation_sessions_cannot_add_a_phone(pool: PgPool) {
         "{b}"
     );
 }
+
+async fn admin_link(app: &TestApp, target: Uuid) -> (KeyDeviceFixture, Value) {
+    let (a, _) = create_test_user(&app.pool).await;
+    make_admin(&app.pool, a).await;
+    let adev = KeyDeviceFixture::insert(&app.pool, &app.config, a, "active").await;
+    grant_step_up(
+        &app.pool,
+        adev.session_id.unwrap(),
+        "admin.enrollment.issue",
+        &target.to_string(),
+    )
+    .await;
+    let (s, issued) = call(
+        app,
+        Method::POST,
+        &format!("/api/admin/users/{target}/enrollments"),
+        &adev.access_token,
+        json!({"mode": "setup", "claimant_check": {"method": "in_person", "note": "at home"}}),
+    )
+    .await;
+    assert_eq!(s, 201, "{issued}");
+    (adev, issued)
+}
+
+/// Fable r2: an existing account's browser passkey is pending with the
+/// request's ready_at, active at completion, gone on cancel; a reused
+/// ceremony and another link's token are refused.
+#[sqlx::test]
+async fn existing_account_browser_passkey_waits_for_its_request(pool: PgPool) {
+    use super::helpers::login::TEST_ORIGIN;
+    use super::helpers::passkeys::SoftAuthenticator;
+    let app = TestApp::with_passkeys(pool.clone()).await;
+    // A second admin with a key: the request's independent canceller.
+    let (b, _) = create_test_user(&pool).await;
+    make_admin(&pool, b).await;
+    let bdev = KeyDeviceFixture::insert(&pool, &app.config, b, "active").await;
+    let (oma, _) = create_test_user(&pool).await;
+    sqlx::query("UPDATE users SET first_activity_at = NOW() - INTERVAL '1 day' WHERE id = $1")
+        .bind(oma)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for cancel in [false, true] {
+        let (adev, issued) = admin_link(&app, oma).await;
+        let token = issued["setup_token"].as_str().unwrap();
+        let (s, start, _) = browser(
+            &app,
+            "/auth/enrollments/passkey/start",
+            None,
+            json!({"setup_token": token}),
+        )
+        .await;
+        assert_eq!(s, 200, "{start}");
+        let mut soft = SoftAuthenticator::new();
+        let credential = soft.register(TEST_ORIGIN, &start["options"]);
+        let body = json!({"setup_token": token, "ceremony_id": start["ceremony_id"],
+                          "credential": credential, "label": "Laptop"});
+        let (s, claimed, _) =
+            browser(&app, "/auth/enrollments/passkey/finish", None, body.clone()).await;
+        assert_eq!(s, 201, "{claimed}");
+        // The same ceremony again: refused.
+        let (s, b2, _) = browser(&app, "/auth/enrollments/passkey/finish", None, body).await;
+        assert_eq!(
+            (s, b2["error"].as_str()),
+            (400, Some("PASSKEY_CEREMONY_INVALID")),
+            "{b2}"
+        );
+        let id = claimed["enrollment_id"].as_str().unwrap();
+        let (s, b3) = type_code_on(&app, &adev, id, claimed["code"].as_str().unwrap()).await;
+        assert_eq!(s, 200, "{b3}");
+        let (pk_state, ready_at): (String, Option<chrono::DateTime<chrono::Utc>>) =
+            sqlx::query_as("SELECT state, ready_at FROM passkeys WHERE enrollment_id = $1::uuid")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let (req_id, req_ready): (Uuid, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+            "SELECT id, ready_at FROM account_requests WHERE enrollment_id = $1::uuid",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pk_state, "pending");
+        assert_eq!(ready_at.map(|t| t.timestamp()), Some(req_ready.timestamp()));
+        // Fable r2 m-b: the admin added it.
+        let actor: String = sqlx::query_scalar(
+            "SELECT actor_kind FROM security_events
+              WHERE subject_id = $1 AND event_type = 'authenticator_added'
+              ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(oma)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(actor, "admin");
+        if cancel {
+            grant_step_up(
+                &pool,
+                bdev.session_id.unwrap(),
+                "request.cancel",
+                &req_id.to_string(),
+            )
+            .await;
+            let (s, b4) = call(
+                &app,
+                Method::POST,
+                &format!("/api/account-requests/{req_id}/cancel"),
+                &bdev.access_token,
+                json!({"reason": null, "part2": null}),
+            )
+            .await;
+            assert_eq!(s, 200, "{b4}");
+            let left: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM passkeys WHERE enrollment_id = $1::uuid")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(left, 0, "the pending passkey goes with the request");
+        } else {
+            sqlx::query(
+                "UPDATE account_requests SET ready_at = NOW() - INTERVAL '1 second' WHERE id = $1",
+            )
+            .bind(req_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            vc_server::auth::timers::run_once(&app.state).await.unwrap();
+            let st: String =
+                sqlx::query_scalar("SELECT state FROM passkeys WHERE enrollment_id = $1::uuid")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(st, "active");
+        }
+    }
+    // Another link's setup token with this ceremony: 404 (no claim).
+    let (_, issued) = admin_link(&app, oma).await;
+    let (_, other) = admin_link(&app, oma).await;
+    let (_, start, _) = browser(
+        &app,
+        "/auth/enrollments/passkey/start",
+        None,
+        json!({"setup_token": issued["setup_token"]}),
+    )
+    .await;
+    let mut soft = SoftAuthenticator::new();
+    let credential = soft.register(TEST_ORIGIN, &start["options"]);
+    let (s, b5, _) = browser(
+        &app,
+        "/auth/enrollments/passkey/finish",
+        None,
+        json!({"setup_token": other["setup_token"], "ceremony_id": start["ceremony_id"],
+               "credential": credential, "label": null}),
+    )
+    .await;
+    assert_eq!(s, 404, "{b5}");
+}

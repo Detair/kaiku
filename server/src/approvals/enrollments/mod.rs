@@ -953,6 +953,24 @@ pub async fn claim_passkey_tx(
     if row.id != enrollment_id {
         return Err(ApprovalError::EnrollmentTokenInvalid);
     }
+    // Fable r2 m-a: a known credential or a full set is refused at the
+    // claim, under the lock, not only at `done`.
+    let (known, active): (bool, i64) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM passkeys WHERE credential_id = $1 AND state <> 'revoked'),
+                (SELECT COUNT(*) FROM passkeys WHERE user_id = $2 AND state = 'active')",
+    )
+    .bind(verified.passkey.cred_id().as_ref().to_vec())
+    .bind(row.subject_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if known {
+        return Err(ApprovalError::Auth(
+            crate::auth::AuthError::PasskeyAlreadyRegistered,
+        ));
+    }
+    if active >= i64::try_from(crate::auth::passkeys::MAX_ACTIVE_PASSKEYS).unwrap_or(10) {
+        return Err(ApprovalError::Auth(crate::auth::AuthError::PasskeyLimit));
+    }
     let key_hash: [u8; 32] = Sha256::digest(verified.passkey.cred_id().as_ref()).into();
     let code = random_digits(6);
     let claim_secret = Secret256::random();
@@ -1374,7 +1392,7 @@ pub async fn finish_done_tx(
     let variant = EnrollmentVariant::parse(&row.variant).ok_or(ApprovalError::EnrollmentState)?;
     let state = activation_state(variant, subject_is_new(conn, row.subject_id).await?);
     if row.authenticator_type.as_deref() == Some("passkey") {
-        return finish_done_passkey_tx(conn, ctx, row, variant, state, issuer_user).await;
+        return finish_done_passkey_tx(conn, ctx, row, variant, state, issuer_user, actor).await;
     }
     let device_row_id = Uuid::new_v4();
     let claimed_device_id = row
@@ -1540,9 +1558,10 @@ async fn finish_done_passkey_tx(
     variant: EnrollmentVariant,
     state: DeviceState,
     issuer_user: Option<Uuid>,
+    actor: Actor,
 ) -> Result<(Enrollment, AfterDone), ApprovalError> {
     use crate::auth::passkeys::queries::PasskeyState;
-    use crate::auth::passkeys::register::{complete_recorded, RegistrationVia};
+    use crate::auth::passkeys::register::{complete_recorded_by, RegistrationVia};
     let verified: crate::auth::passkeys::rp::VerifiedRegistration = row
         .claimed_passkey
         .clone()
@@ -1569,7 +1588,7 @@ async fn finish_done_passkey_tx(
     } else {
         None
     };
-    let (pk, added) = complete_recorded(
+    let (pk, added) = complete_recorded_by(
         conn,
         row.subject_id,
         &label,
@@ -1581,6 +1600,7 @@ async fn finish_done_passkey_tx(
         },
         ready_at,
         RegistrationVia::Enrollment,
+        actor,
     )
     .await
     .map_err(ApprovalError::Auth)?;
