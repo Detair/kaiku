@@ -191,6 +191,83 @@ async fn start_budget_is_three_per_delay_period(pool: PgPool) {
     assert_eq!(codes_left(&pool, user).await, 7);
 }
 
+/// Codex r3 (5a): two starts with one code at once give one request; the
+/// other gets the neutral answer and consumes nothing more.
+#[sqlx::test]
+async fn one_code_used_twice_at_once_starts_one_request(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name, _, codes) = account(&app).await;
+    let second = json!({"type": "password", "password": PASSWORD});
+    let ((s1, b1), (s2, b2)) = tokio::join!(
+        start(&app, &name, &codes[0], second.clone(), "none"),
+        start(&app, &name, &codes[0], second.clone(), "none")
+    );
+    let mut statuses = [s1, s2];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [201, 401], "{b1} {b2}");
+    let refused = if s1 == 401 { &b1 } else { &b2 };
+    assert_eq!(refused["error"], "INVALID_CREDENTIALS", "{refused}");
+    let used: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM recovery_codes WHERE user_id = $1 AND used_at IS NOT NULL",
+    )
+    .bind(user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let starts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM account_request_starts WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((used, starts), (1, 1));
+}
+
+/// Codex r3 (5a): a code found before a renewal is not consumed after it.
+#[sqlx::test]
+async fn a_found_code_of_an_old_generation_is_not_consumed(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _, _, codes) = account(&app).await;
+    let find = |code: String| {
+        let pool = pool.clone();
+        async move {
+            vc_server::auth::recovery_codes::find(&pool, user, &code)
+                .await
+                .unwrap()
+                .unwrap()
+        }
+    };
+    let (current_id, current_gen) = find(codes[1].clone()).await;
+    let (old_id, old_gen) = find(codes[0].clone()).await;
+    let mut tx = pool.begin().await.unwrap();
+    assert!(
+        vc_server::auth::recovery_codes::consume_id_tx(&mut tx, user, current_id, current_gen)
+            .await
+            .unwrap(),
+        "the control: a current code is consumed"
+    );
+    sqlx::query(
+        "UPDATE users SET recovery_codes_generation = recovery_codes_generation + 1 WHERE id = $1",
+    )
+    .bind(user)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    assert!(
+        !vc_server::auth::recovery_codes::consume_id_tx(&mut tx, user, old_id, old_gen)
+            .await
+            .unwrap(),
+        "a bumped generation consumes nothing"
+    );
+    let used: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT used_at FROM recovery_codes WHERE id = $1")
+            .bind(old_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert!(used.is_none());
+}
+
 #[sqlx::test]
 async fn all_key_devices_are_named_lost(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
