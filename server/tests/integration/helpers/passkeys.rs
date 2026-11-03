@@ -133,3 +133,97 @@ impl SoftAuthenticator {
         v
     }
 }
+
+/// Register a passkey for `user_id` through the test RP and store it in
+/// `state` (a fixture only: the product path to a first passkey is a key
+/// device's full session, DC1). `pending` rows get `ready_at` = now + 24 h.
+pub async fn seed_passkey(
+    app: &TestApp,
+    user_id: uuid::Uuid,
+    state: vc_server::auth::passkeys::queries::PasskeyState,
+) -> (
+    SoftAuthenticator,
+    vc_server::auth::passkeys::queries::PasskeyRow,
+) {
+    use vc_server::auth::passkeys::queries::{self, NewPasskey, PasskeyState};
+    let rp = test_passkey_rp();
+    let mut auth = SoftAuthenticator::new();
+    let handle = queries::user_handle(&app.pool, user_id)
+        .await
+        .expect("user handle");
+    let (ccr, st) = rp
+        .start_registration(handle, "user", "User", vec![])
+        .expect("start registration");
+    let cred = auth.register(
+        super::login::TEST_ORIGIN,
+        &serde_json::to_value(&ccr).expect("options"),
+    );
+    let reg = serde_json::from_value(cred).expect("credential");
+    let verified = rp.finish_registration(&reg, &st).expect("finish");
+    let mut conn = app.pool.acquire().await.expect("connection");
+    let (insert_state, ready_at) = match state {
+        PasskeyState::Pending => (
+            PasskeyState::Pending,
+            Some(chrono::Utc::now() + chrono::Duration::hours(24)),
+        ),
+        PasskeyState::Active | PasskeyState::Revoked => (PasskeyState::Active, None),
+    };
+    let mut row = queries::insert(
+        &mut conn,
+        &NewPasskey {
+            user_id,
+            verified: &verified,
+            label: "Test passkey",
+            state: insert_state,
+            ready_at,
+        },
+    )
+    .await
+    .expect("insert passkey");
+    if state == PasskeyState::Revoked {
+        sqlx::query(
+            "UPDATE passkeys SET state = 'revoked', revoked_at = NOW(), revoke_reason = 'test'
+              WHERE id = $1",
+        )
+        .bind(row.id)
+        .execute(&mut *conn)
+        .await
+        .expect("revoke passkey");
+        row.state = PasskeyState::Revoked;
+    }
+    (auth, row)
+}
+
+/// A live full session created by passkey `passkey_id` (as a passkey
+/// sign-in would make it) → `(sid, access token)`.
+pub async fn passkey_session(
+    pool: &PgPool,
+    config: &vc_server::config::Config,
+    user_id: uuid::Uuid,
+    passkey_id: uuid::Uuid,
+) -> (uuid::Uuid, String) {
+    let sid = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, token_hash, expires_at, assurance, auth_methods,
+                               client_class, authenticator_type, authenticator_id,
+                               absolute_expires_at)
+         VALUES ($1, $2, $3, NOW() + INTERVAL '7 days', 'full', '{passkey}', 'web',
+                 'passkey', $4, NOW() + INTERVAL '30 days')",
+    )
+    .bind(sid)
+    .bind(user_id)
+    .bind(format!("passkey-session-{sid}"))
+    .bind(passkey_id)
+    .execute(pool)
+    .await
+    .expect("insert passkey session");
+    let pair = vc_server::auth::jwt::generate_token_pair_for_session(
+        user_id,
+        sid,
+        &config.jwt_private_key,
+        config.jwt_access_expiry,
+        config.jwt_refresh_expiry,
+    )
+    .expect("tokens");
+    (sid, pair.access_token)
+}

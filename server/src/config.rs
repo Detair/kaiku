@@ -189,6 +189,10 @@ pub struct Config {
     /// test configs start with `None` (routes answer `PASSKEYS_UNAVAILABLE`).
     pub passkeys: Option<std::sync::Arc<crate::auth::passkeys::rp::PasskeyRp>>,
 
+    /// `PASSKEY_ALLOW_RP_ID_CHANGE`: the new `PUBLIC_URL` host whose RP-ID
+    /// change may revoke every passkey at startup (DC5). Unset otherwise.
+    pub passkey_allow_rp_id_change: Option<String>,
+
     /// MFA secret encryption key (32-byte hex string)
     pub mfa_encryption_key: Option<String>,
 
@@ -482,6 +486,8 @@ impl Config {
             public_origin,
             auth_hmac_key,
             passkeys: Some(std::sync::Arc::new(passkeys)),
+            passkey_allow_rp_id_change: env_opt("PASSKEY_ALLOW_RP_ID_CHANGE")
+                .map(|h| h.trim().to_ascii_lowercase()),
             mfa_encryption_key: env_opt("MFA_ENCRYPTION_KEY"),
             require_e2ee_setup: env::var("REQUIRE_E2EE_SETUP")
                 .ok()
@@ -706,6 +712,7 @@ impl Config {
                 derive_auth_hmac_key(None, TEST_JWT_PRIVATE_KEY).expect("test HMAC key derives"),
             ),
             passkeys: None,
+            passkey_allow_rp_id_change: None,
             mfa_encryption_key: Some(TEST_MFA_ENCRYPTION_KEY.into()),
             require_e2ee_setup: false,
             block_check_fail_open: false,

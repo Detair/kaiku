@@ -52,6 +52,7 @@ mod oidc_mock;
 mod optional_features;
 mod pages;
 mod passkeys_profile;
+mod passkeys_schema;
 mod performance_budgets;
 mod push_http;
 mod push_triggers;

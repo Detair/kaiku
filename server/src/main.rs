@@ -87,6 +87,22 @@ async fn main() -> Result<()> {
         db::create_redis_client_with_timeout(&config.redis_url, config.valkey_command_timeout)
             .await?;
 
+    // Passkeys are bound to the RP ID (DC5): a changed `PUBLIC_URL` host with
+    // live passkeys refuses to start unless PASSKEY_ALLOW_RP_ID_CHANGE names it.
+    if let Some(rp) = &config.passkeys {
+        let ctx = vc_server::auth::ctx::AuthCtx {
+            db: &db_pool,
+            redis: &redis,
+            config: &config,
+        };
+        vc_server::auth::passkeys::rp_pin::check_rp_id(
+            &ctx,
+            rp.rp_id(),
+            config.passkey_allow_rp_id_change.as_deref(),
+        )
+        .await?;
+    }
+
     // Initialize S3 client (optional - file uploads will be disabled if not configured)
     // Skip initialization if S3 credentials aren't configured (blank = unset)
     let s3 = if config.has_s3_credentials() {

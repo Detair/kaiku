@@ -6,4 +6,6 @@
 
 pub mod ceremony;
 pub mod config;
+pub mod queries;
 pub mod rp;
+pub mod rp_pin;
