@@ -88,9 +88,9 @@ class AuthRepositoryLoginRaceTest {
     @Test
     fun `server switch during login sends the token nowhere else and clears nothing`() = runTest {
         every { tokenStorage.getAccessToken() } returns null
-        val requests = mutableListOf<Pair<String, String?>>() // host to Authorization
+        val requests = mutableListOf<Triple<String, String, String?>>() // host, path, Authorization
         val engine = MockEngine { request ->
-            requests += request.url.host to request.headers[HttpHeaders.Authorization]
+            requests += Triple(request.url.host, request.url.encodedPath, request.headers[HttpHeaders.Authorization])
             val json = headersOf(HttpHeaders.ContentType, "application/json")
             if (request.url.encodedPath == "/auth/login-attempts/a-1/collect") {
                 serverUrl = "https://b.example.com" // switched while the collect is in flight
@@ -117,8 +117,11 @@ class AuthRepositoryLoginRaceTest {
         val result = realRepository.completeAttempt("https://a.example.com", null) { attempts.collect("a-1", "verifier") }
 
         assertTrue(result.isFailure)
-        assertEquals(listOf("a.example.com"), requests.map { it.first }) // only the collect itself
-        assertTrue(requests.none { it.second == "Bearer access-a" })
+        // The minted session never reaches B: A gets the collect, then the logout that ends it there.
+        assertEquals(listOf("a.example.com", "a.example.com"), requests.map { it.first })
+        assertEquals(listOf("/auth/login-attempts/a-1/collect", "/auth/logout"), requests.map { it.second })
+        assertTrue(requests.none { it.first == "b.example.com" })
+        assertEquals("Bearer access-a", requests.last().third)
         verify(exactly = 0) { tokenStorage.clear() }
         verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
         assertEquals(AuthSession.LoggedOut, authState.session.value)

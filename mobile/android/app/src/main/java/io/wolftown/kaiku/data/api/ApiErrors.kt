@@ -13,7 +13,13 @@ import io.ktor.http.isSuccess
  */
 internal suspend fun HttpResponse.ensureSuccess(fallback: String) {
     if (status.isSuccess()) return
-    val body = runCatching { body<ApiErrorResponse>() }.getOrNull()
+    val body = try {
+        body<ApiErrorResponse>()
+    } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
     val retryAfter = headers[HttpHeaders.RetryAfter]?.trim()?.toLongOrNull()
     throw ApiException(
         status,

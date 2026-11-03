@@ -78,8 +78,12 @@ class FakeApprovalApi : ApprovalApi {
         return KeyDevice(id = id, label = "Pixel 8", state = KeyDeviceStatus.REVOKED)
     }
 
+    /** The report hangs (until cancelled or timed out). */
+    var reportHangs = false
+
     override suspend fun reportInvalidated(id: String): KeyDevice {
         calls += "reportInvalidated:$id"
+        if (reportHangs) kotlinx.coroutines.awaitCancellation()
         return KeyDevice(id = id, label = "Pixel 8", state = KeyDeviceStatus.REVOKED)
     }
 }

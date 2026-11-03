@@ -71,7 +71,10 @@ private data class RegisterRequest(
     val password: String,
     val email: String? = null,
     val displayName: String? = null
-)
+) {
+    // Never print the password (logs, crash reports).
+    override fun toString(): String = "RegisterRequest(username=$username)"
+}
 
 @Serializable
 private data class RefreshTokenRequest(
@@ -102,15 +105,13 @@ class AuthApiImpl @Inject constructor(
         email: String?,
         displayName: String?
     ): RegistrationTicket {
+        // Pre-session: no stored bearer, no refresh on a 401; the error keeps its fields
+        // (`Retry-After`, `PASSWORD_REJECTED {reason}`).
         val response = httpClient.post("/auth/register") {
+            publicRoute()
             setBody(RegisterRequest(username, password, email, displayName))
         }
-
-        if (!response.status.isSuccess()) {
-            val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(response.status, errorBody?.message ?: "Registration failed", code = errorBody?.error)
-        }
-
+        response.ensureSuccess("Registration failed")
         return response.body()
     }
 

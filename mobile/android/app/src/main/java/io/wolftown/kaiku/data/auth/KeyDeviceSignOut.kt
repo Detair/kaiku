@@ -28,7 +28,7 @@ class KeyDeviceSignOut @Inject constructor(
 
     suspend fun signOutAndRemovePhone(activity: FragmentActivity): StepUpOutcome {
         val local = keyDevices.local() ?: return StepUpOutcome.NotKeyDevice
-        val id = local.keyDeviceId ?: return StepUpOutcome.Failed("NO_KEY_DEVICE_ID")
+        val id = local.keyDeviceId ?: currentKeyDeviceId(local.userId) ?: return StepUpOutcome.Failed("NO_KEY_DEVICE_ID")
         val out = stepUp.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, id, "")
         if (out !is StepUpOutcome.Granted) return out
         try {
@@ -43,6 +43,8 @@ class KeyDeviceSignOut @Inject constructor(
             }
         } catch (_: IOException) {
             return StepUpOutcome.Failed("NETWORK")
+        } catch (_: Exception) {
+            return StepUpOutcome.Failed("NETWORK")
         }
         // Forget first, so the sign-out below is a plain one and unregisters push. Push goes after the
         // removal on purpose (plan B6, C19 amendment 3): a removal that fails keeps the key and its
@@ -51,5 +53,17 @@ class KeyDeviceSignOut @Inject constructor(
         keyDevices.forget()
         authRepository.logout()
         return out
+    }
+
+    /**
+     * This phone's key-device id when the sign-in did not record it (`/auth/me` without
+     * `session.key_device_id`): the server's list marks the current one; it is kept for next time.
+     */
+    private suspend fun currentKeyDeviceId(userId: String): String? = try {
+        approvalApi.keyDevices().firstOrNull { it.isCurrent }?.id?.also { keyDevices.markActive(userId, it) }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
     }
 }

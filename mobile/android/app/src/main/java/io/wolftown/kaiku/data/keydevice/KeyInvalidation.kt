@@ -4,7 +4,9 @@ import io.wolftown.kaiku.data.api.ApprovalApi
 import io.wolftown.kaiku.data.repository.AuthRepository
 import java.util.logging.Logger
 import javax.inject.Inject
-import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * B.1: Android invalidated K_approve (the screen lock was removed). Wherever a
@@ -19,19 +21,25 @@ class KeyInvalidation @Inject constructor(
 ) {
     private companion object {
         val logger: Logger = Logger.getLogger("KeyInvalidation")
+        const val REPORT_TIMEOUT_MS = 5_000L
     }
 
-    suspend fun handle() {
-        val id = keyDevices.local()?.keyDeviceId
-        if (id != null && authRepository.hasLiveSession()) {
-            try {
-                approvalApi.reportInvalidated(id)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.warning("Invalidated key not reported: ${e.javaClass.simpleName}")
+    /**
+     * Runs to the end even when the screen that found out is left meanwhile: the report is
+     * bounded, and the key and its record are always forgotten.
+     */
+    suspend fun handle() = withContext(NonCancellable) {
+        try {
+            val id = keyDevices.local()?.keyDeviceId
+            if (id != null && authRepository.hasLiveSession()) {
+                try {
+                    withTimeoutOrNull(REPORT_TIMEOUT_MS) { approvalApi.reportInvalidated(id) }
+                } catch (e: Exception) {
+                    logger.warning("Invalidated key not reported: ${e.javaClass.simpleName}")
+                }
             }
+        } finally {
+            keyDevices.forget()
         }
-        keyDevices.forget()
     }
 }

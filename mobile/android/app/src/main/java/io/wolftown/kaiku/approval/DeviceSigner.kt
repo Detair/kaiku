@@ -50,10 +50,12 @@ class DeviceSigner(
             if (!keyStore.hasKey()) UvResult.KeyInvalidated else verifier.sign(activity, prompt, message)
         } catch (e: CancellationException) {
             throw e
+        } catch (_: KeyInvalidatedException) {
+            UvResult.KeyInvalidated
         } catch (e: Exception) {
-            // Any other Keystore failure (ProviderException, UnrecoverableKeyException, …) fails the
-            // signature instead of crashing the app.
-            UvResult.Failed("KEYSTORE_" + e.javaClass.simpleName)
+            // An invalidated key reported in another shape still counts as invalidated; any other
+            // Keystore failure (ProviderException, …) fails the signature instead of crashing.
+            if (isInvalidatedKeyFailure(e)) UvResult.KeyInvalidated else UvResult.Failed("KEYSTORE_" + e.javaClass.simpleName)
         }
         if (r == UvResult.KeyInvalidated) onKeyInvalidated()
         return when (r) {

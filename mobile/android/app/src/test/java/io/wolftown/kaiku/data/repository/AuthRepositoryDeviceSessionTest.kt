@@ -17,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -125,5 +126,55 @@ class AuthRepositoryDeviceSessionTest {
 
         assertNull(repository.beginDeviceSignIn(origin))
         assertEquals("https://other.example.org", serverUrl)
+    }
+
+    @Test fun `a device sign-in supersedes a sign-in still in flight and is never wiped by it`() = runTest {
+        coEvery { authApi.authenticatedGetMe("device-access", origin) } returns alice
+        val result = repository.completeAttempt(origin, null) {
+            // While the attempt is collected, the key signs in (e.g. from a notification).
+            val start = repository.beginDeviceSignIn(origin)!!
+            assertTrue(repository.installDeviceSession(auth, "u1", start).isSuccess)
+            throw java.io.IOException("the collect failed late")
+        }
+        assertTrue(result.isFailure)
+        verify(exactly = 0) { tokenStorage.clear() }
+        assertEquals("u1", (authState.session.value as AuthSession.LoggedIn).userId)
+    }
+
+    @Test fun `two overlapping device sign-ins never both install`() = runTest {
+        coEvery { authApi.authenticatedGetMe(any(), origin) } returns alice
+        val first = repository.beginDeviceSignIn(origin)!!
+        val second = repository.beginDeviceSignIn(origin)!!
+        assertTrue(repository.installDeviceSession(auth.copy(accessToken = "second"), "u1", second).isSuccess)
+        assertTrue(repository.installDeviceSession(auth, "u1", first).isFailure)
+        coVerify { authApi.logoutSession(origin, "device-access", "device-refresh") }
+    }
+
+    @Test fun `a collected session that is not installed is ended on its server`() = runTest {
+        val result = repository.completeAttempt(origin, null) {
+            serverUrl = "https://other.example.org" // the person changed the server meanwhile
+            AuthResponse(accessToken = "attempt-access", refreshToken = "attempt-refresh", expiresIn = 900, tokenType = "Bearer")
+        }
+        assertTrue(result.isFailure)
+        coVerify { authApi.logoutSession(origin, "attempt-access", "attempt-refresh") }
+        verify(exactly = 0) { tokenStorage.saveTokens("attempt-access", any(), any(), any()) }
+    }
+
+    @Test fun `ending the replaced session survives a cancelled caller`() = runTest {
+        authState.setLoggedIn("u1")
+        every { tokenStorage.getAccessToken() } returns "old-access"
+        coEvery { authApi.authenticatedGetMe("device-access", origin) } returns alice
+        val started = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { authApi.logoutSession(origin, "old-access", null) } coAnswers {
+            started.complete(Unit)
+            kotlinx.coroutines.delay(1_000)
+        }
+        val start = repository.beginDeviceSignIn(origin)!!
+        val job = backgroundScope.launch { repository.installDeviceSession(auth, "u1", start) }
+        started.await()
+        job.cancel()
+        testScheduler.advanceUntilIdle()
+        verify { tokenStorage.saveTokens("device-access", "device-refresh", 900, "u1") }
+        coVerify(exactly = 1) { authApi.logoutSession(origin, "old-access", null) }
     }
 }

@@ -53,4 +53,21 @@ class AuthApiErrorCodeTest {
         // The one-time code of the callback, redeemed with the attempt's verifier (C27).
         assertEquals("INVALID_CREDENTIALS", codeOf { api.exchangeOidc("c", "verifier") })
     }
+
+    @Test
+    fun `register is a public route whose errors keep their fields`() = runTest {
+        val rec = io.wolftown.kaiku.testutil.ApiRecorder(status = HttpStatusCode.TooManyRequests,
+            body = """{"error":"TOO_MANY_ATTEMPTS","message":"slow down"}""", extraHeaders = mapOf("Retry-After" to "120"))
+        val api = AuthApiImpl(rec.client)
+        val e = try {
+            api.register("anna", "pw-long-enough")
+            null
+        } catch (x: ApiException) {
+            x
+        }
+        assertEquals("TOO_MANY_ATTEMPTS", e?.code)
+        assertEquals(120L, e?.fields?.retryAfterSeconds)
+        // Pre-session: the stored bearer of some other session never goes along.
+        assertEquals(null, rec.last.headers["Authorization"])
+    }
 }

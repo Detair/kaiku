@@ -126,9 +126,13 @@ class KeyDeviceRepository @Inject constructor(
 
     /** Deletes the key and the metadata (revoked, invalidated, removed, cancelled setup). */
     fun forget() {
-        keyStore.delete()
-        store.clear()
-        stored.value = null
+        try {
+            keyStore.delete()
+        } finally {
+            // A failing Keystore delete never leaves the record (and the server pin) behind.
+            store.clear()
+            stored.value = null
+        }
     }
 
     fun recordSessionCap(cap: Instant?) {

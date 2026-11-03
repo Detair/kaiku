@@ -181,13 +181,13 @@ class AuthRepository @Inject constructor(
                         false
                     }
                 }
-                if (!installed) return supersededResult()
+                if (!installed) return superseded(serverUrl, authResponse)
                 return Result.failure(PasswordChangeRequiredException())
             }
 
             // Server switched while the attempt was collected: don't send server A's
-            // token anywhere else, and leave the new server's state alone.
-            if (tokenStorage.getServerUrl() != serverUrl) return supersededResult()
+            // token anywhere else (the minted session is ended on A), and leave B alone.
+            if (tokenStorage.getServerUrl() != serverUrl) return superseded(serverUrl, authResponse)
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
             // The previous session's teardown finishes before this one starts.
@@ -199,18 +199,28 @@ class AuthRepository @Inject constructor(
                 authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id,
                 precondition = { loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl },
             )
-            if (!persisted) return supersededResult()
+            if (!persisted) return superseded(serverUrl, authResponse)
             Result.success(user)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // Only the latest attempt may clear: a stale sign-in failing late must
-            // not wipe the session a newer one stored meanwhile.
+            // Only the latest attempt may clear, and never under a running session: a stale
+            // sign-in failing late must not wipe the session a newer one stored meanwhile.
             synchronized(pendingLock) {
-                if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl) tokenStorage.clear()
+                if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl &&
+                    authState.session.value !is AuthSession.LoggedIn
+                ) {
+                    tokenStorage.clear()
+                }
             }
             Result.failure(e)
         }
+    }
+
+    /** A collected session that is not installed is ended on its server, so none is left live. */
+    private suspend fun superseded(serverUrl: String, auth: AuthResponse): Result<User> {
+        endUnused(serverUrl, auth)
+        return supersededResult()
     }
 
     /** False while a session runs: a passkey sign-in then starts nothing. */
@@ -440,7 +450,10 @@ class AuthRepository @Inject constructor(
             tokenStorage.saveServerUrl(keyOrigin)
         }
         val serverUrl = tokenStorage.getServerUrl() ?: return null
-        DeviceSignInStart(loginAttempt, serverUrl, session)
+        // A sign-in of its own: an older sign-in still in flight can no longer install or
+        // clear anything, and two overlapping device sign-ins never both install.
+        pendingPasswordChange = null
+        DeviceSignInStart(++loginAttempt, serverUrl, session)
     }
 
     /**
@@ -482,13 +495,15 @@ class AuthRepository @Inject constructor(
                 endUnused(serverUrl, auth)
                 return Result.failure(IllegalStateException("Device sign-in was cancelled or superseded"))
             }
+            // The new session is installed: ending the replaced one runs to the end even if the
+            // caller is cancelled now, and never turns the installed sign-in into a failure.
             replacedAccess?.let { old ->
-                try {
-                    withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) { authApi.logoutSession(serverUrl, old, null) }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    logger.warning("Old session not ended (best-effort): ${e.javaClass.simpleName}")
+                withContext(NonCancellable) {
+                    try {
+                        withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) { authApi.logoutSession(serverUrl, old, null) }
+                    } catch (e: Exception) {
+                        logger.warning("Old session not ended (best-effort): ${e.javaClass.simpleName}")
+                    }
                 }
             }
             Result.success(user)

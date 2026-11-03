@@ -108,6 +108,10 @@ class DeviceSignIn @Inject constructor(
             }
         } catch (_: IOException) {
             DeviceSignInResult.Network
+        } catch (e: Exception) {
+            // An unreadable answer (a captive portal's page) or a non-IO transport failure: no crash.
+            logger.warning("Device sign-in failed: ${e.javaClass.simpleName}")
+            DeviceSignInResult.Network
         }
     }
 

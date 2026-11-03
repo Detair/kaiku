@@ -83,7 +83,8 @@ class AndroidApprovalKeyStore(private val context: Context) : ApprovalKeyStore {
         }
         val ks = keyStore()
         val chain = ks.getCertificateChain(ALIAS)?.map { it.encoded } ?: emptyList()
-        val spki = ks.getCertificate(ALIAS).publicKey.encoded
+        val spki = ks.getCertificate(ALIAS)?.publicKey?.encoded
+            ?: throw java.security.KeyStoreException("no certificate for the new key")
         return GeneratedKey(spki, chain, d.uvClass)
     }
 

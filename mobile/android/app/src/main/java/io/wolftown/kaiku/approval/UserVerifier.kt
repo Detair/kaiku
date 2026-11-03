@@ -50,6 +50,10 @@ internal fun signNow(keyStore: ApprovalKeyStore, message: ByteArray): UvResult =
     UvResult.KeyInvalidated
 } catch (_: NoApprovalKeyException) {
     UvResult.KeyInvalidated
+} catch (e: UserNotAuthenticatedException) {
+    throw e // the window closed: the caller asks once more
+} catch (e: Exception) {
+    if (isInvalidatedKeyFailure(e)) UvResult.KeyInvalidated else UvResult.Failed("SIGN_FAILED")
 }
 
 /** Signs [message] with an initialised (and, for per-use keys, authenticated) signature; never prehashed. */
@@ -77,6 +81,8 @@ class BiometricUserVerifier(private val keyStore: ApprovalKeyStore) : UserVerifi
             val uvClass = try {
                 keyStore.keyUvClass()
             } catch (_: KeyInvalidatedException) {
+                return@withContext UvResult.KeyInvalidated
+            } catch (_: NoApprovalKeyException) {
                 return@withContext UvResult.KeyInvalidated
             }
             when (uvClass) {

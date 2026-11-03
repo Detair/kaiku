@@ -112,6 +112,9 @@ class DeviceSignInTest {
         assertEquals(DeviceSignInResult.Banned, signIn.signIn(activity))
         api.failWith = java.io.IOException("offline")
         assertEquals(DeviceSignInResult.Network, signIn.signIn(activity))
+        // A captive portal's page or another non-IO failure: no crash, nothing forgotten.
+        api.failWith = kotlinx.serialization.SerializationException("<html>")
+        assertEquals(DeviceSignInResult.Network, signIn.signIn(activity))
         assertEquals(KeyDeviceState.Lapsed(SigFixtures.USER_ID), repo.current())
     }
 

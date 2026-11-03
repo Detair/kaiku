@@ -138,4 +138,26 @@ class KeyDeviceSignOutTest {
         assertTrue(h.keyStore.hasKey())
         coVerify(exactly = 0) { h.pushRegistrar.unregisterForLogout(any()) }
     }
+
+    @Test fun `remove this phone finds its key-device id when the sign-in did not record it`() = runTest {
+        val keyStore = SoftwareApprovalKeyStore().apply { generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use) }
+        val authState = AuthState(backgroundScope)
+        val tokenStorage = TokenStorage(InMemorySharedPreferences()).apply { saveServerUrl("https://chat.example.com") }
+        val repo = KeyDeviceRepository(InMemoryKeyDeviceStore(), keyStore, authState, backgroundScope)
+        val authRepository = AuthRepository(mockk(relaxed = true), tokenStorage, authState, mockk(relaxed = true), noTeardown(authState))
+        val stepUp: DeviceStepUp = mockk()
+        val api = FakeApprovalApi().apply {
+            devices = listOf(io.wolftown.kaiku.domain.model.KeyDevice("kd7", label = "Pixel 8", state = io.wolftown.kaiku.domain.model.KeyDeviceStatus.ACTIVE, isCurrent = true))
+        }
+        repo.saveClaimed(LocalKeyDevice(null, "u1", "https://chat.example.com", UvClass.PER_USE, "e1", null))
+        tokenStorage.saveTokens("a", "r", 900, "u1")
+        authState.setLoggedIn("u1")
+        repo.markActive("u1", null)
+        coEvery { stepUp.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, "kd7", any()) } returns
+            StepUpOutcome.Granted(StepUpGrant("key_device.remove", "kd7", "device", "t"))
+
+        val out = KeyDeviceSignOut(authRepository, repo, stepUp, api).signOutAndRemovePhone(activity)
+        assertTrue(out is StepUpOutcome.Granted)
+        assertTrue("removeKeyDevice:kd7" in api.calls)
+    }
 }
