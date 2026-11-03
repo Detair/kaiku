@@ -506,4 +506,190 @@ mod oidc_factor {
         .await;
         assert_eq!(s, 201, "{b}");
     }
+
+    async fn web_code(ctx: &Ctx, sub: &str) -> String {
+        let answer = authorize(ctx, None).await;
+        issue(ctx, fresh(sub));
+        let html = callback_response(answer["url"].as_str().unwrap())
+            .await
+            .text()
+            .await
+            .unwrap();
+        posted_code(&html)
+    }
+
+    #[sqlx::test]
+    async fn an_identity_of_another_account_is_refused(pool: PgPool) {
+        let ctx = setup(&pool).await;
+        let (_, name, codes) = account(&ctx, "sub-own").await;
+        // Someone else's identity: the code redeems, but not to this account.
+        let other = create_user(&ctx.pool, true).await;
+        link(&ctx, other, "sub-other").await;
+        let oidc_code = web_code(&ctx, "sub-other").await;
+        let (s, b) = start(
+            &ctx,
+            &name,
+            &codes[0],
+            json!({"type": "oidc", "oidc_code": oidc_code}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (401, Some("REQUEST_FACTOR_INVALID")),
+            "{b}"
+        );
+        let open: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM account_requests WHERE state IN ('waiting', 'ready')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(open, 0, "nothing started");
+    }
+
+    #[sqlx::test]
+    async fn a_code_redeems_once(pool: PgPool) {
+        let ctx = setup(&pool).await;
+        let (_, name, codes) = account(&ctx, "sub-once").await;
+        let oidc_code = web_code(&ctx, "sub-once").await;
+        let (s, b) = start(
+            &ctx,
+            &name,
+            &codes[0],
+            json!({"type": "oidc", "oidc_code": oidc_code}),
+        )
+        .await;
+        assert_eq!(s, 201, "{b}");
+        // Withdraw, then the same code again: spent.
+        let secret = b["request_secret"].as_str().unwrap().to_string();
+        let resp = client()
+            .delete(format!("{}/auth/account-requests/current", ctx.server.url))
+            .header("X-Kaiku-Request-Secret", &secret)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 204);
+        let (s, b) = start(
+            &ctx,
+            &name,
+            &codes[1],
+            json!({"type": "oidc", "oidc_code": oidc_code}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (401, Some("REQUEST_FACTOR_INVALID")),
+            "{b}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn bootstrap_with_oidc_as_the_first_factor(pool: PgPool) {
+        let ctx = setup(&pool).await;
+        let (user, name, _) = account(&ctx, "sub-boot").await;
+        let totp =
+            super::super::helpers::login::enable_totp(&ctx.pool, &ctx.config, user, &name).await;
+        sqlx::query("UPDATE users SET bootstrap_open = true WHERE id = $1")
+            .bind(user)
+            .execute(&ctx.pool)
+            .await
+            .unwrap();
+        let oidc_code = web_code(&ctx, "sub-boot").await;
+        let resp = client()
+            .post(format!("{}/auth/account-requests", ctx.server.url))
+            .header("x-kaiku-client", "android")
+            .json(&json!({"username": name, "purpose": "bootstrap",
+                          "first": {"type": "oidc", "oidc_code": oidc_code},
+                          "totp_code": totp.generate_current().unwrap()}))
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status().as_u16();
+        let b: Value = resp.json().await.unwrap_or(Value::Null);
+        assert_eq!(status, 201, "{b}");
+        assert!(
+            b["request"]["factors"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("oidc")),
+            "{b}"
+        );
+    }
+
+    #[sqlx::test]
+    async fn a_desktop_provider_error_reaches_the_app(pool: PgPool) {
+        let ctx = setup(&pool).await;
+        let answer = authorize(
+            &ctx,
+            Some(json!({"loopback_port": 50123,
+                        "callback_path": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        "client_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"})),
+        )
+        .await;
+        let state = query_of(answer["url"].as_str().unwrap())
+            .get("state")
+            .cloned()
+            .unwrap();
+        let resp = client()
+            .get(format!("{}/auth/oidc/callback", ctx.server.url))
+            .query(&[("state", state.as_str()), ("error", "access_denied")])
+            .send()
+            .await
+            .unwrap();
+        let html = resp.text().await.unwrap();
+        let fields = form_fields(&html);
+        assert_eq!(
+            fields.get("flow_id").map(String::as_str),
+            answer["flow_id"].as_str()
+        );
+        assert!(fields.contains_key("error"), "{html}");
+    }
+
+    #[sqlx::test]
+    async fn a_code_whose_sign_in_aged_is_refused(pool: PgPool) {
+        use fred::interfaces::KeysInterface;
+        let ctx = setup(&pool).await;
+        let (user, name, codes) = account(&ctx, "sub-aged").await;
+        // A grant whose sign-in is now 301 s old (redeemed late).
+        let grant = vc_server::auth::account_requests::recovery::RequestOidcGrant {
+            user_id: Some(user),
+            slug: ctx.slug.clone(),
+            auth_time: Some(chrono::Utc::now() - chrono::Duration::seconds(301)),
+            client_challenge: None,
+        };
+        let code = "aged-code-for-the-test-0000000000000000000";
+        let redis = fred::clients::Client::new(
+            fred::types::config::Config::from_url(&ctx.config.redis_url).unwrap(),
+            None,
+            None,
+            None,
+        );
+        {
+            use fred::interfaces::ClientLike;
+            redis.connect();
+            redis.wait_for_connect().await.unwrap();
+        }
+        let _: () = redis
+            .set(
+                vc_server::auth::account_requests::recovery::request_code_key(code),
+                serde_json::to_string(&grant).unwrap(),
+                Some(fred::types::Expiration::EX(60)),
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        let (s, b) = start(
+            &ctx,
+            &name,
+            &codes[0],
+            json!({"type": "oidc", "oidc_code": code}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (401, Some("REQUEST_FACTOR_INVALID")),
+            "{b}"
+        );
+    }
 }

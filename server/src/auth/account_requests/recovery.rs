@@ -312,11 +312,16 @@ pub async fn redeem_oidc_code(
         }
     }
     match (grant.user_id, grant.auth_time) {
-        (Some(user_id), Some(auth_time)) => Ok(OidcFactor {
-            user_id,
-            provider_slug: grant.slug,
-            auth_time,
-        }),
+        // Codex r2: still fresh at redemption, not only at the callback.
+        (Some(user_id), Some(auth_time))
+            if (Utc::now() - auth_time).num_seconds() <= OIDC_FRESH_SECS =>
+        {
+            Ok(OidcFactor {
+                user_id,
+                provider_slug: grant.slug,
+                auth_time,
+            })
+        }
         _ => Err(AuthError::InvalidCredentials),
     }
 }
