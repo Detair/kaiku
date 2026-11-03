@@ -20,4 +20,14 @@ class OriginPin @Inject constructor(
     fun pinned(): String? =
         keyDevices.pinnedOrigin()?.let(KaikuPayloads::canonicalOrigin)
             ?: if (authState.isLoggedIn.value) tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) else null
+
+    /**
+     * The origin every device signature must name (C26 challenge check): the
+     * key's server whenever a key exists, whatever server is saved (a reset or
+     * changed server URL never moves a key); otherwise the configured server
+     * (the setup of this phone talks to the server the person confirmed).
+     */
+    fun signingOrigin(): String? =
+        keyDevices.pinnedOrigin()?.let(KaikuPayloads::canonicalOrigin)
+            ?: tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin)
 }

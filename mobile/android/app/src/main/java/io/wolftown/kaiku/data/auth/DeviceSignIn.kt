@@ -2,7 +2,10 @@ package io.wolftown.kaiku.data.auth
 
 import androidx.fragment.app.FragmentActivity
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.approval.ChallengeRejected
+import io.wolftown.kaiku.approval.ClientClass
 import io.wolftown.kaiku.approval.Decision
+import io.wolftown.kaiku.approval.DeviceLoginContext
 import io.wolftown.kaiku.approval.DeviceIdProvider
 import io.wolftown.kaiku.approval.DeviceSigner
 import io.wolftown.kaiku.approval.SigKind
@@ -50,9 +53,21 @@ class DeviceSignIn @Inject constructor(
 
     suspend fun signIn(activity: FragmentActivity): DeviceSignInResult {
         val local = keyDevices.local() ?: return DeviceSignInResult.Failed("NO_KEY_DEVICE")
+        // Captured before anything is sent: a logout, a server change or another session meanwhile
+        // means the answer is not installed (and is ended on the server).
+        val start = authRepository.beginDeviceSignIn(local.origin) ?: return DeviceSignInResult.Failed("OTHER_SERVER")
         val deviceId = deviceIds.id()
         return try {
             val ch = approvalApi.deviceLoginChallenge(local.userId, deviceId)
+            // The context is checked before the prompt: this app signs in only as an Android client.
+            val verified = try {
+                signer.check(ch, SigKind.DEVICE_LOGIN, local.userId, deviceId)
+            } catch (e: ChallengeRejected) {
+                return DeviceSignInResult.Failed("CHALLENGE_${e.reason}")
+            }
+            if ((verified.context as? DeviceLoginContext)?.clientClass != ClientClass.ANDROID) {
+                return DeviceSignInResult.Failed("CHALLENGE_CONTEXT_MISMATCH")
+            }
             val out = signer.sign(
                 activity, ch, SigKind.DEVICE_LOGIN, local.userId, deviceId, Decision.APPROVE, ByteArray(0),
                 UvPrompt(R.string.security_uv_title, activity.getString(R.string.security_uv_sign_in)),
@@ -62,7 +77,7 @@ class DeviceSignIn @Inject constructor(
                 is SignOutcome.Uv -> onUv(out.result)
                 is SignOutcome.Signed -> {
                     val auth = approvalApi.deviceLogin(ch.challengeId, out.signatureB64u)
-                    val user = authRepository.installDeviceSession(auth, local.userId).getOrElse {
+                    val user = authRepository.installDeviceSession(auth, local.userId, start).getOrElse {
                         logger.warning("Device session not installed: ${it.javaClass.simpleName}")
                         return DeviceSignInResult.Failed("SESSION_NOT_INSTALLED")
                     }

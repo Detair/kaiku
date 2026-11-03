@@ -15,14 +15,13 @@ import io.wolftown.kaiku.approval.DeviceSigner
 import io.wolftown.kaiku.approval.DeviceSuitabilityChecker
 import io.wolftown.kaiku.approval.UserVerifier
 import io.wolftown.kaiku.approval.DeviceIdProvider
+import io.wolftown.kaiku.data.auth.OriginPin
 import io.wolftown.kaiku.data.keydevice.KeyDevicePolicy
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.KeyDeviceStore
 import io.wolftown.kaiku.data.keydevice.PrefsKeyDeviceStore
 import io.wolftown.kaiku.data.local.KeystoreValueCipher
 import io.wolftown.kaiku.data.local.KeystoreWrappedPreferences
-import io.wolftown.kaiku.data.local.TokenStorage
-import io.wolftown.kaiku.domain.KaikuPayloads
 import io.wolftown.kaiku.push.DeviceIdStore
 import javax.inject.Singleton
 
@@ -44,11 +43,11 @@ object ApprovalModule {
     @Singleton
     fun provideUserVerifier(keyStore: ApprovalKeyStore): UserVerifier = BiometricUserVerifier(keyStore)
 
-    /** The pinned origin is the configured server (stored normalised as `https://host[:port]`). */
+    /** The pinned origin is the key's server, else the configured one (B.1, [OriginPin.signingOrigin]). */
     @Provides
-    fun provideChallengeVerifier(tokenStorage: TokenStorage): ChallengeVerifier =
+    fun provideChallengeVerifier(originPin: OriginPin): ChallengeVerifier =
         ChallengeVerifier(
-            pinnedOrigin = { tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) },
+            pinnedOrigin = originPin::signingOrigin,
             nowSeconds = { System.currentTimeMillis() / 1000 },
         )
 

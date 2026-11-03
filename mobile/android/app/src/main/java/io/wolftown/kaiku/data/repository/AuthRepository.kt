@@ -7,6 +7,7 @@ import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.session.SessionTeardownRunner
+import io.wolftown.kaiku.domain.KaikuPayloads
 import io.wolftown.kaiku.domain.model.AuthResponse
 import io.wolftown.kaiku.domain.model.RegistrationTicket
 import io.wolftown.kaiku.domain.model.User
@@ -484,41 +485,70 @@ class AuthRepository @Inject constructor(
         authState.session.value is AuthSession.LoggedIn && tokenStorage.getAccessToken() != null
 
     /**
-     * Installs the full session of a device-key sign-in (C26) for
-     * [expectedUserId]; the profile must be that user's. With a session running
-     * (the B.4 renewal) it replaces it and ends the old one on the server with
-     * its bearer only.
+     * Starts a device-key sign-in (C26) for the key bound to [keyOrigin]: records
+     * the sign-in generation, the server and the running session, which
+     * [installDeviceSession] checks again before it installs anything. The key
+     * ties the app to its server (B.1, coordinator call 6): without a running
+     * session the app's server becomes the key's (a reset session store loses the
+     * saved server, the key's metadata survives); with a session on another
+     * server the sign-in is refused (null).
      */
-    suspend fun installDeviceSession(auth: AuthResponse, expectedUserId: String): Result<User> {
-        val serverUrl = tokenStorage.getServerUrl() ?: return Result.failure(IllegalStateException("no server"))
+    fun beginDeviceSignIn(keyOrigin: String): DeviceSignInStart? = synchronized(pendingLock) {
+        val session = authState.session.value
+        if (tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) != keyOrigin) {
+            if (session is AuthSession.LoggedIn) return null
+            tokenStorage.saveServerUrl(keyOrigin)
+        }
+        val serverUrl = tokenStorage.getServerUrl() ?: return null
+        DeviceSignInStart(loginAttempt, serverUrl, session)
+    }
+
+    /**
+     * Installs the full session of a device-key sign-in for [expectedUserId];
+     * the profile must be that user's. It installs only if nothing changed since
+     * [start]: no logout or other sign-in, the same server, the same running
+     * session (none, or for the B.4 renewal the same one, which it replaces and
+     * ends on the server with its bearer only). A session it does not install is
+     * ended on the server, so a late answer never leaves a live session behind.
+     */
+    suspend fun installDeviceSession(auth: AuthResponse, expectedUserId: String, start: DeviceSignInStart): Result<User> {
+        val serverUrl = start.serverUrl
         return try {
             val user = authApi.authenticatedGetMe(auth.accessToken, serverUrl)
             if (user.id != expectedUserId) {
-                authApi.logoutSession(serverUrl, auth.accessToken, auth.refreshToken)
+                endUnused(serverUrl, auth)
                 return Result.failure(IllegalStateException("device session for another account"))
             }
-            val running = authState.session.value as? AuthSession.LoggedIn
-            if (running == null) {
-                sessionTeardown.awaitIdle()
-                if (!installSession(auth.accessToken, auth.refreshToken, auth.expiresIn, user.id)) {
-                    return Result.failure(AlreadySignedInException())
-                }
-            } else {
-                if (running.userId != user.id) return Result.failure(AlreadySignedInException())
-                val oldAccess = synchronized(pendingLock) {
-                    val old = tokenStorage.getAccessToken()
+            val running = start.session as? AuthSession.LoggedIn
+            if (running != null && running.userId != user.id) {
+                endUnused(serverUrl, auth)
+                return Result.failure(AlreadySignedInException())
+            }
+            // The previous session's teardown finishes before a new one starts.
+            if (running == null) sessionTeardown.awaitIdle()
+            var replacedAccess: String? = null
+            val installed = synchronized(pendingLock) {
+                val unchanged = loginAttempt == start.attempt &&
+                    tokenStorage.getServerUrl() == serverUrl &&
+                    authState.session.value == start.session
+                if (unchanged) {
+                    if (running != null) replacedAccess = tokenStorage.getAccessToken()
                     tokenStorage.saveTokens(auth.accessToken, auth.refreshToken, auth.expiresIn, user.id)
                     authState.setLoggedIn(user.id)
-                    old
                 }
-                if (oldAccess != null) {
-                    try {
-                        withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) { authApi.logoutSession(serverUrl, oldAccess, null) }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        logger.warning("Old session not ended (best-effort): ${e.javaClass.simpleName}")
-                    }
+                unchanged
+            }
+            if (!installed) {
+                endUnused(serverUrl, auth)
+                return Result.failure(IllegalStateException("Device sign-in was cancelled or superseded"))
+            }
+            replacedAccess?.let { old ->
+                try {
+                    withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) { authApi.logoutSession(serverUrl, old, null) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    logger.warning("Old session not ended (best-effort): ${e.javaClass.simpleName}")
                 }
             }
             Result.success(user)
@@ -529,9 +559,32 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    /** Ends a device session that was not installed; best effort, bounded, never cancelled halfway. */
+    private suspend fun endUnused(serverUrl: String, auth: AuthResponse) {
+        withContext(NonCancellable) {
+            try {
+                withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) { authApi.logoutSession(serverUrl, auth.accessToken, auth.refreshToken) }
+            } catch (e: Exception) {
+                logger.warning("Unused device session not ended (best-effort): ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
     fun isLoggedIn(): Boolean {
         return authState.isLoggedIn.value
     }
+}
+
+/**
+ * What a device-key sign-in started from ([AuthRepository.beginDeviceSignIn]):
+ * the sign-in generation, the server it talks to and the session that ran.
+ */
+class DeviceSignInStart internal constructor(
+    internal val attempt: Long,
+    val serverUrl: String,
+    internal val session: AuthSession,
+) {
+    override fun toString(): String = "DeviceSignInStart(serverUrl=$serverUrl)"
 }
 
 /** A sign-in was refused because a session is running; sign out first. */

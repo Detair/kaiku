@@ -19,6 +19,7 @@ import io.wolftown.kaiku.data.keydevice.KeyDeviceState
 import io.wolftown.kaiku.data.keydevice.LocalKeyDevice
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.repository.AuthRepository
+import io.wolftown.kaiku.data.repository.DeviceSignInStart
 import io.wolftown.kaiku.domain.model.SessionInfo
 import io.wolftown.kaiku.domain.model.User
 import io.wolftown.kaiku.testutil.FakeApprovalApi
@@ -45,6 +46,8 @@ class DeviceSignInTest {
     private val store = InMemoryKeyDeviceStore()
     private val authRepository: AuthRepository = mockk()
     private val checks = ChallengeVerifier({ SigFixtures.ORIGIN }, { SigFixtures.EXPIRES_AT - 30 })
+    private val start = DeviceSignInStart(0L, SigFixtures.ORIGIN, io.wolftown.kaiku.data.local.AuthSession.LoggedOut)
+    private var verifier: FakeUserVerifier? = null
 
     private fun TestScope.setUp(uv: UvResult? = null, loggedIn: Boolean = false): Pair<DeviceSignIn, KeyDeviceRepository> {
         val authState = AuthState(backgroundScope)
@@ -55,7 +58,8 @@ class DeviceSignInTest {
         authState.setLoggedIn(SigFixtures.USER_ID)
         repo.markActive(SigFixtures.USER_ID, "kd1")
         if (!loggedIn) authState.setLoggedOut()
-        coEvery { authRepository.installDeviceSession(any(), any()) } answers {
+        coEvery { authRepository.beginDeviceSignIn(SigFixtures.ORIGIN) } returns start
+        coEvery { authRepository.installDeviceSession(any(), any(), any()) } answers {
             authState.setLoggedIn(SigFixtures.USER_ID)
             Result.success(
                 User(SigFixtures.USER_ID, "alice", "Alice", session = SessionInfo("77777777-7777-4777-8777-777777777777", "full", keyDeviceId = "kd1")),
@@ -63,7 +67,8 @@ class DeviceSignInTest {
         }
         coEvery { authRepository.hasLiveSession() } returns loggedIn
         val invalidation = io.wolftown.kaiku.data.keydevice.KeyInvalidation(api, repo, authRepository)
-        val signer = DeviceSigner(keyStore, FakeUserVerifier(keyStore, uv), checks, invalidation::handle)
+        val v = FakeUserVerifier(keyStore, uv).also { verifier = it }
+        val signer = DeviceSigner(keyStore, v, checks, invalidation::handle)
         return DeviceSignIn(api, signer, repo, { SigFixtures.DEVICE_ID }, authRepository) to repo
     }
 
@@ -77,7 +82,7 @@ class DeviceSignInTest {
             listOf("deviceLoginChallenge:${SigFixtures.USER_ID}:${SigFixtures.DEVICE_ID}", "deviceLogin:${SigFixtures.challengeId(3)}"),
             api.calls,
         )
-        coVerify { authRepository.installDeviceSession(api.deviceLoginResult, SigFixtures.USER_ID) }
+        coVerify { authRepository.installDeviceSession(api.deviceLoginResult, SigFixtures.USER_ID, start) }
         assertEquals(KeyDeviceState.Active(SigFixtures.USER_ID), repo.current())
         assertEquals(Instant.parse("2027-02-01T12:00:00Z"), repo.sessionCap())
     }
@@ -133,5 +138,34 @@ class DeviceSignInTest {
         assertFalse(api.calls.any { it.startsWith("deviceLogin:") })
         assertEquals(KeyDeviceState.Lapsed(SigFixtures.USER_ID), repo.current())
         assertTrue(keyStore.hasKey())
+    }
+
+    @Test fun `a sign-in challenge for another client class is refused before the prompt`() = runTest {
+        val (signIn, repo) = setUp()
+        api.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, """{"client_class":"web"}""")
+
+        assertEquals(DeviceSignInResult.Failed("CHALLENGE_CONTEXT_MISMATCH"), signIn.signIn(activity))
+
+        assertTrue(verifier!!.prompts.isEmpty())
+        assertFalse(api.calls.any { it.startsWith("deviceLogin:") })
+        assertEquals(KeyDeviceState.Lapsed(SigFixtures.USER_ID), repo.current())
+    }
+
+    @Test fun `a running session on another server stops the sign-in before any request`() = runTest {
+        val (signIn, _) = setUp()
+        coEvery { authRepository.beginDeviceSignIn(SigFixtures.ORIGIN) } returns null
+
+        assertEquals(DeviceSignInResult.Failed("OTHER_SERVER"), signIn.signIn(activity))
+
+        assertTrue(api.calls.isEmpty())
+    }
+
+    @Test fun `a session the repository does not install is not marked active`() = runTest {
+        val (signIn, repo) = setUp()
+        coEvery { authRepository.installDeviceSession(any(), any(), any()) } returns Result.failure(IllegalStateException("superseded"))
+
+        assertEquals(DeviceSignInResult.Failed("SESSION_NOT_INSTALLED"), signIn.signIn(activity))
+
+        assertEquals(KeyDeviceState.Lapsed(SigFixtures.USER_ID), repo.current())
     }
 }
