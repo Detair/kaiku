@@ -372,3 +372,37 @@ decision. "For L2" marks interface facts the clients need.
 | Codex M7 — canceller cascades without cross-account serialisation | deferred: needs the discover–lock–recheck protocol across accounts (a fresh transaction when the lock set grows); the row lock keeps each request's own transition atomic today | — | — |
 | Codex B1 — pending enrolment revokes the same install's phone | deferred to the LP merge (L1a b8814823); L1b's Pc/Request/Ticket confirmers and request completion use the shared `finish_done_tx`; recovery-case tests after the merge | — | — |
 | Flash note — step-up consume before both locks | verified: admin routes, admin setup, admin contact and Cancel take one ascending `lock_accounts([actor, target])` (or `lock_scope`) before any consume | — | — |
+
+## LP merge (35fcadf8) and the second coordinator round
+
+- Merge `6167214c` (`git merge --no-ff origin/feat/v1.0-login-lp`). Conflicts and resolutions:
+  `enrollments/mod.rs` — L1b's extracted `finish_done_tx` (passkey branch, request staging,
+  admin start) now uses L1a's `subject_is_new`, `replaceable_on_install` (a pending key never
+  replaces a live one, `ENROLLMENT_DEVICE_IN_USE`, never the issuer's own device) and
+  `replaced_reason`; status combines L1a's expired-code `CASE` with L1b's passkey state.
+  `enrollments/handlers.rs` — L1a's `notify_issuer`. `notices.rs` — L1a's sorted recipients
+  without the system account and its recipient locks before the event row, plus L1b's contact
+  recipients (event type and details read with the head row). `timers.rs` — L1a's independent
+  steps plus L1b's login-attempt expiry and unbound clean-up. `governance/error.rs` — both
+  variants. `approvals/handlers.rs`, `login.rs` — LP's comment and refresh helpers. Tests: both
+  sides' enrolment tests; L1b's own-claim helper binds the attestation to the phone key (SPKI);
+  LP's passkey step-up lock test now holds `FOR NO KEY UPDATE` (L1b's account lock mode, which
+  a key-share lock no longer blocks).
+- Codex B1: every L1b confirmer (Pc, Request, Ticket, own claims) and request completion go
+  through `finish_done_tx` with L1a's rule; a recovery's pending phone on a live install is
+  refused at the proof of possession and the live key stays (`a_recovery_phone_never_replaces_a_live_key`).
+  Completion activates the pending row; there is never a replacement to do at completion.
+- Codex M7 (`58781fac`): `lock_for_start` (subject ∪ each admin ∪ the contact) for bootstrap,
+  recovery and admin-setup starts; `lock_route_change` (user ∪ actors ∪ every account whose
+  open requests record the user as admin or contact or one of its authenticators) for owner and
+  admin device/passkey removal, key invalidation, CLI device removal, CLI demote and
+  repudiation; completions with lost devices lock their recording accounts. All over L1a's
+  `lock_scope_with` (one ascending statement, savepoint retry). Test
+  `account_requests::start_vs_route_loss_serialise` (12 concurrent rounds, no deadlock, never an
+  open request without a live route). Not covered: the admin request started at `done` inside
+  the confirm (it holds the subject and the answering device's account only).
+- Fable M4 rest (`review_gaps.rs`): late cancel → 409 `ACCOUNT_REQUEST_COMPLETED`; voids on
+  device removal, demotion and contact change; TOTP renewal before Finish → void; counter reset
+  on success; TOTP-step refusals (a QR attempt now answers 403 `TOTP_UNAVAILABLE` instead of
+  409 `LOGIN_ATTEMPT_NOT_READY` — for L2), compromised TOTP, claimed challenge voided; probation
+  Cancel/repudiation without part 2 → 403 `FULL_SESSION_REQUIRED`.
