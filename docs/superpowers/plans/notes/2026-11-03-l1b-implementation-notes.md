@@ -308,3 +308,39 @@ decision. "For L2" marks interface facts the clients need.
   cancel` (`OwnerAuthority::Cli`). CLI session ends record a new event `sessions_ended` (high,
   `{count, by: "cli"}`) — appended to C28 (coordinator item 5). Factor/throttle resets and
   `may-approve` are audit-only (no C28 event).
+
+## Coordinator round (after d7e7c03e)
+
+- (a) Done: `POST /auth/enrollments/passkey/{start,finish}` (C29 browser claim; the verified
+  passkey is held in `enrollments.claimed_passkey`, the `passkeys` row is created at `done`,
+  `active` or `pending` like a key device; the browser long-polls `/auth/enrollments/status` with
+  the `__Secure-kaiku_enroll` cookie instead of `claim_secret`). `admin_role_granted` /
+  `admin_role_removed` are recorded where `system_admins` rows change (first registered admin,
+  `grant_system_admin`, `revoke_system_admin`, CLI demote).
+- (b) Done: `POST /auth/account-requests/oidc/authorize/{provider_id}` (`prompt=login`,
+  `max_age=0`). L2a's assumption holds: the desktop start answers `{url, flow_id}` like the
+  sign-in start (here the loopback fields come in a JSON body, as L2a's Rust sends them). The
+  callback checks the verified ID token's `auth_time` (≤ 300 s) and the linked identity and hands
+  back a one-time `oidc_code` (60 s): web `postMessage {type: "oidc-request-callback",
+  oidc_code}`, desktop hand-off page, Android `kaiku://auth/callback?code=…`. A stale or unlinked
+  sign-in still gets a code (no oracle) that redeems to nothing. Native codes need the verifier.
+- Repudiation: sign-in events record `factors: [{factor, generation}]` for the password and TOTP
+  they used; "That wasn't me" compromises exactly those. A generation replaced since is left
+  alone (the repudiation is still recorded); an event without a recorded generation compromises
+  nothing.
+- `lock_accounts` takes `FOR NO KEY UPDATE`: this still conflicts with itself, so two transitions
+  on one account serialise exactly as before, and the ascending-id order of B.7 still decides
+  between accounts. Only `FOR KEY SHARE` is no longer blocked, and that is what the FK checks of
+  child inserts (notices, events, sessions) take. They change no account row and take no account
+  lock, so they cannot form a cycle with a transition. `DELETE` of a users row still conflicts.
+- Mutation checks (guarded line removed → the named test must fail): KILLED — request completion
+  generation re-check and route re-check (`finish_rechecks_routes_and_generations`), request
+  client `ready` check (`staging_only_while_ready`), recovery start budget, active password,
+  code consumed first (`recovery_requests::*`), per-account delay and throttle at 100
+  (`throttling::*`), attempt TOTP-step generation re-check, owner rule part 2 without a strong
+  authenticator. SURVIVED at first and strengthened: registration ticket expiry (new
+  `expired_ticket_is_refused`), attempt collect generation re-check (new
+  `collect_rechecks_window_and_generation`, also the 60 s window and `LOGIN_ATTEMPT_NOT_READY`);
+  both KILLED on the re-run.
+- C28 follow-up (later): CLI factor reset, throttle reset and `may-approve` — superseded by the
+  review round below (the contracts now define the events).

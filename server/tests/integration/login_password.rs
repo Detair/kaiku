@@ -411,3 +411,95 @@ async fn password_change_expires_open_attempts(pool: PgPool) {
         .unwrap();
     assert_eq!(state, "expired");
 }
+
+/// A password attempt the phone approved; returns `(attempt id, secret)`.
+async fn approved_password_attempt(
+    app: &TestApp,
+    dev: &KeyDeviceFixture,
+    name: &str,
+) -> (String, Secret) {
+    let (_, step, secret) = login_native(app, name, PASSWORD).await;
+    let attempt = &step["attempt"];
+    let (token, bytes) = qr_token(attempt);
+    let (s, c) = claim(app, dev, &token).await;
+    assert_eq!(s, 201, "{c}");
+    let (s, a) = answer_login(app, dev, &c, &bytes, Decision::Approve).await;
+    assert_eq!(s, 200, "{a}");
+    (attempt_id(attempt), secret)
+}
+
+#[sqlx::test]
+async fn collect_rechecks_window_and_generation(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+
+    // Before the phone answers: 409 LOGIN_ATTEMPT_NOT_READY.
+    let (_, step, secret) = login_native(&app, &name, PASSWORD).await;
+    let id = attempt_id(&step["attempt"]);
+    let (s, b, _) = pc_call(
+        &app,
+        &format!("/auth/login-attempts/{id}/collect"),
+        &secret,
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("LOGIN_ATTEMPT_NOT_READY")),
+        "{b}"
+    );
+
+    // The password changed after the approval: ended.
+    let (id, secret) = approved_password_attempt(&app, &dev, &name).await;
+    sqlx::query("UPDATE users SET password_generation = password_generation + 1 WHERE id = $1")
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, b, _) = pc_call(
+        &app,
+        &format!("/auth/login-attempts/{id}/collect"),
+        &secret,
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (410, Some("LOGIN_ATTEMPT_ENDED")),
+        "{b}"
+    );
+    sqlx::query("UPDATE users SET password_generation = password_generation - 1 WHERE id = $1")
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Collected more than 60 s after the approval: ended.
+    let (id, secret) = approved_password_attempt(&app, &dev, &name).await;
+    sqlx::query(
+        "UPDATE login_attempts SET approved_at = NOW() - INTERVAL '61 seconds' WHERE id = $1::uuid",
+    )
+    .bind(&id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (s, b, _) = pc_call(
+        &app,
+        &format!("/auth/login-attempts/{id}/collect"),
+        &secret,
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (410, Some("LOGIN_ATTEMPT_ENDED")),
+        "{b}"
+    );
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND ended_at IS NULL AND 'phone_confirm' = ANY(auth_methods)")
+        .bind(user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "no session was minted");
+}

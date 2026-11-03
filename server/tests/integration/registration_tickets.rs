@@ -369,3 +369,28 @@ async fn first_admin_must_bind_a_strong_authenticator(pool: PgPool) {
     .await;
     assert_eq!(s, 201, "{issued}");
 }
+
+#[sqlx::test]
+async fn expired_ticket_is_refused(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    open_registration(&pool).await;
+    not_first(&pool).await;
+    let (_, body) = register(&app, json!({"username": "late_one"})).await;
+    let ticket = body["registration_ticket"].as_str().unwrap().to_string();
+    sqlx::query("UPDATE registration_tickets SET expires_at = NOW() - INTERVAL '1 second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (m, uri) in [
+        (Method::GET, "/auth/registration"),
+        (Method::POST, "/auth/registration/totp"),
+        (Method::POST, "/auth/registration/enrollments"),
+    ] {
+        let (s, b) = with_ticket(&app, m, uri, &ticket, json!({})).await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (404, Some("REGISTRATION_TICKET_INVALID")),
+            "{uri}: {b}"
+        );
+    }
+}
