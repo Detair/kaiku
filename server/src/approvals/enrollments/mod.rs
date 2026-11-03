@@ -1207,6 +1207,100 @@ const fn removed_by(actor: Actor) -> &'static str {
     }
 }
 
+/// The account scope of an enrolment's confirmation, locked first.
+///
+/// The subject and `actors`, every possible canceller when an `admin`
+/// enrolment would start a request (Codex r2 M7), and the accounts that
+/// record a live key on the claimed install when `done` would replace it
+/// (Fable r2 M-B; also in the admin branch, Flash r3). One ascending
+/// `lock_accounts` before any device, session, challenge or enrolment row
+/// (Codex r3: no 40P01 against a canceller's transition); the scope and the
+/// live key are re-read under the locks and the attempt retried from a
+/// savepoint when they changed (Codex/Fable r3). Returns the locks and the
+/// live key on the install.
+pub async fn lock_confirm_scope(
+    conn: &mut PgConnection,
+    id: Uuid,
+    actors: &[Uuid],
+) -> Result<
+    (
+        std::collections::BTreeMap<Uuid, super::transition::LockedAccount>,
+        Option<Uuid>,
+    ),
+    ApprovalError,
+> {
+    use super::transition::{
+        accounts_recording, lock_accounts, potential_cancellers, AffectedRoute,
+    };
+    async fn scope(
+        conn: &mut PgConnection,
+        id: Uuid,
+    ) -> Result<(Uuid, Option<Uuid>, Vec<Uuid>), ApprovalError> {
+        let (subject, variant, install): (Uuid, String, Option<Uuid>) = sqlx::query_as(
+            "SELECT subject_id, variant, claimed_device_id FROM enrollments WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(ApprovalError::EnrollmentTokenInvalid)?;
+        let live: Option<Uuid> = match install {
+            Some(install) => {
+                sqlx::query_scalar(
+                    "SELECT id FROM approval_devices
+                      WHERE user_id = $1 AND device_id = $2 AND state <> 'revoked'",
+                )
+                .bind(subject)
+                .bind(install)
+                .fetch_optional(&mut *conn)
+                .await?
+            }
+            None => None,
+        };
+        let mut extra = Vec::new();
+        if variant == "admin" {
+            extra.extend(potential_cancellers(conn, subject).await?);
+        }
+        if let Some(old) = live {
+            extra.extend(
+                accounts_recording(
+                    conn,
+                    &[
+                        AffectedRoute::Admin(subject),
+                        AffectedRoute::Contact(subject),
+                        AffectedRoute::Authenticator(AuthenticatorRef::key_device(old)),
+                    ],
+                )
+                .await?,
+            );
+        }
+        Ok((subject, live, extra))
+    }
+    sqlx::query("SAVEPOINT kaiku_confirm_scope")
+        .execute(&mut *conn)
+        .await?;
+    for _ in 0..3 {
+        let (subject, live, extra) = scope(conn, id).await?;
+        let mut ids = vec![subject];
+        ids.extend(actors.iter().copied());
+        ids.extend(extra);
+        let locked = lock_accounts(conn, &ids).await?;
+        let (subject2, live2, extra2) = scope(conn, id).await?;
+        if subject2 == subject && live2 == live && extra2.iter().all(|a| locked.contains_key(a)) {
+            sqlx::query("RELEASE SAVEPOINT kaiku_confirm_scope")
+                .execute(&mut *conn)
+                .await?;
+            return Ok((locked, live));
+        }
+        sqlx::query("ROLLBACK TO SAVEPOINT kaiku_confirm_scope")
+            .execute(&mut *conn)
+            .await?;
+    }
+    sqlx::query("RELEASE SAVEPOINT kaiku_confirm_scope")
+        .execute(&mut *conn)
+        .await?;
+    Err(ApprovalError::Unavailable)
+}
+
 /// Confirm with `code` (SM2 "confirm").
 ///
 /// B.7 rule 1: the subject's account (and the answering device's) is locked first, in one
@@ -1221,54 +1315,11 @@ pub async fn confirm_tx(
     by: Confirmer<'_>,
     code: &[u8],
 ) -> Result<(Enrollment, AfterDone), ApprovalError> {
-    // Read without a lock to learn whose account to lock first.
-    let subject_id: Uuid = sqlx::query_scalar("SELECT subject_id FROM enrollments WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&mut *conn)
-        .await?
-        .ok_or(ApprovalError::EnrollmentTokenInvalid)?;
     let mut actors = Vec::new();
     if let Confirmer::KeyDeviceAnswer(dev) = &by {
         actors.push(dev.auth.id);
     }
-    // What the `done` may do decides the lock set (B.7 rule 1, read without
-    // a lock, re-read under it): an `admin` enrolment of an existing account
-    // starts a request (every possible canceller, Codex r2 M7), a live key
-    // on the claimed install is replaced (the accounts recording its routes,
-    // Fable r2 M-B).
-    let (variant, claimed_install): (String, Option<Uuid>) =
-        sqlx::query_as("SELECT variant, claimed_device_id FROM enrollments WHERE id = $1")
-            .bind(id)
-            .fetch_one(&mut *conn)
-            .await?;
-    let live_on_install: Option<Uuid> = match claimed_install {
-        Some(install) => {
-            sqlx::query_scalar(
-                "SELECT id FROM approval_devices
-                  WHERE user_id = $1 AND device_id = $2 AND state <> 'revoked'",
-            )
-            .bind(subject_id)
-            .bind(install)
-            .fetch_optional(&mut *conn)
-            .await?
-        }
-        None => None,
-    };
-    let locked = if variant == "admin" {
-        super::transition::lock_for_start(conn, subject_id, &actors).await?
-    } else if let Some(old) = live_on_install {
-        super::transition::lock_route_change(
-            conn,
-            subject_id,
-            &actors,
-            &[AuthenticatorRef::key_device(old)],
-        )
-        .await?
-    } else {
-        let mut accounts = vec![subject_id];
-        accounts.extend(actors.iter().copied());
-        super::transition::lock_accounts(conn, &accounts).await?
-    };
+    let (locked, _live) = lock_confirm_scope(conn, id, &actors).await?;
     let row = lock_by_id(conn, id).await?;
     match row.state.as_str() {
         "claimed" => {}

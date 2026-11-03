@@ -187,7 +187,24 @@ async fn lock_challenge(
     if approver_id != auth.id {
         return Err(ApprovalError::NotFound);
     }
-    super::transition::lock_accounts(conn, &[auth.id, subject_id]).await?;
+    // An `enroll` answer may confirm (and start a request or replace a key):
+    // its whole account scope first, in one ascending statement (Codex r3).
+    let enrollment: Option<Uuid> = sqlx::query_scalar(
+        "SELECT requester_id FROM approvals
+          WHERE id = $1 AND kind = 'enroll' AND requester_kind = 'enrollment'",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .flatten();
+    match enrollment {
+        Some(e) => {
+            super::enrollments::lock_confirm_scope(conn, e, &[auth.id]).await?;
+        }
+        None => {
+            super::transition::lock_accounts(conn, &[auth.id, subject_id]).await?;
+        }
+    }
     let dev = key_device_session(conn, auth).await?;
     let row = lock_for_answer(conn, id, dev.device.user_id, dev.device.device_id).await?;
     Ok((dev, row))

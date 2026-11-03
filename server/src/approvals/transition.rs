@@ -243,7 +243,10 @@ pub async fn lock_for_start(
     .await
 }
 
-async fn potential_cancellers(conn: &mut PgConnection, subject: Uuid) -> sqlx::Result<Vec<Uuid>> {
+pub async fn potential_cancellers(
+    conn: &mut PgConnection,
+    subject: Uuid,
+) -> sqlx::Result<Vec<Uuid>> {
     sqlx::query_scalar(
         "SELECT user_id FROM system_admins
          UNION SELECT recovery_contact_id FROM users

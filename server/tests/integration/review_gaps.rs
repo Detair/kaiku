@@ -411,3 +411,89 @@ async fn same_install_re_enrolment_keeps_the_admin_route(pool: PgPool) {
         "the request keeps its route"
     );
 }
+
+/// Codex r3 (Major): a phone confirmation of an `admin` enrolment takes
+/// its whole account scope (subject, every possible canceller) in one
+/// ascending statement before any device, challenge or enrolment row, so
+/// a transition that holds a lower canceller and then wants the subject
+/// never deadlocks with it (40P01 before the fix).
+#[sqlx::test]
+async fn an_admin_confirmation_and_a_canceller_transition_never_deadlock(pool: PgPool) {
+    use super::enrollments::{claim_with, good, Phone};
+    use super::helpers::make_admin;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(create_test_user(&pool).await.0);
+    }
+    ids.sort();
+    let (a, x, b) = (ids[0], ids[1], ids[2]);
+    make_admin(&pool, a).await;
+    make_admin(&pool, x).await;
+    KeyDeviceFixture::insert(&pool, &app.config, a, "active").await;
+    let xdev = KeyDeviceFixture::insert(&pool, &app.config, x, "active").await;
+    sqlx::query("UPDATE users SET first_activity_at = NOW() - INTERVAL '1 day' WHERE id = $1")
+        .bind(b)
+        .execute(&pool)
+        .await
+        .unwrap();
+    grant_step_up(
+        &pool,
+        xdev.session_id.unwrap(),
+        "admin.enrollment.issue",
+        &b.to_string(),
+    )
+    .await;
+    let (s, issued) = post(
+        &app,
+        &format!("/api/admin/users/{b}/enrollments"),
+        Some(&xdev.access_token),
+        &[],
+        json!({"mode": "setup", "claimant_check": {"method": "in_person", "note": "x"}}),
+    )
+    .await;
+    assert_eq!(s, 201, "{issued}");
+    let phone = Phone::new();
+    let (s, claimed) = claim_with(
+        &app,
+        issued["setup_token"].as_str().unwrap(),
+        &phone,
+        "Pixel 9",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201, "{claimed}");
+    let id = issued["enrollment_id"].as_str().unwrap();
+    let (s, c) = post(
+        &app,
+        &format!("/auth/enrollments/{id}/challenge"),
+        Some(&xdev.access_token),
+        &[],
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 201, "{c}");
+    // A canceller transition: holds A, then wants B (ascending, B.7).
+    let mut t1 = pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut t1, &[a])
+        .await
+        .unwrap();
+    let code = claimed["code"].as_str().unwrap().to_string();
+    let answer = {
+        let app = &app;
+        let xdev = &xdev;
+        let c = c.clone();
+        async move { super::approvals_core::answer(app, xdev, &c, code.as_bytes()).await }
+    };
+    let other = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        let r = vc_server::approvals::transition::lock_accounts(&mut t1, &[b]).await;
+        let ok = r.is_ok();
+        t1.commit().await.ok();
+        ok
+    };
+    let ((s, body), t1_ok) = tokio::join!(answer, other);
+    assert!(t1_ok, "the canceller transition must not deadlock (40P01)");
+    assert_eq!(s, 200, "{body}");
+}
