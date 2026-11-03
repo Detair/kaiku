@@ -523,7 +523,9 @@ pub async fn issue_tx(
     };
     let open: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM enrollments
-          WHERE issuer_kind = $1 AND state IN ('issued', 'claimed') AND expires_at > NOW()
+          WHERE issuer_kind = $1
+            AND ((state = 'issued' AND expires_at > NOW())
+                 OR (state = 'claimed' AND code_expires_at > NOW()))
             AND issuer_session_id IS NOT DISTINCT FROM $2
             AND issuer_device_id IS NOT DISTINCT FROM $3
             AND issuer_request_id IS NOT DISTINCT FROM $4
@@ -856,8 +858,11 @@ pub async fn status(
     );
     let mut first_state: Option<String> = None;
     loop {
+        // A code past due reads `expired` before the sweep marks it.
         let row: Option<(String, Option<Vec<u8>>, Option<String>)> = sqlx::query_as(
-            "SELECT e.state, e.claim_secret_hash,
+            "SELECT CASE WHEN e.state = 'claimed' AND e.code_expires_at <= NOW()
+                         THEN 'expired' ELSE e.state END,
+                    e.claim_secret_hash,
                     (SELECT d.state FROM approval_devices d WHERE d.enrollment_id = e.id LIMIT 1)
                FROM enrollments e WHERE e.id = $1",
         )

@@ -1567,3 +1567,62 @@ async fn pc_session_issuer_gets_the_claimed_hint(pool: PgPool) {
     assert_eq!(hint["enrollment_id"], issued.enrollment_id.to_string());
     assert_eq!(hint["state"], "claimed");
 }
+
+/// Review round 3 (Argon coverage, part 1 m6): a claimed enrolment is open
+/// while its code is valid (not its setup token), and its status says
+/// `expired` as soon as the code is past due, before the sweep marks it.
+#[sqlx::test]
+async fn claimed_enrolment_is_open_while_its_code_is(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let issuer = Issuer::KeyDevice {
+        session_id: dev.session_id.unwrap(),
+        device_id: dev.row_id,
+    };
+    let mut claimed = Vec::new();
+    for _ in 0..5 {
+        let issued = issue(&app, user, EnrollmentVariant::Own, issuer)
+            .await
+            .unwrap();
+        let (s, c) = claim_with(
+            &app,
+            &issued.setup_token,
+            &Phone::new(),
+            "Pixel 9",
+            good(),
+            "per_use",
+        )
+        .await;
+        assert_eq!(s, 201, "{c}");
+        claimed.push((issued.enrollment_id, c));
+    }
+    // Claimed late: the setup token's 10 minutes are over, the codes are not.
+    sqlx::query(
+        "UPDATE enrollments SET created_at = NOW() - INTERVAL '9 minutes',
+                                expires_at = NOW() - INTERVAL '1 minute'
+          WHERE subject_id = $1",
+    )
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            issue(&app, user, EnrollmentVariant::Own, issuer).await,
+            Err(ApprovalError::EnrollmentLimit)
+        ),
+        "five claimed enrolments with valid codes are open"
+    );
+    // A code past due: `expired` at once.
+    let (id, c) = &claimed[0];
+    sqlx::query(
+        "UPDATE enrollments SET code_expires_at = NOW() - INTERVAL '1 second' WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_, st) = status(&app, *id, c["claim_secret"].as_str().unwrap()).await;
+    assert_eq!(st["state"], "expired");
+}
