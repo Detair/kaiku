@@ -465,3 +465,25 @@ Fable), 1 is partly rejected but its real part fixed (p3 #2), and 1 is rejected 
 - Server: `git diff 203b822c HEAD -- server/` (L2a's LP base) is empty. `origin/feat/v1.0-login-lp`
   has moved on to `04a1fe92` (L1a round-3 merge); merging it into L2a is a later step.
 
+## LP merges and Fable follow-ups (after approval at `fcefffd2`)
+
+- `e136ddf3` merges LP `321e9a25` (L1a rounds 3-6, LP fixes), `9c7dd9ac` merges LP `35fcadf8`
+  (passkey rename lock): both `--no-ff`, no conflicts. `git diff origin/feat/v1.0-login-lp --
+  server/` is empty.
+- `b94d1499`: texts for the C26-C28 amendment (09fa5da1): `ENROLLMENT_DEVICE_IN_USE`,
+  `ENROLLMENT_TARGET_SELF`, `SERVICE_UNAVAILABLE` (shared security map; account deletion has no
+  client UI yet, a 503 there would get the generic server text), `ACCOUNT_REQUEST_NOT_READY
+  {state}`, `REGISTRATION_TICKET_INVALID`, the events `sessions_ended`, `factor_restored`,
+  `throttle_reset`, `may_approve_changed` (notice and push). Tests: `noticeAmendment.test.ts`,
+  `securityErrors.test.ts`, `requestErrors.test.ts`, `nativeAuthError.test.ts`.
+- Fable follow-ups: (a) `465ad743` a server change does not restart autofill beside a running
+  choice (`Login.passkey.test.tsx` "a server change during an SSO sign-in leaves the popup…");
+  (b) `1ef094e6` a chat-only step-up without dialogs rejects `StepUpUnavailable`
+  (`SessionDialogsSlot.test.tsx`); (c) `dd40f4aa` admin, settings, onboarding, voice and
+  notifications move to `enLazy.ts` behind the startup gate: initial JS 299618 -> 293529 B gz
+  (6471 B headroom), budget unchanged.
+- Gates: `bun run test:run` 203 files / 1882 tests; tsc clean; i18n 1238 web keys / 235 Android;
+  lint 0 errors, 141 warnings; tauri-commands 90; `cargo fmt --check` clean; `cargo test -p
+  vc-client --lib` 328 passed, 2 ignored. (Two store tests timed out once under full-suite load
+  and passed alone and in the rerun.)
+
