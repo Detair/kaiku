@@ -701,15 +701,27 @@ pub(crate) async fn mint(
         factors::clear_throttle_tx(conn, user, Factor::Password, ExitPath::OtherMethodSignIn)
             .await?;
     }
-    let mut ev = NewSecurityEvent::new(
-        user,
-        EventType::SignIn,
-        Actor::User(user),
-        serde_json::json!({
-            "auth_methods": method.auth_methods(),
-            "assurance": method.assurance().as_str(),
-        }),
-    );
+    // The factor generations this sign-in used, so "That wasn't me"
+    // compromises exactly those (a factor replaced since stays untouched).
+    let mut used = Vec::new();
+    if row.first_factor.as_deref() == Some("password") {
+        if let Some(generation) = row.first_factor_generation {
+            used.push(serde_json::json!({"factor": "password", "generation": generation}));
+        }
+    }
+    if method.auth_methods().contains(&"totp") {
+        // Verified in this transaction under the account lock: current.
+        let st = factors::states(conn, user).await?;
+        used.push(serde_json::json!({"factor": "totp", "generation": st.totp.generation}));
+    }
+    let mut details = serde_json::json!({
+        "auth_methods": method.auth_methods(),
+        "assurance": method.assurance().as_str(),
+    });
+    if !used.is_empty() {
+        details["factors"] = serde_json::Value::Array(used);
+    }
+    let mut ev = NewSecurityEvent::new(user, EventType::SignIn, Actor::User(user), details);
     ev.client = Some((class, row.client_label.clone()));
     ev.ip = client.ip;
     ev.session_id = Some(issued.session_id);

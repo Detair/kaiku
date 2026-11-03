@@ -116,7 +116,9 @@ async fn repudiating_a_password_sign_in_ends_it_and_compromises(pool: PgPool) {
         EventType::SignIn,
         Some(pc),
         None,
-        json!({"auth_methods": ["password", "totp"], "assurance": "probation"}),
+        json!({"auth_methods": ["password", "totp"], "assurance": "probation",
+               "factors": [{"factor": "password", "generation": 1},
+                           {"factor": "totp", "generation": 1}]}),
     )
     .await;
     let (s, b) = repudiate(&app, &dev, id).await;
@@ -449,13 +451,21 @@ async fn warning_before_voiding_the_own_bootstrap(pool: PgPool) {
     let (_, token) = create_probation_session_with_token(&pool, &app.config, user).await;
     let pc = Uuid::new_v4();
     insert_session_row(&pool, pc, user, false).await;
+    let (pw_gen, totp_gen): (i64, i64) =
+        sqlx::query_as("SELECT password_generation, totp_generation FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     let id = event(
         &pool,
         user,
         EventType::SignIn,
         Some(pc),
         None,
-        json!({"auth_methods": ["password", "totp"]}),
+        json!({"auth_methods": ["password", "totp"],
+               "factors": [{"factor": "password", "generation": pw_gen},
+                           {"factor": "totp", "generation": totp_gen}]}),
     )
     .await;
     let (s, started) = start_bootstrap(&app, user, &name, &totp).await;
@@ -495,4 +505,128 @@ async fn warning_before_voiding_the_own_bootstrap(pool: PgPool) {
     .await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["voided_request_ids"], json!([started["request"]["id"]]));
+}
+
+async fn generations(pool: &PgPool, user: Uuid) -> (i64, i64, String, String) {
+    sqlx::query_as(
+        "SELECT password_generation, totp_generation, password_state, totp_state
+           FROM users WHERE id = $1",
+    )
+    .bind(user)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test]
+async fn a_sign_in_records_the_generations_it_used(pool: PgPool) {
+    use super::helpers::login::password_user;
+    use super::login_attempts::{attempt_id, pc_call};
+    use super::login_password::login_native;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, "zq8#vT4p-repud").await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    // Renew TOTP once so the generations differ.
+    sqlx::query("UPDATE users SET totp_generation = 3 WHERE id = $1")
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, step, secret) = login_native(&app, &name, "zq8#vT4p-repud").await;
+    assert_eq!(s, 202, "{step}");
+    let id = attempt_id(&step["attempt"]);
+    let (s, b, _) = pc_call(
+        &app,
+        &format!("/auth/login-attempts/{id}/totp"),
+        &secret,
+        json!({"code": totp.generate_current().unwrap()}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let details: Value = sqlx::query_scalar(
+        "SELECT details FROM security_events WHERE subject_id = $1 AND event_type = 'sign_in'",
+    )
+    .bind(user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        details["factors"],
+        json!([{"factor": "password", "generation": 1}, {"factor": "totp", "generation": 3}]),
+        "{details}"
+    );
+}
+
+#[sqlx::test]
+async fn repudiation_compromises_exactly_the_recorded_generation(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = create_test_user(&pool).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let pc = Uuid::new_v4();
+    insert_session_row(&pool, pc, user, false).await;
+    // Only the password was used (with a phone confirmation).
+    let id = event(
+        &pool,
+        user,
+        EventType::SignIn,
+        Some(pc),
+        None,
+        json!({"auth_methods": ["password", "phone_confirm"],
+               "factors": [{"factor": "password", "generation": 1}]}),
+    )
+    .await;
+    let (s, b) = repudiate(&app, &dev, id).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["compromised"], json!(["password"]));
+    let (pw_gen, totp_gen, pw, totp) = generations(&pool, user).await;
+    assert_eq!((pw.as_str(), totp.as_str()), ("compromised", "active"));
+    assert_eq!((pw_gen, totp_gen), (2, 1));
+}
+
+#[sqlx::test]
+async fn a_factor_replaced_since_is_left_alone(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = create_test_user(&pool).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let id = event(
+        &pool,
+        user,
+        EventType::SignIn,
+        None,
+        None,
+        json!({"auth_methods": ["password", "totp"],
+               "factors": [{"factor": "password", "generation": 1},
+                           {"factor": "totp", "generation": 1}]}),
+    )
+    .await;
+    // Both were replaced after the sign-in.
+    sqlx::query("UPDATE users SET password_generation = 2, totp_generation = 2 WHERE id = $1")
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, b) = repudiate(&app, &dev, id).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["compromised"], json!([]));
+    assert!(
+        b["event"]["repudiated_at"].as_str().is_some(),
+        "still recorded"
+    );
+    let (pw_gen, totp_gen, pw, totp) = generations(&pool, user).await;
+    assert_eq!((pw_gen, totp_gen), (2, 2));
+    assert_eq!((pw.as_str(), totp.as_str()), ("active", "active"));
+    // A sign-in event without recorded generations compromises nothing.
+    let id = event(
+        &pool,
+        user,
+        EventType::SignIn,
+        None,
+        None,
+        json!({"auth_methods": ["password", "totp"]}),
+    )
+    .await;
+    let (s, b) = repudiate(&app, &dev, id).await;
+    assert_eq!((s, &b["compromised"]), (200, &json!([])), "{b}");
 }

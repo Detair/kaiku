@@ -70,6 +70,28 @@ fn methods(ev: &EventRow) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The `{factor, generation}` list a sign-in event recorded.
+fn recorded_factors(ev: &EventRow) -> Vec<FactorRef> {
+    ev.details["factors"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|f| {
+                    let factor = match f["factor"].as_str()? {
+                        "password" => Factor::Password,
+                        "totp" => Factor::Totp,
+                        _ => return None,
+                    };
+                    Some(FactorRef {
+                        factor,
+                        generation: f["generation"].as_i64()?,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Decide the effects of `ev` (part 2 never revokes).
 pub async fn effects(
     conn: &mut PgConnection,
@@ -99,27 +121,10 @@ pub async fn effects(
             if may_revoke && (m.iter().any(|x| x == "passkey" || x == "device_key")) {
                 out.revoke = authenticator_of(ev);
             }
-            if m.iter().any(|x| x == "password") {
-                // The generation that produced it (recorded on the attempt).
-                let g: Option<i64> = sqlx::query_scalar(
-                    "SELECT first_factor_generation FROM login_attempts
-                      WHERE session_id = $1 AND first_factor = 'password'",
-                )
-                .bind(ev.session_id)
-                .fetch_optional(&mut *conn)
-                .await?
-                .flatten();
-                out.compromise.push(g.map_or_else(
-                    || current(Factor::Password),
-                    |generation| FactorRef {
-                        factor: Factor::Password,
-                        generation,
-                    },
-                ));
-            }
-            if m.iter().any(|x| x == "totp") {
-                out.compromise.push(current(Factor::Totp));
-            }
+            // Exactly the generations the sign-in recorded; nothing for a
+            // factor it did not record (mark_compromised_tx skips one
+            // replaced since).
+            out.compromise.extend(recorded_factors(ev));
         }
         "authenticator_added" => match ev.details["type"].as_str() {
             Some("totp") => out.compromise.push(current(Factor::Totp)),
@@ -420,15 +425,11 @@ pub async fn repudiate_action(
     // B.6.6: an open request of the account that used a factor this would
     // mark compromised.
     let compromises: Vec<&str> = match ev.event_type.as_str() {
-        "sign_in" => {
-            let m: Vec<&str> = ev.details["auth_methods"]
-                .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-                .unwrap_or_default();
-            m.into_iter()
-                .filter(|x| *x == "password" || *x == "totp")
-                .collect()
-        }
+        // Only the generations the sign-in recorded would be compromised.
+        "sign_in" => ev.details["factors"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|f| f["factor"].as_str()).collect())
+            .unwrap_or_default(),
         "authenticator_added" if ev.details["type"] == "totp" => vec!["totp"],
         "password_set" | "password_changed" => vec!["password"],
         _ => Vec::new(),
