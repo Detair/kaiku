@@ -17,7 +17,7 @@ import { codeIs } from "@/lib/errorCode";
 import { HttpError } from "@/lib/tauri/common";
 import { getStepUpMethods } from "@/lib/tauri/security";
 import type { StepUpAction } from "@/lib/types";
-import { passkeyCeremonies } from "@/lib/passkeySeam";
+import { canUsePasskeys, stepUpWithPasskey } from "@/lib/tauri/passkeys";
 import { isProbation } from "@/stores/auth";
 import { showFullSessionRequired } from "@/components/auth/FullSessionRequiredDialog";
 
@@ -93,18 +93,18 @@ function requestGrant(req: StepUpRequest, passkeyOk: boolean): Promise<void> {
     const abort = new AbortController();
     const [running, setRunning] = createSignal(false);
     const [error, setError] = createSignal<unknown>(null);
-    const ceremonies = passkeyCeremonies();
+    const mode = passkeyOk && canUsePasskeys() ? "passkey" : "phone";
     const entry: PendingStepUp = {
       req,
-      mode: passkeyOk && ceremonies ? "passkey" : "phone",
+      mode,
       running,
       error,
       confirm: async () => {
-        if (!ceremonies || running()) return;
+        if (mode !== "passkey" || running()) return;
         setRunning(true);
         setError(null);
         try {
-          await ceremonies.stepUp(req.action, req.target, abort.signal);
+          await stepUpWithPasskey(req.action, req.target, abort.signal);
           if (abort.signal.aborted) return;
           setPending(null);
           resolve();

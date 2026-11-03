@@ -7,9 +7,16 @@ vi.mock("@/lib/tauri/security", async (orig) => ({
   getMeSecurity,
 }));
 
+const passkeySignIn = vi.hoisted(() => vi.fn());
+const usable = vi.hoisted(() => ({ on: true }));
+vi.mock("@/lib/tauri/passkeys", async (orig) => ({
+  ...(await orig<object>()),
+  passkeySignIn,
+  canUsePasskeys: () => usable.on,
+}));
+
 import ProbationBanner from "../ProbationBanner";
 import { setAuthState, isProbation, sessionInfo } from "@/stores/auth";
-import { registerPasskeyCeremonies } from "@/lib/passkeySeam";
 import type { User } from "@/lib/types";
 
 function user(session: unknown): User {
@@ -54,15 +61,13 @@ function security(passkeys: number) {
 
 beforeEach(() => {
   getMeSecurity.mockReset();
-  registerPasskeyCeremonies({
-    signIn: vi.fn().mockResolvedValue({ user: user({ ...probation, assurance: "full" }), setup_required: false, password_change_required: false }),
-    stepUp: vi.fn(),
-  });
+  usable.on = true;
+  passkeySignIn.mockReset();
+  passkeySignIn.mockResolvedValue({ user: user({ ...probation, assurance: "full" }), setup_required: false, password_change_required: false });
 });
 
 afterEach(() => {
   cleanup();
-  registerPasskeyCeremonies(null);
   setAuthState({ user: null });
 });
 
@@ -77,6 +82,16 @@ describe("ProbationBanner", () => {
       ),
     ).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("button", { name: "Sign in with a passkey" })).toBeTruthy());
+  });
+
+  it("a client that cannot run a passkey ceremony offers no passkey sign-in", async () => {
+    usable.on = false;
+    getMeSecurity.mockResolvedValue(security(1));
+    setAuthState({ user: user(probation) });
+    render(() => <ProbationBanner />);
+    await waitFor(() => expect(getMeSecurity).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
   });
 
   it("without a passkey it says where to add one", async () => {

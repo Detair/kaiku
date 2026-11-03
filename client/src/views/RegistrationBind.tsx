@@ -16,7 +16,8 @@ import {
   startRegistrationTotp,
   verifyRegistrationTotp,
 } from "@/lib/tauri/registration";
-import { createPasskeyFromJSON } from "@/lib/passkeySeam";
+import { createPasskeyCredential } from "@/lib/tauri/passkeys";
+import { passkeyFailureText } from "@/lib/authErrors";
 import { safeReturnUrl } from "@/lib/returnUrl";
 import type { TotpSetup } from "@/lib/types";
 import QrCodeImage from "@/components/auth/QrCodeImage";
@@ -72,7 +73,7 @@ const RegistrationBind: Component = () => {
     try {
       await job();
     } catch (err) {
-      setError(errorText(err, "auth.bind.failed"));
+      setError(passkeyFailureText(err, "auth.bind.failed") || null);
     } finally {
       setBusy(false);
     }
@@ -81,7 +82,7 @@ const RegistrationBind: Component = () => {
   const usePasskey = () =>
     run(async () => {
       const start = await startRegistrationPasskey(null);
-      const credential = await createPasskeyFromJSON(start.options, new AbortController().signal);
+      const credential = await createPasskeyCredential(start.options, new AbortController().signal);
       await finishRegistrationPasskey(start.ceremony_id, credential);
       setDone("passkey");
     });

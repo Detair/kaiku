@@ -3,6 +3,7 @@ import { errorText } from "@/i18n/errors";
 import { formatTimestamp } from "@/i18n/format";
 import { codeIs } from "@/lib/errorCode";
 import { HttpError } from "@/lib/tauri/common";
+import { PasskeyError } from "@/lib/tauri/passkeys";
 
 /** Server codes the sign-in form words specifically (used with `errorText`). */
 export const LOGIN_ERRORS: Partial<Record<string, MessageKey>> = {
@@ -87,4 +88,20 @@ export function loginErrorText(err: unknown): string {
     return t("auth.login.tooManyAttempts");
   }
   return errorText(err, "auth.login.failed", LOGIN_ERRORS);
+}
+
+/**
+ * A failed passkey ceremony (LP's `PasskeyError`) in LP's words, silent ("")
+ * for cancels and aborts; anything else through `errorText`.
+ */
+export function passkeyFailureText(
+  err: unknown,
+  fallback: MessageKey,
+  byCode?: Partial<Record<string, MessageKey>>,
+): string {
+  if (err instanceof PasskeyError) {
+    const key = byCode?.[err.code];
+    return key ? t(key) : formatPasskeyError(err);
+  }
+  return errorText(err, fallback, byCode);
 }

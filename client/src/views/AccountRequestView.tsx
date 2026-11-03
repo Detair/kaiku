@@ -20,7 +20,8 @@ import {
   startRequestTotp,
   verifyRequestTotp,
 } from "@/lib/tauri/accountRequests";
-import { createPasskeyFromJSON } from "@/lib/passkeySeam";
+import { createPasskeyCredential } from "@/lib/tauri/passkeys";
+import { passkeyFailureText } from "@/lib/authErrors";
 import type { AccountRequestState, TotpSetup } from "@/lib/types";
 import { finish, reloadRequest, request, withdraw } from "@/stores/accountRequest";
 import PasswordInput from "@/components/ui/PasswordInput";
@@ -85,7 +86,7 @@ const AccountRequestView: Component = () => {
       await reloadRequest();
       setStage(null);
     } catch (err) {
-      setError(errorText(err, "auth.request.failed", REQUEST_ERRORS));
+      setError(passkeyFailureText(err, "auth.request.failed", REQUEST_ERRORS) || null);
     } finally {
       setBusy(false);
     }
@@ -94,7 +95,7 @@ const AccountRequestView: Component = () => {
   const addPasskey = () =>
     run(async () => {
       const start = await startRequestPasskey(null);
-      const credential = await createPasskeyFromJSON(start.options, new AbortController().signal);
+      const credential = await createPasskeyCredential(start.options, new AbortController().signal);
       await finishRequestPasskey(start.ceremony_id, credential);
     });
 

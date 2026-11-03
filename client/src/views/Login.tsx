@@ -240,6 +240,12 @@ const Login: Component = () => {
     setPasskeyBusy(false);
   };
 
+  /** "Use a passkey instead" on the QR: back to the form, then the button's ceremony. */
+  const usePasskeyInstead = () => {
+    void leaveFlow();
+    void handlePasskey();
+  };
+
   // Autofill belongs to the form: it stops while a sign-in step (QR,
   // confirmation, TOTP) replaces the form and starts again when the form
   // comes back.
@@ -400,7 +406,12 @@ const Login: Component = () => {
         <Switch>
           <Match when={(() => { const f = loginFlow(); return f.step === "qr" ? f : null; })()}>
             {(f) => (
-              <QrLoginPanel attempt={f().attempt} payload={f().qrPayload} onBack={() => void leaveFlow()} />
+              <QrLoginPanel
+                attempt={f().attempt}
+                payload={f().qrPayload}
+                onBack={() => void leaveFlow()}
+                onUsePasskey={showPasskey() ? usePasskeyInstead : undefined}
+              />
             )}
           </Match>
           <Match when={(() => { const f = loginFlow(); return f.step === "confirm" ? f : null; })()}>

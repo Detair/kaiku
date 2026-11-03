@@ -48,7 +48,6 @@ import SetupPhoneModal from "./security/SetupPhoneModal";
 import SecurityLogSection from "./security/SecurityLogSection";
 import { t } from "@/i18n";
 import { securityErrorText } from "./security/securityErrors";
-// TODO(LP rebase): LP's <PasskeysSection /> mounts above the TOTP section.
 
 const MfaSetupModal = lazy(() => import("./MfaSetupModal"));
 

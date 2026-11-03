@@ -7,10 +7,10 @@
 
 import { Component, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { t } from "@/i18n";
-import { errorText } from "@/i18n/errors";
+import { passkeyFailureText } from "@/lib/authErrors";
 import { FULL_SESSION_REQUIRED_EVENT } from "@/lib/tauri/common";
 import { replaceSessionWithPasskey } from "@/stores/auth";
-import { passkeyCeremonies } from "@/lib/passkeySeam";
+import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { meSecurity, refreshMeSecurity } from "@/stores/security";
 import DialogShell from "./DialogShell";
 
@@ -32,7 +32,7 @@ const FullSessionRequiredDialog: Component = () => {
   createEffect(() => {
     if (open() && meSecurity() === null) void refreshMeSecurity();
   });
-  const canSignIn = () => (meSecurity()?.passkeys ?? 0) > 0 && passkeyCeremonies() !== null;
+  const canSignIn = () => (meSecurity()?.passkeys ?? 0) > 0 && canUsePasskeys();
 
   const close = () => {
     setOpen(false);
@@ -45,7 +45,7 @@ const FullSessionRequiredDialog: Component = () => {
       await replaceSessionWithPasskey();
       close();
     } catch (err) {
-      setError(errorText(err, "auth.probation.signInFailed"));
+      setError(passkeyFailureText(err, "auth.probation.signInFailed") || null);
     } finally {
       setBusy(false);
     }

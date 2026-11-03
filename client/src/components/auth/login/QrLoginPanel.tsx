@@ -14,10 +14,7 @@ export interface QrLoginPanelProps {
   attempt: LoginAttempt;
   payload: string;
   onBack: () => void;
-  /**
-   * "Use a passkey instead". TODO(LP rebase): Login passes LP's passkey
-   * sign-in (`PasskeyButton` / `loginWithPasskey`); hidden until then.
-   */
+  /** "Use a passkey instead" (LP's passkey sign-in); hidden without one. */
   onUsePasskey?: () => void;
 }
 

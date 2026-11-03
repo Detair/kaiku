@@ -274,6 +274,35 @@ describe("Login with a passkey", () => {
     expect((passkeySignInMock.mock.calls[1][1] as { mediation: string }).mediation).toBe("conditional");
   });
 
+  it("use a passkey instead on the phone QR leaves the attempt and runs the button's ceremony", async () => {
+    const tauri = await import("@/lib/tauri");
+    pollMock.mockReturnValue(new Promise(() => {}));
+    cancelMock.mockResolvedValue(undefined);
+    vi.mocked(tauri.createQrAttempt).mockResolvedValueOnce({
+      attempt_id: "55555555-5555-4555-8555-555555555555",
+      kind: "qr",
+      state: "open",
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      qr: { payload: "kaiku://login/v1?o=x&t=a", expires_at: "" },
+      totp_available: false,
+    } as never);
+    pendingUntilAbort();
+    await renderLogin();
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with your phone" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use a passkey instead" }));
+    await waitFor(() => expect(cancelMock).toHaveBeenCalledWith("55555555-5555-4555-8555-555555555555"));
+    await waitFor(() =>
+      expect(passkeySignInMock.mock.calls.some(([, o]) => (o as { mediation: string }).mediation === "optional")).toBe(true),
+    );
+    await new Promise((res) => setTimeout(res, 20));
+    // Only the button's ceremony runs: no autofill beside it.
+    const calls = passkeySignInMock.mock.calls;
+    const last = calls[calls.length - 1][1] as { mediation: string; signal: AbortSignal };
+    expect(last.mediation).toBe("optional");
+    expect(last.signal.aborted).toBe(false);
+  });
+
   it("PASSKEY_UNKNOWN shows the removed message", async () => {
     conditional.available = false;
     passkeySignInMock.mockRejectedValue(

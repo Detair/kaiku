@@ -11,8 +11,13 @@ const fetchMock = vi.hoisted(() => {
   return f;
 });
 
+const createCredential = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/tauri/passkeys", async (orig) => ({
+  ...(await orig<object>()),
+  createPasskeyCredential: createCredential,
+}));
+
 import SetupLink from "../SetupLink";
-import { registerPasskeyCeremonies } from "@/lib/passkeySeam";
 
 const TOKEN = "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8";
 const ID = "55555555-5555-4555-8555-555555555555";
@@ -27,15 +32,11 @@ beforeEach(() => {
   tauriMode.on = false;
   ua = "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0";
   vi.spyOn(navigator, "userAgent", "get").mockImplementation(() => ua);
-  registerPasskeyCeremonies({
-    signIn: vi.fn(),
-    stepUp: vi.fn(),
-    create: vi.fn().mockResolvedValue({ id: "cred", type: "public-key" }),
-  });
+  createCredential.mockReset();
+  createCredential.mockResolvedValue({ id: "cred", type: "public-key" });
 });
 afterEach(() => {
   cleanup();
-  registerPasskeyCeremonies(null);
   vi.restoreAllMocks();
   window.history.replaceState(null, "", "/");
 });

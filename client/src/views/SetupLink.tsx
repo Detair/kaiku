@@ -13,7 +13,8 @@ import { formatTimestamp } from "@/i18n/format";
 import { isTauri } from "@/lib/tauri/common";
 import { claimStatus, finishPasskeyClaim, startPasskeyClaim } from "@/lib/tauri/enrollments";
 import { androidIntentUrl, isAndroidBrowser, parseSetupFragment, type SetupFragment } from "@/lib/setupLink";
-import { createPasskeyFromJSON } from "@/lib/passkeySeam";
+import { createPasskeyCredential } from "@/lib/tauri/passkeys";
+import { passkeyFailureText } from "@/lib/authErrors";
 import { formatCode } from "@/components/auth/CodeEntry";
 import type { ClaimStatus, PasskeyClaimStart } from "@/lib/types";
 
@@ -77,12 +78,12 @@ const SetupLink: Component = () => {
     setBusy(true);
     setError(null);
     try {
-      const credential = await createPasskeyFromJSON(p.start.options, abort.signal);
+      const credential = await createPasskeyCredential(p.start.options, abort.signal);
       const claimed = await finishPasskeyClaim(token, p.start.ceremony_id, credential, null);
       setPhase({ kind: "code", code: claimed.code, status: null });
       void poll(claimed.enrollment_id, claimed.code);
     } catch (err) {
-      setError(errorText(err, "auth.setup.failed", SETUP_ERRORS));
+      setError(passkeyFailureText(err, "auth.setup.failed", SETUP_ERRORS) || null);
     } finally {
       setBusy(false);
     }

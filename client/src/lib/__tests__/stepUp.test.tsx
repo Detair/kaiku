@@ -5,6 +5,13 @@ const tauriMode = vi.hoisted(() => ({ on: false }));
 const methods = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", async (orig) => ({ ...(await orig<object>()), isTauri: () => tauriMode.on }));
 vi.mock("@/lib/tauri/security", async (orig) => ({ ...(await orig<object>()), getStepUpMethods: methods }));
+const stepUp = vi.hoisted(() => vi.fn());
+const usable = vi.hoisted(() => ({ on: true }));
+vi.mock("@/lib/tauri/passkeys", async (orig) => ({
+  ...(await orig<object>()),
+  stepUpWithPasskey: stepUp,
+  canUsePasskeys: () => usable.on,
+}));
 const fullSession = vi.hoisted(() => vi.fn());
 vi.mock("@/components/auth/FullSessionRequiredDialog", async (orig) => ({
   ...(await orig<object>()),
@@ -13,7 +20,7 @@ vi.mock("@/components/auth/FullSessionRequiredDialog", async (orig) => ({
 
 import { StepUpCancelled, withStepUp, STEP_UP_LABELS } from "../stepUp";
 import StepUpHost from "@/components/auth/StepUpDialog";
-import { registerPasskeyCeremonies } from "../passkeySeam";
+import { PasskeyError } from "../tauri/passkeys";
 import { setAuthState } from "@/stores/auth";
 import { HttpError } from "../tauri/common";
 import { STEP_UP_ACTIONS, type User } from "../types";
@@ -25,11 +32,11 @@ function signIn(assurance: "full" | "probation") {
 }
 
 const grant = { action: "key_device.remove", target: "d1", via: "passkey", expires_at: "" };
-let stepUp: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  stepUp = vi.fn().mockResolvedValue(grant);
-  registerPasskeyCeremonies({ signIn: vi.fn(), stepUp: stepUp as never });
+  stepUp.mockReset();
+  stepUp.mockResolvedValue(grant);
+  usable.on = true;
   methods.mockResolvedValue({ passkey: true, device: false });
   fullSession.mockReset();
   tauriMode.on = false;
@@ -39,7 +46,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  registerPasskeyCeremonies(null);
   setAuthState({ user: null });
 });
 
@@ -131,7 +137,7 @@ describe("withStepUp", () => {
     const p = withStepUp(req, vi.fn());
     await confirm();
     expect(await screen.findByText("Continue in your browser.")).toBeTruthy();
-    fail(new HttpError(0, "x", "PASSKEY_BROWSER_FAILED"));
+    fail(new PasskeyError("PASSKEY_BROWSER_FAILED"));
     expect(
       await screen.findByText(
         "Kaiku could not open the browser chosen under Settings → Browser for passkey sign-in. Choose another one there.",
@@ -139,6 +145,16 @@ describe("withStepUp", () => {
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await expect(p).rejects.toBeInstanceOf(StepUpCancelled);
+  });
+
+  it("a client that cannot run a passkey ceremony shows the phone hint", async () => {
+    usable.on = false;
+    const p = withStepUp(req, vi.fn());
+    expect(await screen.findByText("Confirm this in the Kaiku app on your phone.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Confirm with a passkey" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await expect(p).rejects.toBeInstanceOf(StepUpCancelled);
+    expect(stepUp).not.toHaveBeenCalled();
   });
 
   it("every action of the table has a label", () => {

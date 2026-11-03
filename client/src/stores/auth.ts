@@ -14,7 +14,6 @@ import {
   type RegistrationStarted,
   type User,
 } from "@/lib/types";
-import { passkeyCeremonies } from "@/lib/passkeySeam";
 import { resetMeSecurity } from "./security";
 import * as tauri from "@/lib/tauri";
 import {
@@ -662,12 +661,48 @@ export async function loginWithPasskey(
     username?: tauri.UsernameHint;
   },
 ): Promise<User> {
+  return runPasskeySignIn(serverUrl, o, async (result) => {
+    resetServerFeatures(); // a different server may have been chosen
+    warnIfNotRemembered(result);
+    stopRestoreRetry();
+    pendingTemporaryPassword = null;
+    stepPassword = null;
+    // The security overview belongs to the account that signed in (L2a).
+    resetMeSecurity();
+    setAuthState({
+      restorePending: false,
+      user: result.user,
+      serverUrl: (isTauri() && tauri.getServerUrl()) || serverUrl,
+      isLoading: false,
+      isInitialized: true,
+      error: null,
+      setupRequired: result.setup_required,
+      sessionExpired: false,
+      passwordChangeRequired: result.password_change_required === true,
+    });
+    if (!authState.passwordChangeRequired) await startSessionServices();
+    return result.user;
+  });
+}
+
+/**
+ * One passkey sign-in attempt (LP): a later sign-in, logout or another
+ * passkey attempt makes it stale (Codex M1), so it is aborted and never
+ * installs its session; `install` runs only for the current attempt.
+ */
+async function runPasskeySignIn<T>(
+  serverUrl: string,
+  o: {
+    mediation: "conditional" | "optional";
+    signal: AbortSignal;
+    username?: tauri.UsernameHint;
+  },
+  install: (result: tauri.AuthResult) => Promise<T>,
+): Promise<T> {
   if (isTauri()) await initNativeSession();
   // Cancelled already (e.g. while the native auth events were set up): the
   // abort event is gone, so check the state; nothing starts.
   if (o.signal.aborted) throw new tauri.PasskeyError("ABORTED");
-  // A later sign-in, logout or another passkey attempt makes this one stale
-  // (Codex M1): it is aborted and never installs its session.
   const generation = invalidatePasskeySignIns();
   const ctl = new AbortController();
   passkeyAttempt = ctl;
@@ -682,24 +717,7 @@ export async function loginWithPasskey(
       isCurrent,
     });
     if (!isCurrent()) throw new tauri.PasskeyError("ABORTED");
-    resetServerFeatures(); // a different server may have been chosen
-    warnIfNotRemembered(result);
-    stopRestoreRetry();
-    pendingTemporaryPassword = null;
-    stepPassword = null;
-    setAuthState({
-      restorePending: false,
-      user: result.user,
-      serverUrl: (isTauri() && tauri.getServerUrl()) || serverUrl,
-      isLoading: false,
-      isInitialized: true,
-      error: null,
-      setupRequired: result.setup_required,
-      sessionExpired: false,
-      passwordChangeRequired: result.password_change_required === true,
-    });
-    if (!authState.passwordChangeRequired) await startSessionServices();
-    return result.user;
+    return await install(result);
   } finally {
     o.signal.removeEventListener("abort", abort);
     if (passkeyAttempt === ctl) passkeyAttempt = null;
@@ -719,8 +737,9 @@ function invalidatePasskeySignIns(): number {
 }
 
 /**
- * A sign-in step produced a session (attempt collected, TOTP step, and later
- * LP's passkey sign-in): take it over and start the session services.
+ * A sign-in step produced a session (attempt collected, TOTP step, the
+ * passkey sign-in of a chat-only session): take it over and start the
+ * session services.
  */
 export async function completeSignIn(
   serverUrl: string,
@@ -831,15 +850,14 @@ export async function logout(): Promise<void> {
  * `adopt_tokens` ends the old session itself.
  */
 export async function replaceSessionWithPasskey(signal?: AbortSignal): Promise<User> {
-  const ceremonies = passkeyCeremonies();
-  if (!ceremonies) throw new Error("PASSKEYS_UNAVAILABLE");
   const serverUrl = tauri.getServerUrl();
   const previousUserId = authState.user?.id ?? null;
   const oldToken = isTauri() ? null : tauri.getAccessToken();
-  const result = await ceremonies.signIn(serverUrl, {
-    mediation: "optional",
-    signal: signal ?? new AbortController().signal,
-  });
+  const result = await runPasskeySignIn(
+    serverUrl,
+    { mediation: "optional", signal: signal ?? new AbortController().signal },
+    async (r) => r,
+  );
   // Close the old session's socket first: ending that session makes the
   // server send SESSION_REVOKED on it, which must not end the new one.
   await requestStop();
@@ -853,15 +871,7 @@ export async function replaceSessionWithPasskey(signal?: AbortSignal): Promise<U
     return result.user;
   }
   if (oldToken && oldToken !== tauri.getAccessToken()) {
-    try {
-      await fetch(`${serverUrl.replace(/\/+$/, "")}/auth/logout`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${oldToken}` },
-        credentials: "omit",
-      });
-    } catch (err) {
-      console.warn("[Auth] Ending the chat-only session failed:", err instanceof Error ? err.message : err);
-    }
+    await endOldBrowserSession(serverUrl, oldToken);
   }
   return completeSignIn(serverUrl, result);
 }

@@ -10,8 +10,8 @@ import { ShieldAlert } from "lucide-solid";
 import { t } from "@/i18n";
 import { isProbation, replaceSessionWithPasskey } from "@/stores/auth";
 import { meSecurity, refreshMeSecurity } from "@/stores/security";
-import { passkeyCeremonies } from "@/lib/passkeySeam";
-import { errorText } from "@/i18n/errors";
+import { canUsePasskeys } from "@/lib/tauri/passkeys";
+import { passkeyFailureText } from "@/lib/authErrors";
 
 // Per chat-only session, not stored: the banner comes back after a restart
 // and for every new chat-only session.
@@ -28,7 +28,7 @@ const ProbationBanner: Component = () => {
     else setCollapsed(false);
   });
   const hasPasskey = () => (meSecurity()?.passkeys ?? 0) > 0;
-  const canSignIn = () => hasPasskey() && passkeyCeremonies() !== null;
+  const canSignIn = () => hasPasskey() && canUsePasskeys();
 
   const signIn = async () => {
     setBusy(true);
@@ -36,7 +36,7 @@ const ProbationBanner: Component = () => {
     try {
       await replaceSessionWithPasskey();
     } catch (err) {
-      setError(errorText(err, "auth.probation.signInFailed"));
+      setError(passkeyFailureText(err, "auth.probation.signInFailed") || null);
     } finally {
       setBusy(false);
     }

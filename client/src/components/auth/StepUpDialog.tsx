@@ -10,6 +10,8 @@ import { Component, Show } from "solid-js";
 import { t } from "@/i18n";
 import { errorText } from "@/i18n/errors";
 import { isTauri } from "@/lib/tauri/common";
+import { PasskeyError } from "@/lib/tauri/passkeys";
+import { formatPasskeyError } from "@/lib/authErrors";
 import { pendingStepUp, stepUpLabel, type PendingStepUp } from "@/lib/stepUp";
 import DialogShell from "./DialogShell";
 
@@ -21,6 +23,18 @@ const STEP_UP_ERRORS = {
   PASSKEY_UNKNOWN: "security.stepUp.error.unknownPasskey",
   FULL_SESSION_REQUIRED: "security.stepUp.error.fullSession",
 } as const;
+
+/**
+ * The step-up's failure: LP's ceremony fails with a `PasskeyError` (desktop:
+ * the bare code from Rust), the server with an `HttpError`.
+ */
+function stepUpErrorText(err: unknown): string {
+  if (err instanceof PasskeyError) {
+    const key = STEP_UP_ERRORS[err.code as keyof typeof STEP_UP_ERRORS];
+    return key ? t(key) : formatPasskeyError(err);
+  }
+  return errorText(err, "security.stepUp.error.generic", STEP_UP_ERRORS);
+}
 
 export const StepUpDialog: Component<{ pending: PendingStepUp }> = (props) => {
   const label = () => t(stepUpLabel(props.pending.req), { target: props.pending.req.targetLabel });
@@ -41,7 +55,7 @@ export const StepUpDialog: Component<{ pending: PendingStepUp }> = (props) => {
         <Show when={props.pending.error()}>
           {(err) => (
             <p role="alert" class="text-base text-text-primary">
-              {errorText(err(), "security.stepUp.error.generic", STEP_UP_ERRORS)}
+              {stepUpErrorText(err())}
             </p>
           )}
         </Show>

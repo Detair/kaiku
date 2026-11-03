@@ -16,10 +16,16 @@ vi.mock("@/stores/websocket", async (orig) => ({
   }),
 }));
 
+const passkeySignIn = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/tauri/passkeys", async (orig) => ({
+  ...(await orig<object>()),
+  passkeySignIn,
+  canUsePasskeys: () => true,
+}));
+
 import FullSessionRequiredDialog, { showFullSessionRequired } from "../FullSessionRequiredDialog";
 import { resetMeSecurity } from "@/stores/security";
 import { browserState, FULL_SESSION_REQUIRED_EVENT, httpRequest } from "@/lib/tauri/common";
-import { registerPasskeyCeremonies } from "@/lib/passkeySeam";
 import { replaceSessionWithPasskey, setAuthState } from "@/stores/auth";
 
 function json(status: number, body: unknown): Response {
@@ -29,7 +35,7 @@ function json(status: number, body: unknown): Response {
 afterEach(() => {
   cleanup();
   fetchMock.mockReset();
-  registerPasskeyCeremonies(null);
+  passkeySignIn.mockReset();
   setAuthState({ user: null });
   vi.useRealTimers();
 });
@@ -62,7 +68,7 @@ describe("FullSessionRequiredDialog", () => {
   it("replaceSessionWithPasskey ends the old session with credentials omit", async () => {
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "old-token";
-    const signIn = vi.fn(async () => {
+    const signIn = passkeySignIn.mockImplementation(async () => {
       browserState.accessToken = "new-token";
       return {
         user: { id: "u1", session: { id: "s2", assurance: "full" } },
@@ -70,7 +76,6 @@ describe("FullSessionRequiredDialog", () => {
         password_change_required: false,
       };
     });
-    registerPasskeyCeremonies({ signIn, stepUp: vi.fn() } as never);
     order.length = 0;
     fetchMock.mockImplementation(async (url: string) => {
       if (String(url).endsWith("/auth/logout")) order.push("logout-old");
@@ -89,6 +94,27 @@ describe("FullSessionRequiredDialog", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer old-token");
   });
 
+  it("a newer sign-in makes a running chat-only passkey sign-in stale", async () => {
+    // LP's attempt generations also cover the probation banner's sign-in.
+    browserState.serverUrl = "https://chat.example.com";
+    browserState.accessToken = "old-token";
+    setAuthState({ user: { id: "u1", username: "a", session: { id: "s1", assurance: "probation" } } as never });
+    let finish!: (v: unknown) => void;
+    passkeySignIn.mockImplementationOnce(() => new Promise((r) => (finish = r)));
+    passkeySignIn.mockImplementationOnce(() => new Promise(() => {}));
+    fetchMock.mockImplementation(async () => new Response(null, { status: 204 }));
+    const first = replaceSessionWithPasskey();
+    await waitFor(() => expect(passkeySignIn).toHaveBeenCalledTimes(1));
+    const o = passkeySignIn.mock.calls[0][1] as { signal: AbortSignal; isCurrent: () => boolean };
+    void replaceSessionWithPasskey();
+    await waitFor(() => expect(passkeySignIn).toHaveBeenCalledTimes(2));
+    expect(o.signal.aborted).toBe(true);
+    expect(o.isCurrent()).toBe(false);
+    finish({ user: { id: "u1", session: { id: "s2", assurance: "full" } }, setup_required: false, password_change_required: false });
+    await expect(first).rejects.toMatchObject({ code: "ABORTED" });
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/auth/logout"))).toBe(false);
+  });
+
   it("a passkey of another account reloads the app instead of mixing two accounts", async () => {
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "old-token";
@@ -96,13 +122,10 @@ describe("FullSessionRequiredDialog", () => {
     const reload = vi.fn();
     const original = window.location;
     Object.defineProperty(window, "location", { configurable: true, value: { ...original, reload } });
-    registerPasskeyCeremonies({
-      signIn: vi.fn(async () => {
-        browserState.accessToken = "new-token";
-        return { user: { id: "u2", session: { id: "s9", assurance: "full" } }, setup_required: false, password_change_required: false };
-      }),
-      stepUp: vi.fn(),
-    } as never);
+    passkeySignIn.mockImplementation(async () => {
+      browserState.accessToken = "new-token";
+      return { user: { id: "u2", session: { id: "s9", assurance: "full" } }, setup_required: false, password_change_required: false };
+    });
     fetchMock.mockImplementation(async () => new Response(null, { status: 204 }));
     try {
       await replaceSessionWithPasskey();
@@ -134,7 +157,6 @@ describe("FullSessionRequiredDialog passkey offer (Argon review)", () => {
     resetMeSecurity();
     browserState.serverUrl = "https://chat.example.com";
     browserState.accessToken = "at";
-    registerPasskeyCeremonies({ signIn: vi.fn(), stepUp: vi.fn() } as never);
     fetchMock.mockImplementation(async () => json(200, overview(0)));
     render(() => <FullSessionRequiredDialog />);
     showFullSessionRequired();

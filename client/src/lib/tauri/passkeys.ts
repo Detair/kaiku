@@ -355,24 +355,49 @@ export async function stepUpWithPasskey(
   }
 }
 
+/** Whether this client can run a passkey ceremony (desktop: the system browser). */
+export function canUsePasskeys(): boolean {
+  return isTauri() || isWebAuthnAvailable();
+}
+
+/** `navigator.credentials.create` for C29 registration options (browser only). */
+async function createCredential(
+  options: CeremonyStart["options"],
+  signal: AbortSignal,
+): Promise<PublicKeyCredential> {
+  if (isTauri() || !isWebAuthnAvailable()) throw new PasskeyError("PASSKEY_NOT_SUPPORTED");
+  try {
+    const created = await navigator.credentials.create({
+      publicKey: creationOptionsFromJSON(options.publicKey),
+      signal,
+    });
+    if (!created) throw new PasskeyError("PASSKEY_FAILED");
+    return created as PublicKeyCredential;
+  } catch (err) {
+    if (err instanceof PasskeyError) throw err;
+    throw new PasskeyError(webAuthnErrorCode(err));
+  }
+}
+
+/**
+ * Create a passkey from C29 registration `options` (`{publicKey}`) and answer
+ * its `credential` JSON, for the routes that finish elsewhere: setup links,
+ * account requests and registration tickets (browser only).
+ */
+export async function createPasskeyCredential(options: unknown, signal: AbortSignal): Promise<unknown> {
+  if (typeof options !== "object" || options === null) throw new PasskeyError("PASSKEY_FAILED");
+  const o = options as Partial<CeremonyStart["options"]>;
+  const publicKey = o.publicKey ?? (options as Record<string, unknown>);
+  return credentialToJSON(await createCredential({ publicKey }, signal));
+}
+
 /** Add a passkey (browser only; needs a `passkey.add` grant first). */
 export async function registerPasskey(o: { label: string; signal: AbortSignal }): Promise<Passkey> {
   if (isTauri() || !isWebAuthnAvailable()) throw new PasskeyError("PASSKEY_NOT_SUPPORTED");
   const start = await httpRequest<CeremonyStart>("POST", "/auth/passkeys/register/start", {
     label: o.label,
   });
-  let cred: PublicKeyCredential;
-  try {
-    const created = await navigator.credentials.create({
-      publicKey: creationOptionsFromJSON(start.options.publicKey),
-      signal: o.signal,
-    });
-    if (!created) throw new PasskeyError("PASSKEY_FAILED");
-    cred = created as PublicKeyCredential;
-  } catch (err) {
-    if (err instanceof PasskeyError) throw err;
-    throw new PasskeyError(webAuthnErrorCode(err));
-  }
+  const cred = await createCredential(start.options, o.signal);
   try {
     return await httpRequest<Passkey>("POST", "/auth/passkeys/register/finish", {
       ceremony_id: start.ceremony_id,

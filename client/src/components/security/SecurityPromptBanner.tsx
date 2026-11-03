@@ -12,7 +12,7 @@ import type { SecurityPrompt } from "@/lib/types";
 import { isProbation, replaceSessionWithPasskey } from "@/stores/auth";
 import { currentPrompt, snoozePrompt } from "@/stores/security";
 import { requestSettings } from "@/stores/settingsNav";
-import { passkeyCeremonies } from "@/lib/passkeySeam";
+import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import SetupPhoneModal from "@/components/settings/security/SetupPhoneModal";
 
 const TEXT: Record<SecurityPrompt, MessageKey> = {
@@ -67,14 +67,14 @@ const SecurityPromptBanner: Component = () => {
                   when={!isProbation()}
                   fallback={<p class="text-sm text-text-secondary mr-auto">{t("auth.probation.addPasskeyHint")}</p>}
                 >
-                  {/* TODO(LP rebase): open LP's PasskeysSection "Add" directly. */}
+                  {/* LP's "Add a passkey" needs the user's click on it (WebAuthn), so the prompt opens the section. */}
                   <button type="button" class={action} onClick={() => requestSettings("security")}>
                     {t("security.prompt.openSettings")}
                   </button>
                 </Show>
               </Match>
               <Match when={p() === "sign_in_with_passkey"}>
-                <Show when={passkeyCeremonies()}>
+                <Show when={canUsePasskeys()}>
                   <button type="button" class={action} onClick={() => void replaceSessionWithPasskey().catch(() => undefined)}>
                     {t("auth.probation.signIn")}
                   </button>
