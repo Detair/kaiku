@@ -55,6 +55,7 @@ This document tracks all direct third-party dependencies and their licenses for 
 | jsonwebtoken | 9.3 | MIT | JWT token creation and validation |
 | argon2 | 0.5 | MIT OR Apache-2.0 | Argon2id password hashing |
 | totp-rs | 5.7 | MIT | TOTP-based MFA with QR code generation |
+| qrcodegen | 1.8 | MIT | Terminal QR code of the `kaiku-admin enroll` setup link (server) |
 | openidconnect | 3.5 | MIT | OpenID Connect / OAuth 2.0 client |
 
 ### Cryptography & E2EE

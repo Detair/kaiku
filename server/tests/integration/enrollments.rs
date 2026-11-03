@@ -60,13 +60,13 @@ async fn issue(
 }
 
 /// The new phone: its key and install id.
-struct Phone {
-    key: SigningKey,
-    device_id: Uuid,
+pub(super) struct Phone {
+    pub(super) key: SigningKey,
+    pub(super) device_id: Uuid,
 }
 
 impl Phone {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             key: SigningKey::random(&mut rand::rngs::OsRng),
             device_id: Uuid::new_v4(),
@@ -86,7 +86,7 @@ impl Phone {
 }
 
 /// open → pop-challenge → claim with `label`, `reported` and `uv_class`.
-async fn claim_with(
+pub(super) async fn claim_with(
     app: &TestApp,
     token: &str,
     phone: &Phone,
@@ -132,7 +132,7 @@ async fn claim_with(
     .await
 }
 
-fn good() -> Option<Reported> {
+pub(super) fn good() -> Option<Reported> {
     Some(Reported::good(&[]))
 }
 

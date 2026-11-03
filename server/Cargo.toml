@@ -40,6 +40,8 @@ serde_urlencoded.workspace = true
 jsonwebtoken.workspace = true
 argon2.workspace = true
 totp-rs.workspace = true
+# Terminal QR code of the CLI setup link (MIT; already in the tree via totp-rs).
+qrcodegen = "1.8"
 openidconnect.workspace = true
 
 # Crypto
@@ -153,3 +155,8 @@ workspace = true
 [[bin]]
 name = "vc-server"
 path = "src/main.rs"
+
+# Host CLI for key phones and sessions (`docker compose exec server kaiku-admin …`).
+[[bin]]
+name = "kaiku-admin"
+path = "src/bin/kaiku_admin.rs"

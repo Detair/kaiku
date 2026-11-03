@@ -10794,6 +10794,7 @@ dependencies = [
  "opentelemetry_sdk",
  "p256",
  "pulldown-cmark",
+ "qrcodegen",
  "rand 0.8.5",
  "rcgen",
  "regex",

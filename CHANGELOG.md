@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- `kaiku-admin` on the server host can set up a key phone for any account and remove devices or end sessions; every use is logged and notified.
 - A key phone signs itself in again with its screen lock after its session lapsed, without a password.
 - A phone becomes a key by opening a setup link or code and confirming a 6-digit code shown on it; phones without a screen lock or a hardware key store are refused at the start.
 - Your phone can be a key for your account: it confirms sensitive actions with its screen lock, and you can see and remove your key phones in the security settings.

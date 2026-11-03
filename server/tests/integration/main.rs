@@ -17,6 +17,7 @@ mod call_push;
 mod channel_permissions;
 mod channel_pins;
 mod channels_http;
+mod cli;
 mod connectivity_http;
 mod custom_status;
 mod device_login;

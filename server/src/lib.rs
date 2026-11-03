@@ -9,6 +9,7 @@ pub mod approvals;
 pub mod auth;
 pub mod bots;
 pub mod chat;
+pub mod cli;
 pub mod config;
 pub mod connectivity;
 pub mod crypto;

@@ -253,3 +253,29 @@ is listed here, per task. "Coordinator" marks items that need a decision.
 - A wrong signature does not spend the challenge (rolled back, as the answer route).
 - Each device-key sign-in records `sign_in {auth_methods ["device_key"], assurance "full"}`
   with the device's label and is delivered as a normal notice (B.4 "never silent").
+
+## Task 13 — `kaiku-admin` host CLI
+
+- `CliIo::read_line` is async (`fn read_line(..) -> impl Future + Send`) and `run` takes
+  `&mut impl CliIo` instead of `&mut dyn CliIo`: the scripted test terminal must wait for the
+  phone's claim on the same runtime; a blocking read would deadlock it. Stdin is read in
+  `spawn_blocking`.
+- Events: `enroll` records `authenticator_added` (actor `cli`, via `confirm_tx`) and `devices
+  remove` records `authenticator_removed {type: key_device, by: cli}` (via `revoke_tx`), both with
+  their `security.*` audit rows. Lists and `sessions end` write only their own audit row
+  (`cli.devices.list`, `cli.sessions.list`, `cli.sessions.end`, plus `cli.enroll`,
+  `cli.devices.remove`; actor = the system account): C28 has no event type for "sessions
+  ended by the host" or for reads. **For L1b/coordinator:** add an event type if host-ended
+  sessions should notify the account.
+- After commit the CLI runs the same steps as the HTTP routes (`after_done`, `after_revoke`:
+  notice delivery, WS hint, push clean-up after the last notice) on a server state it builds
+  itself (no listener, no limiter). Undelivered notices stay in the outbox for the server's
+  minute sweep (DC11).
+- `sessions end <user>` needs an explicit `--all` (the plan's `None = all`) so a missing id
+  never ends every session by accident.
+- `devices remove` takes the key device id from `devices list` (the `approval_devices.id`), not
+  the per-install id, and refuses a device of another account.
+- The enrolment code prompt ignores spaces and re-asks (without spending a try) when the input
+  is not 6 digits.
+- The binary parses its arguments before reading any configuration, so a usage error exits 2
+  without touching the database (tested on the built binary).
