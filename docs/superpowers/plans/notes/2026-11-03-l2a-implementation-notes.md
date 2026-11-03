@@ -417,3 +417,51 @@ Fable: 13 rows (10 findings + 3 known deferred): 12 fixed, 0 rejected, 1 deferre
 Codex: 7 fixed, 0 rejected, 0 deferred. Argon: 50 findings: 49 fixed (3 of them with a rejected
 sub-point: 6 #1 point 2, 7 minor point 2, 9 #3 "disable all"), 1 rejected (5 #6), 0 deferred.
 
+## PR review round 2 (confirmations of `21e7d705..432fe02d`)
+
+Reviews: `codereview-l2a-codex-r3.md` (first half; REQUEST CHANGES), `codereview-l2a-fable-r2.md`
+(APPROVE WITH FIXES), `codereview-flash-l2a-r3-part{1,2,3}.md` (Gemini Flash standing in for
+Argon; APPROVE WITH FIXES). Codex M3–M5 and Fable's round-1 findings were confirmed fixed. Every
+fix below came test-first: the named test failed before the fix (where the fix had to land first
+to compile, it was checked by reverting the fix).
+
+| Finding | Verdict | Commit | Test / reason |
+|---|---|---|---|
+| Codex M1 PARTLY: password registration ignores its choice and navigates after leaving | fixed: `Register.tsx` keeps the choice; a stale answer (and its error) is dropped | `12f69a67` | `LoginChoices.test.tsx`: "Register: a password sign-up answered after another sign-in choice never navigates", "…after leaving the page never navigates" |
+| Codex M2 PARTLY: browser discard uses the global logout | fixed: `discardBrowserSession` ends the adopted session with its own bearer (`credentials: omit`), drops the local token only while it is still the current one | `12de4dcf` | `loginAttempts.test.ts`: "ends exactly that session with its own bearer, and a replacement keeps its token", "a result it did not adopt ends nothing" |
+| Codex regression: `en/security` chunk failure leaves blank labels (= Fable R6, Flash p1 #4) | fixed: `initLocale` retries once; `StartupGate` blocks the app with a reload notice | `cc9c9e7a` | `locale.test.ts`: "an on-demand area that cannot load is reported…", "one failed load … is retried"; `ChunkLoadNotice.test.tsx` |
+| Codex regression: a modal passkey aborted by SSO restarts autofill | fixed: restarts gated on the captured choice (`currentSignInChoice`) | `ed960f6c` | `Login.passkey.test.tsx`: "a modal sign-in aborted by a newer SSO choice does not bring autofill back" |
+| Fable R1: `fallback={null}` hosts; step-ups hang without the dialog chunk (= Flash p1 #1, p3 #1) | fixed: `SessionDialogsSlot` / `SecurityHostsSlot` show `ChunkLoadNotice` with Reload; the failure is recorded eagerly (`markSessionDialogsFailed`), a waiting and every later step-up reject `StepUpUnavailable` | `c5d6c721` | `SessionDialogsSlot.test.tsx` (both tests time out without the flag), `SecurityHostsSlot.test.tsx` |
+| Fable R2: full-session listener not eager | fixed: `App.tsx` imports `lib/fullSessionRequired` | `c2761d81` | `fullSessionEager.test.ts`: "the app shell registers the listener, so an early refusal is kept" |
+| Fable R3 (optional): `callback_path` zeroized only as a copy | fixed: `LoopbackCallback.callback_path: Zeroizing<String>` (LP's `passkey.rs` serializes `as_str()`); the serialized request body stays unwiped (one-flow secret) | `72d91f4a` | `the_callback_path_is_wiped_when_dropped` (type-level: did not compile before) |
+| Fable R4: autofill stays off after a failed phone/SSO start | fixed: restart after a failed phone start, a failed SSO start, a blocked or closed popup | `ed960f6c`, `ff2e2e48` | `Login.passkey.test.tsx`: "a failed phone start …", "a failed SSO start … brings autofill back" |
+| Fable R5: `browserBearer` fails open when unbound | fixed: no bearer without `tokenServerUrl`; hand-set test tokens now bind | `5b481514` | `bearerBinding.test.ts`: "a token without a bound server is never sent" |
+| Fable R6: QR image blank on a failed `qrcode` chunk | deferred | — | nit: the QR panel keeps its text, Back and "use a passkey"; a reload fixes it |
+| Flash p1 #2: too-late text unmounted by the refresh | fixed: the modal holds the request until closed, Close instead of cancel | `aa9ceafa` | `OpenRequestModal.test.tsx`: "the too-late answer stays on screen after the refresh, until dismissed" |
+| Flash p1 #3: `buildDefault()` may return the app origin | fixed: never `tauri://localhost` / `http://tauri.localhost` / non-http(s), also not as a choice; empty when unknown | `f580ed30` | `signInServer.test.ts` (3 tests) |
+| Flash p1 #5: `err.details.reason` unguarded | fixed | `c8aac1a5` | `securityErrors.test.ts` |
+| Flash p2 #1: browser discard (= Codex M2) | fixed | `12de4dcf` | as Codex M2 |
+| Flash p2 #2: `loginWithPasskey` is not a choice | fixed: it begins one before it awaits; Login captures it | `f1e68e5b` | `LoginChoices.test.tsx`: "a passkey sign-in begun during a phone sign-in makes the phone run stale" |
+| Flash p2 #3: `reloadRequest` ignores `requestServer()` | fixed: `getCurrentRequest(serverUrl)` (browser; the desktop secret knows its server) | `f580ed30` | `accountRequest.test.ts`: "asks the server the request was started on" |
+| Flash p2 #4: security push dropped when `noticeText` fails | fixed: generic body `security.notice.pushFallback` | `226f4413` | `websocketSecurityPush.test.ts` |
+| Flash p2 #5: `busy` never decremented for a dropped step | fixed: `StepGuard` drop guard; an entry past its TTL goes when its step ends | `2aa897a4` | `a_dropped_collect_is_no_longer_busy`, `a_step_that_ends_after_the_ttl_drops_its_entry` |
+| Flash p3 #2: lazy step panels without Suspense "throw" and strand the flow | partly rejected: Solid's `lazy` renders nothing until loaded (`createResource`, `node_modules/solid-js/dist/solid.js` `lazy`), no unsuspended error, and a Suspense would blank the form on the settings resource (round 1). Fixed the real part: a failed chunk shows Reload and Back | `33809b21` | `LoginStepChunk.test.tsx`: "offers a reload and the way back to the form" |
+| Flash p3 #3: `handlePhoneSignIn` omits `beginSignInChoice` | rejected | — | `startPhoneSignIn` begins it (`client/src/stores/loginFlow.ts:340`); `LoginChoices.test.tsx` "a late SSO result after choosing the phone is dropped" covers that order |
+| Flash p3 #4: recovery submits before the server resolves; empty provider slug | fixed: forms disabled until the server is resolved and known; SSO needs a provider | `667a14cf` | `recoverDesktop.test.tsx`: "nothing goes out before the server is known", "without any server the form sends nothing" |
+
+Counts: Codex 4 fixed (M1, M2, two regressions). Fable 5 fixed (R1, R2, R3, R4, R5), 1 deferred
+(R6, the QR part). Flash: 11 findings, of which 9 are fixed (4 of them shared with Codex or
+Fable), 1 is partly rejected but its real part fixed (p3 #2), and 1 is rejected (p3 #3).
+
+### Gates (after PR review round 2, `ff2e2e48`)
+
+- `bun run test:run`: 201 files / 1871 tests passed. `bunx tsc --noEmit`: clean.
+  `bun run i18n:check`: 1225 web keys, 235 Android strings. `bun run lint`: 0 errors, 141
+  warnings (none new in the touched files). `bun run lint:tauri-commands`: 90 commands.
+- `bun run build` + `python3 scripts/check_bundle_budget.py`: initial JS 299526 / 300000 B gz,
+  CSS 17052 / 25000, largest chunk 102458 / 170000.
+- `cargo fmt --check`: clean. `SQLX_OFFLINE=true cargo test -p vc-client --lib`: 328 passed,
+  2 ignored.
+- Server: `git diff 203b822c HEAD -- server/` (L2a's LP base) is empty. `origin/feat/v1.0-login-lp`
+  has moved on to `04a1fe92` (L1a round-3 merge); merging it into L2a is a later step.
+
