@@ -29,3 +29,33 @@ decision. "For L2" marks interface facts the clients need.
 - `PASSWORD_REJECTED` is a 400 with `reason` (`length`, `breached`, `context`).
 - Recovery codes: 13 characters from the RFC 4648 alphabet (5 bits of an OS-random byte each),
   shown `ABCDE-FGHIJ-KLM`; a malformed input costs one dummy Argon2 verify.
+
+## Task 16 — own-account routes behind the guards
+
+- Every guarded route takes `lock_accounts([caller])`, consumes its grant (`step_up::consume_tx`)
+  and records `step_up_action {action, target_label}` (`step_up::record_action_tx`) in one
+  transaction; labels come from `approvals::handlers::target_label` (now `pub(crate)`, plus an
+  `identity.unlink` arm = the provider slug).
+- `DELETE /auth/me/password` answers 409 `LAST_STRONG_AUTHENTICATOR` before the step-up when the
+  account has no active strong authenticator (after the step-up it could never trigger, because
+  `consume_tx` re-checks the grant's authenticator).
+- `/auth/mfa/verify` only confirms the pending secret of `/auth/mfa/setup` (no pending secret → 400
+  `VALIDATION_ERROR`); the first verify no longer returns backup codes. `/auth/mfa/disable`
+  ignores a code in the body (L2a sends one).
+- Identity unlink: a passwordless account with an active strong authenticator may drop its last
+  OIDC identity.
+- Account deletion: `password` in the body is ignored; the duplicate and guild-ownership checks
+  answer before the step-up.
+- **Interim (coordinator):** an admin-created account with a temporary password signs in with
+  probation and can no longer change the password itself (403 `FULL_SESSION_REQUIRED`); Task 23
+  drops temporary passwords and Task 25 clears `must_change_password` (no RC is cut between).
+- Long-lived tokens: `require_full_session` on `POST /api/applications/{id}/bot`,
+  `/reset-token` and `POST /api/channels/{id}/webhooks` (handler-level layer).
+- **L1a review item (WebSocket):** `admin_subscribe` re-reads the socket's session row (live,
+  full, a system admin) before the elevation check, so a cached `admin:elevated:{sid}` of a
+  probation session subscribes nothing. Test `guarded_routes::probation_admin_cannot_subscribe_to_admin_events`.
+- **L1a review m3 (jwt clean-up):** `generate_token_pair`, `generate_token_pair_for_session`,
+  `build_token_pair` and `validate_refresh_token` are `#[cfg(test)]` in `auth::jwt`; integration
+  tests mint their legacy-format tokens in `tests/integration/helpers/tokens.rs` from the public
+  `Claims`. Test helpers `grant_step_up(pool, sid, action, target)` and `make_session_full` serve
+  existing tests of guarded routes.
