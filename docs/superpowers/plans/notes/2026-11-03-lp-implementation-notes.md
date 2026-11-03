@@ -520,9 +520,8 @@ files changed on the L1a side.
 | `/auth/reauth/methods` `device` = an active key device | LP had the same query | merged (above) | `1d3913be` | `passkeys_step_up::reauth_methods_report_passkey` |
 
 L1a round 3 rows marked for LP: part 4 M1 "`grant_tx` does not check `by`'s owner" is LP's
-`strong::belongs_to` (rebase onto round 1). Still open for LP: part 2 M2 "passkey fallback for
-`admin.authenticator.remove`": `target_label` names only a key device for that action (no route
-consumes it before L1b).
+`strong::belongs_to` (rebase onto round 1). Part 2 M2 "passkey fallback for
+`admin.authenticator.remove`" was still open here; it is done in the next section (`8283f662`).
 
 ### Android fixes deferred to LP by the L2b review
 
@@ -562,3 +561,44 @@ consumes it before L1b).
   277 passed, 2 ignored.
 - Android: `./gradlew lintDebug testDebugUnitTest --no-daemon`: lint 0 errors (47 warnings),
   900 unit tests passed (88 classes).
+
+## Merge of L1a review rounds 4 and 5 (2026-11-03)
+
+Four `--no-ff` merges of `origin/feat/v1.0-login-l1a`, each pushed normally (no rebase, no
+force): `8a18d06c` (round 4, `b2391e08`), `ae8b4df4` (round 5, `93baf530`), `9de25567` (notice
+sweep cursor, `caa449e2`) and `e09642f7` (the sweep's advisory lock and the
+`idx_security_events_undelivered (created_at, id)` change in the unreleased migration
+20261120000000, `9ba364bf`).
+
+**Conflicts: none.** Round 4 ports LP's `admin.*` step-up gate (`6c8a4444` + `e03bdb27`) into L1a
+(`23450390`) with the same text, so `auth/step_up.rs`, `auth/guards.rs`, `auth/error.rs` and
+`approvals/handlers.rs` merged to LP's version. Their remaining differences from L1a are LP's
+own: `passkey.remove` labels read only the caller's active passkeys, and `grant_tx` checks
+`strong::belongs_to`. L1a also added `device_admin_step_up_needs_an_admin` to
+`approvals_core.rs` with LP's body. The merge commit drops LP's copy in `passkeys_step_up.rs`,
+so the test exists once. LP's `admin_step_ups_need_an_admin` (the passkey start) stays.
+
+**Attestation and enrolment changes.** `attestation::check` now binds the leaf SPKI to the
+claimed key, and `ENROLLMENT_DEVICE_IN_USE` is answered at pop-challenge and confirm (also for
+the issuer's own phone). Neither touches LP: passkeys use attestation `none`, and only L1a's
+`enrollments.rs` builds chains (`helpers/attestation.rs`). The passkey suites pass unchanged.
+
+**Label fallback (`8283f662`).** `target_label` for `admin.authenticator.remove` falls back from
+the key device to the passkey with that id (C27: a key device or passkey id), as the desktop
+ceremony page already did. Only system admins reach it, because the `admin.*` gate runs first.
+Test: `passkeys_step_up::device_admin_step_up_names_a_passkey_target` (an empty label before;
+it also checks a key-device target and an unknown id).
+
+Gates on the final tree (`e09642f7`):
+
+- `cargo test -p vc-server --lib`: 702 passed (the Valkey lib tests run through a temporary
+  local forwarder to the L1a test Valkey, stopped afterwards).
+- Passkey, approvals, approval devices, step-up grants, enrolment, device sign-in, session
+  (assurance, end, revocation, refresh rotation), transition locks, Valkey outage, security
+  events and notices, system account, CLI, elevation, guarded routes, re-auth and governance
+  suites: 387 passed, 0 failed.
+- Full `--test integration`: 1220 passed, 0 failed, 33 ignored.
+- `cargo +nightly fmt --all -- --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server --
+  -D warnings` clean; `cargo deny check`: advisories, bans, licenses, sources ok. No `query!`
+  macro changed (`.sqlx` unchanged). Client and Android were not touched in these merges, so
+  their gates were not run again.
