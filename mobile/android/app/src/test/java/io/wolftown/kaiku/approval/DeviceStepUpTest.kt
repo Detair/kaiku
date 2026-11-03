@@ -6,6 +6,8 @@ import io.mockk.every
 import io.mockk.mockk
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.auth.DeviceStepUpProvider
+import io.wolftown.kaiku.data.auth.PasskeyFailure
+import io.wolftown.kaiku.data.auth.StepUpProvider
 import io.wolftown.kaiku.data.auth.StepUpFailure
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.LocalKeyDevice
@@ -103,8 +105,55 @@ class DeviceStepUpTest {
         assertEquals(Result.success(grant), provider.stepUp(activity, "key_device.remove", "99999999-9999-4999-8999-999999999999"))
         val failed = provider.stepUp(activity, "no.such.action", "")
         assertTrue(failed.exceptionOrNull() is StepUpFailure)
+        api.failWith = apiError(500, "INTERNAL_ERROR")
+        assertEquals(StepUpOutcome.Failed("INTERNAL_ERROR"), (provider.stepUp(activity, "passkey.add", "").exceptionOrNull() as StepUpFailure).outcome)
+    }
+
+    /** LP's PasskeysViewModel reads LP's failure types: a cancel shows nothing, probation says how to get a full session. */
+    @Test fun `device provider speaks LP's failure types for cancel and probation`() = runTest {
+        stepUp()
+        val cancelling = DeviceStepUpProvider(
+            DeviceStepUp(api, DeviceSigner(keyStore, FakeUserVerifier(keyStore, UvResult.Cancelled), checks), repo, { SigFixtures.DEVICE_ID }, authApi),
+        )
+        assertEquals(PasskeyFailure.Cancelled, cancelling.stepUp(activity, "key_device.remove", "99999999-9999-4999-8999-999999999999").exceptionOrNull())
         api.failWith = apiError(403, "FULL_SESSION_REQUIRED")
-        assertEquals(StepUpOutcome.ProbationSession, (provider.stepUp(activity, "passkey.add", "").exceptionOrNull() as StepUpFailure).outcome)
+        val probation = DeviceStepUpProvider(stepUp()).stepUp(activity, "passkey.add", "").exceptionOrNull()
+        assertEquals("FULL_SESSION_REQUIRED", (probation as PasskeyFailure.Server).code)
+    }
+
+    /** DC1: the key's step-up only on the key phone; elsewhere LP's passkey step-up gives `passkey.add`. */
+    @Test fun `device provider falls back to the passkey step-up when this phone is not the key`() = runTest {
+        val passkeyGrant = StepUpGrant("passkey.add", "", "passkey", "2026-11-03T12:05:00Z")
+        val asked = mutableListOf<String>()
+        val passkeys = object : StepUpProvider {
+            override suspend fun stepUp(activity: android.app.Activity, action: String, target: String): Result<StepUpGrant> {
+                asked += "$action:$target"
+                return Result.success(passkeyGrant)
+            }
+        }
+        assertEquals(Result.success(passkeyGrant), DeviceStepUpProvider(stepUp(keyDevice = false), passkeys).stepUp(activity, "passkey.add", ""))
+        assertEquals(listOf("passkey.add:"), asked)
+        assertTrue(verifier.prompts.isEmpty())
+
+        // The server says the session is not the key's own (KEY_DEVICE_REQUIRED): the same fallback.
+        val s = stepUp()
+        api.failWith = apiError(403, "KEY_DEVICE_REQUIRED")
+        assertEquals(Result.success(passkeyGrant), DeviceStepUpProvider(s, passkeys).stepUp(activity, "passkey.add", ""))
+        assertEquals(2, asked.size)
+
+        // Without a fallback the provider still says why.
+        val none = DeviceStepUpProvider(stepUp(keyDevice = false)).stepUp(activity, "passkey.add", "").exceptionOrNull()
+        assertEquals(StepUpOutcome.NotKeyDevice, (none as StepUpFailure).outcome)
+    }
+
+    @Test fun `the module binds the key phone's provider for LP's qualifier with the passkey fallback`() = runTest {
+        val passkeyApi: io.wolftown.kaiku.data.api.PasskeyApi = mockk()
+        coEvery { passkeyApi.stepUpStart(any(), any()) } throws java.io.IOException("offline")
+        val passkeys = io.wolftown.kaiku.data.auth.PasskeyStepUp(passkeyApi, mockk())
+        val bound = io.wolftown.kaiku.di.ApprovalModule.provideDeviceStepUpProvider(stepUp(keyDevice = false), passkeys)
+        assertTrue(bound is DeviceStepUpProvider)
+        assertTrue(bound.stepUp(activity, "passkey.add", "").exceptionOrNull() is java.io.IOException)
+        io.mockk.coVerify(exactly = 1) { passkeyApi.stepUpStart("passkey.add", "") }
     }
 
     @Test fun `every action has a wire name from the common rules table`() {

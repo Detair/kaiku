@@ -15,7 +15,11 @@ import io.wolftown.kaiku.approval.DeviceSigner
 import io.wolftown.kaiku.approval.DeviceSuitabilityChecker
 import io.wolftown.kaiku.approval.UserVerifier
 import io.wolftown.kaiku.approval.DeviceIdProvider
+import io.wolftown.kaiku.data.auth.DeviceStepUp
+import io.wolftown.kaiku.data.auth.DeviceStepUpProvider
 import io.wolftown.kaiku.data.auth.OriginPin
+import io.wolftown.kaiku.data.auth.PasskeyStepUp
+import io.wolftown.kaiku.data.auth.StepUpProvider
 import io.wolftown.kaiku.data.keydevice.KeyDevicePolicy
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.KeyDeviceStore
@@ -72,6 +76,18 @@ object ApprovalModule {
     @Provides
     fun provideSetupEnvironment(impl: io.wolftown.kaiku.ui.auth.setup.AndroidSetupEnvironment):
         io.wolftown.kaiku.ui.auth.setup.SetupEnvironment = impl
+
+    /**
+     * The key device's step-up for LP's seam (`@DeviceStepUp`, LP's optional
+     * binding in `PasskeyModule`): LP's passkey Add gets its `passkey.add` grant
+     * from the key on the key phone (DC1) and from a passkey elsewhere.
+     */
+    @Provides
+    @DeviceStepUp
+    fun provideDeviceStepUpProvider(
+        stepUp: io.wolftown.kaiku.approval.DeviceStepUp,
+        passkeys: PasskeyStepUp,
+    ): StepUpProvider = DeviceStepUpProvider(stepUp, fallback = passkeys)
 
     @Provides
     fun provideDeviceSigner(
