@@ -8,6 +8,7 @@
 //! - `rp_pin`: the RP-ID pin checked at startup (DC5).
 //! - `step_up`: passkey step-up on L1a's action-bound grants.
 //! - `login`: discoverable sign-in → a new full session.
+//! - `manage`: list, rename and remove (never the last strong authenticator).
 //! - `register`: adding a passkey (`passkey.add`) and the core L1b calls.
 //!
 //! Limits (B.5): every passkey route has its own `AuthPasskey` request
@@ -17,6 +18,7 @@
 pub mod ceremony;
 pub mod config;
 pub(crate) mod login;
+pub(crate) mod manage;
 pub mod queries;
 pub mod register;
 pub mod rp;
@@ -25,7 +27,7 @@ pub(crate) mod step_up;
 pub mod types;
 
 use axum::middleware::{from_fn, from_fn_with_state};
-use axum::routing::post;
+use axum::routing::{get, patch, post};
 use axum::Router;
 
 use self::rp::{PasskeyFailure, PasskeyRp};
@@ -103,6 +105,11 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/passkeys/step-up/start", post(step_up::start))
         .route("/passkeys/step-up/finish", post(step_up::finish))
         .route("/passkeys/register/start", post(register::start))
-        .route("/passkeys/register/finish", post(register::finish));
+        .route("/passkeys/register/finish", post(register::finish))
+        .route("/passkeys", get(manage::list))
+        .route(
+            "/passkeys/{id}",
+            patch(manage::rename).delete(manage::remove),
+        );
     public_limits(public, state).merge(session_limits(session, state))
 }

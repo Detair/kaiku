@@ -72,3 +72,27 @@ impl From<&PasskeyRow> for PasskeyView {
         }
     }
 }
+
+/// `GET /auth/passkeys`. `user_handle` is the b64u `WebAuthn` user id.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PasskeyListResponse {
+    pub rp_id: String,
+    pub user_handle: String,
+    pub passkeys: Vec<PasskeyView>,
+}
+
+/// `PATCH /auth/passkeys/{id}`.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct RenameRequest {
+    pub label: String,
+}
+
+/// `DELETE /auth/passkeys/{id}`: what the client needs for
+/// `signalUnknownCredential` and `signalAllAcceptedCredentials` (b64u).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PasskeyRemovedResponse {
+    pub rp_id: String,
+    pub user_handle: String,
+    pub credential_id: String,
+    pub remaining_credential_ids: Vec<String>,
+}
