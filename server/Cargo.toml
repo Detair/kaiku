@@ -48,6 +48,7 @@ sha1.workspace = true
 sha2.workspace = true
 hmac.workspace = true
 hkdf.workspace = true
+p256.workspace = true
 subtle = "2.6"
 zeroize.workspace = true
 url = "2.5"

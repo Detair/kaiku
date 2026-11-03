@@ -67,6 +67,9 @@ This document tracks all direct third-party dependencies and their licenses for 
 | hkdf | 0.12 | MIT OR Apache-2.0 | HMAC-based key derivation |
 | sha2 | 0.10 | MIT OR Apache-2.0 | SHA-256/SHA-512 hashing |
 | zeroize | 1.8 | Apache-2.0 OR MIT | Secure memory zeroing for secrets |
+| p256 | 0.13 | Apache-2.0 OR MIT | P-256 ECDSA verification of key-device signatures (server, verify only) |
+| subtle | 2.6 | BSD-3-Clause | Constant-time comparison of sign-in secrets (server) |
+| url | 2.5 | MIT OR Apache-2.0 | `PUBLIC_URL` origin parsing (server) |
 | bs58 | 0.5 | MIT/Apache-2.0 | Base58 encoding for recovery keys (vc-crypto) |
 | getrandom | 0.2 | MIT OR Apache-2.0 | OS-level random number generation (vc-crypto) |
 
