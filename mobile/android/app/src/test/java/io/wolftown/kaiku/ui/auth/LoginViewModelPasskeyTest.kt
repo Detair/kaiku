@@ -18,6 +18,7 @@ import io.wolftown.kaiku.data.repository.AuthRepository
 import io.wolftown.kaiku.domain.model.CeremonyStart
 import io.wolftown.kaiku.domain.model.User
 import io.ktor.http.HttpStatusCode
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -116,6 +117,53 @@ class LoginViewModelPasskeyTest {
         assertNotNull(vm.uiState.value.passkeyReadyAt)
         assertEquals(R.string.passkeys_error_ready_at, vm.uiState.value.passkeyErrorRes)
         coVerify(exactly = 0) { credentials.signalRemoved(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `a passkey tap while a password sign-in runs starts nothing`() = runTest(dispatcher) {
+        // L2b review (Argon p5 #6), deferred to LP: the button has its own
+        // `enabled`, and the ViewModel refuses a start while another sign-in runs.
+        val login = CompletableDeferred<Result<User>>()
+        coEvery { repo.login(any(), any(), any()) } coAnswers { login.await() }
+        vm.onLoginClicked()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.isLoading)
+        assertFalse("the passkey label stays idle", vm.uiState.value.passkeyLoading)
+        vm.onPasskeySignIn(activity)
+        advanceUntilIdle()
+        coVerify(exactly = 0) { api.loginStart() }
+        // The password sign-in was not cancelled and still completes.
+        login.complete(Result.success(mockk(relaxed = true)))
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.loginSuccess)
+    }
+
+    @Test
+    fun `a second passkey tap while one runs starts no second ceremony`() = runTest(dispatcher) {
+        val outcome = CompletableDeferred<PasskeyOutcome>()
+        coEvery { credentials.get(any(), any()) } coAnswers { outcome.await() }
+        vm.onPasskeySignIn(activity)
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.passkeyLoading)
+        vm.onPasskeySignIn(activity)
+        advanceUntilIdle()
+        coVerify(exactly = 1) { api.loginStart() }
+        outcome.complete(PasskeyOutcome.Cancelled)
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.isLoading)
+        assertFalse(vm.uiState.value.passkeyLoading)
+    }
+
+    @Test
+    fun `a password sign-in that replaces a passkey one clears the passkey label`() = runTest(dispatcher) {
+        coEvery { credentials.get(any(), any()) } coAnswers { CompletableDeferred<PasskeyOutcome>().await() }
+        coEvery { repo.login(any(), any(), any()) } returns Result.success(mockk(relaxed = true))
+        vm.onPasskeySignIn(activity)
+        advanceUntilIdle()
+        vm.onLoginClicked()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.loginSuccess)
+        assertFalse(vm.uiState.value.passkeyLoading)
     }
 
     @Test
