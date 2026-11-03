@@ -44,27 +44,14 @@ describe("re-auth requests", () => {
     expect(r).toEqual({ mode: "browser", url: "https://idp/x" });
   });
 
-  it("desktop runs the native command and maps its error codes", async () => {
+  it("desktop has no provider re-authentication any more (C27, no native command)", async () => {
     tauriMode.on = true;
-    invoke.mockResolvedValueOnce({ expires_at: null });
-    await startOidcReauth("kc", { mfaCode: "1" });
-    expect(invoke).toHaveBeenCalledWith("oidc_reauth", {
-      serverUrl: "https://chat.example",
-      providerId: "kc",
-      reason: null,
-      mfaCode: "1",
-      attemptId: expect.any(String),
+    await expect(startOidcReauth("kc", { mfaCode: "1" })).rejects.toMatchObject({
+      status: 404,
+      code: "REAUTH_UNAVAILABLE",
     });
-    invoke.mockRejectedValueOnce("REAUTH_STALE");
-    await expect(startOidcReauth("kc", {})).rejects.toMatchObject({ code: "REAUTH_STALE" });
-    invoke.mockRejectedValueOnce("HTTP_429");
-    await expect(startOidcReauth("kc", {})).rejects.toMatchObject({ status: 429 });
-    // The status stays next to the code (lowercase server codes included).
-    invoke.mockRejectedValueOnce("HTTP_503:service_unavailable");
-    await expect(startOidcReauth("kc", {})).rejects.toMatchObject({
-      status: 503,
-      code: "service_unavailable",
-    });
+    expect(invoke).not.toHaveBeenCalled();
+    expect(httpRequest).not.toHaveBeenCalled();
   });
 
   it("elevate sends password and code", async () => {
@@ -99,22 +86,6 @@ describe("re-auth requests", () => {
     });
     expect(invoke).not.toHaveBeenCalled();
     expect(httpRequest).not.toHaveBeenCalled();
-  });
-
-  it("cancels the native attempt with the same id when aborted mid-flow", async () => {
-    tauriMode.on = true;
-    const ac = new AbortController();
-    let release: (v: unknown) => void = () => {};
-    invoke.mockImplementation((cmd: string) =>
-      cmd === "oidc_reauth" ? new Promise((r) => (release = r)) : Promise.resolve(),
-    );
-    const p = startOidcReauth("kc", { signal: ac.signal });
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("oidc_reauth", expect.anything()));
-    const id = (invoke.mock.calls[0][1] as { attemptId: string }).attemptId;
-    ac.abort();
-    expect(invoke).toHaveBeenCalledWith("oidc_reauth_cancel", { attemptId: id });
-    release(undefined);
-    await p;
   });
 
   it("recognises the elevation-required error from both transports", () => {

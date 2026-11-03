@@ -146,8 +146,6 @@ pub fn run() {
             commands::pre_session::account_request_start,
             commands::pre_session::request_oidc_factor,
             commands::pre_session::pre_session_request,
-            commands::reauth::oidc_reauth,
-            commands::reauth::oidc_reauth_cancel,
             commands::passkey::passkey_sign_in,
             commands::passkey::passkey_step_up,
             commands::passkey::passkey_cancel,
