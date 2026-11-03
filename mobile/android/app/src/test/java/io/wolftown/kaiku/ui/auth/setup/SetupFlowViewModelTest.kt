@@ -500,4 +500,26 @@ class SetupFlowViewModelTest {
         v.checkBeforeScan()
         assertTrue(v.scanReady.value is UvDecision.Use)
     }
+
+    @Test fun `leaving one setup screen never deletes another one's unclaimed key`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val f = KeyDeviceFixture(backgroundScope, active = false)
+        f.keyStore.delete()
+        f.authState.setLoggedOut()
+        coEvery { deviceSignIn.signIn(any()) } returns DeviceSignInResult.Success
+        fun flow() = SetupFlowViewModel(enroll.api, suitability, f.keyStore, f.signer, f.repo, { SigFixtures.DEVICE_ID }, deviceSignIn, env,
+            probe, keyDispatcher = keyDispatcher)
+        val idle = flow()
+        val active = flow()
+        active.start(entry) // generates its key, now at the subject question
+        assertTrue(f.keyStore.hasKey())
+        idle.cancel() // an idle sibling (e.g. a stale setup screen) goes away
+        assertTrue(f.keyStore.hasKey())
+
+        idle.start(entry) // the sibling becomes the active setup: it replaces the orphan with its own key
+        active.cancel() // the first one's key is no longer the stored one
+        assertTrue(f.keyStore.hasKey())
+        idle.cancel() // its own key goes
+        assertFalse(f.keyStore.hasKey())
+    }
 }

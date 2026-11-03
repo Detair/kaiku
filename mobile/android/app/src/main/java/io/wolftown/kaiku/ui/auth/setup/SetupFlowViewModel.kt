@@ -315,8 +315,11 @@ class SetupFlowViewModel internal constructor(
      */
     private fun abandonUnclaimed() {
         if (keyDevices.local() != null) return
-        // No key device is stored: any key here is this setup's (also one a cancelled generation left).
-        keyStore.delete()
+        // Only the key this instance made, still the one in the store: another setup screen's
+        // ViewModel shares the alias and may hold its own unclaimed key (Fable optional).
+        val mine = key
+        if (mine != null && keyStore.publicKeySpki()?.contentEquals(mine.spki) == true) keyStore.delete()
+        key = null
         if (adoptedServer) {
             env.restoreServer(replacedServer)
             adoptedServer = false
