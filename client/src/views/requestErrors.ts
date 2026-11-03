@@ -1,6 +1,6 @@
 /** Refusals of an account-request start (C27): one text for every cause of a 401. */
 
-import { plural, t } from "@/i18n";
+import { plural, t, type MessageKey } from "@/i18n";
 import { errorText } from "@/i18n/errors";
 import { codeIs } from "@/lib/errorCode";
 import { HttpError } from "@/lib/tauri/common";
@@ -26,4 +26,28 @@ export function requestStartError(err: unknown, purpose: "recovery" | "bootstrap
     OIDC_TIMEOUT: "auth.sso.timeout",
     SERVER_OUTDATED: "auth.login.serverOutdated",
   });
+}
+
+/** The steps of a running request (`/account-request`). */
+const REQUEST_STEP_ERRORS = {
+  NO_PRE_SESSION_SECRET: "auth.request.lost",
+  ACCOUNT_REQUEST_COMPLETED: "auth.request.completed",
+} as const;
+
+/** A request step's refusal; 409 `ACCOUNT_REQUEST_NOT_READY {state}` says not yet, or expired (C27 amendment). */
+export function requestStepError(err: unknown, fallback: MessageKey): string {
+  if (err instanceof HttpError && codeIs(err.code, "ACCOUNT_REQUEST_NOT_READY")) {
+    return t(err.details?.state === "expired" ? "auth.request.expiredNow" : "auth.request.notReady");
+  }
+  return errorText(err, fallback, REQUEST_STEP_ERRORS);
+}
+
+/** The registration ticket is gone: lost on this device, or unknown or expired on the server. */
+export const BIND_ERRORS = {
+  NO_PRE_SESSION_SECRET: "auth.bind.lost",
+  REGISTRATION_TICKET_INVALID: "auth.bind.lost",
+} as const;
+
+export function bindErrorText(err: unknown, fallback: MessageKey): string {
+  return errorText(err, fallback, BIND_ERRORS);
 }

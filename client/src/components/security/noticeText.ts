@@ -45,6 +45,10 @@ export const NOTICE_KEYS: Record<SecurityEventType, MessageKey> = {
   session_ended_reuse: "security.notice.sessionEndedReuse",
   session_ended_limit: "security.notice.sessionEndedLimit",
   bootstrap_reminder: "security.notice.bootstrapReminder",
+  sessions_ended: "security.notice.sessionsEnded",
+  factor_restored: "security.notice.factorRestored",
+  throttle_reset: "security.notice.throttleReset",
+  may_approve_changed: "security.notice.mayApproveChanged",
   unknown: "security.notice.generic",
 };
 
@@ -84,6 +88,10 @@ export const PUSH_KEYS: Record<SecurityEventType, MessageKey> = {
   session_ended_reuse: "security.push.sessionEndedReuse",
   session_ended_limit: "security.push.sessionEndedLimit",
   bootstrap_reminder: "security.push.bootstrapReminder",
+  sessions_ended: "security.push.sessionsEnded",
+  factor_restored: "security.push.factorRestored",
+  throttle_reset: "security.push.throttleReset",
+  may_approve_changed: "security.push.mayApproveChanged",
   unknown: "security.push.generic",
 };
 

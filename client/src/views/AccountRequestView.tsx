@@ -9,7 +9,6 @@
 import { Component, Match, Show, Switch, createSignal, onCleanup, onMount } from "solid-js";
 import { A } from "@solidjs/router";
 import { t, type MessageKey } from "@/i18n";
-import { errorText } from "@/i18n/errors";
 import { formatTimestamp } from "@/i18n/format";
 import { isTauri } from "@/lib/tauri/common";
 import {
@@ -20,7 +19,8 @@ import {
   startRequestTotp,
   verifyRequestTotp,
 } from "@/lib/tauri/accountRequests";
-import { createPasskeyCredential } from "@/lib/tauri/passkeys";
+import { PasskeyError, createPasskeyCredential } from "@/lib/tauri/passkeys";
+import { requestStepError } from "./requestErrors";
 import { passkeyFailureText } from "@/lib/authErrors";
 import type { AccountRequestState, TotpSetup } from "@/lib/types";
 import { finish, reloadRequest, request, withdraw } from "@/stores/accountRequest";
@@ -39,10 +39,6 @@ const END_TEXT: Partial<Record<AccountRequestState, MessageKey>> = {
   unknown: "auth.request.unknownState",
 };
 
-const REQUEST_ERRORS = {
-  NO_PRE_SESSION_SECRET: "auth.request.lost",
-  ACCOUNT_REQUEST_COMPLETED: "auth.request.completed",
-} as const;
 
 const item = "w-full min-h-12 px-4 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-base text-text-primary text-left state-disabled";
 
@@ -66,7 +62,7 @@ const AccountRequestView: Component = () => {
     try {
       await reloadRequest();
     } catch (err) {
-      setError(errorText(err, "auth.request.loadFailed", REQUEST_ERRORS));
+      setError(requestStepError(err, "auth.request.loadFailed"));
     }
   };
   onMount(() => {
@@ -86,7 +82,9 @@ const AccountRequestView: Component = () => {
       if (reload) await reloadRequest();
       setStage(null);
     } catch (err) {
-      setError(passkeyFailureText(err, "auth.request.failed", REQUEST_ERRORS) || null);
+      setError(
+        err instanceof PasskeyError ? passkeyFailureText(err, "auth.request.failed") || null : requestStepError(err, "auth.request.failed"),
+      );
     } finally {
       setBusy(false);
     }
@@ -108,7 +106,7 @@ const AccountRequestView: Component = () => {
     } catch (err) {
       // Back to the choices, with the reason (Argon review 9 #1).
       setStage(null);
-      setError(errorText(err, "auth.request.failed", REQUEST_ERRORS));
+      setError(requestStepError(err, "auth.request.failed"));
     }
   };
 
@@ -119,7 +117,7 @@ const AccountRequestView: Component = () => {
       setCodes(await finish());
       setFinished(true);
     } catch (err) {
-      setError(errorText(err, "auth.request.failed", REQUEST_ERRORS));
+      setError(requestStepError(err, "auth.request.failed"));
     } finally {
       setBusy(false);
     }

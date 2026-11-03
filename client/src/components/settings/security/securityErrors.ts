@@ -21,6 +21,11 @@ export const SECURITY_ERRORS: Partial<Record<string, MessageKey>> = {
   NOT_ADMIN: "security.stepUp.error.notAdmin",
   ADMIN_TARGET_IS_ADMIN: "security.error.adminTarget",
   ENROLLMENT_LIMIT: "security.setupPhone.limit",
+  // C26/C27 amendment 2026-11-03.
+  ENROLLMENT_DEVICE_IN_USE: "security.error.deviceInUse",
+  ENROLLMENT_TARGET_SELF: "security.error.targetSelf",
+  // A database or Valkey outage; a retry can succeed.
+  SERVICE_UNAVAILABLE: "security.error.serviceUnavailable",
 };
 
 const PASSWORD_REASONS: Record<string, MessageKey> = {

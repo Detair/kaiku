@@ -7,7 +7,6 @@
 import { Component, Match, Show, Switch, createSignal, onCleanup, onMount } from "solid-js";
 import { A, useSearchParams } from "@solidjs/router";
 import { plural, t } from "@/i18n";
-import { errorText } from "@/i18n/errors";
 import { isTauri } from "@/lib/tauri/common";
 import {
   finishRegistrationPasskey,
@@ -18,6 +17,7 @@ import {
 } from "@/lib/tauri/registration";
 import { createPasskeyCredential } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
+import { BIND_ERRORS, bindErrorText } from "./requestErrors";
 import { safeReturnUrl } from "@/lib/returnUrl";
 import type { TotpSetup } from "@/lib/types";
 import QrCodeImage from "@/components/auth/QrCodeImage";
@@ -63,7 +63,7 @@ const RegistrationBind: Component = () => {
       const at = Date.parse(r.expires_at);
       if (!Number.isNaN(at)) setExpiresAt(at);
     } catch (err) {
-      setError(errorText(err, "auth.bind.loadFailed", { NO_PRE_SESSION_SECRET: "auth.bind.lost" }));
+      setError(bindErrorText(err, "auth.bind.loadFailed"));
     }
   });
 
@@ -78,7 +78,7 @@ const RegistrationBind: Component = () => {
     try {
       await job();
     } catch (err) {
-      setError(passkeyFailureText(err, "auth.bind.failed") || null);
+      setError(passkeyFailureText(err, "auth.bind.failed", BIND_ERRORS) || null);
     } finally {
       setBusy(false);
     }

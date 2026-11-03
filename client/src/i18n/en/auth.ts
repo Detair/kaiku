@@ -120,6 +120,8 @@ export const auth = {
   "auth.request.void": "This request is no longer valid: something about the account changed while it waited.",
   "auth.request.unknownState": "This request can't be shown. Update Kaiku.",
   "auth.request.lost": "This device does not know a request. Start again.",
+  "auth.request.notReady": "This request is not ready yet.",
+  "auth.request.expiredNow": "This request has expired. Start a new one.",
   "auth.request.loadFailed": "Could not load your request. Please try again.",
   "auth.request.failed": "That did not work. Please try again.",
   "auth.setup.pageTitle": "Set up",

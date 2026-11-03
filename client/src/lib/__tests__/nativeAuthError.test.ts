@@ -26,6 +26,9 @@ describe("nativeAuthError", () => {
   it("keeps the register conflict codes as 409s with their code (Argon review)", () => {
     expect(nativeAuthError("USER_EXISTS")).toMatchObject({ status: 409, code: "USER_EXISTS" });
     expect(nativeAuthError("EMAIL_TAKEN")).toMatchObject({ status: 409, code: "EMAIL_TAKEN" });
+    // C26/C27 amendment 2026-11-03.
+    expect(nativeAuthError("REGISTRATION_TICKET_INVALID")).toMatchObject({ status: 404, code: "REGISTRATION_TICKET_INVALID" });
+    expect(nativeAuthError("ACCOUNT_REQUEST_NOT_READY")).toMatchObject({ status: 409, code: "ACCOUNT_REQUEST_NOT_READY" });
     expect(errorText(nativeAuthError("EMAIL_TAKEN"), "auth.register.failed", REGISTER_ERRORS, REGISTER_STATUS_ERRORS)).toBe(
       errorText(new HttpError(409, "x", "EMAIL_TAKEN"), "auth.register.failed", REGISTER_ERRORS),
     );

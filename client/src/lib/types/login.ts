@@ -415,6 +415,11 @@ export const SECURITY_EVENT_TYPES = [
   "session_ended_reuse",
   "session_ended_limit",
   "bootstrap_reminder",
+  // C28 amendment 2026-11-03: every admin and CLI recovery action is notified.
+  "sessions_ended",
+  "factor_restored",
+  "throttle_reset",
+  "may_approve_changed",
 ] as const;
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number] | "unknown";
 
