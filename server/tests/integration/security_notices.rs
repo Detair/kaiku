@@ -16,9 +16,9 @@ use vc_server::security_events::{notices, record, Actor, EventType, NewSecurityE
 use vc_server::system_account::SYSTEM_USER_ID;
 
 use super::helpers::{
-    body_to_json, create_elevated_session, create_session_with_token, create_test_user,
-    make_admin, spawn_fcm_mock, spawn_test_server, test_service_account, ws_connect, FcmMock,
-    FcmMockResponse, TestApp,
+    body_to_json, create_elevated_session, create_session_with_token, create_test_user, make_admin,
+    spawn_fcm_mock, spawn_test_server, test_service_account, ws_connect, FcmMock, FcmMockResponse,
+    TestApp,
 };
 
 fn event(subject: Uuid, event_type: EventType, actor: Actor) -> NewSecurityEvent {
@@ -105,7 +105,10 @@ async fn notice_creates_kaiku_dm_message(pool: PgPool) {
     assert_eq!(m["message_type"], "security");
     assert_eq!(m["author"]["id"], SYSTEM_USER_ID.to_string());
     assert_eq!(m["author"]["is_system"], true);
-    assert!(!m["content"].as_str().unwrap().is_empty(), "English fallback");
+    assert!(
+        !m["content"].as_str().unwrap().is_empty(),
+        "English fallback"
+    );
     let n = &m["security_notice"];
     assert_eq!(n["count"], 1);
     assert_eq!(n["event_type"], "sign_in");
@@ -146,11 +149,18 @@ async fn high_events_copied_to_other_admins(pool: PgPool) {
     make_admin(&pool, a).await;
     make_admin(&pool, b).await;
 
-    record_and_deliver(&app, event(u, EventType::AuthenticatorAdded, Actor::User(u))).await;
+    record_and_deliver(
+        &app,
+        event(u, EventType::AuthenticatorAdded, Actor::User(u)),
+    )
+    .await;
     for (who, token) in [(u, &u_token), (a, &a_token), (b, &b_token)] {
         let items = kaiku_notices(&app, who, token).await;
         assert_eq!(items.len(), 1, "one notice for {who}");
-        assert_eq!(items[0]["security_notice"]["subject"]["user_id"], u.to_string());
+        assert_eq!(
+            items[0]["security_notice"]["subject"]["user_id"],
+            u.to_string()
+        );
     }
 
     // A normal event is not copied.
@@ -159,7 +169,11 @@ async fn high_events_copied_to_other_admins(pool: PgPool) {
     assert_eq!(kaiku_notices(&app, u, &u_token).await.len(), 2);
 
     // A high event on admin A: A's own notice and B's copy; never two for A.
-    record_and_deliver(&app, event(a, EventType::AuthenticatorAdded, Actor::User(a))).await;
+    record_and_deliver(
+        &app,
+        event(a, EventType::AuthenticatorAdded, Actor::User(a)),
+    )
+    .await;
     let a_items = kaiku_notices(&app, a, &a_token).await;
     assert_eq!(a_items.len(), 2);
     assert_eq!(
@@ -181,6 +195,7 @@ async fn notices_coalesce_within_10_minutes(pool: PgPool) {
     let (u, token) = user_with_token(&app).await;
     let first = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
     let mut ws = ws_connect(&server, &token).await;
+    super::helpers::next_ws_event(&mut ws, "ready", Duration::from_secs(5)).await;
 
     let second = record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
     let update =
@@ -206,9 +221,16 @@ async fn notices_coalesce_within_10_minutes(pool: PgPool) {
         [third.to_string(), second.to_string(), first.to_string()],
         "newest first"
     );
-    assert!(items[0]["edited_at"].as_str().is_some(), "an update edits the message");
+    assert!(
+        items[0]["edited_at"].as_str().is_some(),
+        "an update edits the message"
+    );
     // A different event type is a different notice.
-    record_and_deliver(&app, event(u, EventType::RecoveryCodesCreated, Actor::User(u))).await;
+    record_and_deliver(
+        &app,
+        event(u, EventType::RecoveryCodesCreated, Actor::User(u)),
+    )
+    .await;
     assert_eq!(kaiku_notices(&app, u, &token).await.len(), 2);
 
     // 11 minutes after the notice's first event: a new message.
@@ -292,13 +314,12 @@ async fn push_payload_is_c28(pool: PgPool) {
     let msg = &got[0]["message"];
     assert_eq!(msg["token"], device);
     let data = &msg["data"];
-    let notice_id: Uuid = sqlx::query_scalar(
-        "SELECT notice_id FROM security_notice_events WHERE event_id = $1",
-    )
-    .bind(e1)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let notice_id: Uuid =
+        sqlx::query_scalar("SELECT notice_id FROM security_notice_events WHERE event_id = $1")
+            .bind(e1)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(
         data,
         &serde_json::json!({
@@ -311,7 +332,10 @@ async fn push_payload_is_c28(pool: PgPool) {
         })
     );
     assert_eq!(msg["android"]["priority"], "HIGH");
-    assert_eq!(msg["android"]["collapse_key"], format!("security-{notice_id}"));
+    assert_eq!(
+        msg["android"]["collapse_key"],
+        format!("security-{notice_id}")
+    );
     assert_eq!(msg["android"]["ttl"], "86400s");
 
     // A second update within 60 s pushes nothing.
@@ -320,7 +344,11 @@ async fn push_payload_is_c28(pool: PgPool) {
 
     // An admin actor is named.
     let (admin, _) = create_test_user(&pool).await;
-    record_and_deliver(&app, event(u, EventType::PasswordCompromised, Actor::Admin(admin))).await;
+    record_and_deliver(
+        &app,
+        event(u, EventType::PasswordCompromised, Actor::Admin(admin)),
+    )
+    .await;
     let got = settle(&mock, 2).await;
     assert_eq!(got.len(), 2);
     let data = &got[1]["message"]["data"];
@@ -339,11 +367,9 @@ async fn push_bypasses_notification_settings(pool: PgPool) {
 
     // A DM wake fills the C20 coalescer for (u, dm); security pushes are
     // outside it and arrive at once, one per notice.
-    app.state.push.notify(
-        &app.state,
-        u,
-        vc_server::push::WakeSignal::dm(dm, 1),
-    );
+    app.state
+        .push
+        .notify(&app.state, u, vc_server::push::WakeSignal::dm(dm, 1));
     settle(&mock, 1).await;
     for t in [EventType::SignIn, EventType::KeyInvalidated] {
         record_and_deliver(&app, event(u, t, Actor::User(u))).await;
@@ -389,7 +415,11 @@ async fn security_log_is_newest_first_and_paginated(pool: PgPool) {
     let (u, token) = user_with_token(&app).await;
     let (other, _) = create_test_user(&pool).await;
     let mut ids = Vec::new();
-    for t in [EventType::SignIn, EventType::PasswordSet, EventType::RecoveryCodesCreated] {
+    for t in [
+        EventType::SignIn,
+        EventType::PasswordSet,
+        EventType::RecoveryCodesCreated,
+    ] {
         ids.push(record_one(&pool, event(u, t, Actor::User(u))).await);
     }
     record_one(&pool, event(other, EventType::SignIn, Actor::User(other))).await;
@@ -402,9 +432,15 @@ async fn security_log_is_newest_first_and_paginated(pool: PgPool) {
         .iter()
         .map(|e| e["id"].as_str().unwrap())
         .collect();
-    assert_eq!(got, [ids[2].to_string(), ids[1].to_string(), ids[0].to_string()]);
+    assert_eq!(
+        got,
+        [ids[2].to_string(), ids[1].to_string(), ids[0].to_string()]
+    );
     assert_eq!(page["has_more"], false);
-    assert_eq!(page["items"][0]["ip"], "203.0.113.44", "own log shows the IP");
+    assert_eq!(
+        page["items"][0]["ip"], "203.0.113.44",
+        "own log shows the IP"
+    );
 
     let (_, page) = get(&app, "/api/me/security-events?limit=2", &token).await;
     assert_eq!(page["items"].as_array().unwrap().len(), 2);
@@ -439,7 +475,11 @@ async fn copies_hide_ip_and_place(pool: PgPool) {
     let (admin, admin_token) = user_with_token(&app).await;
     make_admin(&pool, admin).await;
     let (u, u_token) = user_with_token(&app).await;
-    record_and_deliver(&app, event(u, EventType::AuthenticatorAdded, Actor::User(u))).await;
+    record_and_deliver(
+        &app,
+        event(u, EventType::AuthenticatorAdded, Actor::User(u)),
+    )
+    .await;
 
     let own = kaiku_notices(&app, u, &u_token).await;
     assert_eq!(own[0]["security_notice"]["events"][0]["ip"], "203.0.113.44");
@@ -457,7 +497,10 @@ async fn copies_hide_ip_and_place(pool: PgPool) {
     )
     .await;
     assert_eq!(status, 200, "{page}");
-    assert_eq!(page["items"][0]["ip"], "203.0.113.44", "admin log shows the IP");
+    assert_eq!(
+        page["items"][0]["ip"], "203.0.113.44",
+        "admin log shows the IP"
+    );
 }
 
 #[sqlx::test]

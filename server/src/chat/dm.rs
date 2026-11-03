@@ -124,6 +124,18 @@ fn build_dm_list_entry(
     }
 }
 
+/// [`dm_list_entry`] by channel id; `None` if the channel does not exist.
+pub(crate) async fn dm_list_entry_by_id(
+    pool: &sqlx::PgPool,
+    viewer_id: Uuid,
+    channel_id: Uuid,
+) -> Result<Option<DMListResponse>, ChatError> {
+    let Some(channel) = db::find_channel_by_id(pool, channel_id).await? else {
+        return Ok(None);
+    };
+    Ok(Some(dm_list_entry(pool, viewer_id, channel).await?))
+}
+
 /// Build one `GET /api/dm` element for `channel` as seen by `viewer_id`
 /// (participants, last message preview, the viewer's unread count).
 pub(crate) async fn dm_list_entry(

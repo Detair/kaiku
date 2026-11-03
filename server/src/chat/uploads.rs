@@ -558,6 +558,7 @@ pub async fn upload_message_with_file(
             .as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok()),
         webhook_id: None,
+        security_notice: None,
     };
 
     // Broadcast payload excludes the nonce — it's only for the sender

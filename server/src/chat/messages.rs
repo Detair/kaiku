@@ -265,6 +265,7 @@ pub async fn create(
                         embeds: None,
                         components: None,
                         webhook_id: None,
+                        security_notice: None,
                     };
 
                     let message_json = serde_json::to_value(&response).unwrap_or_default();
@@ -480,6 +481,7 @@ pub async fn create(
                             embeds: None,
                             components: None,
                             webhook_id: None,
+                            security_notice: None,
                         };
 
                         return Ok((StatusCode::ACCEPTED, Json(accepted)));
@@ -620,6 +622,7 @@ pub async fn create(
         embeds: embeds_json.clone(),
         components: components_json.clone(),
         webhook_id: None,
+        security_notice: None,
     };
 
     // Broadcast via Redis pub-sub (nonce excluded — it's only for the sender)
@@ -834,6 +837,7 @@ pub async fn update(
             .as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok()),
         webhook_id: message.webhook_id,
+        security_notice: None,
     };
 
     // Broadcast edit via Redis pub-sub
@@ -988,6 +992,25 @@ pub async fn build_message_responses(
     // Bulk fetch attachments
     let message_ids: Vec<Uuid> = messages.iter().map(|m| m.id).collect();
     let all_attachments = db::list_file_attachments_by_messages(pool, &message_ids).await?;
+
+    // Security notices of the Kaiku DM, as this reader sees them (C28).
+    let security_ids: Vec<Uuid> = messages
+        .iter()
+        .filter(|m| m.message_type == "security")
+        .map(|m| m.id)
+        .collect();
+    let mut security_notices = if security_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let mut conn = pool.acquire().await?;
+        crate::security_events::notices::notices_by_message(
+            &mut conn,
+            requesting_user_id,
+            Some(&security_ids),
+            None,
+        )
+        .await?
+    };
     let mut attachment_map: std::collections::HashMap<Uuid, Vec<AttachmentInfo>> =
         std::collections::HashMap::new();
     for attachment in all_attachments {
@@ -1110,6 +1133,7 @@ pub async fn build_message_responses(
                     .as_ref()
                     .and_then(|v| serde_json::from_value(v.clone()).ok()),
                 webhook_id: msg.webhook_id,
+                security_notice: security_notices.remove(&msg.id),
             }
         })
         .collect();

@@ -5,8 +5,14 @@
 //! the user and the admins, and never deletable from a session. Each event
 //! has a `system_audit_log` row written in the same transaction.
 
+pub mod handlers;
+pub mod notices;
+pub mod push;
+pub mod queries;
 pub mod record;
 pub mod types;
 
+pub use handlers::router;
+pub use notices::{spawn_delivery, SecurityNotice};
 pub use record::record;
 pub use types::{Action, Actor, EventType, NewSecurityEvent, SecurityEvent, Severity};

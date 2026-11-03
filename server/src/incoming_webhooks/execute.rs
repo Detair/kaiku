@@ -87,6 +87,7 @@ pub(super) fn webhook_message_response(message: Message) -> MessageResponse {
             .and_then(|v| serde_json::from_value(v.clone()).ok()),
         components: None,
         webhook_id: message.webhook_id,
+        security_notice: None,
     }
 }
 

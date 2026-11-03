@@ -412,6 +412,9 @@ async fn main() -> Result<()> {
             .expect("Failed to create HTTP client"),
     });
 
+    // Minute sweep of the login state machines (notice outbox, timers).
+    let auth_timers_handle = vc_server::auth::timers::spawn(state.clone());
+
     // Remove voice peers whose connection failed and did not recover.
     let stale_peer_reaper_handle = state
         .sfu
@@ -450,6 +453,7 @@ async fn main() -> Result<()> {
     stale_peer_reaper_handle.abort();
     db_cleanup_handle.abort();
     webhook_worker_handle.abort();
+    auth_timers_handle.abort();
     rtp_flush_handle.abort();
     retention_handle.abort();
     voice_health_handle.abort();

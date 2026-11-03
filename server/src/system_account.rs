@@ -31,6 +31,14 @@ pub fn is_system_user(id: Uuid) -> bool {
 /// never create two DMs.
 #[tracing::instrument(skip(conn))]
 pub async fn kaiku_dm_tx(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<Uuid> {
+    Ok(kaiku_dm_created_tx(conn, user_id).await?.0)
+}
+
+/// [`kaiku_dm_tx`], also telling whether the DM was created just now.
+pub async fn kaiku_dm_created_tx(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+) -> sqlx::Result<(Uuid, bool)> {
     // Per-user advisory key, namespaced by the "kaiku_dm:" prefix.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('kaiku_dm:' || $1::text, 0))")
         .bind(user_id)
@@ -49,7 +57,7 @@ pub async fn kaiku_dm_tx(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result
     .fetch_optional(&mut *conn)
     .await?
     {
-        return Ok(id);
+        return Ok((id, false));
     }
     let id = Uuid::now_v7();
     sqlx::query(
@@ -66,5 +74,5 @@ pub async fn kaiku_dm_tx(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result
         .bind(SYSTEM_USER_ID)
         .execute(&mut *conn)
         .await?;
-    Ok(id)
+    Ok((id, true))
 }

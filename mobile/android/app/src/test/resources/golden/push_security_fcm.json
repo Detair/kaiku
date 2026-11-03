@@ -1,0 +1,14 @@
+{
+  "collapse_key": "security-00000000-0000-4000-8000-000000005001",
+  "data": {
+    "actor_id": "00000000-0000-4000-8000-00000000a002",
+    "count": "3",
+    "event_type": "password_compromised",
+    "notice_id": "00000000-0000-4000-8000-000000005001",
+    "severity": "high",
+    "subject_id": "00000000-0000-4000-8000-00000000a001",
+    "t": "security"
+  },
+  "priority": "HIGH",
+  "ttl": "86400s"
+}

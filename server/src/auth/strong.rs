@@ -72,3 +72,13 @@ impl AuthenticatorRef {
         })
     }
 }
+
+/// The current display label of an authenticator (the key device's model or
+/// the passkey's name), `None` if unknown. Key devices arrive in Task 8;
+/// LP adds the passkey arm.
+pub async fn authenticator_label(
+    _conn: &mut sqlx::PgConnection,
+    _a: AuthenticatorRef,
+) -> sqlx::Result<Option<String>> {
+    Ok(None)
+}

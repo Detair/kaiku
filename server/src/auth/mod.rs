@@ -24,6 +24,7 @@ pub(crate) mod register;
 pub(crate) mod revocation;
 pub(crate) mod sessions;
 pub mod strong;
+pub mod timers;
 pub mod types;
 pub mod ua_parser;
 

@@ -256,6 +256,10 @@ pub struct MessageResponse {
     /// badge and skip the profile popup). Omitted for user messages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub webhook_id: Option<Uuid>,
+    /// The coalesced security notice of a `message_type: "security"`
+    /// message in the Kaiku DM (C28), as the reader sees it; null otherwise.
+    #[schema(value_type = Option<Object>)]
+    pub security_notice: Option<crate::security_events::SecurityNotice>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]

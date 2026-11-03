@@ -963,6 +963,18 @@ pub enum ServerEvent {
     /// A DM channel was newly created with this user as a participant (sent
     /// to every participant, including the creator's other devices). Open
     /// sockets are subscribed to the channel before this event is delivered.
+    /// A coalesced security notice in the Kaiku DM changed (C28): sent to
+    /// the notice's recipient only. Clients replace the message's
+    /// `security_notice` and never act on the hint alone.
+    SecurityNoticeUpdated {
+        /// The Kaiku DM.
+        channel_id: Uuid,
+        /// The notice's message.
+        message_id: Uuid,
+        /// The `SecurityNotice` as the recipient sees it.
+        security_notice: serde_json::Value,
+    },
+
     DmCreated {
         /// The DM exactly as one element of `GET /api/dm` (`DMListResponse`)
         /// for the receiving user. A JSON value because `DMListResponse` is

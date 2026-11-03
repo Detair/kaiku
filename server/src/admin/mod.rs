@@ -92,6 +92,10 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/guilds/{id}/page-limits",
             get(guilds::get_guild_page_limits).patch(guilds::set_guild_page_limits),
         )
+        .route(
+            "/security-events",
+            get(crate::security_events::handlers::list_admin),
+        )
         .layer(from_fn_with_state(state.clone(), require_elevated));
 
     // Non-elevated admin routes (require system admin)

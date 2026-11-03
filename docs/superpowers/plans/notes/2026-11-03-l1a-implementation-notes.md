@@ -44,3 +44,22 @@ is listed here, per task. "Coordinator" marks items that need a decision.
   `user_exists` (ban, delete, …) exclude it.
 - `UserSummary.is_system` (admin list) is always false because the system account is never
   listed; `UserProfile.is_system` (`GET /auth/me`) is false for every signed-in user.
+
+## Task 4 — notices, push, log, sweep
+
+- New notices are announced to the recipient's own WS channel (`user:{id}`) as `message_new`
+  (and `dm_created` when the Kaiku DM was created by this notice), not on `channel:{id}`: a
+  freshly created DM has no channel subscriptions yet. Updates send
+  `security_notice_updated` (C28) to the recipient only.
+- Coalescing uses the event's `created_at`, not delivery time, so a late sweep coalesces the
+  same way as the immediate delivery. A notice's `severity` becomes `high` when any of its
+  events is high (`authenticator_added` can be `totp`/normal or `key_device`/high).
+- `place` is `""` in v1.0 (DC17); on the wire it is `null` when empty (C28 `place|null`).
+- `ip`/`place` are shown on the subject's own notices, the own log and the admin log; never
+  on an admin's (or, in L1b, the contact's) copy.
+- There are no server-side quiet hours or per-channel mute, so "bypass" is inherent: every
+  security push goes to every subscription of the recipient through `push::deliver_with`,
+  outside the C20 coalescer. `push/AGENTS.md` documents that clients must not suppress `high`.
+- `SecurityEvent.authenticator.label` is resolved through `auth::strong::authenticator_label`
+  (key devices from Task 8, passkeys from LP).
+- The admin log's `user_id` is optional (all accounts when absent).

@@ -119,6 +119,7 @@ fn message(id: Uuid, content: &str, created_at: &str) -> MessageResponse {
         embeds: None,
         components: None,
         webhook_id: None,
+        security_notice: None,
     }
 }
 
@@ -478,5 +479,130 @@ fn android_golden_unread_aggregate() {
     check_golden(
         "unread_aggregate.json",
         serde_json::to_value(&aggregate).expect("serialize unread aggregate"),
+    );
+}
+
+// ============================================================================
+// Security notices (C28)
+// ============================================================================
+
+const NOTICE_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_5001);
+const NOTICE_MESSAGE_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_5002);
+const KAIKU_DM_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_5003);
+const EVENT_ID_1: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_5011);
+const EVENT_ID_2: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_5012);
+
+fn security_event(id: Uuid, at: &str) -> vc_server::security_events::SecurityEvent {
+    use vc_server::security_events::types::{EventActor, EventClient};
+    vc_server::security_events::SecurityEvent {
+        id,
+        event_type: "sign_in".to_string(),
+        severity: "normal".to_string(),
+        created_at: ts(at),
+        subject_id: AUTHOR_ID,
+        actor: EventActor {
+            kind: "self".to_string(),
+            user_id: Some(AUTHOR_ID),
+            username: Some("alice".to_string()),
+        },
+        client: Some(EventClient {
+            class: "desktop".to_string(),
+            label: "Kaiku desktop on Windows".to_string(),
+        }),
+        place: None,
+        ip: Some("203.0.113.7".to_string()),
+        session_id: None,
+        authenticator: None,
+        request_id: None,
+        details: serde_json::json!({"auth_methods": ["qr"], "assurance": "probation"}),
+        actions: Vec::new(),
+        repudiated_at: None,
+    }
+}
+
+fn security_notice() -> vc_server::security_events::SecurityNotice {
+    use vc_server::security_events::notices::NoticeSubject;
+    vc_server::security_events::SecurityNotice {
+        notice_id: NOTICE_ID,
+        subject: NoticeSubject {
+            user_id: AUTHOR_ID,
+            username: "alice".to_string(),
+            display_name: "Alice".to_string(),
+        },
+        event_type: "sign_in".to_string(),
+        severity: "normal".to_string(),
+        count: 2,
+        first_at: ts("2026-11-03T12:00:00Z"),
+        last_at: ts("2026-11-03T12:04:00Z"),
+        events: vec![
+            security_event(EVENT_ID_2, "2026-11-03T12:04:00Z"),
+            security_event(EVENT_ID_1, "2026-11-03T12:00:00Z"),
+        ],
+        events_truncated: false,
+    }
+}
+
+/// A notice message in the Kaiku DM (`GET /api/messages/channel/{id}` item).
+#[test]
+fn android_golden_security_notice_message() {
+    let mut m = message(
+        NOTICE_MESSAGE_ID,
+        "Security notice: sign in (2)",
+        "2026-11-03T12:00:00Z",
+    );
+    m.channel_id = KAIKU_DM_ID;
+    m.author = AuthorProfile {
+        id: vc_server::system_account::SYSTEM_USER_ID,
+        username: "kaiku".to_string(),
+        display_name: "Kaiku".to_string(),
+        avatar_url: None,
+        status: "offline".to_string(),
+        is_system: true,
+    };
+    m.message_type = "security".to_string();
+    m.edited_at = Some(ts("2026-11-03T12:04:00Z"));
+    m.security_notice = Some(security_notice());
+    check_golden(
+        "security_notice_message.json",
+        serde_json::to_value(&m).expect("serialize message"),
+    );
+}
+
+/// `security_notice_updated` (WS, to the recipient only).
+#[test]
+fn android_golden_ws_security_notice_updated() {
+    let event = ServerEvent::SecurityNoticeUpdated {
+        channel_id: KAIKU_DM_ID,
+        message_id: NOTICE_MESSAGE_ID,
+        security_notice: serde_json::to_value(security_notice()).expect("serialize notice"),
+    };
+    check_golden(
+        "ws_security_notice_updated.json",
+        serde_json::to_value(&event).expect("serialize event"),
+    );
+}
+
+/// FCM `data` of a `t=security` push (all strings), with an admin actor.
+#[test]
+fn android_golden_push_security_fcm() {
+    use vc_server::push::PushPayload;
+    use vc_server::security_events::push::SecurityPush;
+    use vc_server::security_events::{EventType, Severity};
+    let push = SecurityPush {
+        notice_id: NOTICE_ID,
+        event_type: EventType::PasswordCompromised,
+        severity: Severity::High,
+        count: 3,
+        subject_id: AUTHOR_ID,
+        actor_id: Some(BOB_ID),
+    };
+    check_golden(
+        "push_security_fcm.json",
+        serde_json::json!({
+            "data": push.fcm_data(),
+            "priority": if push.high_priority() { "HIGH" } else { "NORMAL" },
+            "collapse_key": push.collapse_key(),
+            "ttl": push.ttl(),
+        }),
     );
 }

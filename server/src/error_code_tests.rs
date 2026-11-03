@@ -388,6 +388,15 @@ async fn guild_codes_are_upper_snake() {
 #[tokio::test]
 async fn platform_codes_are_upper_snake() {
     assert_codes(
+        "SecurityEventsError",
+        "error",
+        [
+            crate::security_events::handlers::SecurityEventsError::Validation(s()),
+            crate::security_events::handlers::SecurityEventsError::Database(db()),
+        ],
+    )
+    .await;
+    assert_codes(
         "FavoritesError",
         "error",
         [
