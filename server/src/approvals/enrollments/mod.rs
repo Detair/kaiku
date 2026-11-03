@@ -1185,6 +1185,12 @@ pub async fn finish_done_tx(
     .await?;
     crate::auth::strong::mark_first_activity(conn, row.subject_id).await?;
     crate::auth::registration::mark_bound_tx(conn, row.subject_id).await?;
+    // A strong authenticator active by this path consumes the bootstrap
+    // entitlement (F8 rev 4).
+    if state == DeviceState::Active {
+        crate::auth::account_requests::core::on_strong_activated(conn, ctx, row.subject_id, None)
+            .await?;
+    }
     let mut ev = NewSecurityEvent::new(
         row.subject_id,
         EventType::AuthenticatorAdded,

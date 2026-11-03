@@ -2,6 +2,7 @@ mod guarded_routes;
 mod guild_member_privacy;
 mod helpers;
 
+mod account_requests;
 mod admin_create_user;
 mod admin_diagnostics;
 mod admin_elevation;

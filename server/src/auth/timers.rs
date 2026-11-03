@@ -66,5 +66,15 @@ pub async fn run_once(state: &AppState) -> anyhow::Result<()> {
         }
     }
 
+    // 6. Account requests: ready soon, ready, admin completion, expiry (SM3).
+    match crate::auth::account_requests::core::timers(&crate::auth::ctx::AuthCtx::from(state)).await
+    {
+        Ok(events) => crate::security_events::spawn_delivery(state, events),
+        Err(e) => {
+            tracing::warn!(error = %e, "sweep: account request timers failed");
+            first_err.get_or_insert_with(|| anyhow::anyhow!(e.to_string()));
+        }
+    }
+
     first_err.map_or(Ok(()), Err)
 }

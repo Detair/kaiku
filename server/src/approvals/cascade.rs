@@ -32,11 +32,12 @@ pub struct CascadeOutcome {
 #[tracing::instrument(skip_all)]
 pub async fn on_generation_ended(
     conn: &mut PgConnection,
-    _ctx: &AuthCtx<'_>,
+    ctx: &AuthCtx<'_>,
     user_id: Uuid,
     used: crate::auth::factors::FactorRef,
 ) -> AuthResult<()> {
     crate::auth::login_attempts::core::on_generation_ended(conn, user_id, used).await?;
+    crate::auth::account_requests::core::on_generation_ended(conn, ctx, user_id, used).await?;
     Ok(())
 }
 
@@ -44,11 +45,11 @@ pub async fn on_generation_ended(
 /// requests that recorded the old contact lose that route (Task 21).
 #[tracing::instrument(skip_all)]
 pub async fn on_contact_changed(
-    _conn: &mut PgConnection,
-    _ctx: &AuthCtx<'_>,
-    _account: Uuid,
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    account: Uuid,
 ) -> AuthResult<()> {
-    Ok(())
+    crate::auth::account_requests::core::recheck_routes(conn, ctx, None, Some(account)).await
 }
 
 /// The cascade of ended sessions (called by `end_sessions_tx`).
@@ -100,5 +101,6 @@ pub async fn on_authenticator_revoked(
             super::core::void_for_device(conn, user_id, install).await?;
         }
     }
+    crate::auth::account_requests::core::on_authenticator_revoked(conn, ctx, user_id, a).await?;
     Ok(CascadeOutcome { ended_sessions })
 }

@@ -32,6 +32,12 @@ pub struct LockedAccount {
 
 /// Lock the accounts `ids` (deduplicated) in ascending id order with ONE
 /// statement, then read their bans and roles under the locks.
+///
+/// `FOR NO KEY UPDATE`: transitions serialise on it (and on deletes), but
+/// it does not conflict with the `FOR KEY SHARE` locks that inserts
+/// referencing `users` take (notices, messages, events), so a notice
+/// delivery that inserts rows for several accounts cannot deadlock with a
+/// transition holding two account locks (found in L1b Task 21).
 #[tracing::instrument(skip(conn))]
 pub async fn lock_accounts(
     conn: &mut PgConnection,
@@ -44,7 +50,7 @@ pub async fn lock_accounts(
         "SELECT id, is_system, may_approve FROM users
           WHERE id = ANY($1)
           ORDER BY id
-          FOR UPDATE",
+          FOR NO KEY UPDATE",
     )
     .bind(&ids)
     .fetch_all(&mut *conn)
@@ -152,11 +158,23 @@ pub async fn lock_scope(
 }
 
 /// The accounts whose open account requests record one of `affected` as an
-/// independent canceller. L1a has no account requests yet: always empty
-/// (L1b Task 21 implements it).
+/// independent canceller (GIN containment on `cancellers`).
 pub async fn accounts_recording(
-    _conn: &mut PgConnection,
-    _affected: &[AffectedRoute],
+    conn: &mut PgConnection,
+    affected: &[AffectedRoute],
 ) -> sqlx::Result<Vec<Uuid>> {
-    Ok(Vec::new())
+    let mut out = Vec::new();
+    for a in affected {
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT user_id FROM account_requests
+              WHERE state IN ('waiting', 'ready') AND cancellers @> $1",
+        )
+        .bind(crate::auth::account_requests::core::CancellerRoute::containment(a))
+        .fetch_all(&mut *conn)
+        .await?;
+        out.extend(ids);
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
 }

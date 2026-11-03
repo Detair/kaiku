@@ -219,10 +219,10 @@ pub async fn states(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<Fact
 /// The current generation of `f`, under the row lock.
 async fn locked_generation(conn: &mut PgConnection, user_id: Uuid, f: Factor) -> sqlx::Result<i64> {
     let sql = match f {
-        Factor::Password => "SELECT password_generation FROM users WHERE id = $1 FOR UPDATE",
-        Factor::Totp => "SELECT totp_generation FROM users WHERE id = $1 FOR UPDATE",
+        Factor::Password => "SELECT password_generation FROM users WHERE id = $1 FOR NO KEY UPDATE",
+        Factor::Totp => "SELECT totp_generation FROM users WHERE id = $1 FOR NO KEY UPDATE",
         Factor::RecoveryCodes => {
-            "SELECT recovery_codes_generation FROM users WHERE id = $1 FOR UPDATE"
+            "SELECT recovery_codes_generation FROM users WHERE id = $1 FOR NO KEY UPDATE"
         }
     };
     sqlx::query_scalar(sql)

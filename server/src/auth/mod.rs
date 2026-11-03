@@ -2,6 +2,7 @@
 //!
 //! Handles local authentication, SSO/OIDC, MFA, and session management.
 
+pub mod account_requests;
 pub mod assurance;
 pub mod client_class;
 pub(crate) mod cookies;
@@ -18,8 +19,9 @@ pub(crate) mod mfa;
 pub mod mfa_crypto;
 mod middleware;
 pub mod oidc;
+pub mod owner_rule;
 pub mod passkeys;
-mod password;
+pub(crate) mod password;
 pub mod password_policy;
 pub(crate) mod profile;
 pub(crate) mod queries;
@@ -201,7 +203,8 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(forgot_password_route)
         .merge(reset_password_route)
         .merge(login_attempts::router(&state))
-        .merge(registration::router(&state));
+        .merge(registration::router(&state))
+        .merge(account_requests::public_router(&state));
 
     // Routes a user with a pending forced password change may still use.
     // `/me/password` needs a full session and a step-up grant (C27).

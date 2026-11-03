@@ -93,6 +93,10 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/security-events",
             get(crate::security_events::handlers::list_admin),
         )
+        .route(
+            "/account-requests",
+            get(crate::auth::account_requests::handlers::list_admin),
+        )
         .layer(from_fn_with_state(state.clone(), require_elevated));
 
     // Non-elevated admin routes (require system admin)

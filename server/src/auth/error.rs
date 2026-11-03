@@ -252,6 +252,42 @@ pub enum AuthError {
     #[error("This cannot be done to another admin's account")]
     AdminTargetIsAdmin,
 
+    /// The account already has an open request (409 `ACCOUNT_REQUEST_OPEN`).
+    #[error("This account already has an open request")]
+    AccountRequestOpen,
+
+    /// Nobody independent could cancel the request (409
+    /// `NO_INDEPENDENT_CANCELLER`, SM3).
+    #[error("Name and confirm a recovery contact first, or ask your server's operator")]
+    NoIndependentCanceller,
+
+    /// A cancel that lost against completion (409 `ACCOUNT_REQUEST_COMPLETED`).
+    #[error("This request has already completed")]
+    AccountRequestCompleted,
+
+    /// Not a canceller of this request (403 `CANCEL_NOT_ALLOWED`).
+    #[error("You cannot cancel this request")]
+    CancelNotAllowed,
+
+    /// The request client acted outside `ready` (409
+    /// `ACCOUNT_REQUEST_NOT_READY {state}`; appended to C27's list).
+    #[error("This request is not ready")]
+    AccountRequestNotReady { state: String },
+
+    /// A valid recovery code with a failed second factor (401
+    /// `REQUEST_FACTOR_INVALID {recovery_codes_left}`, B.5).
+    #[error("The second factor was not accepted")]
+    RequestFactorInvalid { recovery_codes_left: i64 },
+
+    /// "That wasn't me" is not possible for this reader (403
+    /// `REPUDIATE_NOT_ALLOWED`).
+    #[error("You cannot report this event")]
+    RepudiateNotAllowed,
+
+    /// The event was already reported (409 `EVENT_ALREADY_REPUDIATED`).
+    #[error("This event was already reported")]
+    EventAlreadyRepudiated,
+
     /// Unknown or expired registration ticket (404
     /// `REGISTRATION_TICKET_INVALID`; not in C27's list, appended).
     #[error("This sign-up has expired; please register again")]
@@ -349,6 +385,18 @@ impl AuthError {
             Self::PasswordRejected(_) => (StatusCode::BAD_REQUEST, "PASSWORD_REJECTED"),
             Self::NeutralSignIn => (StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS"),
             Self::TicketInvalid => (StatusCode::NOT_FOUND, "REGISTRATION_TICKET_INVALID"),
+            Self::AccountRequestOpen => (StatusCode::CONFLICT, "ACCOUNT_REQUEST_OPEN"),
+            Self::NoIndependentCanceller => (StatusCode::CONFLICT, "NO_INDEPENDENT_CANCELLER"),
+            Self::AccountRequestCompleted => (StatusCode::CONFLICT, "ACCOUNT_REQUEST_COMPLETED"),
+            Self::CancelNotAllowed => (StatusCode::FORBIDDEN, "CANCEL_NOT_ALLOWED"),
+            Self::AccountRequestNotReady { .. } => {
+                (StatusCode::CONFLICT, "ACCOUNT_REQUEST_NOT_READY")
+            }
+            Self::RequestFactorInvalid { .. } => {
+                (StatusCode::UNAUTHORIZED, "REQUEST_FACTOR_INVALID")
+            }
+            Self::RepudiateNotAllowed => (StatusCode::FORBIDDEN, "REPUDIATE_NOT_ALLOWED"),
+            Self::EventAlreadyRepudiated => (StatusCode::CONFLICT, "EVENT_ALREADY_REPUDIATED"),
             Self::RecoveryContactInvalid => (StatusCode::BAD_REQUEST, "RECOVERY_CONTACT_INVALID"),
             Self::AdminTargetIsAdmin => (StatusCode::FORBIDDEN, "ADMIN_TARGET_IS_ADMIN"),
             Self::TotpUnavailable => (StatusCode::FORBIDDEN, "TOTP_UNAVAILABLE"),
@@ -366,7 +414,30 @@ impl IntoResponse for AuthError {
 
         // C29: `PASSKEY_PENDING` carries `ready_at` next to `error`; C27:
         // `PASSWORD_REJECTED` carries `reason`.
-        let mut response = if let Self::LoginAttemptEnded { state } = &self {
+        let mut response = if let Self::AccountRequestNotReady { state } = &self {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": self.to_string(),
+                    "state": state,
+                })),
+            )
+                .into_response()
+        } else if let Self::RequestFactorInvalid {
+            recovery_codes_left,
+        } = &self
+        {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": self.to_string(),
+                    "recovery_codes_left": recovery_codes_left,
+                })),
+            )
+                .into_response()
+        } else if let Self::LoginAttemptEnded { state } = &self {
             (
                 status,
                 Json(serde_json::json!({
