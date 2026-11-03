@@ -334,3 +334,30 @@ for Argon until 2026-11-08) APPROVE / APPROVE WITH FIXES.
 Gates after round 2 (`--rerun-tasks`): BUILD SUCCESSFUL; `:app:testDebugUnitTest` 1241 tests in 140
 classes, 0 failures; `:lint-rules:test` 11, 0 failures; `lintDebug` 0 errors, 54 warnings; APK built;
 `i18n:check` no errors; server diff against LP empty. Instrumented tests not run (no device).
+
+## LP merge (321e9a25) and the contract amendment 09fa5da1 (2026-11-03)
+
+`git merge --no-ff origin/feat/v1.0-login-lp` (no rebase; the branch has a PR): L1a fix rounds 3–6
+(server only) and LP's Android fixes. Conflicts (2):
+
+- `AuthRepository.kt`: the KDoc of `installNativeSignIn`, and both sides' identical `endUnused`
+  helper (LP 30551dc6 for refused or superseded passkey results, L2b's for attempts and device-key
+  sign-ins). Kept once, LP's position, with one KDoc naming all three callers; LP's
+  `AuthRepositoryNativeSignInTest` and L2b's session tests pass (LP's test now races a
+  `completeAttempt` instead of the removed `login`).
+- `LoginViewModel.kt`: LP's `passkeyLoading` kept next to L2b's `oidcProviders`; LP's `onLoginClicked`
+  / MFA path stays removed (the password sign-in is `LoginAttemptViewModel`'s).
+
+LP 13f2c733 (the passkey button's own `enabled`) across L2b's split: `enabled = !isLoading &&
+!attempt.busy`; the screen reports each ViewModel's running sign-in to the other
+(`LoginViewModel.setOtherSignInRunning`, `LoginAttemptViewModel.setPasskeyRunning`), and each refuses a
+start beside it. This closes the round-1 deferral (Argon p5 #6). LP's two tests that drove
+`onLoginClicked` were ported (`a passkey tap while a password sign-in runs starts nothing`, `a password
+sign-in never starts beside a running passkey sign-in`).
+
+Amendment 09fa5da1 (commits 192176b9, a23397f3): `ENROLLMENT_DEVICE_IN_USE` → "This phone is already a
+key of this account" with "Sign in with this phone" (back to the sign-in, i.e. "Confirm it's you" on a
+key phone); the issuer says the same of the other phone. `REGISTRATION_TICKET_INVALID` → "register
+again" (setup and registration; the kept ticket is dropped). `ACCOUNT_REQUEST_NOT_READY {state}` →
+not ready yet / expired. `ENROLLMENT_TARGET_SELF` also in the admin list. C28 `sessions_ended`,
+`factor_restored`, `throttle_reset`, `may_approve_changed` → `security_notice_*` / `security_push_*`.
