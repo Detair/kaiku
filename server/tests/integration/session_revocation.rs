@@ -550,6 +550,7 @@ async fn test_password_change_revoke_others_requires_current_session(pool: PgPoo
         jti: None,
         sid: None,
         assurance: None,
+        gen: None,
     };
     let pem = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,

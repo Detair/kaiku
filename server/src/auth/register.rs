@@ -212,6 +212,7 @@ pub async fn register(
         );
         e
     })?;
+    crate::security_events::spawn_delivery(&state, issued.event_ids.clone());
 
     if !is_first_user {
         tracing::info!(user_id = %user.id, username = %user.username, "User registered");

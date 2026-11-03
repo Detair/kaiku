@@ -63,7 +63,7 @@ use utoipa::{Modify, OpenApi};
         // Auth - public
         crate::auth::register::register,
         crate::auth::login::login,
-        crate::auth::login::refresh_token,
+        crate::auth::refresh::refresh_token,
         crate::auth::login::forgot_password,
         crate::auth::login::reset_password,
         crate::auth::login::oidc_providers,

@@ -157,6 +157,14 @@ pub enum AuthError {
     },
 
     /// Internal server error.
+    /// A refresh token was used twice: the session has ended (B.4).
+    #[error("This session was ended because its key was used twice")]
+    SessionReused,
+
+    /// The session lapsed (inactivity) or reached its absolute cap (B.4).
+    #[error("This session has expired; sign in again")]
+    SessionExpired,
+
     #[error("Internal server error")]
     Internal(String),
 }
@@ -216,6 +224,8 @@ impl IntoResponse for AuthError {
                 (StatusCode::BAD_REQUEST, "REAUTH_PROVIDER_UNAVAILABLE")
             }
             Self::TooManyAttempts { .. } => (StatusCode::TOO_MANY_REQUESTS, "TOO_MANY_ATTEMPTS"),
+            Self::SessionReused => (StatusCode::UNAUTHORIZED, "SESSION_REUSED"),
+            Self::SessionExpired => (StatusCode::UNAUTHORIZED, "SESSION_EXPIRED"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         };
 

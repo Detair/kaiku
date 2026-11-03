@@ -34,7 +34,7 @@ pub async fn list_sessions(
 ) -> AuthResult<Json<SessionListResponse>> {
     // Try to identify the current session from cookie (browser) or header (Tauri).
     // Best-effort: if neither is available, all sessions will have is_current = false.
-    let current_hash = extract_current_token_hash(&headers, &jar);
+    let current_hash = extract_current_token_hash(&headers, &jar, &state.config);
 
     let sessions = queries::list_user_sessions(&state.db, auth_user.id).await?;
 
@@ -189,7 +189,7 @@ pub(super) async fn current_session_id(
     if let Some(sid) = auth_user.session_id {
         return Ok(Some(sid));
     }
-    let Some(hash) = extract_current_token_hash(headers, jar) else {
+    let Some(hash) = extract_current_token_hash(headers, jar, &state.config) else {
         return Ok(None);
     };
     Ok(crate::db::find_session_by_token_hash(&state.db, &hash)

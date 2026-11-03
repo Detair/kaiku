@@ -126,3 +126,29 @@ is listed here, per task. "Coordinator" marks items that need a decision.
   key_device_id`).
 - (5) Desktop OIDC callback messages `oidc-callback {status, attempt}` and
   `oidc-request-callback`: L1b/LP territory, not touched in L1a.
+
+## Task 7 — refresh rotation, caps, session limit
+
+- Refresh order under the row lock: signature (expiry not checked — the row decides
+  inactivity, answered `SESSION_EXPIRED`) → row exists and belongs to `sub` → **ban** (403
+  `ACCOUNT_BANNED`, as before: a banned user's client is told why) → ended or denylist hit
+  (401 `INVALID_TOKEN`; an unreachable denylist is skipped) → absolute cap (ends the row,
+  `SESSION_EXPIRED`) / inactivity (`SESSION_EXPIRED`, the row lapses) → generation logic. The
+  plan lists "ended" before "banned"; neither the spec nor C27 fixes the order, and the
+  existing C25 tests pin `ACCOUNT_BANNED` for a banned user's refresh.
+- New-format refresh JWT: `{sub, exp, iat, typ, jti, sid, gen}`; the row stores
+  `refresh_generation`, `refresh_jti`, `refresh_issued_at` (second precision, the JWT `iat`)
+  and `refresh_retry_at`. The retry re-encodes the identical token (Ed25519 is deterministic)
+  and checks it against the stored hash before answering; a mismatch (only if
+  `JWT_REFRESH_EXPIRY` changed within those 10 s) answers `INVALID_TOKEN`.
+- A token with a higher `gen` than the row, or the current `gen` with a different hash, is
+  "unrecognised": 401 `INVALID_TOKEN`, nothing changes.
+- A spent legacy refresh token (no `gen`) is not recognisable as a predecessor: after its one
+  rotation it answers `INVALID_TOKEN` and ends nothing.
+- The refresh cookie is always `SameSite=Strict` (B.4); `COOKIE_SAMESITE` no longer applies to
+  it (documented). Name `__Secure-kaiku_refresh` with `COOKIE_SECURE`, else `kaiku_refresh`
+  (local development); the old name is read once and cleared.
+- Session-limit notices (`session_ended_limit`) are recorded in the issuing transaction;
+  `IssuedSession.event_ids` lets the sign-in handlers deliver them right after commit (the
+  minute sweep is the fallback). The reuse notice is delivered by a spawned
+  `deliver_pending` after the 401.

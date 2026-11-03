@@ -116,66 +116,6 @@ pub async fn insert_oidc_user(
 // Sessions
 // ============================================================================
 
-/// The locked session row a refresh rotates.
-#[derive(Debug, sqlx::FromRow)]
-pub struct RefreshSession {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub assurance: String,
-    pub absolute_expires_at: DateTime<Utc>,
-}
-
-/// Lock a live session row by `token_hash` for token rotation (B.7 rule 1:
-/// refresh locks only its own row). `None` when the session does not exist,
-/// has ended, or is past its inactivity expiry or absolute cap.
-pub async fn lock_live_session_by_token_hash_tx(
-    conn: &mut PgConnection,
-    token_hash: &str,
-) -> Result<Option<RefreshSession>, AuthError> {
-    let session: Option<RefreshSession> = sqlx::query_as(
-        r"
-        SELECT id, user_id, assurance, absolute_expires_at
-        FROM sessions
-        WHERE token_hash = $1 AND ended_at IS NULL
-          AND expires_at > NOW() AND absolute_expires_at > NOW()
-        FOR UPDATE
-        ",
-    )
-    .bind(token_hash)
-    .fetch_optional(conn)
-    .await?;
-    Ok(session)
-}
-
-/// Rotate a session's refresh token in place.
-///
-/// The session keeps its id, so the `sid` carried by every access token of
-/// this login stays the same across refreshes: revoking the session reaches
-/// tokens and sockets opened before any refresh. `expires_at` never passes
-/// the absolute cap (the caller caps it).
-pub async fn rotate_session_tx(
-    conn: &mut PgConnection,
-    session_id: Uuid,
-    token_hash: &str,
-    expires_at: DateTime<Utc>,
-    client: &super::session_issue::SessionClient,
-) -> Result<(), AuthError> {
-    sqlx::query(
-        r"UPDATE sessions
-          SET token_hash = $2, expires_at = $3, ip_address = $4::inet,
-              user_agent = $5, last_used_at = NOW()
-          WHERE id = $1",
-    )
-    .bind(session_id)
-    .bind(token_hash)
-    .bind(expires_at)
-    .bind(client.ip.map(|ip| ip.to_string()))
-    .bind(client.user_agent.as_deref())
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
 /// Whether the user has an active global ban (no expiry, or one in the future).
 pub async fn is_user_globally_banned(pool: &PgPool, user_id: Uuid) -> sqlx::Result<bool> {
     sqlx::query_scalar(

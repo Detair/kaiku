@@ -70,9 +70,9 @@ Rate limiting also uses Valkey; see [rate-limiting.md](rate-limiting.md).
 | `MFA_ENCRYPTION_KEY` | unset (empty = unset) | 32-byte hex key that encrypts MFA secrets at rest |
 | `REQUIRE_E2EE_SETUP` | `false` | Require users to set up end-to-end encryption |
 | `BLOCK_CHECK_FAIL_OPEN` | `false` | Allow DMs/calls when the Valkey block check fails (default fail-closed) |
-| `COOKIE_SECURE` | `true` in release builds | `Secure` flag on the refresh cookie |
+| `COOKIE_SECURE` | `true` in release builds | `Secure` flag on the refresh cookie; with it the cookie is named `__Secure-kaiku_refresh` (without it, for local development only, `kaiku_refresh`) |
 | `COOKIE_DOMAIN` | unset | Domain of the refresh cookie |
-| `COOKIE_SAMESITE` | `lax` | `lax`, `strict` or `none`; `none` requires `COOKIE_SECURE=true` |
+| `COOKIE_SAMESITE` | `lax` | `lax`, `strict` or `none`; `none` requires `COOKIE_SECURE=true`. The refresh cookie is always `SameSite=Strict` |
 | `OIDC_ISSUER_URL` | unset (empty = unset) | OIDC provider issuer URL (seeds an OIDC provider) |
 | `OIDC_CLIENT_ID` | unset (empty = unset) | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | unset (empty = unset) | OIDC client secret |

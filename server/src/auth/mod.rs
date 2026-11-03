@@ -20,6 +20,7 @@ mod password;
 pub(crate) mod profile;
 pub(crate) mod queries;
 pub(crate) mod reauth;
+pub mod refresh;
 pub(crate) mod register;
 pub mod revocation;
 pub mod session_check;
@@ -107,7 +108,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     // Refresh route with rate limiting
     let refresh_route = Router::new()
-        .route("/refresh", post(login::refresh_token))
+        .route("/refresh", post(refresh::refresh_token))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             rate_limit_by_ip,

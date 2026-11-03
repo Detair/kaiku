@@ -52,6 +52,7 @@ mod ratelimit_http;
 mod reaction_roles;
 mod reauth;
 mod reauth_oidc;
+mod refresh_rotation;
 mod reports;
 mod role_channel_overrides;
 mod roles_security;

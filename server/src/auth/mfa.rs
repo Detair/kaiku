@@ -525,6 +525,7 @@ pub async fn qr_redeem(
         },
     )
     .await?;
+    crate::security_events::spawn_delivery(&state, issued.event_ids.clone());
 
     tracing::info!(user_id = %user_id, "QR login token redeemed");
     crate::observability::metrics::record_auth_login_attempt(true);

@@ -135,6 +135,10 @@ pub struct IssuedSession {
     pub assurance: Assurance,
     pub absolute_expires_at: DateTime<Utc>,
     pub setup_complete: bool,
+    /// Security events recorded in the issuing transaction (the session
+    /// limit's `session_ended_limit`); deliver them after commit
+    /// (`security_events::spawn_delivery`), else the sweep does.
+    pub event_ids: Vec<Uuid>,
 }
 
 impl IssuedSession {
@@ -203,11 +207,56 @@ pub async fn issue_session_tx(
         Some((false,)) => {}
     }
 
+    // Session limit (B.4): at the limit, end the least recently used
+    // sessions with a notice, under the account lock above.
+    let mut event_ids = Vec::new();
+    let live: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sessions
+          WHERE user_id = $1 AND ended_at IS NULL
+            AND expires_at > NOW() AND absolute_expires_at > NOW()",
+    )
+    .bind(new.user_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    let excess = live - ctx.config.max_sessions_per_user + 1;
+    if excess > 0 {
+        let oldest: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM sessions
+              WHERE user_id = $1 AND ended_at IS NULL
+                AND expires_at > NOW() AND absolute_expires_at > NOW()
+              ORDER BY last_used_at, created_at
+              LIMIT $2",
+        )
+        .bind(new.user_id)
+        .bind(excess)
+        .fetch_all(&mut *conn)
+        .await?;
+        let ended = super::revocation::end_sessions_tx(
+            conn,
+            ctx,
+            new.user_id,
+            &oldest,
+            super::revocation::EndReason::Limit,
+        )
+        .await?;
+        for sid in ended {
+            let mut ev = crate::security_events::NewSecurityEvent::new(
+                new.user_id,
+                crate::security_events::EventType::SessionEndedLimit,
+                crate::security_events::Actor::System,
+                serde_json::json!({ "session_id": sid }),
+            );
+            ev.session_id = Some(sid);
+            event_ids.push(crate::security_events::record(conn, ev).await?);
+        }
+    }
+
     let session_id = Uuid::now_v7();
     let tokens = super::jwt::generate_session_tokens(
         new.user_id,
         session_id,
         assurance,
+        0,
         &ctx.config.jwt_private_key,
         ctx.config.jwt_access_expiry,
         ctx.config.jwt_refresh_expiry,
@@ -225,8 +274,10 @@ pub async fn issue_session_tx(
         "INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent,
                                assurance, auth_methods, auth_time, client_class,
                                authenticator_type, authenticator_id, absolute_expires_at,
-                               last_used_at, created_at)
-         VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8, $9, $10, $11, $12, $13, $9, $9)",
+                               last_used_at, created_at, refresh_generation, refresh_jti,
+                               refresh_issued_at)
+         VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8, $9, $10, $11, $12, $13, $9, $9, 0, $14,
+                 to_timestamp($15))",
     )
     .bind(session_id)
     .bind(new.user_id)
@@ -241,6 +292,8 @@ pub async fn issue_session_tx(
     .bind(new.authenticator.map(|a| a.as_str()))
     .bind(new.authenticator.map(|a| a.id))
     .bind(absolute)
+    .bind(tokens.refresh_jti)
+    .bind(tokens.refresh_iat as f64)
     .execute(&mut *conn)
     .await?;
 
@@ -265,6 +318,7 @@ pub async fn issue_session_tx(
         assurance,
         absolute_expires_at: absolute,
         setup_complete,
+        event_ids,
     })
 }
 

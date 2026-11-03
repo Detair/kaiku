@@ -141,6 +141,8 @@ async fn admin_and_auth_codes_are_upper_snake() {
     let auth = vec![
         AuthError::InvalidCredentials,
         AuthError::UserNotFound,
+        AuthError::SessionReused,
+        AuthError::SessionExpired,
         AuthError::NotFound(s()),
         AuthError::Forbidden,
         AuthError::UserAlreadyExists,

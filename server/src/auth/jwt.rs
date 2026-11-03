@@ -38,6 +38,10 @@ pub struct Claims {
     /// (B.4 rev 5). A token without it is probation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assurance: Option<String>,
+    /// Refresh tokens only: the session's refresh generation (DC2). A
+    /// refresh token without it is a legacy token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gen: Option<i64>,
 }
 
 /// Token type discriminator.
@@ -61,6 +65,10 @@ pub struct TokenPair {
     pub access_expires_in: i64,
     /// Refresh token ID for session tracking.
     pub refresh_token_id: Uuid,
+    /// The refresh token's `jti` and `iat` (stored on the session row so a
+    /// lost response can be answered with the identical successor, DC2).
+    pub refresh_jti: Uuid,
+    pub refresh_iat: i64,
 }
 
 /// Decode a base64-encoded PEM key.
@@ -120,9 +128,13 @@ pub fn generate_token_pair_for_session(
     )
 }
 
-/// Tokens for a session created or renewed by `session_issue` / refresh:
-/// the access token carries `sid` and the session's `assurance` (display
-/// only).
+/// Tokens for a session created or renewed by `session_issue` / refresh.
+///
+/// The access token carries `sid` and the session's `assurance` (display
+/// only); the refresh token carries `sid` and the refresh generation `gen`
+/// (DC2), signed with the server's Ed25519 key, so a token can be
+/// recognised as an earlier one of the same session without storing spent
+/// hashes, and a forged one cannot end anyone's session.
 ///
 /// # Errors
 /// The signing key is invalid.
@@ -130,19 +142,126 @@ pub fn generate_session_tokens(
     user_id: Uuid,
     session_id: Uuid,
     assurance: super::assurance::Assurance,
+    gen: i64,
     private_key: &str,
     access_expiry_seconds: i64,
     refresh_expiry_seconds: i64,
 ) -> AuthResult<TokenPair> {
-    build_token_pair(
+    let now = Utc::now().timestamp();
+    let access_token = encode_access(
         user_id,
         session_id,
-        Uuid::now_v7(),
-        Some(assurance),
-        private_key,
+        assurance,
+        now,
         access_expiry_seconds,
-        refresh_expiry_seconds,
-    )
+        private_key,
+    )?;
+    let refresh_jti = Uuid::new_v4();
+    let refresh_token = encode_refresh(
+        user_id,
+        session_id,
+        gen,
+        refresh_jti,
+        now,
+        now + refresh_expiry_seconds,
+        private_key,
+    )?;
+    Ok(TokenPair {
+        access_token,
+        refresh_token,
+        access_expires_in: access_expiry_seconds,
+        refresh_token_id: session_id,
+        refresh_jti,
+        refresh_iat: now,
+    })
+}
+
+fn encoding_key(private_key: &str) -> AuthResult<EncodingKey> {
+    let key_bytes = decode_pem_key(private_key)?;
+    EncodingKey::from_ed_pem(&key_bytes)
+        .map_err(|e| AuthError::Internal(format!("Invalid Ed25519 private key: {e}")))
+}
+
+/// A fresh access token for a session.
+///
+/// # Errors
+/// The signing key is invalid.
+pub fn encode_access(
+    user_id: Uuid,
+    session_id: Uuid,
+    assurance: super::assurance::Assurance,
+    iat: i64,
+    access_expiry_seconds: i64,
+    private_key: &str,
+) -> AuthResult<String> {
+    let claims = Claims {
+        sub: user_id.to_string(),
+        exp: iat + access_expiry_seconds,
+        iat,
+        typ: TokenType::Access,
+        jti: None,
+        sid: Some(session_id.to_string()),
+        assurance: Some(assurance.as_str().to_string()),
+        gen: None,
+    };
+    Ok(encode(
+        &Header::new(Algorithm::EdDSA),
+        &claims,
+        &encoding_key(private_key)?,
+    )?)
+}
+
+/// A refresh token of the authenticated format (DC2). Deterministic: the
+/// same inputs give the identical token (Ed25519), which answers a lost
+/// response with the same successor.
+///
+/// # Errors
+/// The signing key is invalid.
+pub fn encode_refresh(
+    user_id: Uuid,
+    sid: Uuid,
+    gen: i64,
+    jti: Uuid,
+    iat: i64,
+    exp: i64,
+    private_key: &str,
+) -> AuthResult<String> {
+    let claims = Claims {
+        sub: user_id.to_string(),
+        exp,
+        iat,
+        typ: TokenType::Refresh,
+        jti: Some(jti.to_string()),
+        sid: Some(sid.to_string()),
+        assurance: None,
+        gen: Some(gen),
+    };
+    Ok(encode(
+        &Header::new(Algorithm::EdDSA),
+        &claims,
+        &encoding_key(private_key)?,
+    )?)
+}
+
+/// Verify a refresh token's signature and type, **not** its expiry: the
+/// session row decides whether the session has lapsed (answered as
+/// `SESSION_EXPIRED`, C27).
+///
+/// # Errors
+/// Bad signature, wrong type or a missing `jti`.
+pub fn verify_refresh_signature(token: &str, public_key: &str) -> AuthResult<Claims> {
+    let mut validation = Validation::new(Algorithm::EdDSA);
+    validation.validate_exp = false;
+    validation.required_spec_claims.remove("exp");
+    let key_bytes = decode_pem_key(public_key)?;
+    let decoding_key = DecodingKey::from_ed_pem(&key_bytes)
+        .map_err(|e| AuthError::Internal(format!("Invalid Ed25519 public key: {e}")))?;
+    let data =
+        decode::<Claims>(token, &decoding_key, &validation).map_err(|_| AuthError::InvalidToken)?;
+    if data.claims.typ != TokenType::Refresh || data.claims.jti.is_none() {
+        return Err(AuthError::InvalidToken);
+    }
+    Ok(data.claims)
 }
 
 fn build_token_pair(
@@ -173,6 +292,7 @@ fn build_token_pair(
         jti: None,
         sid: Some(refresh_token_id.to_string()),
         assurance: assurance.map(|a| a.as_str().to_string()),
+        gen: None,
     };
 
     let access_token = encode(
@@ -190,6 +310,7 @@ fn build_token_pair(
         jti: Some(refresh_jti.to_string()),
         sid: None,
         assurance: None,
+        gen: None,
     };
 
     let refresh_token = encode(
@@ -203,6 +324,8 @@ fn build_token_pair(
         refresh_token,
         access_expires_in: access_expiry_seconds,
         refresh_token_id,
+        refresh_jti,
+        refresh_iat: now.timestamp(),
     })
 }
 
