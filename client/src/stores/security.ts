@@ -10,24 +10,36 @@ import { getMeSecurity } from "@/lib/tauri/security";
 import type { MeSecurity, SecurityPrompt } from "@/lib/types";
 
 const [security, setSecurity] = createSignal<MeSecurity | null>(null);
-let inFlight: Promise<void> | null = null;
+/**
+ * Bumped by `resetMeSecurity` (sign-out, a new session or account): a
+ * request started before then is detached and its answer dropped, so one
+ * account's overview never shows (or prompts) under the next one.
+ */
+let generation = 0;
+let inFlight: { generation: number; promise: Promise<void> } | null = null;
 
 /** The last loaded overview, or null before the first load. */
 export const meSecurity = security;
 
-/** Reload the overview (single flight). Failures keep the last value. */
+/** Reload the overview (single flight per session). Failures keep the last value. */
 export function refreshMeSecurity(): Promise<void> {
-  inFlight ??= getMeSecurity()
-    .then((s) => {
-      setSecurity(s);
-    })
-    .catch((err) => {
-      console.warn("[Security] Loading the overview failed:", err instanceof Error ? err.message : err);
-    })
-    .finally(() => {
-      inFlight = null;
-    });
-  return inFlight;
+  if (inFlight && inFlight.generation === generation) return inFlight.promise;
+  const mine = generation;
+  const flight = {
+    generation: mine,
+    promise: getMeSecurity()
+      .then((s) => {
+        if (mine === generation) setSecurity(s);
+      })
+      .catch((err) => {
+        console.warn("[Security] Loading the overview failed:", err instanceof Error ? err.message : err);
+      })
+      .finally(() => {
+        if (inFlight === flight) inFlight = null;
+      }),
+  };
+  inFlight = flight;
+  return flight.promise;
 }
 
 const [signOutOthersOffered, setSignOutOthersOffered] = createSignal(false);
@@ -47,8 +59,10 @@ export function closeSignOutOthers(): void {
   setSignOutOthersOffered(false);
 }
 
-/** Forget the overview (sign-out). */
+/** Forget the overview (sign-out, new session); a running load is dropped. */
 export function resetMeSecurity(): void {
+  generation += 1;
+  inFlight = null;
   setSecurity(null);
   setSignOutOthersOffered(false);
 }

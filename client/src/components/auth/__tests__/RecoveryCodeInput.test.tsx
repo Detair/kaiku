@@ -13,3 +13,16 @@ describe("RecoveryCodeInput", () => {
     expect((screen.getByLabelText("Recovery code") as HTMLInputElement).value).toBe("ABCDE FGHJK MNP");
   });
 });
+
+describe("RecoveryCodeInput separators (Argon review)", () => {
+  it("a typed space or dash leaves the field grouped", () => {
+    const [value, setValue] = createSignal("ABCDE");
+    render(() => <RecoveryCodeInput value={value()} onInput={setValue} label="Code" />);
+    const input = screen.getByLabelText("Code") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "ABCDE-" } });
+    expect(value()).toBe("ABCDE");
+    expect(input.value).toBe("ABCDE");
+    fireEvent.input(input, { target: { value: "ABCDE F" } });
+    expect(input.value).toBe("ABCDE F");
+  });
+});

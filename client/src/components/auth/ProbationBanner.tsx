@@ -5,7 +5,7 @@
  * the app and is never hidden for good.
  */
 
-import { Component, Show, createSignal, onMount } from "solid-js";
+import { Component, Show, createEffect, createSignal } from "solid-js";
 import { ShieldAlert } from "lucide-solid";
 import { t } from "@/i18n";
 import { isProbation, replaceSessionWithPasskey } from "@/stores/auth";
@@ -13,14 +13,19 @@ import { meSecurity, refreshMeSecurity } from "@/stores/security";
 import { passkeyCeremonies } from "@/lib/passkeySeam";
 import { errorText } from "@/i18n/errors";
 
-// Per app run, not stored: the banner comes back after a restart.
+// Per chat-only session, not stored: the banner comes back after a restart
+// and for every new chat-only session.
 const [collapsed, setCollapsed] = createSignal(false);
 
 const ProbationBanner: Component = () => {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-  onMount(() => {
+  // The banner stays mounted while sessions change: whenever this turns into
+  // a chat-only session, load the overview (passkey button or hint); a full
+  // session in between opens the banner again for the next one.
+  createEffect(() => {
     if (isProbation()) void refreshMeSecurity();
+    else setCollapsed(false);
   });
   const hasPasskey = () => (meSecurity()?.passkeys ?? 0) > 0;
   const canSignIn = () => hasPasskey() && passkeyCeremonies() !== null;
@@ -44,11 +49,11 @@ const ProbationBanner: Component = () => {
         fallback={
           <button
             type="button"
-            class="fixed top-2 left-1/2 -translate-x-1/2 z-[55] flex items-center gap-2 px-3 min-h-9 rounded-full border border-status-warning/60 bg-surface-layer2 text-sm text-text-primary shadow"
+            class="fixed top-2 left-1/2 -translate-x-1/2 z-[55] flex items-center gap-2 px-4 min-h-11 rounded-full border border-status-warning/60 bg-surface-layer2 text-base text-text-primary shadow"
             onClick={() => setCollapsed(false)}
             aria-expanded="false"
           >
-            <ShieldAlert class="w-4 h-4 text-status-warning" aria-hidden="true" />
+            <ShieldAlert class="w-5 h-5 text-status-warning" aria-hidden="true" />
             {t("auth.probation.chip")}
           </button>
         }

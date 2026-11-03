@@ -11,6 +11,7 @@ import { ShieldAlert } from "lucide-solid";
 import { t } from "@/i18n";
 import { formatTimestamp } from "@/i18n/format";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 import { cancelAccountRequest, type Part2Factor } from "@/lib/tauri/security";
 import { withStepUp, StepUpCancelled } from "@/lib/stepUp";
 import { meSecurity, refreshMeSecurity } from "@/stores/security";
@@ -29,6 +30,8 @@ export function resetOpenRequestDismissals(): void {
 
 const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
   const dialog = createDialog({ onClose: () => props.close() });
+  // Its part-2 and step-up confirmations open above it (`DialogShell`).
+  const layer = createModalLayer(MODAL_LAYER.prompt);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [part2, setPart2] = createSignal(false);
@@ -54,8 +57,8 @@ const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
 
   return (
     <div
-      class="fixed inset-0 z-[80] flex items-center justify-center p-4"
-      style={{ "background-color": "var(--color-surface-base)" }}
+      class="fixed inset-0 flex items-center justify-center p-4"
+      style={{ "background-color": "var(--color-surface-base)", "z-index": layer }}
     >
       <div class="w-full max-w-lg space-y-5" {...dialog.dialogProps} ref={dialog.ref}>
         <div class="flex items-start gap-3">

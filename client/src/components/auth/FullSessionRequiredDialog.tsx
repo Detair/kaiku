@@ -1,16 +1,17 @@
 /**
  * FullSessionRequiredDialog — a request was refused with 403
- * `FULL_SESSION_REQUIRED` (C27): this needs a passkey sign-in, or the Kaiku
- * app on the phone. Opened by `FULL_SESSION_REQUIRED_EVENT` (at most once per
+ * `FULL_SESSION_REQUIRED` (C27): this needs a passkey sign-in (offered when
+ * the account has a passkey), or the Kaiku app on the phone. Opened by `FULL_SESSION_REQUIRED_EVENT` (at most once per
  * 2 s) or directly by `withStepUp` for a chat-only session.
  */
 
-import { Component, Show, createSignal, onCleanup, onMount } from "solid-js";
+import { Component, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import { t } from "@/i18n";
 import { errorText } from "@/i18n/errors";
 import { FULL_SESSION_REQUIRED_EVENT } from "@/lib/tauri/common";
 import { replaceSessionWithPasskey } from "@/stores/auth";
 import { passkeyCeremonies } from "@/lib/passkeySeam";
+import { meSecurity, refreshMeSecurity } from "@/stores/security";
 import DialogShell from "./DialogShell";
 
 const [open, setOpen] = createSignal(false);
@@ -26,6 +27,12 @@ const FullSessionRequiredDialog: Component = () => {
   const onEvent = () => setOpen(true);
   onMount(() => window.addEventListener(FULL_SESSION_REQUIRED_EVENT, onEvent));
   onCleanup(() => window.removeEventListener(FULL_SESSION_REQUIRED_EVENT, onEvent));
+  // The passkey sign-in is offered only when the account has a passkey
+  // (C27 `sign_in_with_passkey`); without an overview yet, load it.
+  createEffect(() => {
+    if (open() && meSecurity() === null) void refreshMeSecurity();
+  });
+  const canSignIn = () => (meSecurity()?.passkeys ?? 0) > 0 && passkeyCeremonies() !== null;
 
   const close = () => {
     setOpen(false);
@@ -48,7 +55,7 @@ const FullSessionRequiredDialog: Component = () => {
     <Show when={open()}>
       <DialogShell title={t("auth.fullSession.title")} onClose={close}>
         <p class="text-base text-text-primary">{t("auth.fullSession.text")}</p>
-        <Show when={passkeyCeremonies()}>
+        <Show when={canSignIn()}>
           <button type="button" class="btn-primary w-full min-h-12 text-base" disabled={busy()} onClick={() => void signIn()}>
             {t("auth.probation.signIn")}
           </button>

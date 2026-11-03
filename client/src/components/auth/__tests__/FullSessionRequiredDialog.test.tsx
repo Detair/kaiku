@@ -16,7 +16,8 @@ vi.mock("@/stores/websocket", async (orig) => ({
   }),
 }));
 
-import FullSessionRequiredDialog from "../FullSessionRequiredDialog";
+import FullSessionRequiredDialog, { showFullSessionRequired } from "../FullSessionRequiredDialog";
+import { resetMeSecurity } from "@/stores/security";
 import { browserState, FULL_SESSION_REQUIRED_EVENT, httpRequest } from "@/lib/tauri/common";
 import { registerPasskeyCeremonies } from "@/lib/passkeySeam";
 import { replaceSessionWithPasskey, setAuthState } from "@/stores/auth";
@@ -109,5 +110,48 @@ describe("FullSessionRequiredDialog", () => {
       Object.defineProperty(window, "location", { configurable: true, value: original });
     }
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("FullSessionRequiredDialog passkey offer (Argon review)", () => {
+  function overview(passkeys: number) {
+    return {
+      session: { assurance: "probation", auth_methods: ["qr"] },
+      password: null,
+      totp: null,
+      recovery_codes_left: 0,
+      key_devices: 1,
+      passkeys,
+      may_approve: true,
+      bootstrap_open: false,
+      recovery_contact: null,
+      open_request: null,
+      prompts: [],
+    };
+  }
+
+  it("offers the passkey sign-in only when the account has a passkey", async () => {
+    resetMeSecurity();
+    browserState.serverUrl = "https://chat.example.com";
+    browserState.accessToken = "at";
+    registerPasskeyCeremonies({ signIn: vi.fn(), stepUp: vi.fn() } as never);
+    fetchMock.mockImplementation(async () => json(200, overview(0)));
+    render(() => <FullSessionRequiredDialog />);
+    showFullSessionRequired();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText("Or do it in the Kaiku app on your phone.")).toBeTruthy());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    cleanup();
+
+    resetMeSecurity();
+    fetchMock.mockImplementation(async () => json(200, overview(1)));
+    render(() => <FullSessionRequiredDialog />);
+    showFullSessionRequired();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Sign in with a passkey" })).toBeTruthy());
+    const loaded = fetchMock.mock.calls.some(([url]) => String(url).endsWith("/api/me/security"));
+    expect(loaded).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
   });
 });

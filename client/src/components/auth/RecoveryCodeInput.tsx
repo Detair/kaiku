@@ -33,7 +33,13 @@ const RecoveryCodeInput: Component<RecoveryCodeInputProps> = (props) => {
         spellcheck={false}
         value={groupRecoveryCode(props.value)}
         disabled={props.disabled}
-        onInput={(e) => props.onInput(normalizeRecoveryCode(e.currentTarget.value).slice(0, 32))}
+        onInput={(e) => {
+          const normalized = normalizeRecoveryCode(e.currentTarget.value).slice(0, 32);
+          // A typed space or dash leaves the value unchanged, so Solid would
+          // not rewrite the field: group it here.
+          e.currentTarget.value = groupRecoveryCode(normalized);
+          props.onInput(normalized);
+        }}
       />
     </div>
   );

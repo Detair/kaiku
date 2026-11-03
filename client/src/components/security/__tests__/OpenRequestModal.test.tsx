@@ -7,6 +7,8 @@ const stepUp = vi.hoisted(() => vi.fn(async (_req: unknown, run: () => Promise<u
 vi.mock("@/lib/stepUp", async (orig) => ({ ...(await orig<object>()), withStepUp: stepUp }));
 
 import OpenRequestModal, { resetOpenRequestDismissals } from "../OpenRequestModal";
+import { StepUpDialog } from "@/components/auth/StepUpDialog";
+import type { PendingStepUp } from "@/lib/stepUp";
 import { refreshMeSecurity } from "@/stores/security";
 import { setAuthState } from "@/stores/auth";
 import { security, signInAs } from "@/components/settings/security/__tests__/securityTestUtils";
@@ -78,5 +80,39 @@ describe("OpenRequestModal", () => {
   it("a completed request shows nothing", async () => {
     await mount(request({ state: "completed" }));
     expect(screen.queryByText(/Someone asked to change/)).toBeNull();
+  });
+});
+
+/** The z-index of the overlay that holds the dialog named `name`. */
+function layerOf(name: string): number {
+  const overlay = screen.getByRole("dialog", { name }).closest<HTMLElement>(".fixed");
+  return Number(overlay?.style.zIndex || getComputedStyle(overlay!).zIndex);
+}
+
+describe("OpenRequestModal stacking (Codex review)", () => {
+  const prompt = "Someone asked to change how you sign in to your account.";
+
+  it("the part-2 confirmation opens above the prompt", async () => {
+    await mount(request({ cancel: { via: "part2" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel this request" }));
+    await waitFor(() => expect(screen.getByRole("dialog", { name: "Confirm with a code" })).toBeTruthy());
+    expect(layerOf("Confirm with a code")).toBeGreaterThan(layerOf(prompt));
+  });
+
+  it("the step-up dialog opens above the prompt", async () => {
+    await mount(request());
+    const pending = {
+      req: { action: "request.cancel", target: "r1", targetLabel: "Alice" },
+      mode: "phone",
+      running: () => false,
+      error: () => null,
+      confirm: vi.fn(),
+      cancel: vi.fn(),
+    } as unknown as PendingStepUp;
+    render(() => <StepUpDialog pending={pending} />);
+    const stepUpLayer = Number(
+      screen.getByTestId("step-up-dialog").closest<HTMLElement>(".fixed")!.style.zIndex,
+    );
+    expect(stepUpLayer).toBeGreaterThan(layerOf(prompt));
   });
 });

@@ -111,3 +111,36 @@ describe("ProbationBanner", () => {
     expect(screen.getByText(/Signed in for chat only/)).toBeTruthy();
   });
 });
+
+describe("ProbationBanner across sessions (Argon review)", () => {
+  it("a session that becomes chat-only later loads the overview", async () => {
+    getMeSecurity.mockResolvedValue(security(1));
+    setAuthState({ user: user({ ...probation, assurance: "full" }) });
+    render(() => <ProbationBanner />);
+    expect(getMeSecurity).not.toHaveBeenCalled();
+    setAuthState({ user: user({ ...probation, id: "s2" }) });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Sign in with a passkey" })).toBeTruthy());
+    expect(getMeSecurity).toHaveBeenCalled();
+  });
+
+  it("a new chat-only session shows the banner open again", async () => {
+    getMeSecurity.mockResolvedValue(security(1));
+    setAuthState({ user: user(probation) });
+    render(() => <ProbationBanner />);
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    expect(screen.queryByText(/Signed in for chat only/)).toBeNull();
+    setAuthState({ user: user({ ...probation, assurance: "full" }) });
+    setAuthState({ user: user({ ...probation, id: "s3" }) });
+    await waitFor(() => expect(screen.getByText(/Signed in for chat only/)).toBeTruthy());
+  });
+
+  it("the collapsed chip is a large touch target", () => {
+    getMeSecurity.mockResolvedValue(security(1));
+    setAuthState({ user: user(probation) });
+    render(() => <ProbationBanner />);
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    const chip = screen.getByRole("button", { name: "Chat only" });
+    expect(chip.className).toContain("min-h-11");
+    expect(chip.className).toContain("text-base");
+  });
+});

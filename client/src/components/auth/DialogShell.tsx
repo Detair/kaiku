@@ -1,6 +1,7 @@
 /**
  * DialogShell — the modal frame of the v1.0 sign-in dialogs: overlay, title,
- * close button, keyboard and focus handling (`createDialog`). Readable text
+ * close button, keyboard and focus handling (`createDialog`), and a layer
+ * above every modal already open (`createModalLayer`). Readable text
  * uses `text-text-primary` / `text-text-secondary` (CLAUDE.md contrast rules).
  */
 
@@ -8,6 +9,7 @@ import { Component, JSX } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X } from "lucide-solid";
 import { createDialog } from "@/lib/a11y/dialog";
+import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 import { t } from "@/i18n";
 
 export interface DialogShellProps {
@@ -21,10 +23,13 @@ export interface DialogShellProps {
 
 const DialogShell: Component<DialogShellProps> = (props) => {
   const dialog = createDialog({ onClose: () => props.onClose() });
+  // Above any modal already open (a confirmation from a full-screen prompt).
+  const layer = createModalLayer(MODAL_LAYER.dialog);
   return (
     <Portal>
       <div
-        class="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4"
+        class="fixed inset-0 flex items-center justify-center bg-black/60 p-4"
+        style={{ "z-index": layer }}
         onClick={() => props.onClose()}
       >
         <div
