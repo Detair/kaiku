@@ -193,12 +193,18 @@ pub async fn download_export(
 // ============================================================================
 
 /// End every session of the account (account-deletion logout, C25) in the
-/// revocation order: `ended_at`, denylist, NOTIFY, commit.
+/// revocation order: `ended_at`, denylist, NOTIFY, commit. Any failure is
+/// 503 `SERVICE_UNAVAILABLE` (the contract's outage answer; a retry of the
+/// request ends them), logged here and never echoed.
 async fn end_all_for_deletion(
     state: &AppState,
     user_id: uuid::Uuid,
 ) -> Result<(), GovernanceError> {
-    let mut tx = state.db.begin().await?;
+    let unavailable = |e: &dyn std::fmt::Display| {
+        tracing::error!(error = %e, %user_id, "ending the sessions of a deletion failed");
+        GovernanceError::ServiceUnavailable
+    };
+    let mut tx = state.db.begin().await.map_err(|e| unavailable(&e))?;
     crate::auth::revocation::end_all_sessions_tx(
         &mut tx,
         &crate::auth::ctx::AuthCtx::from(state),
@@ -207,8 +213,8 @@ async fn end_all_for_deletion(
         crate::auth::revocation::EndReason::AccountDeleted,
     )
     .await
-    .map_err(|e| GovernanceError::Internal(e.to_string()))?;
-    tx.commit().await?;
+    .map_err(|e| unavailable(&e))?;
+    tx.commit().await.map_err(|e| unavailable(&e))?;
     Ok(())
 }
 

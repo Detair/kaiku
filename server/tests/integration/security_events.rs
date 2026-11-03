@@ -337,3 +337,41 @@ async fn is_system_flag_on_profiles(pool: PgPool) {
     assert_eq!(status, 200);
     assert_eq!(me["is_system"], false);
 }
+
+/// Review round 3 (Argon coverage, part 4 m1): pinning in someone else's
+/// Kaiku DM answers like any other DM (`NOT_GUILD_CHANNEL`), so a channel
+/// id never tells an outsider that it is a Kaiku DM.
+#[sqlx::test]
+async fn pin_never_reveals_another_users_kaiku_dm(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (owner, _) = create_test_user(&pool).await;
+    let (outsider, _) = create_test_user(&pool).await;
+    let (friend, _) = create_test_user(&pool).await;
+    let token = generate_access_token(&app.config, outsider);
+    let (dm, message) = kaiku_dm_with_message(&pool, owner).await;
+    let normal_dm = create_dm_channel(&pool, owner, friend).await;
+    let normal_message = insert_message(&pool, normal_dm, owner, "hi").await;
+    for method in [Method::PUT, Method::DELETE] {
+        let (s1, b1) = call(
+            &app,
+            method.clone(),
+            &format!("/api/channels/{dm}/messages/{message}/pin"),
+            &token,
+            None,
+        )
+        .await;
+        let (s2, b2) = call(
+            &app,
+            method.clone(),
+            &format!("/api/channels/{normal_dm}/messages/{normal_message}/pin"),
+            &token,
+            None,
+        )
+        .await;
+        assert_eq!(
+            (s1, &b1["error"]),
+            (s2, &b2["error"]),
+            "{method}: {b1} / {b2}"
+        );
+    }
+}

@@ -162,8 +162,8 @@ pub async fn get_reauth_methods(
     // F7: a step-up is a passkey assertion (an active passkey) or a
     // `device_stepup` from an active key device; never a password, TOTP or
     // OIDC.
-    // `device` counts key devices only: `strong::active_strong_count`
-    // includes passkeys.
+    // `device` means an active key device (not any strong authenticator: a
+    // passkey-only account has no device step-up).
     let device: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE user_id = $1 AND state = 'active')",
     )

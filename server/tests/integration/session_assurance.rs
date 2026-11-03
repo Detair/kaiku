@@ -589,3 +589,56 @@ async fn issue_session_refuses_the_system_account(pool: PgPool) {
     .await;
     assert!(res.is_err());
 }
+
+/// Review round 3 (Argon coverage, part 4 M2): C27 lists `authenticator:
+/// {id, type, label}` for each session; the label is the key device's.
+#[sqlx::test]
+async fn session_list_names_the_key_device(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev =
+        super::helpers::approvals::KeyDeviceFixture::insert(&pool, &app.config, user, "active")
+            .await;
+    let (status, list) = get(&app, "/auth/sessions", &dev.access_token).await;
+    assert_eq!(status, 200, "{list}");
+    let item = list["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == dev.session_id.unwrap().to_string())
+        .cloned()
+        .unwrap();
+    assert_eq!(item["authenticator"]["id"], dev.row_id.to_string());
+    assert_eq!(item["authenticator"]["label"], "Pixel 8");
+}
+
+/// Review round 3 (Argon coverage, part 4 m3): the access token's `sid` is
+/// the current session; a refresh cookie of another session does not make
+/// that one current too.
+#[sqlx::test]
+async fn session_list_marks_only_the_tokens_session_current(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let (a, token_a) = create_session_with_token(&pool, &app.config, user).await;
+    let (b, _) = create_session_with_token(&pool, &app.config, user).await;
+    sqlx::query("UPDATE sessions SET token_hash = $2 WHERE id = $1")
+        .bind(b)
+        .bind(vc_server::auth::hash_token("cookie-of-b"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let req = TestApp::request(Method::GET, "/auth/sessions")
+        .header("Authorization", format!("Bearer {token_a}"))
+        .header("Cookie", "kaiku_refresh=cookie-of-b")
+        .body(Body::empty())
+        .unwrap();
+    let list = body_to_json(app.oneshot(req).await).await;
+    let current: Vec<String> = list["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["is_current"] == true)
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(current, vec![a.to_string()]);
+}

@@ -393,3 +393,100 @@ async fn ban_takes_the_account_lock(pool: PgPool) {
         "the session minted under the lock ends with the ban"
     );
 }
+
+/// Review round 3 (Argon coverage, part 2 M1): when the recorded set grows
+/// between the read and the lock, the retry must not take a lower account
+/// while it still holds a higher one from the first attempt. Here the
+/// subject is the higher id and the newly recorded account the lower one;
+/// another transition holds the lower one and then takes the higher one.
+#[sqlx::test]
+async fn lock_scope_retry_never_takes_a_lower_account_after_a_higher_one(pool: PgPool) {
+    use vc_server::approvals::transition::lock_scope_with;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let (low, high) = if a < b { (a, b) } else { (b, a) };
+
+    let mut other = pool.begin().await.unwrap();
+    lock_accounts(&mut other, &[low]).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let scope = LockScope {
+        subject: high,
+        actors: Vec::new(),
+        affected: Vec::new(),
+    };
+    let mut reads = 0;
+    let scoped = lock_scope_with(&mut tx, &scope, move |_, _| {
+        reads += 1;
+        // Empty when first read, then a request recording `low` appears.
+        let found = if reads == 1 { Vec::new() } else { vec![low] };
+        Box::pin(async move { Ok(found) })
+    });
+    let holder = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        lock_accounts(&mut other, &[high])
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        other.commit().await.map_err(|e| e.to_string())
+    };
+    let (scoped, held) = tokio::join!(scoped, holder);
+    assert!(held.is_ok(), "the other transition commits: {held:?}");
+    let locked = scoped.expect("no deadlock on the scope side");
+    assert_eq!(locked.keys().copied().collect::<Vec<_>>(), vec![low, high]);
+    tx.rollback().await.unwrap();
+}
+
+/// Review round 3 (Argon coverage, part 6 M1, foreign-key locks): a notice
+/// delivery for an account and the admin deletion of that account. The
+/// deletion locks the account and then cascades into the account's events;
+/// the delivery must not hold such an event while it waits for the
+/// account (the foreign keys of its notice rows take a key-share lock).
+#[sqlx::test]
+async fn notice_delivery_and_account_deletion_never_deadlock(pool: PgPool) {
+    use vc_server::security_events::{notices, record, Actor, EventType, NewSecurityEvent};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let token = super::helpers::create_elevated_session(&pool, &app.config, admin).await;
+    let (target, _) = create_test_user(&pool).await;
+    let mut tx = pool.begin().await.unwrap();
+    vc_server::system_account::kaiku_dm_tx(&mut tx, target)
+        .await
+        .unwrap();
+    let ev = record(
+        &mut tx,
+        NewSecurityEvent::new(
+            target,
+            EventType::SignIn,
+            Actor::User(target),
+            serde_json::json!({"auth_methods": ["password"], "assurance": "probation"}),
+        ),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Hold the delivery inside its transaction (at the Kaiku DM lock).
+    let mut blocker = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('kaiku_dm:' || $1::text, 0))")
+        .bind(target)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let ids = [ev];
+    let delivery = notices::deliver(&app.state, &ids);
+    let uri = format!("/api/admin/users/{target}");
+    let deletion = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        admin_call(&app, Method::DELETE, &uri, &token, "").await
+    };
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 2).await;
+        blocker.commit().await.unwrap();
+    };
+    let (delivered, (status, body), ()) = tokio::join!(delivery, deletion, release);
+    assert_eq!(status, 200, "the deletion completes: {body}");
+    assert!(
+        delivered.is_ok(),
+        "no deadlock on the delivery side: {delivered:?}"
+    );
+}

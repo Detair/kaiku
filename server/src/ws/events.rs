@@ -960,9 +960,6 @@ pub enum ServerEvent {
         updated_by: Uuid,
     },
 
-    /// A DM channel was newly created with this user as a participant (sent
-    /// to every participant, including the creator's other devices). Open
-    /// sockets are subscribed to the channel before this event is delivered.
     /// An enrolment the user issued changed state (C26): the issuer's screen
     /// refetches it.
     EnrollmentUpdated {
@@ -1000,6 +997,9 @@ pub enum ServerEvent {
         security_notice: serde_json::Value,
     },
 
+    /// A DM channel was newly created with this user as a participant (sent
+    /// to every participant, including the creator's other devices). Open
+    /// sockets are subscribed to the channel before this event is delivered.
     DmCreated {
         /// The DM exactly as one element of `GET /api/dm` (`DMListResponse`)
         /// for the receiving user. A JSON value because `DMListResponse` is

@@ -202,6 +202,7 @@ async fn admin_and_auth_codes_are_upper_snake() {
         AuthError::AuthMethodDisabled,
         AuthError::PasswordChangeRequired,
         AuthError::AccountBanned,
+        AuthError::NotAdmin,
         AuthError::ElevationRequired,
         AuthError::CannotUnlinkLastIdentity,
         AuthError::ServiceUnavailable,
@@ -446,6 +447,7 @@ async fn platform_codes_are_upper_snake() {
                 E::EnrollmentFailed,
                 E::EnrollmentState,
                 E::EnrollmentLimit,
+                E::EnrollmentDeviceInUse,
                 E::DeviceUnsuitable {
                     reason: "attestation_missing",
                 },
@@ -608,6 +610,7 @@ async fn platform_codes_are_upper_snake() {
             GovernanceError::StorageNotConfigured,
             GovernanceError::Validation(s()),
             GovernanceError::Database(db()),
+            GovernanceError::ServiceUnavailable,
             GovernanceError::Internal(s()),
         ],
     )

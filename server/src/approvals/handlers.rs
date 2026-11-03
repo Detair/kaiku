@@ -51,7 +51,7 @@ pub(crate) async fn target_label(
                 .await?
         }
         StepUpAction::AdminAuthenticatorRemove => {
-            // A key device or a passkey id (C27 step-up table).
+            // C27: the target is a key device or a passkey id (any account).
             match crate::auth::strong::authenticator_label(conn, AuthenticatorRef::key_device(*id))
                 .await?
             {

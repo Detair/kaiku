@@ -43,26 +43,31 @@ pub async fn run_once(state: &AppState) -> anyhow::Result<()> {
     }
 
     // 2. Expire challenges past their deadline (B.2).
-    let expired = match state.db.acquire().await {
-        Ok(mut conn) => match crate::approvals::core::expire_due(&mut conn).await {
+    match state.db.acquire().await {
+        Ok(mut conn) => {
+            if let Err(e) = crate::approvals::core::expire_due(&mut conn).await {
+                tracing::warn!(error = %e, "sweep: challenge expiry failed");
+                first_err.get_or_insert_with(|| e.into());
+            }
             // 3. Enrolments whose setup token or code is past due (SM2).
-            Ok(_) => match crate::approvals::enrollments::expire_due(&mut conn).await {
-                // 4. Login attempts: dead claims reopen, past due expire (SM1).
-                Ok(_) => match crate::auth::login_attempts::core::expire_due(&mut conn).await {
-                    // 5. Accounts whose registration ticket bound nothing (F8).
-                    Ok(_) => crate::auth::registration::delete_unbound_due(&mut conn).await,
-                    Err(e) => Err(e),
-                },
-                Err(e) => Err(e),
-            },
-            Err(e) => Err(e),
-        },
-        Err(e) => Err(e),
-    };
-    if let Err(e) = expired {
-        tracing::warn!(error = %e, "sweep: challenge expiry failed");
-        if first_err.is_none() {
-            first_err = Some(e.into());
+            if let Err(e) = crate::approvals::enrollments::expire_due(&mut conn).await {
+                tracing::warn!(error = %e, "sweep: enrolment expiry failed");
+                first_err.get_or_insert_with(|| e.into());
+            }
+            // 4. Login attempts: dead claims reopen, past due expire (SM1).
+            if let Err(e) = crate::auth::login_attempts::core::expire_due(&mut conn).await {
+                tracing::warn!(error = %e, "sweep: login attempt expiry failed");
+                first_err.get_or_insert_with(|| e.into());
+            }
+            // 5. Accounts whose registration ticket bound nothing (F8).
+            if let Err(e) = crate::auth::registration::delete_unbound_due(&mut conn).await {
+                tracing::warn!(error = %e, "sweep: unbound account clean-up failed");
+                first_err.get_or_insert_with(|| e.into());
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "sweep: no connection for the expiry steps");
+            first_err.get_or_insert_with(|| e.into());
         }
     }
 

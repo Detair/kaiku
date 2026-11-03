@@ -15,6 +15,11 @@
 //! Legacy tokens (no `gen`) matching the stored hash are rotated once into
 //! the new format. Inactivity or the absolute cap → 401 `SESSION_EXPIRED`
 //! (the cap also ends the row).
+//!
+//! Everything under the lock runs on the transaction's own connection, and
+//! the denylist of a `sid` token is read before the lock (its verdict is
+//! applied after the ban check), so no second pool connection and no Valkey
+//! round-trip is awaited while the row is held.
 
 use std::net::SocketAddr;
 
@@ -86,11 +91,24 @@ pub async fn rotate(
     let claims = super::jwt::verify_refresh_signature(raw, &ctx.config.jwt_public_key)?;
     let user_id: Uuid = claims.sub.parse().map_err(|_| AuthError::InvalidToken)?;
     let presented_hash = super::hash_token(raw);
+    let sid: Option<Uuid> = match claims.sid.as_deref() {
+        Some(s) => Some(s.parse().map_err(|_| AuthError::InvalidToken)?),
+        None => None,
+    };
+    // The denylist (an end that may not be visible yet) is read before the
+    // row lock, so no Valkey round-trip runs under it; a hit refuses below,
+    // after the ban check. An unreachable denylist is skipped (B.4 rev 5).
+    let denied = match sid {
+        Some(sid) => {
+            super::session_check::denylist(ctx.redis, sid).await
+                == super::session_check::Denylist::Hit
+        }
+        None => false,
+    };
 
     let mut tx = ctx.db.begin().await?;
-    let row: Option<Row> = match (claims.sid.as_deref(), claims.gen) {
+    let row: Option<Row> = match (sid, claims.gen) {
         (Some(sid), Some(_)) => {
-            let sid: Uuid = sid.parse().map_err(|_| AuthError::InvalidToken)?;
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "SELECT {ROW_COLUMNS} FROM sessions WHERE id = $1 FOR UPDATE"
             )))
@@ -116,14 +134,25 @@ pub async fn rotate(
         return Err(AuthError::InvalidToken);
     }
     // A banned account is told why (its sessions were ended by the ban).
-    if super::queries::is_user_globally_banned(ctx.db, user_id).await? {
+    // Read in this transaction: a second pool connection while this one
+    // holds the row could starve the pool under concurrent refreshes.
+    let banned: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM global_bans
+                         WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW()))",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if banned {
         return Err(AuthError::AccountBanned);
     }
-    // Ended sessions, and a denylist hit (an end that may not be visible
-    // yet), are refused; an unreachable denylist is skipped (B.4 rev 5).
+    // Ended sessions are refused. A legacy token's session id is known only
+    // now; its one denylist read runs under the lock (once per token).
     if row.ended_at.is_some()
-        || super::session_check::denylist(ctx.redis, row.id).await
-            == super::session_check::Denylist::Hit
+        || denied
+        || (sid.is_none()
+            && super::session_check::denylist(ctx.redis, row.id).await
+                == super::session_check::Denylist::Hit)
     {
         return Err(AuthError::InvalidToken);
     }

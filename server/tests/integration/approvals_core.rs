@@ -649,3 +649,133 @@ async fn finished_challenges_and_enrolments_are_cleaned_up(pool: PgPool) {
             .unwrap();
     assert!(gone);
 }
+
+/// Review round 3 (Argon coverage, part 4 M1): consuming a grant takes the
+/// account lock before the session row (B.7 rule 1). The elevation row and
+/// its audit entry reference `users`, so without it the elevation held the
+/// session row and waited for a key-share lock on the account, while a
+/// revocation held the account and waited to end that session (40P01).
+#[sqlx::test]
+async fn elevation_and_revocation_never_deadlock(pool: PgPool) {
+    use vc_server::approvals::devices::{revoke_tx, RevokeReason};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    super::helpers::make_admin(&pool, user).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let c = stepup_challenge(&app, &dev, "admin.elevate", "").await;
+    assert_eq!(answer(&app, &dev, &c, b"").await.0, 200);
+
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+    let mut revoker = app.pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut revoker, &[user])
+        .await
+        .unwrap();
+    let revoke = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        let r = revoke_tx(
+            &mut revoker,
+            &ctx,
+            dev.row_id,
+            RevokeReason::Admin,
+            vc_server::security_events::Actor::Cli,
+        )
+        .await;
+        match r {
+            Ok(_) => revoker.commit().await.map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    };
+    let elevate = async {
+        let req = super::helpers::login::peer_request(Method::POST, "/api/admin/elevate")
+            .header("Authorization", format!("Bearer {}", dev.access_token))
+            .header("Content-Type", "application/json")
+            .body(Body::from(json!({"reason": "test"}).to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await;
+        let status = resp.status().as_u16();
+        (status, body_to_json(resp).await)
+    };
+    let ((status, body), revoked) = tokio::join!(elevate, revoke);
+    assert!(revoked.is_ok(), "the revocation commits: {revoked:?}");
+    assert_ne!(status, 500, "no deadlock on the elevation side: {body}");
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (401, Some("INVALID_TOKEN"))
+    );
+    let elevated: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM elevated_sessions WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(elevated, 0);
+}
+
+fn admin_actions(other: Uuid, device: Uuid) -> Vec<(&'static str, String)> {
+    vec![
+        ("admin.elevate", String::new()),
+        ("admin.enrollment.issue", other.to_string()),
+        ("admin.authenticator.remove", device.to_string()),
+        ("admin.may_approve", other.to_string()),
+        ("admin.factor.set_state", other.to_string()),
+        ("admin.recovery_contact.set", other.to_string()),
+    ]
+}
+
+#[sqlx::test]
+async fn device_admin_step_up_needs_an_admin(pool: PgPool) {
+    // Review round 2: the key-device step-up resolves no foreign label for
+    // a non-admin; an admin's challenge names the foreign key device.
+    let app = TestApp::with_pool(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (other, _) = create_test_user(&app.pool).await;
+    let dev = KeyDeviceFixture::insert(&app.pool, &app.config, user, "active").await;
+    let theirs = KeyDeviceFixture::insert(&app.pool, &app.config, other, "active").await;
+    sqlx::query("UPDATE approval_devices SET label = 'Their secret phone' WHERE id = $1")
+        .bind(theirs.row_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    for (action, target) in admin_actions(other, theirs.row_id) {
+        let (s, b) = post(
+            &app,
+            "/api/approvals/step-up",
+            &dev.access_token,
+            json!({"action": action, "target": target}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (403, Some("NOT_ADMIN")),
+            "{action}: {b}"
+        );
+        assert!(!b.to_string().contains("Their secret phone"), "{b}");
+    }
+    // Review round 3 (Codex): NOT_ADMIN comes first, also without a key
+    // device (never KEY_DEVICE_REQUIRED for a non-admin).
+    let (_, plain) = create_session_with_token(&app.pool, &app.config, user).await;
+    for (action, target) in admin_actions(other, theirs.row_id) {
+        let (s, b) = post(
+            &app,
+            "/api/approvals/step-up",
+            &plain,
+            json!({"action": action, "target": target}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (403, Some("NOT_ADMIN")),
+            "{action}: {b}"
+        );
+    }
+    make_admin(&app.pool, user).await;
+    let (s, c) = post(
+        &app,
+        "/api/approvals/step-up",
+        &dev.access_token,
+        json!({"action": "admin.authenticator.remove", "target": theirs.row_id.to_string()}),
+    )
+    .await;
+    assert_eq!(s, 201, "{c}");
+    assert_eq!(c["context"]["target_label"], "Their secret phone", "{c}");
+}

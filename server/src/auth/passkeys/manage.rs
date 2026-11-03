@@ -70,6 +70,9 @@ pub async fn rename(
     rp_of(&state)?;
     let label = clean_label(Some(&body.label))?;
     let mut tx = state.db.begin().await?;
+    // B.7 rule 1: the account before the passkey row (a step-up grant holds
+    // the account and then reads the passkey).
+    crate::approvals::transition::lock_accounts(&mut tx, &[auth.id]).await?;
     let row = queries::rename(&mut *tx, auth.id, id, &label)
         .await?
         .ok_or_else(|| AuthError::NotFound("passkey".into()))?;

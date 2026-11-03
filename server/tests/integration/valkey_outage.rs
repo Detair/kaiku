@@ -584,3 +584,36 @@ async fn login_with_mfa_fails_closed_with_503_when_valkey_hangs(pool: PgPool) {
     let body: serde_json::Value = response.json().await.expect("JSON body");
     assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
 }
+
+/// Review round 3 (Argon coverage, part 3 M2): ending many sessions while
+/// Valkey hangs costs one command timeout, not two per session, inside the
+/// revoking transaction (its account and session locks are held meanwhile).
+#[sqlx::test]
+async fn ending_many_sessions_waits_for_a_hung_valkey_once(pool: PgPool) {
+    let proxy = ValkeyProxy::spawn().await;
+    let (state, _config) = state_via_proxy(pool.clone(), &proxy, None).await;
+    let (user, _) = create_test_user(&pool).await;
+    for _ in 0..7 {
+        super::helpers::insert_session_row(&pool, uuid::Uuid::now_v7(), user, false).await;
+    }
+    proxy.freeze();
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&state);
+    let started = std::time::Instant::now();
+    let mut tx = pool.begin().await.unwrap();
+    let ended = vc_server::auth::revocation::end_all_sessions_tx(
+        &mut tx,
+        &ctx,
+        user,
+        None,
+        vc_server::auth::revocation::EndReason::Ban,
+    )
+    .await
+    .expect("the row decides; a hung denylist never fails the end");
+    tx.commit().await.unwrap();
+    assert_eq!(ended.len(), 8);
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "ended in {:?}",
+        started.elapsed()
+    );
+}

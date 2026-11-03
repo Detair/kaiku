@@ -59,7 +59,7 @@ use uuid::Uuid as AdminUuid;
 ///
 /// Keyed by the login session (the token's `sid`): an elevation belongs to one
 /// session, not to the admin's whole account (C24).
-fn elevated_cache_key(session_id: AdminUuid) -> String {
+pub fn elevated_cache_key(session_id: AdminUuid) -> String {
     format!("admin:elevated:{session_id}")
 }
 

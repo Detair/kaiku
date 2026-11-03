@@ -777,68 +777,173 @@ async fn admin_step_ups_need_an_admin(pool: PgPool) {
     assert_eq!(s, 200, "{b}");
 }
 
+/// Merge of L1a review round 3: `grant_tx` now takes the account lock
+/// (`FOR UPDATE` on `users`) before the session row. The passkey grant wrote
+/// its audit row first, whose `actor_id` foreign key holds a key-share lock
+/// on the same account, so two concurrent grants each held that lock and
+/// waited for the other's to take the account (40P01, a 500). The grant
+/// transaction now takes the account lock first.
 #[sqlx::test]
-async fn device_admin_step_up_needs_an_admin(pool: PgPool) {
-    // Review round 2: the key-device step-up resolves no foreign label for
-    // a non-admin; an admin's challenge names the foreign key device.
+async fn concurrent_passkey_step_ups_never_deadlock(pool: PgPool) {
     let app = TestApp::with_passkeys(pool).await;
     let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let handle = queries::user_handle(&app.pool, user).await.unwrap();
+    let mut finishes = Vec::new();
+    for _ in 0..2 {
+        let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
+        let (s, start) = post(
+            &app,
+            "/auth/passkeys/step-up/start",
+            Some(&token),
+            json!({"action": "passkey.add", "target": ""}),
+        )
+        .await;
+        assert_eq!(s, 200, "{start}");
+        let cred = auth.assert(
+            TEST_ORIGIN,
+            &start["options"],
+            &row.credential_id,
+            Some(handle),
+            true,
+        );
+        finishes.push((
+            token,
+            json!({"ceremony_id": start["ceremony_id"], "credential": cred}),
+        ));
+    }
+    // Another transition holds the account lock (L1b: account locks are
+    // `FOR NO KEY UPDATE`, which a key-share lock of an FK insert no longer
+    // blocks), so both grants reach their account lock before either
+    // commits.
+    let mut holder = app.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE")
+        .bind(user)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let release = async {
+        crate::helpers::wait_for_lock_waiters(&app.pool, 2).await;
+        holder.commit().await.unwrap();
+    };
+    let (a, b, ()) = tokio::join!(
+        post(
+            &app,
+            "/auth/passkeys/step-up/finish",
+            Some(&finishes[0].0),
+            finishes[0].1.clone(),
+        ),
+        post(
+            &app,
+            "/auth/passkeys/step-up/finish",
+            Some(&finishes[1].0),
+            finishes[1].1.clone(),
+        ),
+        release,
+    );
+    assert_eq!(a.0, 200, "first grant: {}", a.1);
+    assert_eq!(b.0, 200, "second grant: {}", b.1);
+}
+
+/// LP review r5 (Fable): renaming a passkey while a step-up with it finishes
+/// never deadlocks. The rename used to take the passkey row before the
+/// account (its audit row's key share), the grant the account before the
+/// passkey (`strong::is_active` FOR SHARE).
+#[sqlx::test]
+async fn renaming_a_passkey_during_its_step_up_never_deadlocks(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let handle = queries::user_handle(&app.pool, user).await.unwrap();
+    let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
+    let (s, start) = post(
+        &app,
+        "/auth/passkeys/step-up/start",
+        Some(&token),
+        json!({"action": "passkey.add", "target": ""}),
+    )
+    .await;
+    assert_eq!(s, 200, "{start}");
+    let cred = auth.assert(
+        TEST_ORIGIN,
+        &start["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    let finish = json!({"ceremony_id": start["ceremony_id"], "credential": cred});
+    // Hold the account: the grant queues for it first, then the rename takes
+    // the passkey row and queues behind the grant.
+    let mut holder = app.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let grant = post(&app, "/auth/passkeys/step-up/finish", Some(&token), finish);
+    let rename = async {
+        crate::helpers::wait_for_lock_waiters(&app.pool, 1).await;
+        let req = peer_request(Method::PATCH, &format!("/auth/passkeys/{}", row.id))
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::from(json!({"label": "Renamed"}).to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await;
+        let status = resp.status().as_u16();
+        (status, body_to_json(resp).await)
+    };
+    let release = async {
+        crate::helpers::wait_for_lock_waiters(&app.pool, 2).await;
+        holder.commit().await.unwrap();
+    };
+    let (g, r, ()) = tokio::join!(grant, rename, release);
+    assert_eq!(g.0, 200, "grant: {}", g.1);
+    assert_eq!(r.0, 200, "rename: {}", r.1);
+}
+
+/// L1a review round 3, part 2 M2 (for LP): the target of
+/// `admin.authenticator.remove` is a key device or a passkey id (C27), so an
+/// admin's key-device challenge names another account's passkey too (the
+/// desktop ceremony page already did).
+#[sqlx::test]
+async fn device_admin_step_up_names_a_passkey_target(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (admin, _) = create_test_user(&app.pool).await;
     let (other, _) = create_test_user(&app.pool).await;
-    let dev =
-        crate::helpers::approvals::KeyDeviceFixture::insert(&app.pool, &app.config, user, "active")
-            .await;
-    let theirs = crate::helpers::approvals::KeyDeviceFixture::insert(
+    make_admin(&app.pool, admin).await;
+    let (_, theirs) = seed_passkey(&app, other, PasskeyState::Active).await;
+    sqlx::query("UPDATE passkeys SET label = 'Their security key' WHERE id = $1")
+        .bind(theirs.id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let theirs_device = crate::helpers::approvals::KeyDeviceFixture::insert(
         &app.pool,
         &app.config,
         other,
         "active",
     )
     .await;
-    sqlx::query("UPDATE approval_devices SET label = 'Their secret phone' WHERE id = $1")
-        .bind(theirs.row_id)
-        .execute(&app.pool)
-        .await
-        .unwrap();
-    for (action, target) in admin_actions(other, theirs.row_id) {
-        let (s, b) = post(
+    let dev = crate::helpers::approvals::KeyDeviceFixture::insert(
+        &app.pool,
+        &app.config,
+        admin,
+        "active",
+    )
+    .await;
+    for (target, label) in [
+        (theirs.id, "Their security key"),
+        (theirs_device.row_id, "Pixel 8"),
+        (Uuid::new_v4(), ""),
+    ] {
+        let (s, c) = post(
             &app,
             "/api/approvals/step-up",
             Some(&dev.access_token),
-            json!({"action": action, "target": target}),
+            json!({"action": "admin.authenticator.remove", "target": target.to_string()}),
         )
         .await;
-        assert_eq!(
-            (s, b["error"].as_str()),
-            (403, Some("NOT_ADMIN")),
-            "{action}: {b}"
-        );
-        assert!(!b.to_string().contains("Their secret phone"), "{b}");
+        assert_eq!(s, 201, "{c}");
+        assert_eq!(c["context"]["target_label"], label, "{c}");
     }
-    // Review round 3 (Codex): NOT_ADMIN comes first, also without a key
-    // device (never KEY_DEVICE_REQUIRED for a non-admin).
-    let (_, plain) = create_session_with_token(&app.pool, &app.config, user).await;
-    for (action, target) in admin_actions(other, theirs.row_id) {
-        let (s, b) = post(
-            &app,
-            "/api/approvals/step-up",
-            Some(&plain),
-            json!({"action": action, "target": target}),
-        )
-        .await;
-        assert_eq!(
-            (s, b["error"].as_str()),
-            (403, Some("NOT_ADMIN")),
-            "{action}: {b}"
-        );
-    }
-    make_admin(&app.pool, user).await;
-    let (s, c) = post(
-        &app,
-        "/api/approvals/step-up",
-        Some(&dev.access_token),
-        json!({"action": "admin.authenticator.remove", "target": theirs.row_id.to_string()}),
-    )
-    .await;
-    assert_eq!(s, 201, "{c}");
-    assert_eq!(c["context"]["target_label"], "Their secret phone", "{c}");
 }

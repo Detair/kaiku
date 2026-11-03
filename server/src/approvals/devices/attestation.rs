@@ -6,7 +6,10 @@
 //! and refuses a key whose reported properties fall below B.1: security
 //! level below TEE, no user authentication, a timeout other than per-use or
 //! ≤ 10 s, or an attestation challenge other than the enrolment nonce. That
-//! catches app bugs, not a modified app.
+//! catches app bugs, not a modified app. The leaf must certify the claimed
+//! key (its `SubjectPublicKeyInfo` equals the claim's). User authentication means a
+//! hardware-enforced `userAuthType` other than none and no `noAuthRequired`;
+//! an unreadable `authTimeout` makes the extension unreadable.
 
 use super::UvClass;
 use crate::approvals::secrets::ct_eq;
@@ -52,10 +55,15 @@ impl Unsuitable {
 }
 
 /// Check the leaf of `chain` (DER, leaf first) against B.1 for `uv_class`.
+///
+/// The leaf must certify `public_key` (the claimed key's SPKI DER): its
+/// reported properties describe the key it certifies, so a leaf for any
+/// other key says nothing about the claimed one.
 pub fn check(
     chain: &[Vec<u8>],
     nonce: &[u8; 32],
     uv_class: UvClass,
+    public_key: &[u8],
 ) -> Result<ReportedProperties, Unsuitable> {
     let leaf = chain.first().ok_or(Unsuitable::AttestationMissing)?;
     if chain.len() > MAX_CHAIN {
@@ -69,6 +77,9 @@ pub fn check(
         .find(|e| e.oid.to_id_string() == KEY_DESCRIPTION_OID)
         .ok_or(Unsuitable::AttestationMissing)?;
     let desc = parse_key_description(ext.value).ok_or(Unsuitable::AttestationMissing)?;
+    if cert.public_key().raw != public_key {
+        return Err(Unsuitable::AttestationProperties);
+    }
     let props = ReportedProperties {
         security_level: desc.security_level,
         user_auth: desc.user_auth,
@@ -204,16 +215,30 @@ fn parse_key_description(der: &[u8]) -> Option<KeyDescription> {
     let challenge = f[4].content.to_vec();
     let sw = auth_list(f[6].content)?;
     let hw = auth_list(f[7].content)?;
-    let has = |tag: u32| hw.iter().chain(sw.iter()).any(|(t, _)| *t == tag);
-    let timeout = hw
+    let no_auth = hw
         .iter()
         .chain(sw.iter())
-        .find(|(t, _)| *t == TAG_AUTH_TIMEOUT)
-        .and_then(|(_, v)| uint(v));
+        .any(|(t, _)| *t == TAG_NO_AUTH_REQUIRED);
+    // Only the TEE enforces user authentication: `userAuthType` must be
+    // hardware-enforced and name an authenticator (0 is `HW_AUTH_NONE`).
+    let hw_auth_type = hw
+        .iter()
+        .any(|(t, v)| *t == TAG_USER_AUTH_TYPE && uint(v).is_some_and(|v| v > 0));
+    // Every reported `authTimeout` must be readable (an unreadable one is
+    // never "absent", which would pass as per-use); the longest window decides.
+    let mut timeout: Option<u64> = None;
+    for (_, v) in hw
+        .iter()
+        .chain(sw.iter())
+        .filter(|(t, _)| *t == TAG_AUTH_TIMEOUT)
+    {
+        let t = uint(v)?;
+        timeout = Some(timeout.map_or(t, |m| m.max(t)));
+    }
     Some(KeyDescription {
         security_level: attestation_level.min(keymint_level),
         challenge,
-        user_auth: !has(TAG_NO_AUTH_REQUIRED) && has(TAG_USER_AUTH_TYPE),
+        user_auth: !no_auth && hw_auth_type,
         auth_timeout: timeout,
     })
 }
@@ -237,5 +262,108 @@ pub fn clean_label(raw: &str) -> String {
         "Android phone".to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tlv(tag: &[u8], content: &[u8]) -> Vec<u8> {
+        let mut out = tag.to_vec();
+        out.push(u8::try_from(content.len()).unwrap());
+        out.extend_from_slice(content);
+        out
+    }
+
+    /// `[tag] EXPLICIT inner` with a high tag number.
+    fn explicit(tag: u32, inner: &[u8]) -> Vec<u8> {
+        let t = [
+            0xbf,
+            0x80 | u8::try_from(tag >> 7).unwrap(),
+            u8::try_from(tag & 0x7f).unwrap(),
+        ];
+        tlv(&t, inner)
+    }
+
+    fn int(v: &[u8]) -> Vec<u8> {
+        tlv(&[0x02], v)
+    }
+
+    /// A TEE `KeyDescription` with the given authorisation lists.
+    fn description(sw: &[u8], hw: &[u8]) -> Vec<u8> {
+        let mut seq = Vec::new();
+        seq.extend(int(&[100]));
+        seq.extend(tlv(&[0x0a], &[1]));
+        seq.extend(int(&[100]));
+        seq.extend(tlv(&[0x0a], &[1]));
+        seq.extend(tlv(&[0x04], &[7; 32]));
+        seq.extend(tlv(&[0x04], &[]));
+        seq.extend(tlv(&[0x30], sw));
+        seq.extend(tlv(&[0x30], hw));
+        tlv(&[0x30], &seq)
+    }
+
+    #[test]
+    fn hardware_user_auth_is_user_auth() {
+        let d = parse_key_description(&description(&[], &explicit(504, &int(&[2])))).unwrap();
+        assert!(d.user_auth);
+        assert_eq!(d.auth_timeout, None);
+    }
+
+    /// Review round 3 (Argon coverage, part 1 M2): only the TEE enforces
+    /// user authentication, so a `userAuthType` in `softwareEnforced` is none.
+    #[test]
+    fn software_enforced_user_auth_is_no_user_auth() {
+        let d = parse_key_description(&description(&explicit(504, &int(&[2])), &[])).unwrap();
+        assert!(!d.user_auth);
+    }
+
+    /// `userAuthType = 0` is `HW_AUTH_NONE`.
+    #[test]
+    fn user_auth_type_none_is_no_user_auth() {
+        let d = parse_key_description(&description(&[], &explicit(504, &int(&[0])))).unwrap();
+        assert!(!d.user_auth);
+        let empty = parse_key_description(&description(&[], &explicit(504, &[]))).unwrap();
+        assert!(!empty.user_auth);
+    }
+
+    #[test]
+    fn no_auth_required_anywhere_is_no_user_auth() {
+        let mut hw = explicit(504, &int(&[2]));
+        let sw = explicit(503, &tlv(&[0x05], &[]));
+        assert!(
+            !parse_key_description(&description(&sw, &hw))
+                .unwrap()
+                .user_auth
+        );
+        hw.extend(explicit(503, &tlv(&[0x05], &[])));
+        assert!(
+            !parse_key_description(&description(&[], &hw))
+                .unwrap()
+                .user_auth
+        );
+    }
+
+    /// A present but unreadable `authTimeout` is never read as "absent"
+    /// (which would pass as per-use).
+    #[test]
+    fn malformed_auth_timeout_is_unreadable() {
+        let mut hw = explicit(504, &int(&[2]));
+        hw.extend(explicit(505, &int(&[0x80])));
+        assert!(parse_key_description(&description(&[], &hw)).is_none());
+        let mut hw = explicit(504, &int(&[2]));
+        hw.extend(explicit(505, &[]));
+        assert!(parse_key_description(&description(&[], &hw)).is_none());
+    }
+
+    /// Every reported `authTimeout` counts; the longest window decides.
+    #[test]
+    fn longest_auth_timeout_decides() {
+        let mut hw = explicit(504, &int(&[2]));
+        hw.extend(explicit(505, &int(&[0])));
+        let sw = explicit(505, &int(&[30]));
+        let d = parse_key_description(&description(&sw, &hw)).unwrap();
+        assert_eq!(d.auth_timeout, Some(30));
     }
 }
