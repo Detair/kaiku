@@ -76,10 +76,12 @@ async fn password_failures_delay_after_5(pool: PgPool) {
 #[sqlx::test]
 async fn unknown_usernames_count_alike(pool: PgPool) {
     let app = TestApp::with_pool(pool).await;
+    // Valkey outlives the test database: a fresh name per run.
+    let name = format!("nobody_{}", &Uuid::new_v4().simple().to_string()[..12]);
     for _ in 0..5 {
-        assert_eq!(login(&app, "nobody_here", "x-password").await.0, 401);
+        assert_eq!(login(&app, &name, "x-password").await.0, 401);
     }
-    let (s, b, _) = login(&app, "Nobody_Here", "x-password").await;
+    let (s, b, _) = login(&app, &name.to_uppercase(), "x-password").await;
     assert_eq!(
         (s, b["error"].as_str()),
         (429, Some("TOO_MANY_ATTEMPTS")),
