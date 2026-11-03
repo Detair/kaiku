@@ -835,3 +835,57 @@ async fn failing_events_at_both_ends_never_starve_the_middle(pool: PgPool) {
     assert!(delivered.is_some(), "the middle event is delivered");
     assert_eq!(kaiku_notices(&app, u, &token).await.len(), 1);
 }
+
+/// Review round 6 (Codex r5): a sweep that cannot take the cursor lock (another
+/// server process is sweeping) delivers its oldest half and leaves the cursor
+/// alone, so concurrent sweeps never move it backwards.
+#[sqlx::test]
+async fn a_concurrent_sweep_never_moves_the_cursor(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (u, _token) = user_with_token(&app).await;
+    let first = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
+    let second = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
+    let delivered = |id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<chrono::DateTime<chrono::Utc>>>(
+                "SELECT delivered_at FROM security_events WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .is_some()
+        }
+    };
+    let cursor = || {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM system_settings WHERE key = $1")
+                .bind(notices::SWEEP_CURSOR_KEY)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let mut other = pool.acquire().await.unwrap();
+    sqlx::query("SELECT pg_advisory_lock(hashtext($1))")
+        .bind(notices::SWEEP_CURSOR_KEY)
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    let _ = notices::deliver_pending_bounded(&app.state, 2).await;
+    assert!(delivered(first).await, "the oldest half still goes");
+    assert!(
+        !delivered(second).await,
+        "no rotating half without the lock"
+    );
+    assert_eq!(cursor().await, 0, "the cursor is untouched");
+    sqlx::query("SELECT pg_advisory_unlock(hashtext($1))")
+        .bind(notices::SWEEP_CURSOR_KEY)
+        .execute(&mut *other)
+        .await
+        .unwrap();
+    let _ = notices::deliver_pending_bounded(&app.state, 2).await;
+    assert!(delivered(second).await);
+}

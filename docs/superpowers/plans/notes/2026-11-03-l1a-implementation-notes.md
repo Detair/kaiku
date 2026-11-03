@@ -568,3 +568,12 @@ Codex: gate, SPKI and 503 FIXED; two PARTLY, fixed by the coordinator. Gemini Fl
 | Notice sweep: failing events at both ends starve a middle one forever | fixed: the second half continues from a rotating cursor (`system_settings` key `security.notice_sweep_cursor`) and wraps around, so every leftover is reached within `ceil(undelivered / half)` sweeps; both halves are index range scans (a first random-sample version was refused by Codex r5: unbounded scan, no fairness bound) | see `git log` ("rotating cursor") | `security_notices::failing_events_at_both_ends_never_starve_the_middle` (red before; deterministic, 5 sweeps); the round-4 test loops 4 sweeps |
 
 Gates: `enrollments::`, `security_notices::`, `approvals*` integration 72 passed; after the cursor change `security_notices::` + `enrollments::` 53 passed; fmt and `clippy -p vc-server -D warnings` clean.
+
+## Review round 6 (Codex r5 on the rotating cursor; 2026-11-03)
+
+| Finding | Verdict | Commit | Test |
+|---|---|---|---|
+| Concurrent sweeps (several processes) can write a stale cursor back | fixed: the rotating half runs in a transaction holding `pg_try_advisory_xact_lock(hashtext('security.notice_sweep_cursor'))`; a sweep without the lock delivers only its oldest half | see `git log` ("advisory lock") | `security_notices::a_concurrent_sweep_never_moves_the_cursor` (red with the lock bypassed: checked) |
+| The nullable `OR` and the `(created_at, id)` comparison do not match the `created_at`-only partial index | fixed: separate queries with and without a cursor; `idx_security_events_undelivered` is now `(created_at, id) WHERE delivered_at IS NULL` (the migration is new in L1a and unreleased, so it is changed in place) | same | covered by the sweep tests |
+
+Gates: `security_notices::` + `enrollments::` 54 passed; fmt and `clippy -p vc-server -D warnings` clean (`--tests` lints in other files are pre-existing).
