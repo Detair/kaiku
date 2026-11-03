@@ -694,8 +694,9 @@ const UsersPanel: Component = () => {
               </div>
 
               {/* Sign-in security (C27 admin user view) */}
-              <Show when={adminState.selectedUserDetails}>
-                {(details) => <UserSecurityPanel user={details()} meId={currentUser()?.id ?? ""} />}
+              {/* Keyed: another user gets a fresh panel (its toggles start from that user). */}
+              <Show when={adminState.selectedUserDetails} keyed>
+                {(details) => <UserSecurityPanel user={details} meId={currentUser()?.id ?? ""} />}
               </Show>
 
               {/* Actions Section */}
