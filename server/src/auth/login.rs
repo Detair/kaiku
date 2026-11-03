@@ -16,7 +16,7 @@ use super::backup_codes::find_matching_backup_code;
 use super::client_class::ClientClass;
 use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
-use super::helpers::{extract_refresh_token, should_return_refresh_token};
+use super::helpers::{extract_refresh_token_with_source, should_return_refresh_token};
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
 use super::oidc::{
@@ -217,7 +217,11 @@ pub async fn logout(
     // browsers) when it belongs to the caller. Either alone is enough.
     let mut session_ids: Vec<Uuid> = auth_user.session_id.into_iter().collect();
     let body_token = body.and_then(|b| b.0.refresh_token);
-    if let Ok(raw_token) = extract_refresh_token(body_token, &jar, &state.config) {
+    let mut legacy_cookie = false;
+    if let Ok((raw_token, from_legacy)) =
+        extract_refresh_token_with_source(body_token, &jar, &state.config)
+    {
+        legacy_cookie = from_legacy;
         let token_hash = hash_token(&raw_token);
         if let Some(session) = find_session_by_token_hash(&state.db, &token_hash).await? {
             if session.user_id == auth_user.id && !session_ids.contains(&session.id) {
@@ -244,7 +248,13 @@ pub async fn logout(
 
     tracing::info!(user_id = %auth_user.id, "User logged out");
 
-    Ok(jar.add(cookies::build_clear_cookie(&state.config)))
+    let jar = jar.add(cookies::build_clear_cookie(&state.config));
+    // The pre-v1.0 cookie it read goes too (as on refresh).
+    Ok(if legacy_cookie {
+        jar.add(cookies::build_clear_legacy_cookie(&state.config))
+    } else {
+        jar
+    })
 }
 
 // ============================================================================
