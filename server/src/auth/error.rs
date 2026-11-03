@@ -233,6 +233,15 @@ pub enum AuthError {
     #[error("Choose another password")]
     PasswordRejected(crate::auth::password_policy::PasswordRejected),
 
+    /// F3's neutral answer: a wrong password, an unknown user and a closed
+    /// password path look the same (401 `INVALID_CREDENTIALS`).
+    #[error("Wrong username or password, or password sign-in is not available for this account. Use a passkey or 'Sign in with phone', or ask an admin.")]
+    NeutralSignIn,
+
+    /// TOTP is not set up, throttled or compromised (403 `TOTP_UNAVAILABLE`).
+    #[error("Your authenticator code cannot be used for this account")]
+    TotpUnavailable,
+
     /// Unknown attempt or wrong collection secret (C27).
     #[error("This sign-in is not known")]
     LoginAttemptUnknown,
@@ -323,6 +332,8 @@ impl AuthError {
             Self::PasskeyHandoffInvalid => (StatusCode::BAD_REQUEST, "PASSKEY_HANDOFF_INVALID"),
             Self::ClientOutdated => (StatusCode::BAD_REQUEST, "CLIENT_OUTDATED"),
             Self::PasswordRejected(_) => (StatusCode::BAD_REQUEST, "PASSWORD_REJECTED"),
+            Self::NeutralSignIn => (StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS"),
+            Self::TotpUnavailable => (StatusCode::FORBIDDEN, "TOTP_UNAVAILABLE"),
             Self::LoginAttemptUnknown => (StatusCode::NOT_FOUND, "LOGIN_ATTEMPT_UNKNOWN"),
             Self::LoginAttemptNotReady => (StatusCode::CONFLICT, "LOGIN_ATTEMPT_NOT_READY"),
             Self::LoginAttemptEnded { .. } => (StatusCode::GONE, "LOGIN_ATTEMPT_ENDED"),

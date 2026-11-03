@@ -348,6 +348,39 @@ pub(super) struct Chain {
     pub(super) result: HashMap<String, String>,
 }
 
+/// Follow the provider's redirect to the server callback and return the
+/// callback's own response (the v1.0 hand-off page or popup page).
+pub(super) async fn callback_response(provider_url: &str) -> reqwest::Response {
+    let resp = client().get(provider_url).send().await.expect("provider");
+    let callback = resp
+        .headers()
+        .get("location")
+        .and_then(|l| l.to_str().ok())
+        .expect("provider redirect")
+        .to_string();
+    assert!(callback.contains("/auth/oidc/callback"), "{callback}");
+    client().get(&callback).send().await.expect("callback")
+}
+
+/// The hidden form fields of a hand-off page.
+pub(super) fn form_fields(html: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for part in html.split("<input type=\"hidden\" ").skip(1) {
+        let name = part
+            .split("name=\"")
+            .nth(1)
+            .and_then(|r| r.split('"').next());
+        let value = part
+            .split("value=\"")
+            .nth(1)
+            .and_then(|r| r.split('"').next());
+        if let (Some(n), Some(v)) = (name, value) {
+            out.insert(n.to_string(), v.to_string());
+        }
+    }
+    out
+}
+
 /// Follow the redirects from the provider URL until the desktop return
 /// address (the server callback is never called by hand).
 pub(super) async fn follow(provider_url: &str) -> Chain {
@@ -400,8 +433,11 @@ async fn test_login_flow_does_not_force_a_fresh_login(pool: PgPool) {
             ctx.server.url, ctx.slug
         ))
         .query(&[
-            ("redirect_uri", DESKTOP_RETURN),
-            ("response", "json"),
+            ("loopback_port", "50123"),
+            (
+                "callback_path",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            ),
             (
                 "client_challenge",
                 "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",

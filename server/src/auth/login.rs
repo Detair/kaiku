@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 
 use axum::extract::{ConnectInfo, Path, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 use axum_extra::extract::CookieJar;
@@ -15,7 +15,9 @@ use uuid::Uuid;
 use super::client_class::ClientClass;
 use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
-use super::helpers::{extract_refresh_token, should_return_refresh_token};
+use super::factors::{Factor, FactorRef};
+use super::helpers::extract_refresh_token;
+use super::login_attempts::types::LoginStep;
 use super::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use super::middleware::AuthUser;
 use super::oidc::{
@@ -25,7 +27,7 @@ use super::oidc::{
     OidcUserInfo, OIDC_HANDOFF_TTL_SECS,
 };
 use super::password::{hash_password, verify_password};
-use super::session_issue::{issue_session, NewSession, SessionClient, SignInMethod};
+use super::session_issue::SessionClient;
 use super::types::{
     AuthResponse, ForgotPasswordRequest, LoginRequest, LogoutRequest, OidcAuthorizeQuery,
     OidcCallbackQuery, OidcHandoffExchangeRequest, ResetPasswordRequest,
@@ -39,7 +41,18 @@ use crate::db::{
 };
 use crate::ratelimit::NormalizedIp;
 
-/// Login with username/password.
+/// F3's neutral answer: same status, body and work for a wrong password,
+/// an unknown user and a closed password path.
+#[must_use]
+pub const fn neutral_answer() -> AuthError {
+    AuthError::NeutralSignIn
+}
+
+/// Sign in with a password (F3, F4): never a session. A correct password
+/// creates a `password` login attempt and answers 202 `LoginStep`
+/// (`confirmation_required` with an active key device and `may_approve`,
+/// else `totp_required` with an active TOTP); everything else gets the
+/// neutral answer after one Argon2 verify.
 ///
 /// POST /auth/login
 #[utoipa::path(
@@ -48,9 +61,9 @@ use crate::ratelimit::NormalizedIp;
     tag = "auth",
     request_body = LoginRequest,
     responses(
-        (status = 200, description = "Login successful", body = AuthResponse),
-        (status = 401, description = "Invalid credentials"),
-        (status = 403, description = "MFA verification required or auth method disabled"),
+        (status = 202, description = "Confirm on the phone or with TOTP", body = super::login_attempts::types::LoginStep),
+        (status = 400, description = "CLIENT_OUTDATED (mfa_code, or a native client without client_challenge)"),
+        (status = 401, description = "INVALID_CREDENTIALS (the neutral answer)"),
     ),
     security(()),
 )]
@@ -62,7 +75,7 @@ pub async fn login(
     headers: HeaderMap,
     jar: CookieJar,
     Json(body): Json<LoginRequest>,
-) -> AuthResult<(CookieJar, Json<AuthResponse>)> {
+) -> AuthResult<(StatusCode, CookieJar, Json<LoginStep>)> {
     // Helper macro to record failed auth (if rate limiter is configured)
     // SECURITY: Fails request with 503 if Valkey is down (fail-closed pattern)
     macro_rules! record_failed_auth {
@@ -72,40 +85,54 @@ pub async fn login(
                 if rl.record_failed_auth(&nip.0).await.is_err()
                     && !rl.allow_during_outage(crate::ratelimit::RateLimitCategory::FailedAuth)
                 {
-                    // Fail closed (503, logged and counted by
-                    // `allow_during_outage`): otherwise a rate limiter failure
-                    // would let attackers bypass failed-login blocking.
                     return Err(AuthError::ServiceUnavailable);
                 }
             }
         };
     }
 
-    // Look up the user, then ALWAYS run a password verification — against the
-    // real hash if the account exists with a local password, otherwise against
-    // a dummy hash of identical Argon2 cost. This keeps the response time the
-    // same whether the username exists or not, closing the timing side-channel
-    // that would otherwise reveal valid usernames (enumeration).
+    // v1.0: the code is never sent with the password (C27).
+    if body.mfa_code.is_some() {
+        return Err(AuthError::ClientOutdated);
+    }
+    let binding =
+        super::login_attempts::handlers::binding(&headers, body.client_challenge.as_deref())?;
+
+    // Always one Argon2 verify (a dummy hash for unknown users, the system
+    // account and passwordless accounts), so the work is the same.
     let user_opt = find_user_by_username(&state.db, &body.username).await?;
     let stored_hash = user_opt
         .as_ref()
-        .and_then(|u| u.password_hash.as_deref())
-        .unwrap_or_else(|| super::password::DUMMY_PASSWORD_HASH.as_str());
-    // A malformed stored hash (verify error) is treated as a non-match rather
-    // than a distinct 500, so it cannot be used as an oracle either.
-    let password_valid = verify_password(&body.password, stored_hash).unwrap_or(false);
+        .and_then(|u| u.password_hash.clone())
+        .unwrap_or_else(|| super::password::DUMMY_PASSWORD_HASH.clone());
+    let password = body.password.clone();
+    let password_valid = tokio::task::spawn_blocking(move || {
+        verify_password(&password, &stored_hash).unwrap_or(false)
+    })
+    .await
+    .map_err(|e| AuthError::Internal(format!("password check failed: {e}")))?;
 
     let user = match user_opt {
-        // Local account whose password matched. The system account has no
-        // password and is refused like an unknown user (C28).
-        Some(u) if u.password_hash.is_some() && !u.is_system && password_valid => u,
-        // Missing user, non-local (OIDC) account, or wrong password — all
-        // indistinguishable to the caller.
-        _ => {
-            record_failed_auth!();
-            crate::observability::metrics::record_auth_login_attempt(false);
-            return Err(AuthError::InvalidCredentials);
+        Some(u) if u.password_hash.is_some() && !u.is_system && password_valid => Some(u),
+        _ => None,
+    };
+    let mut conn = state.db.acquire().await?;
+    let step = match &user {
+        Some(u) => {
+            super::login_attempts::core::next_step(
+                &mut conn,
+                u.id,
+                super::login_attempts::core::AttemptKind::Password,
+            )
+            .await?
         }
+        None => None,
+    };
+    drop(conn);
+    let (Some(user), Some((step, generation))) = (user, step) else {
+        record_failed_auth!();
+        crate::observability::metrics::record_auth_login_attempt(false);
+        return Err(neutral_answer());
     };
 
     // A banned account cannot start a new session.
@@ -114,60 +141,85 @@ pub async fn login(
         return Err(AuthError::AccountBanned);
     }
 
-    // Check MFA if enabled
-    if let Some(ref encrypted_secret) = user.mfa_secret {
-        // MFA is enabled - code is required
-        let mfa_code = body.mfa_code.as_ref().ok_or(AuthError::MfaRequired)?;
-
-        // Try the TOTP code first. It is accepted once per 30-second step
-        // (the same per-user replay protection as the re-authentication
-        // paths) and only after the password matched; a Valkey error fails
-        // closed with 503.
-        let totp_valid =
-            super::reauth::accept_totp(&state, user.id, encrypted_secret, &user.username, mfa_code)
-                .await?;
-
-        if !totp_valid {
-            record_failed_auth!();
-            crate::observability::metrics::record_auth_login_attempt(false);
-            return Err(AuthError::InvalidMfaCode);
-        }
-    }
-
-    // Create the session (probation: a password, with or without TOTP, is
-    // never a full sign-in, CC4).
-    let method = if user.mfa_secret.is_some() {
-        SignInMethod::LegacyPasswordMfa
-    } else {
-        SignInMethod::LegacyPassword
-    };
-    let client = SessionClient::from_request(&state, &headers, addr);
-    let issued = issue_session(
-        &AuthCtx::from(&state),
-        &NewSession {
-            user_id: user.id,
-            method,
-            client: &client,
-            client_class: ClientClass::from_headers(&headers),
-            authenticator: None,
-        },
+    let (status, jar, step) = start_attempt(
+        &state,
+        &headers,
+        addr,
+        jar,
+        user.id,
+        super::login_attempts::core::AttemptKind::Password,
+        Some(FactorRef {
+            factor: Factor::Password,
+            generation,
+        }),
+        binding,
+        step,
     )
     .await?;
-    crate::security_events::spawn_delivery(&state, issued.event_ids.clone());
-
-    // Clear failed auth counter on successful login
     if let (Some(ref rl), Some(Extension(ref nip))) = (&state.rate_limiter, &normalized_ip) {
         let _ = rl.clear_failed_auth(&nip.0).await;
     }
+    tracing::info!(user_id = %user.id, step = step.status, "Password correct; confirmation pending");
+    Ok((status, jar, Json(step)))
+}
 
-    tracing::info!(user_id = %user.id, setup_required = !issued.setup_complete, "User logged in");
-    crate::observability::metrics::record_auth_login_attempt(true);
-
-    let include_refresh_token = should_return_refresh_token(&headers);
-    let jar = jar.add(issued.refresh_cookie(&state.config));
+/// Create the `password`/`oidc` attempt of a correct first factor and its
+/// `LoginStep` (202; the attempt cookie for a browser).
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn start_attempt(
+    state: &AppState,
+    headers: &HeaderMap,
+    addr: SocketAddr,
+    jar: CookieJar,
+    user_id: Uuid,
+    kind: super::login_attempts::core::AttemptKind,
+    first_factor: Option<FactorRef>,
+    binding: super::login_attempts::core::CollectionBinding,
+    step: super::login_attempts::core::NextStep,
+) -> AuthResult<(StatusCode, CookieJar, LoginStep)> {
+    use super::login_attempts::{core, handlers};
+    let class = ClientClass::from_headers(headers);
+    let client = SessionClient::from_request(state, headers, addr);
+    let ctx = AuthCtx::from(state);
+    let mut tx = state.db.begin().await?;
+    if let Some(old) = handlers::cookie_secret(&jar, &state.config) {
+        core::cancel_by_cookie(&mut tx, &ctx, &old).await?;
+    }
+    let created = core::create_tx(
+        &mut tx,
+        &ctx,
+        core::NewAttempt {
+            kind,
+            user_id: Some(user_id),
+            first_factor,
+            client_class: class,
+            client_label: core::client_label(class, client.user_agent.as_deref()),
+            client,
+            binding,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    let jar = match &created.cookie {
+        Some(secret) => jar.add(handlers::attempt_cookie(
+            &secret.to_b64u(),
+            core::ATTEMPT_TTL_SECS,
+            &state.config,
+        )),
+        None => jar,
+    };
+    // A TOTP-only account sees no QR (nothing could scan it).
+    let mut attempt = created.attempt;
+    if step == core::NextStep::TotpRequired {
+        attempt.qr = None;
+    }
     Ok((
+        StatusCode::ACCEPTED,
         jar,
-        Json(issued.into_response(user.must_change_password, include_refresh_token)),
+        LoginStep {
+            status: step.as_str().to_string(),
+            attempt,
+        },
     ))
 }
 
@@ -292,22 +344,62 @@ pub async fn oidc_authorize(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<OidcAuthorizeQuery>,
 ) -> Result<Response, AuthError> {
-    // A desktop start must come from the app itself: browsers cannot send the
-    // header cross-site (not allowed by CORS) and a clicked link cannot set
-    // it, so a crafted start link never reaches the provider. The app reads
-    // the provider URL from JSON instead of following a redirect.
-    let is_desktop_start = query.redirect_uri.is_some() || query.client_challenge.is_some();
-    if is_desktop_start && !is_desktop_client(&headers) {
-        return Err(AuthError::OidcClientOutdated);
-    }
-    let want_json = is_desktop_start || query.response.as_deref() == Some("json");
-    start_oidc_flow(
+    // v1.0 (C27, C29 step 8): a native start names its app with
+    // `X-Kaiku-Client` and binds the later attempt to `client_challenge`;
+    // the desktop also names its loopback listener. Browsers cannot send the
+    // header cross-site, so a crafted link never starts a native flow.
+    let class = ClientClass::from_headers(&headers);
+    let native = match class {
+        ClientClass::Web => {
+            if query.redirect_uri.is_some()
+                || query.client_challenge.is_some()
+                || query.loopback_port.is_some()
+            {
+                return Err(AuthError::OidcClientOutdated);
+            }
+            None
+        }
+        ClientClass::Desktop => {
+            let (Some(port), Some(path), Some(_)) = (
+                query.loopback_port,
+                query.callback_path.as_deref(),
+                query.client_challenge.as_deref(),
+            ) else {
+                // The 307 `?code=` hand-back to `redirect_uri` is gone.
+                return Err(AuthError::OidcClientOutdated);
+            };
+            if port < 1024
+                || path.len() != 43
+                || crate::approvals::secrets::b64u_decode(path).is_none()
+            {
+                return Err(AuthError::Validation(
+                    "loopback_port or callback_path".to_string(),
+                ));
+            }
+            Some(super::oidc::NativeLogin::Desktop {
+                flow_id: Uuid::new_v4(),
+                loopback: super::passkeys::desktop_page::LoopbackTarget {
+                    port,
+                    callback_path: path.to_string(),
+                },
+            })
+        }
+        ClientClass::Android => {
+            if query.client_challenge.is_none() {
+                return Err(AuthError::OidcClientOutdated);
+            }
+            Some(super::oidc::NativeLogin::Android)
+        }
+    };
+    let want_json = native.is_some() || query.response.as_deref() == Some("json");
+    start_oidc_flow_with(
         &state,
         &provider,
-        query.redirect_uri.as_deref(),
+        None,
         query.client_challenge.as_deref(),
         OidcFlowPurpose::Login,
         want_json,
+        native,
     )
     .await
 }
@@ -346,6 +438,28 @@ pub async fn start_oidc_flow(
     purpose: OidcFlowPurpose,
     want_json: bool,
 ) -> Result<Response, AuthError> {
+    start_oidc_flow_with(
+        state,
+        provider,
+        redirect_uri,
+        client_challenge,
+        purpose,
+        want_json,
+        None,
+    )
+    .await
+}
+
+/// [`start_oidc_flow`] with a native sign-in start (C27, C29 step 8).
+pub async fn start_oidc_flow_with(
+    state: &AppState,
+    provider: &str,
+    redirect_uri: Option<&str>,
+    client_challenge: Option<&str>,
+    purpose: OidcFlowPurpose,
+    want_json: bool,
+    native: Option<super::oidc::NativeLogin>,
+) -> Result<Response, AuthError> {
     let auth_methods = get_auth_methods_allowed(&state.db).await?;
     if !auth_methods.oidc {
         return Err(AuthError::AuthMethodDisabled);
@@ -379,8 +493,8 @@ pub async fn start_oidc_flow(
 
     // Desktop login hands back a one-time code bound to this challenge; an app
     // that sends none would expect tokens in the loopback URL and is refused.
-    let is_desktop_login =
-        matches!(purpose, OidcFlowPurpose::Login) && redirects.client_redirect_uri.is_some();
+    let is_desktop_login = matches!(purpose, OidcFlowPurpose::Login)
+        && (redirects.client_redirect_uri.is_some() || native.is_some());
     let client_challenge = match (is_desktop_login, client_challenge) {
         (true, Some(challenge)) if is_valid_client_challenge(challenge) => {
             Some(challenge.to_string())
@@ -419,6 +533,7 @@ pub async fn start_oidc_flow(
         purpose,
         client_redirect_uri: redirects.client_redirect_uri,
         client_challenge,
+        native: native.clone(),
     };
     let ttl = OIDC_STATE_TTL_SECS;
 
@@ -452,7 +567,9 @@ pub async fn start_oidc_flow(
         })?;
 
     tracing::info!(provider = %provider, purpose = flow_state.purpose.kind(), json = want_json, "Starting OIDC provider flow");
-    if want_json {
+    if let Some(super::oidc::NativeLogin::Desktop { flow_id, .. }) = &native {
+        Ok(Json(serde_json::json!({ "url": auth_url, "flow_id": flow_id })).into_response())
+    } else if want_json {
         Ok(Json(serde_json::json!({ "url": auth_url })).into_response())
     } else {
         Ok(Redirect::temporary(&auth_url).into_response())
@@ -480,9 +597,12 @@ pub async fn start_oidc_flow(
 #[tracing::instrument(skip(state, jar, query))]
 pub async fn oidc_callback(
     State(state): State<AppState>,
+    connect: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     jar: CookieJar,
     axum::extract::Query(query): axum::extract::Query<OidcCallbackQuery>,
 ) -> Result<Response, AuthError> {
+    let addr = connect.map_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)), |c| c.0 .0);
     let oidc_manager = state
         .oidc_manager
         .as_ref()
@@ -757,84 +877,97 @@ pub async fn oidc_callback(
         tracing::warn!(error = %e, provider = %flow_state.slug, "Failed to update identity last_used_at");
     }
 
-    if let Some(redirect_url) = client_return_url(&flow_state) {
-        // Desktop: hand back only a one-time code; the desktop redeems it with
-        // its verifier at `POST /auth/oidc/desktop/exchange`.
-        return Ok(desktop_login_hand_back(&state, &flow_state, redirect_url, user.id).await);
-    }
-
-    let issued =
-        issue_oidc_session(&state, user.id, &SessionClient::default(), ClientClass::Web).await?;
-    crate::security_events::spawn_delivery(&state, issued.event_ids.clone());
-    let tokens = &issued.tokens;
-    let setup_complete = issued.setup_complete;
-
-    tracing::info!(user_id = %user.id, provider = %flow_state.slug, "User logged in via OIDC");
-
-    // Browser flow: set HttpOnly refresh cookie + return HTML with postMessage
-    let jar = jar.add(cookies::build_refresh_cookie(
-        &tokens.refresh_token,
-        state.config.jwt_refresh_expiry,
-        &state.config,
-    ));
-
-    // JSON-encode tokens to prevent any injection via token values
-    let payload = serde_json::json!({
-        "type": "oidc-callback",
-        "access_token": tokens.access_token,
-        "expires_in": tokens.access_expires_in,
-        "setup_required": !setup_complete,
-    });
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html><body><script>
-if (window.opener) {{
-    window.opener.postMessage({payload}, window.location.origin);
-    window.close();
-}} else {{
-    document.body.innerText = "Login successful. You can close this window.";
-}}
-</script></body></html>"#,
-    );
-    Ok((jar, axum::response::Html(html)).into_response())
-}
-
-/// Start a session for an OIDC login (probation, CC4).
-async fn issue_oidc_session(
-    state: &AppState,
-    user_id: Uuid,
-    client: &SessionClient,
-    client_class: ClientClass,
-) -> AuthResult<super::session_issue::IssuedSession> {
-    issue_session(
-        &AuthCtx::from(state),
-        &NewSession {
-            user_id,
-            method: SignInMethod::LegacyOidc,
-            client,
-            client_class,
-            authenticator: None,
-        },
+    // v1.0 (F3 OIDC variant): no session; the account's second step.
+    let mut conn = state.db.acquire().await?;
+    let step = super::login_attempts::core::next_step(
+        &mut conn,
+        user.id,
+        super::login_attempts::core::AttemptKind::Oidc,
     )
-    .await
+    .await?;
+    drop(conn);
+
+    match flow_state.native.clone() {
+        Some(native) => {
+            let Some(step_kind) = step else {
+                return Ok(native_failure(&flow_state, &native, "INVALID_CREDENTIALS"));
+            };
+            let _ = step_kind;
+            Ok(native_hand_back(&state, &flow_state, &native, user.id).await)
+        }
+        None if client_return_url(&flow_state).is_some() => {
+            // A pre-v1.0 desktop state (`redirect_uri`): the app must update.
+            Ok(flow_failure_response(&flow_state, OIDC_CLIENT_OUTDATED))
+        }
+        None => {
+            let Some((step, _)) = step else {
+                return Ok(flow_failure_response(&flow_state, "INVALID_CREDENTIALS"));
+            };
+            // Browser: an `oidc` attempt bound to the attempt cookie.
+            let (_, jar, step) = start_attempt(
+                &state,
+                &headers,
+                addr,
+                jar,
+                user.id,
+                super::login_attempts::core::AttemptKind::Oidc,
+                None,
+                super::login_attempts::core::CollectionBinding::Cookie,
+                step,
+            )
+            .await?;
+            tracing::info!(user_id = %user.id, provider = %flow_state.slug, "OIDC first factor; confirmation pending");
+            let payload = serde_json::json!({
+                "type": "oidc-callback",
+                "status": step.status,
+                "attempt": step.attempt,
+            });
+            Ok((jar, axum::response::Html(popup_result_page(&payload, true))).into_response())
+        }
+    }
 }
 
-/// Generic code: a desktop login state without a client challenge (started by
-/// an older app or before the upgrade) cannot be handed back.
-const OIDC_CLIENT_OUTDATED: &str = "OIDC_CLIENT_OUTDATED";
+/// A native OIDC sign-in failed after the provider: the desktop hand-off
+/// page carries `error`, Android's callback `error=`.
+fn native_failure(
+    flow_state: &OidcFlowState,
+    native: &super::oidc::NativeLogin,
+    code: &str,
+) -> Response {
+    match native {
+        super::oidc::NativeLogin::Desktop { flow_id, loopback } => {
+            super::passkeys::desktop_page::handoff_page(
+                loopback,
+                *flow_id,
+                super::passkeys::desktop_page::HandoffField::Error(code),
+            )
+        }
+        super::oidc::NativeLogin::Android => {
+            let _ = flow_state;
+            android_callback("error", code)
+        }
+    }
+}
 
-/// Finish a desktop login: store a one-time hand-off grant (60 s, no tokens)
-/// and redirect the browser to the loopback with only `code` added to the
-/// stored return address (which may carry the desktop's per-flow value).
-async fn desktop_login_hand_back(
+/// `kaiku://auth/callback?<key>=<value>` for the Android Custom Tab
+/// (no-store, no referrer).
+fn android_callback(key: &str, value: &str) -> Response {
+    let mut url = openidconnect::url::Url::parse("kaiku://auth/callback").expect("static URL");
+    url.query_pairs_mut().append_pair(key, value);
+    loopback_redirect(&url)
+}
+
+/// Store the one-time hand-off grant (60 s) and deliver only its code: the
+/// desktop through the hand-off page's form POST (C29 step 8), Android
+/// through `kaiku://auth/callback?code=…`.
+async fn native_hand_back(
     state: &AppState,
     flow_state: &OidcFlowState,
-    mut redirect_url: openidconnect::url::Url,
+    native: &super::oidc::NativeLogin,
     user_id: Uuid,
 ) -> Response {
     let Some(client_challenge) = flow_state.client_challenge.clone() else {
-        tracing::info!(provider = %flow_state.slug, "Desktop OIDC state without client challenge");
-        return flow_failure_response(flow_state, OIDC_CLIENT_OUTDATED);
+        return native_failure(flow_state, native, OIDC_CLIENT_OUTDATED);
     };
     let code = new_handoff_code();
     let grant = OidcHandoffGrant {
@@ -859,12 +992,24 @@ async fn desktop_login_hand_back(
     };
     if let Err(e) = stored {
         tracing::error!(error = %e, "Failed to store OIDC hand-off code");
-        return flow_failure_response(flow_state, "SERVICE_UNAVAILABLE");
+        return native_failure(flow_state, native, "SERVICE_UNAVAILABLE");
     }
-    tracing::info!(user_id = %user_id, provider = %flow_state.slug, "OIDC desktop login handed off");
-    redirect_url.query_pairs_mut().append_pair("code", &code);
-    loopback_redirect(&redirect_url)
+    tracing::info!(user_id = %user_id, provider = %flow_state.slug, "OIDC native sign-in handed off");
+    match native {
+        super::oidc::NativeLogin::Desktop { flow_id, loopback } => {
+            super::passkeys::desktop_page::handoff_page(
+                loopback,
+                *flow_id,
+                super::passkeys::desktop_page::HandoffField::Code(&code),
+            )
+        }
+        super::oidc::NativeLogin::Android => android_callback("code", &code),
+    }
 }
+
+/// Generic code: a desktop login state without a client challenge (started by
+/// an older app or before the upgrade) cannot be handed back.
+const OIDC_CLIENT_OUTDATED: &str = "OIDC_CLIENT_OUTDATED";
 
 /// 307 to the desktop loopback: never cached, never sent on as a referrer.
 fn loopback_redirect(url: &openidconnect::url::Url) -> Response {
@@ -909,7 +1054,7 @@ pub async fn oidc_desktop_exchange(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<OidcHandoffExchangeRequest>,
-) -> AuthResult<Json<AuthResponse>> {
+) -> AuthResult<(StatusCode, Json<LoginStep>)> {
     if body.code.is_empty() || body.code.len() > 128 {
         return Err(AuthError::OidcHandoffInvalid);
     }
@@ -938,18 +1083,40 @@ pub async fn oidc_desktop_exchange(
     if queries::is_user_globally_banned(&state.db, user.id).await? {
         return Err(AuthError::AccountBanned);
     }
-
-    let client = SessionClient::from_request(&state, &headers, addr);
-    // The exchange is the desktop's own call; an Android client says so.
-    let class = match ClientClass::from_headers(&headers) {
-        ClientClass::Web => ClientClass::Desktop,
-        native => native,
+    let mut conn = state.db.acquire().await?;
+    let step = super::login_attempts::core::next_step(
+        &mut conn,
+        user.id,
+        super::login_attempts::core::AttemptKind::Oidc,
+    )
+    .await?;
+    drop(conn);
+    let Some((step, _)) = step else {
+        return Err(neutral_answer());
     };
-    let issued = issue_oidc_session(&state, user.id, &client, class).await?;
-    crate::security_events::spawn_delivery(&state, issued.event_ids.clone());
-    tracing::info!(user_id = %user.id, provider = %grant.slug, "User logged in via OIDC (desktop)");
-
-    Ok(Json(issued.into_response(user.must_change_password, true)))
+    // The exchange is the native app's own call: its attempt is bound to
+    // the start's `client_challenge` (the verifier just proved it).
+    let mut headers = headers;
+    if ClientClass::from_headers(&headers) == ClientClass::Web {
+        headers.insert(
+            DESKTOP_CLIENT_HEADER,
+            axum::http::HeaderValue::from_static("desktop"),
+        );
+    }
+    let (status, _, step) = start_attempt(
+        &state,
+        &headers,
+        addr,
+        CookieJar::new(),
+        user.id,
+        super::login_attempts::core::AttemptKind::Oidc,
+        None,
+        super::login_attempts::core::CollectionBinding::S256(grant.client_challenge.clone()),
+        step,
+    )
+    .await?;
+    tracing::info!(user_id = %user.id, provider = %grant.slug, "OIDC first factor (native); confirmation pending");
+    Ok((status, Json(step)))
 }
 
 /// Attach a freshly-authenticated external identity to an existing account
@@ -1073,6 +1240,9 @@ const OIDC_EXCHANGE_FAILED: &str = "OIDC_EXCHANGE_FAILED";
 /// | login | `?error=CODE`          | `{type: "oidc-callback", error}`                     |
 /// | link  | `?link_error=CODE`     | `{type: "oidc-link-callback", success: false, error_code}` |
 fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Response {
+    if let Some(native) = &flow_state.native {
+        return native_failure(flow_state, native, code);
+    }
     let is_link = match flow_state.purpose {
         OidcFlowPurpose::Link { .. } => true,
         OidcFlowPurpose::Login => false,
@@ -1090,7 +1260,7 @@ fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Resp
             "error_code": code,
         })
     } else {
-        serde_json::json!({ "type": "oidc-callback", "error": code })
+        serde_json::json!({ "type": "oidc-callback", "status": "error", "error": code })
     };
     // The link UI handles failures itself (closes the popup); the login page
     // only reacts to success, so a failed login keeps the popup open with a hint.

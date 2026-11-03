@@ -472,6 +472,7 @@ async fn refresh(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<()> {
     .bind(COLLECT_WINDOW_SECS as f64)
     .execute(&mut *conn)
     .await?;
+    record_unfinished(conn, &[id]).await?;
     Ok(())
 }
 
@@ -546,6 +547,7 @@ pub async fn cancel_tx(
     .bind(id)
     .execute(&mut *conn)
     .await?;
+    record_unfinished(conn, &[id]).await?;
     read(conn, id, false)
         .await?
         .ok_or(AuthError::LoginAttemptUnknown)
@@ -593,6 +595,7 @@ async fn expire_row(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<()> {
     .bind(id)
     .execute(&mut *conn)
     .await?;
+    record_unfinished(conn, &[id]).await?;
     Ok(())
 }
 
@@ -939,6 +942,7 @@ pub async fn answer_tx(
             .bind(attempt.id)
             .execute(&mut *conn)
             .await?;
+            events.extend(record_unfinished(conn, &[attempt.id]).await?);
             let mut ev = NewSecurityEvent::new(
                 user,
                 EventType::ApprovalReported,
@@ -991,6 +995,7 @@ pub async fn deny_tx(conn: &mut PgConnection, row: &ChallengeRow) -> Result<(), 
         .bind(attempt.id)
         .execute(&mut *conn)
         .await?;
+    record_unfinished(conn, &[attempt.id]).await?;
     Ok(())
 }
 
@@ -1015,6 +1020,181 @@ pub async fn release_tx(conn: &mut PgConnection, row: &ChallengeRow) -> Result<(
     .execute(&mut *conn)
     .await?;
     Ok(())
+}
+
+// ============================================================================
+// F3/F4: a correct first factor, the TOTP step, unfinished notices
+// ============================================================================
+
+/// What follows a correct first factor (C27 `LoginStep.status`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NextStep {
+    /// An active key device with `may_approve`: the PC shows the QR.
+    ConfirmationRequired,
+    /// No such device, but an active TOTP.
+    TotpRequired,
+}
+
+impl NextStep {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfirmationRequired => "confirmation_required",
+            Self::TotpRequired => "totp_required",
+        }
+    }
+}
+
+/// The second step an account offers after a correct first factor, or
+/// `None` (the neutral answer). `password` additionally needs the password
+/// `active`.
+pub async fn next_step(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    first: AttemptKind,
+) -> sqlx::Result<Option<(NextStep, i64)>> {
+    let row: Option<(String, i64, String, bool, bool, bool, bool)> = sqlx::query_as(
+        "SELECT u.password_state, u.password_generation, u.totp_state,
+                u.mfa_secret IS NOT NULL, u.may_approve, u.is_system,
+                EXISTS (SELECT 1 FROM approval_devices d
+                         WHERE d.user_id = u.id AND d.state = 'active')
+           FROM users u WHERE u.id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((pw_state, pw_gen, totp_state, has_totp, may_approve, is_system, has_device)) = row
+    else {
+        return Ok(None);
+    };
+    if is_system || (first == AttemptKind::Password && pw_state != "active") {
+        return Ok(None);
+    }
+    let step = if has_device && may_approve {
+        NextStep::ConfirmationRequired
+    } else if has_totp && totp_state == "active" {
+        NextStep::TotpRequired
+    } else {
+        return Ok(None);
+    };
+    Ok(Some((step, pw_gen)))
+}
+
+/// Record one `sign_in_not_finished {factor, count}` for each F3/F4 attempt
+/// of `ids` that ended without a session after a correct first factor
+/// (SM1; coalesced by the notice delivery).
+pub async fn record_unfinished(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(Uuid, Uuid, String, Option<String>, String, String)> = sqlx::query_as(
+        "UPDATE login_attempts SET unfinished_recorded = true
+          WHERE id = ANY($1) AND kind <> 'qr' AND user_id IS NOT NULL AND NOT unfinished_recorded
+            AND state IN ('denied', 'reported', 'cancelled', 'expired')
+          RETURNING id, user_id, kind, host(ip), client_class, client_label",
+    )
+    .bind(ids)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut events = Vec::with_capacity(rows.len());
+    for (_, user, kind, ip, class, label) in rows {
+        let mut ev = NewSecurityEvent::new(
+            user,
+            EventType::SignInNotFinished,
+            Actor::System,
+            serde_json::json!({ "factor": kind, "count": 1 }),
+        );
+        ev.ip = ip.and_then(|ip| ip.parse().ok());
+        ev.client = ClientClass::parse(&class).map(|c| (c, label));
+        events.push(record(conn, ev).await?);
+    }
+    Ok(events)
+}
+
+/// Outcome of a TOTP step.
+pub enum TotpOutcome {
+    Signed(Collected),
+    /// A wrong or replayed code: `second_factor_failed` was recorded.
+    WrongCode(Vec<Uuid>),
+}
+
+/// The TOTP step (SM1, F4).
+///
+/// A `password`/`oidc` attempt in `open` or `claimed`, its first factor
+/// unchanged and not disabled (OIDC: no password check), TOTP `active` (else
+/// 403 `TOTP_UNAVAILABLE`), a code accepted once (replay store). A claimed
+/// challenge becomes void; mints a probation session.
+#[tracing::instrument(skip(conn, ctx, secret, code, client))]
+pub async fn totp_tx(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    id: Uuid,
+    secret: &CollectionSecret,
+    code: &str,
+    client: &SessionClient,
+) -> AuthResult<Locked<TotpOutcome>> {
+    let Some(row) = lock_for_pc(conn, ctx, id, secret).await? else {
+        return Ok(Locked::Retry);
+    };
+    let kind = row.kind();
+    if kind == AttemptKind::Qr || !matches!(row.state.as_str(), "open" | "claimed") {
+        return Err(ended(&row));
+    }
+    if row.expires_at <= Utc::now() {
+        expire_row(conn, id).await?;
+        return Err(AuthError::LoginAttemptEnded {
+            state: "expired".into(),
+        });
+    }
+    let user = row.user_id.ok_or(AuthError::LoginAttemptUnknown)?;
+    let st = factors::states(conn, user).await?;
+    if let Some(f) = row.first_factor_ref() {
+        if st.password.generation != f.generation || st.password.state.is_disabled() {
+            expire_row(conn, id).await?;
+            return Err(AuthError::LoginAttemptEnded {
+                state: "expired".into(),
+            });
+        }
+    }
+    let secret_row: Option<(Option<String>, String)> =
+        sqlx::query_as("SELECT mfa_secret, username FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let (Some(encrypted), username) = secret_row.ok_or(AuthError::LoginAttemptUnknown)? else {
+        return Err(AuthError::TotpUnavailable);
+    };
+    if st.totp.state.is_disabled() {
+        return Err(AuthError::TotpUnavailable);
+    }
+    if !crate::auth::reauth::accept_totp_ctx(ctx, user, &encrypted, &username, code).await? {
+        let mut ev = NewSecurityEvent::new(
+            user,
+            EventType::SecondFactorFailed,
+            Actor::System,
+            serde_json::json!({ "factor": "totp", "count": 1 }),
+        );
+        ev.client = ClientClass::parse(&row.client_class).map(|c| (c, row.client_label.clone()));
+        ev.ip = client.ip;
+        return Ok(Locked::Done(TotpOutcome::WrongCode(vec![
+            record(conn, ev).await?,
+        ])));
+    }
+    // "Phone not at hand?" while a phone holds the claim: that challenge is
+    // void (the claimer is this account; its lock is held).
+    if let Some(challenge) = row.challenge_id {
+        sqlx::query("UPDATE approvals SET state = 'expired' WHERE id = $1 AND state = 'issued'")
+            .bind(challenge)
+            .execute(&mut *conn)
+            .await?;
+    }
+    let method = match kind {
+        AttemptKind::Oidc => SignInMethod::OidcTotp,
+        _ => SignInMethod::PasswordTotp,
+    };
+    let class = ClientClass::parse(&row.client_class).unwrap_or(ClientClass::Web);
+    let collected = mint(conn, ctx, &row, user, method, class, client).await?;
+    Ok(Locked::Done(TotpOutcome::Signed(collected)))
 }
 
 // ============================================================================
@@ -1063,16 +1243,18 @@ pub async fn on_generation_ended(
     if used.factor != Factor::Password {
         return Ok(0);
     }
-    Ok(sqlx::query(
+    let ids: Vec<Uuid> = sqlx::query_scalar(
         "UPDATE login_attempts SET state = 'expired', ended_at = NOW()
           WHERE user_id = $1 AND first_factor = 'password' AND first_factor_generation = $2
-            AND state IN ('open', 'claimed', 'approved')",
+            AND state IN ('open', 'claimed', 'approved')
+          RETURNING id",
     )
     .bind(user_id)
     .bind(used.generation)
-    .execute(&mut *conn)
-    .await?
-    .rows_affected())
+    .fetch_all(&mut *conn)
+    .await?;
+    record_unfinished(conn, &ids).await?;
+    Ok(ids.len() as u64)
 }
 
 /// Decode a b64u QR token (32 bytes).

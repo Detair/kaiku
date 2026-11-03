@@ -543,18 +543,36 @@ async fn login_with_mfa_fails_closed_with_503_when_valkey_hangs(pool: PgPool) {
     .generate_current()
     .expect("code");
 
+    // The password step needs no Valkey replay entry; the TOTP step does.
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let step: serde_json::Value = reqwest::Client::new()
+        .post(format!("{}/auth/login", server.url))
+        .header("x-kaiku-client", "desktop")
+        .json(&serde_json::json!({
+            "username": username,
+            "password": "Correct-Horse-42",
+            "client_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+        }))
+        .send()
+        .await
+        .expect("password step")
+        .json()
+        .await
+        .expect("LoginStep");
+    let attempt = step["attempt"]["attempt_id"]
+        .as_str()
+        .expect("attempt")
+        .to_string();
+
     proxy.freeze();
 
     let started = Instant::now();
     let response = tokio::time::timeout(
         HANG_GUARD,
         reqwest::Client::new()
-            .post(format!("{}/auth/login", server.url))
-            .json(&serde_json::json!({
-                "username": username,
-                "password": "Correct-Horse-42",
-                "mfa_code": code,
-            }))
+            .post(format!("{}/auth/login-attempts/{attempt}/totp", server.url))
+            .header("x-kaiku-client", "desktop")
+            .json(&serde_json::json!({ "verifier": verifier, "code": code }))
             .send(),
     )
     .await

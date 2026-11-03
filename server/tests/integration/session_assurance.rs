@@ -19,7 +19,6 @@ use vc_server::auth::hash_password;
 use vc_server::auth::session_issue::{issue_session, NewSession, SessionClient, SignInMethod};
 use vc_server::system_account::SYSTEM_USER_ID;
 
-use super::helpers::login::peer_request;
 use super::helpers::migrations::{apply_from, apply_until};
 use super::helpers::{
     body_to_json, create_probation_session_with_token, create_session_with_token, create_test_user,
@@ -38,16 +37,18 @@ async fn password_user(pool: &PgPool) -> (Uuid, String) {
     (user.id, username)
 }
 
+/// A password sign-in (F4: password, then TOTP; TOTP is turned on for the
+/// account) as `client`.
 async fn login(app: &TestApp, username: &str, client: Option<&str>) -> (u16, Value) {
-    let mut req =
-        peer_request(Method::POST, "/auth/login").header("Content-Type", "application/json");
-    if let Some(c) = client {
-        req = req.header("X-Kaiku-Client", c);
-    }
-    let body = serde_json::json!({"username": username, "password": PASSWORD});
-    let resp = app
-        .oneshot(req.body(Body::from(body.to_string())).unwrap())
-        .await;
+    let user: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+        .bind(username)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let totp = super::helpers::login::enable_totp(&app.pool, &app.config, user, username).await;
+    let headers: Vec<(&str, &str)> = client.map(|c| ("X-Kaiku-Client", c)).into_iter().collect();
+    let resp =
+        super::helpers::login::f4_sign_in(app, user, username, PASSWORD, &totp, &headers).await;
     let status = resp.status().as_u16();
     (status, body_to_json(resp).await)
 }
@@ -241,7 +242,7 @@ async fn new_password_session_is_probation(pool: PgPool) {
     .unwrap();
     assert_eq!(row.0, user);
     assert_eq!(row.1, "probation");
-    assert_eq!(row.2, vec!["password".to_string()]);
+    assert_eq!(row.2, vec!["password".to_string(), "totp".to_string()]);
     assert_eq!(row.3, "web");
     assert!(row.4.is_none());
 }

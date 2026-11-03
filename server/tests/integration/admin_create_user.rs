@@ -63,22 +63,36 @@ async fn create_user(
         .expect("POST /api/admin/users")
 }
 
-/// Log in without an `Origin` header so the refresh token comes back in the body.
-async fn login(server: &TestServer, username: &str, password: &str) -> reqwest::Response {
-    reqwest::Client::new()
-        .post(format!("{}/auth/login", server.url))
-        .json(&serde_json::json!({ "username": username, "password": password }))
-        .send()
-        .await
-        .expect("POST /auth/login")
+/// A sign-in session of `username` (v1.0: a password is only a first
+/// factor, C27; the session is minted as F4 does after its second step).
+async fn session_of(app: &TestApp, username: &str) -> serde_json::Value {
+    let (user, must_change): (uuid::Uuid, bool) =
+        sqlx::query_as("SELECT id, must_change_password FROM users WHERE username = $1")
+            .bind(username)
+            .fetch_one(&app.pool)
+            .await
+            .expect("user");
+    let (access, refresh, _) = super::helpers::login::signed_in(
+        &app.state,
+        user,
+        vc_server::auth::session_issue::SignInMethod::PasswordTotp,
+    )
+    .await;
+    serde_json::json!({
+        "access_token": access,
+        "refresh_token": refresh,
+        "password_change_required": must_change,
+    })
 }
 
-async fn create_and_login(server: &TestServer, admin_token: &str) -> serde_json::Value {
+async fn create_and_login(
+    app: &TestApp,
+    server: &TestServer,
+    admin_token: &str,
+) -> serde_json::Value {
     let resp = create_user(server, admin_token, "oma", TEMP_PASSWORD).await;
     assert_eq!(resp.status(), StatusCode::CREATED);
-    let resp = login(server, "oma", TEMP_PASSWORD).await;
-    assert_eq!(resp.status(), StatusCode::OK);
-    resp.json().await.expect("login JSON")
+    session_of(app, "oma").await
 }
 
 #[sqlx::test]
@@ -221,36 +235,11 @@ async fn create_user_works_with_registration_closed(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn login_reports_password_change_required(pool: PgPool) {
-    let (_app, server, token) = setup_admin(&pool).await;
-
-    let body = create_and_login(&server, &token).await;
-    assert_eq!(body["password_change_required"], true);
-
-    // Ordinary accounts report false.
-    let resp = reqwest::Client::new()
-        .post(format!("{}/auth/register", server.url))
-        .json(&serde_json::json!({ "username": "normalo", "password": TEMP_PASSWORD }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["password_change_required"], false);
-    let body: serde_json::Value = login(&server, "normalo", TEMP_PASSWORD)
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(body["password_change_required"], false);
-}
-
-#[sqlx::test]
 async fn pending_user_only_reaches_allowed_routes(pool: PgPool) {
-    let (_app, server, token) = setup_admin(&pool).await;
+    let (app, server, token) = setup_admin(&pool).await;
     let client = reqwest::Client::new();
 
-    let login_body = create_and_login(&server, &token).await;
+    let login_body = create_and_login(&app, &server, &token).await;
     let access = login_body["access_token"].as_str().unwrap().to_string();
     let refresh = login_body["refresh_token"].as_str().unwrap().to_string();
 
@@ -316,8 +305,8 @@ async fn pending_user_only_reaches_allowed_routes(pool: PgPool) {
 
 #[sqlx::test]
 async fn pending_user_can_logout(pool: PgPool) {
-    let (_app, server, token) = setup_admin(&pool).await;
-    let login_body = create_and_login(&server, &token).await;
+    let (app, server, token) = setup_admin(&pool).await;
+    let login_body = create_and_login(&app, &server, &token).await;
     let access = login_body["access_token"].as_str().unwrap();
     let refresh = login_body["refresh_token"].as_str().unwrap();
 
@@ -577,7 +566,7 @@ async fn guild_state(pool: &PgPool, guild_id: Uuid, username: &str) -> Option<St
 
 #[sqlx::test]
 async fn test_create_user_joins_requested_guilds(pool: PgPool) {
-    let (_app, server, token) = setup_admin(&pool).await;
+    let (app, server, token) = setup_admin(&pool).await;
     let (owner_id, _) = create_test_user(&pool).await;
     let guild_a = super::helpers::create_guild(&pool, owner_id).await;
     let guild_b = super::helpers::create_guild(&pool, owner_id).await;
@@ -621,11 +610,7 @@ async fn test_create_user_joins_requested_guilds(pool: PgPool) {
     assert_eq!(logged, expected);
 
     // After the password change the new user sees the servers.
-    let login_body: serde_json::Value = login(&server, "oma", TEMP_PASSWORD)
-        .await
-        .json()
-        .await
-        .unwrap();
+    let login_body: serde_json::Value = session_of(&app, "oma").await;
     let access = login_body["access_token"].as_str().unwrap();
     let client = reqwest::Client::new();
     // The forced change needs a full session now (C27); clear the flag as

@@ -51,8 +51,13 @@ pub struct LoginRequest {
     pub username: String,
     /// Password.
     pub password: String,
-    /// MFA code (required if MFA is enabled).
+    /// Gone in v1.0 (C27): sent → 400 `CLIENT_OUTDATED`.
+    #[serde(default)]
     pub mfa_code: Option<String>,
+    /// Native clients: S256 of their verifier (the attempt's collection
+    /// secret); browsers get the attempt cookie instead.
+    #[serde(default)]
+    pub client_challenge: Option<String>,
 }
 
 impl std::fmt::Debug for LoginRequest {
@@ -60,8 +65,7 @@ impl std::fmt::Debug for LoginRequest {
         f.debug_struct("LoginRequest")
             .field("username", &self.username)
             .field("password", &"[REDACTED]")
-            .field("mfa_code", &self.mfa_code.as_ref().map(|_| "[REDACTED]"))
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -357,6 +361,10 @@ pub struct OidcAuthorizeQuery {
     /// `code` that only that verifier can redeem at
     /// `POST /auth/oidc/desktop/exchange`. Missing → 400 `OIDC_CLIENT_OUTDATED`.
     pub client_challenge: Option<String>,
+    /// Desktop sign-in (C29 step 8): the loopback listener's port …
+    pub loopback_port: Option<u16>,
+    /// … and its per-flow path (43 b64u characters).
+    pub callback_path: Option<String>,
     /// When `"json"`, return the provider authorization URL as a JSON body
     /// (`{"url": ...}`) instead of a 307 redirect. Used by the browser link
     /// flow, which calls this endpoint as an authenticated XHR (a top-level

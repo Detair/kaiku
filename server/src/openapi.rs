@@ -84,6 +84,7 @@ use utoipa::{Modify, OpenApi};
         crate::auth::login_attempts::handlers::poll,
         crate::auth::login_attempts::handlers::collect,
         crate::auth::login_attempts::handlers::cancel,
+        crate::auth::login_attempts::handlers::totp,
         crate::approvals::handlers::claim,
         crate::auth::recovery_codes::create,
         crate::auth::recovery_codes::count,

@@ -33,6 +33,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         .route("/login-attempts/{id}/poll", post(handlers::poll))
         .route("/login-attempts/{id}/collect", post(handlers::collect))
         .route("/login-attempts/{id}/cancel", post(handlers::cancel))
+        .route("/login-attempts/{id}/totp", post(handlers::totp))
         .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
         .layer(from_fn(with_category(RateLimitCategory::AuthFlow)))
 }

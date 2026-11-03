@@ -51,9 +51,12 @@ return 1
 
 /// Build the TOTP generator of an account (no skew; steps are checked one by
 /// one so the matching step is known).
-fn account_totp(state: &AppState, encrypted_secret: &str, username: &str) -> AuthResult<TOTP> {
-    let encryption_key = state
-        .config
+fn account_totp(
+    config: &crate::config::Config,
+    encrypted_secret: &str,
+    username: &str,
+) -> AuthResult<TOTP> {
+    let encryption_key = config
         .mfa_encryption_key
         .as_ref()
         .ok_or_else(|| AuthError::Internal("MFA encryption not configured".to_string()))?;
@@ -89,9 +92,27 @@ pub async fn accept_totp(
     username: &str,
     code: &str,
 ) -> AuthResult<bool> {
+    accept_totp_ctx(
+        &super::ctx::AuthCtx::from(state),
+        user_id,
+        encrypted_secret,
+        username,
+        code,
+    )
+    .await
+}
+
+/// [`accept_totp`] on borrowed handles (core functions, the CLI).
+pub async fn accept_totp_ctx(
+    ctx: &super::ctx::AuthCtx<'_>,
+    user_id: Uuid,
+    encrypted_secret: &str,
+    username: &str,
+    code: &str,
+) -> AuthResult<bool> {
     use fred::interfaces::LuaInterface;
 
-    let totp = account_totp(state, encrypted_secret, username)?;
+    let totp = account_totp(ctx.config, encrypted_secret, username)?;
     let now = u64::try_from(Utc::now().timestamp()).unwrap_or(0);
     let current = now / 30;
     let matched = [current.saturating_sub(1), current, current + 1]
@@ -101,7 +122,7 @@ pub async fn accept_totp(
         return Ok(false);
     };
 
-    let stored: i64 = state
+    let stored: i64 = ctx
         .redis
         .eval(
             TOTP_ACCEPT_SCRIPT,

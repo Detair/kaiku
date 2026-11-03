@@ -42,6 +42,7 @@ mod guild_limits;
 mod identities_http;
 mod incoming_webhooks_http;
 mod login_attempts;
+mod login_password;
 mod media_processing;
 mod mention_permission;
 mod mention_targets;

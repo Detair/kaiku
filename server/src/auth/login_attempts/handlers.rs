@@ -203,6 +203,60 @@ pub async fn collect(
     Ok(session_response(&state, &headers, jar, collected))
 }
 
+/// The TOTP step of a `password`/`oidc` attempt (F4, "Phone not at hand?").
+#[utoipa::path(
+    post,
+    path = "/auth/login-attempts/{id}/totp",
+    tag = "auth",
+    params(("id" = Uuid, Path, description = "Attempt id")),
+    request_body = AttemptRequest,
+    responses(
+        (status = 200, body = AuthResponse),
+        (status = 401, description = "INVALID_MFA"),
+        (status = 403, description = "TOTP_UNAVAILABLE"),
+        (status = 404, description = "LOGIN_ATTEMPT_UNKNOWN"),
+        (status = 410, description = "LOGIN_ATTEMPT_ENDED {state}"),
+    ),
+)]
+#[tracing::instrument(skip_all, fields(attempt_id = %id))]
+pub async fn totp(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    body: Option<Json<AttemptRequest>>,
+) -> AuthResult<(CookieJar, Json<AuthResponse>)> {
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let secret = presented(&headers, &jar, &state.config, &body)?;
+    let code = body
+        .code
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && c.len() <= 16)
+        .ok_or_else(|| AuthError::Validation("code: is required".into()))?
+        .to_string();
+    let client = SessionClient::from_request(&state, &headers, addr);
+    let ctx = AuthCtx::from(&state);
+    let mut tries = 0;
+    let outcome = loop {
+        let mut tx = state.db.begin().await?;
+        let r = core::totp_tx(&mut tx, &ctx, id, &secret, &code, &client).await;
+        if let Some(v) = settle(tx, r, &mut tries).await? {
+            break v;
+        }
+    };
+    match outcome {
+        core::TotpOutcome::Signed(collected) => {
+            Ok(session_response(&state, &headers, jar, collected))
+        }
+        core::TotpOutcome::WrongCode(events) => {
+            crate::security_events::spawn_delivery(&state, events);
+            Err(AuthError::InvalidMfaCode)
+        }
+    }
+}
+
 /// The PC closed the screen.
 #[utoipa::path(
     post,

@@ -56,6 +56,14 @@ async fn create_password_user(pool: &PgPool) -> (Uuid, String) {
     let user = db::create_user(pool, &username, "Revocation Test", None, &hash)
         .await
         .expect("create user");
+    // A second step, so a correct password leads to a login attempt (F4).
+    super::helpers::login::enable_totp(
+        pool,
+        &vc_server::config::Config::default_for_test(),
+        user.id,
+        &username,
+    )
+    .await;
     (user.id, username)
 }
 
@@ -75,14 +83,21 @@ async fn login_raw(server: &TestServer, username: &str) -> reqwest::Response {
         .expect("POST /auth/login")
 }
 
-async fn login(server: &TestServer, username: &str) -> Session {
-    let resp = login_raw(server, username).await;
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body: serde_json::Value = resp.json().await.expect("login JSON");
-    Session {
-        access: body["access_token"].as_str().expect("access").to_string(),
-        refresh: body["refresh_token"].as_str().expect("refresh").to_string(),
-    }
+/// A signed-in session (v1.0: the password is only the first step, so the
+/// session is minted as F4 does after its TOTP step).
+async fn login(fx: &Fixture, username: &str) -> Session {
+    let user: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+        .bind(username)
+        .fetch_one(&fx.app.pool)
+        .await
+        .expect("user");
+    let (access, refresh, _) = super::helpers::login::signed_in(
+        &fx.app.state,
+        user,
+        vc_server::auth::session_issue::SignInMethod::PasswordTotp,
+    )
+    .await;
+    Session { access, refresh }
 }
 
 async fn refresh(server: &TestServer, refresh_token: &str) -> reqwest::Response {
@@ -176,7 +191,7 @@ async fn expect_still_open(ws: &mut WsClient) {
 async fn test_banned_user_cannot_login_or_refresh(pool: PgPool) {
     let fx = setup(&pool).await;
     let (user_id, username) = create_password_user(&pool).await;
-    let session = login(&fx.server, &username).await;
+    let session = login(&fx, &username).await;
 
     ban(&fx, user_id).await;
 
@@ -193,7 +208,7 @@ async fn test_banned_user_cannot_login_or_refresh(pool: PgPool) {
 async fn test_ban_ends_existing_tokens_and_sockets(pool: PgPool) {
     let fx = setup(&pool).await;
     let (user_id, username) = create_password_user(&pool).await;
-    let session = login(&fx.server, &username).await;
+    let session = login(&fx, &username).await;
     let mut ws = connect_ready(&fx.server, &session.access).await;
 
     ban(&fx, user_id).await;
@@ -209,8 +224,8 @@ async fn test_ban_ends_existing_tokens_and_sockets(pool: PgPool) {
 async fn test_revoke_one_session_closes_only_that_socket(pool: PgPool) {
     let fx = setup(&pool).await;
     let (_user_id, username) = create_password_user(&pool).await;
-    let a = login(&fx.server, &username).await;
-    let b = login(&fx.server, &username).await;
+    let a = login(&fx, &username).await;
+    let b = login(&fx, &username).await;
     let sid_b = session_id(&fx.app, &b.access);
     assert_ne!(session_id(&fx.app, &a.access), sid_b);
 
@@ -240,8 +255,8 @@ async fn test_revoke_one_session_closes_only_that_socket(pool: PgPool) {
 async fn test_revoke_after_refresh_closes_socket(pool: PgPool) {
     let fx = setup(&pool).await;
     let (_user_id, username) = create_password_user(&pool).await;
-    let a = login(&fx.server, &username).await;
-    let b = login(&fx.server, &username).await;
+    let a = login(&fx, &username).await;
+    let b = login(&fx, &username).await;
     let mut ws_b = connect_ready(&fx.server, &b.access).await;
 
     let resp = refresh(&fx.server, &b.refresh).await;
@@ -278,7 +293,7 @@ async fn test_revoke_after_refresh_closes_socket(pool: PgPool) {
 async fn test_logout_without_refresh_token_ends_current_session(pool: PgPool) {
     let fx = setup(&pool).await;
     let (_user_id, username) = create_password_user(&pool).await;
-    let session = login(&fx.server, &username).await;
+    let session = login(&fx, &username).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/auth/logout", fx.server.url))
@@ -305,8 +320,8 @@ async fn test_logout_without_refresh_token_ends_current_session(pool: PgPool) {
 async fn test_revoked_session_refresh_and_ws_are_refused(pool: PgPool) {
     let fx = setup(&pool).await;
     let (_user_id, username) = create_password_user(&pool).await;
-    let a = login(&fx.server, &username).await;
-    let b = login(&fx.server, &username).await;
+    let a = login(&fx, &username).await;
+    let b = login(&fx, &username).await;
     let sid_b = session_id(&fx.app, &b.access);
 
     // C27: a full session and the step-up `sessions.end`/id.
@@ -351,7 +366,7 @@ async fn test_revoked_session_refresh_and_ws_are_refused(pool: PgPool) {
 async fn test_attachment_download_token_respects_revocation(pool: PgPool) {
     let fx = setup(&pool).await;
     let (_user_id, username) = create_password_user(&pool).await;
-    let session = login(&fx.server, &username).await;
+    let session = login(&fx, &username).await;
     let download = format!(
         "{}/api/messages/attachments/{}/download?token={}",
         fx.server.url,
@@ -441,8 +456,8 @@ async fn test_bulk_ban_ends_sessions_and_sockets(pool: PgPool) {
     let fx = setup(&pool).await;
     let (user_a, name_a) = create_password_user(&pool).await;
     let (user_b, name_b) = create_password_user(&pool).await;
-    let a = login(&fx.server, &name_a).await;
-    let b = login(&fx.server, &name_b).await;
+    let a = login(&fx, &name_a).await;
+    let b = login(&fx, &name_b).await;
     let mut ws_a = connect_ready(&fx.server, &a.access).await;
     let mut ws_b = connect_ready(&fx.server, &b.access).await;
 
@@ -478,7 +493,7 @@ async fn test_bulk_ban_ends_sessions_and_sockets(pool: PgPool) {
 async fn test_password_reset_ends_sessions_and_sockets(pool: PgPool) {
     let fx = setup(&pool).await;
     let (user_id, username) = create_password_user(&pool).await;
-    let session = login(&fx.server, &username).await;
+    let session = login(&fx, &username).await;
     let mut ws = connect_ready(&fx.server, &session.access).await;
 
     let raw = format!("reset-{}", Uuid::new_v4());
@@ -519,7 +534,7 @@ async fn test_password_change_revoke_others_requires_current_session(pool: PgPoo
 
     let fx = setup(&pool).await;
     let (user_id, username) = create_password_user(&pool).await;
-    let other = login(&fx.server, &username).await;
+    let other = login(&fx, &username).await;
 
     // An access token without a `sid` claim, and no refresh token sent.
     let now = chrono::Utc::now().timestamp();
@@ -564,7 +579,7 @@ async fn test_password_change_revoke_others_requires_current_session(pool: PgPoo
     // Nothing changed: the old password still works, the other session too.
     assert_eq!(
         login_raw(&fx.server, &username).await.status(),
-        StatusCode::OK
+        StatusCode::ACCEPTED
     );
     assert_eq!(me_status(&fx.server, &other.access).await, StatusCode::OK);
 }
@@ -577,7 +592,7 @@ async fn test_refresh_refused_for_denylisted_session(pool: PgPool) {
 
     let fx = setup(&pool).await;
     let (_user_id, username) = create_password_user(&pool).await;
-    let session = login(&fx.server, &username).await;
+    let session = login(&fx, &username).await;
     let sid = session_id(&fx.app, &session.access);
     fx.app
         .state
@@ -606,7 +621,7 @@ async fn test_refresh_refused_for_denylisted_session(pool: PgPool) {
 async fn test_deletion_retry_ends_sessions_again(pool: PgPool) {
     let fx = setup(&pool).await;
     let (user_id, username) = create_password_user(&pool).await;
-    let session = login(&fx.server, &username).await;
+    let session = login(&fx, &username).await;
     let mut ws = connect_ready(&fx.server, &session.access).await;
 
     // State left by a first attempt whose session ending failed: deletion
@@ -866,8 +881,8 @@ async fn cache_elevation(fx: &Fixture, sid: Uuid) {
 async fn test_ending_sessions_clears_cached_elevation(pool: PgPool) {
     let fx = setup(&pool).await;
     let (user_id, username) = create_password_user(&pool).await;
-    let a = login(&fx.server, &username).await;
-    let b = login(&fx.server, &username).await;
+    let a = login(&fx, &username).await;
+    let b = login(&fx, &username).await;
     let sid_b = session_id(&fx.app, &b.access);
 
     // Single session.
