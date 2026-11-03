@@ -374,14 +374,25 @@ pub async fn update_password(
         .bind(auth_user.id)
         .fetch_one(&mut *tx)
         .await?;
-    super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Password).await?;
+    let generation =
+        super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Password).await?;
     queries::update_password_hash_tx(&mut tx, auth_user.id, &new_hash).await?;
     let event_type = if had {
         EventType::PasswordChanged
     } else {
         EventType::PasswordSet
     };
-    let mut events = vec![record_own(&mut tx, &auth_user, &grant, event_type).await?];
+    // The generation it made ("That wasn't me" marks exactly that one).
+    let mut events = vec![
+        record_own_with(
+            &mut tx,
+            &auth_user,
+            &grant,
+            event_type,
+            serde_json::json!({ "generation": generation }),
+        )
+        .await?,
+    ];
     events.push(
         step_up::record_action_tx(&mut tx, &auth_user, &grant, StepUpAction::PasswordSet, "")
             .await?,

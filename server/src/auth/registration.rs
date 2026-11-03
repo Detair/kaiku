@@ -404,7 +404,8 @@ pub async fn totp_verify(
         return Err(AuthError::TotpUnavailable);
     }
     still_unbound(&mut tx, t.id).await?;
-    super::factors::replace_tx(&mut tx, &ctx, t.user_id, super::factors::Factor::Totp).await?;
+    let generation =
+        super::factors::replace_tx(&mut tx, &ctx, t.user_id, super::factors::Factor::Totp).await?;
     // Fable m1: the entitlement only while no strong authenticator is active.
     sqlx::query(
         "UPDATE users SET mfa_secret = $2,
@@ -428,7 +429,7 @@ pub async fn totp_verify(
                 t.user_id,
                 EventType::AuthenticatorAdded,
                 Actor::User(t.user_id),
-                serde_json::json!({"type": "totp"}),
+                serde_json::json!({"type": "totp", "generation": generation}),
             ),
         )
         .await?,

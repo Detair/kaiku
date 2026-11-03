@@ -1109,6 +1109,17 @@ pub async fn next_step(
     Ok(Some((step, pw_gen)))
 }
 
+/// A `record_unfinished` row.
+type Unfinished = (
+    Uuid,
+    Uuid,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<i64>,
+);
+
 /// Record one `sign_in_not_finished {factor, count}` for each F3/F4 attempt
 /// of `ids` that ended without a session after a correct first factor
 /// (SM1; coalesced by the notice delivery).
@@ -1116,23 +1127,25 @@ pub async fn record_unfinished(conn: &mut PgConnection, ids: &[Uuid]) -> sqlx::R
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let rows: Vec<(Uuid, Uuid, String, Option<String>, String, String)> = sqlx::query_as(
+    let rows: Vec<Unfinished> = sqlx::query_as(
         "UPDATE login_attempts SET unfinished_recorded = true
           WHERE id = ANY($1) AND kind <> 'qr' AND user_id IS NOT NULL AND NOT unfinished_recorded
             AND state IN ('denied', 'reported', 'cancelled', 'expired')
-          RETURNING id, user_id, kind, host(ip), client_class, client_label",
+          RETURNING id, user_id, kind, host(ip), client_class, client_label,
+                    CASE WHEN first_factor = 'password' THEN first_factor_generation END",
     )
     .bind(ids)
     .fetch_all(&mut *conn)
     .await?;
     let mut events = Vec::with_capacity(rows.len());
-    for (_, user, kind, ip, class, label) in rows {
-        let mut ev = NewSecurityEvent::new(
-            user,
-            EventType::SignInNotFinished,
-            Actor::System,
-            serde_json::json!({ "factor": kind, "count": 1 }),
-        );
+    for (_, user, kind, ip, class, label, generation) in rows {
+        let mut details = serde_json::json!({ "factor": kind, "count": 1 });
+        // The password generation it used ("That wasn't me" marks exactly it).
+        if let Some(g) = generation {
+            details["factors"] = serde_json::json!([{"factor": "password", "generation": g}]);
+        }
+        let mut ev =
+            NewSecurityEvent::new(user, EventType::SignInNotFinished, Actor::System, details);
         ev.ip = ip.and_then(|ip| ip.parse().ok());
         ev.client = ClientClass::parse(&class).map(|c| (c, label));
         events.push(record(conn, ev).await?);

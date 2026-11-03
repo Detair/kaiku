@@ -27,6 +27,8 @@ use crate::security_events::{record, spawn_delivery, Actor, EventType, NewSecuri
 /// Event types "That wasn't me" applies to.
 pub const REPUDIABLE: &[&str] = &[
     "sign_in",
+    "sign_in_not_finished",
+    "step_up_action",
     "authenticator_added",
     "password_set",
     "password_changed",
@@ -70,6 +72,13 @@ fn methods(ev: &EventRow) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The factor generation an event made (`details.generation`), if recorded.
+fn made(ev: &EventRow, factor: Factor) -> Option<FactorRef> {
+    ev.details["generation"]
+        .as_i64()
+        .map(|generation| FactorRef { factor, generation })
+}
+
 /// The `{factor, generation}` list a sign-in event recorded.
 fn recorded_factors(ev: &EventRow) -> Vec<FactorRef> {
     ev.details["factors"]
@@ -98,15 +107,7 @@ pub async fn effects(
     ev: &EventRow,
     may_revoke: bool,
 ) -> AuthResult<Effects> {
-    let st = factors::states(conn, ev.subject_id).await?;
-    let current = |f: Factor| FactorRef {
-        factor: f,
-        generation: match f {
-            Factor::Password => st.password.generation,
-            Factor::Totp => st.totp.generation,
-            Factor::RecoveryCodes => st.recovery_codes_generation,
-        },
-    };
+    let _ = conn;
     let mut out = Effects {
         session: None,
         revoke: None,
@@ -126,12 +127,19 @@ pub async fn effects(
             // replaced since).
             out.compromise.extend(recorded_factors(ev));
         }
+        // "Someone entered your password but did not finish": the password
+        // generation it recorded (F3 step 6); nothing to end or revoke.
+        "sign_in_not_finished" => out.compromise.extend(recorded_factors(ev)),
+        // A step-up action: the session that made it ends; the authenticator
+        // that only authorised it is never revoked (B.2 rev 4).
+        "step_up_action" => out.session = ev.session_id,
+        // The generation the event made, never the current one (B.7 rule 2).
         "authenticator_added" => match ev.details["type"].as_str() {
-            Some("totp") => out.compromise.push(current(Factor::Totp)),
+            Some("totp") => out.compromise.extend(made(ev, Factor::Totp)),
             _ if may_revoke => out.revoke = authenticator_of(ev),
             _ => {}
         },
-        "password_set" | "password_changed" => out.compromise.push(current(Factor::Password)),
+        "password_set" | "password_changed" => out.compromise.extend(made(ev, Factor::Password)),
         _ => return Err(AuthError::RepudiateNotAllowed),
     }
     Ok(out)
@@ -427,6 +435,10 @@ pub async fn repudiate_action(
     let compromises: Vec<&str> = match ev.event_type.as_str() {
         // Only the generations the sign-in recorded would be compromised.
         "sign_in" => ev.details["factors"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|f| f["factor"].as_str()).collect())
+            .unwrap_or_default(),
+        "sign_in_not_finished" => ev.details["factors"]
             .as_array()
             .map(|a| a.iter().filter_map(|f| f["factor"].as_str()).collect())
             .unwrap_or_default(),

@@ -173,7 +173,7 @@ pub async fn mfa_verify(
         &StepUpTarget::None,
     )
     .await?;
-    super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
+    let generation = super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
     sqlx::query("UPDATE users SET mfa_secret = $2, updated_at = NOW() WHERE id = $1")
         .bind(auth_user.id)
         .bind(&encrypted_secret)
@@ -186,7 +186,7 @@ pub async fn mfa_verify(
             &auth_user,
             &grant,
             EventType::AuthenticatorAdded,
-            serde_json::json!({ "type": "totp" }),
+            serde_json::json!({ "type": "totp", "generation": generation }),
         )
         .await?,
         step_up::record_action_tx(&mut tx, &auth_user, &grant, StepUpAction::TotpSet, "").await?,

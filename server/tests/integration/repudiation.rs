@@ -630,3 +630,149 @@ async fn a_factor_replaced_since_is_left_alone(pool: PgPool) {
     let (s, b) = repudiate(&app, &dev, id).await;
     assert_eq!((s, &b["compromised"]), (200, &json!([])), "{b}");
 }
+
+#[sqlx::test]
+async fn an_unfinished_sign_in_compromises_its_password(pool: PgPool) {
+    use super::helpers::login::password_user;
+    use super::login_attempts::{attempt_id, pc_call};
+    use super::login_password::login_native;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, "zq8#vT4p-unfin").await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    // A correct password, then the PC gives up: the real notice.
+    let (s, step, secret) = login_native(&app, &name, "zq8#vT4p-unfin").await;
+    assert_eq!(s, 202, "{step}");
+    let id = attempt_id(&step["attempt"]);
+    let (s, _, _) = pc_call(
+        &app,
+        &format!("/auth/login-attempts/{id}/cancel"),
+        &secret,
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 204);
+    let (event, details): (Uuid, Value) = sqlx::query_as(
+        "SELECT id, details FROM security_events
+          WHERE subject_id = $1 AND event_type = 'sign_in_not_finished'",
+    )
+    .bind(user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        details["factors"],
+        json!([{"factor": "password", "generation": 1}]),
+        "{details}"
+    );
+    let (s, b) = repudiate(&app, &dev, event).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["compromised"], json!(["password"]));
+    assert_eq!(b["revoked_authenticator_ids"], json!([]));
+}
+
+#[sqlx::test]
+async fn a_step_up_action_ends_its_session_and_revokes_nothing(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    // An older device reports a step-up made by a newer one in its session.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let other = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let id = event(
+        &pool,
+        user,
+        EventType::StepUpAction,
+        other.session_id,
+        Some(AuthenticatorRef::key_device(other.row_id)),
+        json!({"action": "sessions.end", "target_label": "all other sessions"}),
+    )
+    .await;
+    let (s, b) = repudiate(&app, &dev, id).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["ended_session_ids"], json!([other.session_id.unwrap()]));
+    assert_eq!(
+        b["revoked_authenticator_ids"],
+        json!([]),
+        "the authoriser is not revoked"
+    );
+    assert_eq!(device_state(&pool, other.row_id).await, "active");
+    // Repudiation negatives (Fable M4).
+    let (s, b) = call(
+        &app,
+        &format!("/api/me/security-events/{}/repudiate", Uuid::new_v4()),
+        &dev.access_token,
+        json!({}),
+    )
+    .await;
+    assert_eq!((s, b["error"].as_str()), (404, Some("NOT_FOUND")), "{b}");
+    let ev = event(
+        &pool,
+        user,
+        EventType::BootstrapReminder,
+        None,
+        None,
+        json!({}),
+    )
+    .await;
+    grant_step_up(
+        &pool,
+        dev.session_id.unwrap(),
+        "event.repudiate",
+        &ev.to_string(),
+    )
+    .await;
+    let (s, b) = call(
+        &app,
+        &format!("/api/me/security-events/{ev}/repudiate"),
+        &dev.access_token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("REPUDIATE_NOT_ALLOWED")),
+        "{b}"
+    );
+}
+
+#[sqlx::test]
+async fn a_password_change_compromises_only_the_generation_it_made(pool: PgPool) {
+    use super::helpers::{create_session_with_token, make_session_full};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = create_test_user(&pool).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    // A real change records the generation it made.
+    let (sid, token) = create_session_with_token(&pool, &app.config, user).await;
+    make_session_full(&pool, sid).await;
+    grant_step_up(&pool, sid, "password.set", "").await;
+    let (s, b) = call(
+        &app,
+        "/auth/me/password",
+        &token,
+        json!({"new_password": "a perfectly fine passphrase 7"}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let (changed, details): (Uuid, Value) = sqlx::query_as(
+        "SELECT id, details FROM security_events
+          WHERE subject_id = $1 AND event_type IN ('password_set', 'password_changed')",
+    )
+    .bind(user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let made = details["generation"].as_i64().expect("generation recorded");
+    // Replaced again since: repudiating the old change leaves the new one.
+    sqlx::query("UPDATE users SET password_generation = $2 WHERE id = $1")
+        .bind(user)
+        .bind(made + 1)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, b) = repudiate(&app, &dev, changed).await;
+    assert_eq!((s, &b["compromised"]), (200, &json!([])), "{b}");
+    let (_, _, pw, _) = generations(&pool, user).await;
+    assert_eq!(pw, "active");
+}
