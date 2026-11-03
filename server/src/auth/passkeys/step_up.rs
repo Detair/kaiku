@@ -131,15 +131,17 @@ pub(super) async fn verify(
     let result = match rp.finish_step_up(&cred, ceremony_state, row.backup_eligible) {
         Ok(r) => r,
         Err(f) => {
-            if f == super::rp::PasskeyFailure::CounterRegressed {
-                audit::counter_regression(state, &row).await;
-            }
             return Err(failure(f));
         }
     };
-    let mut passkey = row.credential.0.clone();
-    passkey.update_credential(&result);
-    queries::record_use(&state.db, row.id, &passkey, result.backup_state()).await?;
+    if super::rp::counter_regressed(
+        super::rp::stored_counter(&row.credential.0),
+        result.counter(),
+    ) {
+        // A signal, never a refusal (B.1).
+        audit::counter_regression(state, &row, result.counter()).await;
+    }
+    queries::record_use(&state.db, row.id, result.counter(), result.backup_state()).await?;
     Ok((row, result))
 }
 

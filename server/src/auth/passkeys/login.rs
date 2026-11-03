@@ -12,7 +12,6 @@ use webauthn_rs::prelude::{AuthenticationResult, DiscoverableAuthentication, Pub
 
 use super::ceremony::{self, CeremonyKind, CeremonyRecord, CeremonyState};
 use super::queries::{self, PasskeyRow, PasskeyState};
-use super::rp::PasskeyFailure;
 use super::types::CeremonyStart;
 use super::{audit, failure, rp_of};
 use crate::api::AppState;
@@ -83,9 +82,6 @@ pub(super) async fn verify_sign_in(
     let result = match rp.finish_sign_in(&cred, st, &row.credential.0, row.backup_eligible) {
         Ok(r) => r,
         Err(f) => {
-            if f == PasskeyFailure::CounterRegressed {
-                audit::counter_regression(state, &row).await;
-            }
             return Err(failure(f));
         }
     };
@@ -94,9 +90,14 @@ pub(super) async fn verify_sign_in(
             ready_at: row.ready_at.unwrap_or_else(chrono::Utc::now),
         });
     }
-    let mut passkey = row.credential.0.clone();
-    passkey.update_credential(&result);
-    queries::record_use(&state.db, row.id, &passkey, result.backup_state()).await?;
+    if super::rp::counter_regressed(
+        super::rp::stored_counter(&row.credential.0),
+        result.counter(),
+    ) {
+        // A signal, never a refusal (B.1).
+        audit::counter_regression(state, &row, result.counter()).await;
+    }
+    queries::record_use(&state.db, row.id, result.counter(), result.backup_state()).await?;
     Ok((row, result))
 }
 

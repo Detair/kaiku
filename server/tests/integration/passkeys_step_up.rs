@@ -648,3 +648,26 @@ async fn valkey_down_step_up_fails_closed(pool: PgPool) {
     let resp = tower::ServiceExt::oneshot(router, req).await.unwrap();
     assert_eq!(resp.status(), 503);
 }
+
+#[sqlx::test]
+async fn regressed_counter_still_steps_up(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    sqlx::query("UPDATE passkeys SET credential = jsonb_set(credential, '{cred,counter}', to_jsonb(500)) WHERE id = $1")
+        .bind(row.id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
+    let (s, g) = step_up_with(&app, &token, &mut auth, &row, user, "passkey.add", "").await;
+    assert_eq!(s, 200, "{g}");
+    let counter: i64 = sqlx::query_scalar(
+        "SELECT (credential #>> '{cred,counter}')::bigint FROM passkeys WHERE id = $1",
+    )
+    .bind(row.id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(counter, 500);
+}

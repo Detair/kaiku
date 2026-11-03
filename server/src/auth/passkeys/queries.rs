@@ -227,20 +227,30 @@ pub async fn is_active(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<bool> 
     )
 }
 
-/// After a verified assertion: the updated credential (counter), BS and
-/// last use. Nothing else changes (no owner evidence, CC4).
+/// After a verified assertion: the counter high-water mark, BS and last use.
+///
+/// One atomic statement on the row (`GREATEST`: a late or regressed
+/// assertion never lowers the stored counter). Nothing else changes (no
+/// owner evidence, CC4).
 pub async fn record_use(
     db: impl PgExecutor<'_>,
     id: Uuid,
-    credential: &Passkey,
+    received_counter: u32,
     backup_state: bool,
 ) -> sqlx::Result<()> {
     sqlx::query(
-        "UPDATE passkeys SET credential = $2, backup_state = $3, last_used_at = NOW()
+        "UPDATE passkeys SET
+             credential = jsonb_set(
+                 jsonb_set(credential, '{cred,counter}',
+                           to_jsonb(GREATEST(COALESCE((credential #>> '{cred,counter}')::bigint, 0),
+                                             $2::bigint))),
+                 '{cred,backup_state}', to_jsonb($3::boolean)),
+             backup_state = $3,
+             last_used_at = NOW()
           WHERE id = $1",
     )
     .bind(id)
-    .bind(sqlx::types::Json(credential))
+    .bind(i64::from(received_counter))
     .bind(backup_state)
     .execute(db)
     .await?;

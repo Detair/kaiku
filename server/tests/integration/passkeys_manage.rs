@@ -12,7 +12,7 @@ use vc_server::auth::step_up::{StepUpAction, StepUpTarget};
 use crate::helpers::approvals::KeyDeviceFixture;
 use crate::helpers::login::{peer_request, TEST_ORIGIN};
 use crate::helpers::passkeys::{passkey_session, seed_passkey};
-use crate::helpers::{body_to_json, create_session_with_token, create_test_user, TestApp};
+use crate::helpers::{create_session_with_token, create_test_user, TestApp};
 use crate::passkeys_login::sign_in_with;
 use crate::passkeys_step_up::{auth_user, step_up_with};
 

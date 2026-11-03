@@ -68,16 +68,20 @@ pub(crate) mod audit {
     use super::queries::PasskeyRow;
     use crate::api::AppState;
 
-    /// DC4: a counter regression refuses the assertion and leaves this
-    /// audit row; the passkey stays active (not a lockout).
-    pub async fn counter_regression(state: &AppState, row: &PasskeyRow) {
+    /// B.1: a counter that went backwards is a signal (this audit row), never
+    /// a refusal; the passkey stays active and the stored counter stays.
+    pub async fn counter_regression(state: &AppState, row: &PasskeyRow, received: u32) {
         if let Err(e) = crate::permissions::write_audit_log(
             &state.db,
             row.user_id,
             "auth.passkey.counter_regression",
             Some("passkey"),
             Some(row.id),
-            Some(serde_json::json!({"label": row.label})),
+            Some(serde_json::json!({
+                "label": row.label,
+                "stored": super::rp::stored_counter(&row.credential.0),
+                "received": received,
+            })),
             None,
         )
         .await

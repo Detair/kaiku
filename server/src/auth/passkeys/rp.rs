@@ -191,7 +191,7 @@ impl PasskeyRp {
         stored_be: bool,
     ) -> Result<AuthenticationResult, PasskeyFailure> {
         self.check_origin(cred.response.client_data_json.as_ref())?;
-        let key = webauthn_rs::prelude::DiscoverableKey::from(stored);
+        let key = webauthn_rs::prelude::DiscoverableKey::from(&without_counter(stored));
         let result = self
             .webauthn
             .finish_discoverable_authentication(cred, state, &[key])
@@ -205,8 +205,9 @@ impl PasskeyRp {
         &self,
         passkeys: &[Passkey],
     ) -> Result<(RequestChallengeResponse, PasskeyAuthentication), PasskeyFailure> {
+        let creds: Vec<Passkey> = passkeys.iter().map(without_counter).collect();
         self.webauthn
-            .start_passkey_authentication(passkeys)
+            .start_passkey_authentication(&creds)
             .map_err(internal)
     }
 
@@ -226,6 +227,38 @@ impl PasskeyRp {
         check_flags(&result, stored_be)?;
         Ok(result)
     }
+}
+
+/// The crate's working copy of a stored passkey, with the signature counter
+/// set to 0.
+///
+/// B.1: "The signature counter is a signal, never an automatic lockout."
+/// webauthn-rs 0.5.5 refuses a counter that did not grow and has no switch
+/// for it (`require_valid_counter_value` is fixed to `true`). With a stored
+/// counter of 0 the crate skips only that comparison; it still verifies the
+/// signature over `authenticatorData` (which carries the received counter),
+/// the challenge, origin, RP ID hash and UV. Kaiku compares the received
+/// counter with the stored one itself ([`counter_regressed`]) and keeps the
+/// stored high-water mark (`queries::record_use`). This is why
+/// `danger-credential-internals` is enabled: it only exposes the credential
+/// fields, the verification code paths are the crate's own.
+fn without_counter(p: &Passkey) -> Passkey {
+    let mut cred = webauthn_rs::prelude::Credential::from(p.clone());
+    cred.counter = 0;
+    Passkey::from(cred)
+}
+
+/// The stored signature counter of a passkey.
+#[must_use]
+pub fn stored_counter(p: &Passkey) -> u32 {
+    webauthn_rs::prelude::Credential::from(p.clone()).counter
+}
+
+/// `WebAuthn` §6.1.1: a counter that did not grow while one was stored is a
+/// cloning signal (audited, never a refusal).
+#[must_use]
+pub const fn counter_regressed(stored: u32, received: u32) -> bool {
+    stored > 0 && received <= stored
 }
 
 fn internal(e: impl std::fmt::Display) -> PasskeyFailure {

@@ -500,3 +500,119 @@ async fn passkey_requests_have_their_own_limit(pool: PgPool) {
     .await;
     assert_eq!(s, 401, "password sign-in is unaffected");
 }
+
+async fn stored_counter(app: &TestApp, id: Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT (credential #>> '{cred,counter}')::bigint FROM passkeys WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap()
+}
+
+async fn set_counter(app: &TestApp, id: Uuid, n: i64) {
+    sqlx::query("UPDATE passkeys SET credential = jsonb_set(credential, '{cred,counter}', to_jsonb($2::bigint)) WHERE id = $1")
+        .bind(id)
+        .bind(n)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+}
+
+#[sqlx::test]
+async fn regressed_counter_is_a_signal_not_a_lockout(pool: PgPool) {
+    // Spec B.1 (coordinator decision 2): a valid assertion with a counter
+    // that went backwards signs in, is audited, and the stored counter stays.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    set_counter(&app, row.id, 1000).await;
+    let (s, b, _) = signed_in(&app, &mut auth, &row, None).await;
+    assert_eq!(s, 200, "{b}");
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_audit_log WHERE action = 'auth.passkey.counter_regression' AND target_id = $1",
+    )
+    .bind(row.id)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+    assert_eq!(
+        stored_counter(&app, row.id).await,
+        1000,
+        "the high-water mark stays"
+    );
+    // A broken signature is still refused.
+    let start = call(&app.router, "/auth/passkeys/login/start", json!({}), None).await;
+    let handle = queries::user_handle(&app.pool, user).await.unwrap();
+    let mut cred = auth.assert(
+        TEST_ORIGIN,
+        &start.1["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    let mut sig =
+        vc_server::approvals::secrets::b64u_decode(cred["response"]["signature"].as_str().unwrap())
+            .unwrap();
+    let last = sig.len() - 1;
+    sig[last] ^= 0x01;
+    cred["response"]["signature"] = vc_server::approvals::secrets::b64u_encode(&sig).into();
+    let (s, b, _) = call(
+        &app.router,
+        "/auth/passkeys/login/finish",
+        json!({"ceremony_id": start.1["ceremony_id"], "credential": cred}),
+        None,
+    )
+    .await;
+    assert_eq!((s, b["error"].as_str()), (400, Some("PASSKEY_INVALID")));
+}
+
+#[sqlx::test]
+async fn stored_counter_never_decreases(pool: PgPool) {
+    // Review Codex m3: two ceremonies completing in reversed order.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let handle = queries::user_handle(&app.pool, user).await.unwrap();
+    let s1 = call(&app.router, "/auth/passkeys/login/start", json!({}), None)
+        .await
+        .1;
+    let s2 = call(&app.router, "/auth/passkeys/login/start", json!({}), None)
+        .await
+        .1;
+    let a1 = auth.assert(
+        TEST_ORIGIN,
+        &s1["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    let a2 = auth.assert(
+        TEST_ORIGIN,
+        &s2["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    let (s, _, _) = call(
+        &app.router,
+        "/auth/passkeys/login/finish",
+        json!({"ceremony_id": s2["ceremony_id"], "credential": a2}),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200);
+    let high = stored_counter(&app, row.id).await;
+    assert!(high >= 2, "{high}");
+    let (s, _, _) = call(
+        &app.router,
+        "/auth/passkeys/login/finish",
+        json!({"ceremony_id": s1["ceremony_id"], "credential": a1}),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "the older assertion is a signal, not a refusal");
+    assert_eq!(stored_counter(&app, row.id).await, high);
+}
