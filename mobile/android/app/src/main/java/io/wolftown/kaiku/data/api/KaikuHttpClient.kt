@@ -13,6 +13,7 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.util.*
 import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.auth.RefreshResult
+import io.wolftown.kaiku.data.auth.SessionEndLog
 import io.wolftown.kaiku.data.auth.TokenRefresher
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
@@ -50,7 +51,9 @@ internal data class RefreshRequest(val refreshToken: String)
 class KaikuHttpClient @Inject constructor(
     private val tokenStorage: TokenStorage,
     private val authState: AuthState,
-    private val tls13Spec: ConnectionSpec
+    private val tls13Spec: ConnectionSpec,
+    /** Why a refresh ended the session (C27 `SESSION_REUSED`, `SESSION_EXPIRED`), for "Confirm it's you". */
+    private val sessionEndLog: SessionEndLog = SessionEndLog(),
 ) : TokenRefresher {
 
     internal companion object {
@@ -350,8 +353,17 @@ class KaikuHttpClient @Inject constructor(
             val status = response.status
 
             if (status == HttpStatusCode.Unauthorized || status == HttpStatusCode.Forbidden) {
+                val code = try {
+                    normalizeErrorCode(KaikuJson.decodeFromString<ApiErrorResponse>(response.bodyAsText()).error)
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
                 // Only the session that sent this refresh token may be ended.
-                return endSessionIfStill(refreshToken, Outcome.AUTH_REJECTED)
+                val outcome = endSessionIfStill(refreshToken, Outcome.AUTH_REJECTED)
+                if (outcome == Outcome.AUTH_REJECTED) sessionEndLog.record(code)
+                return outcome
             }
 
             if (!status.isSuccess()) {

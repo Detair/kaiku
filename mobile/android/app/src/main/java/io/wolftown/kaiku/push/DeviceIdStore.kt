@@ -2,6 +2,7 @@ package io.wolftown.kaiku.push
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.wolftown.kaiku.approval.DeviceIdProvider
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -15,7 +16,7 @@ import javax.inject.Singleton
 @Singleton
 class DeviceIdStore @Inject constructor(
     @ApplicationContext private val context: Context,
-) {
+) : DeviceIdProvider {
     private companion object {
         const val PREFS = "push_prefs"
         const val KEY_DEVICE_ID = "push_device_id"
@@ -26,7 +27,8 @@ class DeviceIdStore @Inject constructor(
     @Volatile
     private var cached: String? = null
 
-    fun id(): String {
+    /** Also the C26 `device_id` of this install's key device, so C28 pushes reach it. */
+    override fun id(): String {
         cached?.let { return it }
         return synchronized(lock) {
             cached ?: run {

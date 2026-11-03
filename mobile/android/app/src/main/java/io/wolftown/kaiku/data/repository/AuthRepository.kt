@@ -2,6 +2,7 @@ package io.wolftown.kaiku.data.repository
 
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.api.MfaRequiredApiException
+import io.wolftown.kaiku.data.keydevice.KeyDevicePolicy
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
@@ -55,6 +56,13 @@ class AuthRepository @Inject constructor(
         /** Logout never waits longer than this for the push device DELETE. */
         const val PUSH_UNREGISTER_TIMEOUT_MS = 3_000L
     }
+
+    /**
+     * L2 (C26 amendment 3): on a key device a plain sign-out keeps the push
+     * subscription, so a lapsed key device still gets call wakes and notices.
+     */
+    @set:Inject
+    var keyDevicePolicy: KeyDevicePolicy = KeyDevicePolicy.NONE
 
     /**
      * Set by [login] when the server requires a password change; see
@@ -357,7 +365,8 @@ class AuthRepository @Inject constructor(
         val capturedRefresh = tokenStorage.getRefreshToken()
 
         // First step, while the captured session's tokens still authenticate the DELETE.
-        unregisterPush(session?.sessionId)
+        // A key device keeps its subscription (C19 amendment 3).
+        if (!keyDevicePolicy.keepsPushOnSignOut()) unregisterPush(session?.sessionId)
 
         sessionTeardown.tearDown(session?.sessionId).join()
 
@@ -503,6 +512,56 @@ class AuthRepository @Inject constructor(
             throw e
         } catch (e: Exception) {
             tokenStorage.clear()
+            Result.failure(e)
+        }
+    }
+
+    /** A session runs and its tokens are stored. */
+    fun hasLiveSession(): Boolean =
+        authState.session.value is AuthSession.LoggedIn && tokenStorage.getAccessToken() != null
+
+    /**
+     * Installs the full session of a device-key sign-in (C26) for
+     * [expectedUserId]; the profile must be that user's. With a session running
+     * (the B.4 renewal) it replaces it and ends the old one on the server with
+     * its bearer only.
+     */
+    suspend fun installDeviceSession(auth: AuthResponse, expectedUserId: String): Result<User> {
+        val serverUrl = tokenStorage.getServerUrl() ?: return Result.failure(IllegalStateException("no server"))
+        return try {
+            val user = authApi.authenticatedGetMe(auth.accessToken, serverUrl)
+            if (user.id != expectedUserId) {
+                authApi.logoutSession(serverUrl, auth.accessToken, auth.refreshToken)
+                return Result.failure(IllegalStateException("device session for another account"))
+            }
+            val running = authState.session.value as? AuthSession.LoggedIn
+            if (running == null) {
+                sessionTeardown.awaitIdle()
+                if (!installSession(auth.accessToken, auth.refreshToken, auth.expiresIn, user.id)) {
+                    return Result.failure(AlreadySignedInException())
+                }
+            } else {
+                if (running.userId != user.id) return Result.failure(AlreadySignedInException())
+                val oldAccess = synchronized(pendingLock) {
+                    val old = tokenStorage.getAccessToken()
+                    tokenStorage.saveTokens(auth.accessToken, auth.refreshToken, auth.expiresIn, user.id)
+                    authState.setLoggedIn(user.id)
+                    old
+                }
+                if (oldAccess != null) {
+                    try {
+                        withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) { authApi.logoutSession(serverUrl, oldAccess, null) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        logger.warning("Old session not ended (best-effort): ${e.javaClass.simpleName}")
+                    }
+                }
+            }
+            Result.success(user)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
             Result.failure(e)
         }
     }

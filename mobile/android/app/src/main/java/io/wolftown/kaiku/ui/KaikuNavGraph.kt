@@ -19,7 +19,11 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
+import io.wolftown.kaiku.data.keydevice.KeyDeviceState
 import io.wolftown.kaiku.data.local.AuthState
+import io.wolftown.kaiku.ui.auth.ConfirmItsYouScreen
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import io.wolftown.kaiku.navigation.PendingNavigationRules
 import io.wolftown.kaiku.ui.auth.ChangePasswordScreen
 import io.wolftown.kaiku.ui.auth.LoginScreen
@@ -43,8 +47,13 @@ fun KaikuNavGraph(
     startDestination: String,
     authState: AuthState,
     appVersion: String = "",
+    keyDeviceState: StateFlow<KeyDeviceState> = MutableStateFlow(KeyDeviceState.None),
+    pendingRoute: StateFlow<String?> = MutableStateFlow(null),
+    onPendingRouteConsumed: () -> Unit = {},
     pendingNavigationViewModel: PendingNavigationViewModel = hiltViewModel()
 ) {
+    val keyState by keyDeviceState.collectAsState()
+    val nextRoute by pendingRoute.collectAsState()
     val pendingNavigation = pendingNavigationViewModel.pendingNavigation
     val pendingChannelId by pendingNavigation.channelId.collectAsState()
     val currentUserId by authState.currentUserId.collectAsState()
@@ -54,13 +63,30 @@ fun KaikuNavGraph(
 
     // Auth guard: redirect to login when logged out from an authenticated screen
     val authRoutes = setOf(
-        "server_url", "login", "register", "change_password", "qr_scanner", "qr_redeem/{serverUrl}/{token}"
+        "server_url", "login", "register", "change_password", "qr_scanner", "qr_redeem/{serverUrl}/{token}",
+        CONFIRM_ROUTE,
     )
     LaunchedEffect(isLoggedIn) {
         if (!isLoggedIn && currentRoute != null && currentRoute !in authRoutes) {
             navController.navigate("login") {
                 popUpTo(0) { inclusive = true }
             }
+        }
+    }
+
+    // A lapsed key device never sees the password form: it confirms with its screen lock (L2-A11).
+    LaunchedEffect(isLoggedIn, keyState, currentRoute) {
+        if (!isLoggedIn && keyState is KeyDeviceState.Lapsed && currentRoute == "login") {
+            navController.navigate(CONFIRM_ROUTE) { popUpTo(0) { inclusive = true } }
+        }
+    }
+
+    // The renewal prompt (B.4) and other routes the activity asks for.
+    LaunchedEffect(nextRoute, isLoggedIn, currentRoute) {
+        val route = nextRoute ?: return@LaunchedEffect
+        if (isLoggedIn && currentRoute != null && currentRoute !in authRoutes) {
+            onPendingRouteConsumed()
+            navController.navigate(route) { launchSingleTop = true }
         }
     }
 
@@ -216,6 +242,28 @@ fun KaikuNavGraph(
                     )
                 }
 
+                composable(CONFIRM_ROUTE) {
+                    ConfirmItsYouScreen(
+                        onSignedIn = {
+                            navController.navigate("home") { popUpTo(0) { inclusive = true } }
+                        },
+                        onSignedOut = {
+                            navController.navigate("login") { popUpTo(0) { inclusive = true } }
+                        },
+                    )
+                }
+
+                composable(CONFIRM_RENEW_ROUTE) {
+                    ConfirmItsYouScreen(
+                        renewal = true,
+                        onSignedIn = { navController.popBackStack() },
+                        onLater = { navController.popBackStack() },
+                        onSignedOut = {
+                            navController.navigate("login") { popUpTo(0) { inclusive = true } }
+                        },
+                    )
+                }
+
                 composable("qr_scanner") {
                     QrScannerScreen(
                         onQrScanned = { serverUrl, token ->
@@ -264,3 +312,9 @@ fun KaikuNavGraph(
         }
     }
 }
+
+/** L2-A11: the lapsed key device's sign-in screen. */
+const val CONFIRM_ROUTE = "confirm_its_you"
+
+/** The B.4 renewal prompt over a running session. */
+const val CONFIRM_RENEW_ROUTE = "confirm_its_you_renew"

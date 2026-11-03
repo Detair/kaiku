@@ -21,6 +21,9 @@ import androidx.compose.ui.Modifier
 import androidx.fragment.app.FragmentActivity
 import androidx.navigation.compose.rememberNavController
 import dagger.hilt.android.AndroidEntryPoint
+import io.wolftown.kaiku.data.auth.RenewalPolicy
+import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
+import io.wolftown.kaiku.data.keydevice.KeyDeviceState
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
@@ -31,6 +34,9 @@ import io.wolftown.kaiku.ui.auth.LoginViewModel
 import io.wolftown.kaiku.ui.auth.OidcHandler
 import io.wolftown.kaiku.ui.shared.KaikuTheme
 import io.wolftown.kaiku.ui.shared.LocalServerBaseUrl
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import java.time.Instant
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -55,6 +61,12 @@ class MainActivity : FragmentActivity() {
     @Inject
     lateinit var pendingNavigation: PendingNavigation
 
+    @Inject
+    lateinit var keyDevices: KeyDeviceRepository
+
+    /** A route the running app should open next (the B.4 renewal prompt). */
+    private val pendingRoute = MutableStateFlow<String?>(null)
+
     private val loginViewModel: LoginViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -77,7 +89,10 @@ class MainActivity : FragmentActivity() {
                 startDestination = startDestination,
                 authState = authState,
                 appVersion = appVersion,
-                serverBaseUrl = tokenStorage::getServerUrl
+                serverBaseUrl = tokenStorage::getServerUrl,
+                keyDeviceState = keyDevices.state,
+                pendingRoute = pendingRoute,
+                onPendingRouteConsumed = { pendingRoute.value = null },
             )
         }
     }
@@ -86,6 +101,23 @@ class MainActivity : FragmentActivity() {
         super.onStart()
         // Reconnect right away when returning to the app instead of waiting out the backoff.
         realtimeConnectionManager.onAppForeground()
+        checkRenewal()
+    }
+
+    /**
+     * B.4 renewal (coordinator call 5): a key device asks "Confirm it's you to
+     * stay signed in" at a normal app open in the last 7 days before the 90-day
+     * cap, at most once a day, never when opened from a notification or a call.
+     */
+    private fun checkRenewal() {
+        if (keyDevices.current() !is KeyDeviceState.Active) return
+        val fromNotification = intent?.hasExtra(AndroidNotificationPresenter.EXTRA_USER_ID) == true ||
+            intent?.data != null
+        val now = Instant.now()
+        if (RenewalPolicy.shouldRenew(now, keyDevices.sessionCap(), keyDevices.lastRenewalPromptAt(), fromNotification)) {
+            keyDevices.markRenewalPrompted(now)
+            pendingRoute.value = CONFIRM_RENEW_ROUTE
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -125,6 +157,8 @@ class MainActivity : FragmentActivity() {
      */
     private fun resolveStartDestination(): String {
         if (authState.isLoggedIn.value) return "home"
+        // A key device outlives its session: it signs in again with its screen lock (L2-A11).
+        if (keyDevices.current() is KeyDeviceState.Lapsed) return CONFIRM_ROUTE
         if (tokenStorage.getServerUrl() == null) {
             val default = normalizeServerAddress(BuildConfig.DEFAULT_SERVER_URL).getOrNull()
                 ?: return "server_url"
@@ -145,7 +179,10 @@ fun KaikuApp(
     authState: AuthState,
     startDestination: String = "server_url",
     appVersion: String = "",
-    serverBaseUrl: () -> String? = { null }
+    serverBaseUrl: () -> String? = { null },
+    keyDeviceState: StateFlow<KeyDeviceState> = MutableStateFlow(KeyDeviceState.None),
+    pendingRoute: StateFlow<String?> = MutableStateFlow(null),
+    onPendingRouteConsumed: () -> Unit = {},
 ) {
     val isLoggedIn by authState.isLoggedIn.collectAsState()
     val baseUrl = remember(isLoggedIn) { serverBaseUrl() }
@@ -161,7 +198,10 @@ fun KaikuApp(
                     navController = navController,
                     startDestination = startDestination,
                     authState = authState,
-                    appVersion = appVersion
+                    appVersion = appVersion,
+                    keyDeviceState = keyDeviceState,
+                    pendingRoute = pendingRoute,
+                    onPendingRouteConsumed = onPendingRouteConsumed,
                 )
             }
         }

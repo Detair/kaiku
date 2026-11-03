@@ -69,6 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Long-press context menu support for touch devices on messages, channels, and member lists
 - `touch:` UnoCSS variant for touch-specific styling via `@media (hover: none)`
 - Desktop client now displays remote screen shares via native VP8 decode
+- Android: when your phone is your Kaiku key, it signs you in again with its screen lock ("Confirm it's you"), never a password; "Sign out" keeps the key, "Sign out and remove this phone" removes it.
 
 ### Changed
 - Admins elevate by confirming on their phone (or with a passkey) instead of typing their password and code.

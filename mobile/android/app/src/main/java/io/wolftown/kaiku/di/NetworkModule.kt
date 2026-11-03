@@ -34,9 +34,10 @@ object NetworkModule {
     fun provideKaikuHttpClient(
         tokenStorage: TokenStorage,
         authState: AuthState,
-        tls13Spec: ConnectionSpec
+        tls13Spec: ConnectionSpec,
+        sessionEndLog: io.wolftown.kaiku.data.auth.SessionEndLog,
     ): KaikuHttpClient {
-        return KaikuHttpClient(tokenStorage, authState, tls13Spec)
+        return KaikuHttpClient(tokenStorage, authState, tls13Spec, sessionEndLog)
     }
 
     @Provides

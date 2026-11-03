@@ -264,4 +264,47 @@
     <string name="passkeys_login_cancel">Cancel</string>
     <string name="passkeys_android_none_on_device">No passkey for this server on this phone.</string>
     <string name="passkeys_android_not_set_up_for_app">This server is not set up for passkeys in the app yet. Sign in another way.</string>
+
+    <!-- Phone as a key: UV prompt and step-up (spec B.1, F7) -->
+    <string name="security_uv_title">Confirm it\'s you</string>
+    <string name="security_uv_sign_in">Sign in to Kaiku</string>
+    <string name="security_step_up_passkey_add">Add a passkey</string>
+    <string name="security_step_up_passkey_remove">Remove the passkey \'%1$s\'</string>
+    <string name="security_step_up_key_device_remove">Remove the device \'%1$s\'</string>
+    <string name="security_step_up_enrollment_issue">Add a phone</string>
+    <string name="security_step_up_password_set">Set a password</string>
+    <string name="security_step_up_password_remove">Remove your password</string>
+    <string name="security_step_up_totp_set">Set up an authenticator app</string>
+    <string name="security_step_up_totp_remove">Remove the authenticator app</string>
+    <string name="security_step_up_recovery_codes_create">Create new recovery codes</string>
+    <string name="security_step_up_identity_link">Link a sign-in provider</string>
+    <string name="security_step_up_identity_unlink">Unlink \'%1$s\'</string>
+    <string name="security_step_up_sessions_end">Sign out: %1$s</string>
+    <string name="security_step_up_recovery_contact_set">Recovery contact: %1$s</string>
+    <string name="security_step_up_request_cancel">Cancel the request: %1$s</string>
+    <string name="security_step_up_event_repudiate">That wasn\'t me: %1$s</string>
+    <string name="security_step_up_account_delete">Delete your account</string>
+    <string name="security_step_up_admin_elevate">Admin mode</string>
+    <string name="security_step_up_admin_enrollment_issue">Set up a phone for %1$s</string>
+    <string name="security_step_up_admin_authenticator_remove">Remove the device \'%1$s\' now</string>
+    <string name="security_step_up_admin_may_approve">Change \'May confirm sign-ins\' for %1$s</string>
+    <string name="security_step_up_admin_factor_set_state">Change sign-in factors of %1$s</string>
+    <string name="security_step_up_admin_recovery_contact_set">Change the recovery contact of %1$s</string>
+
+    <!-- Confirm it's you (device-key sign-in, B.4) -->
+    <string name="common_ok">OK</string>
+    <string name="security_confirm_renew">Confirm it\'s you to stay signed in</string>
+    <string name="security_confirm_account">Account: %1$s</string>
+    <string name="security_confirm_body">Use your phone\'s screen lock (fingerprint, PIN, pattern or password). Kaiku never asks for a separate PIN.</string>
+    <string name="security_confirm_button">Confirm it\'s you</string>
+    <string name="security_confirm_later">Later</string>
+    <string name="security_confirm_other_account">Use another account</string>
+    <string name="security_confirm_other_account_explain">This phone is your Kaiku key. To use another account on it, remove this phone as your key first. You confirm with your screen lock twice.</string>
+    <string name="security_sign_out_remove_phone">Sign out and remove this phone</string>
+    <string name="security_session_reused">A session was ended because its key was used twice. Confirm it\'s you to sign in again.</string>
+    <string name="security_device_revoked">This phone is no longer your Kaiku key. Ask your admin to set it up again.</string>
+    <string name="security_key_invalidated">This phone is no longer your key because its screen lock changed. Ask your admin to set it up again.</string>
+    <string name="security_network_error">No connection to the server. Check the internet connection and try again.</string>
+    <string name="security_locked_out">Too many tries. Unlock your phone first, then try again.</string>
+    <string name="security_sign_in_failed">That didn\'t work. Try again.</string>
 </resources>
