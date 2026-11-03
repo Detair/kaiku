@@ -24,12 +24,20 @@ const BrowserChoice: Component = () => {
   const linux = /Linux/.test(ua) && !/Android/.test(ua);
   const [settings, { mutate }] = createResource(getSettings);
 
-  const choose = async (value: PasskeyBrowser) => {
-    const current = settings();
-    if (!current) return;
-    const next = { ...current, passkey_browser: value };
-    mutate(next);
-    await updateSettings(next);
+  // Writes onto the settings as stored now (another page may have changed
+  // them since mount); a failed save shows the stored choice again.
+  const choose = async (value: PasskeyBrowser, select: HTMLSelectElement) => {
+    const shown = settings();
+    if (!shown) return;
+    try {
+      const next = { ...(await getSettings()), passkey_browser: value };
+      await updateSettings(next);
+      mutate(next);
+    } catch {
+      const stored = await getSettings().catch(() => shown);
+      mutate(stored);
+      select.value = stored.passkey_browser ?? "system";
+    }
   };
 
   return (
@@ -42,7 +50,7 @@ const BrowserChoice: Component = () => {
         class="input-field min-h-12"
         value={settings()?.passkey_browser ?? "system"}
         disabled={!settings()}
-        onChange={(e) => void choose(e.currentTarget.value as PasskeyBrowser)}
+        onChange={(e) => void choose(e.currentTarget.value as PasskeyBrowser, e.currentTarget)}
       >
         <For each={CHOICES.filter((c) => !c.macOnly || mac)}>
           {(c) => <option value={c.value}>{t(c.key)}</option>}

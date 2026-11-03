@@ -44,6 +44,28 @@ describe("PasskeyBrowserSetting", () => {
     expect(screen.getByText(/Firefox cannot use your phone/)).toBeTruthy();
   });
 
+  it("writes the settings as they are now, not as they were at mount", async () => {
+    render(() => <PasskeyBrowserSetting />);
+    const select = (await screen.findByLabelText("Browser for passkey sign-in")) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("system"));
+    // Another settings page changed the theme in the meantime.
+    settings.getSettings.mockResolvedValue({ ...BASE, theme: "light" });
+    fireEvent.change(select, { target: { value: "chromium" } });
+    await waitFor(() =>
+      expect(settings.updateSettings).toHaveBeenCalledWith(expect.objectContaining({ passkey_browser: "chromium", theme: "light" })),
+    );
+  });
+
+  it("a failed save shows the stored choice again", async () => {
+    settings.updateSettings.mockRejectedValue(new Error("disk full"));
+    render(() => <PasskeyBrowserSetting />);
+    const select = (await screen.findByLabelText("Browser for passkey sign-in")) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("system"));
+    fireEvent.change(select, { target: { value: "chromium" } });
+    await waitFor(() => expect(settings.updateSettings).toHaveBeenCalled());
+    await waitFor(() => expect(select.value).toBe("system"));
+  });
+
   it("Safari is listed only on macOS", async () => {
     render(() => <PasskeyBrowserSetting />);
     await screen.findByLabelText("Browser for passkey sign-in");
