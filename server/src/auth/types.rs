@@ -409,19 +409,3 @@ pub struct ReauthMethodsResponse {
     /// An active key device of the account can confirm it (`device_stepup`).
     pub device: bool,
 }
-
-/// Forgot password request.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct ForgotPasswordRequest {
-    /// Email address of the account.
-    pub email: String,
-}
-
-/// Reset password request.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct ResetPasswordRequest {
-    /// The reset token (raw, as received via email).
-    pub token: String,
-    /// The new password (8-128 characters).
-    pub new_password: String,
-}

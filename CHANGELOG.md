@@ -80,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** changing your password, two-factor settings, recovery codes, linked accounts or other sessions, and deleting your account, now needs a confirmation on your key phone or with a passkey; a password and code alone no longer do. Creating bot tokens and incoming webhooks needs a session signed in with a passkey or your phone.
 - Backup codes are replaced by 10 longer recovery codes, which only start an account recovery (they never sign you in). New passwords are checked against a list of commonly used and leaked passwords.
 - Admins elevate by confirming on their phone (or with a passkey) instead of typing their password and code.
+- At the upgrade, sessions of accounts without two-factor authentication end; accounts with a password and an authenticator app can secure themselves with "Secure my account", and the Kaiku chat reminds them every 30 days. A new security overview lists what to set up next.
 - Admins set up a family member's phone by scanning and typing a code on their own phone; accounts created this way need no password. Setting up an existing account waits 24 hours. Admins see each member's phones, passkeys, password and authenticator state, recovery codes left, recovery contact, open requests and sessions, can mark a password or authenticator as unsafe, turn phone confirmations off, and remove a device at once ("Remove device now"); none of these immediate actions work on another admin's account.
 - Every sign-in now records how strongly it was confirmed; sessions from before this release are limited to chat and calls until you sign in again with a passkey or your phone. Signed-in requests keep working while Valkey is unavailable, and an ended session stays refused.
 - The admin area needs a session signed in with your key phone (or a passkey); other sessions, and every session from before this release, are not let in, and elevations from before this release end with the upgrade.
@@ -170,6 +171,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 - Temporary passwords for admin-created accounts (`POST /api/admin/users` refuses `temporary_password`).
+- Password reset by e-mail. A forgotten password is replaced through an account recovery with a recovery code, or by an admin.
 - The old QR login that signed a phone in without confirmation (`/auth/qr/create`, `/auth/qr/redeem`).
 - `GEOIP_API_URL`.
 - The 'appear offline' status is no longer available.

@@ -99,6 +99,7 @@ mod tenancy_isolation;
 mod threads;
 mod transition_locks;
 mod unread;
+mod upgrade_migration;
 mod upload_limits;
 mod uploads_http;
 mod valkey_outage;

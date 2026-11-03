@@ -13,8 +13,7 @@ use uuid::Uuid;
 
 use super::models::{
     AuthMethodsConfig, Channel, ChannelMember, ChannelType, ChannelUnread, FileAttachment,
-    GuildUnreadSummary, Message, OidcProviderRow, PasswordResetToken, Session, UnreadAggregate,
-    User, UserIdentity,
+    GuildUnreadSummary, Message, OidcProviderRow, Session, UnreadAggregate, User, UserIdentity,
 };
 
 /// Log and return a database error with context.
@@ -512,87 +511,6 @@ pub async fn cleanup_expired_device_transfers(pool: &PgPool) -> sqlx::Result<u64
     let result = sqlx::query("DELETE FROM device_transfers WHERE expires_at < NOW()")
         .execute(pool)
         .await?;
-    Ok(result.rows_affected())
-}
-
-// ============================================================================
-// Password Reset Token Queries
-// ============================================================================
-
-/// Create a password reset token.
-pub async fn create_password_reset_token(
-    pool: &PgPool,
-    user_id: Uuid,
-    token_hash: &str,
-    expires_at: DateTime<Utc>,
-) -> sqlx::Result<PasswordResetToken> {
-    sqlx::query_as::<_, PasswordResetToken>(
-        r"
-        INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
-        VALUES ($1, $2, $3)
-        RETURNING *
-        ",
-    )
-    .bind(user_id)
-    .bind(token_hash)
-    .bind(expires_at)
-    .fetch_one(pool)
-    .await
-    .map_err(db_error!("create_password_reset_token", user_id = %user_id))
-}
-
-/// Find a valid (unused, non-expired) password reset token by its hash.
-pub async fn find_valid_reset_token(
-    pool: &PgPool,
-    token_hash: &str,
-) -> sqlx::Result<Option<PasswordResetToken>> {
-    sqlx::query_as::<_, PasswordResetToken>(
-        "SELECT * FROM password_reset_tokens WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()",
-    )
-    .bind(token_hash)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| {
-        error!(query = "find_valid_reset_token", error = %e, "Database query failed");
-        e
-    })
-}
-
-/// Mark a password reset token as used.
-pub async fn mark_reset_token_used(pool: &PgPool, token_id: Uuid) -> sqlx::Result<()> {
-    sqlx::query("UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1")
-        .bind(token_id)
-        .execute(pool)
-        .await
-        .map_err(db_error!("mark_reset_token_used", token_id = %token_id))?;
-    Ok(())
-}
-
-/// Invalidate all unused password reset tokens for a user.
-pub async fn invalidate_user_reset_tokens(pool: &PgPool, user_id: Uuid) -> sqlx::Result<u64> {
-    let result = sqlx::query(
-        "UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL",
-    )
-    .bind(user_id)
-    .execute(pool)
-    .await
-    .map_err(db_error!("invalidate_user_reset_tokens", user_id = %user_id))?;
-    Ok(result.rows_affected())
-}
-
-/// Clean up expired password reset tokens (for background job).
-///
-/// Removes tokens that expired more than 24 hours ago.
-pub async fn cleanup_expired_reset_tokens(pool: &PgPool) -> sqlx::Result<u64> {
-    let result = sqlx::query(
-        "DELETE FROM password_reset_tokens WHERE expires_at < NOW() - INTERVAL '24 hours'",
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| {
-        error!(query = "cleanup_expired_reset_tokens", error = %e, "Database query failed");
-        e
-    })?;
     Ok(result.rows_affected())
 }
 

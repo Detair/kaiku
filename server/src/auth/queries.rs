@@ -208,19 +208,3 @@ pub async fn update_password_hash_tx(
     .await?;
     Ok(())
 }
-
-// ============================================================================
-// Password reset tokens
-// ============================================================================
-
-/// Mark a password reset token as consumed inside a transaction.
-pub async fn mark_reset_token_used_tx(
-    conn: &mut PgConnection,
-    token_id: Uuid,
-) -> Result<(), AuthError> {
-    sqlx::query("UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1")
-        .bind(token_id)
-        .execute(conn)
-        .await?;
-    Ok(())
-}

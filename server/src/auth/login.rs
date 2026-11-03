@@ -7,7 +7,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 use axum_extra::extract::CookieJar;
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use fred::prelude::*;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -26,18 +26,17 @@ use super::oidc::{
     resolve_flow_redirects, FlowRedirectError, OidcFlowPurpose, OidcFlowState, OidcHandoffGrant,
     OidcUserInfo, OIDC_HANDOFF_TTL_SECS,
 };
-use super::password::{hash_password, verify_password};
+use super::password::verify_password;
 use super::session_issue::SessionClient;
 use super::types::{
-    AuthResponse, ForgotPasswordRequest, LoginRequest, LogoutRequest, OidcAuthorizeQuery,
-    OidcCallbackQuery, OidcHandoffExchangeRequest, ResetPasswordRequest,
+    AuthResponse, LoginRequest, LogoutRequest, OidcAuthorizeQuery, OidcCallbackQuery,
+    OidcHandoffExchangeRequest,
 };
 use super::{cookies, hash_token, queries};
 use crate::api::AppState;
 use crate::db::{
-    self, create_password_reset_token, find_session_by_token_hash, find_user_by_email,
-    find_user_by_id, find_user_by_username, find_user_id_by_identity, find_valid_reset_token,
-    get_auth_methods_allowed, invalidate_user_reset_tokens,
+    self, find_session_by_token_hash, find_user_by_id, find_user_by_username,
+    find_user_id_by_identity, get_auth_methods_allowed,
 };
 use crate::ratelimit::NormalizedIp;
 
@@ -1289,206 +1288,4 @@ if (window.opener) {{
 document.body.innerText = "{fallback}";
 </script></body></html>"#,
     )
-}
-
-// ============================================================================
-// Password Reset
-// ============================================================================
-
-/// Request a password reset email.
-///
-/// Always returns 200 with a generic message to prevent user enumeration.
-/// If SMTP is not configured, returns 503.
-///
-/// POST /auth/forgot-password
-#[utoipa::path(
-    post,
-    path = "/auth/forgot-password",
-    tag = "auth",
-    request_body = ForgotPasswordRequest,
-    responses(
-        (status = 200, description = "Password reset email sent (returns success regardless of whether account exists)"),
-        (status = 503, description = "Email service not configured"),
-    ),
-    security(()),
-)]
-#[tracing::instrument(skip(state, body))]
-pub async fn forgot_password(
-    State(state): State<AppState>,
-    Json(body): Json<ForgotPasswordRequest>,
-) -> AuthResult<Json<serde_json::Value>> {
-    // Check if email service is configured
-    let email_service = state.email.as_ref().ok_or(AuthError::EmailNotConfigured)?;
-
-    // Basic email format validation
-    if !body.email.contains('@') || body.email.len() < 5 {
-        // Still return success to prevent enumeration
-        return Ok(Json(serde_json::json!({
-            "message": "If an account with that email exists, a reset code has been sent."
-        })));
-    }
-
-    // Look up user by email — catch DB errors to prevent enumeration via 500 responses
-    let user = match find_user_by_email(&state.db, &body.email).await {
-        Ok(Some(u)) => u,
-        Ok(None) => {
-            // User not found — return success silently (no enumeration)
-            return Ok(Json(serde_json::json!({
-                "message": "If an account with that email exists, a reset code has been sent."
-            })));
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "Database error during password reset user lookup");
-            return Ok(Json(serde_json::json!({
-                "message": "If an account with that email exists, a reset code has been sent."
-            })));
-        }
-    };
-
-    // Only allow password reset for local auth users
-    if user.auth_method != crate::db::AuthMethod::Local {
-        return Ok(Json(serde_json::json!({
-            "message": "If an account with that email exists, a reset code has been sent."
-        })));
-    }
-
-    // Invalidate existing tokens for this user — abort if this fails to prevent token accumulation
-    if let Err(e) = invalidate_user_reset_tokens(&state.db, user.id).await {
-        tracing::error!(
-            error = %e,
-            user_id = %user.id,
-            "Failed to invalidate existing reset tokens, aborting reset flow"
-        );
-        return Ok(Json(serde_json::json!({
-            "message": "If an account with that email exists, a reset code has been sent."
-        })));
-    }
-
-    // Generate 32 random bytes → base64url token
-    use base64::Engine;
-    use rand::RngCore;
-
-    let mut token_bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut token_bytes);
-    let raw_token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_bytes);
-
-    // Hash for DB storage
-    let token_hash = hash_token(&raw_token);
-    let expires_at = Utc::now() + Duration::hours(1);
-
-    // Insert token into DB — catch DB errors to prevent enumeration via 500 responses
-    if let Err(e) = create_password_reset_token(&state.db, user.id, &token_hash, expires_at).await {
-        tracing::error!(error = %e, user_id = %user.id, "Failed to create password reset token");
-        return Ok(Json(serde_json::json!({
-            "message": "If an account with that email exists, a reset code has been sent."
-        })));
-    }
-
-    // Send email — log warning on failure, return same generic response to prevent enumeration
-    match email_service
-        .send_password_reset(&body.email, &user.username, &raw_token)
-        .await
-    {
-        Ok(()) => {
-            tracing::info!(user_id = %user.id, "Password reset email sent");
-        }
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                user_id = %user.id,
-                "Failed to send password reset email"
-            );
-            // Clean up the orphaned token since the user never received it
-            if let Err(cleanup_err) = invalidate_user_reset_tokens(&state.db, user.id).await {
-                tracing::error!(
-                    error = %cleanup_err,
-                    user_id = %user.id,
-                    "Failed to clean up orphaned password reset token after email failure"
-                );
-            }
-        }
-    }
-
-    // Always return generic message to prevent user enumeration
-    Ok(Json(serde_json::json!({
-        "message": "If an account with that email exists, a reset code has been sent."
-    })))
-}
-
-/// Reset password using a reset token.
-///
-/// POST /auth/reset-password
-#[utoipa::path(
-    post,
-    path = "/auth/reset-password",
-    tag = "auth",
-    request_body = ResetPasswordRequest,
-    responses(
-        (status = 200, description = "Password reset successfully"),
-    ),
-    security(()),
-)]
-#[tracing::instrument(skip(state, body))]
-pub async fn reset_password(
-    State(state): State<AppState>,
-    Json(body): Json<ResetPasswordRequest>,
-) -> AuthResult<Json<serde_json::Value>> {
-    // Validate password length
-    if body.new_password.len() < 8 || body.new_password.len() > 128 {
-        return Err(AuthError::Validation(
-            "Password must be between 8 and 128 characters".to_string(),
-        ));
-    }
-
-    // Hash the provided token and look it up
-    let token_hash = hash_token(&body.token);
-    let reset_token = find_valid_reset_token(&state.db, &token_hash)
-        .await?
-        .ok_or(AuthError::InvalidToken)?;
-
-    // Hash the new password
-    let password_hash = hash_password(&body.new_password).map_err(|_| AuthError::PasswordHash)?;
-
-    // Transaction: mark token used → update password → delete all sessions
-    let mut tx = state.db.begin().await.map_err(|e| {
-        tracing::error!(error = %e, "Failed to start password reset transaction");
-        AuthError::Database(e)
-    })?;
-
-    // Mark token as used
-    queries::mark_reset_token_used_tx(&mut tx, reset_token.id)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = ?e, token_id = %reset_token.id, "Failed to mark reset token used");
-            e
-        })?;
-
-    // Update password
-    queries::update_password_hash_tx(&mut tx, reset_token.user_id, &password_hash)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = ?e, user_id = %reset_token.user_id, "Failed to update password");
-            e
-        })?;
-
-    // End every session of the user (force re-login everywhere), in the
-    // revocation order, inside the reset transaction.
-    super::revocation::end_all_sessions_tx(
-        &mut tx,
-        &AuthCtx::from(&state),
-        reset_token.user_id,
-        None,
-        super::revocation::EndReason::PasswordChanged,
-    )
-    .await?;
-    tx.commit().await.map_err(|e| {
-        tracing::error!(error = %e, "Failed to commit password reset transaction");
-        AuthError::Database(e)
-    })?;
-
-    tracing::info!(user_id = %reset_token.user_id, "Password reset successful, all sessions invalidated");
-
-    Ok(Json(serde_json::json!({
-        "message": "Password has been reset successfully. Please log in with your new password."
-    })))
 }

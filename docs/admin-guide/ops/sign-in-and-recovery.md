@@ -71,7 +71,30 @@ its notifications after the last notice. The account and all admins get a
 notice. If it was the account's only key, give the person a new one with
 `enroll`.
 
+## Before the upgrade to v1.0 (checklist)
+
+1. Set `PUBLIC_URL` to the address members use; passkeys and setup links are
+   bound to it.
+2. Admins who sign in with a password only: turn on an authenticator app
+   before the upgrade. Sessions of accounts with neither an authenticator app
+   nor a key phone or passkey end at the upgrade.
+3. Give the first admin a key phone with `kaiku-admin enroll <admin>` on the
+   server host.
+4. Name a recovery contact for every account and have them confirm it. A
+   contact counts for a request only when they confirmed at least one delay
+   period (`ACCOUNT_REQUEST_DELAY_HOURS`) before it started.
+5. On a server with a single admin, accounts without another canceller can
+   only be recovered with `kaiku-admin` on the host. Consider a second admin.
+
+E-mail password reset is gone: a forgotten password is replaced through an
+account recovery with a recovery code, or by an admin.
+
 ## After the upgrade to v1.0
+
+- Accounts with a password (or a sign-in provider) and an authenticator app,
+  but no key phone or passkey, get **Secure my account**: a delayed request
+  that adds a phone or passkey. The Kaiku chat reminds them every 30 days
+  until they do.
 
 - Every session from before the upgrade is a limited session: chat, calls and
   the own profile, but not the admin area and not elevation. Give each admin a

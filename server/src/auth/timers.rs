@@ -76,5 +76,18 @@ pub async fn run_once(state: &AppState) -> anyhow::Result<()> {
         }
     }
 
+    // 7. `bootstrap_reminder` every 30 days while `bootstrap_open` (C28).
+    match crate::auth::security_overview::bootstrap_reminders(&crate::auth::ctx::AuthCtx::from(
+        state,
+    ))
+    .await
+    {
+        Ok(events) => crate::security_events::spawn_delivery(state, events),
+        Err(e) => {
+            tracing::warn!(error = %e, "sweep: bootstrap reminders failed");
+            first_err.get_or_insert_with(|| anyhow::anyhow!(e.to_string()));
+        }
+    }
+
     first_err.map_or(Ok(()), Err)
 }

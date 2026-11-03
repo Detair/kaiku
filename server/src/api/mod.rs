@@ -233,6 +233,10 @@ pub fn create_router(state: AppState) -> Router {
         )
         .nest("/api/me/connection", connectivity::router())
         .nest("/api/me/preferences", preferences::router())
+        .route(
+            "/api/me/security",
+            get(crate::auth::security_overview::get_security),
+        )
         .nest("/api/me/security-events", crate::security_events::router())
         .nest("/api/me", crate::auth::recovery_contact::router())
         .merge(crate::auth::account_requests::bearer_router())

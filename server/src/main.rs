@@ -249,17 +249,6 @@ async fn main() -> Result<()> {
                 _ => {}
             }
 
-            // Cleanup expired password reset tokens
-            match db::cleanup_expired_reset_tokens(&db_pool_clone).await {
-                Ok(count) if count > 0 => {
-                    tracing::debug!(count, "Cleaned up expired reset tokens");
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to cleanup expired reset tokens");
-                }
-                _ => {}
-            }
-
             // Cleanup webhook delivery logs older than 7 days
             match vc_server::webhooks::queries::cleanup_old_delivery_logs(&db_pool_clone, 7).await {
                 Ok(count) if count > 0 => {

@@ -489,42 +489,6 @@ async fn test_bulk_ban_ends_sessions_and_sockets(pool: PgPool) {
     }
 }
 
-#[sqlx::test]
-async fn test_password_reset_ends_sessions_and_sockets(pool: PgPool) {
-    let fx = setup(&pool).await;
-    let (user_id, username) = create_password_user(&pool).await;
-    let session = login(&fx, &username).await;
-    let mut ws = connect_ready(&fx.server, &session.access).await;
-
-    let raw = format!("reset-{}", Uuid::new_v4());
-    db::create_password_reset_token(
-        &pool,
-        user_id,
-        &vc_server::auth::hash_token(&raw),
-        chrono::Utc::now() + chrono::Duration::minutes(30),
-    )
-    .await
-    .expect("reset token");
-
-    let resp = reqwest::Client::new()
-        .post(format!("{}/auth/reset-password", fx.server.url))
-        .json(&serde_json::json!({ "token": raw, "new_password": "reset-pass-789" }))
-        .send()
-        .await
-        .expect("POST /auth/reset-password");
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    expect_session_revoked(&mut ws).await;
-    assert_eq!(
-        me_status(&fx.server, &session.access).await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        refresh(&fx.server, &session.refresh).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-}
-
 /// With `revoke_others` the caller's own session must be identifiable;
 /// otherwise the request is refused and nothing changes.
 #[sqlx::test]
