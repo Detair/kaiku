@@ -70,8 +70,22 @@ pub fn key_description(r: &Reported) -> Vec<u8> {
     tlv(&[0x30], &seq)
 }
 
-/// A one-certificate chain whose leaf reports `r` (DER).
+/// A one-certificate chain whose leaf reports `r` and certifies `key` (as
+/// Android's leaf certifies the attested key itself).
+pub fn chain_for(r: &Reported, key: &p256::ecdsa::SigningKey) -> Vec<Vec<u8>> {
+    use p256::pkcs8::EncodePrivateKey;
+    let der = key.to_pkcs8_der().unwrap();
+    let pair = rcgen::KeyPair::try_from(der.as_bytes()).unwrap();
+    leaf(r, &pair)
+}
+
+/// A one-certificate chain whose leaf reports `r` for a key of its own
+/// (never the claimed one: the claim is refused).
 pub fn chain(r: &Reported) -> Vec<Vec<u8>> {
+    leaf(r, &rcgen::KeyPair::generate().unwrap())
+}
+
+fn leaf(r: &Reported, key: &rcgen::KeyPair) -> Vec<Vec<u8>> {
     let mut params = rcgen::CertificateParams::new(vec!["android-keystore".to_string()]).unwrap();
     params
         .custom_extensions
@@ -79,8 +93,7 @@ pub fn chain(r: &Reported) -> Vec<Vec<u8>> {
             &[1, 3, 6, 1, 4, 1, 11129, 2, 1, 17],
             key_description(r),
         ));
-    let key = rcgen::KeyPair::generate().unwrap();
-    let cert = params.self_signed(&key).unwrap();
+    let cert = params.self_signed(key).unwrap();
     vec![cert.der().to_vec()]
 }
 

@@ -762,7 +762,7 @@ pub async fn claim(
         .as_slice()
         .try_into()
         .map_err(|_| ApprovalError::EnrollmentState)?;
-    let props = check_attestation(&chain, &nonce, uv_class)
+    let props = check_attestation(&chain, &nonce, uv_class, &der)
         .map_err(|u| ApprovalError::DeviceUnsuitable { reason: u.reason() })?;
     set_state(
         &mut tx,

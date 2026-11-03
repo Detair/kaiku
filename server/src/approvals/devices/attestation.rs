@@ -6,7 +6,8 @@
 //! and refuses a key whose reported properties fall below B.1: security
 //! level below TEE, no user authentication, a timeout other than per-use or
 //! ≤ 10 s, or an attestation challenge other than the enrolment nonce. That
-//! catches app bugs, not a modified app. User authentication means a
+//! catches app bugs, not a modified app. The leaf must certify the claimed
+//! key (its `SubjectPublicKeyInfo` equals the claim's). User authentication means a
 //! hardware-enforced `userAuthType` other than none and no `noAuthRequired`;
 //! an unreadable `authTimeout` makes the extension unreadable.
 
@@ -54,10 +55,15 @@ impl Unsuitable {
 }
 
 /// Check the leaf of `chain` (DER, leaf first) against B.1 for `uv_class`.
+///
+/// The leaf must certify `public_key` (the claimed key's SPKI DER): its
+/// reported properties describe the key it certifies, so a leaf for any
+/// other key says nothing about the claimed one.
 pub fn check(
     chain: &[Vec<u8>],
     nonce: &[u8; 32],
     uv_class: UvClass,
+    public_key: &[u8],
 ) -> Result<ReportedProperties, Unsuitable> {
     let leaf = chain.first().ok_or(Unsuitable::AttestationMissing)?;
     if chain.len() > MAX_CHAIN {
@@ -71,6 +77,9 @@ pub fn check(
         .find(|e| e.oid.to_id_string() == KEY_DESCRIPTION_OID)
         .ok_or(Unsuitable::AttestationMissing)?;
     let desc = parse_key_description(ext.value).ok_or(Unsuitable::AttestationMissing)?;
+    if cert.public_key().raw != public_key {
+        return Err(Unsuitable::AttestationProperties);
+    }
     let props = ReportedProperties {
         security_level: desc.security_level,
         user_auth: desc.user_auth,
