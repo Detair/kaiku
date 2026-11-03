@@ -6,6 +6,7 @@
  */
 
 import { Component, For, Show, createSignal } from "solid-js";
+import type { AccountRequestSummary } from "@/lib/types";
 import { HttpError } from "@/lib/tauri/common";
 import { codeIs } from "@/lib/errorCode";
 import { Portal } from "solid-js/web";
@@ -31,7 +32,12 @@ export function resetOpenRequestDismissals(): void {
   clearOpenRequestDismissals();
 }
 
-const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
+const OpenRequestDialog: Component<{
+  req: () => AccountRequestSummary;
+  close: () => void;
+  /** The cancel lost against completion: the host keeps this request shown. */
+  onTooLate: (req: AccountRequestSummary) => void;
+}> = (props) => {
   // Escape does not answer "That's right": an account-change warning needs
   // an explicit click (Argon review 2 #3).
   const dialog = createDialog({ onClose: () => undefined });
@@ -41,7 +47,7 @@ const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
   const [error, setError] = createSignal<string | null>(null);
   const [part2, setPart2] = createSignal(false);
   const [tooLate, setTooLate] = createSignal(false);
-  const req = () => meSecurity()!.open_request!;
+  const req = () => props.req();
 
   const cancel = async (factor: Part2Factor | null) => {
     setBusy(true);
@@ -58,7 +64,9 @@ const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
       if (err instanceof StepUpCancelled) return;
       if (err instanceof HttpError && codeIs(err.code, "ACCOUNT_REQUEST_COMPLETED")) {
         // Lost against completion (Argon review 2 #2): say so and show the
-        // account as it is now; the new device is in Security settings.
+        // account as it is now; the new device is in Security settings. The
+        // dialog stays until the person closes it (Flash r3 p1 #2).
+        props.onTooLate(req());
         setTooLate(true);
         await refreshMeSecurity();
         return;
@@ -108,7 +116,7 @@ const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
         <Show when={tooLate()}>
           <p role="status" class="text-base text-text-primary">{t("security.action.tooLate")}</p>
         </Show>
-        <Show when={req().cancel}>
+        <Show when={req().cancel && !tooLate()}>
           <button
             type="button"
             class="btn-danger w-full min-h-14 text-lg"
@@ -123,7 +131,7 @@ const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
           class="w-full min-h-12 rounded-lg border border-white/15 text-base text-text-primary hover:bg-white/5"
           onClick={() => props.close()}
         >
-          {t("security.request.thatsRight")}
+          {tooLate() ? t("common.close") : t("security.request.thatsRight")}
         </button>
         <Show when={part2()}>
           <Part2FactorDialog
@@ -140,19 +148,28 @@ const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
 };
 
 const OpenRequestModal: Component = () => {
-  const open = () => {
+  /** A request whose cancel came too late: shown until closed, whatever the overview says now. */
+  const [held, setHeld] = createSignal<AccountRequestSummary | null>(null);
+  const live = () => {
     const r = meSecurity()?.open_request;
-    return !!r && (r.state === "waiting" || r.state === "ready") && !isOpenRequestDismissed(r.id, r.state);
+    return r && (r.state === "waiting" || r.state === "ready") && !isOpenRequestDismissed(r.id, r.state) ? r : null;
   };
+  const shown = () => held() ?? live();
   const close = () => {
+    if (held()) {
+      setHeld(null);
+      return;
+    }
     const r = meSecurity()?.open_request;
     if (r) dismissOpenRequest(r.id, r.state);
   };
   return (
-    <Show when={open()}>
-      <Portal>
-        <OpenRequestDialog close={close} />
-      </Portal>
+    <Show when={shown()}>
+      {(r) => (
+        <Portal>
+          <OpenRequestDialog req={r} close={close} onTooLate={setHeld} />
+        </Portal>
+      )}
     </Show>
   );
 };

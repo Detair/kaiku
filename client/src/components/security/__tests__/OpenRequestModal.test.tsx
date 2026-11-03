@@ -113,6 +113,22 @@ describe("OpenRequestModal", () => {
     expect(api.getMeSecurity).toHaveBeenCalled();
   });
 
+  it("the too-late answer stays on screen after the refresh, until dismissed (Flash r3 p1 #2)", async () => {
+    const { HttpError } = await import("@/lib/tauri/common");
+    api.cancelAccountRequest.mockRejectedValue(new HttpError(409, "x", "ACCOUNT_REQUEST_COMPLETED"));
+    await mount(request());
+    // The refresh after the 409 finds the request completed.
+    api.getMeSecurity.mockResolvedValue(security({ open_request: request({ state: "completed" }) }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel this request" }));
+    await waitFor(() => expect(api.getMeSecurity).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByRole("status").textContent).toBeTruthy();
+    // Nothing to cancel any more; the person closes it themselves.
+    expect(screen.queryByRole("button", { name: "Cancel this request" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  });
+
   it("a completed request shows nothing", async () => {
     await mount(request({ state: "completed" }));
     expect(screen.queryByText(/Someone asked to change/)).toBeNull();
