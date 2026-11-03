@@ -665,6 +665,9 @@ export async function loginWithPasskey(
   },
 ): Promise<User> {
   if (isTauri()) await initNativeSession();
+  // Cancelled already (e.g. while the native auth events were set up): the
+  // abort event is gone, so check the state; nothing starts.
+  if (o.signal.aborted) throw new tauri.PasskeyError("ABORTED");
   // A later sign-in, logout or another passkey attempt makes this one stale
   // (Codex M1): it is aborted and never installs its session.
   const generation = invalidatePasskeySignIns();
