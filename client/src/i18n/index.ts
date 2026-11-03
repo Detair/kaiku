@@ -10,6 +10,7 @@ export {
   getLocale,
   hasExplicitLocale,
   initLocale,
+  lazyAreasLoaded,
   setLocale,
   type Locale,
 } from "./locale";

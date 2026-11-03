@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { en } from "../en";
 
-type DeMock = { de?: Record<string, string>; fail?: boolean };
+type DeMock = { de?: Record<string, string>; fail?: boolean; areaFails?: number };
 
 /**
  * Fresh module graph per test: the locale signal is module state, and the
@@ -14,6 +14,17 @@ async function load(mock: DeMock = {}) {
     if (mock.fail) throw new Error("de.json unavailable");
     return { default: mock.de ?? {} };
   });
+  if (mock.areaFails) {
+    let left = mock.areaFails;
+    const real = await vi.importActual<typeof import("../en/security")>("../en/security");
+    vi.doMock("../en/security", () => {
+      if (left > 0) {
+        left -= 1;
+        throw new Error("chunk load failed");
+      }
+      return real;
+    });
+  }
   const locale = await import("../locale");
   const i18n = await import("../index");
   return { ...locale, ...i18n };
@@ -29,6 +40,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.doUnmock("../locales/de.json");
+  vi.doUnmock("../en/security");
 });
 
 describe("locale runtime", () => {
@@ -65,6 +77,19 @@ describe("locale runtime", () => {
     const { initLocale, t } = await load();
     expect(t("security.notice.missing")).not.toBe(en["security.notice.missing"]);
     await initLocale();
+    expect(t("security.notice.missing")).toBe(en["security.notice.missing"]);
+  });
+
+  it("an on-demand area that cannot load is reported, not left blank (Codex r3)", async () => {
+    const { initLocale, lazyAreasLoaded } = await load({ areaFails: 99 });
+    await initLocale();
+    expect(lazyAreasLoaded()).toBe(false);
+  });
+
+  it("one failed load of an on-demand area is retried", async () => {
+    const { initLocale, lazyAreasLoaded, t } = await load({ areaFails: 1 });
+    await initLocale();
+    expect(lazyAreasLoaded()).toBe(true);
     expect(t("security.notice.missing")).toBe(en["security.notice.missing"]);
   });
 

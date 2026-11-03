@@ -33,6 +33,12 @@ const LAZY_AREAS: ReadonlyArray<() => Promise<Dict>> = [
   () => import("./en/security").then((m) => m.security),
 ];
 let lazyAreas: Promise<boolean> | null = null;
+let lazyAreasOk = false;
+
+/** Whether every on-demand English area has loaded (else the app must not render). */
+export function lazyAreasLoaded(): boolean {
+  return lazyAreasOk;
+}
 
 /**
  * Load the on-demand English areas once and merge them into English.
@@ -42,6 +48,7 @@ export function loadLazyAreas(): Promise<boolean> {
   lazyAreas ??= Promise.all(LAZY_AREAS.map((load) => load()))
     .then((areas) => {
       for (const area of areas) Object.assign(enDict, area);
+      lazyAreasOk = true;
       return true;
     })
     .catch((err: unknown) => {
@@ -165,7 +172,9 @@ export async function setLocale(target: Locale): Promise<void> {
  * English areas first. Never rejects.
  */
 export async function initLocale(): Promise<void> {
-  await loadLazyAreas();
+  // One retry; still missing, `index.tsx` shows a reload instead of an app
+  // with blank texts (Codex r3, Fable r2 R6).
+  if (!(await loadLazyAreas())) await loadLazyAreas();
   const stored = isLocaleSwitchEnabled() ? readStored() : null;
   if (isLocale(stored)) {
     await activate(stored, true);

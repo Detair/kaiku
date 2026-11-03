@@ -3,6 +3,8 @@ export const common = {
   "common.close": "Close",
   "common.save": "Save",
   "common.retry": "Retry",
+  "common.reload": "Reload",
+  "common.loadFailed": "Part of Kaiku could not be loaded. Check your connection, then reload.",
   "common.copy": "Copy",
   "common.copied": "Copied",
   "common.dismiss": "Dismiss",

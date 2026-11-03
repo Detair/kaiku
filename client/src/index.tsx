@@ -14,7 +14,8 @@ import "./styles/highlight-theme.css";
 import "./styles/themes-pixel-highlight.css";
 import AppRoutes from "./App";
 import { applyInitialTheme } from "./stores/theme";
-import { initLocale } from "./i18n";
+import { initLocale, lazyAreasLoaded } from "./i18n";
+import { StartupGate } from "./components/ui/ChunkLoadNotice";
 
 applyInitialTheme();
 // Load the stored UI language before the first render (never rejects).
@@ -25,9 +26,12 @@ const root = document.getElementById("root");
 if (root) {
   render(
     () => (
-      <Router>
-        <AppRoutes />
-      </Router>
+      // Never an app with blank texts: a missing text area gets a reload.
+      <StartupGate ready={lazyAreasLoaded()}>
+        <Router>
+          <AppRoutes />
+        </Router>
+      </StartupGate>
     ),
     root,
   );
