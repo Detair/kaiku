@@ -8,6 +8,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.EnrollmentApi
+import io.wolftown.kaiku.data.api.LongPoll
 import io.wolftown.kaiku.data.auth.DeviceSignIn
 import io.wolftown.kaiku.data.auth.DeviceSignInResult
 import io.wolftown.kaiku.data.keydevice.KeyDevicePhase
@@ -63,22 +64,35 @@ class SetupPendingViewModel @Inject constructor(
     fun check() {
         val local = keyDevices.local() ?: return
         val now = _ui.value
-        if (now == SetupUi.SigningIn || now == SetupUi.Done || (now is SetupUi.Ended && !now.canRetry)) return
+        // A paused sign-in waits for its button: a resume after the cancelled prompt never re-prompts.
+        if (now == SetupUi.SigningIn || now == SetupUi.SignInPaused || now == SetupUi.Done ||
+            (now is SetupUi.Ended && !now.canRetry)
+        ) return
         if (checking) return
         checking = true
         viewModelScope.launch {
             try {
                 val secret = local.claimSecret
-                if (secret != null && keyDevices.phase() != KeyDevicePhase.CLAIMING) checkStatus(local, secret) else checkServer(local)
+                // Only a claim waiting for its code asks the enrolment; a pending (or unanswered)
+                // key device asks the key-device probe, which outlives the finished enrolment.
+                if (secret != null && keyDevices.phase() == KeyDevicePhase.CLAIMED) waitForCode(local, secret) else checkServer(local)
             } finally {
                 checking = false
             }
         }
     }
 
-    private suspend fun checkStatus(local: LocalKeyDevice, secret: String) {
+    /** CLAIMED: long-polls the enrolment while the screen waits for the code to be confirmed. */
+    private suspend fun waitForCode(local: LocalKeyDevice, secret: String) {
+        do {
+            if (!checkStatus(local, secret, LongPoll.WAIT_SECONDS)) return
+        } while (_ui.value == SetupUi.WaitingForCode && keyDevices.phase() == KeyDevicePhase.CLAIMED)
+    }
+
+    /** One status read; false when it could not be read (offline: the next check tries again). */
+    private suspend fun checkStatus(local: LocalKeyDevice, secret: String, wait: Int): Boolean {
         try {
-            val s = enrollmentApi.status(local.enrollmentId, secret, 0, local.origin)
+            val s = enrollmentApi.status(local.enrollmentId, secret, wait, local.origin)
             when (s.state) {
                 EnrollmentState.DONE -> if (s.authenticatorState == "pending") {
                     val at = parseInstant(s.readyAt)
@@ -97,20 +111,23 @@ class SetupPendingViewModel @Inject constructor(
                 EnrollmentState.FAILED -> forget(R.string.setup_code_failed)
                 else -> Unit
             }
+            return true
         } catch (c: CancellationException) {
             throw c
         } catch (x: ApiException) {
             // An unknown or void enrolment: the setup is over.
             if (x.status.value == 404 || x.status.value == 410) forget(R.string.setup_cancelled)
-        } catch (_: IOException) {
-            // Offline: try again at the next check.
+            return false
+        } catch (_: Exception) {
+            // Offline or an unreadable answer: try again at the next check.
+            return false
         }
     }
 
     /** No claim secret to ask with: the server's view of this phone's key device decides. */
     private suspend fun checkServer(local: LocalKeyDevice) {
         val claiming = keyDevices.phase() == KeyDevicePhase.CLAIMING
-        when (val st = probe.probe(local.userId)) {
+        when (val st = probe.probe(local.userId, local.origin)) {
             ServerKeyState.Active -> {
                 keyDevices.markEnrolled(local)
                 _ui.value = SetupUi.SigningIn

@@ -22,7 +22,8 @@ interface ApprovalApi {
     suspend fun answer(challengeId: String, decision: String, responseB64u: String, signatureB64u: String): AnswerResult
     suspend fun deny(challengeId: String)
     suspend fun release(challengeId: String)
-    suspend fun deviceLoginChallenge(userId: String, deviceId: String): ApprovalChallenge
+    /** [origin]: the key's own server (absolute URL), never another configured one; null = configured. */
+    suspend fun deviceLoginChallenge(userId: String, deviceId: String, origin: String? = null): ApprovalChallenge
     suspend fun deviceLogin(challengeId: String, signatureB64u: String): AuthResponse
     suspend fun keyDevices(): List<KeyDevice>
     suspend fun removeKeyDevice(id: String): KeyDevice
@@ -91,8 +92,8 @@ class ApprovalApiImpl @Inject constructor(private val httpClient: HttpClient) : 
         httpClient.post("/api/approvals/$challengeId/release").ensureSuccess("release failed")
     }
 
-    override suspend fun deviceLoginChallenge(userId: String, deviceId: String): ApprovalChallenge {
-        val r = httpClient.post("/auth/device-login/challenge") {
+    override suspend fun deviceLoginChallenge(userId: String, deviceId: String, origin: String?): ApprovalChallenge {
+        val r = httpClient.post(at(origin, "/auth/device-login/challenge")) {
             publicRoute()
             setBody(DeviceLoginChallengeRequest(userId, deviceId))
         }

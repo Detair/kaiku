@@ -57,7 +57,12 @@ class FakeApprovalApi : ApprovalApi {
 
     override suspend fun deny(challengeId: String) { calls += "deny:$challengeId" }
     override suspend fun release(challengeId: String) { calls += "release:$challengeId" }
-    override suspend fun deviceLoginChallenge(userId: String, deviceId: String) = challenge("deviceLoginChallenge:$userId:$deviceId")
+    /** The origin the last device-login challenge was sent to (null: the configured server). */
+    var deviceLoginOrigin: String? = null
+    override suspend fun deviceLoginChallenge(userId: String, deviceId: String, origin: String?): ApprovalChallenge {
+        deviceLoginOrigin = origin
+        return challenge("deviceLoginChallenge:$userId:$deviceId")
+    }
 
     override suspend fun deviceLogin(challengeId: String, signatureB64u: String): AuthResponse {
         calls += "deviceLogin:$challengeId"

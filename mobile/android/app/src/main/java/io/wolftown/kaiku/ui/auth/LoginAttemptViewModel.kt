@@ -113,12 +113,8 @@ class LoginAttemptViewModel @Inject constructor(
 ) : ViewModel() {
 
     companion object {
-        /**
-         * Long-poll wait (C27 allows 0..25 s), kept under OkHttp's default 10 s
-         * read timeout of the shared client; the server answers early on a state
-         * change or a new QR token, so this only bounds idle round trips.
-         */
-        const val POLL_WAIT_SECONDS = 8
+        /** Long-poll wait (C27 allows 0..25 s), below the shared client's read timeout ([LongPoll]). */
+        const val POLL_WAIT_SECONDS = io.wolftown.kaiku.data.api.LongPoll.WAIT_SECONDS
         private const val CANCEL_TIMEOUT_MS = 5_000L
         private const val COLLECT_TRIES = 3
 

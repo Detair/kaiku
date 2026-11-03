@@ -101,6 +101,8 @@ class KaikuHttpClient @Inject constructor(
     val httpClient: HttpClient = createConfiguredClient(OkHttp.create {
         config {
             connectionSpecs(listOf(tls13Spec))
+            // Explicit (OkHttp's default): every long-poll `wait` stays below it (LongPoll).
+            readTimeout(LongPoll.READ_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
         }
     })
 

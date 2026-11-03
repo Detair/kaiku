@@ -96,8 +96,12 @@ private fun SetupFlowSteps(
             }
             is SetupUi.ScreenLockNeeded -> ScreenLockGuide(onCheck = viewModel::recheckScreenLock, onCancel = viewModel::cancel)
             is SetupUi.ConfirmSubject -> {
-                KeyTitle(stringResource(R.string.setup_confirm_subject, u.displayName, u.serverName))
-                KeyBody(stringResource(R.string.setup_confirm_subject_account, u.username), secondary = true)
+                // The signed account name and the pinned server first; unsigned names only as a hint.
+                KeyTitle(stringResource(R.string.setup_confirm_subject, u.username, u.host))
+                KeyBody(
+                    stringResource(R.string.setup_confirm_subject_shown, u.displayName.ifEmpty { u.username }, u.serverName),
+                    secondary = true,
+                )
                 KeyPrimaryButton(stringResource(R.string.setup_confirm_subject_yes), onClick = { activity?.let(viewModel::confirmSubject) })
                 KeySecondaryButton(stringResource(R.string.common_cancel), onClick = viewModel::cancel)
             }

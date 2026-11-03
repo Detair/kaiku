@@ -107,4 +107,13 @@ class ApprovalApiTest {
             assertEquals("2026-11-04T12:00:00Z", e.fields.readyAt)
         }
     }
+
+    @Test fun `the key-device probe goes to the key's own server, not the saved one`() = runTest {
+        rec.status = HttpStatusCode.Created; rec.body = challenge
+        // The saved server changed meanwhile; the key belongs to chat.example.com.
+        api.deviceLoginChallenge("u", "d", origin = "https://key.example.com")
+        assertTrue(rec.last.url.startsWith("https://key.example.com/"))
+        assertEquals("/auth/device-login/challenge", rec.last.path)
+        assertNull(rec.last.headers["Authorization"])
+    }
 }

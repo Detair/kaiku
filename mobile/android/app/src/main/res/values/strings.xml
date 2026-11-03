@@ -385,9 +385,9 @@
     <string name="setup_confirm_server">Set up Kaiku on %1$s (%2$s)?</string>
     <string name="setup_confirm_server_yes">Yes, set up</string>
     <string name="setup_confirm_subject">Set up Kaiku for %1$s on %2$s?</string>
-    <string name="setup_confirm_subject_account">Account: %1$s</string>
+    <string name="setup_confirm_subject_shown">Shown as %1$s on \"%2$s\"</string>
     <string name="setup_confirm_subject_yes">Yes, make this phone the key</string>
-    <string name="setup_uv_subtitle">Make this phone the key for %1$s</string>
+    <string name="setup_uv_subtitle">Make this phone the key for %1$s on %2$s</string>
     <string name="setup_show_code_title">Your setup code</string>
     <string name="setup_show_code_body">Tell this code to the person setting up Kaiku, or type it on your other device. Valid for 5 minutes.</string>
     <string name="setup_code_description">Setup code %1$s</string>

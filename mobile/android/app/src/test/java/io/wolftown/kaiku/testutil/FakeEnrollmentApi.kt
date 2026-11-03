@@ -33,15 +33,21 @@ class FakeEnrollmentApi {
         "https://chat.example.com/setup#v=1&t=x", "2026-11-03T12:10:00Z")
     var enrollment: Enrollment? = null
     var getFailure: Exception? = null
+    /** The `wait` of the last status long-poll. */
+    var lastStatusWait: Int? = null
+    /** Rewrites the PoP context before the server-side hash is made (a consistent, tampered context). */
+    var popContext: (String) -> String = { it }
+    /** The user id in the PoP prefix; null = the subject's. */
+    var popPrefixUser: String? = null
 
     companion object {
         const val SUBJECT_ID = "66666666-6666-4666-8666-666666666666"
     }
 
     fun popChallengeFor(publicKeyB64u: String, userId: String = SUBJECT_ID): ApprovalChallenge {
-        val json = """{"enrollment_id":"55555555-5555-4555-8555-555555555555","new_key_hash":"${SigFixtures.b64u(SigFixtures.sha256(SigFixtures.unb64u(publicKeyB64u)))}","attestation_challenge":"${SigFixtures.b64u(nonce)}","subject_username":"${subject.username}"}"""
+        val json = popContext("""{"enrollment_id":"55555555-5555-4555-8555-555555555555","new_key_hash":"${SigFixtures.b64u(SigFixtures.sha256(SigFixtures.unb64u(publicKeyB64u)))}","attestation_challenge":"${SigFixtures.b64u(nonce)}","subject_username":"${subject.username}"}""")
         val ctx = SigContext.fromJson(SigKind.ENROLL_POP, SigFixtures.json(json))
-        val prefix = SigFixtures.prefixFor(SigKind.ENROLL_POP, SigFixtures.challengeId(5), ctx, userId = userId)
+        val prefix = SigFixtures.prefixFor(SigKind.ENROLL_POP, SigFixtures.challengeId(5), ctx, userId = popPrefixUser ?: userId)
         return SigFixtures.challengeFor(SigKind.ENROLL_POP, 5, json, prefix = prefix)
     }
 
@@ -69,6 +75,7 @@ class FakeEnrollmentApi {
         }
         override suspend fun status(enrollmentId: String, claimSecret: String, waitSeconds: Int, origin: String?): ClaimStatus {
             calls += "status"
+            lastStatusWait = waitSeconds
             statusFailures.pollFirst()?.let { throw it }
             // A long-poll with nothing new waits (until the test ends).
             return statuses.pollFirst() ?: kotlinx.coroutines.awaitCancellation()

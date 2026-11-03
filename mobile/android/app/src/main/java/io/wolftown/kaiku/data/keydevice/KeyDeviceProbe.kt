@@ -25,14 +25,15 @@ sealed interface ServerKeyState {
  * public `POST /auth/device-login/challenge` (C26) answers with a challenge for
  * an active key device, 409 `KEY_DEVICE_PENDING {ready_at}` for a pending one,
  * and 404 `KEY_DEVICE_UNKNOWN` / 403 `KEY_DEVICE_REVOKED` otherwise. The
- * challenge is not answered; it expires unused.
+ * challenge is not answered; it expires unused. It always asks the key's own
+ * server ([origin]): another server's "unknown" must never cost a key (Fable m1).
  */
 class KeyDeviceProbe @Inject constructor(
     private val approvalApi: ApprovalApi,
     private val deviceIds: DeviceIdProvider,
 ) {
-    suspend fun probe(userId: String): ServerKeyState = try {
-        approvalApi.deviceLoginChallenge(userId, deviceIds.id())
+    suspend fun probe(userId: String, origin: String): ServerKeyState = try {
+        approvalApi.deviceLoginChallenge(userId, deviceIds.id(), origin)
         ServerKeyState.Active
     } catch (e: CancellationException) {
         throw e
@@ -44,6 +45,9 @@ class KeyDeviceProbe @Inject constructor(
             else -> ServerKeyState.Unknown
         }
     } catch (_: IOException) {
+        ServerKeyState.Unknown
+    } catch (_: Exception) {
+        // An unreadable answer (e.g. a captive portal's page): not known, nothing is deleted.
         ServerKeyState.Unknown
     }
 }

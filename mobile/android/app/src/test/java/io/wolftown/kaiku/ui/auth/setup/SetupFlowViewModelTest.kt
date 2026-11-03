@@ -73,7 +73,10 @@ class SetupFlowViewModelTest {
         val saved = mutableListOf<String>()
         override fun pinnedOrigin() = pinned
         override fun signedInUserId() = signedInUser
-        override fun saveServerOrigin(origin: String) { saved += origin }
+        var stored: String? = null
+        override fun saveServerOrigin(origin: String) { saved += origin; stored = origin }
+        override fun savedServer() = stored
+        override fun restoreServer(url: String?) { stored = url }
         override val deviceLabel = "Google Pixel 8"
         override val apiLevel = 35
     }
@@ -132,7 +135,7 @@ class SetupFlowViewModelTest {
         assertFalse(enroll.calls.contains("popChallenge"))
         decision = UvPolicy.choose(30, true, true)
         v.recheckScreenLock()
-        assertEquals(SetupUi.ConfirmSubject("Oma", "oma", "Familie Müller"), v.ui.value)
+        assertEquals(SetupUi.ConfirmSubject("Oma", "oma", "Familie Müller", "chat.example.com"), v.ui.value)
     }
 
     @Test fun `phone without a hardware keystore cannot be a key`() = runTest {
@@ -235,7 +238,7 @@ class SetupFlowViewModelTest {
         val (v, _) = vm()
         v.start(SetupEntry(SigFixtures.ORIGIN, token, SetupEntry.Source.TICKET, ticket = "ticket-secret"))
         // A ticket comes from this app's own registration: no server question.
-        assertEquals(SetupUi.ConfirmSubject("Oma", "oma", "Familie Müller"), v.ui.value)
+        assertEquals(SetupUi.ConfirmSubject("Oma", "oma", "Familie Müller", "chat.example.com"), v.ui.value)
         v.confirmSubject(activity)
         assertEquals("ticket-secret", enroll.lastTicket)
         assertFalse(enroll.calls.contains("status"))
@@ -365,7 +368,7 @@ class SetupFlowViewModelTest {
         v.reset()
         assertFalse(v.started)
         v.start(entry)
-        assertEquals(SetupUi.ConfirmSubject("Oma", "oma", "Familie Müller"), v.ui.value)
+        assertEquals(SetupUi.ConfirmSubject("Oma", "oma", "Familie Müller", "chat.example.com"), v.ui.value)
     }
 
     @Test fun `key work runs off the main thread`() = runTest {
@@ -375,5 +378,103 @@ class SetupFlowViewModelTest {
         f.keyStore.onGenerate = { generatedOffMain = onKeyDispatcher }
         v.start(entry)
         assertTrue(generatedOffMain)
+    }
+
+    @Test fun `the status long-poll waits less than the client's read timeout`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val (v, _) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        runCurrent()
+        assertEquals(io.wolftown.kaiku.data.api.LongPoll.WAIT_SECONDS, enroll.lastStatusWait)
+        assertTrue(io.wolftown.kaiku.data.api.LongPoll.WAIT_SECONDS < io.wolftown.kaiku.data.api.LongPoll.READ_TIMEOUT_SECONDS)
+    }
+
+    @Test fun `try again after an unsure answer for a waiting claim keeps the key`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        // Done, pending, but no ready time: the probe is asked, and it cannot be reached.
+        enroll.statuses += ClaimStatus(EnrollmentState.DONE, "pending")
+        approval.failWith = IOException("offline")
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        runCurrent()
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
+        assertEquals(KeyDevicePhase.CLAIMED, f.repo.phase())
+        val spki = f.keyStore.publicKeySpki()!!
+        val generated = f.keyStore.generatedChallenges.size
+
+        v.retry()
+        // The waiting screen asks the server; the key the server enrolled is never replaced.
+        assertEquals(SetupUi.Resume, v.ui.value)
+        assertTrue(f.keyStore.publicKeySpki()!!.contentEquals(spki))
+        assertEquals(generated, f.keyStore.generatedChallenges.size)
+    }
+
+    @Test fun `a new setup code while a claim is unresolved goes to the waiting screen`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.claimFailure = IOException("timeout")
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        assertEquals(KeyDevicePhase.CLAIMING, f.repo.phase())
+        val generated = f.keyStore.generatedChallenges.size
+        v.reset()
+        v.start(entry) // the person scans again
+        assertEquals(SetupUi.Resume, v.ui.value)
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(generated, f.keyStore.generatedChallenges.size)
+    }
+
+    @Test fun `the subject screen and the prompt show the signed name and the server first`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.subject = io.wolftown.kaiku.domain.model.AccountRef(FakeEnrollmentApi.SUBJECT_ID, "oma", "Admin Bob")
+        io.mockk.every { activity.getString(R.string.setup_uv_subtitle, any(), any()) } answers {
+            "uv:" + it.invocation.args.drop(1).flatMap { a -> (a as? Array<*>)?.toList() ?: listOf(a) }.joinToString("|")
+        }
+        val (v, f) = vm()
+        v.start(entry)
+        assertEquals(SetupUi.ConfirmSubject("Admin Bob", "oma", "Familie Müller", "chat.example.com"), v.ui.value)
+        v.confirmSubject(activity)
+        assertEquals("uv:oma|chat.example.com", f.verifier.prompts.single().subtitle)
+    }
+
+    @Test fun `a PoP context that does not match this key, nonce or account is refused`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        val tampers = listOf<(String) -> String>(
+            { it.replace(Regex("\"attestation_challenge\":\"[^\"]*\""), "\"attestation_challenge\":\"${SigFixtures.b64u(ByteArray(32))}\"") },
+            { it.replace(Regex("\"new_key_hash\":\"[^\"]*\""), "\"new_key_hash\":\"${SigFixtures.b64u(ByteArray(32))}\"") },
+            { it.replace("\"subject_username\":\"oma\"", "\"subject_username\":\"mallory\"") },
+        )
+        for (t in tampers) {
+            enroll.popContext = t // the server's hash is consistent: only the explicit checks catch it
+            val (v, f) = vm()
+            v.start(entry)
+            assertEquals(SetupUi.Ended(R.string.setup_mismatch, canRetry = false), v.ui.value)
+            assertTrue(f.verifier.prompts.isEmpty())
+            assertFalse(f.keyStore.hasKey())
+            assertFalse(enroll.calls.contains("claim"))
+        }
+    }
+
+    @Test fun `a PoP prefix for another user id is refused`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.popPrefixUser = SigFixtures.USER_ID // not the subject the server named
+        val (v, f) = vm()
+        v.start(entry)
+        assertEquals(SetupUi.Ended(R.string.setup_mismatch, canRetry = false), v.ui.value)
+        assertTrue(f.verifier.prompts.isEmpty())
+        assertFalse(f.keyStore.hasKey())
+    }
+
+    @Test fun `cancel after confirming the server puts the saved one back`() = runTest {
+        env.stored = "https://typed.example.net"
+        val (v, f) = vm()
+        v.start(entry.copy(origin = "https://other.example.org"))
+        v.confirmServer()
+        assertEquals("https://other.example.org", env.stored)
+        v.cancel()
+        assertEquals("https://typed.example.net", env.stored)
+        assertFalse(f.keyStore.hasKey())
     }
 }
