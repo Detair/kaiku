@@ -636,3 +636,33 @@ async fn a_delayed_success_keeps_the_renewed_generations_count(pool: PgPool) {
         .unwrap();
     assert_eq!(count, 7, "the renewed generation's failures stay");
 }
+
+/// Codex r4 #3: the count, the delay and the expiry are one script; its
+/// delay schedule is `delay_after`'s.
+#[sqlx::test]
+async fn the_failure_script_sets_the_schedules_delay(pool: PgPool) {
+    use vc_server::ratelimit::account::{delay_after, AccountLimiter};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let key = CounterKey::totp(Uuid::new_v4(), 1);
+    let limiter = AccountLimiter::new(&app.state.redis);
+    for before in [0_i64, 3, 4, 5, 10, 11, 50] {
+        set_count(&app, &key, before).await;
+        let start = chrono::Utc::now().timestamp();
+        let (n, epoch) = limiter.record_failure_epoch(&key).await.unwrap();
+        assert_eq!((i64::from(n), epoch), (before + 1, 0));
+        let next: Option<i64> = app.state.redis.hget(key.redis_key(), "next").await.unwrap();
+        match delay_after(n) {
+            None => assert_eq!(next, None, "n = {n}"),
+            Some(d) => {
+                let wait = next.expect("a delay") - start;
+                let want = i64::try_from(d.as_secs()).unwrap();
+                assert!(
+                    (want..=want + 2).contains(&wait),
+                    "n = {n}: {wait} vs {want}"
+                );
+            }
+        }
+        let ttl: i64 = app.state.redis.ttl(key.redis_key()).await.unwrap();
+        assert!(ttl > 23 * 3600, "the expiry is set: {ttl}");
+    }
+}

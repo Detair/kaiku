@@ -114,59 +114,45 @@ impl<'a> AccountLimiter<'a> {
 
     /// Count a failure; returns the consecutive count.
     pub async fn record_failure(&self, key: &CounterKey) -> Result<u32, RateLimitError> {
-        let k = key.redis_key();
-        let n: i64 = self
-            .redis
-            .hincrby(&k, "count", 1)
-            .await
-            .map_err(|_| RateLimitError::RedisUnavailable)?;
-        let n = u32::try_from(n).unwrap_or(u32::MAX);
-        if let Some(d) = delay_after(n) {
-            let next = Utc::now().timestamp() + i64::try_from(d.as_secs()).unwrap_or(0);
-            self.redis
-                .hset::<(), _, _>(&k, ("next", next))
-                .await
-                .map_err(|_| RateLimitError::RedisUnavailable)?;
-        }
-        self.redis
-            .expire::<(), _>(&k, COUNTER_TTL_SECS, None)
-            .await
-            .map_err(|_| RateLimitError::RedisUnavailable)?;
-        Ok(n)
+        Ok(self.record_failure_epoch(key).await?.0)
     }
 
     /// Count a failure atomically with the counter's epoch (a success bumps
-    /// it): `(consecutive count, epoch)`.
+    /// it): `(consecutive count, epoch)`. The count, the delay (`next`) and
+    /// the expiry are one script, so a success never interleaves with a
+    /// half-recorded failure and leaves a stale delay (Codex r4 #3).
     pub async fn record_failure_epoch(
         &self,
         key: &CounterKey,
     ) -> Result<(u32, i64), RateLimitError> {
         use fred::interfaces::LuaInterface;
-        let k = key.redis_key();
         let (n, epoch): (i64, i64) = self
             .redis
             .eval(
                 "local c = redis.call('HINCRBY', KEYS[1], 'count', 1)
                  local e = tonumber(redis.call('HGET', KEYS[1], 'epoch') or '0')
+                 local free = tonumber(ARGV[1])
+                 if c >= free then
+                   local secs = tonumber(ARGV[3])
+                   if c - free < 7 then
+                     secs = math.min(tonumber(ARGV[2]) * 2 ^ (c - free), secs)
+                   end
+                   redis.call('HSET', KEYS[1], 'next', string.format('%d', tonumber(ARGV[4]) + secs))
+                 end
+                 redis.call('EXPIRE', KEYS[1], ARGV[5])
                  return {c, e}",
-                vec![k.clone()],
-                Vec::<String>::new(),
+                vec![key.redis_key()],
+                vec![
+                    FREE_FAILURES.to_string(),
+                    FIRST_DELAY_SECS.to_string(),
+                    MAX_DELAY_SECS.to_string(),
+                    Utc::now().timestamp().to_string(),
+                    COUNTER_TTL_SECS.to_string(),
+                ],
             )
             .await
             .map_err(|_| RateLimitError::RedisUnavailable)?;
-        let n = u32::try_from(n).unwrap_or(u32::MAX);
-        if let Some(d) = delay_after(n) {
-            let next = Utc::now().timestamp() + i64::try_from(d.as_secs()).unwrap_or(0);
-            self.redis
-                .hset::<(), _, _>(&k, ("next", next))
-                .await
-                .map_err(|_| RateLimitError::RedisUnavailable)?;
-        }
-        self.redis
-            .expire::<(), _>(&k, COUNTER_TTL_SECS, None)
-            .await
-            .map_err(|_| RateLimitError::RedisUnavailable)?;
-        Ok((n, epoch))
+        Ok((u32::try_from(n).unwrap_or(u32::MAX), epoch))
     }
 
     /// A success starts a new epoch: the count and the delay go, and
