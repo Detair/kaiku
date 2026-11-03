@@ -213,6 +213,8 @@ async fn invalidated_device_is_revoked_with_notice(pool: PgPool) {
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["state"], "revoked");
     assert_eq!(body["revoke_reason"], "key_invalidated");
+    // Review round 3 (Argon coverage, part 1 m7): it is the caller's own device.
+    assert_eq!(body["is_current"], true);
     let ev = events(&pool, user, "key_invalidated").await;
     assert_eq!(ev.len(), 1);
     assert_eq!(ev[0].0, "high");
