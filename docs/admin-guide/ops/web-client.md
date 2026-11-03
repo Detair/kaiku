@@ -28,6 +28,7 @@ Put both containers behind one reverse proxy and route by path:
 | `/auth/` (sign-in, refresh, SSO callback pages) | server |
 | `/ws` (WebSocket) | server |
 | `/health` | server |
+| `/.well-known/` (`assetlinks.json` for passkeys in the Android app; see [Passkeys](passkeys.md)) | server |
 | everything else | web client |
 
 Proxy requirements for the server paths:
@@ -60,6 +61,9 @@ chat.example.com {
 		reverse_proxy server:8080
 	}
 	handle /ws {
+		reverse_proxy server:8080
+	}
+	handle /.well-known/* {
 		reverse_proxy server:8080
 	}
 	handle {
@@ -115,6 +119,10 @@ server {
     location = /health {
         proxy_pass http://kaiku-server:8080;
     }
+    location /.well-known/ {
+        proxy_pass http://kaiku-server:8080;
+        proxy_set_header Host $host;
+    }
     location / {
         proxy_pass http://kaiku-web:8080;
         proxy_set_header Host $host;
@@ -124,8 +132,8 @@ server {
 
 ### Kubernetes Ingress
 
-Use one host with path rules: `Prefix` `/api` and `/auth`, `Exact` `/ws` and
-`/health` to the server Service; `Prefix` `/` to the web Service. Most
+Use one host with path rules: `Prefix` `/api`, `/auth` and `/.well-known`,
+`Exact` `/ws` and `/health` to the server Service; `Prefix` `/` to the web Service. Most
 ingress controllers pick the longest matching path, so the order does not
 matter. Make sure the controller's WebSocket timeout covers long-lived
 connections.

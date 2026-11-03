@@ -109,3 +109,59 @@ notice (and the "warn before connecting over HTTP" setting), and a future Chromi
 main-frame LNA gating ever lands. **For the maintainer (D4/D6):** a 10-minute hand check of the
 hand-off on Safari macOS (default settings, and with the HTTP warning on) and Firefox stable; these
 two rows are not confirmed on a real browser.
+
+## Rebase onto L1a review round 1
+
+After Task 4 the branch was rebased onto `origin/feat/v1.0-login-l1a` at `c07f402e` (no
+conflicts). The two LP items from L1a's "Review round 1" are done in Task 5: `grant_tx` checks
+that the producing authenticator is the caller's (`strong::belongs_to`, Fable m7), and the
+`passkey.remove` target label of a `device_stepup` challenge reads only the caller's passkeys
+(Fable m1). Tests: `grant_needs_the_callers_own_authenticator`,
+`device_step_up_label_is_scoped_to_the_caller`.
+
+## Tasks 2–10 (server, LP-1)
+
+- **Release certificate (Q1, coordinator/maintainer).** No signed release APK was available
+  without a download this session needed permission for, so `OFFICIAL_RELEASE_CERT_SHA256` is
+  `None`. Consequence: with both Android variables unset the server has no Android origin and
+  `assetlinks.json` is `[]` (a startup warning says so); official APKs work once the constant is
+  filled in or `PASSKEY_ANDROID_CERT_SHA256` is set. Explicit app ids without any certificate
+  refuse startup. `none` in either variable turns Android off; `none` plus an explicit value in
+  the other refuses startup.
+- `deny.toml`: no change. 0.5.5 does not use `rsa`, so the planned RUSTSEC-2023-0071 note does
+  not apply.
+- RP-ID change (DC5) revokes **live** passkeys (pending and active): a pending one is bound to the
+  old domain as well. The refusal counts live passkeys.
+- `queries::activate` (pending → active, clears `ready_at`, marks the first activity) exists for
+  L1b's "Finish"; `queries::insert` marks the first activity for an `active` row.
+- The step-up handlers live in `passkeys/step_up.rs` (plan: `reauth.rs`, which would clash with
+  `auth/reauth.rs` in reviews and logs).
+- All LP `AuthError` variants were added in Task 5. `AuthError::status_and_code()` was extracted
+  from `into_response` so the hand-off page can carry the bare code. `PASSKEY_PENDING` adds
+  `ready_at` next to `error`.
+- `AuthPasskey` counts as a v1.0 sign-in category: 429 answers `TOO_MANY_ATTEMPTS` with
+  `Retry-After` (common rules), like `AuthFlow`.
+- `record_use` runs before the grant/session transaction, so the counter is kept even when the
+  grant then fails (session ended).
+- `register::{begin, complete}` are `pub` (integration tests, L1b); `complete_recorded` also
+  returns the `authenticator_added` event id for delivery after commit.
+- Passkey sign-in: the refresh cookie only for web clients, the token only in the body for native
+  ones (plan); `issue` re-checks the passkey `active` under the account lock `issue_session_tx`
+  takes, so a concurrent removal cannot leave a fresh session behind.
+- Removal response: `remaining_credential_ids` lists live credentials (pending too), so
+  `signalAllAcceptedCredentials` never hides a pending passkey (B.1: never signalled unknown).
+- Desktop: `auth::optional_auth` (new middleware, additive) authenticates a bearer when one is
+  sent; `desktop/flows` (step_up) and `desktop/redeem` use it. A request with an invalid bearer is
+  refused 401 before the redemption runs, so it does not spend the flow; it grants nothing.
+- Desktop page: a stale assertion after a reload fails with `PASSKEY_INVALID` (it is verified
+  against the flow's current ceremony and its challenge does not match), not
+  `PASSKEY_CEREMONY_INVALID`; the flow ends either way. The ceremony starts on a button press
+  ("Continue with passkey"), not on load, because Safari requires a user gesture for WebAuthn.
+- Desktop flow updates (`options` and `finish`) are read-modify-write without a Valkey
+  transaction; a reload racing a finish can at worst lose the result (the app times out and
+  starts again), never create a second one (the ceremony is `GETDEL`).
+- Task 9 Step 3 (hand check of `ceremony.js` in Chromium with a virtual authenticator) was not run
+  in this session (no GUI browser with a running local server); `node --check` passes. It is part
+  of D4.
+- Caddy: `caddy adapt` (local `caddy:2` image) shows `/.well-known/*` → `server:8080` as the first
+  route, before the web catch-all.

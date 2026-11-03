@@ -382,6 +382,10 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         // Health check
         .route("/health", get(health_check))
+        .route(
+            "/.well-known/assetlinks.json",
+            get(crate::auth::passkeys::assetlinks::assetlinks),
+        )
         .merge(app_routes)
         // Middleware
         .layer(from_fn(security_headers))

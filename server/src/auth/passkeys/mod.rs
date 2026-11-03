@@ -3,6 +3,7 @@
 //! - `config`: the RP ID (`PUBLIC_URL`'s host), the web origin and the Android `apk-key-hash`
 //!   origins.
 //! - `rp`: `webauthn-rs` in Kaiku's profile (exact origins, UV, BE).
+//! - `assetlinks`: `/.well-known/assetlinks.json` for the Android apps.
 //! - `ceremony`: single-use ceremony state in Valkey (fail closed).
 //! - `queries`: the `passkeys` table; revocation runs the L1a cascade.
 //! - `rp_pin`: the RP-ID pin checked at startup (DC5).
@@ -17,6 +18,7 @@
 //! limit (per IP for public routes, per user behind a session); none is
 //! behind `check_ip_not_blocked`, and no passkey failure feeds `failed_auth`.
 
+pub mod assetlinks;
 pub mod ceremony;
 pub mod config;
 pub(crate) mod desktop;
