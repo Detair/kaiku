@@ -45,6 +45,10 @@ export interface AuthResponse {
   token_type: string;
   setup_required: boolean;
   password_change_required?: boolean;
+  /** C27: the new session's id, assurance and absolute cap (absent on older servers). */
+  session_id?: string;
+  assurance?: "full" | "probation";
+  absolute_expires_at?: string;
 }
 
 /** Auth result type (returned by login/register). */
@@ -666,12 +670,26 @@ export class HttpError extends Error {
     message: string,
     /** Server error code from the body's `error` field (contract C16). */
     public readonly code?: string,
-    /** The parsed error body (extra fields such as `ready_at`). */
-    public readonly details?: Record<string, unknown>,
+    /**
+     * Extra fields the error body carries next to `error` (C26–C29 common
+     * rules: `tries_left`, `recovery_codes_left`, `ready_at`, `state`, `reason`).
+     */
+    public readonly details: Record<string, unknown> = {},
+    /** Seconds from a `Retry-After` header (429 `TOO_MANY_ATTEMPTS`). */
+    public readonly retryAfter?: number,
   ) {
     super(message);
     this.name = "HttpError";
   }
+}
+
+/** Seconds of a `Retry-After` header (delta-seconds or an HTTP date). */
+export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  const at = Date.parse(trimmed);
+  return Number.isNaN(at) ? undefined : Math.max(0, Math.ceil((at - now) / 1000));
 }
 
 /** Server error code (contract C4) for a pending forced password change. */
@@ -680,13 +698,34 @@ export const PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
 /** Window event dispatched when a request reports `PASSWORD_CHANGE_REQUIRED`. */
 export const PASSWORD_CHANGE_REQUIRED_EVENT = "kaiku:password-change-required";
 
-const AUTH_ENDPOINTS = new Set([
-  "/auth/login",
-  "/auth/register",
-  "/auth/refresh",
-  "/auth/passkeys/login/start",
-  "/auth/passkeys/login/finish",
-]);
+const PRE_SESSION_EXACT = new Set(["/auth/login", "/auth/register", "/auth/refresh"]);
+
+/** Prefixes matched as the path itself or the path followed by `/`. */
+const PRE_SESSION_PREFIXES = [
+  "/auth/login-attempts",
+  "/auth/account-requests/current",
+  "/auth/account-requests/oidc",
+  "/auth/registration",
+  "/auth/enrollments/open",
+  "/auth/enrollments/pop-challenge",
+  "/auth/enrollments/claim",
+  "/auth/enrollments/status",
+  "/auth/enrollments/passkey",
+  "/auth/device-login",
+  "/auth/passkeys/login",
+];
+
+/**
+ * Calls made before (or outside) a session: sign-in steps, account requests,
+ * registration tickets, new-device enrolment routes (C26, C27, C29). They get
+ * no bearer and no refresh-and-retry on 401 (a 401 there is an answer, not an
+ * expired token). Compared on the path without a query.
+ */
+export function isPreSessionPath(path: string): boolean {
+  const clean = (path.startsWith("/") ? path : `/${path}`).split(/[?#]/)[0];
+  if (PRE_SESSION_EXACT.has(clean) || clean === "/auth/account-requests") return true;
+  return PRE_SESSION_PREFIXES.some((p) => clean === p || clean.startsWith(`${p}/`));
+}
 
 /**
  * HTTP helper for both modes. Base URL and bearer come from
@@ -724,7 +763,7 @@ async function sendHttpRequest<T>(
   }
 
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
-  const isAuthEndpoint = AUTH_ENDPOINTS.has(cleanPath);
+  const isAuthEndpoint = isPreSessionPath(cleanPath);
 
   if (token && !isAuthEndpoint) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -767,7 +806,7 @@ async function sendHttpRequest<T>(
       );
     }
 
-    let errorBody: { error?: string; message?: string } | null = null;
+    let errorBody: ({ error?: string; message?: string } & Record<string, unknown>) | null = null;
     try {
       errorBody = rawBody ? JSON.parse(rawBody) : null;
     } catch {
@@ -799,11 +838,18 @@ async function sendHttpRequest<T>(
       errorBody && typeof errorBody === "object" && typeof errorBody.error === "string"
         ? errorBody.error
         : undefined;
+    const details: Record<string, unknown> = {};
+    if (errorBody && typeof errorBody === "object") {
+      for (const [key, value] of Object.entries(errorBody)) {
+        if (key !== "error" && key !== "message") details[key] = value;
+      }
+    }
     throw new HttpError(
       response.status,
       errorMessage,
       code,
-      errorBody && typeof errorBody === "object" ? (errorBody as Record<string, unknown>) : undefined,
+      details,
+      parseRetryAfter(response.headers?.get?.("Retry-After") ?? null),
     );
   }
 

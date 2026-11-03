@@ -3,9 +3,16 @@ import { formatTimestamp } from "@/i18n/format";
 
 /** Server codes the sign-in form words specifically (used with `errorText`). */
 export const LOGIN_ERRORS: Partial<Record<string, MessageKey>> = {
-  INVALID_CREDENTIALS: "auth.login.invalidCredentials",
+  // F3: one neutral answer for a wrong password, an unknown user and a
+  // closed password path (also OIDC's neutral 401).
+  INVALID_CREDENTIALS: "auth.login.neutralFailure",
   INVALID_MFA: "auth.login.mfaInvalid",
   ACCOUNT_BANNED: "auth.login.banned",
+  TOO_MANY_ATTEMPTS: "auth.login.tooManyAttempts",
+  CLIENT_OUTDATED: "auth.login.clientOutdated",
+  LOGIN_ATTEMPT_ENDED: "auth.login.attemptEnded",
+  LOGIN_ATTEMPT_UNKNOWN: "auth.login.attemptEnded",
+  TOTP_UNAVAILABLE: "auth.login.totpUnavailable",
 };
 
 /** Server codes the sign-up form words specifically (used with `errorText`). */

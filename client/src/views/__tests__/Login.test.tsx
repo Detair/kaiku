@@ -64,7 +64,13 @@ describe("Login", () => {
   it("shows the invalid-credentials sentence for INVALID_CREDENTIALS", async () => {
     loginMock.mockRejectedValue(new HttpError(401, "Invalid credentials", "INVALID_CREDENTIALS"));
     await submit();
-    await waitFor(() => expect(screen.getByText("Invalid username or password.")).toBeTruthy());
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "Wrong username or password, or password sign-in is not available for this account. Use a passkey or 'Sign in with phone', or ask an admin.",
+        ),
+      ).toBeTruthy(),
+    );
   });
 
   it("never shows a bare status line for a proxy error", async () => {

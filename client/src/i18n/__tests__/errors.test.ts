@@ -9,10 +9,10 @@ describe("errorText", () => {
     const text = errorText(
       err,
       "auth.login.failed",
-      { INVALID_CREDENTIALS: "auth.login.invalidCredentials" },
+      { INVALID_CREDENTIALS: "auth.login.neutralFailure" },
       { 401: "auth.forcedChange.wrongTemporary" },
     );
-    expect(text).toBe("Invalid username or password.");
+    expect(text).toBe("Wrong username or password, or password sign-in is not available for this account. Use a passkey or 'Sign in with phone', or ask an admin.");
   });
 
   it("falls back to the status map when the code is unknown", () => {
@@ -66,7 +66,7 @@ describe("errorText", () => {
       const text = errorText(
         new HttpError(400, "x", code),
         "auth.login.failed",
-        { INVALID_CREDENTIALS: "auth.login.invalidCredentials" },
+        { INVALID_CREDENTIALS: "auth.login.neutralFailure" },
         {},
       );
       expect(text).toBe(t("auth.login.failed"));
@@ -87,8 +87,8 @@ describe("errorText", () => {
       cause: new HttpError(401, "Invalid credentials", "INVALID_CREDENTIALS"),
     });
     expect(
-      errorText(wrapped, "auth.login.failed", { INVALID_CREDENTIALS: "auth.login.invalidCredentials" }),
-    ).toBe("Invalid username or password.");
+      errorText(wrapped, "auth.login.failed", { INVALID_CREDENTIALS: "auth.login.neutralFailure" }),
+    ).toBe("Wrong username or password, or password sign-in is not available for this account. Use a passkey or 'Sign in with phone', or ask an admin.");
   });
 
   it("maps FEATURE_DISABLED to the turned-off sentence", () => {

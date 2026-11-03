@@ -61,17 +61,38 @@ export function nativeAuthError(error: unknown): unknown {
   if (text === "Invalid username or password") {
     return new HttpError(401, text, "INVALID_CREDENTIALS");
   }
-  if (text === "ACCOUNT_BANNED") {
-    return new HttpError(403, text, "ACCOUNT_BANNED");
-  }
   if (text?.startsWith("Connection failed:")) {
     return new TypeError(text);
   }
   if (text === "Username or email already exists") {
     return new HttpError(409, text);
   }
+  // Bare server codes (`SessionError::Server` displays the code), optionally
+  // with `:<seconds>` from a Retry-After (`TOO_MANY_ATTEMPTS:120`).
+  const bare = text ? /^([A-Z][A-Z0-9_]*)(?::(\d+))?$/.exec(text) : null;
+  if (bare) {
+    const code = bare[1];
+    return new HttpError(
+      NATIVE_CODE_STATUS[code] ?? 400,
+      code,
+      code,
+      {},
+      bare[2] === undefined ? undefined : Number(bare[2]),
+    );
+  }
   return error;
 }
+
+/** Status for bare native codes whose fallback text depends on it. */
+const NATIVE_CODE_STATUS: Partial<Record<string, number>> = {
+  INVALID_CREDENTIALS: 401,
+  INVALID_MFA: 401,
+  ACCOUNT_BANNED: 403,
+  LOGIN_ATTEMPT_UNKNOWN: 404,
+  LOGIN_ATTEMPT_ENDED: 410,
+  TOO_MANY_ATTEMPTS: 429,
+  SERVICE_UNAVAILABLE: 503,
+};
 
 /** Server codes the native SSO commands report as bare strings. */
 const NATIVE_SSO_CODES = new Set([
@@ -95,7 +116,7 @@ export function nativeSsoError(error: unknown): unknown {
 }
 
 /** Native mode: session-management request sent by Rust with the refresh token. */
-async function nativeSessionRequest<T>(
+export async function nativeSessionRequest<T>(
   method: string,
   path: string,
   body?: unknown,

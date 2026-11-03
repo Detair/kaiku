@@ -29,6 +29,16 @@ describe("nativeAuthError", () => {
     expect(err.code).toBeUndefined();
   });
 
+  it("turns a bare server code into an HttpError with its code", () => {
+    expect(nativeAuthError("LOGIN_ATTEMPT_ENDED")).toMatchObject({ status: 410, code: "LOGIN_ATTEMPT_ENDED" });
+    expect(nativeAuthError("TOO_MANY_ATTEMPTS:90")).toMatchObject({
+      status: 429,
+      code: "TOO_MANY_ATTEMPTS",
+      retryAfter: 90,
+    });
+    expect(nativeAuthError("CLIENT_OUTDATED")).toMatchObject({ status: 400, code: "CLIENT_OUTDATED" });
+  });
+
   it("passes unknown errors through unchanged", () => {
     const other = new Error("boom");
     expect(nativeAuthError(other)).toBe(other);
@@ -52,7 +62,7 @@ describe("nativeSsoError", () => {
   });
 
   it("leaves other errors to nativeAuthError", () => {
-    expect(nativeSsoError("MFA_REQUIRED")).toBe("MFA_REQUIRED");
+    expect(nativeSsoError("MFA_REQUIRED")).toMatchObject({ code: "MFA_REQUIRED" });
     expect(nativeSsoError("Connection failed: refused")).toBeInstanceOf(TypeError);
     expect(nativeSsoError("OIDC login timed out (60s). Please try again.")).toBe(
       "OIDC login timed out (60s). Please try again.",
