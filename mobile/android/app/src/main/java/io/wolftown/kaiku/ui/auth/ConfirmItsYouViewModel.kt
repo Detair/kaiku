@@ -92,7 +92,8 @@ class ConfirmItsYouViewModel @Inject constructor(
         if (_ui.value.working) return
         _ui.update { it.copy(working = true, error = null) }
         viewModelScope.launch {
-            if (keyDevices.current() !is KeyDeviceState.Active) {
+            val signedInForRemoval = keyDevices.current() !is KeyDeviceState.Active
+            if (signedInForRemoval) {
                 val r = deviceSignIn.signIn(activity)
                 if (r != DeviceSignInResult.Success) {
                     _ui.update {
@@ -100,17 +101,32 @@ class ConfirmItsYouViewModel @Inject constructor(
                             working = false,
                             error = signInResultText(r),
                             keyGone = r == DeviceSignInResult.Revoked || r == DeviceSignInResult.KeyInvalidated,
+                            readyAt = (r as? DeviceSignInResult.Pending)?.readyAt,
+                            done = if (r is DeviceSignInResult.Pending) ConfirmDone.PENDING else null,
                         )
                     }
                     return@launch
                 }
             }
             val out = signOut.signOutAndRemovePhone(activity)
+            // The session made only for the removal never outlives a removal that did not happen:
+            // the phone goes back to "Confirm it's you" (or, without a key, to signed out).
+            if (signedInForRemoval && out !is StepUpOutcome.Granted) signOut.signOut()
+            val keyGone = out is StepUpOutcome.Failed && out.code == "KEY_INVALIDATED"
             _ui.update {
                 when (out) {
                     is StepUpOutcome.Granted -> it.copy(working = false, done = ConfirmDone.SIGNED_OUT)
                     StepUpOutcome.Cancelled -> it.copy(working = false)
-                    else -> it.copy(working = false, error = R.string.security_sign_in_failed)
+                    else -> it.copy(
+                        working = false,
+                        keyGone = keyGone,
+                        error = when {
+                            keyGone -> R.string.security_key_invalidated
+                            out is StepUpOutcome.Failed && out.code == "UV_LOCKED_OUT" -> R.string.security_locked_out
+                            out is StepUpOutcome.Failed && out.code == "NETWORK" -> R.string.security_network_error
+                            else -> R.string.security_sign_in_failed
+                        },
+                    )
                 }
             }
         }
