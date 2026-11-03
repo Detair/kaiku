@@ -503,6 +503,58 @@ async fn admin_link(app: &TestApp, target: Uuid) -> (KeyDeviceFixture, Value) {
     (adev, issued)
 }
 
+/// Fable r3: an `admin` enrolment completes only while its issuer is still
+/// an admin; one demoted between the challenge and the answer adds nothing.
+#[sqlx::test]
+async fn a_demoted_issuer_cannot_complete_an_admin_enrolment(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (target, _) = create_test_user(&pool).await;
+    let (adev, issued) = admin_link(&app, target).await;
+    let id = issued["enrollment_id"].as_str().unwrap();
+    let phone = Phone::new();
+    let (s, claimed) = claim_with(
+        &app,
+        issued["setup_token"].as_str().unwrap(),
+        &phone,
+        "Pixel 9",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201, "{claimed}");
+    let (s, c) = call(
+        &app,
+        Method::POST,
+        &format!("/auth/enrollments/{id}/challenge"),
+        &adev.access_token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 201, "{c}");
+    vc_server::permissions::queries::revoke_system_admin(&pool, adev.user_id, None)
+        .await
+        .unwrap();
+    let code = claimed["code"].as_str().unwrap();
+    let (s, b) = super::approvals_core::answer(&app, &adev, &c, code.as_bytes()).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("APPROVAL_NOT_ALLOWED")),
+        "{b}"
+    );
+    let devices: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM approval_devices WHERE device_id = $1")
+            .bind(phone.device_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let state: String = sqlx::query_scalar("SELECT state FROM enrollments WHERE id = $1::uuid")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!((devices, state.as_str()), (0, "claimed"));
+}
+
 /// Fable r2: an existing account's browser passkey is pending with the
 /// request's ready_at, active at completion, gone on cancel; a reused
 /// ceremony and another link's token are refused.

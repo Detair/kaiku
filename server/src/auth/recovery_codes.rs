@@ -137,11 +137,12 @@ pub async fn consume_tx(conn: &mut PgConnection, user_id: Uuid, code: &str) -> A
 /// without a lock (Fable r2 M-A: no account lock is held during Argon2).
 /// Always exactly `CODE_COUNT` checks.
 pub async fn find(
-    conn: &mut PgConnection,
+    pool: &sqlx::PgPool,
     user_id: Uuid,
     code: &str,
 ) -> AuthResult<Option<(Uuid, i64)>> {
     let raw = normalise(code);
+    // The rows first; the pool connection is back before Argon2 (Fable r3).
     let rows: Vec<(Uuid, String, i64)> = sqlx::query_as(
         "SELECT rc.id, rc.code_hash, rc.generation FROM recovery_codes rc
            JOIN users u ON u.id = rc.user_id
@@ -150,7 +151,7 @@ pub async fn find(
           ORDER BY rc.created_at, rc.id",
     )
     .bind(user_id)
-    .fetch_all(&mut *conn)
+    .fetch_all(pool)
     .await?;
     let dummy = super::password::DUMMY_PASSWORD_HASH.clone();
     if raw.len() != CODE_CHARS || !raw.bytes().all(|b| ALPHABET.contains(&b)) {

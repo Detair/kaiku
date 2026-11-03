@@ -1442,6 +1442,19 @@ pub async fn finish_done_tx(
 ) -> Result<(Enrollment, AfterDone), ApprovalError> {
     let variant = EnrollmentVariant::parse(&row.variant).ok_or(ApprovalError::EnrollmentState)?;
     let state = activation_state(variant, subject_is_new(conn, row.subject_id).await?);
+    // Fable r3: an `admin` enrolment completes only while its issuer is
+    // still an admin. The row is held FOR SHARE, so a demotion waits for
+    // this transaction instead of slipping in before its commit.
+    if variant == EnrollmentVariant::Admin {
+        let still: Option<Uuid> =
+            sqlx::query_scalar("SELECT user_id FROM system_admins WHERE user_id = $1 FOR SHARE")
+                .bind(issuer_user)
+                .fetch_optional(&mut *conn)
+                .await?;
+        if still.is_none() {
+            return Err(ApprovalError::NotAllowed);
+        }
+    }
     if row.authenticator_type.as_deref() == Some("passkey") {
         return finish_done_passkey_tx(conn, ctx, row, variant, state, issuer_user, actor).await;
     }
@@ -1707,13 +1720,15 @@ async fn finish_done_passkey_tx(
             );
         }
     }
-    crate::auth::registration::mark_bound_tx(conn, row.subject_id).await?;
+    // `done` first, then the bind (it ends the ticket's other open links),
+    // as on the key-device path (Fable r3).
     sqlx::query(
         "UPDATE enrollments SET state = 'done', done_at = NOW(), ended_at = NOW() WHERE id = $1",
     )
     .bind(row.id)
     .execute(&mut *conn)
     .await?;
+    crate::auth::registration::mark_bound_tx(conn, row.subject_id).await?;
     let mut done = row.clone();
     done.state = "done".into();
     let wire = to_wire(conn, &done).await?;

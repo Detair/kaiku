@@ -62,10 +62,7 @@ pub async fn start_recovery(
     // The code first, without any lock and with constant work (Fable r2
     // M-A); an invalid one is the neutral answer for every account (Codex
     // r2 M6).
-    let found = {
-        let mut conn = state.db.acquire().await?;
-        crate::auth::recovery_codes::find(&mut conn, user.id, code).await?
-    };
+    let found = crate::auth::recovery_codes::find(&state.db, user.id, code).await?;
     let Some((code_id, code_generation)) = found else {
         return Err(neutral());
     };
