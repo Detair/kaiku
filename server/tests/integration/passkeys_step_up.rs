@@ -843,3 +843,50 @@ async fn concurrent_passkey_step_ups_never_deadlock(pool: PgPool) {
     assert_eq!(a.0, 200, "first grant: {}", a.1);
     assert_eq!(b.0, 200, "second grant: {}", b.1);
 }
+
+/// L1a review round 3, part 2 M2 (for LP): the target of
+/// `admin.authenticator.remove` is a key device or a passkey id (C27), so an
+/// admin's key-device challenge names another account's passkey too (the
+/// desktop ceremony page already did).
+#[sqlx::test]
+async fn device_admin_step_up_names_a_passkey_target(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (admin, _) = create_test_user(&app.pool).await;
+    let (other, _) = create_test_user(&app.pool).await;
+    make_admin(&app.pool, admin).await;
+    let (_, theirs) = seed_passkey(&app, other, PasskeyState::Active).await;
+    sqlx::query("UPDATE passkeys SET label = 'Their security key' WHERE id = $1")
+        .bind(theirs.id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let theirs_device = crate::helpers::approvals::KeyDeviceFixture::insert(
+        &app.pool,
+        &app.config,
+        other,
+        "active",
+    )
+    .await;
+    let dev = crate::helpers::approvals::KeyDeviceFixture::insert(
+        &app.pool,
+        &app.config,
+        admin,
+        "active",
+    )
+    .await;
+    for (target, label) in [
+        (theirs.id, "Their security key"),
+        (theirs_device.row_id, "Pixel 8"),
+        (Uuid::new_v4(), ""),
+    ] {
+        let (s, c) = post(
+            &app,
+            "/api/approvals/step-up",
+            Some(&dev.access_token),
+            json!({"action": "admin.authenticator.remove", "target": target.to_string()}),
+        )
+        .await;
+        assert_eq!(s, 201, "{c}");
+        assert_eq!(c["context"]["target_label"], label, "{c}");
+    }
+}
