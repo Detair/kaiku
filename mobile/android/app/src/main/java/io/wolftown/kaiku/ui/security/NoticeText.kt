@@ -47,6 +47,10 @@ object NoticeText {
         "session_ended_reuse" -> R.string.security_notice_session_ended_reuse
         "session_ended_limit" -> R.string.security_notice_session_ended_limit
         "bootstrap_reminder" -> R.string.security_notice_bootstrap_reminder
+        "sessions_ended" -> R.string.security_notice_sessions_ended
+        "factor_restored" -> R.string.security_notice_factor_restored
+        "throttle_reset" -> R.string.security_notice_throttle_reset
+        "may_approve_changed" -> R.string.security_notice_may_approve_changed
         else -> R.string.security_notice_generic
     }
 
@@ -87,6 +91,10 @@ object NoticeText {
         "session_ended_reuse" -> R.string.security_push_session_ended_reuse
         "session_ended_limit" -> R.string.security_push_session_ended_limit
         "bootstrap_reminder" -> R.string.security_push_bootstrap_reminder
+        "sessions_ended" -> R.string.security_push_sessions_ended
+        "factor_restored" -> R.string.security_push_factor_restored
+        "throttle_reset" -> R.string.security_push_throttle_reset
+        "may_approve_changed" -> R.string.security_push_may_approve_changed
         else -> R.string.security_push_generic
     }
 }

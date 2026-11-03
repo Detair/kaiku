@@ -18,6 +18,8 @@ class NoticeTextTest {
         "admin_setup", "admin_role_granted", "admin_role_removed",
         "recovery_contact_named", "recovery_contact_confirmed", "recovery_contact_changed",
         "session_ended_reuse", "session_ended_limit", "bootstrap_reminder",
+        // C28 amendment (2026-11-03): admin and CLI recovery actions.
+        "sessions_ended", "factor_restored", "throttle_reset", "may_approve_changed",
     )
 
     @Test fun `every event type has notice and push strings and unknown uses generic`() {

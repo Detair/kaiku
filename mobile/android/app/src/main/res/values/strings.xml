@@ -555,6 +555,10 @@
     <string name="security_notice_session_ended_reuse">A session of %1$s was ended because its key was used twice</string>
     <string name="security_notice_session_ended_limit">The oldest session of %1$s was ended (too many sessions)</string>
     <string name="security_notice_bootstrap_reminder">Secure %1$s: add a phone or a passkey</string>
+    <string name="security_notice_sessions_ended">An admin ended sessions of %1$s</string>
+    <string name="security_notice_factor_restored">An admin made a sign-in factor of %1$s usable again</string>
+    <string name="security_notice_throttle_reset">An admin allowed sign-in attempts for %1$s again</string>
+    <string name="security_notice_may_approve_changed">An admin changed whether the phones of %1$s may confirm sign-ins</string>
     <string name="security_notice_generic">Security notice for %1$s</string>
     <string name="security_push_sign_in">New sign-in to %1$s</string>
     <string name="security_push_sign_in_not_finished">A sign-in to %1$s was not finished</string>
@@ -591,6 +595,10 @@
     <string name="security_push_session_ended_reuse">A session of %1$s was ended</string>
     <string name="security_push_session_ended_limit">The oldest session of %1$s was ended</string>
     <string name="security_push_bootstrap_reminder">Secure %1$s: add a phone or a passkey</string>
+    <string name="security_push_sessions_ended">Sessions of %1$s were ended</string>
+    <string name="security_push_factor_restored">A sign-in factor of %1$s is usable again</string>
+    <string name="security_push_throttle_reset">Sign-in attempts for %1$s are allowed again</string>
+    <string name="security_push_may_approve_changed">\"May confirm sign-ins\" changed for %1$s</string>
     <string name="security_push_generic">Security notice for %1$s</string>
 
     <!-- Security notices: channel, Kaiku DM, actions, log, open request -->
