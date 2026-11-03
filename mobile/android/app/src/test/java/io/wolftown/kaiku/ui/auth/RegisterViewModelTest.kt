@@ -97,4 +97,35 @@ class RegisterViewModelTest {
         )
         assertNull(viewModel.uiState.value.errorRes)
     }
+
+    @Test
+    fun `a failed issuance after the account was created retries with the same ticket`() = runTest {
+        coEvery { authRepository.register("anna", "pw", null, null) } returns
+            Result.success(io.wolftown.kaiku.domain.model.RegistrationTicket("u1", "anna", "2026-11-03T12:30:00Z", "ticket-1"))
+        coEvery { enrollmentApi.issueWithTicket("ticket-1") } throws java.io.IOException("offline") andThen
+            io.wolftown.kaiku.domain.model.EnrollmentIssued("e1", "setup-token", "https://chat.example.com/setup#v=1&t=x", "2026-11-03T12:10:00Z")
+        viewModel.onUsernameChanged("anna")
+        viewModel.onPasswordChanged("pw")
+        viewModel.onRegisterClicked()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.errorRes != null)
+
+        viewModel.onRegisterClicked() // "Create account" again
+        advanceUntilIdle()
+        io.mockk.coVerify(exactly = 1) { authRepository.register(any(), any(), any(), any()) }
+        assertEquals("ticket-1", viewModel.uiState.value.setupEntry?.ticket)
+        viewModel.onSetupStarted()
+        assertNull(viewModel.uiState.value.setupEntry)
+    }
+
+    @Test
+    fun `a double tap registers once`() = runTest {
+        coEvery { authRepository.register(any(), any(), any(), any()) } returns Result.failure(java.io.IOException("x"))
+        viewModel.onUsernameChanged("anna")
+        viewModel.onPasswordChanged("pw")
+        viewModel.onRegisterClicked()
+        viewModel.onRegisterClicked()
+        advanceUntilIdle()
+        io.mockk.coVerify(exactly = 1) { authRepository.register(any(), any(), any(), any()) }
+    }
 }

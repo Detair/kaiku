@@ -70,30 +70,37 @@ class RegisterViewModel @Inject constructor(
         _uiState.update { it.copy(displayName = displayName) }
     }
 
+    /**
+     * The ticket of an account this screen already created (30 min, C27): a retry after a failed
+     * issuance only issues again, it never registers the same name twice (Argon part6 #2).
+     */
+    private var created: Pair<String, String>? = null
+
     fun onRegisterClicked() {
         val state = _uiState.value
+        if (state.isLoading) return
         _uiState.update { it.copy(isLoading = true, errorRes = null) }
 
         viewModelScope.launch {
             val email = state.email.ifBlank { null }
             val displayName = state.displayName.ifBlank { null }
-            val result = authRepository.register(
+            val kept = created?.takeIf { it.first == state.username }?.second
+            val ticket = kept ?: authRepository.register(
                 state.username,
                 state.password,
                 email,
                 displayName
-            )
-
-            val ticket = result.getOrElse { exception ->
+            ).getOrElse { exception ->
                 _uiState.update { it.copy(isLoading = false, errorRes = AuthErrorMapper.register(exception)) }
                 return@launch
-            }
+            }.ticket
+            created = state.username to ticket
             // F8: no session; the ticket binds this phone's own key (claim without a code).
             try {
                 val origin = tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin)
                     ?: throw IllegalStateException("no server")
-                val issued = enrollmentApi.issueWithTicket(ticket.ticket)
-                val entry = SetupEntry(origin, issued.setupToken, SetupEntry.Source.TICKET, ticket = ticket.ticket)
+                val issued = enrollmentApi.issueWithTicket(ticket)
+                val entry = SetupEntry(origin, issued.setupToken, SetupEntry.Source.TICKET, ticket = ticket)
                 _uiState.update { it.copy(isLoading = false, setupEntry = entry) }
             } catch (e: CancellationException) {
                 throw e
@@ -106,6 +113,11 @@ class RegisterViewModel @Inject constructor(
     fun clearError() {
         _uiState.update { it.copy(errorRes = null) }
     }
+
+    /** Called once the setup took the entry: coming back here never replays it. */
+    fun onSetupStarted() {
+        _uiState.update { it.copy(setupEntry = null) }
+    }
 }
 
 @Composable
@@ -117,7 +129,10 @@ fun RegisterScreen(
     val uiState by viewModel.uiState.collectAsState()
 
     LaunchedEffect(uiState.setupEntry) {
-        uiState.setupEntry?.let(onRegistered)
+        uiState.setupEntry?.let {
+            viewModel.onSetupStarted()
+            onRegistered(it)
+        }
     }
 
     Column(
