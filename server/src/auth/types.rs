@@ -334,22 +334,6 @@ pub struct RevokeAllResponse {
     pub revoked_count: i64,
 }
 
-/// QR login token redemption request.
-#[derive(Deserialize, utoipa::ToSchema)]
-pub struct QrRedeemRequest {
-    /// One-time QR login token.
-    pub token: String,
-}
-
-/// QR login token creation response.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct QrCreateResponse {
-    /// One-time QR login token.
-    pub token: String,
-    /// Token lifetime in seconds.
-    pub expires_in: u64,
-}
-
 /// OIDC callback query parameters.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct OidcCallbackQuery {

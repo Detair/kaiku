@@ -13,6 +13,7 @@ mod helpers;
 pub(crate) mod identities;
 pub mod jwt;
 pub(crate) mod login;
+pub mod login_attempts;
 pub(crate) mod mfa;
 pub mod mfa_crypto;
 mod middleware;
@@ -48,9 +49,7 @@ pub use middleware::{
 pub use password::{hash_password, verify_password};
 
 use crate::api::AppState;
-use crate::ratelimit::{
-    check_ip_not_blocked, rate_limit_by_ip, rate_limit_by_user, with_category, RateLimitCategory,
-};
+use crate::ratelimit::{check_ip_not_blocked, rate_limit_by_ip, with_category, RateLimitCategory};
 
 /// Create authentication router.
 ///
@@ -60,7 +59,7 @@ use crate::ratelimit::{
 /// - POST /refresh - Refresh access token
 /// - POST /forgot-password - Request password reset email
 /// - POST /reset-password - Reset password with token
-/// - POST /qr/redeem - Redeem a one-time QR login token
+/// - POST /login-attempts[/{id}/poll|collect|cancel] - Sign in with phone (SM1, C27)
 /// - GET /oidc/providers - List OIDC providers
 /// - GET /oidc/authorize/{provider} - Initiate OIDC flow
 /// - GET /oidc/callback - OIDC callback
@@ -82,7 +81,6 @@ use crate::ratelimit::{
 /// - POST /mfa/disable - Turn TOTP off (full + step-up `totp.remove`)
 /// - POST /recovery-codes - New recovery codes (full session + step-up, C27)
 /// - GET /recovery-codes/count - Unused recovery codes (any session)
-/// - POST /qr/create - Create a one-time QR login token (rate limited)
 /// - GET /reauth/methods - Step-up methods of the caller (C27)
 pub fn router(state: AppState) -> Router<AppState> {
     // Phone setup and device-key sign-in (C26), merged under `/auth`.
@@ -193,18 +191,6 @@ pub fn router(state: AppState) -> Router<AppState> {
             RateLimitCategory::AuthPasswordReset,
         )));
 
-    // QR login redeem route with rate limiting (public — mobile isn't authenticated yet).
-    // Uses AuthLogin category: like /login, this exchanges a credential for a full session.
-    let qr_redeem_route = Router::new()
-        .route("/qr/redeem", post(mfa::qr_redeem))
-        .layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            rate_limit_by_ip,
-        ))
-        .layer(axum_middleware::from_fn(with_category(
-            RateLimitCategory::AuthLogin,
-        )));
-
     // Merge all public routes
     let public_routes = login_route
         .merge(register_route)
@@ -212,7 +198,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(oidc_routes)
         .merge(forgot_password_route)
         .merge(reset_password_route)
-        .merge(qr_redeem_route);
+        .merge(login_attempts::router(&state));
 
     // Routes a user with a pending forced password change may still use.
     // `/me/password` needs a full session and a step-up grant (C27).
@@ -227,16 +213,6 @@ pub fn router(state: AppState) -> Router<AppState> {
             state.clone(),
             require_auth_allow_password_change,
         ));
-
-    // The old QR login (removed in L1b Task 17).
-    let mfa_reauth_routes = with_reauth_limits(
-        Router::new().route("/qr/create", post(mfa::qr_create)),
-        &state,
-    )
-    .layer(axum_middleware::from_fn_with_state(
-        state.clone(),
-        require_auth,
-    ));
 
     // Protected routes (auth required)
     let protected_routes = Router::new()
@@ -285,29 +261,6 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(flow_routes)
         .merge(passkey_routes)
         .merge(password_change_routes)
-        .merge(mfa_reauth_routes)
         .merge(protected_routes)
         .merge(link_authorize_route)
-}
-
-/// Per-user limits and the IP block check (only the old QR create route).
-///
-/// Wrap the result in the auth layer: `rate_limit_by_user` needs `AuthUser`.
-/// Outer to inner: IP block check, category, per-user rate limit.
-pub(crate) fn with_reauth_limits<S>(router: Router<S>, state: &AppState) -> Router<S>
-where
-    S: Clone + Send + Sync + 'static,
-{
-    router
-        .layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            rate_limit_by_user,
-        ))
-        .layer(axum_middleware::from_fn(with_category(
-            RateLimitCategory::AuthOther,
-        )))
-        .layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            check_ip_not_blocked,
-        ))
 }

@@ -1,11 +1,7 @@
-//! MFA (TOTP) and QR login handlers.
+//! TOTP set-up and removal (C27 `totp.set`, `totp.remove`).
 
-use std::net::SocketAddr;
-
-use axum::extract::{ConnectInfo, State};
-use axum::http::HeaderMap;
+use axum::extract::State;
 use axum::Json;
-use axum_extra::extract::CookieJar;
 use fred::prelude::*;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
@@ -13,17 +9,13 @@ use uuid::Uuid;
 use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
 use super::factors::Factor;
-use super::helpers::should_return_refresh_token;
 use super::mfa_crypto::encrypt_mfa_secret;
 use super::middleware::AuthUser;
 use super::reauth;
 use super::step_up::{self, StepUpAction, StepUpTarget};
-use super::types::{
-    AuthResponse, MfaSetupResponse, MfaVerifyRequest, QrCreateResponse, QrRedeemRequest,
-};
+use super::types::{MfaSetupResponse, MfaVerifyRequest};
 use crate::api::AppState;
 use crate::approvals::transition::lock_accounts;
-use crate::db::find_user_by_id;
 use crate::security_events::{spawn_delivery, EventType};
 
 /// Setup MFA (TOTP).
@@ -274,116 +266,4 @@ async fn set_mfa_secret_tx(conn: &mut sqlx::PgConnection, user_id: Uuid) -> sqlx
         .execute(&mut *conn)
         .await?;
     Ok(())
-}
-
-// ============================================================================
-// QR Login Handlers
-// ============================================================================
-
-/// Create a one-time QR login token for the authenticated user.
-///
-/// POST /auth/qr/create
-///
-/// The token is stored in Valkey with a 120-second TTL and can be redeemed
-/// exactly once by an unauthenticated device (e.g. mobile app scanning a QR code).
-#[tracing::instrument(skip(state))]
-pub async fn qr_create(
-    State(state): State<AppState>,
-    auth: AuthUser,
-) -> AuthResult<Json<QrCreateResponse>> {
-    let token = Uuid::now_v7().to_string();
-    let redis_key = format!("qr_login:{token}");
-
-    state
-        .redis
-        .set::<(), _, _>(
-            &redis_key,
-            auth.id.to_string(),
-            Some(fred::types::Expiration::EX(120)),
-            Some(fred::types::SetOptions::NX),
-            false,
-        )
-        .await
-        .map_err(|e| AuthError::Internal(format!("Failed to store QR token: {e}")))?;
-
-    tracing::info!(user_id = %auth.id, "Created QR login token");
-
-    Ok(Json(QrCreateResponse {
-        token,
-        expires_in: 120,
-    }))
-}
-
-/// Redeem a one-time QR login token for a full auth session.
-///
-/// POST /auth/qr/redeem
-///
-/// The token is consumed atomically via `GETDEL` so it cannot be reused.
-/// Returns an access/refresh token pair identical to the login endpoint.
-#[tracing::instrument(skip(state, jar, headers, body))]
-pub async fn qr_redeem(
-    State(state): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    jar: CookieJar,
-    Json(body): Json<QrRedeemRequest>,
-) -> AuthResult<(CookieJar, Json<AuthResponse>)> {
-    let token_uuid: Uuid = body.token.parse().map_err(|_| {
-        crate::observability::metrics::record_auth_login_attempt(false);
-        AuthError::InvalidCredentials
-    })?;
-    let redis_key = format!("qr_login:{token_uuid}");
-
-    // Atomic get-and-delete (one-use)
-    let user_id_str: Option<String> = state
-        .redis
-        .getdel(&redis_key)
-        .await
-        .map_err(|e| AuthError::Internal(format!("Failed to read QR token: {e}")))?;
-
-    let user_id_str = user_id_str.ok_or_else(|| {
-        crate::observability::metrics::record_auth_login_attempt(false);
-        AuthError::InvalidCredentials
-    })?;
-    let user_id: Uuid = user_id_str
-        .parse()
-        .map_err(|_| AuthError::Internal("Invalid user ID in QR token".to_string()))?;
-
-    // Verify user still exists (may have been deleted/banned during the token window)
-    let user = find_user_by_id(&state.db, user_id).await?.ok_or_else(|| {
-        crate::observability::metrics::record_auth_login_attempt(false);
-        AuthError::InvalidCredentials
-    })?;
-
-    // A banned account cannot start a new session.
-    if super::queries::is_user_globally_banned(&state.db, user_id).await? {
-        return Err(AuthError::AccountBanned);
-    }
-
-    // Create the session (probation, CC4) with the redeeming client.
-    let client = super::session_issue::SessionClient::from_request(&state, &headers, addr);
-    let issued = super::session_issue::issue_session(
-        &super::ctx::AuthCtx::from(&state),
-        &super::session_issue::NewSession {
-            user_id,
-            method: super::session_issue::SignInMethod::LegacyQrRedeem,
-            client: &client,
-            client_class: super::client_class::ClientClass::from_headers(&headers),
-            authenticator: None,
-        },
-    )
-    .await?;
-    crate::security_events::spawn_delivery(&state, issued.event_ids.clone());
-
-    tracing::info!(user_id = %user_id, "QR login token redeemed");
-    crate::observability::metrics::record_auth_login_attempt(true);
-
-    let include_refresh_token = should_return_refresh_token(&headers);
-
-    let jar = jar.add(issued.refresh_cookie(&state.config));
-
-    Ok((
-        jar,
-        Json(issued.into_response(user.must_change_password, include_refresh_token)),
-    ))
 }

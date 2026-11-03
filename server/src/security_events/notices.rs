@@ -373,6 +373,17 @@ pub fn spawn_delivery(state: &AppState, event_ids: Vec<Uuid>) {
     });
 }
 
+/// Deliver every undelivered event in the background (after a transition
+/// that recorded events without returning their ids, e.g. a cascade).
+pub fn spawn_pending_delivery(state: &AppState) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = deliver_pending(&state).await {
+            tracing::warn!(error = %e, "notice delivery failed; the sweep retries");
+        }
+    });
+}
+
 /// The sweep step: deliver every undelivered event (oldest first, bounded).
 /// Returns how many events were picked up.
 pub async fn deliver_pending(state: &AppState) -> anyhow::Result<usize> {

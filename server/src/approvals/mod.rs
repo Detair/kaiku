@@ -28,6 +28,7 @@ use crate::ratelimit::{rate_limit_by_user, with_category, RateLimitCategory};
 /// `/api/approvals` (bearer; `ApprovalLogin` per user).
 pub fn approvals_router(state: &AppState) -> Router<AppState> {
     Router::new()
+        .route("/claim", post(handlers::claim))
         .route("/step-up", post(handlers::step_up))
         .route("/{id}/answer", post(handlers::answer))
         .route("/{id}/deny", post(handlers::deny))

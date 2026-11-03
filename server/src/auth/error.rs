@@ -233,6 +233,16 @@ pub enum AuthError {
     #[error("Choose another password")]
     PasswordRejected(crate::auth::password_policy::PasswordRejected),
 
+    /// Unknown attempt or wrong collection secret (C27).
+    #[error("This sign-in is not known")]
+    LoginAttemptUnknown,
+    /// The attempt cannot be collected yet (not approved).
+    #[error("This sign-in has not been confirmed yet")]
+    LoginAttemptNotReady,
+    /// The attempt has ended: 410 `LOGIN_ATTEMPT_ENDED {state}`.
+    #[error("This sign-in has ended")]
+    LoginAttemptEnded { state: String },
+
     #[error("Internal server error")]
     Internal(String),
 }
@@ -313,6 +323,9 @@ impl AuthError {
             Self::PasskeyHandoffInvalid => (StatusCode::BAD_REQUEST, "PASSKEY_HANDOFF_INVALID"),
             Self::ClientOutdated => (StatusCode::BAD_REQUEST, "CLIENT_OUTDATED"),
             Self::PasswordRejected(_) => (StatusCode::BAD_REQUEST, "PASSWORD_REJECTED"),
+            Self::LoginAttemptUnknown => (StatusCode::NOT_FOUND, "LOGIN_ATTEMPT_UNKNOWN"),
+            Self::LoginAttemptNotReady => (StatusCode::CONFLICT, "LOGIN_ATTEMPT_NOT_READY"),
+            Self::LoginAttemptEnded { .. } => (StatusCode::GONE, "LOGIN_ATTEMPT_ENDED"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         }
     }
@@ -324,7 +337,17 @@ impl IntoResponse for AuthError {
 
         // C29: `PASSKEY_PENDING` carries `ready_at` next to `error`; C27:
         // `PASSWORD_REJECTED` carries `reason`.
-        let mut response = if let Self::PasswordRejected(reason) = &self {
+        let mut response = if let Self::LoginAttemptEnded { state } = &self {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": self.to_string(),
+                    "state": state,
+                })),
+            )
+                .into_response()
+        } else if let Self::PasswordRejected(reason) = &self {
             (
                 status,
                 Json(serde_json::json!({

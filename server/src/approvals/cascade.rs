@@ -31,11 +31,12 @@ pub struct CascadeOutcome {
 /// (Task 21) that used `used` end here.
 #[tracing::instrument(skip_all)]
 pub async fn on_generation_ended(
-    _conn: &mut PgConnection,
+    conn: &mut PgConnection,
     _ctx: &AuthCtx<'_>,
-    _user_id: Uuid,
-    _used: crate::auth::factors::FactorRef,
+    user_id: Uuid,
+    used: crate::auth::factors::FactorRef,
 ) -> AuthResult<()> {
+    crate::auth::login_attempts::core::on_generation_ended(conn, user_id, used).await?;
     Ok(())
 }
 

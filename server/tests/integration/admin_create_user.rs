@@ -271,7 +271,6 @@ async fn pending_user_only_reaches_allowed_routes(pool: PgPool) {
         (reqwest::Method::GET, "/api/guilds"),
         (reqwest::Method::POST, "/auth/me"),
         (reqwest::Method::GET, "/auth/sessions"),
-        (reqwest::Method::POST, "/auth/qr/create"),
     ] {
         let resp = client
             .request(method.clone(), format!("{}{path}", server.url))

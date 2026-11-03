@@ -44,6 +44,18 @@ pub enum ApprovalError {
     DeviceUnsuitable { reason: &'static str },
     #[error("This account has been banned")]
     AccountBanned,
+    /// The scanned sign-in code is unknown, used or older than 60 s (C27).
+    #[error("This code has just changed; scan the new one")]
+    LoginCodeStale,
+    /// Another phone holds the attempt's claim.
+    #[error("Another phone is already confirming this sign-in")]
+    LoginAttemptClaimed,
+    /// A password/OIDC attempt of another account (C26 claim).
+    #[error("This sign-in belongs to another account")]
+    LoginAttemptOtherAccount,
+    /// The signed `response` is not the scanned token (B.2; nothing changes).
+    #[error("This answer does not match the scanned code")]
+    ResponseMismatch,
     #[error("{0}")]
     Validation(String),
     #[error("Service temporarily unavailable")]
@@ -89,6 +101,10 @@ impl IntoResponse for ApprovalError {
             Self::EnrollmentLimit => (StatusCode::CONFLICT, "ENROLLMENT_LIMIT"),
             Self::DeviceUnsuitable { .. } => (StatusCode::BAD_REQUEST, "DEVICE_UNSUITABLE"),
             Self::AccountBanned => (StatusCode::FORBIDDEN, "ACCOUNT_BANNED"),
+            Self::LoginCodeStale => (StatusCode::NOT_FOUND, "LOGIN_CODE_STALE"),
+            Self::LoginAttemptClaimed => (StatusCode::CONFLICT, "LOGIN_ATTEMPT_CLAIMED"),
+            Self::LoginAttemptOtherAccount => (StatusCode::CONFLICT, "LOGIN_ATTEMPT_OTHER_ACCOUNT"),
+            Self::ResponseMismatch => (StatusCode::BAD_REQUEST, "APPROVAL_RESPONSE_MISMATCH"),
             Self::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),
             Self::Database(e) => {

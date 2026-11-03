@@ -185,6 +185,38 @@ async fn lock_challenge(
     Ok((dev, row))
 }
 
+/// Claim a login attempt with the scanned QR token (C26, SM1): from a key
+/// device's own session with `may_approve` on → 201 `ApprovalChallenge`
+/// (`login`).
+#[utoipa::path(
+    post,
+    path = "/api/approvals/claim",
+    tag = "approvals",
+    request_body = crate::auth::login_attempts::types::ClaimRequest,
+    responses(
+        (status = 201, body = ApprovalChallenge),
+        (status = 403, description = "KEY_DEVICE_REQUIRED or APPROVAL_NOT_ALLOWED"),
+        (status = 404, description = "LOGIN_CODE_STALE"),
+        (status = 409, description = "LOGIN_ATTEMPT_CLAIMED or LOGIN_ATTEMPT_OTHER_ACCOUNT"),
+    ),
+    security(("bearer_auth" = [])),
+)]
+#[tracing::instrument(skip(state, auth, body), fields(user_id = %auth.id))]
+pub async fn claim(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<crate::auth::login_attempts::types::ClaimRequest>,
+) -> Result<(StatusCode, Json<ApprovalChallenge>), ApprovalError> {
+    let token = crate::auth::login_attempts::core::decode_token(&body.token)
+        .ok_or(ApprovalError::LoginCodeStale)?;
+    let ctx = AuthCtx::from(&state);
+    let mut tx = state.db.begin().await?;
+    let challenge =
+        crate::auth::login_attempts::core::claim_tx(&mut tx, &ctx, &auth, &token).await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(challenge)))
+}
+
 /// Answer a challenge with a UV signature (C26 answer results).
 #[utoipa::path(
     post,
@@ -306,13 +338,39 @@ pub async fn answer(
                 Err(e) => Err(e),
             }
         }
-        // `login` arrives with L1b; proofs answered at their own routes.
+        Some(Kind::Login) => {
+            let result = crate::auth::login_attempts::core::answer_tx(
+                &mut tx,
+                &ctx,
+                &dev,
+                &row,
+                decision,
+                &response,
+                &body.signature,
+            )
+            .await;
+            match result {
+                Ok((answer, events)) => {
+                    tx.commit().await?;
+                    crate::security_events::spawn_delivery(&state, events);
+                    crate::security_events::notices::spawn_pending_delivery(&state);
+                    Ok(Json(answer))
+                }
+                // The attempt ended: its challenge is void (keep that mark).
+                Err(ApprovalError::State) => {
+                    tx.commit().await?;
+                    Err(ApprovalError::State)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        // Proofs are answered at their own routes.
         _ => Err(ApprovalError::NotFound),
     }
 }
 
 /// The unsigned "No" (C26): `enroll` cancels the enrolment its issuer
-/// started; `login` arrives with L1b.
+/// started; `login` denies the attempt.
 #[utoipa::path(
     post,
     path = "/api/approvals/{id}/deny",
@@ -360,11 +418,21 @@ pub async fn deny(
             super::enrollments::notify_issuer_after_failure(&state, row.requester_id).await;
             Ok(StatusCode::NO_CONTENT)
         }
+        Some(Kind::Login) => {
+            let _ = dev;
+            match crate::auth::login_attempts::core::deny_tx(&mut tx, &row).await {
+                Ok(()) | Err(ApprovalError::State) => {
+                    tx.commit().await?;
+                    Ok(StatusCode::NO_CONTENT)
+                }
+                Err(e) => Err(e),
+            }
+        }
         _ => Err(ApprovalError::NotFound),
     }
 }
 
-/// Back / dismissed (C26): only `login` claims return to `open` (L1b).
+/// Back / dismissed (C26): only `login` claims return to `open`.
 #[utoipa::path(
     post,
     path = "/api/approvals/{id}/release",
@@ -387,6 +455,15 @@ pub async fn release(
             Err(ApprovalError::Expired)
         }
         Err(e) => Err(e),
+        Ok((_, row)) if row.kind() == Some(Kind::Login) => {
+            match crate::auth::login_attempts::core::release_tx(&mut tx, &row).await {
+                Ok(()) | Err(ApprovalError::State) => {
+                    tx.commit().await?;
+                    Ok(StatusCode::NO_CONTENT)
+                }
+                Err(e) => Err(e),
+            }
+        }
         Ok(_) => Err(ApprovalError::NotFound),
     }
 }
