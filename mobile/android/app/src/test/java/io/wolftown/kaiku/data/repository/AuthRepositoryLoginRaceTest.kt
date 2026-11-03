@@ -118,10 +118,13 @@ class AuthRepositoryLoginRaceTest {
 
         assertTrue(result.isFailure)
         // The minted session never reaches B: A gets the collect, then the logout that ends it there.
-        assertEquals(listOf("a.example.com", "a.example.com"), requests.map { it.first })
-        assertEquals(listOf("/auth/login-attempts/a-1/collect", "/auth/logout"), requests.map { it.second })
-        assertTrue(requests.none { it.first == "b.example.com" })
-        assertEquals("Bearer access-a", requests.last().third)
+        // (How many logout tries run depends on the bounded best-effort timeout, which runs on the
+        // test's virtual clock while the mock engine answers on real threads: at least one.)
+        assertTrue(requests.all { it.first == "a.example.com" })
+        assertEquals("/auth/login-attempts/a-1/collect", requests.first().second)
+        val logouts = requests.drop(1)
+        assertTrue(logouts.isNotEmpty() && logouts.all { it.second == "/auth/logout" })
+        assertEquals("Bearer access-a", logouts.first().third)
         verify(exactly = 0) { tokenStorage.clear() }
         verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
         assertEquals(AuthSession.LoggedOut, authState.session.value)
