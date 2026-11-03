@@ -154,18 +154,150 @@ impl Lang {
 /// What the ceremony page asks the user to allow.
 pub enum PageHeading {
     SignIn,
-    RemovePasskey(String),
-    RemoveDevice(String),
-    Elevate,
-    Other,
+    /// One step-up action and the (already resolved, owner-scoped) label
+    /// of its target; `others` for `sessions.end` on `others`.
+    StepUp {
+        action: crate::auth::step_up::StepUpAction,
+        label: String,
+        others: bool,
+    },
+}
+
+/// The sentence naming one step-up action on the ceremony page.
+///
+/// F7: the user sees exactly what they approve. `None` for an action the desktop
+/// flow does not run (`passkey.add`, DC12). Refused at start when `None`.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn step_up_text(
+    lang: Lang,
+    action: crate::auth::step_up::StepUpAction,
+    label: &str,
+    others: bool,
+) -> Option<String> {
+    use crate::auth::step_up::StepUpAction as A;
+    let q = |l: &str| match lang {
+        Lang::En => format!("\u{201c}{l}\u{201d}"),
+        Lang::De => format!("\u{201e}{l}\u{201c}"),
+    };
+    let named = |en: &str, en_none: &str, de: &str, de_none: &str| -> String {
+        match (lang, label.is_empty()) {
+            (Lang::En, false) => en.replace("{}", &q(label)),
+            (Lang::En, true) => en_none.to_string(),
+            (Lang::De, false) => de.replace("{}", &q(label)),
+            (Lang::De, true) => de_none.to_string(),
+        }
+    };
+    let plain = |en: &str, de: &str| -> String {
+        match lang {
+            Lang::En => en.to_string(),
+            Lang::De => de.to_string(),
+        }
+    };
+    let what = match action {
+        A::PasskeyAdd => return None,
+        A::PasskeyRemove => named(
+            "to remove the passkey {}",
+            "to remove a passkey",
+            "den Passkey {} zu entfernen",
+            "einen Passkey zu entfernen",
+        ),
+        A::KeyDeviceRemove => named(
+            "to remove the key phone {}",
+            "to remove a key phone",
+            "das Schl\u{fc}ssel-Handy {} zu entfernen",
+            "ein Schl\u{fc}ssel-Handy zu entfernen",
+        ),
+        A::EnrollmentIssue => plain(
+            "to create a setup link for a new key phone or passkey",
+            "einen Einrichtungslink f\u{fc}r ein neues Schl\u{fc}ssel-Handy oder einen Passkey zu erstellen",
+        ),
+        A::PasswordSet => plain("to set or change your password", "dein Passwort zu setzen oder zu \u{e4}ndern"),
+        A::PasswordRemove => plain("to remove your password", "dein Passwort zu entfernen"),
+        A::TotpSet => plain(
+            "to set up an authenticator app (TOTP)",
+            "eine Authenticator-App (TOTP) einzurichten",
+        ),
+        A::TotpRemove => plain(
+            "to remove your authenticator app (TOTP)",
+            "deine Authenticator-App (TOTP) zu entfernen",
+        ),
+        A::RecoveryCodesCreate => plain(
+            "to create new recovery codes",
+            "neue Wiederherstellungscodes zu erstellen",
+        ),
+        A::IdentityLink => plain(
+            "to link a sign-in provider to your account",
+            "einen Anmeldedienst mit deinem Konto zu verbinden",
+        ),
+        A::IdentityUnlink => named(
+            "to unlink the sign-in provider {}",
+            "to unlink a sign-in provider",
+            "den Anmeldedienst {} zu trennen",
+            "einen Anmeldedienst zu trennen",
+        ),
+        A::SessionsEnd if others => plain(
+            "to sign out all your other sessions",
+            "alle deine anderen Sitzungen abzumelden",
+        ),
+        A::SessionsEnd => named(
+            "to sign out the session {}",
+            "to sign out one of your sessions",
+            "die Sitzung {} abzumelden",
+            "eine deiner Sitzungen abzumelden",
+        ),
+        A::RecoveryContactSet => named(
+            "to make {} your recovery contact",
+            "to remove your recovery contact",
+            "{} zu deiner Vertrauensperson f\u{fc}r die Wiederherstellung zu machen",
+            "deine Vertrauensperson f\u{fc}r die Wiederherstellung zu entfernen",
+        ),
+        A::RequestCancel => plain("to cancel an account request", "eine Kontoanfrage abzubrechen"),
+        A::EventRepudiate => plain(
+            "to report a security notice as \u{201c}That wasn't me\u{201d}",
+            "eine Sicherheitsmeldung als \u{201e}Das war ich nicht\u{201c} zu melden",
+        ),
+        A::AccountDelete => plain("to delete your account", "dein Konto zu l\u{f6}schen"),
+        A::AdminElevate => plain("to unlock admin actions", "Admin-Aktionen freizuschalten"),
+        A::AdminEnrollmentIssue => named(
+            "to create a setup link for the account {}",
+            "to create a setup link for another account",
+            "einen Einrichtungslink f\u{fc}r das Konto {} zu erstellen",
+            "einen Einrichtungslink f\u{fc}r ein anderes Konto zu erstellen",
+        ),
+        A::AdminAuthenticatorRemove => named(
+            "to remove {} from another account",
+            "to remove a key phone or passkey of another account",
+            "{} aus einem anderen Konto zu entfernen",
+            "ein Schl\u{fc}ssel-Handy oder einen Passkey eines anderen Kontos zu entfernen",
+        ),
+        A::AdminMayApprove => named(
+            "to change who may confirm sign-ins for the account {}",
+            "to change who may confirm sign-ins for another account",
+            "zu \u{e4}ndern, wer Anmeldungen f\u{fc}r das Konto {} best\u{e4}tigen darf",
+            "zu \u{e4}ndern, wer Anmeldungen f\u{fc}r ein anderes Konto best\u{e4}tigen darf",
+        ),
+        A::AdminFactorSetState => named(
+            "to change the sign-in methods of the account {}",
+            "to change the sign-in methods of another account",
+            "die Anmeldemethoden des Kontos {} zu \u{e4}ndern",
+            "die Anmeldemethoden eines anderen Kontos zu \u{e4}ndern",
+        ),
+        A::AdminRecoveryContactSet => named(
+            "to change the recovery contact of the account {}",
+            "to change the recovery contact of another account",
+            "die Vertrauensperson des Kontos {} zu \u{e4}ndern",
+            "die Vertrauensperson eines anderen Kontos zu \u{e4}ndern",
+        ),
+    };
+    Some(match lang {
+        Lang::En => format!("Allow the Kaiku desktop app on this computer {what}"),
+        Lang::De => format!("Der Kaiku-Desktop-App auf diesem Computer erlauben, {what}"),
+    })
 }
 
 struct Texts {
     title_sign_in: &'static str,
-    remove_passkey: (&'static str, &'static str),
-    remove_device: (&'static str, &'static str),
-    elevate: &'static str,
-    other: &'static str,
     forwarded: &'static str,
     start: &'static str,
     back: &'static str,
@@ -180,16 +312,6 @@ struct Texts {
 
 const EN: Texts = Texts {
     title_sign_in: "Sign in to the Kaiku desktop app on this computer",
-    remove_passkey: (
-        "Allow the Kaiku desktop app on this computer to remove the passkey \u{201c}",
-        "\u{201d}",
-    ),
-    remove_device: (
-        "Allow the Kaiku desktop app on this computer to remove the device \u{201c}",
-        "\u{201d}",
-    ),
-    elevate: "Allow the Kaiku desktop app on this computer to unlock admin actions",
-    other: "Allow the Kaiku desktop app on this computer to make this security change",
     forwarded: "If someone sent you this link, close this page.",
     start: "Continue with passkey",
     back: "Back to the app",
@@ -206,17 +328,6 @@ const EN: Texts = Texts {
 
 const DE: Texts = Texts {
     title_sign_in: "Bei der Kaiku-Desktop-App auf diesem Computer anmelden",
-    remove_passkey: (
-        "Der Kaiku-Desktop-App auf diesem Computer erlauben, den Passkey \u{201e}",
-        "\u{201c} zu entfernen",
-    ),
-    remove_device: (
-        "Der Kaiku-Desktop-App auf diesem Computer erlauben, das Ger\u{e4}t \u{201e}",
-        "\u{201c} zu entfernen",
-    ),
-    elevate: "Der Kaiku-Desktop-App auf diesem Computer erlauben, Admin-Aktionen freizuschalten",
-    other: "Der Kaiku-Desktop-App auf diesem Computer erlauben, diese Sicherheits\u{e4}nderung \
-            vorzunehmen",
     forwarded: "Wenn dir jemand diesen Link geschickt hat, schlie\u{df}e diese Seite.",
     start: "Mit Passkey fortfahren",
     back: "Zur\u{fc}ck zur App",
@@ -292,14 +403,11 @@ pub fn ceremony_page(lang: Lang, heading: &PageHeading, flow_id: Uuid) -> Respon
     let t = texts(lang);
     let title = match heading {
         PageHeading::SignIn => t.title_sign_in.to_string(),
-        PageHeading::RemovePasskey(label) => {
-            format!("{}{}{}", t.remove_passkey.0, label, t.remove_passkey.1)
-        }
-        PageHeading::RemoveDevice(label) => {
-            format!("{}{}{}", t.remove_device.0, label, t.remove_device.1)
-        }
-        PageHeading::Elevate => t.elevate.to_string(),
-        PageHeading::Other => t.other.to_string(),
+        PageHeading::StepUp {
+            action,
+            label,
+            others,
+        } => step_up_text(lang, *action, label, *others).unwrap_or_default(),
     };
     let body = format!(
         "<h1>{title}</h1>\

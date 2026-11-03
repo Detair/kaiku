@@ -1111,3 +1111,77 @@ async fn options_without_active_passkeys_end_the_flow(pool: PgPool) {
     assert_eq!(o.status, 400);
     assert_eq!(page(&app.router, &flow.path, None).await.status, 404);
 }
+
+#[sqlx::test]
+async fn every_desktop_step_up_page_names_its_action(pool: PgPool) {
+    // Review Codex m4: never a generic "security change".
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (_, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
+    let cases: Vec<(&str, String, &str, &str)> = vec![
+        (
+            "passkey.remove",
+            row.id.to_string(),
+            "to remove the passkey",
+            "den Passkey",
+        ),
+        (
+            "password.set",
+            String::new(),
+            "to set or change your password",
+            "Passwort",
+        ),
+        (
+            "account.delete",
+            String::new(),
+            "to delete your account",
+            "Konto",
+        ),
+        (
+            "sessions.end",
+            "others".to_string(),
+            "to sign out all your other sessions",
+            "Sitzungen",
+        ),
+        (
+            "recovery_codes.create",
+            String::new(),
+            "recovery codes",
+            "Wiederherstellungscodes",
+        ),
+        (
+            "admin.elevate",
+            String::new(),
+            "to unlock admin actions",
+            "Admin-Aktionen",
+        ),
+    ];
+    for (action, target, en, de) in cases {
+        let flow = start(
+            &app.router,
+            start_body("step_up", Some(action), Some(&target)),
+            Some(&token),
+        )
+        .await;
+        let p = page(&app.router, &flow.path, None).await;
+        assert!(p.body.contains(en), "{action}: {}", p.body);
+        assert!(!p.body.contains("this security change"), "{action}");
+        let p = page(&app.router, &flow.path, Some("de")).await;
+        assert!(p.body.contains(de), "{action}: {}", p.body);
+    }
+    // The label is the caller's own passkey's, HTML-escaped.
+    sqlx::query("UPDATE passkeys SET label = '<b>Laptop</b>' WHERE id = $1")
+        .bind(row.id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let flow = start(
+        &app.router,
+        start_body("step_up", Some("passkey.remove"), Some(&row.id.to_string())),
+        Some(&token),
+    )
+    .await;
+    let p = page(&app.router, &flow.path, None).await;
+    assert!(p.body.contains("&lt;b&gt;Laptop&lt;/b&gt;"), "{}", p.body);
+}

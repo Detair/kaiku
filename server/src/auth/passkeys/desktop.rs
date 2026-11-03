@@ -266,6 +266,12 @@ pub async fn start(
             }
             let (action, target, _) =
                 step_up::check_start(&state, &auth, raw_action, body.target.as_deref()).await?;
+            // The ceremony page must be able to name the action (F7).
+            if super::desktop_page::step_up_text(Lang::En, action, "", false).is_none() {
+                return Err(invalid(
+                    "this action cannot be confirmed in the desktop app",
+                ));
+            }
             FlowPurpose::StepUp {
                 user_id: auth.id,
                 session_id: auth.session_id.ok_or(AuthError::InvalidToken)?,
@@ -327,7 +333,9 @@ async fn heading(state: &AppState, purpose: &FlowPurpose) -> AuthResult<PageHead
         return Ok(PageHeading::SignIn);
     };
     let id = Uuid::parse_str(target).ok();
-    let label = |sql: &'static str| async move {
+    // Labels of the caller's own objects only (owner-scoped); admin actions
+    // name the other account (its user name) or its authenticator.
+    let own = |sql: &'static str| async move {
         match id {
             Some(id) => sqlx::query_scalar::<_, String>(sql)
                 .bind(id)
@@ -338,15 +346,56 @@ async fn heading(state: &AppState, purpose: &FlowPurpose) -> AuthResult<PageHead
             None => Ok(String::new()),
         }
     };
-    Ok(match action {
-        StepUpAction::PasskeyRemove => PageHeading::RemovePasskey(
-            label("SELECT label FROM passkeys WHERE id = $1 AND user_id = $2").await?,
-        ),
-        StepUpAction::KeyDeviceRemove => PageHeading::RemoveDevice(
-            label("SELECT label FROM approval_devices WHERE id = $1 AND user_id = $2").await?,
-        ),
-        StepUpAction::AdminElevate => PageHeading::Elevate,
-        _ => PageHeading::Other,
+    let other = |sql: &'static str| async move {
+        match id {
+            Some(id) => sqlx::query_scalar::<_, String>(sql)
+                .bind(id)
+                .fetch_optional(&state.db)
+                .await
+                .map(Option::unwrap_or_default),
+            None => Ok(String::new()),
+        }
+    };
+    let label = match action {
+        StepUpAction::PasskeyRemove => {
+            own("SELECT label FROM passkeys WHERE id = $1 AND user_id = $2 AND state = 'active'").await?
+        }
+        StepUpAction::KeyDeviceRemove => {
+            own("SELECT label FROM approval_devices WHERE id = $1 AND user_id = $2 AND state = 'active'")
+                .await?
+        }
+        StepUpAction::IdentityUnlink => {
+            own("SELECT provider_slug FROM user_identities WHERE id = $1 AND user_id = $2").await?
+        }
+        StepUpAction::SessionsEnd => own(
+            "SELECT COALESCE(user_agent, '') FROM sessions WHERE id = $1 AND user_id = $2",
+        )
+        .await
+        .map(|ua| {
+            if ua.is_empty() {
+                ua
+            } else {
+                crate::auth::ua_parser::parse_device_name(&ua)
+            }
+        })?,
+        StepUpAction::RecoveryContactSet
+        | StepUpAction::AdminEnrollmentIssue
+        | StepUpAction::AdminMayApprove
+        | StepUpAction::AdminFactorSetState
+        | StepUpAction::AdminRecoveryContactSet => {
+            other("SELECT username FROM users WHERE id = $1 AND NOT is_system").await?
+        }
+        StepUpAction::AdminAuthenticatorRemove => other(
+            "SELECT label FROM approval_devices WHERE id = $1
+             UNION ALL SELECT label FROM passkeys WHERE id = $1 LIMIT 1",
+        )
+        .await?,
+        _ => String::new(),
+    };
+    Ok(PageHeading::StepUp {
+        action: *action,
+        label,
+        others: target == "others",
     })
 }
 
