@@ -393,3 +393,44 @@ async fn ban_takes_the_account_lock(pool: PgPool) {
         "the session minted under the lock ends with the ban"
     );
 }
+
+/// Review round 3 (Argon coverage, part 2 M1): when the recorded set grows
+/// between the read and the lock, the retry must not take a lower account
+/// while it still holds a higher one from the first attempt. Here the
+/// subject is the higher id and the newly recorded account the lower one;
+/// another transition holds the lower one and then takes the higher one.
+#[sqlx::test]
+async fn lock_scope_retry_never_takes_a_lower_account_after_a_higher_one(pool: PgPool) {
+    use vc_server::approvals::transition::lock_scope_with;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let (low, high) = if a < b { (a, b) } else { (b, a) };
+
+    let mut other = pool.begin().await.unwrap();
+    lock_accounts(&mut other, &[low]).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let scope = LockScope {
+        subject: high,
+        actors: Vec::new(),
+        affected: Vec::new(),
+    };
+    let mut reads = 0;
+    let scoped = lock_scope_with(&mut tx, &scope, move |_, _| {
+        reads += 1;
+        // Empty when first read, then a request recording `low` appears.
+        let found = if reads == 1 { Vec::new() } else { vec![low] };
+        Box::pin(async move { Ok(found) })
+    });
+    let holder = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        lock_accounts(&mut other, &[high])
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        other.commit().await.map_err(|e| e.to_string())
+    };
+    let (scoped, held) = tokio::join!(scoped, holder);
+    assert!(held.is_ok(), "the other transition commits: {held:?}");
+    let locked = scoped.expect("no deadlock on the scope side");
+    assert_eq!(locked.keys().copied().collect::<Vec<_>>(), vec![low, high]);
+    tx.rollback().await.unwrap();
+}

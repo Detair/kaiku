@@ -136,7 +136,30 @@ pub async fn lock_scope(
     conn: &mut PgConnection,
     scope: &LockScope,
 ) -> Result<BTreeMap<Uuid, LockedAccount>, TransitionError> {
+    lock_scope_with(conn, scope, |c, a| Box::pin(accounts_recording(c, a))).await
+}
+
+/// [`lock_scope`] with the reader of the recorded set given (a seam for
+/// tests; production uses [`accounts_recording`]).
+pub async fn lock_scope_with<F>(
+    conn: &mut PgConnection,
+    scope: &LockScope,
+    mut accounts_recording: F,
+) -> Result<BTreeMap<Uuid, LockedAccount>, TransitionError>
+where
+    F: for<'c> FnMut(
+        &'c mut PgConnection,
+        &'c [AffectedRoute],
+    ) -> futures::future::BoxFuture<'c, sqlx::Result<Vec<Uuid>>>,
+{
     let mut recording = accounts_recording(conn, &scope.affected).await?;
+    // Each attempt runs after a savepoint: a retry first rolls back to it,
+    // which releases the attempt's row locks, so the grown set is again
+    // locked in one statement in ascending order (never a lower account
+    // while a higher one is held). Locks held before the call stay.
+    sqlx::query("SAVEPOINT kaiku_lock_scope")
+        .execute(&mut *conn)
+        .await?;
     for _ in 0..MAX_SCOPE_ATTEMPTS {
         let mut ids = vec![scope.subject];
         ids.extend(scope.actors.iter().copied());
@@ -144,10 +167,19 @@ pub async fn lock_scope(
         let locked = lock_accounts(conn, &ids).await?;
         let again = accounts_recording(conn, &scope.affected).await?;
         if again.iter().all(|id| locked.contains_key(id)) {
+            sqlx::query("RELEASE SAVEPOINT kaiku_lock_scope")
+                .execute(&mut *conn)
+                .await?;
             return Ok(locked);
         }
+        sqlx::query("ROLLBACK TO SAVEPOINT kaiku_lock_scope")
+            .execute(&mut *conn)
+            .await?;
         recording = again;
     }
+    sqlx::query("RELEASE SAVEPOINT kaiku_lock_scope")
+        .execute(&mut *conn)
+        .await?;
     Err(TransitionError::Contended)
 }
 
