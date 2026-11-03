@@ -396,3 +396,67 @@ on real devices stay the RC gate.
 - Android: `:app:testDebugUnitTest` 893 tests, 0 failures; `lintDebug` passes (the
   `UnusedResources` error is gone).
 - Browser run: passed (see above).
+
+## Review round 2 (2026-11-03)
+
+Confirmation reviews of `6fd3ab54..eefe584a`: Codex REQUEST CHANGES, Fable and Argon A/B APPROVE
+WITH FIXES, Argon C APPROVE; no blockers. Every item below has a test that failed before its fix.
+
+| Finding | Reviewer | Commit | Test |
+|---|---|---|---|
+| Non-admins could start `admin.*` step-ups and read foreign authenticator labels or user names (desktop page, key-device `target_label`) | Codex 2.1, Fable R1 | 6c8a4444 | `passkeys_step_up::admin_step_ups_need_an_admin`, `passkeys_step_up::device_admin_step_up_needs_an_admin`, `passkeys_desktop::admin_step_up_pages_are_for_admins_only` |
+| Desktop `finish`: a CAS loser posts an error to the shared listener; a foreign or old ceremony id is taken before the check | Codex 2.2, Argon A R1 | 02837bbf | `passkeys_desktop::a_finish_that_loses_the_race_hands_back_nothing`, `passkeys_desktop::a_foreign_ceremony_id_consumes_nothing` |
+| Web passkey sign-in: the attempt signal aborts an in-flight finish (no `endStaleSession`); state installed before `/auth/me` | Codex 1.1, Argon B R1 | c69a423f | `lib/__tests__/passkeySignInRound2.test.ts` (invalidated during finish, during `/auth/me`, current attempt) |
+| An already aborted signal still starts a sign-in | Codex 2.3 | 82bc72fc | `stores/__tests__/authPasskey.test.ts` |
+| Autofill restart on server change: no debounce, overlapping starts across the availability check, backoff never reset | Argon B R2 | 215694af | `Login.passkey.test.tsx`: "a server change restarts autofill once, after a pause, with a fresh backoff", "an autofill start waiting for availability never runs beside the button's ceremony" |
+| Loopback listener answers connection 17 with 204 at the cap | Argon B R3 | f8b81e61 | `loopback_post::connections_over_the_cap_wait_for_a_slot` |
+| Dead `PasskeyFailure::CounterRegressed` with a "refused" doc | Fable (cosmetic) | 256367fc | `rp::tests::a_crate_counter_refusal_is_plain_invalid` |
+
+Counts: 7 fixed, 0 rejected, 0 deferred. Fable's side note (a user-name mismatch records the valid
+assertion's use before `fail()`) is accepted as harmless; no change.
+
+Notes on the fixes:
+
+- **Admin gate.** `StepUpAction::is_admin` and `guards::require_admin_for_step_up` (new
+  `AuthError::NotAdmin`, 403 `NOT_ADMIN` with the admin middleware's message): for an `admin.*`
+  action the caller must be a system admin (`NOT_ADMIN` first, then `FULL_SESSION_REQUIRED`, as on
+  `/api/admin/*`). `check_start` runs it before anything else, so the web step-up start and the
+  desktop flow start both refuse; the desktop page checks admin again before it resolves a foreign
+  label. **L1a code changed here** (L1a is not merged): `approvals/handlers.rs::step_up` runs the
+  same gate before `target_label`, which covers `admin.authenticator.remove`
+  (`strong::authenticator_label`) and the `admin.*` user-name lookups. L1a's `approvals_core`
+  tests and LP tests that used `admin.elevate` as a convenient no-target action now make their
+  user an admin (fixtures only).
+- **Desktop finish.** Only the flow's current ceremony is taken; anything else (old tab, other
+  flow, web ceremony, malformed id) gets the stale page and consumes nothing. `fail()` posts the
+  terminal error only when its compare-and-set deletion succeeds; when the flow changed meanwhile
+  it returns the stale page. A finish that loses the final compare-and-set returns the stale
+  page. The remaining `fail()` callers are the flow's own ceremony failing verification or not
+  being bound to the flow.
+- **Web adoption.** `/auth/passkeys/login/finish` no longer gets the attempt's signal;
+  `GET /auth/me` goes directly to `serverUrl` with the new token (`credentials: "omit"`); only
+  after it and a final `live()` check are the token, `browserState.serverUrl`, the stored server
+  and the restore block changed. A stale attempt or a failed `/auth/me` ends the minted session.
+- **Residual (web, needs a server change):** a stale finish that lands after a newer sign-in sets
+  its refresh cookie over the newer one's; `endStaleSession` revokes the stale session, so the
+  newer session cannot refresh and asks for a new sign-in when its access token expires
+  (≤ 15 min). Only with two sign-ins racing in one browser.
+- **Loopback.** The accept branch is disabled at 16 open connections; extra connections wait in
+  the kernel backlog until an idle one's read deadline (2 s) frees a slot.
+
+Browser run after round 2 (`scripts/passkey-browser-check.sh`, fresh database): all six steps
+pass with Chrome for Testing 145 and Chromium 156. Its listener is the Node test listener; the
+Rust listener change is covered by its unit test.
+
+Gates (review round 2):
+
+- `cargo test --no-fail-fast -p vc-server --lib --bins --tests`: lib 695 passed; integration
+  1183 passed, 4 failed, 33 ignored. The 4 (`optional_features` pending member, `screening_http`,
+  `session_end::sockets_close_through_the_listener`, `unread::test_viewable_filter_…`, the known
+  screening/socket flakes) pass on rerun with `--test-threads=1`. The passkey, approvals and
+  step-up suites (170 tests) pass.
+- `cargo +nightly fmt --all -- --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server --
+  -D warnings` clean; `cargo deny check`: advisories, bans, licenses, sources ok.
+- `cargo test -p vc-client --lib`: 277 passed, 2 ignored.
+- Client: vitest 151 files / 1604 tests passed; `tsc --noEmit` clean; `i18n:check` ok;
+  `lint:tauri-commands` ok (82); `bun run lint` 0 errors. Android not touched.
