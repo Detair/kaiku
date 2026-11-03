@@ -61,6 +61,7 @@ fn code_of(e: &SessionError) -> String {
             code.clone()
         }
         SessionError::AccountBanned => "ACCOUNT_BANNED".to_string(),
+        SessionError::ServerMismatch => "SESSION_SERVER_MISMATCH".to_string(),
         _ => FAILED.to_string(),
     }
 }
@@ -378,6 +379,14 @@ mod tests {
         })
     }
 
+    /// A manager signed in at `f`'s server (the step-up's own server).
+    async fn signed_in_at(f: &Fixture) -> SessionManager {
+        let m = manager();
+        let tokens: TokenResponse = serde_json::from_value(sign_in_answer()).unwrap();
+        m.adopt_tokens(&f.server.uri(), tokens).await.unwrap();
+        m
+    }
+
     async fn sign_in(f: &Fixture, m: &SessionManager) -> Result<FlowResult, String> {
         run_flow(
             m,
@@ -414,6 +423,7 @@ mod tests {
         assert_eq!(body["client_challenge"].as_str().unwrap().len(), 43);
         // step_up carries the session's bearer.
         let f2 = fixture(Some(("error", "PASSKEY_CANCELLED")), None).await;
+        let m = signed_in_at(&f2).await;
         let r = run_flow(
             &m,
             &f2.server.uri(),
@@ -476,15 +486,13 @@ mod tests {
         let f = fixture(Some(("code", "c-1")), Some(wrong)).await;
         assert_eq!(sign_in(&f, &manager()).await.unwrap_err(), "PASSKEY_FAILED");
         // A step-up for another account.
-        let m = manager();
-        let f1 = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
-        sign_in(&f1, &m).await.unwrap();
         let f2 = fixture(
             Some(("code", "c-2")),
             Some(json!({"purpose": "step_up", "user_id": "0192f0c0-0000-7000-8000-00000000ffff",
                         "grant": {"action": "admin.elevate", "target": "", "via": "passkey", "expires_at": "2027-01-01T00:00:00Z"}})),
         )
         .await;
+        let m = signed_in_at(&f2).await;
         let r = run_flow(
             &m,
             &f2.server.uri(),
@@ -501,15 +509,13 @@ mod tests {
 
     #[tokio::test]
     async fn step_up_returns_the_grant() {
-        let m = manager();
-        let f1 = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
-        sign_in(&f1, &m).await.unwrap();
         let grant = json!({"action": "admin.elevate", "target": "", "via": "passkey", "expires_at": "2027-01-01T00:00:00Z"});
         let f2 = fixture(
             Some(("code", "c-2")),
             Some(json!({"purpose": "step_up", "user_id": USER, "grant": grant})),
         )
         .await;
+        let m = signed_in_at(&f2).await;
         let r = run_flow(
             &m,
             &f2.server.uri(),
@@ -525,6 +531,37 @@ mod tests {
             FlowResult::Granted(g) => assert_eq!(g, grant),
             FlowResult::SignedIn(_) => panic!("expected a grant"),
         }
+    }
+
+    #[tokio::test]
+    async fn step_up_never_sends_the_bearer_to_another_server() {
+        let m = manager();
+        let home = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
+        sign_in(&home, &m).await.unwrap();
+        // Another server (a user-editable URL, a stale field): nothing is sent.
+        let other = fixture(
+            Some(("code", "c-2")),
+            Some(json!({"purpose": "step_up", "user_id": USER, "grant": {}})),
+        )
+        .await;
+        let r = run_flow(
+            &m,
+            &other.server.uri(),
+            Purpose::StepUp,
+            Some("admin.elevate"),
+            Some(""),
+            &Attempt::default(),
+            |_| Ok(()),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(r.unwrap_err(), "SESSION_SERVER_MISMATCH");
+        let e = m
+            .redeem_passkey_flow(&other.server.uri(), FLOW_ID, "c", "v", true)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, SessionError::ServerMismatch), "{e:?}");
+        assert!(other.server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

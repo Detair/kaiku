@@ -165,3 +165,13 @@ that the producing authenticator is the caller's (`strong::belongs_to`, Fable m7
   of D4.
 - Caddy: `caddy adapt` (local `caddy:2` image) shows `/.well-known/*` → `server:8080` as the first
   route, before the web catch-all.
+
+## Task 11 security fix (coordinator finding on ba824df6)
+
+`SessionManager::passkey_flow_post` sent the session's bearer to the caller-supplied
+`server_url` for `step_up`. Fixed: with `bearer`, the session snapshot is taken first and its own
+`server_url` is the base; a request naming another server is refused with the new
+`SessionError::ServerMismatch` (`SESSION_SERVER_MISMATCH`) before anything is sent. Start and
+redeem share the path. Test `step_up_never_sends_the_bearer_to_another_server` (the other mock
+server receives no request). The web/desktop step-up wrapper passes the session's own server URL
+(`getAuthContext().baseUrl`), never a user-editable field (Task 12/13).

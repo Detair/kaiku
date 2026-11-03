@@ -138,6 +138,10 @@ pub enum SessionError {
     /// Rejected locally without contacting the server.
     #[error("{0}")]
     InvalidRequest(String),
+    /// A bearer request named another server than the signed-in one; nothing
+    /// was sent (the access token never leaves for a foreign server).
+    #[error("SESSION_SERVER_MISMATCH")]
+    ServerMismatch,
 }
 
 /// Events the refresh scheduler reports to the webview.
@@ -655,14 +659,26 @@ impl SessionManager {
         body: &Value,
         bearer: bool,
     ) -> Result<Value, SessionError> {
-        let base = normalize_server_url(server_url)?;
+        let requested = normalize_server_url(server_url)?;
+        // A bearer only ever goes to the session's own server: take the
+        // snapshot first and refuse (sending nothing) when the caller names
+        // another one.
+        let session = if bearer {
+            let session = self.snapshot().ok_or(SessionError::Expired)?;
+            if normalize_server_url(&session.server_url)? != requested {
+                return Err(SessionError::ServerMismatch);
+            }
+            Some(session)
+        } else {
+            None
+        };
+        let base = session.as_ref().map_or(requested, |s| s.server_url.clone());
         let mut request = self
             .http
             .post(format!("{base}{path}"))
             .header("X-Kaiku-Client", "desktop")
             .json(body);
-        if bearer {
-            let session = self.snapshot().ok_or(SessionError::Expired)?;
+        if let Some(session) = &session {
             request = request.bearer_auth(&session.access_token);
         }
         let response = request.send().await.map_err(|e| network(&e))?;
