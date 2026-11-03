@@ -20,10 +20,11 @@ import {
   cancelAttempt,
   collectAttempt,
   createQrAttempt,
+  discardAdoptedSession,
   passwordLogin,
   pollAttempt,
 } from "../loginAttempts";
-import { browserState, clearBrowserTokens, httpRequest, isPreSessionPath } from "../common";
+import { browserState, clearBrowserTokens, httpRequest, isPreSessionPath, setBrowserToken } from "../common";
 
 function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(body === undefined ? "" : JSON.stringify(body), {
@@ -221,6 +222,60 @@ describe("login attempt wrappers (browser)", () => {
     const a = await pollAttempt(attempt.attempt_id, 0);
     expect(a.state).toBe("unknown");
     expect(a.kind).toBe("unknown");
+  });
+});
+
+describe("browser discard of an adopted session (Codex r3 M2)", () => {
+  async function adopt(token: string) {
+    fetchMock
+      .mockResolvedValueOnce(json(200, { ...authBodyFor(token) }))
+      .mockResolvedValueOnce(json(200, { id: "u1", username: "alice" }));
+    return collectAttempt(attempt.attempt_id);
+  }
+  function authBodyFor(token: string) {
+    return {
+      access_token: token,
+      expires_in: 900,
+      token_type: "Bearer",
+      setup_required: false,
+      session_id: "s1",
+      assurance: "probation",
+      absolute_expires_at: "2026-12-03T00:00:00Z",
+    };
+  }
+
+  it("ends exactly that session with its own bearer, and a replacement keeps its token", async () => {
+    const result = await adopt("at-old");
+    expect(browserState.accessToken).toBe("at-old");
+    let answer!: () => void;
+    fetchMock.mockImplementationOnce(
+      () => new Promise<Response>((r) => (answer = () => r(new Response(null, { status: 204 })))),
+    );
+    const discarding = discardAdoptedSession(result);
+    // A newer sign-in installs its session while the logout waits.
+    setBrowserToken("https://chat.example.com", "at-new", 900);
+    answer();
+    await discarding;
+    const { url, init } = lastCall();
+    expect(url).toBe("https://chat.example.com/auth/logout");
+    expect(init.credentials).toBe("omit");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer at-old");
+    expect(browserState.accessToken).toBe("at-new");
+  });
+
+  it("drops the local token when nothing replaced it", async () => {
+    const result = await adopt("at-old");
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await discardAdoptedSession(result);
+    expect(browserState.accessToken).toBeNull();
+    expect(browserState.refreshTimer).toBeNull();
+  });
+
+  it("a result it did not adopt ends nothing", async () => {
+    setBrowserToken("https://chat.example.com", "at-current", 900);
+    await discardAdoptedSession({ user: { id: "u1" }, setup_required: false, password_change_required: false } as never);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(browserState.accessToken).toBe("at-current");
   });
 });
 

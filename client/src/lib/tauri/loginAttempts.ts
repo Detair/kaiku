@@ -26,11 +26,11 @@ import {
   abandonedSignIn,
   adoptBrowserAuth,
   baseOf,
+  discardBrowserSession,
   invokeNative,
   useBrowserServer,
   type StillWanted,
 } from "./preSession";
-import { logout as transportLogout } from "./auth";
 
 function attemptPath(attemptId: string, step: "poll" | "collect" | "totp" | "cancel"): string {
   return `/auth/login-attempts/${encodeURIComponent(attemptId)}/${step}`;
@@ -136,8 +136,8 @@ async function nativeSessionStep(
  * End exactly the session a sign-in step produced, when nobody wants it any
  * more (Codex review M2). Desktop: Rust signs out only if that session (its
  * generation) is still the current one; a newer session already ended it.
- * Browser: the adoption checks `stillWanted` right before it installs the
- * token, so the adopted session is the current one here.
+ * Browser: the session is ended with its own bearer, never through the
+ * current transport session (Codex r3 M2), see `discardBrowserSession`.
  */
 export async function discardAdoptedSession(result: AuthResult): Promise<void> {
   if (isTauri()) {
@@ -148,7 +148,7 @@ export async function discardAdoptedSession(result: AuthResult): Promise<void> {
     await loadNativeAuthInfo();
     return;
   }
-  await transportLogout();
+  await discardBrowserSession(result);
 }
 
 /** Give the attempt up (the user left the screen, SM1). */

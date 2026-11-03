@@ -9,6 +9,7 @@
 import type { User } from "../types";
 import {
   browserState,
+  clearBrowserTokens,
   HttpError,
   httpRequest,
   isTauri,
@@ -111,11 +112,32 @@ export async function adoptBrowserAuth(
     // Storage blocked: this tab still knows the server.
   }
   scheduleTokenRefresh();
-  return {
+  const result: AuthResult = {
     user,
     setup_required: response.setup_required,
     password_change_required: response.password_change_required ?? false,
   };
+  // Remembered so a caller that no longer wants it can end exactly this
+  // session (`discardBrowserSession`); the result itself carries no token.
+  adopted.set(result, { base, token: response.access_token });
+  return result;
+}
+
+/** Sessions this tab adopted, by their result (browser). */
+const adopted = new WeakMap<AuthResult, { base: string; token: string }>();
+
+/**
+ * End exactly the session `result` adopted (Codex r3 M2): with its own
+ * bearer and no cookies, so a session installed meanwhile is never touched,
+ * and its token is dropped here only while it is still the current one.
+ * A result this tab did not adopt ends nothing.
+ */
+export async function discardBrowserSession(result: AuthResult): Promise<void> {
+  const held = adopted.get(result);
+  if (!held) return;
+  adopted.delete(result);
+  if (browserState.accessToken === held.token) clearBrowserTokens();
+  await endSessionWith(held.base, held.token);
 }
 
 /** Native: run a Rust command and map its bare-code errors to `HttpError`s. */
