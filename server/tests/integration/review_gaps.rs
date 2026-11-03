@@ -502,49 +502,71 @@ async fn an_admin_confirmation_and_a_canceller_transition_never_deadlock(pool: P
 /// account lock (an expired absolute cap with a valid expiry is refused).
 #[sqlx::test]
 async fn part2_refuses_a_session_past_its_absolute_cap(pool: PgPool) {
-    use fred::interfaces::KeysInterface;
     let app = TestApp::with_pool(pool.clone()).await;
     let (user, name) = password_user(&pool, "zq8#vT4p-cap").await;
     let totp = enable_totp(&pool, &app.config, user, &name).await;
     let (sid, _) = create_probation_session_with_token(&pool, &app.config, user).await;
     let auth = super::helpers::login::auth_user(&app, sid).await;
+    // The control: the same session within its cap passes part 2.
+    let code = totp.generate_current().unwrap();
+    let ok = part2_with_cap(&app, &auth, &code, 3600.0).await;
+    assert!(
+        matches!(
+            ok,
+            Ok(vc_server::auth::owner_rule::OwnerAuthority::Part2 { factor: "totp" })
+        ),
+        "{ok:?}"
+    );
+    let r = part2_with_cap(&app, &auth, &code, -1.0).await;
+    assert!(
+        matches!(r, Err(vc_server::auth::AuthError::InvalidToken)),
+        "a session past its absolute cap acts for no one: {r:?}"
+    );
+}
+
+/// Part 2 by TOTP for `auth`'s own session, its absolute cap set `cap_secs`
+/// from now (`expires_at` a day ahead).
+async fn part2_with_cap(
+    app: &TestApp,
+    auth: &vc_server::auth::AuthUser,
+    code: &str,
+    cap_secs: f64,
+) -> vc_server::auth::AuthResult<vc_server::auth::owner_rule::OwnerAuthority> {
+    use fred::interfaces::KeysInterface;
     sqlx::query(
-        "UPDATE sessions SET absolute_expires_at = NOW() - INTERVAL '1 second',
+        "UPDATE sessions SET absolute_expires_at = NOW() + make_interval(secs => $2),
                 expires_at = NOW() + INTERVAL '1 day' WHERE id = $1",
     )
-    .bind(sid)
-    .execute(&pool)
+    .bind(auth.session_id)
+    .bind(cap_secs)
+    .execute(&app.pool)
     .await
     .unwrap();
     let _: Result<(), _> = app
         .state
         .redis
-        .del::<(), _>(format!("mfa:totp_step:{user}"))
+        .del::<(), _>(format!("mfa:totp_step:{}", auth.id))
         .await;
     let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
-    let mut tx = pool.begin().await.unwrap();
-    vc_server::approvals::transition::lock_accounts(&mut tx, &[user])
+    let mut tx = app.pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut tx, &[auth.id])
         .await
         .unwrap();
-    let r = vc_server::auth::owner_rule::authorize(
+    vc_server::auth::owner_rule::authorize(
         &mut tx,
         &ctx,
-        &auth,
+        auth,
         &vc_server::auth::owner_rule::OwnerTarget {
-            subject: user,
+            subject: auth.id,
             action: vc_server::auth::step_up::StepUpAction::RequestCancel,
             target: vc_server::auth::step_up::StepUpTarget::Id(Uuid::new_v4()),
             event_at: None,
             created_by_event: Vec::new(),
         },
         Some(vc_server::auth::owner_rule::Part2Factor::Totp(
-            totp.generate_current().unwrap(),
+            code.to_string(),
         )),
         || vc_server::auth::AuthError::CancelNotAllowed,
     )
-    .await;
-    assert!(
-        r.is_err(),
-        "a session past its absolute cap acts for no one"
-    );
+    .await
 }
