@@ -573,6 +573,7 @@ async fn platform_codes_are_upper_snake() {
             GovernanceError::StorageNotConfigured,
             GovernanceError::Validation(s()),
             GovernanceError::Database(db()),
+            GovernanceError::ServiceUnavailable,
             GovernanceError::Internal(s()),
         ],
     )
