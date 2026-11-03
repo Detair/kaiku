@@ -344,3 +344,31 @@ decision. "For L2" marks interface facts the clients need.
   both KILLED on the re-run.
 - C28 follow-up (later): CLI factor reset, throttle reset and `may-approve` — superseded by the
   review round below (the contracts now define the events).
+
+## Review round 1 (Codex, Fable) at d7e7c03e
+
+| Finding | Verdict | Commit | Test |
+|---|---|---|---|
+| Fable B1 / Codex M3 — TOTP counter missing on OIDC attempt, bootstrap, part 2, recovery | fixed: `auth::totp_guard` (pre-check, outcome, 20/100 effects in their own transaction; bootstrap compromises its password generation at 100) | 103ac2f5 | `throttling::{oidc_attempt_totp_step_is_throttled, bootstrap_totp_is_throttled, part2_totp_is_throttled, recovery_totp_is_throttled_before_a_code_is_consumed}` |
+| Codex M4 — bootstrap bypasses the start budget | fixed: shared budget (3 per delay period) and the password counter | 103ac2f5 | `throttling::bootstrap_starts_share_the_budget` |
+| Codex B2 — old credential recorded as a newer generation | fixed: bootstrap and recovery re-read hash/secret under the lock; `/auth/login` re-checks hash + generation before the attempt | 103ac2f5, 6aaf439f | none deterministic (interleaving); `account_requests::concurrent_starts_one_open` rewritten |
+| Fable M1 / Codex M5 — repudiation uses current or attempt-row generations | fixed: sign-in, unfinished sign-in, password and TOTP events record their generation; only that one is compromised, a replaced one is left alone, unknown → nothing | e37ac4a7, 633dc446 | `repudiation::{a_sign_in_records_the_generations_it_used, repudiation_compromises_exactly_the_recorded_generation, a_factor_replaced_since_is_left_alone, a_password_change_compromises_only_the_generation_it_made}` |
+| Codex M10 — no repudiation for `sign_in_not_finished`, `step_up_action` | fixed: unfinished → its recorded password generation; step-up → ends its session, revokes nothing | 633dc446 | `repudiation::{an_unfinished_sign_in_compromises_its_password, a_step_up_action_ends_its_session_and_revokes_nothing}` |
+| Fable M2 / Codex M6 — recovery enumeration | fixed: `lost` validated before the lookup; `consume_tx` always checks `CODE_COUNT` hashes (dummy-padded, also for a malformed code) | 103ac2f5 | `recovery_requests::*` (timing not asserted) |
+| Fable M3 — attempt long-poll holds a connection | fixed: a connection per step, at most 32 concurrent long-polls (then answered at once) | 594bd2d6 | none (pool behaviour) |
+| Codex M8 — no re-check after the locks | fixed: admin routes re-check the actor's role under the lock (403 `NOT_ADMIN`); part 2 re-checks its session is live | 594bd2d6 | none deterministic |
+| Codex M9 — bound ticket still binds | fixed: binding routes refuse a bound ticket (also re-checked under the lock) | 594bd2d6 | `registration_tickets::a_bound_ticket_binds_nothing_more` |
+| Codex 11 / Fable m6 — CLI notices (coordinator correction) | fixed: `factor_restored`, `throttle_reset`, `may_approve_changed` (`by: admin|cli`) for CLI and admin routes; `sessions_ended` kept | 6aaf439f | `cli_recovery::every_cli_action_is_audited_and_notified`, `admin_setup::may_approve_and_factor_toggles_are_audited` |
+| Fable m1 — bootstrap_open after a strong bind | fixed | 594bd2d6 | `registration_tickets::a_bound_ticket_binds_nothing_more` |
+| Fable m2 — banned accounts run requests | fixed: starts answer neutrally, Finish 403 `ACCOUNT_BANNED`, admin completion waits | 103ac2f5, 9dde2e6e | `account_request_client::a_banned_account_cannot_finish` |
+| Fable m3 — recovery-code generation not re-checked | fixed | 9dde2e6e | `account_request_client::finish_rechecks_the_recovery_code_generation` |
+| Fable m4 — lost devices in setup mode | fixed: 400 | 9dde2e6e | `admin_setup::lost_devices_only_in_recovery_mode` |
+| Fable m5 — `ACCOUNT_BANNED` on a correct password | kept (coordinator decision: a banned person is told so) | — | `login_password::passwordless_banned_and_system_accounts` |
+| Fable m7 — WS hint to an unconfirmed contact | fixed | 9dde2e6e | none |
+| Fable m8 — Argon2 under the account lock | fixed: policy + hash before the transaction | 9dde2e6e | `account_request_client::stage_password_totp_and_contact` |
+| Fable m9 — admin contact can confirm | fixed: 400 `RECOVERY_CONTACT_INVALID` | 9dde2e6e | `recovery_contact::a_contact_who_became_admin_cannot_confirm` |
+| Fable M4 — test gaps | partly: collect window/generation/`LOGIN_ATTEMPT_NOT_READY`, ticket expiry, probation Add a phone, `/auth/login` passwordless/system/banned, admin `STEP_UP_REQUIRED`, repudiation negatives, error codes in the named bare-status tests | ac868475, 5904aca5 | as listed |
+| Fable M4 — rest (request voids and races, throttle completion paths, TOTP-step refusals, probation cancel/repudiate without part 2) | deferred (next round) | — | — |
+| Codex M7 — canceller cascades without cross-account serialisation | deferred: needs the discover–lock–recheck protocol across accounts (a fresh transaction when the lock set grows); the row lock keeps each request's own transition atomic today | — | — |
+| Codex B1 — pending enrolment revokes the same install's phone | deferred to the LP merge (L1a b8814823); L1b's Pc/Request/Ticket confirmers and request completion use the shared `finish_done_tx`; recovery-case tests after the merge | — | — |
+| Flash note — step-up consume before both locks | verified: admin routes, admin setup, admin contact and Cancel take one ascending `lock_accounts([actor, target])` (or `lock_scope`) before any consume | — | — |
