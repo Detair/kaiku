@@ -601,7 +601,7 @@
   "passkeys.settings.neverUsed": "Noch nicht benutzt",
   "passkeys.settings.pending": "Bereit ab {{time}}",
   "passkeys.settings.remove": "Entfernen",
-  "passkeys.settings.removeConfirm": "Den Passkey „{{label}}“ entfernen? Du bestätigst das mit einem Passkey.",
+  "passkeys.settings.removeConfirm": "Den Passkey „{{label}}“ entfernen? Du bestätigst das mit einem Passkey. Wenn du dich hier damit angemeldet hast, wirst du abgemeldet.",
   "passkeys.settings.removeConfirmButton": "Passkey entfernen",
   "passkeys.settings.removeDesktopHint": "Kaiku öffnet deinen Browser, damit du mit einem Passkey bestätigst.",
   "passkeys.settings.rename": "Umbenennen",

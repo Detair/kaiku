@@ -259,7 +259,7 @@
     <string name="passkeys_settings_never_used">Not used yet</string>
     <string name="passkeys_settings_pending">Ready at %1$s</string>
     <string name="passkeys_settings_remove">Remove</string>
-    <string name="passkeys_settings_remove_confirm">Remove the passkey “%1$s”? You confirm this with a passkey.</string>
+    <string name="passkeys_settings_remove_confirm">Remove the passkey “%1$s”? You confirm this with a passkey. If you signed in here with it, you will be signed out.</string>
     <string name="passkeys_settings_remove_confirm_button">Remove passkey</string>
     <string name="passkeys_login_cancel">Cancel</string>
     <string name="passkeys_android_none_on_device">No passkey for this server on this phone.</string>

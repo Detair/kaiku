@@ -36,7 +36,8 @@ export const passkeys = {
   "passkeys.settings.nameLabel": "Passkey name",
   "passkeys.settings.save": "Save",
   "passkeys.settings.remove": "Remove",
-  "passkeys.settings.removeConfirm": "Remove the passkey “{{label}}”? You confirm this with a passkey.",
+  "passkeys.settings.removeConfirm":
+    "Remove the passkey “{{label}}”? You confirm this with a passkey. If you signed in here with it, you will be signed out.",
   "passkeys.settings.removeConfirmButton": "Remove passkey",
   "passkeys.settings.removeDesktopHint": "Kaiku opens your browser to confirm with a passkey.",
   "passkeys.settings.labelInvalid": "The name must be 1 to 64 characters.",

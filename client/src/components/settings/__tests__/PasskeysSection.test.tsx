@@ -95,6 +95,8 @@ describe("PasskeysSection", () => {
     api.deletePasskey.mockResolvedValue(REMOVED);
     render(() => <PasskeysSection />);
     fireEvent.click((await screen.findAllByRole("button", { name: "Remove" }))[0]);
+    // Removing the passkey this session came from ends the session: said up front.
+    expect(screen.getByText(/If you signed in here with it, you will be signed out\./)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Remove passkey" }));
     await waitFor(() => expect(signalRemoved).toHaveBeenCalledWith(REMOVED));
     expect(api.stepUpWithPasskey).toHaveBeenCalledWith("passkey.remove", "p-1", expect.any(AbortSignal));
