@@ -120,6 +120,25 @@ line ("Sensitive actions … Password and single sign-on re-authentication are g
   `crypto/*`: lints of the current toolchain); no finding in the touched files.
 - Not run: Android (section B), the rebase onto L1a → LP → L1b, the A14 browser/desktop checks.
 
+## Final review (internal, before the PR reviews)
+
+One fresh reviewer (Sonnet) on the whole branch: 0 Critical, 8 Important (all fixed in
+`7539c48b`, each with a test that failed first), 10 Minor deferred:
+
+- `withStepUp`: a second request replaces a pending one without settling it.
+- `forgetStepPassword` is never called for an abandoned password step.
+- `refresh_session` returning `None` can win against `auth:session_expired {reason: "reused"}`.
+- Attempt expiry uses the PC clock without a grace period.
+- `navigator.locks.request` rejections are not caught.
+- `adopt_tokens` awaits the old session's `/auth/logout` (up to the 30 s client timeout).
+- Request OIDC popup: no close grace; the provider URL is not checked for `https:`.
+- `adoptBrowserAuth` keeps the token when `/auth/me` fails.
+- An in-flight `refreshMeSecurity` can write after `resetMeSecurity`.
+- Sentry `beforeSend` strips queries but not fragments (`/setup#…` in the desktop webview).
+
+Native error strings are now `CODE`, `CODE:<secs>` or `CODE:<secs?>:{json}` (extra body fields),
+also for `session_request`; `Server error (NNN)` maps to that status.
+
 ## Size
 
 ~12.9k insertions incl. ~3.5k test lines (estimate was ~7.7k), Rust ~1.7k.
