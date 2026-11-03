@@ -389,14 +389,9 @@ const fn replaced_reason(variant: EnrollmentVariant) -> &'static str {
     }
 }
 
-/// Whether the account has never had any activity (B.0 "new account").
+/// Whether the account is new (B.0; [`crate::auth::strong::is_new_account`]).
 async fn subject_is_new(conn: &mut PgConnection, user_id: Uuid) -> Result<bool, ApprovalError> {
-    let first_activity: Option<DateTime<Utc>> =
-        sqlx::query_scalar("SELECT first_activity_at FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&mut *conn)
-            .await?;
-    Ok(first_activity.is_none())
+    Ok(crate::auth::strong::is_new_account(conn, user_id).await?)
 }
 
 /// The live key device that a `done` of `row` would replace on install

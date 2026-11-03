@@ -566,6 +566,25 @@ pub async fn create_test_user(pool: &PgPool) -> (Uuid, String) {
     unreachable!("create_test_user retry loop must return or panic")
 }
 
+/// Make `user_id` a B.0 *new* account: no password, TOTP, session,
+/// recovery codes, identity or first activity (a test user starts with a
+/// password hash and a session, which make it existing).
+pub async fn make_new_account(pool: &PgPool, user_id: Uuid) {
+    for sql in [
+        "DELETE FROM sessions WHERE user_id = $1",
+        "DELETE FROM recovery_codes WHERE user_id = $1",
+        "DELETE FROM user_identities WHERE user_id = $1",
+        "UPDATE users SET first_activity_at = NULL, password_hash = NULL, mfa_secret = NULL
+          WHERE id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("make the account new");
+    }
+}
+
 /// Grant system admin to a user.
 pub async fn make_admin(pool: &PgPool, user_id: Uuid) {
     sqlx::query("INSERT INTO system_admins (user_id, granted_by) VALUES ($1, $1)")

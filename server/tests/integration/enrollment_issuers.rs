@@ -297,6 +297,7 @@ async fn any_admin_can_cancel_an_admin_enrolment(pool: PgPool) {
     make_admin(&pool, a).await;
     let adev = KeyDeviceFixture::insert(&pool, &app.config, a, "active").await;
     let (target, _) = create_test_user(&pool).await;
+    super::helpers::make_new_account(&pool, target).await;
     grant_step_up(
         &pool,
         adev.session_id.unwrap(),
@@ -382,6 +383,7 @@ async fn browser_setup_link_registers_a_passkey(pool: PgPool) {
     make_admin(&pool, admin).await;
     let adev = KeyDeviceFixture::insert(&pool, &app.config, admin, "active").await;
     let (oma, oma_name) = create_test_user(&pool).await;
+    super::helpers::make_new_account(&pool, oma).await;
     grant_step_up(
         &pool,
         adev.session_id.unwrap(),
@@ -509,6 +511,7 @@ async fn admin_link(app: &TestApp, target: Uuid) -> (KeyDeviceFixture, Value) {
 async fn a_demoted_issuer_cannot_complete_an_admin_enrolment(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (target, _) = create_test_user(&pool).await;
+    super::helpers::make_new_account(&pool, target).await;
     let (adev, issued) = admin_link(&app, target).await;
     let id = issued["enrollment_id"].as_str().unwrap();
     let phone = Phone::new();

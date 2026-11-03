@@ -469,6 +469,7 @@ async fn admin_setup_of_a_new_account_is_active_at_once(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_, dev) = admin_phone(&app).await;
     let (oma, _) = create_test_user(&pool).await;
+    super::helpers::make_new_account(&pool, oma).await;
     let (phone, s, b) = set_up(&app, &dev, oma, setup_body()).await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(phone_state(&pool, &phone).await, "active");
@@ -667,6 +668,7 @@ async fn one_grant_per_setup_code(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let (_, dev) = admin_phone(&app).await;
     let (oma, _) = create_test_user(&pool).await;
+    super::helpers::make_new_account(&pool, oma).await;
     let (s, _) = issue_setup(&app, &dev, oma, setup_body()).await;
     assert_eq!(s, 201);
     let (s, b) = call(

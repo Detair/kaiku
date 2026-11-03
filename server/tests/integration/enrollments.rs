@@ -1567,11 +1567,7 @@ async fn admin_enroll_answer_against(pool: PgPool, subject_is_lower: bool) {
         (high, low)
     };
     super::helpers::make_admin(&pool, admin).await;
-    sqlx::query("UPDATE users SET first_activity_at = NULL WHERE id = $1")
-        .bind(subject)
-        .execute(&pool)
-        .await
-        .unwrap();
+    super::helpers::make_new_account(&pool, subject).await;
     let admin_dev = KeyDeviceFixture::insert(&pool, &app.config, admin, "active").await;
     let issuer = Issuer::KeyDevice {
         session_id: admin_dev.session_id.unwrap(),

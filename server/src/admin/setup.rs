@@ -106,6 +106,14 @@ pub async fn issue_admin_enrollment(
     // The subject, the admin and every possible canceller (Codex M7).
     let locked =
         crate::approvals::transition::lock_for_start(&mut tx, account, &[admin.id]).await?;
+    // Codex M8 (Flash r5): the actor is still an unbanned admin under the
+    // lock; a demotion committed while this waited wins.
+    if !locked
+        .get(&admin.id)
+        .is_some_and(|a| a.is_admin && !a.banned)
+    {
+        return Err(auth(AuthError::NotAdmin));
+    }
     let target = locked
         .get(&account)
         .filter(|a| a.exists && !a.is_system)
@@ -114,11 +122,8 @@ pub async fn issue_admin_enrollment(
         return Err(ApprovalError::AccountBanned);
     }
     let dev = key_device_session(&mut tx, &admin).await?;
-    let existing: bool =
-        sqlx::query_scalar("SELECT first_activity_at IS NOT NULL FROM users WHERE id = $1")
-            .bind(account)
-            .fetch_one(&mut *tx)
-            .await?;
+    // B.0, the same predicate as at `done` (Flash r5 part 1 B1).
+    let existing = !crate::auth::strong::is_new_account(&mut tx, account).await?;
     if existing {
         if crate::auth::account_requests::core::open_of(&mut tx, account)
             .await?

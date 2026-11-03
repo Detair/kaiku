@@ -197,7 +197,11 @@ pub async fn register(
         );
     }
 
-    // Create the session in the registration transaction (probation).
+    // B.0: a password is activity (the account is no longer new).
+    if password_hash.is_some() {
+        super::strong::mark_first_activity(&mut tx, user.id).await?;
+    }
+
     // F8: a registration ticket (30 min), never a session.
     let (_, ticket, ticket_expires_at) =
         super::registration::issue_ticket_tx(&mut tx, &AuthCtx::from(&state), user.id).await?;
@@ -212,7 +216,10 @@ pub async fn register(
         );
         e
     })?;
-    if !is_first_user {
+    if is_first_user {
+        // The `admin_role_granted` event now, not at the next sweep (Flash r5).
+        crate::security_events::notices::spawn_pending_delivery(&state);
+    } else {
         tracing::info!(user_id = %user.id, username = %user.username, "User registered");
     }
 
