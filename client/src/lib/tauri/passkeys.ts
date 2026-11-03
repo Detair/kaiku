@@ -112,8 +112,7 @@ function attemptId(): string {
 
 /** Run a Rust passkey command; an abort cancels it in Rust. */
 async function invokeCancellable<T>(
-  command: string,
-  args: Record<string, unknown>,
+  run: (attemptId: string) => Promise<T>,
   signal: AbortSignal,
 ): Promise<T> {
   const id = attemptId();
@@ -123,7 +122,7 @@ async function invokeCancellable<T>(
   if (signal.aborted) throw new PasskeyError("ABORTED");
   signal.addEventListener("abort", onAbort, { once: true });
   try {
-    return await invoke<T>(command, { ...args, attemptId: id });
+    return await run(id);
   } catch (err) {
     throw new PasskeyError(signal.aborted ? "ABORTED" : String(err));
   } finally {
@@ -169,7 +168,10 @@ export async function passkeySignIn(
   o: { mediation: "conditional" | "optional"; signal: AbortSignal; username?: string },
 ): Promise<AuthResult> {
   if (isTauri()) {
-    return invokeCancellable<AuthResult>("passkey_sign_in", { serverUrl }, o.signal);
+    return invokeCancellable(
+      (attemptId) => invoke<AuthResult>("passkey_sign_in", { serverUrl, attemptId }),
+      o.signal,
+    );
   }
   // The base URL for the calls below; the restore block and the stored
   // server are only touched after a completed sign-in (autofill runs on
@@ -218,9 +220,14 @@ export async function stepUpWithPasskey(
 ): Promise<StepUpGrant> {
   if (isTauri()) {
     const { baseUrl } = await getAuthContext();
-    return invokeCancellable<StepUpGrant>(
-      "passkey_step_up",
-      { serverUrl: baseUrl, action, target: target ?? "" },
+    return invokeCancellable(
+      (attemptId) =>
+        invoke<StepUpGrant>("passkey_step_up", {
+          serverUrl: baseUrl,
+          action,
+          target: target ?? "",
+          attemptId,
+        }),
       signal,
     );
   }
