@@ -82,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every sign-in now records how strongly it was confirmed; sessions from before this release are limited to chat and calls until you sign in again with a passkey or your phone. Signed-in requests keep working while Valkey is unavailable, and an ended session stays refused.
 - The admin area needs a session signed in with your key phone (or a passkey); other sessions, and every session from before this release, are not let in, and elevations from before this release end with the upgrade.
 - **Breaking:** the server no longer starts without `PUBLIC_URL`, the public `https://` address users open. Sign-in confirmations are bound to it; read the admin guide before changing your domain.
+- Admins create accounts without a password and set up the person's phone from the Kaiku app; the admin panel shows each user's phones, passkeys, open requests and security log.
 - New accounts choose a passkey, the Kaiku app on a phone or an authenticator app right after registering.
 - Sessions started by a QR code, a password or single sign-on are chat-only. Sign in with a passkey to change sign-in settings or do admin work.
 - Signing in with a password or single sign-on is now confirmed by scanning a code with the Kaiku app on your phone (or an authenticator code if you have no phone set up).

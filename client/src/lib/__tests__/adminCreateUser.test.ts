@@ -23,7 +23,7 @@ describe("adminCreateUser", () => {
       "fetch",
       vi.fn().mockResolvedValue({ ok: true, status: 201, text: vi.fn().mockResolvedValue(JSON.stringify(summary)) }),
     );
-    const req = { username: "anna", display_name: "Anna", temporary_password: "abcdEFGH2345" };
+    const req = { username: "anna", display_name: "Anna", recovery_contact_id: null };
     const result = await adminCreateUser(req);
     expect(result).toEqual(summary);
     expect(fetch).toHaveBeenCalledWith(
@@ -45,7 +45,7 @@ describe("adminCreateUser", () => {
     const err = await adminCreateUser({
       username: "anna",
       display_name: null,
-      temporary_password: "abcdEFGH2345",
+      recovery_contact_id: null,
     }).catch((e) => e);
     expect(err).toBeInstanceOf(HttpError);
     expect(err.status).toBe(409);

@@ -51,6 +51,9 @@ import Avatar from "@/components/ui/Avatar";
 import TableRowSkeleton from "./TableRowSkeleton";
 import { showToast } from "@/components/ui/Toast";
 import CreateAccountModal from "./CreateAccountModal";
+import UserSecurityPanel from "./UserSecurityPanel";
+import AdminRequestsPanel from "./AdminRequestsPanel";
+import { currentUser } from "@/stores/auth";
 import { t } from "@/i18n";
 
 const PAGE_SIZE = 20;
@@ -279,6 +282,10 @@ const UsersPanel: Component = () => {
     <div class="flex flex-1 h-full overflow-hidden">
       {/* User List */}
       <div class="flex-1 flex flex-col min-w-0">
+        {/* Open requests to change sign-in (C27, elevated) */}
+        <Show when={adminState.isElevated}>
+          <AdminRequestsPanel />
+        </Show>
         {/* Header */}
         <div class="flex items-center justify-between p-4 border-b border-white/10">
           <h2 class="text-lg font-bold text-text-primary">Users</h2>
@@ -685,6 +692,11 @@ const UsersPanel: Component = () => {
                   </Show>
                 </div>
               </div>
+
+              {/* Sign-in security (C27 admin user view) */}
+              <Show when={adminState.selectedUserDetails}>
+                {(details) => <UserSecurityPanel user={details()} meId={currentUser()?.id ?? ""} />}
+              </Show>
 
               {/* Actions Section */}
               <div class="space-y-3 pt-4 border-t border-white/10">

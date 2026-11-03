@@ -62,6 +62,26 @@ describe("CreateAccountModal validation", () => {
   });
 });
 
+describe("CreateAccountModal without a password", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    mocks.adminCreateUser.mockReset();
+    mocks.adminCreateUser.mockResolvedValue({ username: "oma", display_name: "Oma" });
+  });
+
+  it("create account sends no password and shows the phone setup hint", async () => {
+    render(() => <CreateAccountModal onClose={() => {}} />);
+    expect(screen.queryByLabelText("Temporary password")).toBeNull();
+    fireEvent.input(screen.getByLabelText(/^Username/), { target: { value: "oma" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    await waitFor(() => expect(mocks.adminCreateUser).toHaveBeenCalledTimes(1));
+    const req = mocks.adminCreateUser.mock.calls[0][0];
+    expect(req).not.toHaveProperty("temporary_password");
+    expect(req.recovery_contact_id).toBeNull();
+    expect(await screen.findByText("Now set up their phone from the Kaiku app on your phone.")).toBeTruthy();
+  });
+});
+
 describe("CreateAccountModal servers", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
