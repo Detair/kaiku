@@ -361,3 +361,15 @@ key phone); the issuer says the same of the other phone. `REGISTRATION_TICKET_IN
 again" (setup and registration; the kept ticket is dropped). `ACCOUNT_REQUEST_NOT_READY {state}` →
 not ready yet / expired. `ENROLLMENT_TARGET_SELF` also in the admin list. C28 `sessions_ended`,
 `factor_restored`, `throttle_reset`, `may_approve_changed` → `security_notice_*` / `security_push_*`.
+
+Then (e9d50200, 95ceefec, merge of LP 35fcadf8, server only, no conflict):
+
+- Fable (LP review, low, pre-existing): a `GET /auth/me` failure, or a cancellation in `GetMe` /
+  `awaitIdle` (the screen cancelling its sign-in job), left a minted session neither installed nor
+  ended. `installNativeSignIn`, `completeAttempt` (once `collect()` returned, unless held as a pending
+  password change) and `installDeviceSession` (until installed or ended) now call `endUnused`
+  (NonCancellable, bounded) and rethrow the cancellation. Six tests (failure and cancellation, per
+  path) fail without the fix; a failing `collect()` ends nothing.
+- `AuthRepositoryLoginRaceTest` was flaky: `endUnused`'s `withTimeoutOrNull` runs on the test clock
+  while MockEngine answers on real threads, so the logout count varies. It now asserts the collect and
+  that every logout uses server A's token.
