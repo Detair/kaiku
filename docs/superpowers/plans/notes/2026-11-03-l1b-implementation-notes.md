@@ -149,3 +149,23 @@ decision. "For L2" marks interface facts the clients need.
   incl. tests up to there).
 - Identity link (Task 16 follow-up): the `identity.link` grant is spent and committed before the
   provider round trip (a test showed a pool timeout when a transaction was held across it).
+
+## Task 20 — recovery contact (C28)
+
+- `PUT /api/me/recovery-contact {user_id}` (full + `recovery_contact.set`/user_id) → 200
+  `RecoveryContact`; `DELETE` (`recovery_contact.set`/`""`) → 204; `GET
+  /api/me/recovery-contact-for` → `{accounts}`; `POST
+  /api/me/recovery-contact-for/{user_id}/confirm` (full, no step-up) → 204 (404 when the caller is
+  not that account's contact); `PUT /api/admin/users/{user_id}/recovery-contact {user_id}` (full +
+  `admin.recovery_contact.set`/user_id; an admin target → 403 `ADMIN_TARGET_IS_ADMIN`; in the
+  non-elevated admin group).
+- An admin, the account itself, the system account or an unknown id → 400
+  `RECOVERY_CONTACT_INVALID`. A new contact clears the confirmation; `counts_from =
+  confirmed_at + ACCOUNT_REQUEST_DELAY_HOURS` (new config, 24..=72, default 24, documented).
+- Events: `recovery_contact_named` (first), `recovery_contact_changed` (later; details
+  `{contact_user_id, previous_contact_user_id}`), `recovery_contact_confirmed` (actor
+  `recovery_contact`). Recipients follow C28: the subject and the contacts named in the details
+  (not all admins, as the plan said). For every `high` event the confirmed contact gets a copy
+  (role `Contact`, never `ip`/`place`).
+- `cascade::on_contact_changed` is the hook Task 21 fills (requests that recorded the old
+  contact).
