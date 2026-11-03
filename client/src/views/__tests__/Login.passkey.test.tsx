@@ -193,6 +193,27 @@ describe("Login with a passkey", () => {
     await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(4));
   });
 
+  it("a password sign-in cancels a pending autofill restart", async () => {
+    // Review round 3 (Fable): the server-change timer must not start an
+    // autofill ceremony while the password sign-in runs.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const tauri = await import("@/lib/tauri");
+    const override = deferred<string | null>();
+    vi.mocked(tauri.getDefaultServerUrl).mockReturnValueOnce(override.promise);
+    vi.mocked(tauri.login).mockReturnValueOnce(new Promise(() => {}));
+    pendingUntilAbort();
+    await renderLogin();
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
+    override.resolve("https://other.example.com");
+    await vi.advanceTimersByTimeAsync(100);
+    fireEvent.input(screen.getByPlaceholderText("Enter your username"), { target: { value: "fabian" } });
+    fireEvent.input(screen.getByPlaceholderText("Enter your password"), { target: { value: "secret-pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Login" }));
+    await waitFor(() => expect(tauri.login).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(passkeySignInMock).toHaveBeenCalledTimes(1);
+  });
+
   it("an autofill start waiting for availability never runs beside the button's ceremony", async () => {
     // Review round 2 (Argon B R2): a generation token across the await.
     const gate = deferred<void>();

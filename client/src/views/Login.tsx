@@ -100,6 +100,8 @@ const Login: Component = () => {
   let conditionalCtl: AbortController | undefined;
   let modalCtl: AbortController | undefined;
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
+  /** A pending autofill start after a server change. */
+  let serverChangeTimer: ReturnType<typeof setTimeout> | undefined;
   const linux = typeof navigator !== "undefined" && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
 
   // Bumped by every start and stop: a start still waiting for
@@ -110,6 +112,7 @@ const Login: Component = () => {
     conditionalCtl?.abort();
     conditionalCtl = undefined;
     clearTimeout(restartTimer);
+    clearTimeout(serverChangeTimer);
   };
 
   /** Words a passkey failure; silent for cancels and aborts. */
@@ -168,7 +171,6 @@ const Login: Component = () => {
   // once, the new one starts after a pause (no ceremony per keystroke) and
   // with the first backoff again. The button's ceremony restarts autofill
   // itself when it ends.
-  let serverChangeTimer: ReturnType<typeof setTimeout> | undefined;
   createEffect(
     on(
       serverUrl,
@@ -176,7 +178,6 @@ const Login: Component = () => {
         if (modalCtl) return;
         stopConditional();
         conditionalBackoff = FIRST_BACKOFF_MS;
-        clearTimeout(serverChangeTimer);
         serverChangeTimer = setTimeout(() => void startConditional(), SERVER_CHANGE_DEBOUNCE_MS);
       },
       { defer: true },
@@ -186,7 +187,6 @@ const Login: Component = () => {
     void startConditional();
   });
   onCleanup(() => {
-    clearTimeout(serverChangeTimer);
     stopConditional();
     modalCtl?.abort();
   });
