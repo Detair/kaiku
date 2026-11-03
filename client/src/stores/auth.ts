@@ -664,8 +664,13 @@ export async function loginWithPasskey(
     username?: tauri.UsernameHint;
   },
 ): Promise<User> {
+  // A sign-in choice of its own, begun before anything awaits (Flash r3
+  // p2 #2): a phone, password or SSO run is stale at once and cannot install
+  // its session beside this one; a later choice makes this one stale. The
+  // caller captures it with `currentSignInChoice()` right after the call.
+  const choice = beginSignInChoice();
   const attempt = await runPasskeySignIn(serverUrl, o);
-  if (!attempt.isCurrent()) throw new tauri.PasskeyError("ABORTED");
+  if (!attempt.isCurrent() || !choice.isCurrent()) throw new tauri.PasskeyError("ABORTED");
   const { result } = attempt;
   // The session is here: an SSO wait or a phone attempt still running is over.
   endSignInChoices();
@@ -748,7 +753,9 @@ let choiceCtl: AbortController | null = null;
  * Start a sign-in choice (Codex review M1): every other one becomes stale at
  * once: a running passkey ceremony is aborted (LP's generation), an SSO wait
  * is cancelled through its signal, an older password or phone attempt drops
- * its late answer. Passkey autofill is not a choice until it is picked.
+ * its late answer. Every passkey sign-in, autofill included, is a choice
+ * from its start (`loginWithPasskey`); the sign-in page runs autofill only
+ * while no other choice is in flight.
  */
 export function beginSignInChoice(): SignInChoice {
   invalidatePasskeySignIns();

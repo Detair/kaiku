@@ -41,7 +41,7 @@ vi.mock("@/lib/tauri/common", async () => {
 import Login from "../Login";
 import Register from "../Register";
 import { leaveFlow, loginFlow } from "@/stores/loginFlow";
-import { beginSignInChoice, setAuthState } from "@/stores/auth";
+import { beginSignInChoice, loginWithPasskey, setAuthState } from "@/stores/auth";
 
 const SSO_ATTEMPT = "66666666-6666-4666-8666-666666666666";
 const QR_ATTEMPT = "55555555-5555-4555-8555-555555555555";
@@ -114,6 +114,39 @@ describe("one sign-in choice at a time", () => {
     const f = loginFlow();
     expect(f.step).toBe("qr");
     expect(f.step === "qr" && f.attempt.attempt_id).toBe(QR_ATTEMPT);
+  });
+
+  it("a passkey sign-in begun during a phone sign-in makes the phone run stale (Flash r3 p2 #2)", async () => {
+    const poll = deferred<unknown>();
+    api.pollAttempt.mockReturnValue(poll.promise);
+    api.createQrAttempt.mockResolvedValue({
+      attempt_id: QR_ATTEMPT,
+      kind: "qr",
+      state: "open",
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      qr: { payload: "kaiku://login/v1?o=x&t=a", expires_at: "" },
+      totp_available: false,
+    });
+    await renderAt("/login");
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in with your phone" }));
+    await screen.findByRole("heading", { name: "Sign in with your phone" });
+    await waitFor(() => expect(api.pollAttempt).toHaveBeenCalled());
+    // Another caller's passkey sign-in (the ceremony stays open).
+    void loginWithPasskey("https://chat.example.com", {
+      mediation: "optional",
+      signal: new AbortController().signal,
+    }).catch(() => undefined);
+    const tauri = await import("@/lib/tauri");
+    const wantedAtCollect: boolean[] = [];
+    vi.mocked(tauri.collectAttempt).mockImplementation(async (_id: string, wanted?: () => boolean) => {
+      wantedAtCollect.push(wanted?.() ?? true);
+      return new Promise(() => {});
+    });
+    // The phone approves while the passkey sheet is open.
+    poll.resolve({ attempt_id: QR_ATTEMPT, kind: "qr", state: "approved", expires_at: "", qr: null, totp_available: false });
+    await new Promise((r) => setTimeout(r, 20));
+    // Nothing collects the phone's session for a run that is no longer wanted.
+    expect(wantedAtCollect.every((w) => !w)).toBe(true);
   });
 
   it("an SSO result for a page the user left is dropped", async () => {

@@ -225,20 +225,22 @@ const Login: Component = () => {
   const handlePasskey = async () => {
     setLocalError("");
     clearError();
-    // A new sign-in choice: an SSO wait, a password or phone attempt in
-    // flight are stale now (Codex review M1).
-    const choice = beginSignInChoice();
     stopConditional();
     modalCtl?.abort();
     const ctl = new AbortController();
     modalCtl = ctl;
     setPasskeyBusy(true);
+    // A new sign-in choice (begun by loginWithPasskey before it awaits): an
+    // SSO wait, a password or phone attempt in flight are stale now (Codex
+    // review M1).
+    const signingIn = loginWithPasskey(serverUrl(), {
+      mediation: "optional",
+      signal: ctl.signal,
+      username: username().trim() || undefined,
+    });
+    const choice = currentSignInChoice();
     try {
-      await loginWithPasskey(serverUrl(), {
-        mediation: "optional",
-        signal: ctl.signal,
-        username: username().trim() || undefined,
-      });
+      await signingIn;
       afterPasskey();
     } catch (err) {
       if (!ctl.signal.aborted) showPasskeyError(err);
@@ -248,7 +250,7 @@ const Login: Component = () => {
         setPasskeyBusy(false);
         // Autofill comes back only for this choice: a newer one (SSO) that
         // aborted the ceremony keeps the page to itself (Codex r3).
-        if (!disposed && choice.isCurrent()) void startConditional();
+        if (!disposed && choice?.isCurrent()) void startConditional();
       }
     }
   };
