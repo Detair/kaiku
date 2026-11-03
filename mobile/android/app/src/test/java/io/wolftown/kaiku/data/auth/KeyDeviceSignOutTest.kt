@@ -160,4 +160,26 @@ class KeyDeviceSignOutTest {
         assertTrue(out is StepUpOutcome.Granted)
         assertTrue("removeKeyDevice:kd7" in api.calls)
     }
+
+    @Test fun `a cancelled removal propagates the cancellation`() = runTest {
+        val keyStore = SoftwareApprovalKeyStore().apply { generate(ByteArray(32), UvPolicy.choose(30, true, true) as UvDecision.Use) }
+        val authState = AuthState(backgroundScope)
+        val tokenStorage = TokenStorage(InMemorySharedPreferences()).apply { saveServerUrl("https://chat.example.com") }
+        val repo = KeyDeviceRepository(InMemoryKeyDeviceStore(), keyStore, authState, backgroundScope)
+        val authRepository = AuthRepository(mockk(relaxed = true), tokenStorage, authState, mockk(relaxed = true), noTeardown(authState))
+        val stepUp: DeviceStepUp = mockk()
+        val api: io.wolftown.kaiku.data.api.ApprovalApi = mockk(relaxed = true)
+        repo.saveClaimed(LocalKeyDevice("kd1", "u1", "https://chat.example.com", UvClass.PER_USE, "e1", null))
+        tokenStorage.saveTokens("a", "r", 900, "u1")
+        authState.setLoggedIn("u1")
+        repo.markActive("u1", "kd1")
+        coEvery { stepUp.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, "kd1", any()) } returns
+            StepUpOutcome.Granted(StepUpGrant("key_device.remove", "kd1", "device", "t"))
+        coEvery { api.removeKeyDevice("kd1") } throws kotlinx.coroutines.CancellationException("screen left")
+
+        val thrown = runCatching { KeyDeviceSignOut(authRepository, repo, stepUp, api).signOutAndRemovePhone(activity) }.exceptionOrNull()
+        assertTrue(thrown is kotlin.coroutines.cancellation.CancellationException)
+        // Nothing was forgotten for a removal that never finished.
+        assertTrue(repo.local() != null)
+    }
 }
