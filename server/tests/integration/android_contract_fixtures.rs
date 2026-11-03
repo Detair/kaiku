@@ -226,6 +226,28 @@ fn android_golden_auth_response_password_change() {
     );
 }
 
+/// Device-key sign-in (C26 `POST /auth/device-login`): a full session, the
+/// refresh token in the body, the 90-day absolute cap of a native client.
+#[test]
+fn android_golden_auth_response_device_key() {
+    let response = AuthResponse {
+        access_token: "fixture-device-access-token".to_string(),
+        refresh_token: Some("fixture-device-refresh-token".to_string()),
+        expires_in: 900,
+        token_type: "Bearer".to_string(),
+        setup_required: false,
+        password_change_required: false,
+        session_id: SESSION_ID,
+        assurance: vc_server::auth::assurance::Assurance::Full,
+        absolute_expires_at: ts("2027-02-01T12:00:00Z"),
+    };
+
+    check_golden(
+        "auth_response_device_key.json",
+        serde_json::to_value(&response).expect("serialize auth response"),
+    );
+}
+
 const GUILD_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_b001);
 
 fn channel_with_unread(

@@ -155,6 +155,9 @@ When rate limited, the server returns:
 }
 ```
 
+The key-phone routes (`RATE_LIMIT_APPROVAL_LOGIN`, `RATE_LIMIT_AUTH_FLOW`) send the same body
+with `"error": "TOO_MANY_ATTEMPTS"`.
+
 For blocked IPs:
 ```json
 {

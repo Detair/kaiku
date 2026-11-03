@@ -631,6 +631,13 @@ async fn rate_limit_voice_and_call_codes_are_upper_snake() {
                 reset_at: 0,
                 retry_after: 1,
             }),
+            RateLimitError::TooManyAttempts(RateLimitResult {
+                allowed: false,
+                limit: 1,
+                remaining: 0,
+                reset_at: 0,
+                retry_after: 1,
+            }),
             RateLimitError::IpBlocked { retry_after: 1 },
         ],
     )

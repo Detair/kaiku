@@ -52,3 +52,19 @@ pub struct AnswerResponse {
     #[schema(value_type = Option<Object>)]
     pub enrollment: Option<serde_json::Value>,
 }
+
+/// `POST /auth/device-login/challenge` body.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct DeviceLoginChallengeRequest {
+    pub user_id: Uuid,
+    /// The app's per-install id.
+    pub device_id: Uuid,
+}
+
+/// `POST /auth/device-login` body.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct DeviceLoginRequest {
+    pub challenge_id: Uuid,
+    /// b64u ASN.1 DER ECDSA signature over M (decision approve, empty response).
+    pub signature: String,
+}

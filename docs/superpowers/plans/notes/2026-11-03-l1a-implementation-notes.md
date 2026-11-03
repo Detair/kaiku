@@ -225,3 +225,31 @@ is listed here, per task. "Coordinator" marks items that need a decision.
   and 22 implement it. `Confirmer::Pc`/`Request`/`Ticket` answer 404 in L1a.
 - The answer route commits a wrong-code try (`ENROLL_CODE_WRONG`, `ENROLLMENT_FAILED`) and
   the spent challenge even though it answers an error.
+
+## Task 12 — device-key sign-in
+
+- **429 code:** the existing limiter answered `RATE_LIMITED`; the contract ("Errors") and the
+  plan's test want `TOO_MANY_ATTEMPTS` with `Retry-After`. Ruling: the v1.0 sign-in categories
+  (`ApprovalLogin`, `AuthFlow`) answer `TOO_MANY_ATTEMPTS` (same body otherwise); every older
+  category keeps `RATE_LIMITED` so today's clients are unchanged.
+- **`auth_methods` in the response:** C26's route line says the `AuthResponse` carries
+  `auth_methods: ["device_key"]`, but C27 defines `AuthResponse` without it (only `session_id`,
+  `assurance`, `absolute_expires_at` were added). Followed C27: the session's `auth_methods`
+  are on `GET /auth/me` → `session.auth_methods`. **Coordinator:** if clients want the field in
+  the `AuthResponse`, it is an additive change for every sign-in.
+- `sign_in` returns `DeviceSignIn {session, password_change_required}` instead of the bare
+  `IssuedSession`, so the response carries the account's real `password_change_required` (as
+  `/auth/login`).
+- Lock order: account (`lock_accounts`), then the device row `FOR UPDATE`, then the challenge.
+  Every revoking caller takes the account lock first, so a revocation either commits before
+  (sign-in sees `revoked`) or after (and ends the minted session). The challenge itself is
+  read once without a lock to learn the account.
+- The device's older sessions are those with `authenticator = key_device(id)` and no
+  `ended_at` (also already-expired rows); they end `superseded`.
+- Unknown device and the system account → 404 `KEY_DEVICE_UNKNOWN`; only revoked rows → 403
+  `KEY_DEVICE_REVOKED`; then ban → 403 `ACCOUNT_BANNED`; then `pending` → 409
+  `KEY_DEVICE_PENDING {ready_at: null}` (`ready_at` comes from account requests, L1b). The
+  ban is re-checked under the lock at sign-in.
+- A wrong signature does not spend the challenge (rolled back, as the answer route).
+- Each device-key sign-in records `sign_in {auth_methods ["device_key"], assurance "full"}`
+  with the device's label and is delivered as a normal notice (B.4 "never silent").

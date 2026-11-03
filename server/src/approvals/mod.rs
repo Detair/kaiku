@@ -5,6 +5,7 @@
 pub mod cascade;
 pub mod context;
 pub mod core;
+pub mod device_login;
 pub mod devices;
 pub mod enrollments;
 pub mod error;
@@ -56,8 +57,9 @@ pub async fn server_name(conn: &mut sqlx::PgConnection) -> sqlx::Result<String> 
     .unwrap_or_else(|| "Kaiku".to_string()))
 }
 
-/// Public enrolment routes (`AuthFlow` per IP, never IP-blocked) and the
-/// issuing key device's `/enrollments/{id}/challenge`, merged into `/auth`.
+/// Public enrolment and device-key sign-in routes (`AuthFlow` per IP, never
+/// IP-blocked) and the issuing key device's `/enrollments/{id}/challenge`,
+/// merged into `/auth`.
 pub fn flow_router(state: &AppState) -> Router<AppState> {
     use crate::ratelimit::rate_limit_by_ip;
     let public = Router::new()
@@ -68,6 +70,11 @@ pub fn flow_router(state: &AppState) -> Router<AppState> {
         )
         .route("/enrollments/claim", post(enrollments::handlers::claim))
         .route("/enrollments/status", post(enrollments::handlers::status))
+        .route(
+            "/device-login/challenge",
+            post(device_login::challenge_handler),
+        )
+        .route("/device-login", post(device_login::sign_in_handler))
         .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
         .layer(from_fn(with_category(RateLimitCategory::AuthFlow)));
     let bearer = Router::new()

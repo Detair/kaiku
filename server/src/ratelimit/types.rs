@@ -80,6 +80,12 @@ impl RateLimitCategory {
         )
     }
 
+    /// The v1.0 sign-in categories (contract "Errors": 429 `TOO_MANY_ATTEMPTS`).
+    #[must_use]
+    pub const fn is_sign_in_flow(&self) -> bool {
+        matches!(self, Self::ApprovalLogin | Self::AuthFlow)
+    }
+
     /// Returns all categories except `FailedAuth` (which is handled separately).
     pub const fn all() -> &'static [Self] {
         &[

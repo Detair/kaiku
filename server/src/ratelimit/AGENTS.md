@@ -240,6 +240,10 @@ response.headers_mut().insert(
 ```
 **HTTP Status**: `429 Too Many Requests`
 
+The v1.0 sign-in categories (`ApprovalLogin`, `AuthFlow`) answer the same body with
+`"error": "TOO_MANY_ATTEMPTS"` (contract "Errors"); every other category keeps `RATE_LIMITED`.
+Both set `Retry-After`.
+
 **Blocked IP Response**:
 ```json
 {

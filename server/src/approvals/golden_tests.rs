@@ -357,7 +357,7 @@ fn compressed_or_other_curve_keys_refused() {
         parse_public_key(&der[..der.len() - 1]),
         Err(SignatureError::BadKey)
     ));
-    let mut trailing = der.clone();
+    let mut trailing = der;
     trailing.push(0);
     assert!(matches!(
         parse_public_key(&trailing),

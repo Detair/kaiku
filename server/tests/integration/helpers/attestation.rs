@@ -5,7 +5,7 @@
 /// What the fake leaf reports.
 #[derive(Clone)]
 pub struct Reported {
-    /// 0 software, 1 TEE, 2 StrongBox.
+    /// 0 software, 1 TEE, 2 `StrongBox`.
     pub level: u8,
     pub user_auth: bool,
     pub timeout: Option<u8>,

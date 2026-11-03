@@ -57,7 +57,7 @@ pub async fn rustfs_available() -> bool {
 
 /// Aborts the test app's session-end listener when the app is dropped, so
 /// its connection is gone before `#[sqlx::test]` drops the test database
-/// (PostgreSQL waits up to 5 s for other backends, then refuses the drop).
+/// (`PostgreSQL` waits up to 5 s for other backends, then refuses the drop).
 pub struct AbortOnDrop(pub Option<JoinHandle<()>>);
 
 impl Drop for AbortOnDrop {
