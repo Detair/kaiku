@@ -46,7 +46,7 @@ impl Attempt {
     }
 
     /// `Err` once cancelled; call right before each side effect.
-    fn check(&self) -> Result<(), String> {
+    pub fn check(&self) -> Result<(), String> {
         if self.is_cancelled() {
             Err(CANCELLED.to_string())
         } else {
@@ -55,7 +55,7 @@ impl Attempt {
     }
 }
 
-const CANCELLED: &str = "REAUTH_CANCELLED";
+pub const CANCELLED: &str = "REAUTH_CANCELLED";
 /// How many unmatched / finished ids are remembered (bounded on purpose).
 const REMEMBERED_IDS: usize = 32;
 
@@ -63,7 +63,7 @@ const REMEMBERED_IDS: usize = 32;
 /// might still register (IPC gap) and only in a small bounded list; a cancel
 /// for a finished id is ignored.
 #[derive(Default)]
-struct Registry {
+pub struct Registry {
     running: HashMap<String, Arc<Attempt>>,
     early_cancels: VecDeque<String>,
     finished: VecDeque<String>,
@@ -77,7 +77,7 @@ fn remember(list: &mut VecDeque<String>, id: &str) {
 }
 
 impl Registry {
-    fn register(&mut self, id: &str) -> Result<Arc<Attempt>, String> {
+    pub fn register(&mut self, id: &str) -> Result<Arc<Attempt>, String> {
         if self.running.contains_key(id) {
             return Err("REAUTH_FAILED".to_string());
         }
@@ -90,7 +90,7 @@ impl Registry {
         Ok(attempt)
     }
 
-    fn cancel(&mut self, id: &str) {
+    pub fn cancel(&mut self, id: &str) {
         if let Some(attempt) = self.running.get(id) {
             attempt.cancel();
         } else if !self.finished.iter().any(|f| f == id) {
@@ -98,14 +98,14 @@ impl Registry {
         }
     }
 
-    fn finish(&mut self, id: &str) {
+    pub fn finish(&mut self, id: &str) {
         if self.running.remove(id).is_some() {
             remember(&mut self.finished, id);
         }
     }
 }
 
-fn registry() -> std::sync::MutexGuard<'static, Registry> {
+pub fn registry() -> std::sync::MutexGuard<'static, Registry> {
     static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
     REGISTRY
         .get_or_init(Mutex::default)
@@ -118,7 +118,7 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
 /// cancelled flow is dropped where it stands (no browser, no listener). The
 /// flag is checked once more on the way out, so a cancel that lands while the
 /// flow itself is being polled still wins: a cancelled attempt never succeeds.
-async fn run_cancellable<T>(
+pub async fn run_cancellable<T>(
     attempt: &Attempt,
     flow: impl std::future::Future<Output = Result<T, String>>,
 ) -> Result<T, String> {

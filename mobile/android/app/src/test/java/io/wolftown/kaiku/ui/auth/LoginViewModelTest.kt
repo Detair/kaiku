@@ -38,7 +38,7 @@ class LoginViewModelTest {
         every { tokenStorage.getServerUrl() } returns "https://kaiku.example.com"
         serverProbe = mockk()
         coEvery { serverProbe.probe(any()) } returns ProbeResult.Ok(registrationOpen = false)
-        viewModel = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        viewModel = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe, mockk(relaxed = true))
     }
 
     @After
@@ -340,7 +340,7 @@ class LoginViewModelTest {
         coEvery { serverProbe.probe("https://kaiku.example.com") } returns
             ProbeResult.Ok(registrationOpen = false)
 
-        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe, mockk(relaxed = true))
         advanceUntilIdle()
 
         assertFalse(vm.uiState.value.registrationOpen)
@@ -352,7 +352,7 @@ class LoginViewModelTest {
         coEvery { serverProbe.probe("https://kaiku.example.com") } returns
             ProbeResult.Ok(registrationOpen = true)
 
-        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe, mockk(relaxed = true))
         advanceUntilIdle()
 
         assertTrue(vm.uiState.value.registrationOpen)
@@ -362,7 +362,7 @@ class LoginViewModelTest {
     fun `register stays hidden when the server cannot be checked`() = runTest {
         coEvery { serverProbe.probe(any()) } returns ProbeResult.Unreachable
 
-        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe, mockk(relaxed = true))
         advanceUntilIdle()
 
         assertFalse(vm.uiState.value.registrationOpen)
@@ -374,7 +374,7 @@ class LoginViewModelTest {
             ProbeResult.Unreachable,
             ProbeResult.Ok(registrationOpen = true)
         )
-        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe, mockk(relaxed = true))
         advanceUntilIdle()
         assertTrue(vm.uiState.value.registrationCheckFailed)
         assertFalse(vm.uiState.value.registrationOpen)
@@ -407,7 +407,7 @@ class LoginViewModelTest {
     @Test
     fun `change server returns to server screen keeping nothing stale`() = runTest {
         coEvery { serverProbe.probe(any()) } returns ProbeResult.Ok(registrationOpen = true)
-        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe)
+        val vm = LoginViewModel(authRepository, oidcHandler, tokenStorage, serverProbe, mockk(relaxed = true))
         advanceUntilIdle()
         vm.onUsernameChanged("anna")
         vm.onPasswordChanged("secret")

@@ -129,6 +129,10 @@ fun SettingsScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
+            PasskeysSection()
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
             NotificationSettingsSection(
                 state = notificationState,
                 onPreferUnifiedPush = viewModel::setPreferUnifiedPush,

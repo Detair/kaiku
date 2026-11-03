@@ -320,6 +320,27 @@ export async function loadAdminStats(): Promise<void> {
 }
 
 /**
+ * Elevate with the session's `admin.elevate` step-up grant (passkey or key
+ * device, F7). Rethrows so the dialog can show why.
+ */
+export async function elevateWithStepUp(reason: string | null = null): Promise<ElevateResponse> {
+  setAdminState({ isElevating: true, error: null });
+  try {
+    const response = await tauri.adminElevateWithStepUp(reason);
+    setAdminState({
+      isElevated: response.elevated,
+      elevationExpiresAt: response.expires_at,
+      isElevating: false,
+    });
+    if (response.elevated) startElevationTimer();
+    return response;
+  } catch (err) {
+    setAdminState({ isElevating: false });
+    throw err;
+  }
+}
+
+/**
  * Elevate admin session. The caller proves who they are (contract C24); a
  * failed attempt is rethrown so the re-auth dialog can show why.
  */

@@ -17,6 +17,7 @@ pub(crate) mod mfa;
 pub mod mfa_crypto;
 mod middleware;
 pub mod oidc;
+pub mod passkeys;
 mod password;
 pub(crate) mod profile;
 pub(crate) mod queries;
@@ -39,7 +40,9 @@ use axum::{middleware as axum_middleware, Router};
 pub use error::{AuthError, AuthResult};
 pub use helpers::hash_token;
 pub use jwt::Claims;
-pub use middleware::{require_auth, require_auth_allow_password_change, AuthUser, SessionMeta};
+pub use middleware::{
+    optional_auth, require_auth, require_auth_allow_password_change, AuthUser, SessionMeta,
+};
 pub use password::{hash_password, verify_password};
 
 use crate::api::AppState;
@@ -84,6 +87,8 @@ use crate::ratelimit::{
 pub fn router(state: AppState) -> Router<AppState> {
     // Phone setup and device-key sign-in (C26), merged under `/auth`.
     let flow_routes = crate::approvals::flow_router(&state);
+    // Passkeys (C29): their own `AuthPasskey` limits, never IP-blocked.
+    let passkey_routes = passkeys::router(&state);
     // Login route with IP block check and rate limiting
     let login_route = Router::new()
         .route("/login", post(login::login))
@@ -284,6 +289,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     public_routes
         .merge(flow_routes)
+        .merge(passkey_routes)
         .merge(password_change_routes)
         .merge(password_route)
         .merge(mfa_reauth_routes)

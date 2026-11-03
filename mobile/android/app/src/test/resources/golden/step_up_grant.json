@@ -1,0 +1,6 @@
+{
+  "action": "passkey.remove",
+  "expires_at": "2026-11-01T10:05:00Z",
+  "target": "00000000-0000-7000-8000-00000000e001",
+  "via": "passkey"
+}

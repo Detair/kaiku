@@ -6,6 +6,7 @@ import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.session.SessionTeardownRunner
+import io.wolftown.kaiku.domain.model.AuthResponse
 import io.wolftown.kaiku.domain.model.User
 import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.ui.auth.MfaRequiredException
@@ -200,6 +201,65 @@ class AuthRepository @Inject constructor(
                 if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl) tokenStorage.clear()
             }
             Result.failure(e)
+        }
+    }
+
+    /** False while a session runs: a passkey sign-in then starts nothing. */
+    fun canStartSignIn(): Boolean = signedInRefusal() == null
+
+    /**
+     * Installs a session from a sign-in that needed no password (a passkey,
+     * C29): `GET /auth/me` with the new token, then the same single install
+     * point as [login], only for the latest attempt and the server it went to.
+     * A result that is not installed (a session runs, the server changed, or
+     * another sign-in came first) ends its session on [serverUrl], so a
+     * second result never leaves an unused session live.
+     */
+    suspend fun installNativeSignIn(authResponse: AuthResponse, serverUrl: String?): Result<User> {
+        signedInRefusal()?.let { refused ->
+            serverUrl?.let { endUnused(it, authResponse) }
+            return refused
+        }
+        val attempt = invalidateLogin()
+        if (serverUrl == null) return supersededResult()
+        if (tokenStorage.getServerUrl() != serverUrl) {
+            endUnused(serverUrl, authResponse)
+            return supersededResult()
+        }
+        return try {
+            val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
+            sessionTeardown.awaitIdle()
+            val persisted = installSession(
+                authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id,
+                precondition = { loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl },
+            )
+            if (!persisted) {
+                endUnused(serverUrl, authResponse)
+                supersededResult()
+            } else {
+                Result.success(user)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Ends a minted session that was not installed, on the server that
+     * minted it, with its own tokens only; best effort, bounded, never
+     * cancelled halfway. L2b has the same helper for device sign-ins.
+     */
+    private suspend fun endUnused(serverUrl: String, auth: AuthResponse) {
+        withContext(NonCancellable) {
+            try {
+                withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) {
+                    authApi.logoutSession(serverUrl, auth.accessToken, auth.refreshToken)
+                }
+            } catch (e: Exception) {
+                logger.warning("Unused session not ended (best-effort): ${e.javaClass.simpleName}")
+            }
         }
     }
 

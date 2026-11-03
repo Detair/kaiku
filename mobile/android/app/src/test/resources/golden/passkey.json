@@ -1,0 +1,15 @@
+{
+  "aaguid": "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4",
+  "backup_eligible": true,
+  "backup_state": true,
+  "created_at": "2026-11-01T10:00:00Z",
+  "id": "00000000-0000-7000-8000-00000000e001",
+  "label": "Pixel 8",
+  "last_used_at": null,
+  "ready_at": "2026-11-03T10:00:00Z",
+  "state": "pending",
+  "transports": [
+    "internal",
+    "hybrid"
+  ]
+}

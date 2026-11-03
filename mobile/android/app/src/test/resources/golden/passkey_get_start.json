@@ -1,0 +1,12 @@
+{
+  "ceremony_id": "00000000-0000-4000-8000-00000000d001",
+  "options": {
+    "publicKey": {
+      "allowCredentials": [],
+      "challenge": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+      "rpId": "chat.example.com",
+      "timeout": 300000,
+      "userVerification": "required"
+    }
+  }
+}

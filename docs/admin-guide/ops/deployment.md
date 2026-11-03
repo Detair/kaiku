@@ -72,6 +72,12 @@ JWT_SECRET=$(openssl rand -base64 32)
 ACME_EMAIL=admin@yourdomain.com
 ```
 
+### Passkeys
+
+Passkeys work without extra settings in browsers and the desktop app. They are bound to your
+domain (`PUBLIC_URL`): changing it later invalidates every passkey and key phone. Passkeys in the
+Android app need `/.well-known/` routed to the server. See [Passkeys](passkeys.md).
+
 ### Voice Chat (WebRTC)
 
 For voice to work, configure:

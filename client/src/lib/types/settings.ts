@@ -24,11 +24,16 @@ export interface VoiceSettings {
   vad_threshold: number;
 }
 
+/** "Browser for passkey sign-in" (desktop); Safari on macOS only. */
+export type PasskeyBrowser = "system" | "chromium" | "chrome" | "firefox" | "safari";
+
 export interface AppSettings {
   audio: AudioSettings;
   voice: VoiceSettings;
   theme: "dark" | "light";
   notifications_enabled: boolean;
+  /** Desktop only; older settings files lack it (= "system"). */
+  passkey_browser?: PasskeyBrowser;
 }
 
 export interface UiState {

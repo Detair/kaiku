@@ -175,12 +175,40 @@ async fn provider_url(authorize_url: &Url, start: Start<'_>, what: &str) -> Resu
 
 /// Open `url` in the system browser.
 fn open_browser(app_handle: &tauri::AppHandle, url: &str) -> Result<(), String> {
+    open_browser_with(app_handle, url, super::settings::PasskeyBrowser::System)
+}
+
+/// The `tauri-plugin-shell` program for the passkey browser setting
+/// (`None` = the system default).
+#[allow(deprecated)] // tauri-plugin-shell::open is deprecated in favor of tauri-plugin-opener
+pub const fn browser_program(
+    browser: super::settings::PasskeyBrowser,
+) -> Option<tauri_plugin_shell::open::Program> {
+    use tauri_plugin_shell::open::Program;
+
+    use super::settings::PasskeyBrowser;
+    match browser.validated() {
+        PasskeyBrowser::System => None,
+        PasskeyBrowser::Chromium => Some(Program::Chromium),
+        PasskeyBrowser::Chrome => Some(Program::Chrome),
+        PasskeyBrowser::Firefox => Some(Program::Firefox),
+        PasskeyBrowser::Safari => Some(Program::Safari),
+    }
+}
+
+/// Open `url` in the system browser, or in the browser chosen under
+/// "Browser for passkey sign-in" (DC14).
+pub fn open_browser_with(
+    app_handle: &tauri::AppHandle,
+    url: &str,
+    browser: super::settings::PasskeyBrowser,
+) -> Result<(), String> {
     #[allow(deprecated)] // tauri-plugin-shell::open is deprecated in favor of tauri-plugin-opener
     {
         use tauri_plugin_shell::ShellExt;
         app_handle
             .shell()
-            .open(url, None)
+            .open(url, browser_program(browser))
             .map_err(|e| format!("Failed to open browser: {e}"))
     }
 }

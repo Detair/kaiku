@@ -38,6 +38,10 @@ const type = (label: RegExp, value: string) =>
 
 describe("ReauthDialog", () => {
   beforeEach(() => {
+    (globalThis as { PublicKeyCredential?: unknown }).PublicKeyCredential ??= {};
+    if (!navigator.credentials) {
+      Object.defineProperty(navigator, "credentials", { value: { get: () => undefined }, configurable: true });
+    }
     document.body.innerHTML = "";
   });
 
@@ -246,5 +250,49 @@ describe("ReauthDialog", () => {
     setup({ methods: [...PW, OIDC], onOidc: vi.fn() });
     expect(screen.getByLabelText(/your password/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Confirm with Keycloak" })).toBeTruthy();
+  });
+
+  it("passkey method is offered first and runs onPasskey", async () => {
+    const onPasskey = vi.fn().mockResolvedValue(undefined);
+    setup({ methods: [{ kind: "passkey" }, ...PW, OIDC], onPasskey, onOidc: vi.fn() });
+    const buttons = screen.getAllByRole("button").map((b) => b.textContent ?? "");
+    const passkeyAt = buttons.findIndex((b) => b.includes("Confirm with a passkey"));
+    const oidcAt = buttons.findIndex((b) => b.includes("Keycloak"));
+    expect(passkeyAt).toBeGreaterThanOrEqual(0);
+    expect(passkeyAt).toBeLessThan(oidcAt);
+    const pw = screen.getByLabelText(/password/i);
+    expect(
+      screen.getByRole("button", { name: "Confirm with a passkey" }).compareDocumentPosition(pw) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with a passkey" }));
+    await waitFor(() => expect(onPasskey).toHaveBeenCalledOnce());
+  });
+
+  it("a passkey-only account is not shown as unavailable", () => {
+    setup({ methods: [{ kind: "passkey" }], onPasskey: vi.fn() });
+    expect(screen.getByRole("button", { name: "Confirm with a passkey" })).toBeTruthy();
+  });
+
+  it("closing the dialog aborts the passkey ceremony", async () => {
+    let seen: AbortSignal | undefined;
+    const onPasskey = vi.fn((signal: AbortSignal) => {
+      seen = signal;
+      return new Promise<void>(() => {});
+    });
+    const { unmount } = setup({ methods: [{ kind: "passkey" }], onPasskey });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm with a passkey" }));
+    await waitFor(() => expect(onPasskey).toHaveBeenCalledOnce());
+    unmount();
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it("no passkey method in a browser without WebAuthn", () => {
+    // Review Argon minor 8.
+    const saved = (globalThis as { PublicKeyCredential?: unknown }).PublicKeyCredential;
+    delete (globalThis as { PublicKeyCredential?: unknown }).PublicKeyCredential;
+    setup({ methods: [{ kind: "passkey" }, ...PW], onPasskey: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Confirm with a passkey" })).toBeNull();
+    (globalThis as { PublicKeyCredential?: unknown }).PublicKeyCredential = saved;
   });
 });

@@ -7,7 +7,8 @@
 
 import { Component, createResource, Show } from "solid-js";
 import ReauthDialog from "@/components/auth/ReauthDialog";
-import { confirmElevation, elevateSession } from "@/stores/admin";
+import { confirmElevation, elevateSession, elevateWithStepUp } from "@/stores/admin";
+import { stepUpWithPasskey } from "@/lib/tauri/passkeys";
 import { HttpError } from "@/lib/tauri";
 import { defaultReauthStrategy, reauthErrorText } from "@/lib/reauth";
 import { showToast } from "@/components/ui/Toast";
@@ -61,6 +62,13 @@ const ElevateDialog: Component<{ onClose: () => void; onElevated?: () => void }>
             if (!elevated) {
               throw new HttpError(0, "REAUTH_NOT_CONFIRMED", "REAUTH_NOT_CONFIRMED");
             }
+            props.onElevated?.();
+            props.onClose();
+          }}
+          onPasskey={async (signal) => {
+            await stepUpWithPasskey("admin.elevate", null, signal);
+            if (signal.aborted) return;
+            await elevateWithStepUp(null);
             props.onElevated?.();
             props.onClose();
           }}

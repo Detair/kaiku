@@ -301,7 +301,7 @@ pub async fn get_reauth_methods(
     State(state): State<AppState>,
     auth_user: AuthUser,
 ) -> AuthResult<Json<ReauthMethodsResponse>> {
-    // F7: a step-up is a passkey assertion (LP sets `passkey`) or a
+    // F7: a step-up is a passkey assertion (an active passkey) or a
     // `device_stepup` from an active key device; never a password, TOTP or
     // OIDC.
     // `device` means an active key device (not any strong authenticator: a
@@ -312,10 +312,8 @@ pub async fn get_reauth_methods(
     .bind(auth_user.id)
     .fetch_one(&state.db)
     .await?;
-    Ok(Json(ReauthMethodsResponse {
-        passkey: false,
-        device,
-    }))
+    let passkey = super::passkeys::queries::active_count(&state.db, auth_user.id).await? > 0;
+    Ok(Json(ReauthMethodsResponse { passkey, device }))
 }
 
 #[cfg(test)]

@@ -74,28 +74,55 @@ impl AuthenticatorRef {
 }
 
 /// Whether the authenticator is `active` (pending and revoked ones
-/// authenticate nothing, SM4). Key devices; LP adds the passkey arm.
+/// authenticate nothing, SM4): key devices and passkeys.
 pub async fn is_active(conn: &mut sqlx::PgConnection, a: AuthenticatorRef) -> sqlx::Result<bool> {
     match a.kind {
         AuthenticatorKind::KeyDevice => Ok(sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE id = $1 AND state = 'active')",
+            "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE id = $1 AND state = 'active'
+                            FOR SHARE)",
         )
         .bind(a.id)
         .fetch_one(&mut *conn)
         .await?),
-        // LP adds passkeys.
-        AuthenticatorKind::Passkey => Ok(false),
+        AuthenticatorKind::Passkey => Ok(sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM passkeys WHERE id = $1 AND state = 'active' FOR SHARE)",
+        )
+        .bind(a.id)
+        .fetch_one(&mut *conn)
+        .await?),
     }
 }
 
-/// The account's active strong authenticators (B.0). Key devices; LP adds
+/// Whether the authenticator is a row of `user_id` (any state).
+pub async fn belongs_to(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    a: AuthenticatorRef,
+) -> sqlx::Result<bool> {
+    let sql = match a.kind {
+        AuthenticatorKind::KeyDevice => {
+            "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE id = $1 AND user_id = $2)"
+        }
+        AuthenticatorKind::Passkey => {
+            "SELECT EXISTS (SELECT 1 FROM passkeys WHERE id = $1 AND user_id = $2)"
+        }
+    };
+    sqlx::query_scalar(sql)
+        .bind(a.id)
+        .bind(user_id)
+        .fetch_one(&mut *conn)
+        .await
+}
+
+/// The account's active strong authenticators (B.0): key devices and
 /// passkeys.
 pub async fn active_strong_count(
     conn: &mut sqlx::PgConnection,
     user_id: Uuid,
 ) -> sqlx::Result<i64> {
     sqlx::query_scalar(
-        "SELECT COUNT(*) FROM approval_devices WHERE user_id = $1 AND state = 'active'",
+        "SELECT (SELECT COUNT(*) FROM approval_devices WHERE user_id = $1 AND state = 'active')
+              + (SELECT COUNT(*) FROM passkeys WHERE user_id = $1 AND state = 'active')",
     )
     .bind(user_id)
     .fetch_one(&mut *conn)
@@ -128,7 +155,7 @@ pub async fn mark_first_activity(conn: &mut sqlx::PgConnection, user_id: Uuid) -
 }
 
 /// The current display label of an authenticator (the key device's model or
-/// the passkey's name), `None` if unknown. LP adds the passkey arm.
+/// the passkey's name), `None` if unknown.
 pub async fn authenticator_label(
     conn: &mut sqlx::PgConnection,
     a: AuthenticatorRef,
@@ -140,6 +167,11 @@ pub async fn authenticator_label(
                 .fetch_optional(&mut *conn)
                 .await
         }
-        AuthenticatorKind::Passkey => Ok(None),
+        AuthenticatorKind::Passkey => {
+            sqlx::query_scalar("SELECT label FROM passkeys WHERE id = $1")
+                .bind(a.id)
+                .fetch_optional(&mut *conn)
+                .await
+        }
     }
 }

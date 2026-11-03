@@ -1,7 +1,8 @@
-import { Component, createSignal, createResource, Show, For, onCleanup, onMount } from "solid-js";
+import { Component, createEffect, createSignal, createResource, Show, For, on, onCleanup, onMount } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import {
   login,
+  loginWithPasskey,
   loginWithOidc,
   completeNativeOidcLogin,
   authState,
@@ -19,7 +20,15 @@ import { isTauri } from "@/lib/tauri/common";
 import { openBlankSsoPopup, reloadAfterSsoPopup, watchSsoPopup } from "@/lib/oidcPopup";
 import { safeReturnUrl } from "@/lib/returnUrl";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
-import { LOGIN_ERRORS } from "@/lib/authErrors";
+import { formatPasskeyError, LOGIN_ERRORS } from "@/lib/authErrors";
+import PasskeyButton from "@/components/auth/PasskeyButton";
+import { PasskeyError } from "@/lib/tauri/passkeys";
+import { isConditionalMediationAvailable, isWebAuthnAvailable } from "@/lib/webauthn";
+
+/** A conditional ceremony lives 300 s on the server; restart it before. */
+const CONDITIONAL_RESTART_MS = 270_000;
+/** Pause after a server change before autofill starts again. */
+const SERVER_CHANGE_DEBOUNCE_MS = 500;
 
 /** Map icon_hint to a Lucide icon component. */
 function providerIcon(hint: string | null) {
@@ -82,6 +91,138 @@ const Login: Component = () => {
     }
   });
 
+  // Passkeys (F1, C29): autofill (conditional mediation) runs in the
+  // background in browsers; the button runs a modal ceremony (desktop: the
+  // system browser).
+  const desktop = isTauri();
+  const showPasskey = () => desktop || isWebAuthnAvailable();
+  const [passkeyBusy, setPasskeyBusy] = createSignal(false);
+  let conditionalCtl: AbortController | undefined;
+  let modalCtl: AbortController | undefined;
+  let restartTimer: ReturnType<typeof setTimeout> | undefined;
+  /** A pending autofill start after a server change. */
+  let serverChangeTimer: ReturnType<typeof setTimeout> | undefined;
+  const linux = typeof navigator !== "undefined" && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+
+  // Bumped by every start and stop: a start still waiting for
+  // `isConditionalMediationAvailable` gives way to anything later (Argon B R2).
+  let conditionalGeneration = 0;
+  const stopConditional = () => {
+    conditionalGeneration += 1;
+    conditionalCtl?.abort();
+    conditionalCtl = undefined;
+    clearTimeout(restartTimer);
+    clearTimeout(serverChangeTimer);
+  };
+
+  /** Words a passkey failure; silent for cancels and aborts. */
+  const showPasskeyError = (err: unknown) => {
+    if (!(err instanceof PasskeyError)) {
+      setLocalError(errorText(err, "passkeys.error.failed", LOGIN_ERRORS));
+      return;
+    }
+    // PASSKEY_UNKNOWN was already signalled; PASSKEY_PENDING never is (B.1).
+    const text = formatPasskeyError(err);
+    if (text) setLocalError(text);
+  };
+
+  const afterPasskey = () =>
+    navigate(safeReturnUrl(searchParams.returnUrl) ?? "/", { replace: true });
+
+  // After a failed autofill (cancelled sheet, server error) it restarts,
+  // with a growing pause so an offline server is not hammered.
+  const FIRST_BACKOFF_MS = 2_000;
+  let conditionalBackoff = FIRST_BACKOFF_MS;
+  const startConditional = async () => {
+    // Never beside the button's ceremony (it restarts autofill when done).
+    if (desktop || disposed || modalCtl || !isWebAuthnAvailable()) return;
+    const generation = ++conditionalGeneration;
+    const available = await isConditionalMediationAvailable();
+    if (!available || disposed || generation !== conditionalGeneration) return;
+    stopConditional();
+    const ctl = new AbortController();
+    conditionalCtl = ctl;
+    restartTimer = setTimeout(() => {
+      if (conditionalCtl === ctl) void startConditional();
+    }, CONDITIONAL_RESTART_MS);
+    try {
+      await loginWithPasskey(serverUrl(), {
+        mediation: "conditional",
+        signal: ctl.signal,
+        // The name typed by the time a passkey is picked.
+        username: () => username().trim() || undefined,
+      });
+      afterPasskey();
+    } catch (err) {
+      if (ctl.signal.aborted || conditionalCtl !== ctl) return;
+      // Autofill stays quiet, except for a removed or a pending passkey.
+      if (err instanceof PasskeyError && ["PASSKEY_UNKNOWN", "PASSKEY_PENDING"].includes(err.code)) {
+        showPasskeyError(err);
+      }
+      clearTimeout(restartTimer);
+      const delay = conditionalBackoff;
+      conditionalBackoff = Math.min(conditionalBackoff * 2, 60_000);
+      restartTimer = setTimeout(() => {
+        if (conditionalCtl === ctl) void startConditional();
+      }, delay);
+    }
+  };
+  // A changed server gets its own autofill ceremony: the old one stops at
+  // once, the new one starts after a pause (no ceremony per keystroke) and
+  // with the first backoff again. The button's ceremony restarts autofill
+  // itself when it ends.
+  createEffect(
+    on(
+      serverUrl,
+      () => {
+        if (modalCtl) return;
+        stopConditional();
+        conditionalBackoff = FIRST_BACKOFF_MS;
+        serverChangeTimer = setTimeout(() => void startConditional(), SERVER_CHANGE_DEBOUNCE_MS);
+      },
+      { defer: true },
+    ),
+  );
+  onMount(() => {
+    void startConditional();
+  });
+  onCleanup(() => {
+    stopConditional();
+    modalCtl?.abort();
+  });
+
+  const handlePasskey = async () => {
+    setLocalError("");
+    clearError();
+    stopConditional();
+    modalCtl?.abort();
+    const ctl = new AbortController();
+    modalCtl = ctl;
+    setPasskeyBusy(true);
+    try {
+      await loginWithPasskey(serverUrl(), {
+        mediation: "optional",
+        signal: ctl.signal,
+        username: username().trim() || undefined,
+      });
+      afterPasskey();
+    } catch (err) {
+      if (!ctl.signal.aborted) showPasskeyError(err);
+    } finally {
+      if (modalCtl === ctl) {
+        modalCtl = undefined;
+        setPasskeyBusy(false);
+        if (!disposed) void startConditional();
+      }
+    }
+  };
+
+  const cancelPasskey = () => {
+    modalCtl?.abort();
+    modalCtl = undefined;
+    setPasskeyBusy(false);
+  };
+
   const handleLogin = async (e: Event) => {
     e.preventDefault();
     setLocalError("");
@@ -102,6 +243,7 @@ const Login: Component = () => {
       return;
     }
 
+    stopConditional();
     try {
       await login(
         serverUrl(),
@@ -116,9 +258,13 @@ const Login: Component = () => {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg === "MFA_REQUIRED") {
         setMfaCode("");
-      } else if (!authState.error) {
+        return;
+      }
+      if (!authState.error) {
         setLocalError(errorText(err, "auth.login.failed", LOGIN_ERRORS));
       }
+      // The form stays: so does passkey autofill.
+      if (!disposed) void startConditional();
     }
   };
 
@@ -318,6 +464,39 @@ const Login: Component = () => {
 
         {/* Normal Login Flow (hidden during MFA) */}
         <Show when={!authState.mfaRequired}>
+          {/* Passkeys first (F1) */}
+          <Show when={showPasskey()}>
+            <div class="mb-4 space-y-2">
+              <PasskeyButton busy={passkeyBusy()} onClick={() => void handlePasskey()} />
+              <Show when={desktop && passkeyBusy()}>
+                <div role="status" class="p-3 rounded-lg border border-white/10 bg-white/5 text-sm text-text-primary space-y-2">
+                  <p>{t("passkeys.login.browserHint")}</p>
+                  <Show when={linux}>
+                    <p class="text-text-secondary">{t("passkeys.login.linuxHint")}</p>
+                  </Show>
+                  <button
+                    type="button"
+                    class="w-full min-h-12 rounded-lg border border-white/10 text-text-primary hover:bg-white/10"
+                    onClick={cancelPasskey}
+                  >
+                    {t("passkeys.login.cancel")}
+                  </button>
+                </div>
+              </Show>
+              <Show when={showOidc() || showLocalLogin()}>
+                <div class="relative my-5">
+                  <div class="absolute inset-0 flex items-center">
+                    <div class="w-full border-t border-white/10" />
+                  </div>
+                  <div class="relative flex justify-center text-xs">
+                    <span class="bg-background-secondary px-3 text-text-muted">
+                      {t("auth.login.or")}
+                    </span>
+                  </div>
+                </div>
+              </Show>
+            </div>
+          </Show>
           {/* SSO Buttons */}
           <Show when={showOidc()}>
             <div class="space-y-2 mb-4">
@@ -385,7 +564,7 @@ const Login: Component = () => {
                   type="text"
                   class="input-field"
                   name="username"
-                  autocomplete="username"
+                  autocomplete="username webauthn"
                   placeholder={t("auth.login.usernamePlaceholder")}
                   data-testid="login-username"
                   value={username()}

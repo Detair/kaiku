@@ -194,4 +194,23 @@ class GoldenContractTest {
         assertEquals("00000000-0000-4000-8000-00000000e001", channel.lastReadMessageId)
         assertEquals(5L, aggregate.total)
     }
+
+    @Test
+    fun `passkey fixtures decode`() {
+        val start = io.wolftown.kaiku.data.KaikuJson.decodeFromString<io.wolftown.kaiku.domain.model.CeremonyStart>(
+            Golden.load("passkey_get_start.json"),
+        )
+        assertTrue(start.ceremonyId.isNotEmpty())
+        assertNotNull(start.options["publicKey"])
+        val passkey = KaikuJson.decodeFromString<io.wolftown.kaiku.domain.model.Passkey>(Golden.load("passkey.json"))
+        assertTrue(passkey.isPending)
+        assertNotNull(passkey.readyAt)
+        assertEquals(listOf("internal", "hybrid"), passkey.transports)
+        val removed = KaikuJson.decodeFromString<io.wolftown.kaiku.domain.model.PasskeyRemoved>(Golden.load("passkey_removed.json"))
+        assertEquals("chat.example.com", removed.rpId)
+        assertEquals(1, removed.remainingCredentialIds.size)
+        val grant = KaikuJson.decodeFromString<io.wolftown.kaiku.domain.model.StepUpGrant>(Golden.load("step_up_grant.json"))
+        assertEquals("passkey", grant.via)
+        assertEquals("passkey.remove", grant.action)
+    }
 }

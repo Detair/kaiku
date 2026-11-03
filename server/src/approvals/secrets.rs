@@ -69,6 +69,8 @@ pub enum SecretPurpose {
     ClaimSecret,
     RequestSecret,
     RegistrationTicket,
+    /// The desktop passkey hand-off code (LP, C29 step 4).
+    PasskeyHandoffCode,
 }
 
 impl SecretPurpose {
@@ -83,6 +85,7 @@ impl SecretPurpose {
             Self::ClaimSecret => "claim_secret",
             Self::RequestSecret => "request_secret",
             Self::RegistrationTicket => "registration_ticket",
+            Self::PasskeyHandoffCode => "passkey_handoff_code",
         }
     }
 }

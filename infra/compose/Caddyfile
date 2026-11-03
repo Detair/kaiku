@@ -23,6 +23,11 @@
 	handle /ws {
 		reverse_proxy server:8080
 	}
+	# Digital Asset Links for passkeys in the Android app (assetlinks.json);
+	# Google must be able to fetch it. Caddy answers ACME challenges itself.
+	handle /.well-known/* {
+		reverse_proxy server:8080
+	}
 
 	# Everything else is the web client (kaiku-web image). It sets its own
 	# cache and security headers (CSP included); the server paths above keep

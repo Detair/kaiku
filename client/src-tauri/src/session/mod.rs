@@ -138,6 +138,10 @@ pub enum SessionError {
     /// Rejected locally without contacting the server.
     #[error("{0}")]
     InvalidRequest(String),
+    /// A bearer request named another server than the signed-in one; nothing
+    /// was sent (the access token never leaves for a foreign server).
+    #[error("SESSION_SERVER_MISMATCH")]
+    ServerMismatch,
 }
 
 /// Events the refresh scheduler reports to the webview.
@@ -644,6 +648,106 @@ impl SessionManager {
         self.adopt_tokens(&base, tokens).await
     }
 
+    /// A desktop passkey flow request (C29 steps 2 and 6): `POST {base}{path}`
+    /// with `X-Kaiku-Client: desktop`, plus the current session's bearer when
+    /// `bearer` (step-up). Answers the JSON body; a refusal is
+    /// `Server(status, CODE)` with the bare server code.
+    async fn passkey_flow_post(
+        &self,
+        server_url: &str,
+        path: &str,
+        body: &Value,
+        bearer: bool,
+    ) -> Result<Value, SessionError> {
+        let requested = normalize_server_url(server_url)?;
+        let mut retried = false;
+        let (status, text) = loop {
+            // A bearer only ever goes to the session's own server: take the
+            // snapshot first and refuse (sending nothing) when the caller
+            // names another one.
+            let session = if bearer {
+                let session = self.snapshot().ok_or(SessionError::Expired)?;
+                if normalize_server_url(&session.server_url)? != requested {
+                    return Err(SessionError::ServerMismatch);
+                }
+                Some(session)
+            } else {
+                None
+            };
+            let base = session
+                .as_ref()
+                .map_or_else(|| requested.clone(), |s| s.server_url.clone());
+            let mut request = self
+                .http
+                .post(format!("{base}{path}"))
+                .header("X-Kaiku-Client", "desktop")
+                .json(body);
+            if let Some(session) = &session {
+                request = request.bearer_auth(&session.access_token);
+            }
+            let response = request.send().await.map_err(|e| network(&e))?;
+            let status = response.status().as_u16();
+            // The access token can expire while the browser waits (up to
+            // ten minutes). A 401 leaves the flow unspent (the server checks
+            // the bearer before it takes the flow): refresh and retry once.
+            if status == 401 && bearer && !retried {
+                retried = true;
+                self.refresh().await?;
+                continue;
+            }
+            break (status, response.text().await.map_err(|e| network(&e))?);
+        };
+        if !(200..300).contains(&status) {
+            return Err(match error_code(&text) {
+                Some(code) => SessionError::Server(status, code),
+                None => server_error(status, &text),
+            });
+        }
+        serde_json::from_str(&text).map_err(|e| invalid_response(status, &e))
+    }
+
+    /// Start a desktop passkey flow (`POST /auth/passkeys/desktop/flows`).
+    pub async fn start_passkey_flow(
+        &self,
+        server_url: &str,
+        body: &Value,
+        bearer: bool,
+    ) -> Result<Value, SessionError> {
+        self.passkey_flow_post(server_url, "/auth/passkeys/desktop/flows", body, bearer)
+            .await
+    }
+
+    /// Redeem a desktop passkey hand-off with the flow's verifier
+    /// (`POST /auth/passkeys/desktop/redeem`). The answer is returned as is;
+    /// the caller checks `purpose` and `user_id` before adopting anything.
+    pub async fn redeem_passkey_flow(
+        &self,
+        server_url: &str,
+        flow_id: &str,
+        code: &str,
+        verifier: &str,
+        bearer: bool,
+    ) -> Result<Value, SessionError> {
+        let body = json!({ "flow_id": flow_id, "code": code, "verifier": verifier });
+        self.passkey_flow_post(server_url, "/auth/passkeys/desktop/redeem", &body, bearer)
+            .await
+    }
+
+    /// Changes whenever another session replaces this one (sign-in,
+    /// restore, sign-out); token rotations keep it.
+    pub fn identity_generation(&self) -> u64 {
+        self.generation()
+    }
+
+    /// The signed-in account's id (`/auth/me` `id`), if any.
+    pub fn current_user_id(&self) -> Option<String> {
+        self.snapshot()?
+            .user?
+            .get("id")?
+            .as_str()
+            .map(str::to_owned)
+    }
+
     /// Take over a fresh token pair (login, registration, OIDC): fetch the
     /// profile, store the refresh token, publish the session.
     pub async fn adopt_tokens(
@@ -651,8 +755,24 @@ impl SessionManager {
         server_url: &str,
         tokens: TokenResponse,
     ) -> Result<AuthResult, SessionError> {
+        self.adopt_tokens_for(server_url, tokens, None).await
+    }
+
+    /// [`adopt_tokens`](Self::adopt_tokens), refusing (before anything is
+    /// stored) when the token's account is not `expected_user_id`.
+    pub async fn adopt_tokens_for(
+        &self,
+        server_url: &str,
+        tokens: TokenResponse,
+        expected_user_id: Option<&str>,
+    ) -> Result<AuthResult, SessionError> {
         let base = normalize_server_url(server_url)?;
         let user = self.fetch_me(&base, &tokens.access_token).await?;
+        if let Some(expected) = expected_user_id {
+            if user.get("id").and_then(Value::as_str) != Some(expected) {
+                return Err(SessionError::InvalidRequest("ACCOUNT_MISMATCH".to_string()));
+            }
+        }
         let legacy_user = parse_user(&user)?;
         let password_change_required =
             tokens.password_change_required || flag(&user, "password_change_required");
@@ -1736,6 +1856,57 @@ mod tests {
             Ok(SessionEvent::TokenRefreshed(info)) => assert_eq!(info.access_token, "at-2"),
             other => panic!("expected TokenRefreshed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn passkey_redeem_refreshes_once_after_401() {
+        // Earlier review m5: the access token may expire while the browser
+        // waits; a 401 leaves the flow unspent, so refresh and retry once.
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = logged_in(&server, &store).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/passkeys/desktop/redeem"))
+            .and(header("authorization", "Bearer at-1"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/passkeys/desktop/redeem"))
+            .and(header("authorization", "Bearer at-2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"purpose": "step_up"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("at-2", "rt-2")))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let value = m
+            .redeem_passkey_flow(&server.uri(), "f", "c", "v", true)
+            .await
+            .unwrap();
+        assert_eq!(value["purpose"], "step_up");
+    }
+
+    #[tokio::test]
+    async fn passkey_redeem_without_bearer_is_not_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/passkeys/desktop/redeem"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let m = manager(&Arc::new(MemoryTokenStore::new()));
+        assert!(m
+            .redeem_passkey_flow(&server.uri(), "f", "c", "v", false)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

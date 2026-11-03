@@ -141,6 +141,23 @@ pub async fn require_auth_allow_password_change(
     authenticate(&state, request, next, true).await
 }
 
+/// Like [`require_auth`] when an `Authorization` header is present.
+///
+/// A bad header is refused; without one the request passes unauthenticated. For
+/// routes that are public for one purpose and bearer-bound for another (the
+/// desktop passkey flows, C29); handlers take `Option<Extension<AuthUser>>`.
+pub async fn optional_auth(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, AuthError> {
+    if request.headers().contains_key(AUTHORIZATION) {
+        authenticate(&state, request, next, false).await
+    } else {
+        Ok(next.run(request).await)
+    }
+}
+
 async fn authenticate(
     state: &AppState,
     mut request: Request,

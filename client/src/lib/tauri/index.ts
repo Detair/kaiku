@@ -126,3 +126,4 @@ export * from "./websocket";
 export * from "./search";
 export * from "./dms";
 export * from "./webhooks";
+export * from "./passkeys";

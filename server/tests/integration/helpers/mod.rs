@@ -20,6 +20,7 @@ pub mod approvals;
 pub mod attestation;
 pub mod login;
 pub mod migrations;
+pub mod passkeys;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
