@@ -75,6 +75,8 @@ use utoipa::{Modify, OpenApi};
         crate::auth::profile::get_profile,
         crate::auth::profile::update_profile,
         crate::auth::profile::upload_avatar,
+        crate::auth::profile::update_password,
+        crate::auth::profile::remove_password,
         crate::auth::mfa::mfa_setup,
         crate::auth::mfa::mfa_verify,
         crate::auth::mfa::mfa_disable,

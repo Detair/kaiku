@@ -71,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- **Breaking:** changing your password, two-factor settings, recovery codes, linked accounts or other sessions, and deleting your account, now needs a confirmation on your key phone or with a passkey; a password and code alone no longer do. Creating bot tokens and incoming webhooks needs a session signed in with a passkey or your phone.
 - Backup codes are replaced by 10 longer recovery codes, which only start an account recovery (they never sign you in). New passwords are checked against a list of commonly used and leaked passwords.
 - Admins elevate by confirming on their phone (or with a passkey) instead of typing their password and code.
 - Every sign-in now records how strongly it was confirmed; sessions from before this release are limited to chat and calls until you sign in again with a passkey or your phone. Signed-in requests keep working while Valkey is unavailable, and an ended session stays refused.

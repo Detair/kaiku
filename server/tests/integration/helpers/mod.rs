@@ -21,6 +21,7 @@ pub mod attestation;
 pub mod login;
 pub mod migrations;
 pub mod passkeys;
+pub mod tokens;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -35,7 +36,6 @@ use tokio::task::JoinHandle;
 use tower::ServiceExt;
 use uuid::Uuid;
 use vc_server::api::{create_router, AppState, AppStateConfig};
-use vc_server::auth::jwt;
 use vc_server::chat::S3Client;
 use vc_server::config::Config;
 use vc_server::db;
@@ -578,7 +578,7 @@ pub async fn make_admin(pool: &PgPool, user_id: Uuid) {
 /// Generate an access token for the given user, bound to the user's
 /// deterministic test session (DC7; [`create_test_user`] inserts it).
 pub fn generate_access_token(config: &Config, user_id: Uuid) -> String {
-    let pair = jwt::generate_token_pair_for_session(
+    let pair = tokens::token_pair_for_session(
         user_id,
         test_session_id(user_id),
         &config.jwt_private_key,
@@ -670,7 +670,7 @@ async fn session_with_token(
     let session_id = Uuid::now_v7();
     insert_session_row(pool, session_id, user_id, full).await;
 
-    let pair = jwt::generate_token_pair_for_session(
+    let pair = tokens::token_pair_for_session(
         user_id,
         session_id,
         &config.jwt_private_key,
@@ -679,6 +679,80 @@ async fn session_with_token(
     )
     .expect("Failed to generate token pair");
     (session_id, pair.access_token)
+}
+
+/// Turn a test session into a `full` one (as if a key device had created
+/// it), for tests that act from a password sign-in on routes that need a
+/// full session (C27). Its authenticator is the user's fake test device.
+pub async fn make_session_full(pool: &PgPool, sid: Uuid) {
+    sqlx::query(
+        "UPDATE sessions SET assurance = 'full', auth_methods = '{device_key}',
+                authenticator_type = 'key_device',
+                authenticator_id = $2
+          WHERE id = $1",
+    )
+    .bind(sid)
+    .bind(test_authenticator_id(
+        sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM sessions WHERE id = $1")
+            .bind(sid)
+            .fetch_one(pool)
+            .await
+            .expect("session"),
+    ))
+    .execute(pool)
+    .await
+    .expect("make the session full");
+}
+
+/// A step-up grant (F7) for `action`/`target` on the full session `sid`, as
+/// a `device_stepup` would store it. The session's authenticator gets an
+/// active key-device row if it has none (the fake one of a test session),
+/// so `consume_tx` finds it active. For tests of routes behind the step-up
+/// guard; tests of the grant itself use `helpers::login::device_grant`.
+pub async fn grant_step_up(pool: &PgPool, sid: Uuid, action: &str, target: &str) {
+    let (user_id, kind, auth_id): (Uuid, Option<String>, Option<Uuid>) = sqlx::query_as(
+        "SELECT user_id, authenticator_type, authenticator_id FROM sessions WHERE id = $1",
+    )
+    .bind(sid)
+    .fetch_one(pool)
+    .await
+    .expect("session for the grant");
+    let auth_id = auth_id.expect("a full session has an authenticator");
+    if kind.as_deref() == Some("key_device") {
+        let key = p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+        let der = approvals::spki_der(&key);
+        sqlx::query(
+            "INSERT INTO approval_devices
+                (id, user_id, device_id, public_key, public_key_hash, uv_class, label, state,
+                 enrolled_via, activated_at)
+             VALUES ($1, $2, $3, $4, $5, 'per_use', 'Test phone', 'active', 'cli', NOW())
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(auth_id)
+        .bind(user_id)
+        .bind(Uuid::new_v4())
+        .bind(&der)
+        .bind(<sha2::Sha256 as sha2::Digest>::digest(&der).to_vec())
+        .execute(pool)
+        .await
+        .expect("test key device row");
+    }
+    sqlx::query(
+        "INSERT INTO step_up_grants (id, session_id, user_id, action, target_hash, target, via,
+                                     authenticator_type, authenticator_id, created_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'device', $7, $8, NOW(), NOW() + INTERVAL '300 seconds')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(sid)
+    .bind(user_id)
+    .bind(action)
+    .bind(vc_server::approvals::context::target_hash(target).to_vec())
+    .bind(target)
+    .bind(kind.as_deref().unwrap_or("key_device"))
+    .bind(auth_id)
+    .execute(pool)
+    .await
+    .expect("insert step-up grant");
 }
 
 /// Create an elevated admin session (valid for 15 minutes).

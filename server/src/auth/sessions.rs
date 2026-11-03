@@ -9,6 +9,7 @@ use uuid::Uuid;
 use super::error::{AuthError, AuthResult};
 use super::helpers::extract_current_token_hash;
 use super::middleware::AuthUser;
+use super::step_up::{self, StepUpAction, StepUpTarget};
 use super::types::{RevokeAllResponse, SessionInfo, SessionListResponse};
 use super::{queries, ua_parser};
 use crate::api::AppState;
@@ -102,6 +103,8 @@ pub async fn revoke_session(
     headers: HeaderMap,
     jar: CookieJar,
 ) -> AuthResult<StatusCode> {
+    // C27: a full session and the step-up `sessions.end`/id.
+    super::guards::require_full(&auth_user)?;
     // Cannot revoke current session (use logout instead)
     if current_session_id(&state, &auth_user, &headers, &jar).await? == Some(session_id) {
         return Err(AuthError::Forbidden);
@@ -115,8 +118,15 @@ pub async fn revoke_session(
         return Err(AuthError::Forbidden);
     }
 
-    // End it in the revocation order (B.4) and commit.
+    // Consume the grant and end the session in the revocation order (B.4),
+    // in one transaction under the account lock.
+    let target = StepUpTarget::Id(session_id);
     let mut tx = state.db.begin().await?;
+    crate::approvals::transition::lock_accounts(&mut tx, &[auth_user.id]).await?;
+    let label =
+        step_up::target_label_tx(&mut tx, auth_user.id, StepUpAction::SessionsEnd, &target).await?;
+    let grant =
+        step_up::consume_tx(&mut tx, &auth_user, StepUpAction::SessionsEnd, &target).await?;
     super::revocation::end_sessions_tx(
         &mut tx,
         &super::ctx::AuthCtx::from(&state),
@@ -125,7 +135,16 @@ pub async fn revoke_session(
         super::revocation::EndReason::Revoked,
     )
     .await?;
+    let event = step_up::record_action_tx(
+        &mut tx,
+        &auth_user,
+        &grant,
+        StepUpAction::SessionsEnd,
+        &label,
+    )
+    .await?;
     tx.commit().await?;
+    crate::security_events::spawn_delivery(&state, vec![event]);
 
     tracing::info!(user_id = %auth_user.id, session_id = %session_id, "Session revoked");
 
@@ -151,6 +170,8 @@ pub async fn revoke_all_other_sessions(
     headers: HeaderMap,
     jar: CookieJar,
 ) -> AuthResult<Json<RevokeAllResponse>> {
+    // C27: a full session and the step-up `sessions.end`/`others`.
+    super::guards::require_full(&auth_user)?;
     // If we cannot identify the current session, refuse to proceed — otherwise
     // we would delete ALL sessions (including the caller's own).
     let current = current_session_id(&state, &auth_user, &headers, &jar)
@@ -163,6 +184,14 @@ pub async fn revoke_all_other_sessions(
         })?;
 
     let mut tx = state.db.begin().await?;
+    crate::approvals::transition::lock_accounts(&mut tx, &[auth_user.id]).await?;
+    let grant = step_up::consume_tx(
+        &mut tx,
+        &auth_user,
+        StepUpAction::SessionsEnd,
+        &StepUpTarget::Others,
+    )
+    .await?;
     let ended = super::revocation::end_all_sessions_tx(
         &mut tx,
         &super::ctx::AuthCtx::from(&state),
@@ -171,7 +200,16 @@ pub async fn revoke_all_other_sessions(
         super::revocation::EndReason::OthersRevoked,
     )
     .await?;
+    let event = step_up::record_action_tx(
+        &mut tx,
+        &auth_user,
+        &grant,
+        StepUpAction::SessionsEnd,
+        "all other sessions",
+    )
+    .await?;
     tx.commit().await?;
+    crate::security_events::spawn_delivery(&state, vec![event]);
     let revoked_count = ended.len() as i64;
     tracing::info!(user_id = %auth_user.id, revoked_count, "All other sessions revoked");
 

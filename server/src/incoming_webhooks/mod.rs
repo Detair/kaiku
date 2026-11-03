@@ -15,6 +15,7 @@ pub mod queries;
 pub mod slack;
 pub mod types;
 
+use axum::handler::Handler;
 use axum::routing::{get, post};
 use axum::Router;
 pub use error::IncomingWebhookError;
@@ -27,7 +28,10 @@ pub fn management_router() -> Router<AppState> {
     Router::new()
         .route(
             "/api/channels/{channel_id}/webhooks",
-            get(handlers::list_channel_webhooks).post(handlers::create_channel_webhook),
+            // C27: a webhook token only from a full session.
+            get(handlers::list_channel_webhooks).post(handlers::create_channel_webhook.layer(
+                axum::middleware::from_fn(crate::auth::guards::require_full_session),
+            )),
         )
         .route(
             "/api/guilds/{guild_id}/webhooks",

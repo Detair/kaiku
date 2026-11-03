@@ -10,16 +10,21 @@ use fred::prelude::*;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
 
+use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
+use super::factors::Factor;
 use super::helpers::should_return_refresh_token;
 use super::mfa_crypto::encrypt_mfa_secret;
 use super::middleware::AuthUser;
 use super::reauth;
+use super::step_up::{self, StepUpAction, StepUpTarget};
 use super::types::{
     AuthResponse, MfaSetupResponse, MfaVerifyRequest, QrCreateResponse, QrRedeemRequest,
 };
 use crate::api::AppState;
-use crate::db::{find_user_by_id, set_mfa_secret};
+use crate::approvals::transition::lock_accounts;
+use crate::db::find_user_by_id;
+use crate::security_events::{spawn_delivery, EventType};
 
 /// Setup MFA (TOTP).
 ///
@@ -42,6 +47,19 @@ pub async fn mfa_setup(
     State(state): State<AppState>,
     auth_user: AuthUser,
 ) -> AuthResult<Json<MfaSetupResponse>> {
+    // C27: `totp.set` from a full session; the grant is consumed at verify.
+    super::guards::require_full(&auth_user)?;
+    {
+        let mut tx = state.db.begin().await?;
+        step_up::peek_tx(
+            &mut tx,
+            &auth_user,
+            StepUpAction::TotpSet,
+            &StepUpTarget::None,
+        )
+        .await?;
+        tx.commit().await?;
+    }
     // Check if encryption key is configured
     let encryption_key = state
         .config
@@ -105,7 +123,10 @@ pub async fn mfa_setup(
     }))
 }
 
-/// Verify MFA code (TOTP).
+/// Confirm a new TOTP secret (C27 `totp.set`): the code of the pending
+/// secret from `/auth/mfa/setup`, a full session and the step-up grant,
+/// consumed here. A new TOTP generation starts (state `active`, B.1 renewal)
+/// and the event `authenticator_added {type: totp}` is recorded.
 ///
 /// POST /auth/mfa/verify
 #[utoipa::path(
@@ -114,122 +135,145 @@ pub async fn mfa_setup(
     tag = "auth",
     request_body = MfaVerifyRequest,
     responses(
-        (status = 200, description = "MFA verification successful"),
+        (status = 200, description = "TOTP set up"),
+        (status = 401, description = "INVALID_MFA"),
+        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, headers, request), fields(user_id = %auth_user.id))]
+#[tracing::instrument(skip(state, request), fields(user_id = %auth_user.id))]
 pub async fn mfa_verify(
     State(state): State<AppState>,
     auth_user: AuthUser,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<MfaVerifyRequest>,
 ) -> AuthResult<Json<serde_json::Value>> {
-    reauth::ensure_not_locked(&state, auth_user.id).await?;
-
-    // Get user to retrieve encrypted MFA secret (the TOTP check decrypts it)
-    let user = find_user_by_id(&state.db, auth_user.id)
-        .await
-        .map_err(|_| AuthError::Internal("Database error".to_string()))?
-        .ok_or(AuthError::UserNotFound)?;
-
-    // Check if MFA is enabled — either permanently (DB) or pending setup (Redis).
-    let (encrypted_secret, is_pending_setup) = if let Some(secret) = user.mfa_secret {
-        (secret, false)
-    } else {
-        // Check for pending MFA secret in Redis (from mfa_setup)
-        let redis_key = format!("mfa:pending:{}", auth_user.id);
-        let pending: Option<String> =
-            state.redis.get(&redis_key).await.map_err(|e| {
-                AuthError::Internal(format!("Failed to check pending MFA secret: {e}"))
-            })?;
-        match pending {
-            Some(secret) => (secret, true),
-            None => return Err(AuthError::Validation("MFA not enabled".to_string())),
-        }
+    super::guards::require_full(&auth_user)?;
+    let redis_key = format!("mfa:pending:{}", auth_user.id);
+    let pending: Option<String> = state.redis.get(&redis_key).await.map_err(|e| {
+        tracing::error!(error = %e, "Cannot read the pending TOTP secret");
+        AuthError::ServiceUnavailable
+    })?;
+    let Some(encrypted_secret) = pending else {
+        return Err(AuthError::Validation(
+            "Start the authenticator setup first".to_string(),
+        ));
     };
-
-    // Try TOTP code first (accepted once per step: replay protection)
-    let totp_valid = reauth::accept_totp(
+    // Accepted once per step (replay store).
+    if !reauth::accept_totp(
         &state,
         auth_user.id,
         &encrypted_secret,
-        &user.username,
+        &auth_user.username,
         &request.code,
     )
-    .await?;
-
-    if !totp_valid {
-        let client_ip = reauth::client_ip(&state, &headers, addr);
-        reauth::record_failure(&state, auth_user.id, client_ip).await?;
+    .await?
+    {
         return Err(AuthError::InvalidMfaCode);
     }
 
-    // If this was a pending setup, persist the secret to DB and clean up Redis.
-    if is_pending_setup {
-        set_mfa_secret(&state.db, auth_user.id, Some(&encrypted_secret))
-            .await
-            .map_err(|e| AuthError::Internal(format!("Failed to persist MFA secret: {e}")))?;
-
-        let redis_key = format!("mfa:pending:{}", auth_user.id);
-        let _ = state.redis.del::<(), _>(&redis_key).await;
-    }
-
+    let ctx = AuthCtx::from(&state);
+    let mut tx = state.db.begin().await?;
+    lock_accounts(&mut tx, &[auth_user.id]).await?;
+    let grant = step_up::consume_tx(
+        &mut tx,
+        &auth_user,
+        StepUpAction::TotpSet,
+        &StepUpTarget::None,
+    )
+    .await?;
+    super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
+    sqlx::query("UPDATE users SET mfa_secret = $2, updated_at = NOW() WHERE id = $1")
+        .bind(auth_user.id)
+        .bind(&encrypted_secret)
+        .execute(&mut *tx)
+        .await?;
+    super::strong::mark_first_activity(&mut tx, auth_user.id).await?;
+    let events = vec![
+        super::profile::record_own_with(
+            &mut tx,
+            &auth_user,
+            &grant,
+            EventType::AuthenticatorAdded,
+            serde_json::json!({ "type": "totp" }),
+        )
+        .await?,
+        step_up::record_action_tx(&mut tx, &auth_user, &grant, StepUpAction::TotpSet, "").await?,
+    ];
+    tx.commit().await?;
+    let _ = state.redis.del::<(), _>(&redis_key).await;
+    spawn_delivery(&state, events);
     Ok(Json(serde_json::json!({
         "success": true,
         "message": "MFA verification successful"
     })))
 }
 
-/// Disable MFA.
+/// Turn TOTP off (C27 `totp.remove`): a full session and the step-up grant.
+/// A code in the body is accepted and ignored (a code is never a step-up,
+/// F7). Event `authenticator_removed {type: totp, by: self}`.
 ///
 /// POST /auth/mfa/disable
 #[utoipa::path(
     post,
     path = "/auth/mfa/disable",
     tag = "auth",
-    request_body = MfaVerifyRequest,
     responses(
-        (status = 200, description = "MFA disabled successfully"),
+        (status = 200, description = "TOTP turned off"),
+        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, headers, request), fields(user_id = %auth_user.id))]
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
 pub async fn mfa_disable(
     State(state): State<AppState>,
     auth_user: AuthUser,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(request): Json<MfaVerifyRequest>,
 ) -> AuthResult<Json<serde_json::Value>> {
-    // Require MFA verification before disabling (security measure)
-    // First verify the provided code is valid. A lock or a limiter outage
-    // keeps its own answer; every other failure reads as a wrong code.
-    let _verified = mfa_verify(
-        State(state.clone()),
-        auth_user.clone(),
-        ConnectInfo(addr),
-        headers,
-        Json(request),
+    super::guards::require_full(&auth_user)?;
+    let ctx = AuthCtx::from(&state);
+    let mut tx = state.db.begin().await?;
+    lock_accounts(&mut tx, &[auth_user.id]).await?;
+    let grant = step_up::consume_tx(
+        &mut tx,
+        &auth_user,
+        StepUpAction::TotpRemove,
+        &StepUpTarget::None,
     )
-    .await
-    .map_err(|e| match e {
-        AuthError::TooManyAttempts { .. }
-        | AuthError::ServiceUnavailable
-        | AuthError::Internal(_) => e,
-        _ => AuthError::InvalidMfaCode,
-    })?;
-
-    // Clear MFA secret from database
-    set_mfa_secret(&state.db, auth_user.id, None)
-        .await
-        .map_err(|e| AuthError::Internal(format!("Failed to disable MFA: {e}")))?;
-
+    .await?;
+    let had: bool = sqlx::query_scalar("SELECT mfa_secret IS NOT NULL FROM users WHERE id = $1")
+        .bind(auth_user.id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if !had {
+        return Err(AuthError::Validation("MFA not enabled".to_string()));
+    }
+    super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
+    set_mfa_secret_tx(&mut tx, auth_user.id).await?;
+    let events = vec![
+        super::profile::record_own_with(
+            &mut tx,
+            &auth_user,
+            &grant,
+            EventType::AuthenticatorRemoved,
+            serde_json::json!({ "type": "totp", "by": "self" }),
+        )
+        .await?,
+        step_up::record_action_tx(&mut tx, &auth_user, &grant, StepUpAction::TotpRemove, "")
+            .await?,
+    ];
+    tx.commit().await?;
+    spawn_delivery(&state, events);
     Ok(Json(serde_json::json!({
         "success": true,
         "message": "MFA disabled successfully"
     })))
+}
+
+async fn set_mfa_secret_tx(conn: &mut sqlx::PgConnection, user_id: Uuid) -> sqlx::Result<()> {
+    sqlx::query("UPDATE users SET mfa_secret = NULL, updated_at = NOW() WHERE id = $1")
+        .bind(user_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
 }
 
 // ============================================================================

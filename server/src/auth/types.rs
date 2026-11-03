@@ -232,25 +232,19 @@ pub struct UpdateProfileResponse {
     pub updated: Vec<String>,
 }
 
-/// Update password request.
-#[derive(Deserialize, Validate, utoipa::ToSchema)]
+/// `POST /auth/me/password {new_password}` (C27). `current_password` and
+/// `revoke_others` of older clients are ignored: the step-up grant
+/// `password.set` authorises the change.
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdatePasswordRequest {
-    /// Current password.
-    pub current_password: String,
-    /// New password (8-128 characters).
-    #[validate(length(min = 8, max = 128))]
+    /// New password (8–128 characters, blocklist, B.1).
     pub new_password: String,
-    /// Whether to revoke all other sessions after password change.
-    #[serde(default)]
-    pub revoke_others: bool,
 }
 
 impl std::fmt::Debug for UpdatePasswordRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UpdatePasswordRequest")
-            .field("current_password", &"[REDACTED]")
             .field("new_password", &"[REDACTED]")
-            .field("revoke_others", &self.revoke_others)
             .finish()
     }
 }

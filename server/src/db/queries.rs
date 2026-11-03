@@ -117,7 +117,7 @@ pub async fn list_user_identities(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
     .map_err(db_error!("list_user_identities", user_id = %user_id))
 }
 
-/// Result of [`unlink_identity_guarded`].
+/// Result of [`unlink_identity_tx`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum UnlinkOutcome {
     /// The identity was removed.
@@ -128,24 +128,20 @@ pub enum UnlinkOutcome {
     WouldLockOut,
 }
 
-/// Unlink an identity atomically.
+/// Unlink `identity_id` from `user_id` inside the caller's transaction.
 ///
-/// Runs the ownership check, the last-login-method guard, and the delete in a
-/// single transaction that locks the owning user row, so concurrent unlinks for
-/// the same account cannot race past the guard and strand a passwordless user
-/// with zero login methods.
-pub async fn unlink_identity_guarded(
-    pool: &PgPool,
+/// The caller holds the account lock. Refused when it is the account's last
+/// way to sign in: no password, no other identity and no active strong
+/// authenticator (B.1).
+pub async fn unlink_identity_tx(
+    conn: &mut sqlx::PgConnection,
     user_id: Uuid,
     identity_id: Uuid,
 ) -> sqlx::Result<UnlinkOutcome> {
-    let mut tx = pool.begin().await?;
-
-    // Lock the user row to serialize concurrent unlinks for this account.
     let password_hash: Option<Option<String>> =
-        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR UPDATE")
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
             .bind(user_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut *conn)
             .await?;
     let Some(password_hash) = password_hash else {
         return Ok(UnlinkOutcome::NotFound);
@@ -157,20 +153,21 @@ pub async fn unlink_identity_guarded(
     )
     .bind(identity_id)
     .bind(user_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
     if !owned {
         return Ok(UnlinkOutcome::NotFound);
     }
 
-    // A passwordless account must keep at least one identity.
+    // A passwordless account must keep a way to sign in.
     if password_hash.is_none() {
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM user_identities WHERE user_id = $1")
                 .bind(user_id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut *conn)
                 .await?;
-        if count <= 1 {
+        let strong = crate::auth::strong::active_strong_count(&mut *conn, user_id).await?;
+        if count <= 1 && strong == 0 {
             return Ok(UnlinkOutcome::WouldLockOut);
         }
     }
@@ -178,9 +175,8 @@ pub async fn unlink_identity_guarded(
     sqlx::query("DELETE FROM user_identities WHERE id = $1 AND user_id = $2")
         .bind(identity_id)
         .bind(user_id)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
-    tx.commit().await?;
     Ok(UnlinkOutcome::Deleted)
 }
 

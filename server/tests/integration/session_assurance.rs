@@ -15,8 +15,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use vc_server::auth::client_class::ClientClass;
 use vc_server::auth::ctx::AuthCtx;
+use vc_server::auth::hash_password;
 use vc_server::auth::session_issue::{issue_session, NewSession, SessionClient, SignInMethod};
-use vc_server::auth::{hash_password, jwt};
 use vc_server::system_account::SYSTEM_USER_ID;
 
 use super::helpers::login::peer_request;
@@ -293,7 +293,7 @@ async fn missing_row_and_missing_sid_are_refused(pool: PgPool) {
     let (user, _) = create_test_user(&pool).await;
 
     // A valid signature for a session that has no row.
-    let ghost = jwt::generate_token_pair_for_session(
+    let ghost = super::helpers::tokens::token_pair_for_session(
         user,
         Uuid::new_v4(),
         &app.config.jwt_private_key,
@@ -333,7 +333,7 @@ async fn missing_row_and_missing_sid_are_refused(pool: PgPool) {
     // Another user's session id.
     let (other, _) = create_test_user(&pool).await;
     let (other_sid, _) = create_session_with_token(&pool, &app.config, other).await;
-    let stolen_sid = jwt::generate_token_pair_for_session(
+    let stolen_sid = super::helpers::tokens::token_pair_for_session(
         user,
         other_sid,
         &app.config.jwt_private_key,

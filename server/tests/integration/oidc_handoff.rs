@@ -327,7 +327,9 @@ async fn test_browser_login_flow_unchanged(pool: PgPool) {
 async fn test_desktop_link_echoes_the_flow_value(pool: PgPool) {
     let ctx = setup(&pool).await;
     let user = create_user(&ctx.pool, true).await;
-    let (_, token) = super::helpers::create_session_with_token(&ctx.pool, &ctx.config, user).await;
+    let (sid, token) =
+        super::helpers::create_session_with_token(&ctx.pool, &ctx.config, user).await;
+    super::helpers::grant_step_up(&ctx.pool, sid, "identity.link", "").await;
 
     let return_to = desktop_return();
     let resp = client()

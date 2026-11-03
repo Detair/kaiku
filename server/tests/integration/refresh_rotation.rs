@@ -352,7 +352,7 @@ async fn legacy_refresh_token_rotates_once(pool: PgPool) {
     let (user, _) = password_user(&pool).await;
     // A token pair of the old format: the refresh JWT has no `sid`/`gen`.
     let sid = Uuid::new_v4();
-    let pair = vc_server::auth::jwt::generate_token_pair_for_session(
+    let pair = super::helpers::tokens::token_pair_for_session(
         user,
         sid,
         &app.config.jwt_private_key,

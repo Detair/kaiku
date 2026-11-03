@@ -1,23 +1,19 @@
 //! Re-authentication for sensitive actions (C24).
 //!
-//! An elevation belongs to the access token's session, a TOTP code is
-//! accepted once, and failed attempts on `POST /auth/me/password` are
-//! throttled.
+//! An elevation belongs to the access token's session and a TOTP code is
+//! accepted once at sign-in.
 //!
 //! Each test runs a real HTTP server (handlers read the peer address) on a
 //! fresh per-test database.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
-use vc_server::api::{create_router, AppState, AppStateConfig};
+use vc_server::api::AppState;
 use vc_server::config::Config;
-use vc_server::ratelimit::{RateLimitConfig, RateLimiter, RateLimits};
-use vc_server::voice::sfu::SfuServer;
 
 use super::helpers::{
     create_session_with_token, make_admin, spawn_test_server, TestApp, TestServer,
@@ -30,42 +26,6 @@ async fn plain_server(pool: &PgPool) -> (TestServer, Arc<Config>, AppState) {
     let app = TestApp::with_pool(pool.clone()).await;
     let server = spawn_test_server(app.router.clone()).await;
     (server, app.config, app.state)
-}
-
-/// A server with the default rate limits and failed-attempt blocking.
-async fn rate_limited_server(pool: &PgPool) -> (TestServer, Arc<Config>) {
-    let config = Config::default_for_test();
-    let redis = vc_server::db::create_redis_client(&config.redis_url)
-        .await
-        .expect("Failed to connect to test Redis");
-    let sfu = SfuServer::new(Arc::new(config.clone()), None).expect("Failed to create SfuServer");
-    let mut limiter = RateLimiter::new(
-        redis.clone(),
-        RateLimitConfig {
-            enabled: true,
-            redis_key_prefix: format!("test:rl:{}", Uuid::new_v4()),
-            fail_open: false,
-            trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
-            allowlist: HashSet::new(),
-            limits: RateLimits::default(),
-        },
-    );
-    limiter.init().await.expect("Failed to initialize limiter");
-
-    let state = AppState::new(AppStateConfig {
-        db: pool.clone(),
-        redis,
-        config: config.clone(),
-        s3: None,
-        sfu,
-        rate_limiter: Some(limiter),
-        screen_share_limiter: None,
-        email: None,
-        oidc_manager: None,
-        http_client: reqwest::Client::new(),
-    });
-    let server = spawn_test_server(create_router(state)).await;
-    (server, Arc::new(config))
 }
 
 /// Create a local user whose password is [`PASSWORD`]; returns `(id, username)`.
@@ -113,25 +73,6 @@ fn next_step_code(totp: &TOTP) -> String {
         .expect("clock")
         .as_secs();
     totp.generate(now + 30)
-}
-
-async fn post_json(
-    server: &TestServer,
-    path: &str,
-    token: &str,
-    body: Option<Value>,
-) -> (u16, Value) {
-    let client = reqwest::Client::new();
-    let mut req = client
-        .post(format!("{}{path}", server.url))
-        .bearer_auth(token);
-    if let Some(body) = body {
-        req = req.json(&body);
-    }
-    let resp = req.send().await.expect("request");
-    let status = resp.status().as_u16();
-    let json = resp.json::<Value>().await.unwrap_or(Value::Null);
-    (status, json)
 }
 
 async fn get_json(server: &TestServer, path: &str, token: &str) -> (u16, Value) {
@@ -183,48 +124,6 @@ async fn test_de_elevation_is_bound_to_session(pool: PgPool) {
     assert_eq!(status, 200, "session B stays elevated: {body}");
     assert!(!vc_server::admin::is_elevated_admin(&state.redis, &pool, admin, session_a).await);
     assert!(vc_server::admin::is_elevated_admin(&state.redis, &pool, admin, session_b).await);
-}
-
-#[sqlx::test]
-async fn test_password_change_is_rate_limited(pool: PgPool) {
-    let (server, config) = rate_limited_server(&pool).await;
-    let (user, _) = create_user_with_password(&pool).await;
-    let (_, token) = create_session_with_token(&pool, &config, user).await;
-    let wrong = json!({ "current_password": "wrong-password", "new_password": "Brand-New-Pass-1" });
-
-    for attempt in 1..=10 {
-        let (status, body) =
-            post_json(&server, "/auth/me/password", &token, Some(wrong.clone())).await;
-        assert_eq!(status, 401, "attempt {attempt}: {body}");
-    }
-
-    let (status, body) = post_json(&server, "/auth/me/password", &token, Some(wrong)).await;
-    assert_eq!(status, 429, "11th attempt: {body}");
-
-    let (status, body) = post_json(
-        &server,
-        "/auth/me/password",
-        &token,
-        Some(json!({ "current_password": PASSWORD, "new_password": "Brand-New-Pass-1" })),
-    )
-    .await;
-    assert_eq!(status, 429, "a correct attempt is still refused: {body}");
-}
-
-/// A TOTP code is accepted once on `/auth/mfa/verify` (replay store).
-#[sqlx::test]
-async fn test_totp_code_is_accepted_once(pool: PgPool) {
-    let (server, config, _) = plain_server(&pool).await;
-    let (user, username) = create_user_with_password(&pool).await;
-    let totp = enable_mfa(&pool, &config, user, &username).await;
-    let (_, token) = create_session_with_token(&pool, &config, user).await;
-    let code = totp.generate_current().expect("code");
-    let body = json!({ "code": code });
-
-    let (status, first) = post_json(&server, "/auth/mfa/verify", &token, Some(body.clone())).await;
-    assert_eq!(status, 200, "{first}");
-    let (status, body) = post_json(&server, "/auth/mfa/verify", &token, Some(body)).await;
-    assert_eq!(status, 401, "replayed code: {body}");
 }
 
 /// A TOTP code works once at sign-in: the same code again is refused with the

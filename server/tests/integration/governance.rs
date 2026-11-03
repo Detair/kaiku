@@ -148,7 +148,7 @@ async fn test_request_deletion_requires_confirm(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn test_request_deletion_requires_password(pool: PgPool) {
+async fn test_request_deletion_requires_a_step_up(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
@@ -166,11 +166,13 @@ async fn test_request_deletion_requires_password(pool: PgPool) {
         .unwrap();
 
     let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 400, "Should require password for local auth");
+    // C27: the step-up `account.delete`, not the password.
+    assert_eq!(resp.status(), 403, "Should require a step-up");
+    assert_eq!(body_to_json(resp).await["error"], "STEP_UP_REQUIRED");
 }
 
 #[sqlx::test]
-async fn test_request_deletion_wrong_password(pool: PgPool) {
+async fn test_request_deletion_ignores_the_password(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
@@ -188,7 +190,9 @@ async fn test_request_deletion_wrong_password(pool: PgPool) {
         .unwrap();
 
     let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 401, "Should reject wrong password");
+    // A password (right or wrong) is no step-up (F7).
+    assert_eq!(resp.status(), 403, "A password opens nothing");
+    assert_eq!(body_to_json(resp).await["error"], "STEP_UP_REQUIRED");
 }
 
 #[sqlx::test]
@@ -197,6 +201,13 @@ async fn test_request_deletion_success(pool: PgPool) {
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
+    super::helpers::grant_step_up(
+        &app.pool,
+        super::helpers::test_session_id(user_id),
+        "account.delete",
+        "",
+    )
+    .await;
 
     let body = serde_json::json!({
         "password": password,
@@ -269,6 +280,13 @@ async fn test_cancel_deletion(pool: PgPool) {
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
+    super::helpers::grant_step_up(
+        &app.pool,
+        super::helpers::test_session_id(user_id),
+        "account.delete",
+        "",
+    )
+    .await;
 
     // First, request deletion
     let body = serde_json::json!({
@@ -332,6 +350,13 @@ async fn test_duplicate_deletion_request(pool: PgPool) {
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
+    super::helpers::grant_step_up(
+        &app.pool,
+        super::helpers::test_session_id(user_id),
+        "account.delete",
+        "",
+    )
+    .await;
 
     let body = serde_json::json!({
         "password": password,
@@ -377,6 +402,13 @@ async fn test_profile_shows_deletion_scheduled(pool: PgPool) {
     let password = "test_password_123!";
     let (user_id, _) = create_test_user_with_password(&app.pool, password).await;
     let token = generate_access_token(&app.config, user_id);
+    super::helpers::grant_step_up(
+        &app.pool,
+        super::helpers::test_session_id(user_id),
+        "account.delete",
+        "",
+    )
+    .await;
 
     // Request deletion
     let body = serde_json::json!({

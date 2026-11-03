@@ -30,7 +30,7 @@ const STEPUP_TTL_SECS: i64 = 120;
 /// the caller's own account (its sessions and key devices) are read only
 /// from that account; admin targets name any account, so `step_up` lets
 /// only system admins get here with an `admin.*` action.
-async fn target_label(
+pub(crate) async fn target_label(
     conn: &mut sqlx::PgConnection,
     user_id: uuid::Uuid,
     action: StepUpAction,
@@ -82,6 +82,15 @@ async fn target_label(
         .await?
         .flatten()
         .map(|ua| crate::auth::ua_parser::parse_device_name(&ua)),
+        StepUpAction::IdentityUnlink => {
+            sqlx::query_scalar(
+                "SELECT provider_slug FROM user_identities WHERE id = $1 AND user_id = $2",
+            )
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?
+        }
         _ => None,
     };
     Ok(label.unwrap_or_default())

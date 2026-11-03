@@ -217,7 +217,7 @@ pub async fn passkey_session(
     .execute(pool)
     .await
     .expect("insert passkey session");
-    let pair = vc_server::auth::jwt::generate_token_pair_for_session(
+    let pair = super::tokens::token_pair_for_session(
         user_id,
         sid,
         &config.jwt_private_key,

@@ -206,37 +206,6 @@ async fn test_ban_ends_existing_tokens_and_sockets(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn test_password_change_revoke_others_with_bearer_only(pool: PgPool) {
-    let fx = setup(&pool).await;
-    let (_user_id, username) = create_password_user(&pool).await;
-    let a = login(&fx.server, &username).await;
-    let b = login(&fx.server, &username).await;
-
-    let resp = reqwest::Client::new()
-        .post(format!("{}/auth/me/password", fx.server.url))
-        .bearer_auth(&a.access)
-        .json(&serde_json::json!({
-            "current_password": PASSWORD,
-            "new_password": "another-pass-456",
-            "revoke_others": true,
-        }))
-        .send()
-        .await
-        .expect("POST /auth/me/password");
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    assert_eq!(
-        me_status(&fx.server, &b.access).await,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        refresh(&fx.server, &b.refresh).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(me_status(&fx.server, &a.access).await, StatusCode::OK);
-}
-
-#[sqlx::test]
 async fn test_revoke_one_session_closes_only_that_socket(pool: PgPool) {
     let fx = setup(&pool).await;
     let (_user_id, username) = create_password_user(&pool).await;
@@ -248,6 +217,10 @@ async fn test_revoke_one_session_closes_only_that_socket(pool: PgPool) {
     let mut ws_a = connect_ready(&fx.server, &a.access).await;
     let mut ws_b = connect_ready(&fx.server, &b.access).await;
 
+    // C27: a full session and the step-up `sessions.end`/id.
+    let sid_a = session_id(&fx.app, &a.access);
+    super::helpers::make_session_full(&fx.app.pool, sid_a).await;
+    super::helpers::grant_step_up(&fx.app.pool, sid_a, "sessions.end", &sid_b.to_string()).await;
     let resp = reqwest::Client::new()
         .delete(format!("{}/auth/sessions/{sid_b}", fx.server.url))
         .bearer_auth(&a.access)
@@ -278,6 +251,10 @@ async fn test_revoke_after_refresh_closes_socket(pool: PgPool) {
     let sid_b = session_id(&fx.app, &new_access);
     assert_eq!(sid_b, session_id(&fx.app, &b.access));
 
+    // C27: a full session and the step-up `sessions.end`/id.
+    let sid_a = session_id(&fx.app, &a.access);
+    super::helpers::make_session_full(&fx.app.pool, sid_a).await;
+    super::helpers::grant_step_up(&fx.app.pool, sid_a, "sessions.end", &sid_b.to_string()).await;
     let resp = reqwest::Client::new()
         .delete(format!("{}/auth/sessions/{sid_b}", fx.server.url))
         .bearer_auth(&a.access)
@@ -332,6 +309,10 @@ async fn test_revoked_session_refresh_and_ws_are_refused(pool: PgPool) {
     let b = login(&fx.server, &username).await;
     let sid_b = session_id(&fx.app, &b.access);
 
+    // C27: a full session and the step-up `sessions.end`/id.
+    let sid_a = session_id(&fx.app, &a.access);
+    super::helpers::make_session_full(&fx.app.pool, sid_a).await;
+    super::helpers::grant_step_up(&fx.app.pool, sid_a, "sessions.end", &sid_b.to_string()).await;
     let resp = reqwest::Client::new()
         .delete(format!("{}/auth/sessions/{sid_b}", fx.server.url))
         .bearer_auth(&a.access)
@@ -639,6 +620,9 @@ async fn test_deletion_retry_ends_sessions_again(pool: PgPool) {
     .execute(&pool)
     .await
     .unwrap();
+    // The route needs a full session (C27); the duplicate check answers
+    // before the step-up.
+    super::helpers::make_session_full(&fx.app.pool, session_id(&fx.app, &session.access)).await;
 
     let resp = reqwest::Client::new()
         .post(format!("{}/api/me/delete-account", fx.server.url))
@@ -884,11 +868,14 @@ async fn test_ending_sessions_clears_cached_elevation(pool: PgPool) {
     let (user_id, username) = create_password_user(&pool).await;
     let a = login(&fx.server, &username).await;
     let b = login(&fx.server, &username).await;
-    let sid_a = session_id(&fx.app, &a.access);
     let sid_b = session_id(&fx.app, &b.access);
 
     // Single session.
     cache_elevation(&fx, sid_b).await;
+    // C27: a full session and the step-up `sessions.end`/id.
+    let sid_a = session_id(&fx.app, &a.access);
+    super::helpers::make_session_full(&fx.app.pool, sid_a).await;
+    super::helpers::grant_step_up(&fx.app.pool, sid_a, "sessions.end", &sid_b.to_string()).await;
     let resp = reqwest::Client::new()
         .delete(format!("{}/auth/sessions/{sid_b}", fx.server.url))
         .bearer_auth(&a.access)

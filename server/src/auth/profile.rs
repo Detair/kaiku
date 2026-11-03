@@ -1,23 +1,24 @@
 //! User profile handlers (get, update, avatar, password).
 
-use std::net::SocketAddr;
-
-use axum::extract::{ConnectInfo, Multipart, State};
-use axum::http::HeaderMap;
+use axum::extract::{Multipart, State};
 use axum::Json;
-use axum_extra::extract::CookieJar;
 use chrono::Utc;
 use validator::Validate;
 
+use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
+use super::factors::Factor;
 use super::middleware::AuthUser;
 use super::password::hash_password;
 use super::queries;
+use super::step_up::{self, StepUpAction, StepUpTarget};
 use super::types::{
     UpdatePasswordRequest, UpdateProfileRequest, UpdateProfileResponse, UserProfile,
 };
 use crate::api::AppState;
+use crate::approvals::transition::lock_accounts;
 use crate::db::{email_exists, find_user_by_id, update_user_avatar, update_user_profile};
+use crate::security_events::{record, spawn_delivery, Actor, EventType, NewSecurityEvent};
 use crate::util::format_file_size;
 use crate::ws::broadcast_user_patch;
 
@@ -315,7 +316,10 @@ pub async fn update_profile(
     }))
 }
 
-/// Update current user password.
+/// Set or change the password (C27): a full session and the step-up
+/// `password.set`; the blocklist applies (B.1). A new password generation
+/// starts (B.7 rule 2); events `password_set` / `password_changed` and
+/// `step_up_action`.
 ///
 /// POST /auth/me/password
 #[utoipa::path(
@@ -324,102 +328,156 @@ pub async fn update_profile(
     tag = "auth",
     request_body = UpdatePasswordRequest,
     responses(
-        (status = 200, description = "Password updated successfully"),
-        (status = 401, description = "Invalid current password"),
-        (status = 429, description = "Too many failed attempts"),
+        (status = 200, description = "Password set"),
+        (status = 400, description = "PASSWORD_REJECTED {reason}"),
+        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, jar, body, headers), fields(user_id = %auth_user.id))]
+#[tracing::instrument(skip(state, body), fields(user_id = %auth_user.id))]
 pub async fn update_password(
     State(state): State<AppState>,
     auth_user: AuthUser,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    jar: CookieJar,
     Json(body): Json<UpdatePasswordRequest>,
 ) -> AuthResult<Json<serde_json::Value>> {
-    body.validate()
-        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
-
-    super::reauth::ensure_not_locked(&state, auth_user.id).await?;
-
-    let user = find_user_by_id(&state.db, auth_user.id)
+    super::guards::require_full(&auth_user)?;
+    let ctx = AuthCtx::from(&state);
+    let server_name = {
+        let mut conn = state.db.acquire().await?;
+        crate::approvals::server_name(&mut conn).await?
+    };
+    super::password_policy::check(
+        &body.new_password,
+        &super::password_policy::PolicyContext {
+            username: &auth_user.username,
+            display_name: &auth_user.display_name,
+            server_name: &server_name,
+        },
+    )
+    .map_err(AuthError::PasswordRejected)?;
+    let password = body.new_password.clone();
+    let new_hash = tokio::task::spawn_blocking(move || hash_password(&password))
         .await
-        .map_err(AuthError::Database)?
-        .ok_or(AuthError::UserNotFound)?;
+        .map_err(|e| AuthError::Internal(format!("password hashing failed: {e}")))?
+        .map_err(|_| AuthError::PasswordHash)?;
 
-    let current_hash = user
-        .password_hash
-        .as_ref()
-        .ok_or(AuthError::InvalidCredentials)?;
-
-    if !super::reauth::password_matches(&body.current_password, current_hash).await? {
-        let client_ip = super::reauth::client_ip(&state, &headers, addr);
-        super::reauth::record_failure(&state, auth_user.id, client_ip).await?;
-        return Err(AuthError::InvalidCredentials);
-    }
-
-    // A forced change must replace the temporary password the admin handed out.
-    if user.must_change_password && body.new_password == body.current_password {
-        return Err(AuthError::Validation(
-            "new_password: must differ from the temporary password".to_string(),
-        ));
-    }
-
-    let new_hash = hash_password(&body.new_password).map_err(|_| AuthError::PasswordHash)?;
-
-    // Identify the caller's own session before changing anything (the access
-    // token's `sid`, or the refresh token sent as cookie/header). Without it
-    // the other sessions cannot be told apart from the caller's, so the
-    // request is refused rather than silently keeping them.
-    let keep = if body.revoke_others {
-        let current = super::sessions::current_session_id(&state, &auth_user, &headers, &jar)
-            .await?
-            .ok_or_else(|| {
-                tracing::warn!(
-                    user_id = %auth_user.id,
-                    "Cannot identify current session for password-change revocation"
-                );
-                AuthError::Validation(
-                    "Cannot identify current session. Please provide a refresh token via cookie or X-Refresh-Token header.".to_string(),
-                )
-            })?;
-        Some(current)
-    } else {
-        None
-    };
-
-    // Transaction: update password (clearing a pending forced change) +
-    // optionally delete the other sessions
-    let mut tx = state.db.begin().await.map_err(AuthError::Database)?;
-
+    let mut tx = state.db.begin().await?;
+    lock_accounts(&mut tx, &[auth_user.id]).await?;
+    let grant = step_up::consume_tx(
+        &mut tx,
+        &auth_user,
+        StepUpAction::PasswordSet,
+        &StepUpTarget::None,
+    )
+    .await?;
+    let had: bool = sqlx::query_scalar("SELECT password_hash IS NOT NULL FROM users WHERE id = $1")
+        .bind(auth_user.id)
+        .fetch_one(&mut *tx)
+        .await?;
+    super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Password).await?;
     queries::update_password_hash_tx(&mut tx, auth_user.id, &new_hash).await?;
-
-    let ended = match keep {
-        Some(keep) => {
-            super::revocation::end_all_sessions_tx(
-                &mut tx,
-                &super::ctx::AuthCtx::from(&state),
-                auth_user.id,
-                Some(keep),
-                super::revocation::EndReason::PasswordChanged,
-            )
-            .await?
-        }
-        None => Vec::new(),
+    let event_type = if had {
+        EventType::PasswordChanged
+    } else {
+        EventType::PasswordSet
     };
-
-    tx.commit().await.map_err(AuthError::Database)?;
-    let revoked_count = ended.len() as u64;
-
-    tracing::info!(user_id = %auth_user.id, revoked_others = body.revoke_others, revoked_count, "Password updated");
-
+    let mut events = vec![record_own(&mut tx, &auth_user, &grant, event_type).await?];
+    events.push(
+        step_up::record_action_tx(&mut tx, &auth_user, &grant, StepUpAction::PasswordSet, "")
+            .await?,
+    );
+    tx.commit().await?;
+    spawn_delivery(&state, events);
+    tracing::info!(user_id = %auth_user.id, "Password set");
     Ok(Json(serde_json::json!({
         "success": true,
         "message": "Password updated successfully.",
-        "revoked_count": revoked_count
     })))
+}
+
+/// Remove the password (C27): a full session and the step-up
+/// `password.remove`; refused while the account has no active strong
+/// authenticator (409 `LAST_STRONG_AUTHENTICATOR`, B.1: never password-only
+/// or nothing). Event `password_removed`.
+///
+/// DELETE /auth/me/password
+#[utoipa::path(
+    delete,
+    path = "/auth/me/password",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Password removed"),
+        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
+        (status = 409, description = "LAST_STRONG_AUTHENTICATOR"),
+    ),
+    security(("bearer_auth" = [])),
+)]
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
+pub async fn remove_password(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> AuthResult<axum::http::StatusCode> {
+    super::guards::require_full(&auth_user)?;
+    let ctx = AuthCtx::from(&state);
+    let mut tx = state.db.begin().await?;
+    lock_accounts(&mut tx, &[auth_user.id]).await?;
+    if super::strong::active_strong_count(&mut tx, auth_user.id).await? == 0 {
+        return Err(AuthError::LastStrongAuthenticator);
+    }
+    let grant = step_up::consume_tx(
+        &mut tx,
+        &auth_user,
+        StepUpAction::PasswordRemove,
+        &StepUpTarget::None,
+    )
+    .await?;
+    super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Password).await?;
+    sqlx::query(
+        "UPDATE users SET password_hash = NULL, must_change_password = false, updated_at = NOW()
+          WHERE id = $1",
+    )
+    .bind(auth_user.id)
+    .execute(&mut *tx)
+    .await?;
+    let mut events =
+        vec![record_own(&mut tx, &auth_user, &grant, EventType::PasswordRemoved).await?];
+    events.push(
+        step_up::record_action_tx(
+            &mut tx,
+            &auth_user,
+            &grant,
+            StepUpAction::PasswordRemove,
+            "",
+        )
+        .await?,
+    );
+    tx.commit().await?;
+    spawn_delivery(&state, events);
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// Record an own-account event of the caller's session and grant.
+pub(super) async fn record_own(
+    conn: &mut sqlx::PgConnection,
+    auth: &AuthUser,
+    grant: &step_up::ConsumedGrant,
+    event_type: EventType,
+) -> sqlx::Result<uuid::Uuid> {
+    record_own_with(conn, auth, grant, event_type, serde_json::json!({})).await
+}
+
+/// [`record_own`] with `details`.
+pub(super) async fn record_own_with(
+    conn: &mut sqlx::PgConnection,
+    auth: &AuthUser,
+    grant: &step_up::ConsumedGrant,
+    event_type: EventType,
+    details: serde_json::Value,
+) -> sqlx::Result<uuid::Uuid> {
+    let mut ev = NewSecurityEvent::new(auth.id, event_type, Actor::User(auth.id), details);
+    ev.session_id = auth.session_id;
+    ev.authenticator = Some(grant.by);
+    record(conn, ev).await
 }
 
 #[cfg(test)]

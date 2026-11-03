@@ -297,19 +297,9 @@ async fn pending_user_only_reaches_allowed_routes(pool: PgPool) {
     assert_eq!(refreshed["password_change_required"], true);
     let access = refreshed["access_token"].as_str().unwrap().to_string();
 
-    // Re-using the temporary password is rejected.
-    let resp = client
-        .post(format!("{}/auth/me/password", server.url))
-        .bearer_auth(&access)
-        .json(&serde_json::json!({
-            "current_password": TEMP_PASSWORD,
-            "new_password": TEMP_PASSWORD,
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-
+    // v1.0 (C27): setting a password needs a full session and the step-up
+    // `password.set`; a temporary-password sign-in is probation, so the old
+    // forced change is refused (temporary passwords go away in Task 23).
     let resp = client
         .post(format!("{}/auth/me/password", server.url))
         .bearer_auth(&access)
@@ -320,32 +310,9 @@ async fn pending_user_only_reaches_allowed_routes(pool: PgPool) {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // The same access token now reaches the rest of the API.
-    let resp = client
-        .get(format!("{}/auth/me", server.url))
-        .bearer_auth(&access)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let me: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(me["password_change_required"], false);
-    let resp = client
-        .get(format!("{}/api/guilds", server.url))
-        .bearer_auth(&access)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let body: serde_json::Value = login(&server, "oma", NEW_PASSWORD)
-        .await
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(body["password_change_required"], false);
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "FULL_SESSION_REQUIRED");
 }
 
 #[sqlx::test]
@@ -662,17 +629,12 @@ async fn test_create_user_joins_requested_guilds(pool: PgPool) {
         .unwrap();
     let access = login_body["access_token"].as_str().unwrap();
     let client = reqwest::Client::new();
-    let resp = client
-        .post(format!("{}/auth/me/password", server.url))
-        .bearer_auth(access)
-        .json(&serde_json::json!({
-            "current_password": TEMP_PASSWORD,
-            "new_password": NEW_PASSWORD,
-        }))
-        .send()
+    // The forced change needs a full session now (C27); clear the flag as
+    // the v1.0 upgrade does.
+    sqlx::query("UPDATE users SET must_change_password = false WHERE username = 'oma'")
+        .execute(&pool)
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
     let resp = client
         .get(format!("{}/api/guilds", server.url))
         .bearer_auth(access)

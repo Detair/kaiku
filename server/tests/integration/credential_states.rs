@@ -11,12 +11,11 @@ use uuid::Uuid;
 use vc_server::auth::ctx::AuthCtx;
 use vc_server::auth::factors::{self, ExitPath, Factor, FactorRef, FactorState, StateCause};
 use vc_server::auth::recovery_codes;
-use vc_server::auth::step_up::{grant_tx, StepUpAction, StepUpTarget, StepUpVia};
-use vc_server::auth::strong::AuthenticatorRef;
+use vc_server::auth::step_up::StepUpAction;
 use vc_server::security_events::Actor;
 
 use super::helpers::approvals::KeyDeviceFixture;
-use super::helpers::login::peer_request;
+use super::helpers::login::{device_grant, peer_request};
 use super::helpers::{
     body_to_json_lenient, create_probation_session_with_token, create_test_user, TestApp,
 };
@@ -30,42 +29,6 @@ async fn call(app: &TestApp, method: Method, uri: &str, token: &str, body: Value
     let resp = app.oneshot(req).await;
     let status = resp.status().as_u16();
     (status, body_to_json_lenient(resp).await)
-}
-
-/// The `AuthUser` `require_auth` builds for the session `sid`.
-pub async fn auth_user(app: &TestApp, sid: Uuid) -> vc_server::auth::AuthUser {
-    let s = vc_server::auth::session_check::load_live(&app.pool, sid)
-        .await
-        .unwrap()
-        .expect("live session");
-    let meta = vc_server::auth::SessionMeta::from(&s);
-    let mut auth = vc_server::auth::AuthUser::from(s.user);
-    auth.session_id = Some(meta.id);
-    auth.session = Some(meta);
-    auth
-}
-
-/// A device step-up grant for `action`/`target` on the key device's session.
-pub async fn device_grant(
-    app: &TestApp,
-    dev: &KeyDeviceFixture,
-    action: StepUpAction,
-    target: &str,
-) {
-    let auth = auth_user(app, dev.session_id.unwrap()).await;
-    let target = StepUpTarget::parse(action, target).unwrap();
-    let mut tx = app.pool.begin().await.unwrap();
-    grant_tx(
-        &mut tx,
-        &auth,
-        action,
-        &target,
-        StepUpVia::Device,
-        AuthenticatorRef::key_device(dev.row_id),
-    )
-    .await
-    .expect("grant");
-    tx.commit().await.unwrap();
 }
 
 async fn generations(pool: &PgPool, user: Uuid) -> (i64, i64, i64) {

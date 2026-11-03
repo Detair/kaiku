@@ -12,7 +12,8 @@ use super::types::{
     CancelDeletionResponse, DeleteAccountRequest, DeleteAccountResponse, ExportJobResponse,
 };
 use crate::api::AppState;
-use crate::auth::{verify_password, AuthUser};
+use crate::auth::step_up::{self, StepUpAction, StepUpTarget};
+use crate::auth::AuthUser;
 use crate::db;
 
 // ============================================================================
@@ -229,6 +230,9 @@ pub async fn request_deletion(
     auth: AuthUser,
     Json(body): Json<DeleteAccountRequest>,
 ) -> Result<Json<DeleteAccountResponse>, GovernanceError> {
+    // C27: a full session and the step-up `account.delete` (the password is
+    // no longer asked; `password` in the body is ignored).
+    crate::auth::guards::require_full(&auth)?;
     // Verify confirmation
     if body.confirm != "DELETE" {
         return Err(GovernanceError::Validation(
@@ -250,27 +254,6 @@ pub async fn request_deletion(
         return Err(GovernanceError::DeletionAlreadyScheduled);
     }
 
-    // Verify password (local auth) or confirmation (OIDC)
-    match user.auth_method {
-        db::AuthMethod::Local => {
-            let password = body.password.as_deref().ok_or(GovernanceError::Validation(
-                "Password is required".to_string(),
-            ))?;
-            let password_hash = user
-                .password_hash
-                .as_deref()
-                .ok_or(GovernanceError::PasswordInvalid)?;
-            let valid = verify_password(password, password_hash)
-                .map_err(|_| GovernanceError::PasswordInvalid)?;
-            if !valid {
-                return Err(GovernanceError::PasswordInvalid);
-            }
-        }
-        db::AuthMethod::Oidc => {
-            // OIDC users don't have passwords — confirmation string is sufficient
-        }
-    }
-
     // Check guild ownership — user must transfer all guilds first
     let owned_guilds = queries::list_owned_guilds(&state.db, auth.id).await?;
 
@@ -283,7 +266,22 @@ pub async fn request_deletion(
     let now = Utc::now();
     let scheduled_at = now + Duration::days(30);
 
-    queries::schedule_account_deletion(&state.db, auth.id, now, scheduled_at).await?;
+    // C27: the step-up `account.delete`, consumed with the schedule under
+    // the account lock.
+    let mut tx = state.db.begin().await?;
+    crate::approvals::transition::lock_accounts(&mut tx, &[auth.id]).await?;
+    let grant = step_up::consume_tx(
+        &mut tx,
+        &auth,
+        StepUpAction::AccountDelete,
+        &StepUpTarget::None,
+    )
+    .await?;
+    queries::schedule_account_deletion(&mut *tx, auth.id, now, scheduled_at).await?;
+    let event =
+        step_up::record_action_tx(&mut tx, &auth, &grant, StepUpAction::AccountDelete, "").await?;
+    tx.commit().await?;
+    crate::security_events::spawn_delivery(&state, vec![event]);
 
     // End every session (force logout everywhere) in the revocation order.
     end_all_for_deletion(&state, auth.id).await?;
