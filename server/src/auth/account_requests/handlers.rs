@@ -198,6 +198,9 @@ async fn start_bootstrap(
             return Err(neutral());
         }
     }
+    // Codex r3: an OIDC factor keeps its sign-in time, re-checked after the
+    // account-lock wait.
+    let mut oidc_time: Option<chrono::DateTime<chrono::Utc>> = None;
     let (first_ok, oidc) = match &body.first {
         Some(StartFactor::Password { password }) => {
             let ok = password_ok(verified_hash.clone(), password).await?;
@@ -216,6 +219,9 @@ async fn start_bootstrap(
             verifier,
         }) => {
             let f = super::recovery::redeem_oidc_code(ctx, oidc_code, verifier.as_deref()).await;
+            if let Ok(f) = &f {
+                oidc_time = Some(f.auth_time);
+            }
             (
                 matches!((&f, &user), (Ok(f), Some(u)) if f.user_id == u.id),
                 true,
@@ -252,6 +258,13 @@ async fn start_bootstrap(
             .fetch_one(&mut *tx)
             .await?;
     if !oidc && hash_now != verified_hash {
+        return Err(neutral());
+    }
+    if oidc
+        && !oidc_time.is_some_and(|t| {
+            (chrono::Utc::now() - t).num_seconds() <= super::recovery::OIDC_FRESH_SECS
+        })
+    {
         return Err(neutral());
     }
     // The shared start budget, before the second factor (SM3, B.5).

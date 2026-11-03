@@ -692,4 +692,69 @@ mod oidc_factor {
             "{b}"
         );
     }
+
+    /// Codex r3: an OIDC first factor that turns stale while the start
+    /// waits for the account lock is refused.
+    #[sqlx::test]
+    async fn bootstrap_oidc_freshness_is_rechecked_after_the_lock_wait(pool: PgPool) {
+        use fred::interfaces::{ClientLike, KeysInterface};
+        let ctx = setup(&pool).await;
+        let (user, name, _) = account(&ctx, "sub-wait").await;
+        let totp =
+            super::super::helpers::login::enable_totp(&ctx.pool, &ctx.config, user, &name).await;
+        sqlx::query("UPDATE users SET bootstrap_open = true WHERE id = $1")
+            .bind(user)
+            .execute(&ctx.pool)
+            .await
+            .unwrap();
+        let grant = vc_server::auth::account_requests::recovery::RequestOidcGrant {
+            user_id: Some(user),
+            slug: ctx.slug.clone(),
+            auth_time: Some(chrono::Utc::now() - chrono::Duration::seconds(298)),
+            client_challenge: None,
+        };
+        let code = "wait-code-for-the-test-00000000000000000000";
+        let redis = fred::clients::Client::new(
+            fred::types::config::Config::from_url(&ctx.config.redis_url).unwrap(),
+            None,
+            None,
+            None,
+        );
+        redis.connect();
+        redis.wait_for_connect().await.unwrap();
+        let _: () = redis
+            .set(
+                vc_server::auth::account_requests::recovery::request_code_key(code),
+                serde_json::to_string(&grant).unwrap(),
+                Some(fred::types::Expiration::EX(60)),
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+        let mut hold = pool.begin().await.unwrap();
+        vc_server::approvals::transition::lock_accounts(&mut hold, &[user])
+            .await
+            .unwrap();
+        let start = async {
+            client()
+                .post(format!("{}/auth/account-requests", ctx.server.url))
+                .header("x-kaiku-client", "android")
+                .json(&json!({"username": name, "purpose": "bootstrap",
+                              "first": {"type": "oidc", "oidc_code": code},
+                              "totp_code": totp.generate_current().unwrap()}))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        };
+        let release = async {
+            super::super::helpers::wait_for_lock_waiters(&pool, 1).await;
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            hold.commit().await.unwrap();
+        };
+        let (status, ()) = tokio::join!(start, release);
+        assert_eq!(status, 401, "stale after the wait");
+    }
 }
