@@ -287,12 +287,13 @@ async fn bootstrap_totp_is_throttled(pool: PgPool) {
                "first": {"type": "password", "password": BP}, "totp_code": "000000"}),
     )
     .await;
+    // Fable r2 (i): neutral (the delay only shows after a correct password).
     assert_eq!(
         (s, b["error"].as_str()),
-        (429, Some("TOO_MANY_ATTEMPTS")),
+        (401, Some("INVALID_CREDENTIALS")),
         "{b}"
     );
-    assert!(retry.is_some());
+    let _ = retry;
 }
 
 #[sqlx::test]
@@ -388,4 +389,46 @@ async fn bootstrap_starts_share_the_budget(pool: PgPool) {
         (401, Some("INVALID_CREDENTIALS")),
         "{b}"
     );
+}
+
+/// Codex r2 M6: with a delayed counter an invalid code is the neutral
+/// answer, as for an unknown account (the delay shows only after a valid
+/// code, still before it is consumed).
+#[sqlx::test]
+async fn an_invalid_code_is_neutral_while_delayed(pool: PgPool) {
+    use super::account_requests::admin_with_device;
+    let app = TestApp::with_pool(pool.clone()).await;
+    admin_with_device(&app).await;
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    enable_totp(&pool, &app.config, user, &name).await;
+    set_count(&app, &CounterKey::Totp(user), 5).await;
+    let _: () = app
+        .state
+        .redis
+        .hset(
+            format!("ratelimit:acct:totp:{user}"),
+            ("next", chrono::Utc::now().timestamp() + 30),
+        )
+        .await
+        .unwrap();
+    let body = |u: &str| {
+        json!({"username": u, "purpose": "recovery", "recovery_code": "AAAAA-AAAAA-AAA",
+               "second": {"type": "totp", "code": "000000"}, "lost": "none"})
+    };
+    let known = post_raw(
+        &app,
+        "/auth/account-requests",
+        &[("X-Kaiku-Client", "android")],
+        body(&name),
+    )
+    .await;
+    let unknown = post_raw(
+        &app,
+        "/auth/account-requests",
+        &[("X-Kaiku-Client", "android")],
+        body("no_such_account_r2"),
+    )
+    .await;
+    assert_eq!((known.0, &known.1), (unknown.0, &unknown.1));
+    assert_eq!(known.0, 401, "{}", known.1);
 }

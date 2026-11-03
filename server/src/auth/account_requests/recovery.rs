@@ -59,7 +59,17 @@ pub async fn start_recovery(
         crate::auth::recovery_codes::dummy_check(code).await?;
         return Err(neutral());
     }
-    // The second factor's counter waits before any code is consumed (B.5).
+    // The code first, without any lock and with constant work (Fable r2
+    // M-A); an invalid one is the neutral answer for every account (Codex
+    // r2 M6).
+    let found = {
+        let mut conn = state.db.acquire().await?;
+        crate::auth::recovery_codes::find(&mut conn, user.id, code).await?
+    };
+    let Some((code_id, code_generation)) = found else {
+        return Err(neutral());
+    };
+    // The second factor's counter waits before the code is consumed (B.5).
     match &body.second {
         Some(StartFactor::Totp { .. }) => crate::auth::totp_guard::pre_check(ctx, user.id).await?,
         Some(StartFactor::Password { .. }) => {
@@ -94,7 +104,7 @@ pub async fn start_recovery(
             .bind(user.id)
             .fetch_one(&mut *tx)
             .await?;
-    // 1. The start budget, before any code is consumed.
+    // 1. The start budget, before the code is consumed.
     let starts: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM account_request_starts
           WHERE user_id = $1 AND started_at > NOW() - make_interval(hours => $2)",
@@ -105,11 +115,12 @@ pub async fn start_recovery(
     .await?;
     if starts >= STARTS_PER_PERIOD {
         tracing::warn!(user_id = %user.id, "recovery start budget exhausted (B.5)");
-        crate::auth::recovery_codes::dummy_check(code).await?;
         return Err(neutral());
     }
-    // 2. The recovery code (consumed when valid).
-    if !crate::auth::recovery_codes::consume_tx(&mut tx, user.id, code).await? {
+    // 2. The code, consumed by id while unused and current.
+    if !crate::auth::recovery_codes::consume_id_tx(&mut tx, user.id, code_id, code_generation)
+        .await?
+    {
         return Err(neutral());
     }
     sqlx::query("INSERT INTO account_request_starts (user_id) VALUES ($1)")

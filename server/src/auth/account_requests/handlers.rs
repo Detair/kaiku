@@ -189,6 +189,15 @@ async fn start_bootstrap(
     }
     let user = crate::db::find_user_by_username(&state.db, &body.username).await?;
     let verified_hash = user.as_ref().and_then(|u| u.password_hash.clone());
+    // Fable r2 m-d: before a one-time OIDC code is spent, the TOTP delay
+    // and the start budget (neutral answers, as for every refusal here).
+    if let (Some(StartFactor::Oidc { .. }), Some(u)) = (&body.first, &user) {
+        if crate::auth::totp_guard::pre_check(ctx, u.id).await.is_err()
+            || starts_in_period(&state.db, ctx, u.id).await? >= super::recovery::STARTS_PER_PERIOD
+        {
+            return Err(neutral());
+        }
+    }
     let (first_ok, oidc) = match &body.first {
         Some(StartFactor::Password { password }) => {
             let ok = password_ok(verified_hash.clone(), password).await?;
@@ -223,7 +232,14 @@ async fn start_bootstrap(
     if !first_ok || crate::auth::queries::is_user_globally_banned(&state.db, user.id).await? {
         return Err(neutral());
     }
-    crate::auth::totp_guard::pre_check(ctx, user.id).await?;
+    // Fable r2 (i): the delay is only reachable after a correct first
+    // factor, so it answers neutrally too.
+    if crate::auth::totp_guard::pre_check(ctx, user.id)
+        .await
+        .is_err()
+    {
+        return Err(neutral());
+    }
     let mut tx = state.db.begin().await?;
     // The subject with every possible canceller (Codex M7).
     crate::approvals::transition::lock_for_start(&mut tx, user.id, &[])
@@ -506,4 +522,16 @@ fn transition_err(e: crate::approvals::transition::TransitionError) -> AuthError
         crate::approvals::transition::TransitionError::Db(d) => AuthError::Database(d),
         _ => AuthError::ServiceUnavailable,
     }
+}
+
+/// `self` starts of `user` in the current delay period (B.5 budget).
+async fn starts_in_period(db: &sqlx::PgPool, ctx: &AuthCtx<'_>, user: Uuid) -> AuthResult<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM account_request_starts
+          WHERE user_id = $1 AND started_at > NOW() - make_interval(hours => $2)",
+    )
+    .bind(user)
+    .bind(i32::try_from(ctx.config.account_request_delay_hours).unwrap_or(24))
+    .fetch_one(db)
+    .await?)
 }

@@ -133,6 +133,62 @@ pub async fn consume_tx(conn: &mut PgConnection, user_id: Uuid, code: &str) -> A
     Ok(true)
 }
 
+/// The id of the unused current-generation code `code` matches, read
+/// without a lock (Fable r2 M-A: no account lock is held during Argon2).
+/// Always exactly `CODE_COUNT` checks.
+pub async fn find(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    code: &str,
+) -> AuthResult<Option<(Uuid, i64)>> {
+    let raw = normalise(code);
+    let rows: Vec<(Uuid, String, i64)> = sqlx::query_as(
+        "SELECT rc.id, rc.code_hash, rc.generation FROM recovery_codes rc
+           JOIN users u ON u.id = rc.user_id
+          WHERE rc.user_id = $1 AND rc.generation = u.recovery_codes_generation
+            AND rc.used_at IS NULL
+          ORDER BY rc.created_at, rc.id",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let dummy = super::password::DUMMY_PASSWORD_HASH.clone();
+    if raw.len() != CODE_CHARS || !raw.bytes().all(|b| ALPHABET.contains(&b)) {
+        let _ = matching(&raw, vec![dummy; CODE_COUNT]).await?;
+        return Ok(None);
+    }
+    let mut hashes: Vec<String> = rows.iter().map(|(_, h, _)| h.clone()).collect();
+    let real = hashes.len();
+    hashes.resize(CODE_COUNT.max(real), dummy);
+    Ok(matching(&raw, hashes)
+        .await?
+        .filter(|i| *i < real)
+        .map(|i| (rows[i].0, rows[i].2)))
+}
+
+/// Consume the code `id` found by [`find`] under the account lock: only
+/// while it is unused and still of the current generation.
+pub async fn consume_id_tx(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    id: Uuid,
+    generation: i64,
+) -> sqlx::Result<bool> {
+    Ok(sqlx::query(
+        "UPDATE recovery_codes rc SET used_at = NOW()
+          FROM users u
+         WHERE rc.id = $1 AND rc.user_id = $2 AND u.id = rc.user_id AND rc.used_at IS NULL
+           AND rc.generation = $3 AND u.recovery_codes_generation = $3",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(generation)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
 /// The work of checking `code` against a full set, for an account that has
 /// none or is unknown (B.5: the same answer and work).
 pub async fn dummy_check(code: &str) -> AuthResult<()> {
