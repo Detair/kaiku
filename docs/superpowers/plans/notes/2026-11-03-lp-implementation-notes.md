@@ -68,3 +68,44 @@ these differences (the code wins; LP follows it):
 - **Exact origin strings:** the crate compares parsed URLs, which normalises the scheme's case.
   LP additionally checks the raw `clientDataJSON.origin` string against the allow-list (web
   origin, then each Android origin) before calling the crate, so only exact strings pass.
+
+## Spike B — loopback delivery (research, 2026-11-03; device checks D4/D6 stay with the maintainer)
+
+No browser was driven from a public `https` origin here (no test host and no Windows/macOS
+machines in this session); the matrix below comes from specs, browser source and bug trackers.
+Steps B1/B2 (the harness on a public `https` test subdomain and the browser matrix) remain for
+the maintainer and are folded into D4/D6. "[D]" = documented or cited, "[I]" = inferred.
+
+| Browser (stable, late 2026) | Form POST, auto-submitted | "Continue" without JS | `fetch()` + preflight |
+|---|---|---|---|
+| Chrome / Edge (Win, macOS, Linux) | delivered, no warning, no prompt (high) | same | one-time LNA prompt ("Apps on device"), then delivered (high) |
+| Firefox (Win, macOS, Linux) | delivered, no warning, no prompt (medium-high) | same | one-time LNA prompt ("other apps and services on this device") |
+| Safari (macOS) | delivered; at most a console warning (medium; unverified on a device) | same | blocked as mixed content, no prompt (high) |
+
+- [D] Chromium's insecure-form interstitial (`InsecureFormNavigationThrottle`) fires only when the
+  action URL is not potentially trustworthy; Secure Contexts makes `127.0.0.0/8` trustworthy, and
+  Mixed Content §3.2/§7.1 exempt top-level navigations and trustworthy form actions. Edge shares it.
+- [D] Chromium LNA (prompt since Chrome 142, loopback split as "Apps on device" since 145) gates
+  `fetch()`, subresources and subframes, **not main-frame navigations** (blink-dev intent for 147:
+  "Chrome does not currently enforce any LNA restrictions on main frame navigations"; WICG
+  local-network-access issue 48: no timeline). A top-level form POST is a main-frame navigation [I].
+  The `chrome://flags/#local-network-access-check` "Blocking" setting changes the subresource
+  behaviour only [I].
+- [D] Firefox: the secure-to-insecure form check returns early for loopback action URLs
+  (`HTMLFormElement::DoSecureToInsecureSubmitCheck`); LNA is on for all users since 151, and
+  top-level navigations skip it (`network.lna.allow_top_level_navigation`, default true, bug 1988525).
+- [D] Safari/WebKit has no blocking mixed-form check in `FormSubmission.cpp`; `fetch()` to
+  `http://127.0.0.1` from `https` is blocked as mixed content (WebKit bug 171934, open), so the
+  `fetch()` variant cannot work in Safari at all.
+- [D] CSP `form-action http://127.0.0.1:P/callback/<path>`: exact path match (no trailing `/`),
+  explicit port must equal, the path is ignored after a redirect; all three engines match IP
+  literals by string. The listener therefore answers 200 directly, never a redirect.
+
+**Decision (rule B3):** the **form POST ships**. The `fetch()` variant fails the "works
+everywhere" bar (prompts in Chrome and Firefox, hard-blocked in Safari), so Task 9 builds the
+`form-action` CSP and Task 11 has no preflight answer (`Access-Control-Allow-Private-Network` is
+not shipped). The admin guide names what a user may see: on Safari possibly a "not secure form"
+notice (and the "warn before connecting over HTTP" setting), and a future Chromium interstitial if
+main-frame LNA gating ever lands. **For the maintainer (D4/D6):** a 10-minute hand check of the
+hand-off on Safari macOS (default settings, and with the HTTP warning on) and Firefox stable; these
+two rows are not confirmed on a real browser.
