@@ -43,7 +43,8 @@ export function securityErrorText(
     return loginErrorText(err);
   }
   if (err instanceof HttpError && codeIs(err.code, "PASSWORD_REJECTED")) {
-    return errorText(err, totalKey(PASSWORD_REASONS, err.details.reason, "security.password.rejected.generic"));
+    // `details` may be missing from a proxy's or an older server's body (Flash r3 p1 #5).
+    return errorText(err, totalKey(PASSWORD_REASONS, err.details?.reason, "security.password.rejected.generic"));
   }
   return errorText(err, fallback, extra ? { ...SECURITY_ERRORS, ...extra } : SECURITY_ERRORS);
 }
