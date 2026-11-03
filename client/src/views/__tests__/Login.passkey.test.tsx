@@ -5,7 +5,7 @@ import { Router, Route } from "@solidjs/router";
 
 const passkeySignInMock = vi.hoisted(() => vi.fn());
 const tauriMode = vi.hoisted(() => ({ on: false }));
-const conditional = vi.hoisted(() => ({ available: true }));
+const conditional = vi.hoisted(() => ({ available: true, gate: null as Promise<void> | null }));
 const signalUnknownMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/tauri", async () => {
@@ -28,7 +28,8 @@ vi.mock("@/lib/webauthn", async () => {
   return {
     ...actual,
     isWebAuthnAvailable: () => true,
-    isConditionalMediationAvailable: () => Promise.resolve(conditional.available),
+    isConditionalMediationAvailable: () =>
+      (conditional.gate ?? Promise.resolve()).then(() => conditional.available),
     signalUnknown: signalUnknownMock,
   };
 });
@@ -60,7 +61,15 @@ async function renderLogin() {
 beforeEach(() => {
   tauriMode.on = false;
   conditional.available = true;
+  conditional.gate = null;
 });
+
+/** A promise and its resolve function. */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
 
 afterEach(() => {
   cleanup();
@@ -156,6 +165,46 @@ describe("Login with a passkey", () => {
     await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(2));
     const again = passkeySignInMock.mock.calls[1][1] as { mediation: string };
     expect(again.mediation).toBe("conditional");
+  });
+
+  it("a server change restarts autofill once, after a pause, with a fresh backoff", async () => {
+    // Review round 2 (Argon B R2).
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const tauri = await import("@/lib/tauri");
+    const override = deferred<string | null>();
+    vi.mocked(tauri.getDefaultServerUrl).mockReturnValueOnce(override.promise);
+    passkeySignInMock.mockRejectedValueOnce(new PasskeyError("PASSKEY_CANCELLED"));
+    passkeySignInMock.mockRejectedValueOnce(new PasskeyError("PASSKEY_CANCELLED"));
+    pendingUntilAbort();
+    passkeySignInMock.mockRejectedValueOnce(new PasskeyError("PASSKEY_CANCELLED"));
+    passkeySignInMock.mockRejectedValueOnce(new PasskeyError("PASSKEY_CANCELLED"));
+    await renderLogin();
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(2_100); // first retry after 2 s; the next pause would be 8 s
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(2));
+    override.resolve("https://other.example.com");
+    await vi.advanceTimersByTimeAsync(200);
+    expect(passkeySignInMock).toHaveBeenCalledTimes(2); // not at once
+    await vi.advanceTimersByTimeAsync(500);
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(3));
+    expect(passkeySignInMock.mock.calls[2][0]).toBe("https://other.example.com");
+    // The new server starts with the first pause again (2 s, not 8 s).
+    await vi.advanceTimersByTimeAsync(2_100);
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(4));
+  });
+
+  it("an autofill start waiting for availability never runs beside the button's ceremony", async () => {
+    // Review round 2 (Argon B R2): a generation token across the await.
+    const gate = deferred<void>();
+    conditional.gate = gate.promise;
+    pendingUntilAbort();
+    await renderLogin();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with passkey" }));
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
+    gate.resolve();
+    await new Promise((res) => setTimeout(res, 20));
+    expect(passkeySignInMock).toHaveBeenCalledTimes(1);
+    expect((passkeySignInMock.mock.calls[0][1] as { mediation: string }).mediation).toBe("optional");
   });
 
   it("PASSKEY_UNKNOWN shows the removed message", async () => {

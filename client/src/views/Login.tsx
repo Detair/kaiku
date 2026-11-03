@@ -27,6 +27,8 @@ import { isConditionalMediationAvailable, isWebAuthnAvailable } from "@/lib/weba
 
 /** A conditional ceremony lives 300 s on the server; restart it before. */
 const CONDITIONAL_RESTART_MS = 270_000;
+/** Pause after a server change before autofill starts again. */
+const SERVER_CHANGE_DEBOUNCE_MS = 500;
 
 /** Map icon_hint to a Lucide icon component. */
 function providerIcon(hint: string | null) {
@@ -100,7 +102,11 @@ const Login: Component = () => {
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
   const linux = typeof navigator !== "undefined" && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
 
+  // Bumped by every start and stop: a start still waiting for
+  // `isConditionalMediationAvailable` gives way to anything later (Argon B R2).
+  let conditionalGeneration = 0;
   const stopConditional = () => {
+    conditionalGeneration += 1;
     conditionalCtl?.abort();
     conditionalCtl = undefined;
     clearTimeout(restartTimer);
@@ -122,10 +128,14 @@ const Login: Component = () => {
 
   // After a failed autofill (cancelled sheet, server error) it restarts,
   // with a growing pause so an offline server is not hammered.
-  let conditionalBackoff = 2_000;
+  const FIRST_BACKOFF_MS = 2_000;
+  let conditionalBackoff = FIRST_BACKOFF_MS;
   const startConditional = async () => {
-    if (desktop || disposed || !isWebAuthnAvailable()) return;
-    if (!(await isConditionalMediationAvailable()) || disposed) return;
+    // Never beside the button's ceremony (it restarts autofill when done).
+    if (desktop || disposed || modalCtl || !isWebAuthnAvailable()) return;
+    const generation = ++conditionalGeneration;
+    const available = await isConditionalMediationAvailable();
+    if (!available || disposed || generation !== conditionalGeneration) return;
     stopConditional();
     const ctl = new AbortController();
     conditionalCtl = ctl;
@@ -154,12 +164,20 @@ const Login: Component = () => {
       }, delay);
     }
   };
-  // A changed server gets its own autofill ceremony.
+  // A changed server gets its own autofill ceremony: the old one stops at
+  // once, the new one starts after a pause (no ceremony per keystroke) and
+  // with the first backoff again. The button's ceremony restarts autofill
+  // itself when it ends.
+  let serverChangeTimer: ReturnType<typeof setTimeout> | undefined;
   createEffect(
     on(
       serverUrl,
       () => {
-        if (conditionalCtl) void startConditional();
+        if (modalCtl) return;
+        stopConditional();
+        conditionalBackoff = FIRST_BACKOFF_MS;
+        clearTimeout(serverChangeTimer);
+        serverChangeTimer = setTimeout(() => void startConditional(), SERVER_CHANGE_DEBOUNCE_MS);
       },
       { defer: true },
     ),
@@ -168,6 +186,7 @@ const Login: Component = () => {
     void startConditional();
   });
   onCleanup(() => {
+    clearTimeout(serverChangeTimer);
     stopConditional();
     modalCtl?.abort();
   });
