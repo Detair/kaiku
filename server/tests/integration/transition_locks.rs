@@ -434,3 +434,59 @@ async fn lock_scope_retry_never_takes_a_lower_account_after_a_higher_one(pool: P
     assert_eq!(locked.keys().copied().collect::<Vec<_>>(), vec![low, high]);
     tx.rollback().await.unwrap();
 }
+
+/// Review round 3 (Argon coverage, part 6 M1, foreign-key locks): a notice
+/// delivery for an account and the admin deletion of that account. The
+/// deletion locks the account and then cascades into the account's events;
+/// the delivery must not hold such an event while it waits for the
+/// account (the foreign keys of its notice rows take a key-share lock).
+#[sqlx::test]
+async fn notice_delivery_and_account_deletion_never_deadlock(pool: PgPool) {
+    use vc_server::security_events::{notices, record, Actor, EventType, NewSecurityEvent};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (admin, _) = create_test_user(&pool).await;
+    make_admin(&pool, admin).await;
+    let token = super::helpers::create_elevated_session(&pool, &app.config, admin).await;
+    let (target, _) = create_test_user(&pool).await;
+    let mut tx = pool.begin().await.unwrap();
+    vc_server::system_account::kaiku_dm_tx(&mut tx, target)
+        .await
+        .unwrap();
+    let ev = record(
+        &mut tx,
+        NewSecurityEvent::new(
+            target,
+            EventType::SignIn,
+            Actor::User(target),
+            serde_json::json!({"auth_methods": ["password"], "assurance": "probation"}),
+        ),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Hold the delivery inside its transaction (at the Kaiku DM lock).
+    let mut blocker = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('kaiku_dm:' || $1::text, 0))")
+        .bind(target)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let ids = [ev];
+    let delivery = notices::deliver(&app.state, &ids);
+    let uri = format!("/api/admin/users/{target}");
+    let deletion = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        admin_call(&app, Method::DELETE, &uri, &token, "").await
+    };
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 2).await;
+        blocker.commit().await.unwrap();
+    };
+    let (delivered, (status, body), ()) = tokio::join!(delivery, deletion, release);
+    assert_eq!(status, 200, "the deletion completes: {body}");
+    assert!(
+        delivered.is_ok(),
+        "no deadlock on the delivery side: {delivered:?}"
+    );
+}

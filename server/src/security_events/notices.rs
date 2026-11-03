@@ -126,7 +126,6 @@ struct PendingEvent {
     id: Uuid,
     subject_id: Uuid,
     event_type: String,
-    severity: String,
     actor_kind: String,
     actor_user_id: Option<Uuid>,
     created_at: DateTime<Utc>,
@@ -169,8 +168,33 @@ pub async fn deliver(state: &AppState, event_ids: &[Uuid]) -> anyhow::Result<()>
 
 async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>> {
     let mut tx = state.db.begin().await?;
+    // The event's fields never change: read them without a lock to learn its
+    // accounts, and lock those first (B.7 rule 1; key-share, the lock the
+    // notice rows' foreign keys take anyway, in id order). A deletion locks
+    // the account and then cascades into its events, so the delivery must
+    // never hold the event while it waits for the account.
+    let head: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT subject_id, severity FROM security_events WHERE id = $1 AND delivered_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((subject_id, severity)) = head else {
+        tx.commit().await?;
+        return Ok(Vec::new());
+    };
+    let severity = Severity::parse(&severity).unwrap_or(Severity::High);
+    let recipients = recipients(&mut tx, subject_id, severity).await?;
+    let mut accounts: Vec<Uuid> = recipients.iter().map(|r| r.user_id).collect();
+    accounts.push(subject_id);
+    accounts.sort_unstable();
+    accounts.dedup();
+    sqlx::query("SELECT id FROM users WHERE id = ANY($1) ORDER BY id FOR KEY SHARE")
+        .bind(&accounts)
+        .execute(&mut *tx)
+        .await?;
     let Some(ev) = sqlx::query_as::<_, PendingEvent>(
-        "SELECT id, subject_id, event_type, severity, actor_kind, actor_user_id, created_at
+        "SELECT id, subject_id, event_type, actor_kind, actor_user_id, created_at
            FROM security_events
           WHERE id = $1 AND delivered_at IS NULL
           FOR UPDATE SKIP LOCKED",
@@ -182,14 +206,13 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
         tx.commit().await?;
         return Ok(Vec::new());
     };
-    let severity = Severity::parse(&ev.severity).unwrap_or(Severity::High);
     let event_type = EventType::parse(&ev.event_type);
     let actor_id = match ev.actor_kind.as_str() {
         "admin" | "recovery_contact" => ev.actor_user_id,
         _ => None,
     };
     let mut outcomes = Vec::new();
-    for r in recipients(&mut tx, ev.subject_id, severity).await? {
+    for r in recipients {
         let (channel_id, created_dm) = kaiku_dm_created_tx(&mut tx, r.user_id).await?;
         // Within the window around the notice's first event, both ways: an
         // event delivered late joins only a notice near its own time.
