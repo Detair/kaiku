@@ -884,3 +884,23 @@ probation session and owner evidence are void (CC4).
 takes an optional `username|null` (step 2) and refuses another account's passkey with
 `PASSKEY_USER_MISMATCH` and no result (step 3), as web and Android already do, so a shared PC does
 not sign in someone else by mistake. Additive; absent means no check.
+
+**C26/C27/C28 amendment (2026-11-03, L1a review round 4 and L1b review round 1; additive):**
+- C26: `POST /auth/enrollments/pop-challenge` and the confirm step answer 400 `ENROLLMENT_DEVICE_IN_USE` (no
+  extra fields) when a delayed (`pending`) enrolment is claimed with the install `device_id` of a live key device
+  of the same account, or when any enrolment would replace its own issuer's device. Nothing is revoked. Clients
+  say that this phone is already a key of the account and offer signing in with it.
+- C27 error codes added to the list: 404 `REGISTRATION_TICKET_INVALID` (unknown or expired ticket), 409
+  `ACCOUNT_REQUEST_NOT_READY {state}` (`state` may be `expired`), 400 `ENROLLMENT_TARGET_SELF` (an admin setup
+  code for the admin's own account).
+- C28 event types added (F6 / Task 28: every admin and CLI recovery action is notified):
+
+  | Event types | Severity | `details` |
+  |---|---|---|
+  | `sessions_ended` | high | `{count, by: "admin"\|"cli"}` |
+  | `factor_restored` | high | `{factor: "password"\|"totp", by: "admin"\|"cli"}` |
+  | `throttle_reset` | normal | `{factor: "password"\|"totp", by: "admin"\|"cli"}` |
+  | `may_approve_changed` | high | `{may_approve, by: "admin"\|"cli"}` |
+
+  Text keys follow C15 (`security.notice.<event_type>` and so on). Clients that do not know them show the generic
+  text (C5).
