@@ -282,3 +282,28 @@ is listed here, per task. "Coordinator" marks items that need a decision.
   is not 6 digits.
 - The binary parses its arguments before reading any configuration, so a usage error exits 2
   without touching the database (tested on the built binary).
+
+## Task 14 / Task 30 — gate results (2026-11-03)
+
+- `cargo test --workspace --lib --bins --tests`: every unit suite green (vc-server lib 682,
+  vc-client lib 248, vc-crypto 24, vp8 decoder 4); `--test integration` 1020 passed, 2 failed,
+  33 ignored. The two (`role_channel_overrides::pending_member_ignores_everyone_override_allow`,
+  `unread::test_viewable_filter_matches_require_channel_access`) are the known flaky
+  pending-member family and pass on every rerun (3/3). The lib Valkey tests ran against a
+  temporary Valkey on `127.0.0.1:6379`.
+- Plain `cargo test --workspace` does not build: the client example
+  `client/src-tauri/examples/capture_vp8_fixture.rs` fails against `vpx_encode` (untouched by
+  this branch).
+- `SQLX_OFFLINE=true cargo clippy -- -D warnings`: the server and shared crates are clean; the
+  workspace run fails only in `vc-client` (`voice/video_decoder.rs`, `voice/connection_stats.rs`;
+  untouched by this branch, local clippy 1.97).
+- `cargo +nightly fmt --check` clean; `cargo deny check`: `advisories ok, bans ok, licenses ok,
+  sources ok`; `.sqlx` refreshed (two admin user queries) and `cargo clean -p vc-server &&
+  SQLX_OFFLINE=true cargo build -p vc-server` builds; offline `--lib error_code` (9) and
+  `android_contract_fixtures` (17) pass with the committed goldens; `git diff --check` clean; the
+  IP grep shows only OIDs and documentation ranges.
+- The server image (`infra/docker/Dockerfile`) builds and contains `/usr/local/bin/kaiku-admin`
+  (no arguments → usage, exit 2).
+- Size: `git diff --stat origin/main...HEAD` → 202 files, ~19.6k insertions (≈17.3k in `.rs`),
+  far above the ~7k threshold; the split point is the commit marked "L1a-1 boundary" (Task 7).
+- Not done here (coordinator): the whole-branch Faramir review, the external reviews and the PR.
