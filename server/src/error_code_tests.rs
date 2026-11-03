@@ -414,6 +414,7 @@ async fn platform_codes_are_upper_snake() {
                 E::EnrollmentFailed,
                 E::EnrollmentState,
                 E::EnrollmentLimit,
+                E::EnrollmentDeviceInUse,
                 E::DeviceUnsuitable {
                     reason: "attestation_missing",
                 },

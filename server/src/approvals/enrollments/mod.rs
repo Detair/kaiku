@@ -377,11 +377,12 @@ async fn subject_is_new(conn: &mut PgConnection, user_id: Uuid) -> Result<bool, 
 /// or the refusal (SM4: `active` → `revoked` only by the owner, an admin's
 /// "Remove device now", the CLI, a completed account request, …):
 ///
-/// - an enrolment never replaces the key device that issued it;
+/// - an enrolment never replaces the key device that issued it (400 `VALIDATION_ERROR`: the issuing
+///   app never claims its own link);
 /// - a key that will be `pending` (an `admin` enrolment of an existing account, a `request` child)
 ///   never replaces a live one: that would skip the account request's wait and its cancellers and,
 ///   on another admin's account, `ADMIN_TARGET_IS_ADMIN`. Its replacement belongs to the request's
-///   completion (L1b).
+///   completion (L1b). 400 `ENROLLMENT_DEVICE_IN_USE`: the phone offers to sign in with that key.
 ///
 /// `lock` takes the row `FOR UPDATE` (confirm, under the account lock).
 async fn replaceable_on_install(
@@ -412,9 +413,7 @@ async fn replaceable_on_install(
         ));
     }
     if will_be != DeviceState::Active {
-        return Err(ApprovalError::Validation(
-            "this phone is already a key of the account; remove it there first".into(),
-        ));
+        return Err(ApprovalError::EnrollmentDeviceInUse);
     }
     Ok(Some(live))
 }

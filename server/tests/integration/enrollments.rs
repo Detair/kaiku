@@ -1237,7 +1237,7 @@ async fn pending_admin_enrolment_never_replaces(pool: PgPool, target_is_admin: b
     let (s, b) = pop_status(&app, &issued.setup_token, &clone).await;
     assert_eq!(
         (s, b["error"].as_str()),
-        (400, Some("VALIDATION_ERROR")),
+        (400, Some("ENROLLMENT_DEVICE_IN_USE")),
         "{b}"
     );
     assert_key_untouched(&pool, &victim).await;
@@ -1266,7 +1266,7 @@ async fn pending_admin_enrolment_never_replaces(pool: PgPool, target_is_admin: b
     let (s, b) = super::approvals_core::answer(&app, &admin_dev, &c, code.as_bytes()).await;
     assert_eq!(
         (s, b["error"].as_str()),
-        (400, Some("VALIDATION_ERROR")),
+        (400, Some("ENROLLMENT_DEVICE_IN_USE")),
         "{b}"
     );
     assert_key_untouched(&pool, &victim).await;
@@ -1314,7 +1314,7 @@ async fn pending_request_enrolment_never_replaces_a_live_key(pool: PgPool) {
     let (s, b) = pop_status(&app, &issued.setup_token, &clone).await;
     assert_eq!(
         (s, b["error"].as_str()),
-        (400, Some("VALIDATION_ERROR")),
+        (400, Some("ENROLLMENT_DEVICE_IN_USE")),
         "{b}"
     );
     assert_key_untouched(&pool, &victim).await;

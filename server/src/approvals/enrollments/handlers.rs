@@ -54,7 +54,10 @@ pub async fn open(
     path = "/auth/enrollments/pop-challenge",
     tag = "approvals",
     request_body = PopChallengeRequest,
-    responses((status = 201, body = PopChallengeResponse)),
+    responses(
+        (status = 201, body = PopChallengeResponse),
+        (status = 400, description = "ENROLLMENT_DEVICE_IN_USE: this phone is already a key of the account"),
+    ),
     security(()),
 )]
 #[tracing::instrument(skip_all)]
