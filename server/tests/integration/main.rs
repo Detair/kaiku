@@ -51,6 +51,7 @@ mod oidc_handoff;
 mod oidc_mock;
 mod optional_features;
 mod pages;
+mod passkeys_profile;
 mod performance_budgets;
 mod push_http;
 mod push_triggers;

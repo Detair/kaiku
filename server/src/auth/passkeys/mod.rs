@@ -4,5 +4,6 @@
 //!   origins.
 //! - `rp`: `webauthn-rs` in Kaiku's profile.
 
+pub mod ceremony;
 pub mod config;
 pub mod rp;

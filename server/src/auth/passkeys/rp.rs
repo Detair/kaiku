@@ -1,11 +1,42 @@
 //! `webauthn-rs` in Kaiku's passkey profile (B.1, C29).
 
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use webauthn_rs::prelude::{
+    AuthenticationResult, CreationChallengeResponse, CredentialID, DiscoverableAuthentication,
+    Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
+    RegisterPublicKeyCredential, RequestChallengeResponse,
+};
+
 use super::config::PasskeyConfig;
+
+/// Why a ceremony step failed. Clients only ever see the mapped error code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PasskeyFailure {
+    /// Origin, RP ID, UV, BE, challenge or signature (`PASSKEY_INVALID`).
+    Invalid,
+    /// `credProps.rk == false` at registration (`PASSKEY_NOT_DISCOVERABLE`).
+    NotDiscoverable,
+    /// The signature counter went backwards (DC4: refused, audited).
+    CounterRegressed,
+    /// A discoverable assertion without a user handle.
+    UserHandleMissing,
+    Internal(String),
+}
+
+/// A verified registration, ready to store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifiedRegistration {
+    pub passkey: Passkey,
+    pub aaguid: Option<Uuid>,
+    pub backup_eligible: bool,
+    pub backup_state: bool,
+    pub transports: Vec<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct PasskeyRp {
     config: PasskeyConfig,
-    #[allow(dead_code)] // used by the profile operations (Task 3)
     webauthn: webauthn_rs::Webauthn,
     allowed_origins: Vec<String>,
 }
@@ -54,6 +85,193 @@ impl PasskeyRp {
     pub fn allowed_origins(&self) -> &[String] {
         &self.allowed_origins
     }
+
+    /// The exact-string origin check (C29: Android origins first, then the
+    /// web origin), on the raw `clientDataJSON` before the crate parses it.
+    fn check_origin(&self, client_data_json: &[u8]) -> Result<(), PasskeyFailure> {
+        let origin = serde_json::from_slice::<serde_json::Value>(client_data_json)
+            .ok()
+            .and_then(|v| v.get("origin").and_then(|o| o.as_str().map(str::to_owned)))
+            .ok_or(PasskeyFailure::Invalid)?;
+        if self.allowed_origins.contains(&origin) {
+            Ok(())
+        } else {
+            tracing::debug!("passkey assertion from an origin outside the allow-list");
+            Err(PasskeyFailure::Invalid)
+        }
+    }
+
+    /// Creation options in the profile: `residentKey: required`, UV required,
+    /// attestation `none`, `excludeCredentials`, `credProps`.
+    pub fn start_registration(
+        &self,
+        user_handle: Uuid,
+        username: &str,
+        display_name: &str,
+        exclude: Vec<CredentialID>,
+    ) -> Result<(CreationChallengeResponse, PasskeyRegistration), PasskeyFailure> {
+        let (ccr, state) = self
+            .webauthn
+            .start_passkey_registration(user_handle, username, display_name, Some(exclude))
+            .map_err(internal)?;
+        // webauthn-rs asks for `residentKey: discouraged`; the profile needs a
+        // discoverable credential. The registration state ignores resident-key
+        // settings at finish, so only the options change.
+        let mut json = serde_json::to_value(&ccr).map_err(internal)?;
+        json["publicKey"]["authenticatorSelection"] = serde_json::json!({
+            "residentKey": "required",
+            "requireResidentKey": true,
+            "userVerification": "required",
+        });
+        let ccr = serde_json::from_value(json).map_err(internal)?;
+        Ok((ccr, state))
+    }
+
+    /// Verify a registration: origin (exact), RP ID, UV, challenge; refuse
+    /// `credProps.rk == false` (DC9). Reads BE/BS, transports and the AAGUID.
+    pub fn finish_registration(
+        &self,
+        reg: &RegisterPublicKeyCredential,
+        state: &PasskeyRegistration,
+    ) -> Result<VerifiedRegistration, PasskeyFailure> {
+        self.check_origin(reg.response.client_data_json.as_ref())?;
+        if reg.extensions.cred_props.as_ref().and_then(|p| p.rk) == Some(false) {
+            return Err(PasskeyFailure::NotDiscoverable);
+        }
+        let passkey = self
+            .webauthn
+            .finish_passkey_registration(reg, state)
+            .map_err(refusal)?;
+        let cred = webauthn_rs::prelude::Credential::from(passkey.clone());
+        let transports = cred
+            .transports
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|t| serde_json::to_value(t).ok())
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect();
+        Ok(VerifiedRegistration {
+            aaguid: aaguid_from_attestation_object(reg.response.attestation_object.as_ref()),
+            backup_eligible: cred.backup_eligible,
+            backup_state: cred.backup_state,
+            transports,
+            passkey,
+        })
+    }
+
+    /// Discoverable request options (`allowCredentials: []`, UV required).
+    /// `mediation` is left to the client.
+    pub fn start_sign_in(
+        &self,
+    ) -> Result<(RequestChallengeResponse, DiscoverableAuthentication), PasskeyFailure> {
+        let (mut rcr, state) = self
+            .webauthn
+            .start_discoverable_authentication()
+            .map_err(internal)?;
+        rcr.mediation = None;
+        Ok((rcr, state))
+    }
+
+    /// The user handle and credential id of a discoverable assertion.
+    pub fn identify(&self, cred: &PublicKeyCredential) -> Result<(Uuid, Vec<u8>), PasskeyFailure> {
+        let (handle, id) = self
+            .webauthn
+            .identify_discoverable_authentication(cred)
+            .map_err(|_| PasskeyFailure::UserHandleMissing)?;
+        Ok((handle, id.to_vec()))
+    }
+
+    /// Verify a discoverable assertion against the stored credential, then
+    /// UV and BE == `stored_be` (B.1).
+    pub fn finish_sign_in(
+        &self,
+        cred: &PublicKeyCredential,
+        state: DiscoverableAuthentication,
+        stored: &Passkey,
+        stored_be: bool,
+    ) -> Result<AuthenticationResult, PasskeyFailure> {
+        self.check_origin(cred.response.client_data_json.as_ref())?;
+        let key = webauthn_rs::prelude::DiscoverableKey::from(stored);
+        let result = self
+            .webauthn
+            .finish_discoverable_authentication(cred, state, &[key])
+            .map_err(refusal)?;
+        check_flags(&result, stored_be)?;
+        Ok(result)
+    }
+
+    /// Request options over the caller's own passkeys (DC3).
+    pub fn start_step_up(
+        &self,
+        passkeys: &[Passkey],
+    ) -> Result<(RequestChallengeResponse, PasskeyAuthentication), PasskeyFailure> {
+        self.webauthn
+            .start_passkey_authentication(passkeys)
+            .map_err(internal)
+    }
+
+    /// Verify a step-up assertion; BE is compared here because the
+    /// allow-list path of the crate accepts a BE upgrade.
+    pub fn finish_step_up(
+        &self,
+        cred: &PublicKeyCredential,
+        state: &PasskeyAuthentication,
+        stored_be: bool,
+    ) -> Result<AuthenticationResult, PasskeyFailure> {
+        self.check_origin(cred.response.client_data_json.as_ref())?;
+        let result = self
+            .webauthn
+            .finish_passkey_authentication(cred, state)
+            .map_err(refusal)?;
+        check_flags(&result, stored_be)?;
+        Ok(result)
+    }
+}
+
+fn internal(e: impl std::fmt::Display) -> PasskeyFailure {
+    PasskeyFailure::Internal(e.to_string())
+}
+
+/// Crate refusals: a counter regression is its own signal (DC4); every
+/// other error is `Invalid` (logged at debug, never returned to clients).
+fn refusal(e: webauthn_rs::prelude::WebauthnError) -> PasskeyFailure {
+    match e {
+        webauthn_rs::prelude::WebauthnError::CredentialPossibleCompromise => {
+            PasskeyFailure::CounterRegressed
+        }
+        other => {
+            tracing::debug!(error = %other, "passkey verification refused");
+            PasskeyFailure::Invalid
+        }
+    }
+}
+
+/// UV must be set; BE must equal the value stored at registration (§6.1.3).
+pub fn check_flags(result: &AuthenticationResult, stored_be: bool) -> Result<(), PasskeyFailure> {
+    if !result.user_verified() || result.backup_eligible() != stored_be {
+        return Err(PasskeyFailure::Invalid);
+    }
+    Ok(())
+}
+
+/// The AAGUID from `authData` (AT flag `0x40` at byte 32, bytes 37..53).
+/// All zeros or anything unparsable gives `None`.
+#[must_use]
+pub fn aaguid_from_attestation_object(att: &[u8]) -> Option<Uuid> {
+    let value: serde_cbor_2::Value = serde_cbor_2::from_slice(att).ok()?;
+    let serde_cbor_2::Value::Map(map) = value else {
+        return None;
+    };
+    let auth_data = match map.get(&serde_cbor_2::Value::Text("authData".to_string()))? {
+        serde_cbor_2::Value::Bytes(b) => b,
+        _ => return None,
+    };
+    if auth_data.len() < 53 || auth_data[32] & 0x40 == 0 {
+        return None;
+    }
+    let bytes: [u8; 16] = auth_data[37..53].try_into().ok()?;
+    let id = Uuid::from_bytes(bytes);
+    (!id.is_nil()).then_some(id)
 }
 
 #[cfg(test)]
