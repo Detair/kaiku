@@ -9,6 +9,7 @@ import { AlertTriangle, CheckCircle2, Shield } from "lucide-solid";
 import { t, type MessageKey } from "@/i18n";
 import type { CredentialState } from "@/lib/types";
 import { meSecurity, refreshMeSecurity } from "@/stores/security";
+import { totalKey } from "@/lib/totalKey";
 
 const STATE: Record<CredentialState, MessageKey> = {
   active: "security.overview.state.active",
@@ -26,12 +27,12 @@ const SecurityOverview: Component = () => {
     return [
       {
         label: t("security.overview.password"),
-        value: s.password ? t(STATE[s.password.state]) : t("security.overview.none"),
+        value: s.password ? t(totalKey(STATE, s.password.state, STATE.unknown)) : t("security.overview.none"),
         warn: s.password?.state === "compromised" || s.password?.state === "throttled",
       },
       {
         label: t("security.overview.totp"),
-        value: s.totp ? t(STATE[s.totp.state]) : t("security.overview.none"),
+        value: s.totp ? t(totalKey(STATE, s.totp.state, STATE.unknown)) : t("security.overview.none"),
         warn: s.totp?.state === "compromised" || s.totp?.state === "throttled",
       },
       { label: t("security.overview.recoveryCodes"), value: String(s.recovery_codes_left), warn: s.recovery_codes_left === 0 },

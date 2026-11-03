@@ -31,6 +31,7 @@ import { showToast } from "@/components/ui/Toast";
 import SecurityLogSection from "@/components/settings/security/SecurityLogSection";
 import { securityErrorText } from "@/components/settings/security/securityErrors";
 import { contactCandidates } from "./recoveryContacts";
+import { totalKey } from "@/lib/totalKey";
 
 const STATE: Record<string, MessageKey> = {
   active: "security.overview.state.active",
@@ -160,10 +161,10 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
   const authenticatorState = (a: { state: string; ready_at?: string | null }) =>
     a.state === "pending" && a.ready_at
       ? t("security.keyDevices.readyAt", { time: formatTimestamp(a.ready_at) })
-      : t(AUTHENTICATOR_STATE[a.state] ?? "security.keyDevices.state.unknown");
+      : t(totalKey(AUTHENTICATOR_STATE, a.state, "security.keyDevices.state.unknown"));
 
   const factorText = (state: string | null) =>
-    state ? t(STATE[state] ?? "security.overview.state.unknown") : t("security.overview.none");
+    state ? t(totalKey(STATE, state, "security.overview.state.unknown")) : t("security.overview.none");
 
   /** "Mark as unsafe" / "Allow again" for one factor, if it is set. */
   const FactorButton = (p: { factor: Factor }) => (

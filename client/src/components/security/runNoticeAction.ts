@@ -15,15 +15,21 @@ import {
   type Part2Factor,
 } from "@/lib/tauri/security";
 import { adminRemoveAuthenticator } from "@/lib/tauri/adminSecurity";
+import { deletePasskey } from "@/lib/tauri/passkeys";
+import { isTauri } from "@/lib/tauri/common";
+import { signalRemoved } from "@/lib/webauthn";
 import { StepUpCancelled, withStepUp } from "@/lib/stepUp";
-import { errorText } from "@/i18n/errors";
+import { refreshMeSecurity } from "@/stores/security";
+import { securityErrorText } from "@/components/settings/security/securityErrors";
 import type { NoticeAction, RepudiateResult, SecurityEvent, SecurityNotice } from "@/lib/types";
 import { eventText } from "./noticeText";
+
+export type FollowUp = "removeDevice" | "removeDeviceNow" | "openSecurity" | "askAdmin";
 
 export type NoticeResult =
   | { kind: "done"; text: string }
   | { kind: "cancelled" }
-  | { kind: "tooLate"; text: string; followUp: "removeDevice" | "removeDeviceNow" | "askAdmin" | null };
+  | { kind: "tooLate"; text: string; followUp: FollowUp | null };
 
 function repudiationSummary(r: RepudiateResult, ev: SecurityEvent): string {
   const parts: string[] = [];
@@ -41,10 +47,15 @@ function repudiationSummary(r: RepudiateResult, ev: SecurityEvent): string {
   return parts.length > 0 ? parts.join(" ") : t("security.action.summary.nothing");
 }
 
-/** Who may follow up a cancel that lost against completion. */
-function followUpFor(notice: SecurityNotice, meId: string, isAdmin: boolean): "removeDevice" | "removeDeviceNow" | "askAdmin" {
-  if (notice.subject.user_id === meId) return "removeDevice";
-  return isAdmin ? "removeDeviceNow" : "askAdmin";
+/**
+ * Who may follow up a cancel that lost against completion (C27). Without
+ * the event naming the new device (a self-service request), the owner goes
+ * to Security settings and a contact asks an admin (Argon review 2 #2).
+ */
+function followUpFor(notice: SecurityNotice, meId: string, isAdmin: boolean, hasDevice: boolean): FollowUp | null {
+  if (notice.subject.user_id === meId) return hasDevice ? "removeDevice" : "openSecurity";
+  if (!isAdmin) return "askAdmin";
+  return hasDevice ? "removeDeviceNow" : null;
 }
 
 export async function runNoticeAction(
@@ -64,7 +75,9 @@ export async function runNoticeAction(
         return { kind: "done", text: repudiationSummary(r, ev) };
       }
       case "cancel_request": {
-        const id = ev.request_id ?? "";
+        // No request named: nothing to cancel, no empty-target step-up (Argon 2 #4).
+        if (!ev.request_id) return { kind: "cancelled" };
+        const id = ev.request_id;
         const run = () => cancelAccountRequest(id, null, part2);
         if (a.via === "part2") await run();
         else await withStepUp({ action: "request.cancel", target: id, targetLabel: notice.subject.display_name }, run);
@@ -87,34 +100,54 @@ export async function runNoticeAction(
       return {
         kind: "tooLate",
         text: t("security.action.tooLate"),
-        followUp: ev.authenticator ? followUpFor(notice, meId, opts.isAdmin ?? false) : null,
+        followUp: followUpFor(notice, meId, opts.isAdmin ?? false, ev.authenticator !== null),
       };
     }
     throw err;
+  } finally {
+    // The overview (open request, devices, prompts) changed: no stale state
+    // until the next hint (Argon review 2 #4).
+    void refreshMeSecurity();
   }
 }
 
-/** Owner: remove the own device; anyone else reading: "Remove device now" (admin). */
+/**
+ * Owner: remove the own device by its type (Codex review M4): a passkey
+ * through `passkey.remove` and LP's delete (with the credential signals), a
+ * key device through its own route. Anyone else reading: "Remove device now"
+ * (admin). An authenticator type the client predates is refused.
+ */
 export async function removeDevice(ev: SecurityEvent, notice: SecurityNotice, meId: string): Promise<NoticeResult> {
   const device = ev.authenticator;
   if (!device) return { kind: "cancelled" };
+  const type = device.type;
+  if (type !== "passkey" && type !== "key_device") throw new Error("AUTHENTICATOR_TYPE_UNKNOWN");
   if (notice.subject.user_id === meId) {
-    await withStepUp({ action: "key_device.remove", target: device.id, targetLabel: device.label }, () =>
-      removeKeyDevice(device.id),
-    );
+    if (type === "passkey") {
+      const removed = await withStepUp({ action: "passkey.remove", target: device.id, targetLabel: device.label }, () =>
+        deletePasskey(device.id),
+      );
+      if (!isTauri()) await signalRemoved(removed);
+    } else {
+      await withStepUp({ action: "key_device.remove", target: device.id, targetLabel: device.label }, () =>
+        removeKeyDevice(device.id),
+      );
+    }
   } else {
     await withStepUp({ action: "admin.authenticator.remove", target: device.id, targetLabel: device.label }, () =>
       adminRemoveAuthenticator(notice.subject.user_id, device.id),
     );
   }
+  void refreshMeSecurity();
   return { kind: "done", text: t("security.action.removed") };
 }
 
+/** Notice codes on top of the shared security map (Fable review m5). */
+const NOTICE_ERRORS = {
+  REPUDIATE_NOT_ALLOWED: "security.action.notAllowed",
+  CANCEL_NOT_ALLOWED: "security.action.notAllowed",
+} as const;
+
 export function noticeActionError(err: unknown): string {
-  return errorText(err, "security.action.failed", {
-    REPUDIATE_NOT_ALLOWED: "security.action.notAllowed",
-    CANCEL_NOT_ALLOWED: "security.action.notAllowed",
-    LAST_STRONG_AUTHENTICATOR: "security.error.lastStrong",
-    ADMIN_TARGET_IS_ADMIN: "security.error.adminTarget",
-  });
+  return securityErrorText(err, "security.action.failed", NOTICE_ERRORS) ?? "";
 }

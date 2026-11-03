@@ -7,9 +7,11 @@
 
 import { Component, For, Match, Show, Switch, createSignal } from "solid-js";
 import { t, type MessageKey } from "@/i18n";
+import { totalKey } from "@/lib/totalKey";
 import type { NoticeAction, SecurityEvent, SecurityNotice } from "@/lib/types";
 import type { Part2Factor } from "@/lib/tauri/security";
 import { currentUser } from "@/stores/auth";
+import { requestSettings } from "@/stores/settingsNav";
 import { noticeActionError, removeDevice, runNoticeAction, type NoticeResult } from "./runNoticeAction";
 import Part2FactorDialog from "./Part2FactorDialog";
 
@@ -48,7 +50,7 @@ const NoticeActions: Component<NoticeActionsProps> = (props) => {
   const label = (a: NoticeAction) => {
     if (a.action === "confirm_contact") return t("security.action.willHelp", { name: props.notice.subject.display_name });
     if (a.action === "remove_device" && !own()) return t("security.action.removeDeviceNow");
-    return t(LABEL[a.action as keyof typeof LABEL]);
+    return t(totalKey(LABEL, a.action, "security.action.generic"));
   };
 
   const run = async (a: NoticeAction, part2: Part2Factor | null = null) => {
@@ -112,6 +114,11 @@ const NoticeActions: Component<NoticeActionsProps> = (props) => {
                       {t("security.action.removeDeviceNow")}
                     </button>
                   </Match>
+                  <Match when={r().followUp === "openSecurity"}>
+                    <button type="button" class={button} onClick={() => requestSettings("security")}>
+                      {t("security.prompt.openSettings")}
+                    </button>
+                  </Match>
                   <Match when={r().followUp === "askAdmin"}>
                     <p class="text-base text-text-secondary">{t("security.action.askAdmin")}</p>
                   </Match>
@@ -122,7 +129,7 @@ const NoticeActions: Component<NoticeActionsProps> = (props) => {
           <Match when={warning()}>
             {(a) => (
               <div class="space-y-2 p-3 rounded-lg border border-status-warning/50" role="alert">
-                <p class="text-base text-text-primary">{t(WARNING[a().warning!])}</p>
+                <p class="text-base text-text-primary">{t(totalKey(WARNING, a().warning, "security.action.warning.generic"))}</p>
                 <div class="flex flex-wrap gap-2">
                   <button type="button" class={button} onClick={() => setWarning(null)}>
                     {t("common.cancel")}

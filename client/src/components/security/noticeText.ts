@@ -6,6 +6,7 @@
  */
 
 import { t, type MessageKey } from "@/i18n";
+import { totalKey } from "@/lib/totalKey";
 import type { SecurityEvent, SecurityEventType, SecurityNotice } from "@/lib/types";
 
 export const NOTICE_KEYS: Record<SecurityEventType, MessageKey> = {
@@ -109,7 +110,7 @@ function params(ev: SecurityEvent | undefined, subject: Subject, meId: string, c
 
 /** The notice sentence: placeholders filled, "(N times)" when coalesced. */
 export function noticeText(n: SecurityNotice, meId: string): string {
-  const text = t(NOTICE_KEYS[n.event_type], params(n.events[0], n.subject, meId, n.count));
+  const text = t(noticeKey(n.event_type), params(n.events[0], n.subject, meId, n.count));
   return n.count > 1
     ? t("security.notice.repeated", { text, count: n.count })
     : t("security.notice.single", { text });
@@ -117,10 +118,15 @@ export function noticeText(n: SecurityNotice, meId: string): string {
 
 /** One event of the security log, worded like its notice. */
 export function eventText(ev: SecurityEvent, subject: Subject, meId: string): string {
-  return t("security.notice.single", { text: t(NOTICE_KEYS[ev.event_type], params(ev, subject, meId, 1)) });
+  return t("security.notice.single", { text: t(noticeKey(ev.event_type), params(ev, subject, meId, 1)) });
 }
 
 /** The OS notification text for a new security message. */
 export function pushText(n: SecurityNotice, meId: string): string {
-  return t(PUSH_KEYS[n.event_type], params(n.events[0], n.subject, meId, n.count));
+  return t(totalKey(PUSH_KEYS, n.event_type, PUSH_KEYS.unknown), params(n.events[0], n.subject, meId, n.count));
+}
+
+/** The notice key of an event type; a type the client predates is generic. */
+export function noticeKey(type: unknown): MessageKey {
+  return totalKey(NOTICE_KEYS, type, NOTICE_KEYS.unknown);
 }

@@ -58,7 +58,19 @@ export { editingMessageId, setEditingMessageId };
  * Also processes Megolm session key distribution messages automatically.
  * Returns the message with decrypted content, or a placeholder if decryption fails.
  */
-export async function decryptMessageIfNeeded(message: Message): Promise<Message> {
+/**
+ * C28: a security message's notice is decoded once, at ingress (every load,
+ * catch-up, live message and edit passes here or `updateMessage`), so an
+ * event type, action or state the client predates renders the generic
+ * sentence instead of throwing in a text lookup (Fable review M2).
+ */
+export function withDecodedNotice(message: Message): Message {
+  if (message.message_type !== "security") return message;
+  return { ...message, security_notice: decodeSecurityNotice(message.security_notice) };
+}
+
+export async function decryptMessageIfNeeded(raw: Message): Promise<Message> {
+  const message = withDecodedNotice(raw);
   // If not encrypted, return as-is
   if (!message.encrypted) {
     return message;
@@ -690,7 +702,8 @@ export async function addMessage(message: Message): Promise<void> {
 /**
  * Update an existing message (for edits).
  */
-export function updateMessage(message: Message): void {
+export function updateMessage(raw: Message): void {
+  const message = withDecodedNotice(raw);
   const channelId = message.channel_id;
   const buf = initialLoadInProgress[channelId] ? liveBuffers[channelId] : undefined;
   if (buf) {

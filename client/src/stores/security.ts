@@ -16,28 +16,40 @@ const [security, setSecurity] = createSignal<MeSecurity | null>(null);
  * account's overview never shows (or prompts) under the next one.
  */
 let generation = 0;
-let inFlight: { generation: number; promise: Promise<void> } | null = null;
+let inFlight: { generation: number; promise: Promise<void>; rerun: boolean } | null = null;
 
 /** The last loaded overview, or null before the first load. */
 export const meSecurity = security;
 
-/** Reload the overview (single flight per session). Failures keep the last value. */
+/**
+ * Reload the overview (single flight per session). Failures keep the last
+ * value. A reload asked for while one runs (a WS hint during the initial
+ * load) runs once more afterwards, so a change the running request may have
+ * read before is not missed (Argon review 6 #3).
+ */
 export function refreshMeSecurity(): Promise<void> {
-  if (inFlight && inFlight.generation === generation) return inFlight.promise;
+  if (inFlight && inFlight.generation === generation) {
+    inFlight.rerun = true;
+    return inFlight.promise;
+  }
   const mine = generation;
-  const flight = {
+  const flight: { generation: number; promise: Promise<void>; rerun: boolean } = {
     generation: mine,
-    promise: getMeSecurity()
-      .then((s) => {
-        if (mine === generation) setSecurity(s);
-      })
-      .catch((err) => {
-        console.warn("[Security] Loading the overview failed:", err instanceof Error ? err.message : err);
-      })
-      .finally(() => {
-        if (inFlight === flight) inFlight = null;
-      }),
+    rerun: false,
+    promise: Promise.resolve(),
   };
+  flight.promise = getMeSecurity()
+    .then((s) => {
+      if (mine === generation) setSecurity(s);
+    })
+    .catch((err) => {
+      console.warn("[Security] Loading the overview failed:", err instanceof Error ? err.message : err);
+    })
+    .finally(() => {
+      if (inFlight !== flight) return;
+      inFlight = null;
+      if (flight.rerun && mine === generation) void refreshMeSecurity();
+    });
   inFlight = flight;
   return flight.promise;
 }
@@ -69,12 +81,37 @@ export function closeSignOutOthers(): void {
   setSignOutOthersOffered(false);
 }
 
+/**
+ * Open requests the user answered "That's right" for, by request id and
+ * state (a `waiting` request that turns `ready` is shown again), for this
+ * session only (Argon review 2 #3).
+ */
+const dismissedRequests = new Set<string>();
+const [dismissTick, setDismissTick] = createSignal(0);
+
+export function isOpenRequestDismissed(id: string, state: string): boolean {
+  dismissTick();
+  return dismissedRequests.has(`${id}:${state}`);
+}
+
+export function dismissOpenRequest(id: string, state: string): void {
+  dismissedRequests.add(`${id}:${state}`);
+  setDismissTick((n) => n + 1);
+}
+
+/** Show every open request again (a new session, a new app start). */
+export function clearOpenRequestDismissals(): void {
+  dismissedRequests.clear();
+  setDismissTick((n) => n + 1);
+}
+
 /** Forget the overview (sign-out, new session); a running load is dropped. */
 export function resetMeSecurity(): void {
   generation += 1;
   inFlight = null;
   setSecurity(null);
   setSignOutOthersOffered(false);
+  clearOpenRequestDismissals();
 }
 
 /** Banner prompts, highest priority first (`open_request` is the modal's). */
@@ -89,30 +126,31 @@ const PROMPT_ORDER: SecurityPrompt[] = [
 ];
 
 const SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
-const snoozeKey = (p: SecurityPrompt) => `kaiku:prompt-snooze:${p}`;
+/** Per account (`scope` = user id): one user's "Later" never hides another's prompt (Argon 6 #9). */
+const snoozeKey = (p: SecurityPrompt, scope: string) => `kaiku:prompt-snooze:${scope}:${p}`;
 const [snoozeTick, setSnoozeTick] = createSignal(0);
 
 /** A store that fails (private mode, blocked site data) means "not snoozed". */
-function isSnoozed(p: SecurityPrompt): boolean {
+function isSnoozed(p: SecurityPrompt, scope: string): boolean {
   try {
-    const until = Number(localStorage.getItem(snoozeKey(p)));
+    const until = Number(localStorage.getItem(snoozeKey(p, scope)));
     return Number.isFinite(until) && until > Date.now();
   } catch {
     return false;
   }
 }
 
-/** The one prompt the banner shows now, or null. */
-export function currentPrompt(): SecurityPrompt | null {
+/** The one prompt the banner shows now for account `scope`, or null. */
+export function currentPrompt(scope = ""): SecurityPrompt | null {
   snoozeTick();
   const prompts = security()?.prompts ?? [];
-  return PROMPT_ORDER.find((p) => prompts.includes(p) && !isSnoozed(p)) ?? null;
+  return PROMPT_ORDER.find((p) => prompts.includes(p) && !isSnoozed(p, scope)) ?? null;
 }
 
-/** "Later": hide a prompt for 7 days in this browser. */
-export function snoozePrompt(p: SecurityPrompt): void {
+/** "Later": hide a prompt of account `scope` for 7 days in this browser. */
+export function snoozePrompt(p: SecurityPrompt, scope = ""): void {
   try {
-    localStorage.setItem(snoozeKey(p), String(Date.now() + SNOOZE_MS));
+    localStorage.setItem(snoozeKey(p, scope), String(Date.now() + SNOOZE_MS));
   } catch {
     // Not stored: the prompt simply comes back.
   }

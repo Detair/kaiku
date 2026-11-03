@@ -11,7 +11,7 @@ import {
   onMount,
 } from "solid-js";
 import { Phone, Check, X, ShieldCheck } from "lucide-solid";
-import { isKaikuDM } from "@/lib/kaikuDm";
+import { isReadOnlyDM } from "@/lib/kaikuDm";
 import { loadInitialMessages } from "@/stores/messages";
 import { t, plural } from "@/i18n";
 import { isCallGlareError } from "@/lib/callEnd";
@@ -171,7 +171,7 @@ const DMConversation: Component = () => {
         </div>
       }
     >
-      <Show when={!isKaikuDM(dm())} fallback={<KaikuDMView channelId={dm()!.id} />}>
+      <Show when={!isReadOnlyDM(dm())} fallback={<KaikuDMView channelId={dm()!.id} />}>
       <div class="flex-1 flex flex-col min-h-0 bg-surface-layer1">
         {/* Header */}
         <header class="h-12 px-4 flex items-center gap-3 border-b border-white/5 bg-surface-layer1 shadow-sm relative">

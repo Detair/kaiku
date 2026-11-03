@@ -6,6 +6,8 @@
  */
 
 import { Component, For, Show, createSignal } from "solid-js";
+import { HttpError } from "@/lib/tauri/common";
+import { codeIs } from "@/lib/errorCode";
 import { Portal } from "solid-js/web";
 import { ShieldAlert } from "lucide-solid";
 import { t } from "@/i18n";
@@ -14,27 +16,31 @@ import { createDialog } from "@/lib/a11y/dialog";
 import { createModalLayer, MODAL_LAYER } from "@/lib/a11y/modalLayer";
 import { cancelAccountRequest, type Part2Factor } from "@/lib/tauri/security";
 import { withStepUp, StepUpCancelled } from "@/lib/stepUp";
-import { meSecurity, refreshMeSecurity } from "@/stores/security";
+import {
+  dismissOpenRequest,
+  isOpenRequestDismissed,
+  meSecurity,
+  refreshMeSecurity,
+  clearOpenRequestDismissals,
+} from "@/stores/security";
 import Part2FactorDialog from "./Part2FactorDialog";
 import { noticeActionError } from "./runNoticeAction";
 
-// Per app run: "That's right" hides a request until the next start.
-const dismissed = new Set<string>();
-const [dismissTick, setDismissTick] = createSignal(0);
-
-/** Tests: a new app start. */
+/** Tests: a new app start (a new session clears them too, `resetMeSecurity`). */
 export function resetOpenRequestDismissals(): void {
-  dismissed.clear();
-  setDismissTick((n) => n + 1);
+  clearOpenRequestDismissals();
 }
 
 const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
-  const dialog = createDialog({ onClose: () => props.close() });
+  // Escape does not answer "That's right": an account-change warning needs
+  // an explicit click (Argon review 2 #3).
+  const dialog = createDialog({ onClose: () => undefined });
   // Its part-2 and step-up confirmations open above it (`DialogShell`).
   const layer = createModalLayer(MODAL_LAYER.prompt);
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [part2, setPart2] = createSignal(false);
+  const [tooLate, setTooLate] = createSignal(false);
   const req = () => meSecurity()!.open_request!;
 
   const cancel = async (factor: Part2Factor | null) => {
@@ -49,7 +55,15 @@ const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
         );
       await refreshMeSecurity();
     } catch (err) {
-      if (!(err instanceof StepUpCancelled)) setError(noticeActionError(err));
+      if (err instanceof StepUpCancelled) return;
+      if (err instanceof HttpError && codeIs(err.code, "ACCOUNT_REQUEST_COMPLETED")) {
+        // Lost against completion (Argon review 2 #2): say so and show the
+        // account as it is now; the new device is in Security settings.
+        setTooLate(true);
+        await refreshMeSecurity();
+        return;
+      }
+      setError(noticeActionError(err));
     } finally {
       setBusy(false);
     }
@@ -91,6 +105,9 @@ const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
         <Show when={error()}>
           <p role="alert" class="text-base text-text-primary">{error()}</p>
         </Show>
+        <Show when={tooLate()}>
+          <p role="status" class="text-base text-text-primary">{t("security.action.tooLate")}</p>
+        </Show>
         <Show when={req().cancel}>
           <button
             type="button"
@@ -124,14 +141,12 @@ const OpenRequestDialog: Component<{ close: () => void }> = (props) => {
 
 const OpenRequestModal: Component = () => {
   const open = () => {
-    dismissTick();
     const r = meSecurity()?.open_request;
-    return !!r && (r.state === "waiting" || r.state === "ready") && !dismissed.has(r.id);
+    return !!r && (r.state === "waiting" || r.state === "ready") && !isOpenRequestDismissed(r.id, r.state);
   };
   const close = () => {
     const r = meSecurity()?.open_request;
-    if (r) dismissed.add(r.id);
-    setDismissTick((n) => n + 1);
+    if (r) dismissOpenRequest(r.id, r.state);
   };
   return (
     <Show when={open()}>

@@ -49,6 +49,13 @@ describe("Kaiku DM", () => {
     expect(screen.getByText("Security")).toBeTruthy();
   });
 
+  it("read_only alone closes the composer and calls (Fable review m3)", () => {
+    selected.dm = { id: "k2", name: "", icon_url: null, read_only: true, participants: [me, { ...kaiku, is_system: false }] };
+    render(() => <DMConversation />);
+    expect(screen.queryByTestId("composer")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start call" })).toBeNull();
+  });
+
   it("opening the kaiku dm reloads its latest page", () => {
     selected.dm = { id: "k1", name: "", icon_url: null, read_only: true, participants: [me, kaiku] };
     render(() => <DMConversation />);

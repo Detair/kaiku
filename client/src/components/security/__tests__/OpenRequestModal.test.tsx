@@ -77,6 +77,42 @@ describe("OpenRequestModal", () => {
     expect(screen.getByText(/Someone asked to change/)).toBeTruthy();
   });
 
+  it("Escape does not answer that's right (Argon review 2 #3)", async () => {
+    await mount(request());
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.getByText(/Someone asked to change/)).toBeTruthy();
+  });
+
+  it("a dismissed waiting request comes back once it is ready", async () => {
+    await mount(request());
+    fireEvent.click(screen.getByRole("button", { name: "That's right" }));
+    await waitFor(() => expect(screen.queryByText(/Someone asked to change/)).toBeNull());
+    api.getMeSecurity.mockResolvedValue(security({ open_request: request({ state: "ready" }) }));
+    await refreshMeSecurity();
+    expect(await screen.findByText(/Someone asked to change/)).toBeTruthy();
+  });
+
+  it("a new session shows a dismissed request again", async () => {
+    await mount(request());
+    fireEvent.click(screen.getByRole("button", { name: "That's right" }));
+    await waitFor(() => expect(screen.queryByText(/Someone asked to change/)).toBeNull());
+    const { resetMeSecurity } = await import("@/stores/security");
+    resetMeSecurity();
+    await refreshMeSecurity();
+    expect(await screen.findByText(/Someone asked to change/)).toBeTruthy();
+  });
+
+  it("a cancel that lost against completion says it is too late (Argon review 2 #2)", async () => {
+    const { HttpError } = await import("@/lib/tauri/common");
+    api.cancelAccountRequest.mockRejectedValue(new HttpError(409, "x", "ACCOUNT_REQUEST_COMPLETED"));
+    await mount(request());
+    api.getMeSecurity.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel this request" }));
+    expect(await screen.findByRole("status")).toBeTruthy();
+    expect(api.getMeSecurity).toHaveBeenCalled();
+  });
+
   it("a completed request shows nothing", async () => {
     await mount(request({ state: "completed" }));
     expect(screen.queryByText(/Someone asked to change/)).toBeNull();

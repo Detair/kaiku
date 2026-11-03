@@ -4,7 +4,7 @@
  * adds an icon and "Important" (never colour alone). No message actions.
  */
 
-import { Component, For, Show } from "solid-js";
+import { Component, For, Show, createSignal } from "solid-js";
 import { ShieldAlert, Shield } from "lucide-solid";
 import { t } from "@/i18n";
 import type { SecurityNotice } from "@/lib/types";
@@ -17,10 +17,16 @@ export interface SecurityNoticeCardProps {
   meId: string;
 }
 
-/** Events shown per card; the rest are in the security log. */
+/** Events shown before "Show all"; every supplied event keeps its actions. */
 const SHOWN_EVENTS = 5;
 
-const SecurityNoticeCard: Component<SecurityNoticeCardProps> = (props) => (
+const SecurityNoticeCard: Component<SecurityNoticeCardProps> = (props) => {
+  // A coalesced notice keeps every event's actions reachable (Codex review
+  // M5): the log lists events, but only here can they be acted on.
+  const [all, setAll] = createSignal(false);
+  const shown = () => (all() ? props.notice.events : props.notice.events.slice(0, SHOWN_EVENTS));
+  const hidden = () => props.notice.events.length - shown().length;
+  return (
   <article
     class="mx-4 my-3 p-4 rounded-xl bg-surface-layer2 border space-y-3"
     classList={{
@@ -43,7 +49,7 @@ const SecurityNoticeCard: Component<SecurityNoticeCardProps> = (props) => (
         <p class="text-base font-medium text-text-primary">{noticeText(props.notice, props.meId)}</p>
       </div>
     </div>
-    <For each={props.notice.events.slice(0, SHOWN_EVENTS)}>
+    <For each={shown()}>
       {(ev) => (
         <div class="pl-8 space-y-2">
           <SecurityEventDetails event={ev} />
@@ -51,10 +57,21 @@ const SecurityNoticeCard: Component<SecurityNoticeCardProps> = (props) => (
         </div>
       )}
     </For>
-    <Show when={props.notice.events_truncated || props.notice.events.length > SHOWN_EVENTS}>
+    <Show when={hidden() > 0}>
+      <button
+        type="button"
+        class="ml-8 min-h-12 px-4 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-base text-text-primary"
+        aria-expanded="false"
+        onClick={() => setAll(true)}
+      >
+        {t("security.notice.showAll", { count: props.notice.events.length })}
+      </button>
+    </Show>
+    <Show when={props.notice.events_truncated}>
       <p class="pl-8 text-sm text-text-secondary">{t("security.notice.truncated")}</p>
     </Show>
   </article>
-);
+  );
+};
 
 export default SecurityNoticeCard;

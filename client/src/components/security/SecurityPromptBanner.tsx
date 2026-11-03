@@ -9,7 +9,7 @@ import { useNavigate } from "@solidjs/router";
 import { ShieldCheck } from "lucide-solid";
 import { t, type MessageKey } from "@/i18n";
 import type { SecurityPrompt } from "@/lib/types";
-import { isProbation, replaceSessionWithPasskey } from "@/stores/auth";
+import { currentUser, isProbation, replaceSessionWithPasskey } from "@/stores/auth";
 import { currentPrompt, snoozePrompt } from "@/stores/security";
 import { requestSettings } from "@/stores/settingsNav";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
@@ -32,7 +32,7 @@ const action = "btn-primary min-h-12 text-base";
 const SecurityPromptBanner: Component = () => {
   const navigate = useNavigate();
   const [setupPhone, setSetupPhone] = createSignal(false);
-  const prompt = () => currentPrompt();
+  const prompt = () => currentPrompt(currentUser()?.id ?? "");
   // "Sign in with a passkey": busy, worded failures, aborted with the banner
   // (Argon review 2 #5).
   const [signingIn, setSigningIn] = createSignal(false);
@@ -113,7 +113,7 @@ const SecurityPromptBanner: Component = () => {
             <button
               type="button"
               class="min-h-12 px-4 rounded-lg text-base text-text-secondary hover:text-text-primary hover:bg-white/5"
-              onClick={() => snoozePrompt(p())}
+              onClick={() => snoozePrompt(p(), currentUser()?.id ?? "")}
             >
               {t("security.prompt.later")}
             </button>

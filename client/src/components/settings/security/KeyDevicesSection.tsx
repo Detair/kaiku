@@ -6,6 +6,7 @@
 
 import { Component, For, JSX, Show, createSignal, onMount } from "solid-js";
 import { Smartphone } from "lucide-solid";
+import { totalKey } from "@/lib/totalKey";
 import { t, type MessageKey } from "@/i18n";
 import { formatTimestamp } from "@/i18n/format";
 import { listKeyDevices, removeKeyDevice } from "@/lib/tauri/security";
@@ -75,7 +76,7 @@ const KeyDevicesSection: Component<KeyDevicesSectionProps> = (props) => {
                   <p class="text-sm text-text-secondary">
                     {d.state === "pending" && d.ready_at
                       ? t("security.keyDevices.readyAt", { time: formatTimestamp(d.ready_at) })
-                      : t(STATE_TEXT[d.state])}
+                      : t(totalKey(STATE_TEXT, d.state, STATE_TEXT.unknown))}
                   </p>
                 </div>
                 <Show when={!isProbation()}>
