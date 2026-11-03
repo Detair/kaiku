@@ -229,6 +229,7 @@ export const security = {
   "security.notice.ip": "IP address {{ip}}",
   "security.notice.with": "With {{label}}",
   "security.notice.pushTitle": "Kaiku security notice",
+  "security.notice.pushFallback": "Open Kaiku to see what happened.",
   "security.action.repudiate": "That wasn't me",
   "security.action.cancelRequest": "Cancel this request",
   "security.action.removeDevice": "Remove this device",

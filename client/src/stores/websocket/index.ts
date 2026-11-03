@@ -368,10 +368,16 @@ function notifySecurityNotice(message: Message): void {
   const notice = decodeSecurityNotice(message.security_notice);
   if (!notice) return;
   // The notice texts load with the first notice (not on the startup path).
+  // If they cannot, the notification still goes out (Flash r3 p2 #4).
   void import("@/components/security/noticeText")
-    .then(({ pushText }) =>
-      sendSecurityNotification(t("security.notice.pushTitle"), pushText(notice, currentUser()?.id ?? ""), notice.notice_id),
+    .then(
+      ({ pushText }) => pushText(notice, currentUser()?.id ?? ""),
+      (err: unknown) => {
+        console.warn("[WebSocket] Notice texts did not load:", err);
+        return t("security.notice.pushFallback");
+      },
     )
+    .then((body) => sendSecurityNotification(t("security.notice.pushTitle"), body, notice.notice_id))
     .catch((err) => console.warn("[WebSocket] Security notification failed:", err));
 }
 

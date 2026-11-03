@@ -770,6 +770,7 @@
   "security.notice.passwordSet": "",
   "security.notice.passwordThrottled": "",
   "security.notice.place": "",
+  "security.notice.pushFallback": "",
   "security.notice.pushTitle": "",
   "security.notice.recoveryCodesCreated": "",
   "security.notice.recoveryContactChanged": "",
