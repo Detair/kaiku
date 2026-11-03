@@ -100,11 +100,11 @@ pub async fn authorize(
             return Err(refused());
         }
         // Codex M8: the session is still live under the account lock.
-        let live: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM sessions
-                             WHERE id = $1 AND ended_at IS NULL AND expires_at > NOW()
-                               AND absolute_expires_at > NOW())",
-        )
+        let live: bool = sqlx::query_scalar(concat!(
+            "SELECT EXISTS (SELECT 1 FROM sessions s WHERE s.id = $1 AND ",
+            crate::live_clause!(),
+            ")"
+        ))
         .bind(auth.session_id)
         .fetch_one(&mut *conn)
         .await?;

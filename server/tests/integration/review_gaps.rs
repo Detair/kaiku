@@ -497,3 +497,54 @@ async fn an_admin_confirmation_and_a_canceller_transition_never_deadlock(pool: P
     assert!(t1_ok, "the canceller transition must not deadlock (40P01)");
     assert_eq!(s, 200, "{body}");
 }
+
+/// Fable r3: part 2 re-checks the whole live-session predicate under the
+/// account lock (an expired absolute cap with a valid expiry is refused).
+#[sqlx::test]
+async fn part2_refuses_a_session_past_its_absolute_cap(pool: PgPool) {
+    use fred::interfaces::KeysInterface;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, name) = password_user(&pool, "zq8#vT4p-cap").await;
+    let totp = enable_totp(&pool, &app.config, user, &name).await;
+    let (sid, _) = create_probation_session_with_token(&pool, &app.config, user).await;
+    let auth = super::helpers::login::auth_user(&app, sid).await;
+    sqlx::query(
+        "UPDATE sessions SET absolute_expires_at = NOW() - INTERVAL '1 second',
+                expires_at = NOW() + INTERVAL '1 day' WHERE id = $1",
+    )
+    .bind(sid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let _: Result<(), _> = app
+        .state
+        .redis
+        .del::<(), _>(format!("mfa:totp_step:{user}"))
+        .await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+    let mut tx = pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut tx, &[user])
+        .await
+        .unwrap();
+    let r = vc_server::auth::owner_rule::authorize(
+        &mut tx,
+        &ctx,
+        &auth,
+        &vc_server::auth::owner_rule::OwnerTarget {
+            subject: user,
+            action: vc_server::auth::step_up::StepUpAction::RequestCancel,
+            target: vc_server::auth::step_up::StepUpTarget::Id(Uuid::new_v4()),
+            event_at: None,
+            created_by_event: Vec::new(),
+        },
+        Some(vc_server::auth::owner_rule::Part2Factor::Totp(
+            totp.generate_current().unwrap(),
+        )),
+        || vc_server::auth::AuthError::CancelNotAllowed,
+    )
+    .await;
+    assert!(
+        r.is_err(),
+        "a session past its absolute cap acts for no one"
+    );
+}

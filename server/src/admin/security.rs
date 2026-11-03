@@ -530,12 +530,12 @@ pub async fn security_view(
         },
         None => None,
     };
-    let (full, probation): (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*) FILTER (WHERE assurance = 'full'),
-                COUNT(*) FILTER (WHERE assurance <> 'full')
-           FROM sessions
-          WHERE user_id = $1 AND ended_at IS NULL AND expires_at > NOW()",
-    )
+    let (full, probation): (i64, i64) = sqlx::query_as(concat!(
+        "SELECT COUNT(*) FILTER (WHERE s.assurance = 'full'),
+                    COUNT(*) FILTER (WHERE s.assurance <> 'full')
+               FROM sessions s WHERE s.user_id = $1 AND ",
+        crate::live_clause!()
+    ))
     .bind(user)
     .fetch_one(&mut *conn)
     .await?;

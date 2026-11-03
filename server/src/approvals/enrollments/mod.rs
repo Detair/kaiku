@@ -1370,11 +1370,11 @@ pub async fn confirm_tx(
             if row.issuer_kind != "session" || row.issuer_session_id != auth.session_id {
                 return Err(ApprovalError::NotFound);
             }
-            let live: Option<bool> = sqlx::query_scalar(
-                "SELECT assurance = 'full' FROM sessions
-                  WHERE id = $1 AND ended_at IS NULL AND expires_at > NOW()
-                  FOR SHARE",
-            )
+            let live: Option<bool> = sqlx::query_scalar(concat!(
+                "SELECT s.assurance = 'full' FROM sessions s WHERE s.id = $1 AND ",
+                crate::live_clause!(),
+                " FOR SHARE"
+            ))
             .bind(row.issuer_session_id)
             .fetch_optional(&mut *conn)
             .await?;
