@@ -736,8 +736,13 @@ pub async fn claim(
                     .await?
                     .is_some_and(|t| row.issuer_kind == "ticket" && row.issuer_ticket_id == Some(t))
             }
-            // The request client's own key: L1b Task 22.
-            OwnClaim::Request(_) => false,
+            OwnClaim::Request(secret) => {
+                crate::auth::account_requests::request_id_by_secret(&mut tx, ctx, secret)
+                    .await?
+                    .is_some_and(|r| {
+                        row.issuer_kind == "request" && row.issuer_request_id == Some(r)
+                    })
+            }
         };
         if !issuer_ok {
             return Err(ApprovalError::EnrollmentTokenInvalid);
@@ -769,8 +774,16 @@ pub async fn claim(
                 .bind(row.id)
                 .fetch_one(&mut *tx)
                 .await?;
-        // A pending key's `ready_at` comes from its account request (Task 22).
-        let ready_at: Option<DateTime<Utc>> = None;
+        let device_id: Uuid =
+            sqlx::query_scalar("SELECT id FROM approval_devices WHERE enrollment_id = $1")
+                .bind(row.id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let ready_at = crate::auth::account_requests::core::pending_ready_at(
+            &mut tx,
+            AuthenticatorRef::key_device(device_id),
+        )
+        .await?;
         tx.commit().await?;
         return Ok((
             ClaimResponse::Done {
@@ -887,10 +900,30 @@ pub async fn status(
         }
         let changed = first_state.as_ref().is_some_and(|s| *s != state);
         if changed || state != "claimed" || started.elapsed() >= wait {
+            let ready_at = if device_state.as_deref() == Some("pending") {
+                let device: Option<Uuid> =
+                    sqlx::query_scalar("SELECT id FROM approval_devices WHERE enrollment_id = $1")
+                        .bind(enrollment_id)
+                        .fetch_optional(ctx.db)
+                        .await?;
+                match device {
+                    Some(d) => {
+                        let mut conn = ctx.db.acquire().await?;
+                        crate::auth::account_requests::core::pending_ready_at(
+                            &mut conn,
+                            AuthenticatorRef::key_device(d),
+                        )
+                        .await?
+                    }
+                    None => None,
+                }
+            } else {
+                None
+            };
             return Ok(StatusResponse {
                 state,
                 authenticator_state: device_state,
-                ready_at: None,
+                ready_at,
             });
         }
         first_state.get_or_insert(state);
@@ -1183,7 +1216,18 @@ pub async fn finish_done_tx(
     .bind(row.id)
     .execute(&mut *conn)
     .await?;
-    crate::auth::strong::mark_first_activity(conn, row.subject_id).await?;
+    if state == DeviceState::Pending {
+        if let Some(request_id) = row.issuer_request_id {
+            crate::auth::account_requests::core::stage_authenticator_tx(
+                conn,
+                request_id,
+                AuthenticatorRef::key_device(device_row_id),
+            )
+            .await?;
+        }
+    } else {
+        crate::auth::strong::mark_first_activity(conn, row.subject_id).await?;
+    }
     crate::auth::registration::mark_bound_tx(conn, row.subject_id).await?;
     // A strong authenticator active by this path consumes the bootstrap
     // entitlement (F8 rev 4).

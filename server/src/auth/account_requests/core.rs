@@ -219,16 +219,19 @@ fn secret_hash(ctx: &AuthCtx<'_>, s: &Secret256) -> [u8; 32] {
     keyed_hash(ctx.hmac_key(), SecretPurpose::RequestSecret, s.as_bytes())
 }
 
-/// The open request of a request secret (the own-key claim, SM2).
+/// The `ready` request of a request secret (the own-key claim, SM2).
 pub async fn request_id_by_secret(
     conn: &mut PgConnection,
     ctx: &AuthCtx<'_>,
     secret: &Secret256,
 ) -> sqlx::Result<Option<Uuid>> {
-    sqlx::query_scalar("SELECT id FROM account_requests WHERE request_secret_hash = $1")
-        .bind(secret_hash(ctx, secret).to_vec())
-        .fetch_optional(&mut *conn)
-        .await
+    sqlx::query_scalar(
+        "SELECT id FROM account_requests
+          WHERE request_secret_hash = $1 AND state = 'ready' AND expires_at > NOW()",
+    )
+    .bind(secret_hash(ctx, secret).to_vec())
+    .fetch_optional(&mut *conn)
+    .await
 }
 
 /// The request of a request secret (any state).
@@ -889,9 +892,13 @@ pub async fn complete_locked_tx(
         _ => row.state == "ready" && row.expires_at.is_some_and(|t| t > Utc::now()),
     };
     if !due {
-        return Err(AuthError::AccountRequestNotReady {
-            state: row.state.clone(),
-        });
+        // Past the Finish deadline before the minute sweep: `expired`.
+        let state = if row.state == "ready" {
+            "expired".to_string()
+        } else {
+            row.state.clone()
+        };
+        return Err(AuthError::AccountRequestNotReady { state });
     }
     // Rule 4: generations unchanged, a route left.
     let st = factors::states(conn, row.user_id).await?;
@@ -910,11 +917,17 @@ pub async fn complete_locked_tx(
             .extend(void_row_tx(conn, ctx, row, VoidCause::NoRouteLeft).await?);
         return Ok(out);
     }
+    // `completed` before the effects: the cascades they trigger (a replaced
+    // generation, a revoked lost device) must not void this request.
+    sqlx::query("UPDATE account_requests SET state = 'completed', ended_at = NOW() WHERE id = $1")
+        .bind(row.id)
+        .execute(&mut *conn)
+        .await?;
     let staged = row.staged.clone();
-    let mut credentials_changed;
     // A staged password or TOTP (Task 22): new generations, `active`.
-    credentials_changed = false;
-    if let Some(hash) = staged["password_hash"].as_str() {
+    let password_hash = staged["password_hash"].as_str();
+    let mut credentials_changed = password_hash.is_some();
+    if let Some(hash) = password_hash {
         factors::replace_tx(conn, ctx, row.user_id, Factor::Password).await?;
         sqlx::query(
             "UPDATE users SET password_hash = $2, must_change_password = false WHERE id = $1",
@@ -923,7 +936,6 @@ pub async fn complete_locked_tx(
         .bind(hash)
         .execute(&mut *conn)
         .await?;
-        credentials_changed = true;
     }
     if let Some(secret) = staged["totp_secret"].as_str() {
         factors::replace_tx(conn, ctx, row.user_id, Factor::Totp).await?;
@@ -953,6 +965,14 @@ pub async fn complete_locked_tx(
         Some(a) => activate_pending(conn, row.user_id, a).await?,
         None => false,
     };
+    // The request's open child enrolments end with it (rule 2).
+    sqlx::query(
+        "UPDATE enrollments SET state = 'cancelled', ended_at = NOW()
+          WHERE issuer_request_id = $1 AND state IN ('issued', 'claimed')",
+    )
+    .bind(row.id)
+    .execute(&mut *conn)
+    .await?;
     // Devices named lost are revoked.
     for d in &row.lost_device_ids {
         let still: bool = sqlx::query_scalar(
@@ -1007,9 +1027,9 @@ pub async fn complete_locked_tx(
         let sids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT s.id FROM sessions s
               WHERE s.user_id = $1 AND s.ended_at IS NULL
-                AND NOT (s.authenticator_type = 'key_device' AND s.authenticator_id IN (
+                AND NOT COALESCE(s.authenticator_type = 'key_device' AND s.authenticator_id IN (
                      SELECT d.id FROM approval_devices d
-                      WHERE d.user_id = $1 AND d.state = 'active' AND NOT (d.id = ANY($2))))",
+                      WHERE d.user_id = $1 AND d.state = 'active' AND NOT (d.id = ANY($2))), false)",
         )
         .bind(row.user_id)
         .bind(&row.lost_device_ids)
@@ -1027,10 +1047,6 @@ pub async fn complete_locked_tx(
     for f in [Factor::Password, Factor::Totp] {
         factors::clear_throttle_tx(conn, row.user_id, f, ExitPath::CompletedRequest).await?;
     }
-    sqlx::query("UPDATE account_requests SET state = 'completed', ended_at = NOW() WHERE id = $1")
-        .bind(row.id)
-        .execute(&mut *conn)
-        .await?;
     out.event_ids
         .push(request_event(conn, row, EventType::RequestCompleted, Actor::System, None).await?);
     Ok(out)
@@ -1278,6 +1294,65 @@ pub async fn to_summary(
     })
 }
 
+/// `ready_at` of a pending authenticator: its open account request's
+/// `ready_at` (C26 `KEY_DEVICE_PENDING {ready_at}`, `PASSKEY_PENDING`).
+pub async fn pending_ready_at(
+    conn: &mut PgConnection,
+    a: AuthenticatorRef,
+) -> sqlx::Result<Option<DateTime<Utc>>> {
+    sqlx::query_scalar(
+        "SELECT ready_at FROM account_requests
+          WHERE state IN ('waiting', 'ready') AND staged -> 'authenticator' @> $1",
+    )
+    .bind(serde_json::json!({"type": a.as_str(), "id": a.id}))
+    .fetch_optional(&mut *conn)
+    .await
+}
+
+/// Record the request's staged (pending) authenticator; a previous one is
+/// voided (one live child, SM2).
+pub async fn stage_authenticator_tx(
+    conn: &mut PgConnection,
+    request_id: Uuid,
+    a: AuthenticatorRef,
+) -> sqlx::Result<()> {
+    let old: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT staged -> 'authenticator' FROM account_requests WHERE id = $1")
+            .bind(request_id)
+            .fetch_optional(&mut *conn)
+            .await?
+            .flatten();
+    if let Some(old) = old {
+        if let (Some(t), Some(id)) = (old["type"].as_str(), old["id"].as_str()) {
+            let id: Option<Uuid> = id.parse().ok();
+            if t == "key_device" {
+                sqlx::query(
+                    "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(),
+                            revoke_reason = 'request'
+                      WHERE id = $1 AND state = 'pending'",
+                )
+                .bind(id)
+                .execute(&mut *conn)
+                .await?;
+            } else {
+                sqlx::query("DELETE FROM passkeys WHERE id = $1 AND state = 'pending'")
+                    .bind(id)
+                    .execute(&mut *conn)
+                    .await?;
+            }
+        }
+    }
+    sqlx::query(
+        "UPDATE account_requests
+            SET staged = jsonb_set(staged, '{authenticator}', $2) WHERE id = $1",
+    )
+    .bind(request_id)
+    .bind(serde_json::json!({"type": a.as_str(), "id": a.id}))
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// Load a request by id (any state).
 pub async fn get(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<RequestRow>> {
     by_id(conn, id, false).await
@@ -1295,6 +1370,33 @@ pub async fn lock_by_secret(
     lock_request(conn, seen.id, &[])
         .await?
         .ok_or_else(|| AuthError::NotFound("Unknown request".into()))
+}
+
+/// Lock a `ready` request for Finish: the subject and the staged recovery
+/// contact in ascending id order (B.7), then the row. A contact staged
+/// concurrently after the unlocked read answers 503 (retry).
+pub async fn lock_for_finish(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    secret: &Secret256,
+) -> AuthResult<RequestRow> {
+    let seen = by_secret(conn, ctx, secret, false)
+        .await?
+        .ok_or_else(|| AuthError::NotFound("Unknown request".into()))?;
+    let contact = staged_contact(&seen);
+    let row = lock_request(conn, seen.id, contact.as_slice())
+        .await?
+        .ok_or_else(|| AuthError::NotFound("Unknown request".into()))?;
+    if staged_contact(&row) != contact {
+        return Err(AuthError::ServiceUnavailable);
+    }
+    Ok(row)
+}
+
+fn staged_contact(row: &RequestRow) -> Option<Uuid> {
+    row.staged["recovery_contact_id"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
 }
 
 /// Lock a request by id (subject lock first).
