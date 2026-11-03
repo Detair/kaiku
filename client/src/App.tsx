@@ -232,6 +232,21 @@ const SetupLinkPage = () => (
     </LazyErrorBoundary>
   </Layout>
 );
+const RecoverAccount = lazy(() => import("./views/RecoverAccount"));
+const SecureAccount = lazy(() => import("./views/SecureAccount"));
+const AccountRequestView = lazy(() => import("./views/AccountRequestView"));
+const lazyPage = (name: string, View: Component) => () => (
+  <Layout>
+    <LazyErrorBoundary name={name}>
+      <Suspense fallback={<PageFallback />}>
+        <View />
+      </Suspense>
+    </LazyErrorBoundary>
+  </Layout>
+);
+const RecoverPage = lazyPage("RecoverAccount", RecoverAccount);
+const SecureAccountPage = lazyPage("SecureAccount", SecureAccount);
+const AccountRequestPage = lazyPage("AccountRequest", AccountRequestView);
 const RegisterPage = () => (
   <Layout>
     <Register />
@@ -299,6 +314,9 @@ export const AppRoutes = (): JSX.Element => (
     <Route path="/login" component={LoginPage} />
     <Route path="/register" component={RegisterPage} />
     <Route path="/setup" component={SetupLinkPage} />
+    <Route path="/recover" component={RecoverPage} />
+    <Route path="/secure-account" component={SecureAccountPage} />
+    <Route path="/account-request" component={AccountRequestPage} />
     <Route path="/invite/:code" component={InvitePage} />
     <Route path="/pages/:slug" component={PagePage} />
     <Route path="/guilds/:guildId/pages/:slug" component={PagePage} />

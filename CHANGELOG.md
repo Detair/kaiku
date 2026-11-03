@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A phone becomes a key by opening a setup link or code and confirming a 6-digit code shown on it; phones without a screen lock or a hardware key store are refused at the start.
 - Your phone can be a key for your account: it confirms sensitive actions with its screen lock, and you can see and remove your key phones in the security settings.
 - Security notices: sign-ins and changes to how you sign in appear in a read-only chat with **Kaiku** and in a security log in your account settings; admins get a copy of important ones. They cannot be deleted from a signed-in session.
+- **Account recovery without e-mail:** 'I lost my phone / forgot my password' and 'Secure my account' start a request that completes after 24 hours unless you, your recovery contact or an admin cancels it.
 - Kaiku now asks you to secure your account (phone, passkey, recovery contact) and shows any open request to change your sign-in, with Cancel.
 - **Security notices:** a read-only chat with 'Kaiku' tells you about new sign-ins, devices and account changes, with 'That wasn't me' where it helps; the security log in settings lists every event.
 - Setup links: a link from your admin opens the Kaiku app on Android, or adds a passkey in a computer's browser.
