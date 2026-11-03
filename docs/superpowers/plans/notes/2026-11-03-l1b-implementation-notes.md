@@ -90,3 +90,34 @@ decision. "For L2" marks interface facts the clients need.
   `approval_challenge_login.json`.
 - The `sign_in` event of a QR sign-in carries the PC's class/label/IP and session; a QR sign-in
   ends a password throttle (B.1 exit "another method").
+
+## Task 18 — password and OIDC sign-in with phone confirmation (F3, F4)
+
+- `POST /auth/login {username, password, client_challenge?}` → 202 `LoginStep` or 401
+  `INVALID_CREDENTIALS` with F3's text (`AuthError::NeutralSignIn`, `login::neutral_answer()`):
+  one Argon2 verify (off the runtime) in every case; wrong password, unknown user, the system
+  account, a passwordless account, a `throttled`/`compromised` password and an account without an
+  eligible second step look the same. `mfa_code` → 400 `CLIENT_OUTDATED`. A banned account with a
+  correct password and a second step still answers 403 `ACCOUNT_BANNED`.
+- `confirmation_required` needs an active key device **and** `may_approve`; `totp_required` an
+  active TOTP (`totp_state = active`). A `totp_required` step carries `qr: null`.
+- `POST /auth/login-attempts/{id}/totp {verifier?, code}` (SM1): `password`/`oidc` attempts in
+  `open`/`claimed`; first factor unchanged and active (else 410 `LOGIN_ATTEMPT_ENDED {expired}`);
+  TOTP `active` (else 403 `TOTP_UNAVAILABLE`); wrong/replayed code → 401 `INVALID_MFA` and
+  `second_factor_failed {factor: totp, count: 1}`. A claimed challenge becomes void.
+- `sign_in_not_finished {factor, count: 1}` is recorded once per F3/F4 attempt that ends
+  `denied`, `reported`, `cancelled` or `expired` (flag `unfinished_recorded`); notices coalesce.
+- **OIDC (C27, C29 step 8).** Desktop start: `X-Kaiku-Client: desktop` with `loopback_port`,
+  `callback_path` (43 b64u) and `client_challenge` → `{url, flow_id}`; the callback answers LP's
+  hand-off page (form POST of `flow_id` + `code`, or `error`); the old `redirect_uri` login start
+  → 400 `OIDC_CLIENT_OUTDATED`. Android: `X-Kaiku-Client: android` + `client_challenge` →
+  `{url}`; the callback redirects to `kaiku://auth/callback?code=…` only. `POST
+  /auth/oidc/desktop/exchange {code, verifier}` → 202 `LoginStep` (an `oidc` attempt bound to the
+  start's `client_challenge`) or the neutral 401. Browser: `postMessage {type: "oidc-callback",
+  status, attempt}` with the attempt cookie; failures `{type, status: "error", error}`.
+- **For L2a (desktop):** read `flow_id` from the authorize JSON; the listener receives `flow_id`
+  and `code` (or `error`) by form POST.
+- **Coordinator:** a new account created by OIDC self-registration has no second step and gets the
+  neutral answer; C27 has no registration-ticket path for OIDC sign-up (Task 19 decides).
+- LP's passkey routes already record `sign_in` and `authenticator_added`/`authenticator_removed`;
+  nothing added.
