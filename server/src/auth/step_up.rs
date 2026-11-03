@@ -469,3 +469,18 @@ pub async fn void_for_authenticator(
     .await?
     .rows_affected())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::StepUpAction;
+
+    #[test]
+    fn every_admin_action_is_gated() {
+        // Review round 3 (Fable): a new `admin.*` action cannot slip past
+        // `require_admin_for_step_up` by a missing `is_admin` arm.
+        assert!(StepUpAction::ALL
+            .iter()
+            .all(|a| a.is_admin() == a.as_str().starts_with("admin.")));
+        assert_eq!(StepUpAction::ALL.iter().filter(|a| a.is_admin()).count(), 6);
+    }
+}

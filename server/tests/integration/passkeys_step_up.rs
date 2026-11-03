@@ -814,6 +814,23 @@ async fn device_admin_step_up_needs_an_admin(pool: PgPool) {
         );
         assert!(!b.to_string().contains("Their secret phone"), "{b}");
     }
+    // Review round 3 (Codex): NOT_ADMIN comes first, also without a key
+    // device (never KEY_DEVICE_REQUIRED for a non-admin).
+    let (_, plain) = create_session_with_token(&app.pool, &app.config, user).await;
+    for (action, target) in admin_actions(other, theirs.row_id) {
+        let (s, b) = post(
+            &app,
+            "/api/approvals/step-up",
+            Some(&plain),
+            json!({"action": action, "target": target}),
+        )
+        .await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (403, Some("NOT_ADMIN")),
+            "{action}: {b}"
+        );
+    }
     make_admin(&app.pool, user).await;
     let (s, c) = post(
         &app,

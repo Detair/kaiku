@@ -109,10 +109,12 @@ pub async fn step_up(
     let action = StepUpAction::parse(&body.action)
         .ok_or_else(|| ApprovalError::Validation("unknown action".into()))?;
     let target = StepUpTarget::parse(action, &body.target)?;
+    // NOT_ADMIN before anything else for an admin.* action (as on
+    // /api/admin/*), also before the key-device lookup.
+    crate::auth::guards::require_admin_for_step_up(&state.db, &auth, action).await?;
     let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
     let dev: KeyDeviceSession = key_device_session(&mut tx, &auth).await?;
-    crate::auth::guards::require_admin_for_step_up(&state.db, &auth, action).await?;
     crate::auth::guards::require_full(&auth)?;
     let sid = auth.session_id.ok_or(ApprovalError::KeyDeviceRequired)?;
     let context = CanonicalContext::DeviceStepup(DeviceStepupContext {
