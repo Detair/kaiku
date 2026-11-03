@@ -446,6 +446,7 @@
     <string name="issuer_expired">The setup code ran out of time. Start again.</string>
     <string name="issuer_limit">There are already five open setup codes. Cancel one first.</string>
     <string name="issuer_key_phone_required">Use your Kaiku key phone for this.</string>
+    <string name="security_step_up_none">Confirm this on your Kaiku key phone or with a passkey. This phone has neither.</string>
     <string name="issuer_stopped">Stopped. Nothing was added.</string>
     <string name="keypad_delete">Delete</string>
     <string name="keypad_confirm">Confirm</string>
@@ -479,7 +480,6 @@
     <string name="security_session_last_used">Last used %1$s</string>
     <string name="security_session_end">End</string>
     <string name="security_session_remove_device">Remove device</string>
-    <string name="security_sessions_others">all other sessions</string>
     <string name="security_sessions_end_others">Sign out everywhere else</string>
     <string name="security_recovery_codes">Recovery codes</string>
     <plurals name="security_recovery_codes_left">

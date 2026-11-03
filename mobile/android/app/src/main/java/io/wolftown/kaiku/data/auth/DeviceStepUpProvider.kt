@@ -7,6 +7,15 @@ import io.wolftown.kaiku.domain.model.StepUpAction
 import io.wolftown.kaiku.domain.model.StepUpGrant
 import io.wolftown.kaiku.approval.DeviceStepUp as KeyDeviceStepUp
 
+/**
+ * Whether a [StepUpProvider] can give a grant here at all. LP's
+ * `PasskeysViewModel` reads it, when its provider has it, to offer
+ * "Add a passkey" only where it can work.
+ */
+interface StepUpAvailability {
+    suspend fun available(accountHasPasskey: Boolean): Boolean
+}
+
 /** A device step-up that gave no grant; [outcome] says why. */
 class StepUpFailure(val outcome: StepUpOutcome) : Exception("step-up failed: $outcome")
 
@@ -28,7 +37,14 @@ class StepUpFailure(val outcome: StepUpOutcome) : Exception("step-up failed: $ou
 class DeviceStepUpProvider(
     private val stepUp: KeyDeviceStepUp,
     private val fallback: StepUpProvider? = null,
-) : StepUpProvider {
+) : StepUpProvider, StepUpAvailability {
+    /**
+     * A step-up can work only in a full session, with the key on this phone or a
+     * passkey of the account (Fable m5: LP's "Add a passkey" shows only then).
+     */
+    override suspend fun available(accountHasPasskey: Boolean): Boolean =
+        stepUp.sessionIsFull() && (stepUp.isKeyDevice() || (fallback != null && accountHasPasskey))
+
     override suspend fun stepUp(activity: Activity, action: String, target: String): Result<StepUpGrant> {
         val a = StepUpAction.fromWire(action) ?: return Result.failure(StepUpFailure(StepUpOutcome.Failed("UNKNOWN_ACTION")))
         val host = activity as? FragmentActivity

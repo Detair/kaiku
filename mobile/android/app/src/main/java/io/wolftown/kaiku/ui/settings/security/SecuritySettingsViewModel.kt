@@ -6,13 +6,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
-import io.wolftown.kaiku.approval.DeviceStepUp
 import io.wolftown.kaiku.approval.StepUpOutcome
 import io.wolftown.kaiku.approval.UvClass
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.ApprovalApi
 import io.wolftown.kaiku.data.api.DmApi
 import io.wolftown.kaiku.data.api.SecurityApi
+import io.wolftown.kaiku.data.auth.AccountStepUp
 import io.wolftown.kaiku.data.auth.KeyDeviceSignOut
 import io.wolftown.kaiku.data.keydevice.KeyDeviceRepository
 import io.wolftown.kaiku.data.keydevice.KeyDeviceState
@@ -60,15 +60,16 @@ data class SecuritySettingsUi(
 }
 
 /**
- * Security settings on the key phone (Task B11). Every change goes through the
- * device step-up for exactly its action and target; password and TOTP are
+ * Security settings (Task B11). Every change goes through a step-up for exactly
+ * its action and target, with the key on the key phone or else a passkey
+ * ([AccountStepUp]); one change runs at a time. Password and TOTP are
  * shown read-only (coordinator call 3: managed on web/desktop with a passkey).
  */
 @HiltViewModel
 class SecuritySettingsViewModel internal constructor(
     private val securityApi: SecurityApi,
     private val approvalApi: ApprovalApi,
-    private val stepUp: DeviceStepUp,
+    private val stepUp: AccountStepUp,
     private val keyDevices: KeyDeviceRepository,
     private val signOut: KeyDeviceSignOut,
     private val dms: suspend () -> List<DmConversation>,
@@ -79,7 +80,7 @@ class SecuritySettingsViewModel internal constructor(
     constructor(
         securityApi: SecurityApi,
         approvalApi: ApprovalApi,
-        stepUp: DeviceStepUp,
+        stepUp: AccountStepUp,
         keyDevices: KeyDeviceRepository,
         signOut: KeyDeviceSignOut,
         dmApi: DmApi,
@@ -121,17 +122,17 @@ class SecuritySettingsViewModel internal constructor(
         activity: FragmentActivity,
         action: StepUpAction,
         target: String,
-        label: String,
         authenticatorChange: Boolean = false,
         block: suspend () -> Unit,
     ) {
+        if (_ui.value.working) return
         if (_ui.value.readOnly) {
             _ui.update { it.copy(message = R.string.security_probation_read_only) }
             return
         }
         _ui.update { it.copy(working = true, message = null) }
         viewModelScope.launch {
-            when (val out = stepUp.stepUp(activity, action, target, label)) {
+            when (stepUp.stepUp(activity, action, target)) {
                 is StepUpOutcome.Granted -> try {
                     block()
                     _ui.update { it.copy(working = false, offerSignOutOthers = authenticatorChange || it.offerSignOutOthers) }
@@ -143,14 +144,14 @@ class SecuritySettingsViewModel internal constructor(
                 }
                 StepUpOutcome.Cancelled -> _ui.update { it.copy(working = false) }
                 StepUpOutcome.ProbationSession -> _ui.update { it.copy(working = false, message = R.string.security_probation_read_only) }
-                StepUpOutcome.NotKeyDevice -> _ui.update { it.copy(working = false, message = R.string.issuer_key_phone_required) }
+                StepUpOutcome.NotKeyDevice -> _ui.update { it.copy(working = false, message = R.string.security_step_up_none) }
                 is StepUpOutcome.Failed -> _ui.update { it.copy(working = false, message = R.string.security_sign_in_failed) }
             }
         }
     }
 
     fun removeKeyDevice(activity: FragmentActivity, d: KeyDevice) =
-        guarded(activity, StepUpAction.KEY_DEVICE_REMOVE, d.id, d.label, authenticatorChange = true) {
+        guarded(activity, StepUpAction.KEY_DEVICE_REMOVE, d.id, authenticatorChange = true) {
             approvalApi.removeKeyDevice(d.id)
         }
 
@@ -158,16 +159,16 @@ class SecuritySettingsViewModel internal constructor(
     fun endSession(activity: FragmentActivity, s: SessionItem) {
         val a = s.authenticator
         if (a != null && a.type == "key_device") {
-            guarded(activity, StepUpAction.KEY_DEVICE_REMOVE, a.id, a.label, authenticatorChange = true) {
+            guarded(activity, StepUpAction.KEY_DEVICE_REMOVE, a.id, authenticatorChange = true) {
                 approvalApi.removeKeyDevice(a.id)
             }
         } else {
-            guarded(activity, StepUpAction.SESSIONS_END, s.id, s.device) { securityApi.endSession(s.id) }
+            guarded(activity, StepUpAction.SESSIONS_END, s.id) { securityApi.endSession(s.id) }
         }
     }
 
     fun endOtherSessions(activity: FragmentActivity) =
-        guarded(activity, StepUpAction.SESSIONS_END, "others", activity.getString(R.string.security_sessions_others)) {
+        guarded(activity, StepUpAction.SESSIONS_END, "others") {
             securityApi.endOtherSessions()
             _ui.update { it.copy(offerSignOutOthers = false) }
         }
@@ -180,7 +181,7 @@ class SecuritySettingsViewModel internal constructor(
     fun dismissSignOutOthers() = _ui.update { it.copy(offerSignOutOthers = false) }
 
     fun createRecoveryCodes(activity: FragmentActivity) =
-        guarded(activity, StepUpAction.RECOVERY_CODES_CREATE, "", "") {
+        guarded(activity, StepUpAction.RECOVERY_CODES_CREATE, "") {
             val codes = securityApi.createRecoveryCodes()
             _ui.update { it.copy(newRecoveryCodes = codes) }
         }
@@ -203,29 +204,63 @@ class SecuritySettingsViewModel internal constructor(
     }
 
     fun setRecoveryContact(activity: FragmentActivity, c: ContactCandidate) =
-        guarded(activity, StepUpAction.RECOVERY_CONTACT_SET, c.userId, c.displayName.ifEmpty { c.username }) {
+        guarded(activity, StepUpAction.RECOVERY_CONTACT_SET, c.userId) {
             securityApi.setRecoveryContact(c.userId)
         }
 
     fun removeRecoveryContact(activity: FragmentActivity) =
-        guarded(activity, StepUpAction.RECOVERY_CONTACT_SET, "", "") { securityApi.removeRecoveryContact() }
+        guarded(activity, StepUpAction.RECOVERY_CONTACT_SET, "") { securityApi.removeRecoveryContact() }
 
     fun signOut() {
+        if (_ui.value.working) return
+        _ui.update { it.copy(working = true, message = null) }
         viewModelScope.launch {
-            signOut.signOut()
-            _ui.update { it.copy(signedOut = true) }
+            try {
+                signOut.signOut()
+                _ui.update { it.copy(working = false, signedOut = true) }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                _ui.update { it.copy(working = false, message = errorFor(e)) }
+            }
         }
     }
 
+    /** Needs a full session on the key phone (the removal is a `key_device.remove` step-up). */
     fun signOutAndRemovePhone(activity: FragmentActivity) {
+        if (_ui.value.working) return
+        if (_ui.value.readOnly) {
+            _ui.update { it.copy(message = R.string.security_probation_read_only) }
+            return
+        }
         _ui.update { it.copy(working = true, message = null) }
         viewModelScope.launch {
-            when (signOut.signOutAndRemovePhone(activity)) {
-                is StepUpOutcome.Granted -> _ui.update { it.copy(working = false, signedOut = true) }
-                StepUpOutcome.Cancelled -> _ui.update { it.copy(working = false) }
-                else -> _ui.update { it.copy(working = false, message = R.string.security_sign_in_failed) }
+            val out = try {
+                signOut.signOutAndRemovePhone(activity)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                _ui.update { it.copy(working = false, message = errorFor(e)) }
+                return@launch
+            }
+            _ui.update {
+                when (out) {
+                    is StepUpOutcome.Granted -> it.copy(working = false, signedOut = true)
+                    StepUpOutcome.Cancelled -> it.copy(working = false)
+                    StepUpOutcome.ProbationSession -> it.copy(working = false, message = R.string.security_probation_read_only)
+                    StepUpOutcome.NotKeyDevice -> it.copy(working = false, message = R.string.issuer_key_phone_required)
+                    is StepUpOutcome.Failed -> it.copy(working = false, message = failedText(out.code))
+                }
             }
         }
+    }
+
+    @StringRes
+    private fun failedText(code: String): Int = when (code) {
+        "LAST_STRONG_AUTHENTICATOR" -> R.string.security_last_strong
+        "NETWORK" -> R.string.security_network_error
+        "KEY_INVALIDATED" -> R.string.security_key_invalidated
+        else -> R.string.security_sign_in_failed
     }
 
     fun clearMessage() = _ui.update { it.copy(message = null) }

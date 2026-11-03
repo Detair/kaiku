@@ -160,3 +160,27 @@ class FakeLoginAttemptApi : io.wolftown.kaiku.data.api.LoginAttemptApi {
 fun s256(verifier: String): String = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
     java.security.MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)),
 )
+
+/** A passkey step-up that records what it was asked for and grants it (LP's provider in tests). */
+class RecordingPasskeyStepUp(
+    private val answer: (String, String) -> Result<io.wolftown.kaiku.domain.model.StepUpGrant> =
+        { action, target -> Result.success(io.wolftown.kaiku.domain.model.StepUpGrant(action, target, "passkey", "2026-11-03T12:05:00Z")) },
+) : io.wolftown.kaiku.data.auth.StepUpProvider {
+    val asked = mutableListOf<String>()
+    override suspend fun stepUp(activity: android.app.Activity, action: String, target: String): Result<io.wolftown.kaiku.domain.model.StepUpGrant> {
+        asked += "$action:$target"
+        return answer(action, target)
+    }
+}
+
+/**
+ * The real composite step-up ([io.wolftown.kaiku.data.auth.KeyOrPasskeyStepUp] over
+ * [io.wolftown.kaiku.data.auth.DeviceStepUpProvider]) on a phone that is not a key:
+ * every grant comes from [passkeys].
+ */
+fun nonKeyPhoneStepUp(scope: kotlinx.coroutines.CoroutineScope, passkeys: io.wolftown.kaiku.data.auth.StepUpProvider): io.wolftown.kaiku.data.auth.KeyOrPasskeyStepUp {
+    val authState = io.wolftown.kaiku.data.local.AuthState(scope).apply { setLoggedIn("11111111-1111-4111-8111-111111111111") }
+    val repo = io.wolftown.kaiku.data.keydevice.KeyDeviceRepository(InMemoryKeyDeviceStore(), io.mockk.mockk(relaxed = true), authState, scope)
+    val device = io.wolftown.kaiku.approval.DeviceStepUp(FakeApprovalApi(), io.mockk.mockk(), repo, { "device-1" }, io.mockk.mockk())
+    return io.wolftown.kaiku.data.auth.KeyOrPasskeyStepUp(io.wolftown.kaiku.data.auth.DeviceStepUpProvider(device, fallback = passkeys))
+}

@@ -127,7 +127,8 @@ fun AdminUserScreen(onBack: () -> Unit, onSetUpPhone: (String) -> Unit, viewMode
         if (u == null) return@AdminScaffold
         Text(stringResource(R.string.security_key_devices), style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.padding(top = 16.dp))
-        (u.keyDevices + u.passkeys).forEach { d ->
+        // Revoked authenticators are history: no "Remove device now" for them (and not listed).
+        (u.keyDevices + u.passkeys).filter { it.state != "revoked" }.forEach { d ->
             Row(Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.otherAction), verticalAlignment = Alignment.CenterVertically) {
                 Text(d.label, fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.weight(1f))
                 if (ui.canRemoveDevices) {

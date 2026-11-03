@@ -5,7 +5,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.wolftown.kaiku.R
-import io.wolftown.kaiku.approval.DeviceStepUp
+import io.wolftown.kaiku.data.auth.AccountStepUp
 import io.wolftown.kaiku.approval.StepUpOutcome
 import io.wolftown.kaiku.data.auth.KeyDeviceSignOut
 import io.wolftown.kaiku.domain.model.AuthenticatorRef
@@ -43,7 +43,7 @@ class SecuritySettingsViewModelTest {
     private val activity: FragmentActivity = mockk(relaxed = true)
     private val security = FakeSecurityApi()
     private val approvals = FakeApprovalApi()
-    private val stepUp: DeviceStepUp = mockk()
+    private val stepUp: AccountStepUp = mockk()
     private val signOut: KeyDeviceSignOut = mockk(relaxed = true)
     private val other = KeyDevice("kd2", label = "Old phone", state = KeyDeviceStatus.ACTIVE)
     private val mine = KeyDevice("kd1", label = "Pixel 8", state = KeyDeviceStatus.ACTIVE, isCurrent = true)
@@ -53,7 +53,7 @@ class SecuritySettingsViewModelTest {
     @After fun tearDown() = Dispatchers.resetMain()
 
     private fun granted(action: StepUpAction, target: String) {
-        coEvery { stepUp.stepUp(activity, action, target, any()) } returns
+        coEvery { stepUp.stepUp(activity, action, target) } returns
             StepUpOutcome.Granted(StepUpGrant(action.wire, target, "device", "t"))
     }
 
@@ -69,7 +69,7 @@ class SecuritySettingsViewModelTest {
         val v = vm()
         assertTrue(v.ui.value.readOnly)
         v.removeKeyDevice(activity, other)
-        coVerify(exactly = 0) { stepUp.stepUp(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { stepUp.stepUp(any(), any(), any()) }
         assertEquals(R.string.security_probation_read_only, v.ui.value.message)
     }
 
@@ -79,7 +79,7 @@ class SecuritySettingsViewModelTest {
         assertFalse(v.ui.value.readOnly)
         assertEquals(listOf("kd1", "kd2"), v.ui.value.keyDevices.map { it.id })
         v.removeKeyDevice(activity, other)
-        coVerify { stepUp.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, "kd2", "Old phone") }
+        coVerify { stepUp.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, "kd2") }
         assertTrue("removeKeyDevice:kd2" in approvals.calls)
     }
 
@@ -107,7 +107,7 @@ class SecuritySettingsViewModelTest {
         granted(StepUpAction.SESSIONS_END, "others")
         val v = vm()
         v.endOtherSessions(activity)
-        coVerify { stepUp.stepUp(activity, StepUpAction.SESSIONS_END, "others", any()) }
+        coVerify { stepUp.stepUp(activity, StepUpAction.SESSIONS_END, "others") }
         assertTrue("endOtherSessions" in security.calls)
     }
 
@@ -157,5 +157,47 @@ class SecuritySettingsViewModelTest {
         security.failure = apiError(400, "RECOVERY_CONTACT_INVALID")
         v.setRecoveryContact(activity, ContactCandidate("u-admin", "admin", "Admin"))
         assertEquals(R.string.security_contact_invalid, v.ui.value.message)
+    }
+
+    @Test fun `a passkey session on a phone without a key changes settings with the passkey`() = runTest {
+        val passkeys = io.wolftown.kaiku.testutil.RecordingPasskeyStepUp()
+        approvals.devices = listOf(other)
+        val v = SecuritySettingsViewModel(
+            security, approvals, io.wolftown.kaiku.testutil.nonKeyPhoneStepUp(backgroundScope, passkeys),
+            KeyDeviceFixture(backgroundScope).repo, signOut, { dms }, { SigFixtures.USER_ID },
+        ).also { it.load() }
+        v.removeKeyDevice(activity, other)
+        assertEquals(listOf("key_device.remove:kd2"), passkeys.asked)
+        assertTrue("removeKeyDevice:kd2" in approvals.calls)
+    }
+
+    @Test fun `a second tap while a change runs starts no second step-up`() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<StepUpOutcome>()
+        coEvery { stepUp.stepUp(activity, StepUpAction.KEY_DEVICE_REMOVE, "kd2") } coAnswers { gate.await() }
+        val v = vm()
+        v.removeKeyDevice(activity, other)
+        v.removeKeyDevice(activity, other)
+        v.endOtherSessions(activity)
+        coVerify(exactly = 1) { stepUp.stepUp(any(), any(), any()) }
+        gate.complete(StepUpOutcome.Cancelled)
+        assertFalse(v.ui.value.working)
+    }
+
+    @Test fun `remove this phone is refused in a probation session and failures keep the app running`() = runTest {
+        security.me = security.me.copy(session = SecuritySession("probation", listOf("qr")))
+        val v = vm()
+        v.signOutAndRemovePhone(activity)
+        coVerify(exactly = 0) { signOut.signOutAndRemovePhone(any()) }
+        assertEquals(R.string.security_probation_read_only, v.ui.value.message)
+
+        security.me = security.me.copy(session = SecuritySession("full", listOf("device_key")))
+        v.load()
+        coEvery { signOut.signOutAndRemovePhone(activity) } throws java.io.IOException("offline")
+        v.signOutAndRemovePhone(activity)
+        assertEquals(R.string.security_network_error, v.ui.value.message)
+        coEvery { signOut.signOutAndRemovePhone(activity) } returns StepUpOutcome.Failed("LAST_STRONG_AUTHENTICATOR")
+        v.signOutAndRemovePhone(activity)
+        assertEquals(R.string.security_last_strong, v.ui.value.message)
+        assertFalse(v.ui.value.signedOut)
     }
 }

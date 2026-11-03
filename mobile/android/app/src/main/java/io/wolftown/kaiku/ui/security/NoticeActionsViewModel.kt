@@ -6,12 +6,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
-import io.wolftown.kaiku.approval.DeviceStepUp
 import io.wolftown.kaiku.approval.StepUpOutcome
 import io.wolftown.kaiku.data.api.AdminApi
 import io.wolftown.kaiku.data.api.ApiException
 import io.wolftown.kaiku.data.api.ApprovalApi
 import io.wolftown.kaiku.data.api.SecurityApi
+import io.wolftown.kaiku.data.auth.AccountStepUp
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.domain.model.AuthenticatorRef
 import io.wolftown.kaiku.domain.model.EventAction
@@ -49,11 +49,12 @@ sealed interface NoticeActionUi {
  * "That wasn't me" (repudiate), Cancel the request, "Remove device" (owner:
  * `key_device.remove`; admin reader: `admin.authenticator.remove`) and "I will
  * help" (contact confirmation, full session, no step-up). `via` decides
- * between the device step-up and part 2.
+ * between a step-up and part 2; the step-up is the key or a passkey
+ * ([AccountStepUp]), for exactly the event, request or device.
  */
 @HiltViewModel
 class NoticeActionsViewModel internal constructor(
-    private val stepUp: DeviceStepUp,
+    private val stepUp: AccountStepUp,
     private val securityApi: SecurityApi,
     private val approvalApi: ApprovalApi,
     private val adminApi: AdminApi,
@@ -61,7 +62,7 @@ class NoticeActionsViewModel internal constructor(
 ) : ViewModel() {
 
     @Inject
-    constructor(stepUp: DeviceStepUp, securityApi: SecurityApi, approvalApi: ApprovalApi, adminApi: AdminApi, authState: AuthState) :
+    constructor(stepUp: AccountStepUp, securityApi: SecurityApi, approvalApi: ApprovalApi, adminApi: AdminApi, authState: AuthState) :
         this(stepUp, securityApi, approvalApi, adminApi, { authState.currentUserId.value })
 
     private val _ui = MutableStateFlow<NoticeActionUi>(NoticeActionUi.Idle)
@@ -70,6 +71,8 @@ class NoticeActionsViewModel internal constructor(
     private var pending: Triple<EventAction, SecurityEvent, SecurityNotice>? = null
 
     fun run(activity: FragmentActivity, action: EventAction, event: SecurityEvent, notice: SecurityNotice) {
+        // One action at a time: a second tap never starts a second step-up.
+        if (_ui.value is NoticeActionUi.Working) return
         pending = Triple(action, event, notice)
         val w = warningText(action.warning)
         if (w != null) {
@@ -146,23 +149,25 @@ class NoticeActionsViewModel internal constructor(
         notice: SecurityNotice,
         part2: Part2Factor?,
     ): NoticeActionUi {
-        val subjectIsMe = notice.subject.userId == me()
-        val (stepAction, target, label) = when (action.action) {
-            NoticeAction.REPUDIATE -> Triple(StepUpAction.EVENT_REPUDIATE, event.id, activity.getString(NoticeText.title(event.eventType), notice.subject.displayName, "", "", notice.count))
-            NoticeAction.CANCEL_REQUEST -> Triple(StepUpAction.REQUEST_CANCEL, event.requestId ?: return NoticeActionUi.Error(R.string.security_sign_in_failed), notice.subject.displayName.ifEmpty { notice.subject.username })
+        // Whose account this is decides the route (owner vs admin): never guessed from a missing id.
+        val myId = me() ?: return NoticeActionUi.Error(R.string.security_sign_in_failed)
+        val subjectIsMe = notice.subject.userId == myId
+        val (stepAction, target) = when (action.action) {
+            NoticeAction.REPUDIATE -> StepUpAction.EVENT_REPUDIATE to event.id
+            NoticeAction.CANCEL_REQUEST -> StepUpAction.REQUEST_CANCEL to (event.requestId ?: return NoticeActionUi.Error(R.string.security_sign_in_failed))
             NoticeAction.REMOVE_DEVICE -> {
                 val a = event.authenticator ?: return NoticeActionUi.Error(R.string.security_sign_in_failed)
-                Triple(if (subjectIsMe) StepUpAction.KEY_DEVICE_REMOVE else StepUpAction.ADMIN_AUTHENTICATOR_REMOVE, a.id, a.label)
+                (if (subjectIsMe) StepUpAction.KEY_DEVICE_REMOVE else StepUpAction.ADMIN_AUTHENTICATOR_REMOVE) to a.id
             }
-            NoticeAction.CONFIRM_CONTACT -> Triple(null, notice.subject.userId, "")
+            NoticeAction.CONFIRM_CONTACT -> null to notice.subject.userId
             NoticeAction.UNKNOWN -> return NoticeActionUi.Idle
         }
         if (stepAction != null && part2 == null) {
-            when (val out = stepUp.stepUp(activity, stepAction, target, label)) {
+            when (stepUp.stepUp(activity, stepAction, target)) {
                 is StepUpOutcome.Granted -> Unit
                 StepUpOutcome.Cancelled -> return NoticeActionUi.Idle
                 StepUpOutcome.ProbationSession -> return NoticeActionUi.Error(R.string.security_probation_read_only)
-                StepUpOutcome.NotKeyDevice -> return NoticeActionUi.Error(R.string.issuer_key_phone_required)
+                StepUpOutcome.NotKeyDevice -> return NoticeActionUi.Error(R.string.security_step_up_none)
                 is StepUpOutcome.Failed -> return NoticeActionUi.Error(R.string.security_sign_in_failed)
             }
         }
@@ -194,6 +199,8 @@ class NoticeActionsViewModel internal constructor(
                 "INVALID_MFA", "REQUEST_FACTOR_INVALID" -> NoticeActionUi.Error(R.string.security_part2_wrong)
                 "ADMIN_TARGET_IS_ADMIN" -> NoticeActionUi.Error(R.string.admin_target_is_admin)
                 "LAST_STRONG_AUTHENTICATOR" -> NoticeActionUi.Error(R.string.security_last_strong)
+                "FULL_SESSION_REQUIRED" -> NoticeActionUi.Error(R.string.security_probation_read_only)
+                "KEY_DEVICE_REQUIRED" -> NoticeActionUi.Error(R.string.issuer_key_phone_required)
                 else -> NoticeActionUi.Error(R.string.security_sign_in_failed)
             }
         } catch (_: IOException) {

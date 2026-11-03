@@ -89,6 +89,10 @@ object ApprovalModule {
         passkeys: PasskeyStepUp,
     ): StepUpProvider = DeviceStepUpProvider(stepUp, fallback = passkeys)
 
+    /** L2's screens: the key on the key phone, else a passkey, for exactly the action and target. */
+    @Provides
+    fun provideAccountStepUp(impl: io.wolftown.kaiku.data.auth.KeyOrPasskeyStepUp): io.wolftown.kaiku.data.auth.AccountStepUp = impl
+
     @Provides
     fun provideDeviceSigner(
         keyStore: ApprovalKeyStore,

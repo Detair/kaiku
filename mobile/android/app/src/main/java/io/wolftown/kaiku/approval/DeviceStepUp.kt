@@ -40,6 +40,18 @@ class DeviceStepUp @Inject constructor(
     private val deviceIds: DeviceIdProvider,
     private val authApi: AuthApi,
 ) {
+    /** This phone holds an active key (the session may still be probation). */
+    fun isKeyDevice(): Boolean = keyDevices.local() != null && keyDevices.current() is KeyDeviceState.Active
+
+    /** The running session is `full` (`GET /auth/me` `session`); unknown counts as not full. */
+    suspend fun sessionIsFull(): Boolean = try {
+        authApi.getMe().session?.assurance == "full"
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        false
+    }
+
     suspend fun stepUp(activity: FragmentActivity, action: StepUpAction, target: String, targetLabel: String): StepUpOutcome {
         val local = keyDevices.local()
         if (local == null || keyDevices.current() !is KeyDeviceState.Active) return StepUpOutcome.NotKeyDevice

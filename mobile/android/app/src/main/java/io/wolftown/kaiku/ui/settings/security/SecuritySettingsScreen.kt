@@ -102,7 +102,7 @@ fun SecuritySettingsScreen(
                 Body(stringResource(if (it == UvClass.PER_USE) R.string.security_uv_biometric else R.string.security_uv_screen_lock), secondary = true)
             }
             Action(stringResource(R.string.security_sign_out), onClick = viewModel::signOut)
-            if (ui.isKeyDevice) {
+            if (ui.isKeyDevice && !ui.readOnly) {
                 Action(stringResource(R.string.security_sign_out_remove_phone), enabled = !ui.working, onClick = { askRemovePhone = true })
             }
 

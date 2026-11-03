@@ -5,7 +5,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.wolftown.kaiku.R
-import io.wolftown.kaiku.approval.DeviceStepUp
+import io.wolftown.kaiku.data.auth.AccountStepUp
 import io.wolftown.kaiku.approval.StepUpOutcome
 import io.wolftown.kaiku.data.api.AdminApi
 import io.wolftown.kaiku.domain.model.AdminUserDetail
@@ -32,7 +32,7 @@ class AdminUserViewModelTest {
 
     private val activity: FragmentActivity = mockk(relaxed = true)
     private val admin: AdminApi = mockk(relaxed = true)
-    private val stepUp: DeviceStepUp = mockk()
+    private val stepUp: AccountStepUp = mockk()
     private val detail = AdminUserDetail("u2", "oma", "Oma", mayApprove = false,
         keyDevices = listOf(AuthenticatorRef("kd1", "key_device", "Pixel 6")))
 
@@ -40,7 +40,7 @@ class AdminUserViewModelTest {
     @After fun tearDown() = Dispatchers.resetMain()
 
     private fun grant(action: StepUpAction, target: String) {
-        coEvery { stepUp.stepUp(activity, action, target, any()) } returns StepUpOutcome.Granted(StepUpGrant(action.wire, target, "device", "t"))
+        coEvery { stepUp.stepUp(activity, action, target) } returns StepUpOutcome.Granted(StepUpGrant(action.wire, target, "device", "t"))
     }
 
     @Test fun `admin mode elevates after a device step-up`() = runTest {
@@ -50,7 +50,7 @@ class AdminUserViewModelTest {
         val v = AdminUsersViewModel(admin, stepUp)
         v.enter(activity)
         coVerify(ordering = io.mockk.Ordering.ORDERED) {
-            stepUp.stepUp(activity, StepUpAction.ADMIN_ELEVATE, "", any())
+            stepUp.stepUp(activity, StepUpAction.ADMIN_ELEVATE, "")
             admin.elevate(null)
             admin.users(null)
         }
@@ -70,15 +70,15 @@ class AdminUserViewModelTest {
     @Test fun `remove device now steps up for that authenticator and is hidden for admins`() = runTest {
         grant(StepUpAction.ADMIN_AUTHENTICATOR_REMOVE, "kd1")
         coEvery { admin.user("u2") } returns detail
-        val v = AdminUserViewModel(admin, stepUp, "u2", myUserId = "u1")
+        val v = AdminUserViewModel(admin, stepUp, "u2", myUserId = { "u1" })
         v.load()
         assertTrue(v.ui.value.canRemoveDevices)
         v.removeNow(activity, detail.keyDevices.single())
-        coVerify { stepUp.stepUp(activity, StepUpAction.ADMIN_AUTHENTICATOR_REMOVE, "kd1", "Pixel 6") }
+        coVerify { stepUp.stepUp(activity, StepUpAction.ADMIN_AUTHENTICATOR_REMOVE, "kd1") }
         coVerify { admin.removeAuthenticator("u2", "kd1") }
 
         coEvery { admin.user("u3") } returns detail.copy(id = "u3", isAdmin = true)
-        val a = AdminUserViewModel(admin, stepUp, "u3", myUserId = "u1")
+        val a = AdminUserViewModel(admin, stepUp, "u3", myUserId = { "u1" })
         a.load()
         assertFalse(a.ui.value.canRemoveDevices)
         coEvery { admin.removeAuthenticator("u2", "kd1") } throws apiError(403, "ADMIN_TARGET_IS_ADMIN")
@@ -89,16 +89,16 @@ class AdminUserViewModelTest {
     @Test fun `may approve switch steps up with the user as target`() = runTest {
         grant(StepUpAction.ADMIN_MAY_APPROVE, "u2")
         coEvery { admin.user("u2") } returns detail
-        val v = AdminUserViewModel(admin, stepUp, "u2", myUserId = "u1")
+        val v = AdminUserViewModel(admin, stepUp, "u2", myUserId = { "u1" })
         v.load()
         v.setMayApprove(activity, true)
-        coVerify { stepUp.stepUp(activity, StepUpAction.ADMIN_MAY_APPROVE, "u2", any()) }
+        coVerify { stepUp.stepUp(activity, StepUpAction.ADMIN_MAY_APPROVE, "u2") }
         coVerify { admin.setMayApprove("u2", true) }
     }
 
     @Test fun `no setup a phone for oneself`() = runTest {
         coEvery { admin.user("u1") } returns detail.copy(id = "u1")
-        val v = AdminUserViewModel(admin, stepUp, "u1", myUserId = "u1")
+        val v = AdminUserViewModel(admin, stepUp, "u1", myUserId = { "u1" })
         v.load()
         assertFalse(v.ui.value.canSetUpPhone)
     }

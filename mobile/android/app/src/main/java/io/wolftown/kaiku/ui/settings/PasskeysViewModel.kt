@@ -12,6 +12,7 @@ import io.wolftown.kaiku.data.auth.DeviceStepUp
 import io.wolftown.kaiku.data.auth.PasskeyCredentials
 import io.wolftown.kaiku.data.auth.PasskeyFailure
 import io.wolftown.kaiku.data.auth.PasskeyStepUp
+import io.wolftown.kaiku.data.auth.StepUpAvailability
 import io.wolftown.kaiku.data.auth.StepUpProvider
 import io.wolftown.kaiku.data.auth.ceremony
 import io.wolftown.kaiku.data.auth.publicKeyJson
@@ -60,11 +61,12 @@ class PasskeysViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val list = api.list().passkeys.filter { it.isActive || it.isPending }
+                val canAdd = addAvailable(list)
                 _state.update {
                     it.copy(
                         loading = false,
                         passkeys = list,
-                        canAdd = deviceStepUp.isPresent || list.any(Passkey::isActive),
+                        canAdd = canAdd,
                     )
                 }
             } catch (e: CancellationException) {
@@ -73,6 +75,17 @@ class PasskeysViewModel @Inject constructor(
                 _state.update { it.copy(loading = false, errorRes = R.string.passkeys_error_failed) }
             }
         }
+    }
+
+    /**
+     * L2 (Fable m5): a bound provider that knows whether a step-up can work here
+     * (full session, and the key or a passkey) decides; otherwise as before.
+     */
+    private suspend fun addAvailable(list: List<Passkey>): Boolean {
+        val hasPasskey = list.any(Passkey::isActive)
+        val signal = deviceStepUp.orElse(null) as? StepUpAvailability
+            ?: return deviceStepUp.isPresent || hasPasskey
+        return signal.available(hasPasskey)
     }
 
     /** The step-up for adding: the key device's own when bound, else a passkey. */

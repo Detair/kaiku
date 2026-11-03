@@ -6,10 +6,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
-import io.wolftown.kaiku.approval.DeviceStepUp
 import io.wolftown.kaiku.approval.StepUpOutcome
 import io.wolftown.kaiku.data.api.AdminApi
 import io.wolftown.kaiku.data.api.ApiException
+import io.wolftown.kaiku.data.auth.AccountStepUp
+import kotlinx.coroutines.Job
 import io.wolftown.kaiku.domain.model.AdminUserSummary
 import io.wolftown.kaiku.domain.model.StepUpAction
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,16 +32,18 @@ data class AdminUsersUi(
 )
 
 /**
- * "Admin" on the phone (F5c, coordinator call 1): a device step-up for
- * `admin.elevate` opens the 15-minute window, then the user list with search
- * and "New account" (username, display name, optional recovery contact, never
- * a password).
+ * "Admin" on the phone (F5c, coordinator call 1): a step-up for `admin.elevate`
+ * (the key, or a passkey) opens the 15-minute window, then the user list with
+ * search and "New account" (username, display name, optional recovery contact,
+ * never a password). Setup codes still need the admin's own key phone.
  */
 @HiltViewModel
 class AdminUsersViewModel @Inject constructor(
     private val adminApi: AdminApi,
-    private val stepUp: DeviceStepUp,
+    private val stepUp: AccountStepUp,
 ) : ViewModel() {
+
+    private var searchJob: Job? = null
 
     private val _ui = MutableStateFlow(AdminUsersUi())
     val ui: StateFlow<AdminUsersUi> = _ui.asStateFlow()
@@ -49,11 +52,12 @@ class AdminUsersViewModel @Inject constructor(
         if (_ui.value.working) return
         _ui.update { it.copy(working = true, message = null) }
         viewModelScope.launch {
-            when (stepUp.stepUp(activity, StepUpAction.ADMIN_ELEVATE, "", activity.getString(R.string.security_step_up_admin_elevate))) {
+            when (stepUp.stepUp(activity, StepUpAction.ADMIN_ELEVATE, "")) {
                 is StepUpOutcome.Granted -> Unit
                 StepUpOutcome.Cancelled -> return@launch _ui.update { it.copy(working = false) }
-                StepUpOutcome.NotKeyDevice -> return@launch _ui.update { it.copy(working = false, message = R.string.admin_key_phone_required) }
-                else -> return@launch _ui.update { it.copy(working = false, message = R.string.security_sign_in_failed) }
+                StepUpOutcome.NotKeyDevice -> return@launch _ui.update { it.copy(working = false, message = R.string.security_step_up_none) }
+                StepUpOutcome.ProbationSession -> return@launch _ui.update { it.copy(working = false, message = R.string.security_probation_read_only) }
+                is StepUpOutcome.Failed -> return@launch _ui.update { it.copy(working = false, message = R.string.security_sign_in_failed) }
             }
             try {
                 adminApi.elevate(null)
@@ -70,10 +74,12 @@ class AdminUsersViewModel @Inject constructor(
     fun search(text: String) {
         _ui.update { it.copy(search = text) }
         if (!_ui.value.elevated) return
-        viewModelScope.launch {
+        // Only the latest query's answer is shown: an earlier, slower one never wins.
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
             try {
                 val users = adminApi.users(text.ifBlank { null })
-                _ui.update { it.copy(users = users) }
+                if (_ui.value.search == text) _ui.update { it.copy(users = users) }
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
@@ -84,6 +90,7 @@ class AdminUsersViewModel @Inject constructor(
 
     /** A new, passwordless account; its phone is set up next ("Set up a phone"). */
     fun createUser(username: String, displayName: String, recoveryContactId: String?) {
+        if (_ui.value.working) return
         _ui.update { it.copy(working = true, message = null) }
         viewModelScope.launch {
             try {
