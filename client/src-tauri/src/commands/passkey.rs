@@ -66,6 +66,39 @@ fn code_of(e: &SessionError) -> String {
     }
 }
 
+/// The server's ceremony URL, only if it is this server's own ceremony page
+/// for this flow: same origin as `server_url`, `https` (or `http` on a
+/// loopback host), path `/auth/passkeys/desktop/<flow_id>`, nothing else.
+/// The URL goes to the OS or onto a browser's command line, so anything else
+/// (an argument, a file, another scheme or site) is refused.
+fn ceremony_url(server_url: &str, raw: &str, flow_id: &str) -> Option<String> {
+    let url = url::Url::parse(raw).ok()?;
+    let server = url::Url::parse(server_url).ok()?;
+    let loopback = matches!(
+        url.host(),
+        Some(url::Host::Domain("localhost") | url::Host::Ipv4(_) | url::Host::Ipv6(_))
+    ) && url.host().is_some_and(|h| match h {
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+        url::Host::Domain(d) => d == "localhost",
+    });
+    let scheme_ok = url.scheme() == "https" || (url.scheme() == "http" && loopback);
+    let expected_path = format!("/auth/passkeys/desktop/{flow_id}");
+    let ok = scheme_ok
+        && url.origin() == server.origin()
+        && url.path() == expected_path
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && uuid_like(flow_id);
+    ok.then(|| url.as_str().to_string())
+}
+
+fn uuid_like(s: &str) -> bool {
+    s.len() == 36 && s.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+}
+
 /// The shared desktop flow; `open` launches the browser (stubbed in tests),
 /// `listen_cap` bounds the wait (the flow's own expiry is the other bound).
 #[allow(clippy::too_many_arguments)]
@@ -100,7 +133,8 @@ pub async fn run_flow(
             .await
             .map_err(|e| code_of(&e))?;
         let flow_id = started["flow_id"].as_str().ok_or(FAILED)?.to_string();
-        let url = started["url"].as_str().ok_or(FAILED)?.to_string();
+        let url = ceremony_url(server_url, started["url"].as_str().ok_or(FAILED)?, &flow_id)
+            .ok_or(FAILED)?;
         let expires_in = started["expires_at"]
             .as_str()
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
@@ -284,6 +318,10 @@ mod tests {
     /// a moment) posts `field` to the loopback like the hand-off page.
     struct StartResponder {
         field: Option<(&'static str, &'static str)>,
+        /// Replaces the ceremony URL the server answers with.
+        url: Option<String>,
+        /// The mock server's own origin.
+        origin: String,
         seen: Arc<Mutex<Option<Value>>>,
         bound: Arc<AtomicBool>,
     }
@@ -316,9 +354,14 @@ mod tests {
                 });
             }
             let expires = (chrono::Utc::now() + chrono::Duration::minutes(10)).to_rfc3339();
+            let origin = &self.origin;
+            let ceremony = self.url.as_ref().map_or_else(
+                || format!("{origin}/auth/passkeys/desktop/{FLOW_ID}"),
+                |u| u.replace("OWN", origin),
+            );
             ResponseTemplate::new(201).set_body_json(json!({
                 "flow_id": FLOW_ID,
-                "url": format!("https://chat.example.com/auth/passkeys/desktop/{FLOW_ID}"),
+                "url": ceremony,
                 "expires_at": expires,
             }))
         }
@@ -334,6 +377,14 @@ mod tests {
         field: Option<(&'static str, &'static str)>,
         redeemed: Option<Value>,
     ) -> Fixture {
+        fixture_with_url(field, redeemed, None).await
+    }
+
+    async fn fixture_with_url(
+        field: Option<(&'static str, &'static str)>,
+        redeemed: Option<Value>,
+        url: Option<String>,
+    ) -> Fixture {
         let server = MockServer::start().await;
         let seen = Arc::new(Mutex::new(None));
         let bound = Arc::new(AtomicBool::new(false));
@@ -341,6 +392,8 @@ mod tests {
             .and(path("/auth/passkeys/desktop/flows"))
             .respond_with(StartResponder {
                 field,
+                url,
+                origin: server.uri(),
                 seen: Arc::clone(&seen),
                 bound: Arc::clone(&bound),
             })
@@ -565,6 +618,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_the_servers_own_ceremony_url_is_opened() {
+        // Review I2: the server-supplied URL is launched by the OS or passed
+        // to a browser's command line, so only its own ceremony page goes.
+        for bad in [
+            "--gpu-launcher=/bin/sh".to_string(),
+            "file:///etc/passwd".to_string(),
+            "javascript:alert(1)".to_string(),
+            format!("https://evil.example.com/auth/passkeys/desktop/{FLOW_ID}"),
+            "OWN/auth/passkeys/desktop/another".to_string(),
+            format!("OWN/auth/passkeys/desktop/{FLOW_ID}?x=1"),
+            format!("OWN/elsewhere/{FLOW_ID}"),
+        ] {
+            let f = fixture_with_url(
+                Some(("code", "c-1")),
+                Some(sign_in_answer()),
+                Some(bad.clone()),
+            )
+            .await;
+            let opened = AtomicBool::new(false);
+            let r = run_flow(
+                &manager(),
+                &f.server.uri(),
+                Purpose::SignIn,
+                None,
+                None,
+                &Attempt::default(),
+                |_| {
+                    opened.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+                Duration::from_secs(5),
+            )
+            .await;
+            assert_eq!(r.unwrap_err(), "PASSKEY_FAILED", "{bad}");
+            assert!(!opened.load(Ordering::SeqCst), "{bad}");
+        }
+    }
+
+    #[tokio::test]
     async fn sign_in_tokens_stay_in_rust() {
         let f = fixture(Some(("code", "c-1")), Some(sign_in_answer())).await;
         let m = manager();
@@ -669,5 +761,27 @@ mod tests {
         let s: crate::commands::settings::Settings =
             serde_json::from_str(r#"{"passkey_browser": "chromium"}"#).unwrap();
         assert_eq!(s.passkey_browser, PasskeyBrowser::Chromium);
+    }
+}
+
+#[cfg(test)]
+mod ceremony_url_tests {
+    #[test]
+    fn own_ceremony_url_passes() {
+        let id = "4f1c5c43-6a0e-4f9a-9a3e-1f2d3c4b5a69";
+        let u = format!("http://127.0.0.1:4100/auth/passkeys/desktop/{id}");
+        assert_eq!(
+            super::ceremony_url("http://127.0.0.1:4100", &u, id),
+            Some(u.clone())
+        );
+        let h = format!("https://chat.example.com/auth/passkeys/desktop/{id}");
+        assert_eq!(
+            super::ceremony_url("https://chat.example.com", &h, id),
+            Some(h.clone())
+        );
+        assert_eq!(
+            super::ceremony_url("http://chat.example.com", &h.replace("https", "http"), id),
+            None
+        );
     }
 }

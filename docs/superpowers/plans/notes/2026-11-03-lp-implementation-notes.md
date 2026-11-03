@@ -175,3 +175,26 @@ that the producing authenticator is the caller's (`strong::belongs_to`, Fable m7
 redeem share the path. Test `step_up_never_sends_the_bearer_to_another_server` (the other mock
 server receives no request). The web/desktop step-up wrapper passes the session's own server URL
 (`getAuthContext().baseUrl`), never a user-editable field (Task 12/13).
+
+## Final review (fresh reviewer, server + desktop + web; before Task 14)
+
+- **I1 fixed:** the browser passkey sign-in cleared the logout's session-restore block (and stored
+  the server) before the ceremony; the login page's autofill would have re-enabled restoring a
+  session that logged out while the server was unreachable. Both now happen only after a
+  completed `login/finish`. Tests `lib/__tests__/passkeySignIn.test.ts`.
+- **I2 fixed:** the desktop app opened the server-supplied ceremony `url` unvalidated (the OS
+  launcher, or a browser's command line with "Browser for passkey sign-in"). Only the server's own
+  ceremony page for the flow is opened now: same origin as the server, `https` (or `http` on a
+  loopback host), path `/auth/passkeys/desktop/<flow_id>`, no query, fragment or userinfo; anything
+  else answers `PASSKEY_FAILED` and opens nothing. Test `only_the_servers_own_ceremony_url_is_opened`.
+  The pre-existing OIDC `open_browser` has the same pattern (not LP code; for L1b).
+- **I3 (coordinator):** the desktop sign-in cannot carry the typed user name: C29's
+  `desktop/flows` has no `username` field, so on a shared PC the desktop path does not refuse
+  another account's passkey the way the web path does (`PASSKEY_USER_MISMATCH`). Proposal: an
+  additive `username|null` on the `sign_in` start, checked at `finish`, answered with the hand-off
+  `error=PASSKEY_USER_MISMATCH`.
+- **I4 (maintainer):** the desktop browser path (`ceremony.js`, the hand-off auto-submit and the
+  real listener together) has not run in a real browser here; spike B was research only and Task 9
+  Step 3 was not run. Proposal: one headless Chromium run with a CDP virtual authenticator before
+  merge, or keep D4/D6 as the gate.
+- Minors deferred (reviewer m1–m14): see the final report.

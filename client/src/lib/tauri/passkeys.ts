@@ -171,9 +171,10 @@ export async function passkeySignIn(
   if (isTauri()) {
     return invokeCancellable<AuthResult>("passkey_sign_in", { serverUrl }, o.signal);
   }
+  // The base URL for the calls below; the restore block and the stored
+  // server are only touched after a completed sign-in (autofill runs on
+  // every login page and must not re-enable a logged-out session).
   browserState.serverUrl = serverUrl;
-  localStorage.setItem("serverUrl", serverUrl);
-  setSessionRestoreBlocked(false);
   const start = await httpRequest<CeremonyStart>("POST", "/auth/passkeys/login/start", {});
   const rpId = start.options.publicKey.rpId as string | undefined;
   const cred = await getCredential(start.options, o.signal, o.mediation);
@@ -192,6 +193,8 @@ export async function passkeySignIn(
   } catch (err) {
     throw serverError(err, cred, rpId);
   }
+  localStorage.setItem("serverUrl", serverUrl);
+  setSessionRestoreBlocked(false);
   browserState.accessToken = response.access_token;
   browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
   scheduleTokenRefresh();
