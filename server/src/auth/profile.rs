@@ -381,16 +381,19 @@ pub async fn update_password(
 
     let ended = match keep {
         Some(keep) => {
-            queries::delete_user_sessions_except(&mut tx, auth_user.id, Some(keep)).await?
+            super::revocation::end_all_sessions_tx(
+                &mut tx,
+                &super::ctx::AuthCtx::from(&state),
+                auth_user.id,
+                Some(keep),
+                super::revocation::EndReason::PasswordChanged,
+            )
+            .await?
         }
         None => Vec::new(),
     };
 
     tx.commit().await.map_err(AuthError::Database)?;
-
-    // End the deleted sessions now that the change is committed (their access
-    // tokens and sockets stop); a Valkey failure answers 500, retry is safe.
-    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
     let revoked_count = ended.len() as u64;
 
     tracing::info!(user_id = %auth_user.id, revoked_others = body.revoke_others, revoked_count, "Password updated");

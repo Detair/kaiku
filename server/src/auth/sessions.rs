@@ -115,16 +115,17 @@ pub async fn revoke_session(
         return Err(AuthError::Forbidden);
     }
 
-    // Delete the row (no more refreshes) and commit, then end the session
-    // (its access tokens and sockets stop now). A Valkey failure after the
-    // commit answers 500; the deletion stands.
+    // End it in the revocation order (B.4) and commit.
     let mut tx = state.db.begin().await?;
-    let ended: Vec<Uuid> = queries::delete_user_session_tx(&mut tx, auth_user.id, session_id)
-        .await?
-        .into_iter()
-        .collect();
+    super::revocation::end_sessions_tx(
+        &mut tx,
+        &super::ctx::AuthCtx::from(&state),
+        auth_user.id,
+        &[session_id],
+        super::revocation::EndReason::Revoked,
+    )
+    .await?;
     tx.commit().await?;
-    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
 
     tracing::info!(user_id = %auth_user.id, session_id = %session_id, "Session revoked");
 
@@ -162,9 +163,15 @@ pub async fn revoke_all_other_sessions(
         })?;
 
     let mut tx = state.db.begin().await?;
-    let ended = queries::delete_user_sessions_except(&mut tx, auth_user.id, Some(current)).await?;
+    let ended = super::revocation::end_all_sessions_tx(
+        &mut tx,
+        &super::ctx::AuthCtx::from(&state),
+        auth_user.id,
+        Some(current),
+        super::revocation::EndReason::OthersRevoked,
+    )
+    .await?;
     tx.commit().await?;
-    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
     let revoked_count = ended.len() as i64;
     tracing::info!(user_id = %auth_user.id, revoked_count, "All other sessions revoked");
 

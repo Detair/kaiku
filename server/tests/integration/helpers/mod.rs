@@ -53,8 +53,23 @@ pub async fn rustfs_available() -> bool {
 // Test App
 // ============================================================================
 
+/// Aborts the test app's session-end listener when the app is dropped, so
+/// its connection is gone before `#[sqlx::test]` drops the test database
+/// (PostgreSQL waits up to 5 s for other backends, then refuses the drop).
+pub struct AbortOnDrop(pub Option<JoinHandle<()>>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(h) = self.0.take() {
+            h.abort();
+        }
+    }
+}
+
 /// A test application wrapping the full axum router.
 pub struct TestApp {
+    /// The session-end listener (DC5), aborted on drop.
+    pub session_end: AbortOnDrop,
     pub router: Router,
     pub pool: PgPool,
     pub config: Arc<Config>,
@@ -109,8 +124,17 @@ impl TestApp {
         });
         let router = create_router(state.clone());
         let config = Arc::new(config);
+        // Committed session ends reach the sockets through the listener
+        // (DC5), as in `main.rs`.
+        let session_end = AbortOnDrop(Some(
+            vc_server::auth::revocation::spawn_session_end_listener(
+                state.db.clone(),
+                state.redis.clone(),
+            ),
+        ));
 
         Self {
+            session_end,
             router,
             pool,
             config,
@@ -153,8 +177,17 @@ impl TestApp {
         });
         let router = create_router(state.clone());
         let config = Arc::new(config);
+        // Committed session ends reach the sockets through the listener
+        // (DC5), as in `main.rs`.
+        let session_end = AbortOnDrop(Some(
+            vc_server::auth::revocation::spawn_session_end_listener(
+                state.db.clone(),
+                state.redis.clone(),
+            ),
+        ));
 
         Self {
+            session_end,
             router,
             pool,
             config,
@@ -185,8 +218,17 @@ impl TestApp {
         });
         let router = create_router(state.clone());
         let config = Arc::new(config);
+        // Committed session ends reach the sockets through the listener
+        // (DC5), as in `main.rs`.
+        let session_end = AbortOnDrop(Some(
+            vc_server::auth::revocation::spawn_session_end_listener(
+                state.db.clone(),
+                state.redis.clone(),
+            ),
+        ));
 
         Self {
+            session_end,
             router,
             pool,
             config,
@@ -226,8 +268,17 @@ impl TestApp {
         });
         let router = create_router(state.clone());
         let config = Arc::new(config);
+        // Committed session ends reach the sockets through the listener
+        // (DC5), as in `main.rs`.
+        let session_end = AbortOnDrop(Some(
+            vc_server::auth::revocation::spawn_session_end_listener(
+                state.db.clone(),
+                state.redis.clone(),
+            ),
+        ));
 
         Self {
+            session_end,
             router,
             pool,
             config,
@@ -304,9 +355,16 @@ pub async fn fresh_test_app_with_s3_and_config(
         http_client: reqwest::Client::new(),
     });
     let router = create_router(state.clone());
+    let session_end = AbortOnDrop(Some(
+        vc_server::auth::revocation::spawn_session_end_listener(
+            state.db.clone(),
+            state.redis.clone(),
+        ),
+    ));
 
     (
         TestApp {
+            session_end,
             router,
             pool,
             config: Arc::new(config),

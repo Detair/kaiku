@@ -809,11 +809,11 @@ async fn server_with_valkey(
 }
 
 /// When ending the sessions fails after the ban committed (Valkey refuses
-/// the denylist write), the ban and its audit entry still exist and the
-/// request answers 500 so the admin can retry. (With Valkey fully down the
-/// request is already refused with 503 by the fail-closed denylist check.)
+/// the denylist write), the ban, its audit entry and the ended sessions still
+/// commit (B.4 rev 5: a failed denylist write does not stop the transition;
+/// the committed row is what ends the session).
 #[sqlx::test]
-async fn test_ban_is_audited_when_ending_sessions_fails(pool: PgPool) {
+async fn test_ban_commits_when_the_denylist_write_fails(pool: PgPool) {
     let (server, config, _acl_user) = server_with_write_refusing_valkey(&pool).await;
     let (admin_id, _) = create_test_user(&pool).await;
     make_admin(&pool, admin_id).await;
@@ -831,7 +831,14 @@ async fn test_ban_is_audited_when_ending_sessions_fails(pool: PgPool) {
     .await
     .expect("ban request must not hang")
     .expect("POST ban");
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ended: Option<String> =
+        sqlx::query_scalar("SELECT end_reason FROM sessions WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(ended.as_deref(), Some("ban"));
 
     let banned: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM global_bans WHERE user_id = $1)")

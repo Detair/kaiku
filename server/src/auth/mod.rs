@@ -21,7 +21,7 @@ pub(crate) mod profile;
 pub(crate) mod queries;
 pub(crate) mod reauth;
 pub(crate) mod register;
-pub(crate) mod revocation;
+pub mod revocation;
 pub mod session_check;
 pub mod session_issue;
 pub(crate) mod sessions;

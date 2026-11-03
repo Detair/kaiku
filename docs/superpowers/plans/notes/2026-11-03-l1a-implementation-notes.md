@@ -88,3 +88,41 @@ is listed here, per task. "Coordinator" marks items that need a decision.
   `helpers::ensure_test_session` (governance, identities, admin-created users).
 - `MAX_SESSIONS_PER_USER` is read from the environment (1–1000, default 50) and documented;
   `session_recheck_secs` is a config field only (60, tests set 1).
+
+## Task 6 — ending sessions in the revocation order
+
+- The elevation cache (`admin:elevated:{sid}`) is a positive cache, so it is dropped inside
+  the revoking path (before commit, best effort) as well as by the listener after commit
+  (B.4: a cache needs synchronous invalidation in the revoking path). A concurrent request
+  that re-caches between the drop and the commit is harmless: the ended session is refused
+  by the row check before any elevation check.
+- The listener uses its own one-connection pool (same options), so it never holds one of
+  the application pool's connections. The integration-test `TestApp` spawns one listener per
+  app and aborts it on drop (`AbortOnDrop`), so `#[sqlx::test]` can drop its database
+  (PostgreSQL otherwise waits 5 s per test and then refuses the drop).
+- `valkey_flush_keeps_ended_sessions_refused` deletes the session's denylist key instead of
+  `FLUSHALL`, which would disturb every other test sharing the test Valkey.
+- Semantics change pinned by updated tests: a failed denylist write no longer turns a ban
+  into a 500 (the ban, its audit row and the ended sessions commit; B.4 rev 5);
+  `test_ban_is_audited_when_ending_sessions_fails` became
+  `test_ban_commits_when_the_denylist_write_fails`.
+- Admin user deletion now ends the sessions (reason `account_deleted`) and deletes the user in
+  one transaction; the admin `find_user`/`delete_user` queries exclude the system account
+  (the admin could otherwise delete it).
+- Cleanup deletes ended rows 30 days after `ended_at` and never-ended rows 30 days after their
+  last expiry (`LEAST(expires_at, absolute_expires_at)`), so a lapsed key-device session is
+  still recognised for a month.
+
+## For L1b (messages from the client implementers, 2026-11-03)
+
+- (1) Enrolment status of a void/expired enrolment: see Task 11 below for the code L1a uses.
+- (2) Clients take the step-up `sid` from `GET /auth/me` → `session.id` (C27); L1a's
+  `/auth/me` returns it.
+- (3) Admin user views should carry `is_admin` so clients can hide admin-on-admin actions —
+  additive; L1a adds it with `may_approve` in Task 8 if in scope, otherwise L1b with the C27
+  admin view fields.
+- (4) Clients name the `/auth/me` session object `AuthSession`; the server keeps the C27 field
+  names (`id, assurance, auth_methods, auth_time, client_class, absolute_expires_at,
+  key_device_id`).
+- (5) Desktop OIDC callback messages `oidc-callback {status, attempt}` and
+  `oidc-request-callback`: L1b/LP territory, not touched in L1a.

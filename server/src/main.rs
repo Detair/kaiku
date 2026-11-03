@@ -414,6 +414,11 @@ async fn main() -> Result<()> {
 
     // Minute sweep of the login state machines (notice outbox, timers).
     let auth_timers_handle = vc_server::auth::timers::spawn(state.clone());
+    // Committed session ends close their sockets (DC5).
+    let session_end_listener_handle = vc_server::auth::revocation::spawn_session_end_listener(
+        state.db.clone(),
+        state.redis.clone(),
+    );
 
     // Remove voice peers whose connection failed and did not recover.
     let stale_peer_reaper_handle = state
@@ -454,6 +459,7 @@ async fn main() -> Result<()> {
     db_cleanup_handle.abort();
     webhook_worker_handle.abort();
     auth_timers_handle.abort();
+    session_end_listener_handle.abort();
     rtp_flush_handle.abort();
     retention_handle.abort();
     voice_health_handle.abort();

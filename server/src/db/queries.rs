@@ -458,9 +458,16 @@ pub async fn delete_all_user_sessions(pool: &PgPool, user_id: Uuid) -> sqlx::Res
 
 /// Clean up expired sessions (for background job).
 pub async fn cleanup_expired_sessions(pool: &PgPool) -> sqlx::Result<u64> {
-    let result = sqlx::query("DELETE FROM sessions WHERE expires_at < NOW()")
-        .execute(pool)
-        .await?;
+    // Ended rows are kept 30 days (DC4: refresh-reuse recognition and
+    // audit); so are lapsed ones after their last expiry.
+    let result = sqlx::query(
+        "DELETE FROM sessions
+          WHERE (ended_at IS NOT NULL AND ended_at < NOW() - INTERVAL '30 days')
+             OR (ended_at IS NULL
+                 AND LEAST(expires_at, absolute_expires_at) < NOW() - INTERVAL '30 days')",
+    )
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected())
 }
 

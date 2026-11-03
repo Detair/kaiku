@@ -516,10 +516,14 @@ pub(super) async fn find_user(
     pool: &PgPool,
     user_id: Uuid,
 ) -> Result<Option<(Uuid, String)>, AdminError> {
-    let row = sqlx::query!("SELECT id, username FROM users WHERE id = $1", user_id)
-        .fetch_optional(pool)
-        .await?
-        .map(|r| (r.id, r.username));
+    // The system account is never an admin target (C28).
+    let row = sqlx::query!(
+        "SELECT id, username FROM users WHERE id = $1 AND NOT is_system",
+        user_id
+    )
+    .fetch_optional(pool)
+    .await?
+    .map(|r| (r.id, r.username));
     Ok(row)
 }
 
@@ -542,9 +546,12 @@ pub(super) async fn lookup_usernames(
 
 /// Delete a user by id, cascading to memberships, messages, sessions, etc.
 /// Returns the number of rows deleted (0 or 1).
-pub(super) async fn delete_user(pool: &PgPool, user_id: Uuid) -> Result<u64, AdminError> {
-    let result = sqlx::query!("DELETE FROM users WHERE id = $1", user_id)
-        .execute(pool)
+pub(super) async fn delete_user(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+) -> Result<u64, AdminError> {
+    let result = sqlx::query!("DELETE FROM users WHERE id = $1 AND NOT is_system", user_id)
+        .execute(conn)
         .await?;
     Ok(result.rows_affected())
 }

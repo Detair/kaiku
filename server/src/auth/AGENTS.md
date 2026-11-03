@@ -151,24 +151,16 @@ The committed `sessions` row is the authority for every authenticated request, e
 - **Assurance** (`full` | `probation`) is stored at creation by `session_issue::issue_session_tx` and never changes. The access JWT's `assurance` claim is for client display only; the server decides from `AuthUser::session` (the row). Sessions from before the upgrade are `probation`, `{legacy}`, web, capped at `created_at + 30 d` (DC3).
 - **Creation:** every sign-in path goes through `issue_session_tx` (account row lock, absolute cap by client class — web 30 d, desktop and Android 90 d — `expires_at = min(now + 7 d, absolute)`, `first_activity_at`). IP and User-Agent are stored for display and audit only; there is no GeoIP lookup.
 
-### Session end (C25)
+### Session end (C25, B.4 revocation order)
 
-A ban (single or bulk), a single-session revoke, "revoke all other sessions", a password change with `revoke_others`, a password reset, logout and the account-deletion logout end the affected sessions right away.
+A ban (single or bulk), a single-session revoke, "revoke all other sessions", a password change with `revoke_others`, a password reset, logout, account deletion (request or admin) end the affected sessions right away.
 
-- **Order:**
-  1. Commit the durable change first: the ban row, the session-row deletion, the password, and the admin audit entry.
-  2. Then call `revocation::end_sessions` (a list of ids) or `end_all_sessions` (every socket of the user).
-- **What ending does:**
-  - It denylists each session id (`canis:revoked_sid:{sid}`, TTL `jwt_access_expiry` + 60 s).
-  - It publishes the internal `session_revoked` / `all_sessions_revoked` notice on `user:{id}`. Sockets consume the notice (it is never forwarded) and answer with an `error` event `SESSION_REVOKED`, then close 1008.
-- **Bans:** every authenticated request and every WS handshake re-checks the ban in the DB. A Valkey problem can never undo a ban.
-- **Bounded failure window:** if Valkey fails after the commit, the request answers 500 and the durable change stands.
-  - The session rows are gone, so refresh is impossible.
-  - Open sockets close anyway, because their pub/sub pipeline fails as well (close 1011), and no new socket can become ready while Valkey is down.
-  - The residual exposure is an access token that is not denylisted, until it expires (`jwt_access_expiry`, 15 min).
-  - Every ending call is idempotent, so a retry finishes the job.
-- **Stable session id:** refresh rotates the session row in place, so the `sid` stays the same for the whole login. Do not change refresh back to delete-and-insert: sockets and tokens from before a refresh would then escape revocation.
-- **Possible follow-up:** a durable revocation outbox (a DB row per pending end, drained to Valkey) would close the residual window.
+- **API:** `revocation::end_sessions_tx(conn, ctx, user_id, sids, reason)` and `end_all_sessions_tx(conn, ctx, user_id, keep, reason)`, called inside the transaction of the change after its locks and re-checks. `EndReason` is stored in `sessions.end_reason`.
+- **Order inside the transaction:** `ended_at` + `end_reason` (the row is kept 30 days, DC4) → the sessions' `elevated_sessions` rows deleted and `admin:elevated:{sid}` cleared → each `sid` written to the denylist (`canis:revoked_sid:{sid}`, TTL `jwt_access_expiry` + 60 s; a Valkey error is logged and never stops the transition) → `pg_notify('kaiku_session_ended', {user_id, session_ids, all})` → the caller commits.
+- **After commit:** `spawn_session_end_listener` (one per process, its own connection) republishes the notice as `session_revoked` / `all_sessions_revoked` on `user:{id}`; sockets answer with an `error` event `SESSION_REVOKED` and close 1008. Every socket re-checks its committed row at least every 60 s (the backstop when Valkey or the listener is down). The CLI's ends reach the server through the same `NOTIFY`.
+- **Failure directions:** a rolled-back transaction leaves a denylist entry that only over-revokes until it expires (safe). A failed denylist write leaves the commit authoritative: every request reads the row.
+- **Cleanup:** `cleanup_expired_sessions` deletes ended rows 30 days after `ended_at` and lapsed rows 30 days after their last expiry.
+- **Stable session id:** refresh rotates the session row in place, so the `sid` stays the same for the whole login. Do not change refresh back to delete-and-insert.
 
 ### Re-authentication (C24)
 

@@ -176,36 +176,6 @@ pub async fn rotate_session_tx(
     Ok(())
 }
 
-/// Delete one session of `user_id` inside a transaction. Returns the deleted
-/// id, or `None` when no such session belongs to the user.
-pub async fn delete_user_session_tx(
-    conn: &mut PgConnection,
-    user_id: Uuid,
-    session_id: Uuid,
-) -> sqlx::Result<Option<Uuid>> {
-    sqlx::query_scalar("DELETE FROM sessions WHERE id = $1 AND user_id = $2 RETURNING id")
-        .bind(session_id)
-        .bind(user_id)
-        .fetch_optional(conn)
-        .await
-}
-
-/// Delete every session of `user_id` except `keep` (`None` deletes all) and
-/// return the deleted ids.
-pub async fn delete_user_sessions_except(
-    tx: &mut PgConnection,
-    user_id: Uuid,
-    keep: Option<Uuid>,
-) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(
-        "DELETE FROM sessions WHERE user_id = $1 AND ($2::uuid IS NULL OR id <> $2) RETURNING id",
-    )
-    .bind(user_id)
-    .bind(keep)
-    .fetch_all(tx)
-    .await
-}
-
 /// Whether the user has an active global ban (no expiry, or one in the future).
 pub async fn is_user_globally_banned(pool: &PgPool, user_id: Uuid) -> sqlx::Result<bool> {
     sqlx::query_scalar(

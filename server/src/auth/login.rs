@@ -355,26 +355,18 @@ pub async fn logout(
         return Err(AuthError::InvalidToken);
     }
 
-    // Delete the sessions (no more refreshes) and commit first: signing out
-    // never leaves a refreshable session. Then end them (their access tokens
-    // and sockets stop now); a Valkey failure answers 500 and a retry is safe.
+    // End the sessions in the revocation order (B.4): `ended_at`, denylist,
+    // NOTIFY, commit. Signing out the current session is always allowed.
     let mut tx = state.db.begin().await?;
-    let mut ended = Vec::with_capacity(session_ids.len());
-    for session_id in session_ids {
-        if let Some(id) = queries::delete_user_session_tx(&mut tx, auth_user.id, session_id).await?
-        {
-            ended.push(id);
-        }
-    }
-    // The access token's session may already be gone (e.g. revoked
-    // elsewhere); denylisting it again is harmless.
-    if let Some(own) = auth_user.session_id {
-        if !ended.contains(&own) {
-            ended.push(own);
-        }
-    }
+    super::revocation::end_sessions_tx(
+        &mut tx,
+        &AuthCtx::from(&state),
+        auth_user.id,
+        &session_ids,
+        super::revocation::EndReason::Logout,
+    )
+    .await?;
     tx.commit().await?;
-    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
 
     tracing::info!(user_id = %auth_user.id, "User logged out");
 
@@ -1498,21 +1490,20 @@ pub async fn reset_password(
             e
         })?;
 
-    // Delete all user sessions (force re-login everywhere)
-    let ended = queries::delete_user_sessions_except(&mut tx, reset_token.user_id, None)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = ?e, user_id = %reset_token.user_id, "Failed to delete sessions");
-            AuthError::Database(e)
-        })?;
+    // End every session of the user (force re-login everywhere), in the
+    // revocation order, inside the reset transaction.
+    super::revocation::end_all_sessions_tx(
+        &mut tx,
+        &AuthCtx::from(&state),
+        reset_token.user_id,
+        None,
+        super::revocation::EndReason::PasswordChanged,
+    )
+    .await?;
     tx.commit().await.map_err(|e| {
         tracing::error!(error = %e, "Failed to commit password reset transaction");
         AuthError::Database(e)
     })?;
-
-    // End them now too: their access tokens and every open socket of the
-    // user stop working.
-    super::revocation::end_all_sessions(&state, reset_token.user_id, &ended).await?;
 
     tracing::info!(user_id = %reset_token.user_id, "Password reset successful, all sessions invalidated");
 

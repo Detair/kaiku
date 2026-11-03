@@ -386,7 +386,7 @@ pub async fn ban_user(
         body.expires_at,
     )
     .await?;
-    let ended = crate::auth::queries::delete_user_sessions_except(&mut tx, user_id, None).await?;
+    end_all_sessions_tx(&state, &mut tx, user_id).await?;
     tx.commit().await?;
 
     // Log the action
@@ -401,8 +401,6 @@ pub async fn ban_user(
         Some(&ip_address),
     )
     .await?;
-
-    end_all_sessions(&state, user_id, &ended).await?;
 
     // Broadcast admin event
     if let Err(e) = broadcast_admin_event(
@@ -538,7 +536,7 @@ pub async fn bulk_ban_users(
         // bulk ban after a Valkey failure still closes them.
         if queries::is_user_banned(&state.db, *user_id).await? {
             already_banned += 1;
-            if end_all_sessions(&state, *user_id, &[]).await.is_err() {
+            if retell_banned(&state, *user_id).await.is_err() {
                 failed.push(BulkActionFailure {
                     id: *user_id,
                     reason: "Banned, but open connections could not be closed; retry".to_string(),
@@ -548,23 +546,14 @@ pub async fn bulk_ban_users(
         }
 
         // Ban the user (durable first), then end their sessions
-        let ended = match ban_and_delete_sessions(&state, *user_id, admin.user_id, &body).await {
-            Ok(ended) => ended,
-            Err(e) => {
-                failed.push(BulkActionFailure {
-                    id: *user_id,
-                    reason: format!("Database error: {e}"),
-                });
-                continue;
-            }
-        };
-        banned_count += 1;
-        if end_all_sessions(&state, *user_id, &ended).await.is_err() {
+        if let Err(e) = ban_and_end_sessions(&state, *user_id, admin.user_id, &body).await {
             failed.push(BulkActionFailure {
                 id: *user_id,
-                reason: "Banned, but open connections could not be closed; retry".to_string(),
+                reason: format!("Database error: {e}"),
             });
+            continue;
         }
+        banned_count += 1;
     }
 
     // Log the bulk action
@@ -622,12 +611,24 @@ pub async fn delete_user(
         return Err(AdminError::Validation("Cannot delete yourself".to_string()));
     }
 
-    // Delete user (cascades to guild_members, messages, sessions, global_bans, etc.)
-    let deleted = queries::delete_user(&state.db, user_id).await?;
-
+    // End every session (revocation order: their sockets close after the
+    // commit), then delete the user (cascades to guild_members, messages,
+    // sessions, global_bans, etc.), in one transaction.
+    let mut tx = state.db.begin().await?;
+    crate::auth::revocation::end_all_sessions_tx(
+        &mut tx,
+        &crate::auth::ctx::AuthCtx::from(&state),
+        user_id,
+        None,
+        crate::auth::revocation::EndReason::AccountDeleted,
+    )
+    .await
+    .map_err(|e| AdminError::Internal(e.to_string()))?;
+    let deleted = queries::delete_user(&mut tx, user_id).await?;
     if deleted == 0 {
         return Err(AdminError::NotFound("User".to_string()));
     }
+    tx.commit().await?;
 
     // Log the action
     let ip_address = addr.ip().to_string();
@@ -714,29 +715,44 @@ pub async fn export_users_csv(
     ))
 }
 
-/// End every session of `user_id` right away (C25): denylist `ended` and
-/// close all of the user's open sockets. Runs after the ban is committed.
-async fn end_all_sessions(
+/// End every session of `user_id` in the caller's ban transaction, in the
+/// revocation order (B.4): `ended_at`, denylist, NOTIFY; the caller commits.
+async fn end_all_sessions_tx(
     state: &AppState,
+    conn: &mut sqlx::PgConnection,
     user_id: Uuid,
-    ended: &[Uuid],
-) -> Result<(), AdminError> {
-    crate::auth::revocation::end_all_sessions(state, user_id, ended)
-        .await
-        .map_err(|e| AdminError::Internal(e.to_string()))
+) -> Result<Vec<Uuid>, AdminError> {
+    crate::auth::revocation::end_all_sessions_tx(
+        conn,
+        &crate::auth::ctx::AuthCtx::from(state),
+        user_id,
+        None,
+        crate::auth::revocation::EndReason::Ban,
+    )
+    .await
+    .map_err(|e| AdminError::Internal(e.to_string()))
 }
 
-/// Bulk-ban step for one user: insert the ban and delete the user's sessions
-/// in one transaction; returns the deleted session ids.
-async fn ban_and_delete_sessions(
+/// An already banned user: tell every open socket again (a repeated bulk
+/// ban after a failure still closes them).
+async fn retell_banned(state: &AppState, user_id: Uuid) -> Result<(), AdminError> {
+    let mut tx = state.db.begin().await?;
+    end_all_sessions_tx(state, &mut tx, user_id).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Bulk-ban step for one user: insert the ban and end the user's sessions
+/// in one transaction.
+async fn ban_and_end_sessions(
     state: &AppState,
     user_id: Uuid,
     banned_by: Uuid,
     body: &BulkBanRequest,
-) -> Result<Vec<Uuid>, AdminError> {
+) -> Result<(), AdminError> {
     let mut tx = state.db.begin().await?;
     queries::insert_global_ban(&mut tx, user_id, banned_by, &body.reason, body.expires_at).await?;
-    let ended = crate::auth::queries::delete_user_sessions_except(&mut tx, user_id, None).await?;
+    end_all_sessions_tx(state, &mut tx, user_id).await?;
     tx.commit().await?;
-    Ok(ended)
+    Ok(())
 }

@@ -30,3 +30,45 @@ pub fn peer_request(method: axum::http::Method, uri: &str) -> axum::http::reques
         TEST_PEER,
     )))
 }
+
+/// A Valkey client that fails every command: connected, then closed, with
+/// a short command timeout (Valkey "down" for the code under test).
+pub async fn failing_valkey(config: &Config) -> fred::clients::Client {
+    use fred::prelude::{ClientLike, Config as ValkeyConfig, PerformanceConfig};
+    let perf = PerformanceConfig {
+        default_command_timeout: std::time::Duration::from_millis(300),
+        ..PerformanceConfig::default()
+    };
+    let redis = fred::clients::Client::new(
+        ValkeyConfig::from_url(&config.redis_url).expect("Valkey URL"),
+        Some(perf),
+        None,
+        None,
+    );
+    redis.connect();
+    redis.wait_for_connect().await.expect("connect Valkey");
+    redis.quit().await.expect("quit Valkey");
+    redis
+}
+
+/// An `AppState` on `pool` with the given Valkey client (no S3, no limiter).
+pub fn state_with_redis(
+    pool: PgPool,
+    config: Config,
+    redis: fred::clients::Client,
+) -> vc_server::api::AppState {
+    let sfu = vc_server::voice::sfu::SfuServer::new(std::sync::Arc::new(config.clone()), None)
+        .expect("SfuServer");
+    vc_server::api::AppState::new(vc_server::api::AppStateConfig {
+        db: pool,
+        redis,
+        config,
+        s3: None,
+        sfu,
+        rate_limiter: None,
+        screen_share_limiter: None,
+        email: None,
+        oidc_manager: None,
+        http_client: reqwest::Client::new(),
+    })
+}
