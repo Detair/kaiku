@@ -60,6 +60,12 @@ jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 argon2 = "0.5"
 totp-rs = { version = "5", features = ["gen_secret", "qr", "otpauth"] }
 openidconnect = "4"
+# Passkeys (WebAuthn L3, C29; MPL-2.0, used unmodified). Pinned exactly: 0.5.5
+# until 0.6.2 is 14 days old and advisory-free (LP spike A, 14-day rule).
+webauthn-rs = { version = "=0.5.5", features = ["conditional-ui", "danger-allow-state-serialisation", "danger-credential-internals"] }
+webauthn-authenticator-rs = { version = "=0.5.5", features = ["softpasskey"] }
+# CBOR of the attestation object (AAGUID); already in the tree via webauthn-rs-core.
+serde_cbor_2 = "0.13"
 
 # Crypto
 rustls = { version = "0.23", features = ["ring"] }

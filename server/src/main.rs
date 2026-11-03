@@ -38,6 +38,15 @@ async fn main() -> Result<()> {
     }
     info!(features = ?config.optional_features, "Optional features");
     info!(origin = %config.public_origin.origin, "Public origin");
+    if let Some(rp) = &config.passkeys {
+        info!(rp_id = rp.rp_id(), origins = ?rp.allowed_origins(), "Passkeys enabled");
+        if rp.config().android_app_ids.is_empty() {
+            tracing::warn!(
+                "No Android app is configured for passkeys (PASSKEY_ANDROID_APP_IDS / \
+                 PASSKEY_ANDROID_CERT_SHA256): passkeys work in browsers and the desktop app only"
+            );
+        }
+    }
 
     // Initialize database
     let db_pool = db::create_pool(&config.database_url).await?;

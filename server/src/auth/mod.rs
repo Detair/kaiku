@@ -17,6 +17,7 @@ pub(crate) mod mfa;
 pub mod mfa_crypto;
 mod middleware;
 pub mod oidc;
+pub mod passkeys;
 mod password;
 pub(crate) mod profile;
 pub(crate) mod queries;

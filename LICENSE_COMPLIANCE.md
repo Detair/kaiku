@@ -57,6 +57,10 @@ This document tracks all direct third-party dependencies and their licenses for 
 | totp-rs | 5.7 | MIT | TOTP-based MFA with QR code generation |
 | qrcodegen | 1.8 | MIT | Terminal QR code of the `kaiku-admin enroll` setup link (server) |
 | openidconnect | 3.5 | MIT | OpenID Connect / OAuth 2.0 client |
+| webauthn-rs (+ webauthn-rs-core, webauthn-rs-proto, webauthn-attestation-ca, base64urlsafedata) | =0.5.5 | MPL-2.0 | Passkeys: WebAuthn relying party (server, C29); used unmodified |
+| serde_cbor_2 | 0.13 | MIT OR Apache-2.0 | CBOR of the WebAuthn attestation object (passkey AAGUID; server) |
+| webauthn-authenticator-rs | =0.5.5 | MPL-2.0 | Soft passkey for the WebAuthn tests (server dev-dependency only) |
+| async-stream (+ async-stream-impl), pastey | 0.3 / 0.2 | MIT / MIT OR Apache-2.0 | Transitive dependencies of the webauthn crates |
 
 ### Cryptography & E2EE
 
@@ -256,6 +260,11 @@ firebase-messaging pulls in Google Play services client libraries (e.g. `play-se
 
 - **License:** MPL-2.0 OR Apache-2.0
 - **Note:** We use it under Apache-2.0 (the OR clause allows choosing either license). Fully compatible.
+
+### webauthn-rs family (passkeys)
+
+- **License:** MPL-2.0 (`webauthn-rs`, `webauthn-rs-core`, `webauthn-rs-proto`, `webauthn-attestation-ca`, `base64urlsafedata`; dev-only `webauthn-authenticator-rs`)
+- **Note:** MPL-2.0 is file-level copyleft. The crates are used unmodified from crates.io, so no MPL obligation reaches Kaiku's own files; a modified copy would have to keep its files under MPL-2.0. The 0.5.x line verifies through `openssl` (Apache-2.0) / `openssl-sys` (MIT), already linked through `native-tls`.
 
 ### vpx-encode / libvpx
 

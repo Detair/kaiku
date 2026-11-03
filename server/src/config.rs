@@ -183,6 +183,12 @@ pub struct Config {
     /// `AUTH_HMAC_KEY`, else derived from the JWT signing key).
     pub auth_hmac_key: AuthHmacKey,
 
+    /// The passkey relying party (C29): RP ID = `public_origin.host`, the web
+    /// origin and the Android origins (`PASSKEY_ANDROID_APP_IDS`,
+    /// `PASSKEY_ANDROID_CERT_SHA256`). Always `Some` from the environment;
+    /// test configs start with `None` (routes answer `PASSKEYS_UNAVAILABLE`).
+    pub passkeys: Option<std::sync::Arc<crate::auth::passkeys::rp::PasskeyRp>>,
+
     /// MFA secret encryption key (32-byte hex string)
     pub mfa_encryption_key: Option<String>,
 
@@ -393,6 +399,13 @@ impl Config {
             env_opt("AUTH_HMAC_KEY").as_deref(),
             &jwt_private_key,
         )?);
+        let passkeys = crate::auth::passkeys::rp::PasskeyRp::new(
+            crate::auth::passkeys::config::PasskeyConfig::new(
+                &public_origin,
+                env_opt("PASSKEY_ANDROID_APP_IDS").as_deref(),
+                env_opt("PASSKEY_ANDROID_CERT_SHA256").as_deref(),
+            )?,
+        )?;
         let (optional_features, unknown_optional_features) = optional_features_from_env();
         let valkey_command_timeout =
             parse_valkey_command_timeout(env_opt("VALKEY_COMMAND_TIMEOUT_MS").as_deref())?;
@@ -468,6 +481,7 @@ impl Config {
             public_url: Some(public_origin.origin.clone()),
             public_origin,
             auth_hmac_key,
+            passkeys: Some(std::sync::Arc::new(passkeys)),
             mfa_encryption_key: env_opt("MFA_ENCRYPTION_KEY"),
             require_e2ee_setup: env::var("REQUIRE_E2EE_SETUP")
                 .ok()
@@ -691,6 +705,7 @@ impl Config {
             auth_hmac_key: AuthHmacKey(
                 derive_auth_hmac_key(None, TEST_JWT_PRIVATE_KEY).expect("test HMAC key derives"),
             ),
+            passkeys: None,
             mfa_encryption_key: Some(TEST_MFA_ENCRYPTION_KEY.into()),
             require_e2ee_setup: false,
             block_check_fail_open: false,
