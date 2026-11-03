@@ -301,15 +301,19 @@ pub async fn get_reauth_methods(
     State(state): State<AppState>,
     auth_user: AuthUser,
 ) -> AuthResult<Json<ReauthMethodsResponse>> {
-    // F7: a step-up is a passkey assertion (LP sets `passkey`) or a
+    // F7: a step-up is a passkey assertion (an active passkey) or a
     // `device_stepup` from an active key device; never a password, TOTP or
     // OIDC.
-    let mut conn = state.db.acquire().await?;
-    let device = super::strong::active_strong_count(&mut conn, auth_user.id).await? > 0;
-    Ok(Json(ReauthMethodsResponse {
-        passkey: false,
-        device,
-    }))
+    // `device` counts key devices only: `strong::active_strong_count`
+    // includes passkeys.
+    let device: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE user_id = $1 AND state = 'active')",
+    )
+    .bind(auth_user.id)
+    .fetch_one(&state.db)
+    .await?;
+    let passkey = super::passkeys::queries::active_count(&state.db, auth_user.id).await? > 0;
+    Ok(Json(ReauthMethodsResponse { passkey, device }))
 }
 
 #[cfg(test)]

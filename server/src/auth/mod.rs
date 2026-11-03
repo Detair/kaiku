@@ -85,6 +85,8 @@ use crate::ratelimit::{
 pub fn router(state: AppState) -> Router<AppState> {
     // Phone setup and device-key sign-in (C26), merged under `/auth`.
     let flow_routes = crate::approvals::flow_router(&state);
+    // Passkeys (C29): their own `AuthPasskey` limits, never IP-blocked.
+    let passkey_routes = passkeys::router(&state);
     // Login route with IP block check and rate limiting
     let login_route = Router::new()
         .route("/login", post(login::login))
@@ -285,6 +287,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     public_routes
         .merge(flow_routes)
+        .merge(passkey_routes)
         .merge(password_change_routes)
         .merge(password_route)
         .merge(mfa_reauth_routes)

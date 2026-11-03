@@ -305,7 +305,11 @@ pub async fn grant_tx(
     by: AuthenticatorRef,
 ) -> AuthResult<StepUpGrant> {
     let sid = lock_full_session(conn, auth).await?;
-    if !super::strong::is_active(conn, by).await? {
+    // The producing authenticator must be active and the caller's own
+    // (L1a review m7: callers are not trusted for the owner of `by`).
+    if !super::strong::is_active(conn, by).await?
+        || !super::strong::belongs_to(conn, auth.id, by).await?
+    {
         return Err(AuthError::StepUpRequired);
     }
     let now = Utc::now();

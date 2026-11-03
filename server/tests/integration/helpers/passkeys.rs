@@ -227,3 +227,35 @@ pub async fn passkey_session(
     .expect("tokens");
     (sid, pair.access_token)
 }
+
+/// The app's router with a real rate limiter (fresh key prefix, default
+/// limits), for the limit tests. The limiter is returned for `is_blocked`.
+pub async fn limited_router(app: &TestApp) -> (axum::Router, vc_server::ratelimit::RateLimiter) {
+    limited_router_with(app, vc_server::ratelimit::RateLimits::default()).await
+}
+
+pub async fn limited_router_with(
+    app: &TestApp,
+    limits: vc_server::ratelimit::RateLimits,
+) -> (axum::Router, vc_server::ratelimit::RateLimiter) {
+    use vc_server::ratelimit::{RateLimitConfig, RateLimiter};
+    let mut limiter = RateLimiter::new(
+        app.state.redis.clone(),
+        RateLimitConfig {
+            enabled: true,
+            redis_key_prefix: format!("test:rl:{}", uuid::Uuid::new_v4()),
+            fail_open: false,
+            trusted_proxies: vc_server::ratelimit::TrustedProxies::default(),
+            allowlist: std::collections::HashSet::new(),
+            limits,
+        },
+    );
+    limiter.init().await.expect("limiter");
+    let mut state = super::login::state_with_redis(
+        app.pool.clone(),
+        (*app.config).clone(),
+        app.state.redis.clone(),
+    );
+    state.rate_limiter = Some(limiter.clone());
+    (vc_server::api::create_router(state), limiter)
+}

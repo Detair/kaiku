@@ -21,6 +21,14 @@ pub fn new_ceremony_id() -> Uuid {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CeremonyKind {
     SignIn,
+    /// Bound to the account, the session (`sid`) and one action + target.
+    StepUp {
+        user_id: Uuid,
+        session_id: Uuid,
+        action: crate::auth::step_up::StepUpAction,
+        /// `StepUpTarget::canonical()`.
+        target: String,
+    },
 }
 
 /// The `webauthn-rs` state of the ceremony.

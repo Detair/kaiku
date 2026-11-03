@@ -17,6 +17,10 @@ pub enum RateLimitCategory {
     ApprovalLogin,
     /// Public enrolment and device-key sign-in routes per IP (never IP-blocked).
     AuthFlow,
+    /// Public passkey endpoints (ceremonies, desktop flows, redemption) per
+    /// IP, and passkey routes per user; never feeds or checks the
+    /// failed-login IP block (B.5).
+    AuthPasskey,
     /// Write operations (create/update/delete)
     Write,
     /// Social operations (friend requests, invites)
@@ -49,6 +53,7 @@ impl RateLimitCategory {
             Self::AuthOther => "auth_other",
             Self::ApprovalLogin => "approval_login",
             Self::AuthFlow => "auth_flow",
+            Self::AuthPasskey => "auth_passkey",
             Self::Write => "write",
             Self::Social => "social",
             Self::Read => "read",
@@ -76,6 +81,7 @@ impl RateLimitCategory {
                 | Self::AuthOther
                 | Self::ApprovalLogin
                 | Self::AuthFlow
+                | Self::AuthPasskey
                 | Self::FailedAuth
         )
     }
@@ -83,7 +89,10 @@ impl RateLimitCategory {
     /// The v1.0 sign-in categories (contract "Errors": 429 `TOO_MANY_ATTEMPTS`).
     #[must_use]
     pub const fn is_sign_in_flow(&self) -> bool {
-        matches!(self, Self::ApprovalLogin | Self::AuthFlow)
+        matches!(
+            self,
+            Self::ApprovalLogin | Self::AuthFlow | Self::AuthPasskey
+        )
     }
 
     /// Returns all categories except `FailedAuth` (which is handled separately).
@@ -95,6 +104,7 @@ impl RateLimitCategory {
             Self::AuthOther,
             Self::ApprovalLogin,
             Self::AuthFlow,
+            Self::AuthPasskey,
             Self::Write,
             Self::Social,
             Self::Read,
@@ -121,6 +131,7 @@ mod outage_policy_tests {
             RateLimitCategory::AuthOther,
             RateLimitCategory::ApprovalLogin,
             RateLimitCategory::AuthFlow,
+            RateLimitCategory::AuthPasskey,
             RateLimitCategory::FailedAuth,
         ] {
             assert!(category.is_auth(), "{category:?}");

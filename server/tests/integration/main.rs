@@ -53,6 +53,7 @@ mod optional_features;
 mod pages;
 mod passkeys_profile;
 mod passkeys_schema;
+mod passkeys_step_up;
 mod performance_budgets;
 mod push_http;
 mod push_triggers;

@@ -177,6 +177,52 @@ pub enum AuthError {
     #[error("This session has expired; sign in again")]
     SessionExpired,
 
+    /// Passkeys are not configured on this server (test configs only).
+    #[error("Passkeys are not available on this server")]
+    PasskeysUnavailable,
+
+    /// Unknown, used, expired or foreign passkey ceremony (C29).
+    #[error("This passkey request has expired; please try again")]
+    PasskeyCeremonyInvalid,
+
+    /// Origin, RP ID, UV, BE, challenge or signature check failed (C29).
+    #[error("The passkey could not be verified")]
+    PasskeyInvalid,
+
+    /// The credential is not (or no longer) registered (C29).
+    #[error("This passkey was removed from Kaiku")]
+    PasskeyUnknown,
+
+    /// The passkey is `pending` until `ready_at` (DC11; never "unknown").
+    #[error("This passkey is not ready yet")]
+    PasskeyPending {
+        ready_at: chrono::DateTime<chrono::Utc>,
+    },
+
+    /// The passkey belongs to another account than the one asked for.
+    #[error("This passkey belongs to another account")]
+    PasskeyUserMismatch,
+
+    /// `credProps.rk == false`: the credential is not discoverable (DC9).
+    #[error("This passkey cannot be used to sign in without a user name")]
+    PasskeyNotDiscoverable,
+
+    /// The credential is already registered.
+    #[error("This passkey is already registered")]
+    PasskeyAlreadyRegistered,
+
+    /// At most 10 active passkeys per account (DC6).
+    #[error("This account already has the maximum number of passkeys")]
+    PasskeyLimit,
+
+    /// A desktop hand-off redemption failed (C29 step 6).
+    #[error("The sign-in from the browser could not be completed; please try again")]
+    PasskeyHandoffInvalid,
+
+    /// A desktop route was called without `X-Kaiku-Client: desktop`.
+    #[error("Please update the Kaiku app")]
+    ClientOutdated,
+
     #[error("Internal server error")]
     Internal(String),
 }
@@ -241,15 +287,38 @@ impl IntoResponse for AuthError {
             Self::LastStrongAuthenticator => (StatusCode::CONFLICT, "LAST_STRONG_AUTHENTICATOR"),
             Self::SessionReused => (StatusCode::UNAUTHORIZED, "SESSION_REUSED"),
             Self::SessionExpired => (StatusCode::UNAUTHORIZED, "SESSION_EXPIRED"),
+            Self::PasskeysUnavailable => (StatusCode::SERVICE_UNAVAILABLE, "PASSKEYS_UNAVAILABLE"),
+            Self::PasskeyCeremonyInvalid => (StatusCode::BAD_REQUEST, "PASSKEY_CEREMONY_INVALID"),
+            Self::PasskeyInvalid => (StatusCode::BAD_REQUEST, "PASSKEY_INVALID"),
+            Self::PasskeyUnknown => (StatusCode::BAD_REQUEST, "PASSKEY_UNKNOWN"),
+            Self::PasskeyPending { .. } => (StatusCode::CONFLICT, "PASSKEY_PENDING"),
+            Self::PasskeyUserMismatch => (StatusCode::BAD_REQUEST, "PASSKEY_USER_MISMATCH"),
+            Self::PasskeyNotDiscoverable => (StatusCode::BAD_REQUEST, "PASSKEY_NOT_DISCOVERABLE"),
+            Self::PasskeyAlreadyRegistered => (StatusCode::CONFLICT, "PASSKEY_ALREADY_REGISTERED"),
+            Self::PasskeyLimit => (StatusCode::CONFLICT, "PASSKEY_LIMIT"),
+            Self::PasskeyHandoffInvalid => (StatusCode::BAD_REQUEST, "PASSKEY_HANDOFF_INVALID"),
+            Self::ClientOutdated => (StatusCode::BAD_REQUEST, "CLIENT_OUTDATED"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         };
 
-        let body = Json(ErrorResponse {
-            error: code.to_string(),
-            message: self.to_string(),
-        });
-
-        let mut response = (status, body).into_response();
+        // C29: `PASSKEY_PENDING` carries `ready_at` next to `error`.
+        let mut response = if let Self::PasskeyPending { ready_at } = &self {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": self.to_string(),
+                    "ready_at": ready_at,
+                })),
+            )
+                .into_response()
+        } else {
+            let body = Json(ErrorResponse {
+                error: code.to_string(),
+                message: self.to_string(),
+            });
+            (status, body).into_response()
+        };
         if let Self::TooManyAttempts { retry_after } = self {
             response
                 .headers_mut()

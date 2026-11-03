@@ -38,6 +38,7 @@ Each category can be configured using environment variables in the format `reque
 | `RATE_LIMIT_AUTH_OTHER` | `20,60` | 20 requests per 60 seconds |
 | `RATE_LIMIT_APPROVAL_LOGIN` | `30,60` | Key-phone approval routes (`/api/approvals/*`), per user |
 | `RATE_LIMIT_AUTH_FLOW` | `60,60` | Phone setup (`/auth/enrollments/*`) and phone sign-in (`/auth/device-login*`), per IP; never blocked by failed-login IP blocks |
+| `RATE_LIMIT_AUTH_PASSKEY` | `30,60` | Passkeys: sign-in ceremonies, desktop passkey flows and their redemption per IP, and the signed-in passkey routes (step-up, adding, renaming, removing) per user; never blocked by failed-login IP blocks, and failed passkey attempts never count towards one |
 | `RATE_LIMIT_WRITE` | `30,60` | 30 requests per 60 seconds |
 | `RATE_LIMIT_SOCIAL` | `20,60` | 20 requests per 60 seconds |
 | `RATE_LIMIT_READ` | `200,60` | 200 requests per 60 seconds |
@@ -155,7 +156,7 @@ When rate limited, the server returns:
 }
 ```
 
-The key-phone routes (`RATE_LIMIT_APPROVAL_LOGIN`, `RATE_LIMIT_AUTH_FLOW`) send the same body
+The key-phone and passkey routes (`RATE_LIMIT_APPROVAL_LOGIN`, `RATE_LIMIT_AUTH_FLOW`, `RATE_LIMIT_AUTH_PASSKEY`) send the same body
 with `"error": "TOO_MANY_ATTEMPTS"`.
 
 For blocked IPs:

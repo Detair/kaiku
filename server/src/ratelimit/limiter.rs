@@ -442,6 +442,7 @@ impl RateLimiter {
             RateLimitCategory::AuthOther => &self.config.limits.auth_other,
             RateLimitCategory::ApprovalLogin => &self.config.limits.approval_login,
             RateLimitCategory::AuthFlow => &self.config.limits.auth_flow,
+            RateLimitCategory::AuthPasskey => &self.config.limits.auth_passkey,
             RateLimitCategory::Write => &self.config.limits.write,
             RateLimitCategory::Social => &self.config.limits.social,
             RateLimitCategory::Read => &self.config.limits.read,

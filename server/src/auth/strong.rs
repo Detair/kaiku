@@ -92,6 +92,27 @@ pub async fn is_active(conn: &mut sqlx::PgConnection, a: AuthenticatorRef) -> sq
     }
 }
 
+/// Whether the authenticator is a row of `user_id` (any state).
+pub async fn belongs_to(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    a: AuthenticatorRef,
+) -> sqlx::Result<bool> {
+    let sql = match a.kind {
+        AuthenticatorKind::KeyDevice => {
+            "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE id = $1 AND user_id = $2)"
+        }
+        AuthenticatorKind::Passkey => {
+            "SELECT EXISTS (SELECT 1 FROM passkeys WHERE id = $1 AND user_id = $2)"
+        }
+    };
+    sqlx::query_scalar(sql)
+        .bind(a.id)
+        .bind(user_id)
+        .fetch_one(&mut *conn)
+        .await
+}
+
 /// The account's active strong authenticators (B.0): key devices and
 /// passkeys.
 pub async fn active_strong_count(
