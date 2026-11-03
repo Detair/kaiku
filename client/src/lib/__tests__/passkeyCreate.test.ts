@@ -55,4 +55,14 @@ describe("createPasskeyCredential", () => {
     expect(err).toBeInstanceOf(PasskeyError);
     expect((err as PasskeyError).code).toBe("PASSKEY_NOT_SUPPORTED");
   });
+
+  it("an already aborted signal creates nothing", async () => {
+    // Argon review 5 #8.
+    const create = vi.fn(async () => ({}));
+    browser(create);
+    const ctl = new AbortController();
+    ctl.abort();
+    await expect(createPasskeyCredential(options, ctl.signal)).rejects.toMatchObject({ code: "ABORTED" });
+    expect(create).not.toHaveBeenCalled();
+  });
 });

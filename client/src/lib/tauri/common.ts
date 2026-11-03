@@ -329,6 +329,7 @@ let nativeAuthInfo: NativeAuthInfo | null = null;
  * Reset when a session hands out a token again.
  */
 let nativeSessionExpiryReported = false;
+let nativeExpiryReason: "expired" | "reused" | null = null;
 
 /** Cache (or clear) the auth info handed out by the Rust session. */
 export function setNativeAuthInfo(info: NativeAuthInfo | null): void {
@@ -336,6 +337,7 @@ export function setNativeAuthInfo(info: NativeAuthInfo | null): void {
   if (info) {
     browserState.serverUrl = info.server_url;
     nativeSessionExpiryReported = false;
+    nativeExpiryReason = null;
   }
 }
 
@@ -370,14 +372,30 @@ export async function getAuthContext(): Promise<AuthContext> {
  * token used twice (`reused`, C27) ends the session for good instead.
  */
 export function expireNativeSession(reason: "expired" | "reused" = "expired"): void {
-  if (nativeSessionExpiryReported) return;
+  // A "reused" report after a plain expiry still ends the session for good
+  // with its own reason (Argon review 5 #7); anything else is reported once.
+  if (nativeSessionExpiryReported && !(reason === "reused" && nativeExpiryReason === "expired")) return;
   nativeSessionExpiryReported = true;
+  nativeExpiryReason = reason;
   setNativeAuthInfo(null);
   if (reason === "reused") {
     window.dispatchEvent(new CustomEvent(SESSION_ENDED_EVENT, { detail: { reason } }));
     return;
   }
   window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+}
+
+/**
+ * A request needs a full session (403 `FULL_SESSION_REQUIRED`): the app
+ * shows one dialog; repeats within 2 s do not stack it. Used by the browser
+ * path below and by the desktop's native requests (Argon review 5 #2).
+ */
+export function reportFullSessionRequired(): void {
+  const now = Date.now();
+  if (typeof window !== "undefined" && now - lastFullSessionEventAt >= FULL_SESSION_EVENT_GAP_MS) {
+    lastFullSessionEventAt = now;
+    window.dispatchEvent(new CustomEvent(FULL_SESSION_REQUIRED_EVENT));
+  }
 }
 
 /** `Display` of the Rust `SessionError::Expired`. */
@@ -501,7 +519,12 @@ export function refreshAccessToken(): Promise<boolean> {
 function withRefreshLock(run: () => Promise<boolean>): Promise<boolean> {
   const locks = typeof navigator !== "undefined" ? (navigator as Navigator & { locks?: LockManager }).locks : undefined;
   if (isTauri() || !locks?.request) return run();
-  return locks.request("kaiku-refresh", run) as Promise<boolean>;
+  // A refused lock request (no permission, aborted) must not reject: callers
+  // treat a refresh as never throwing (Fable m7).
+  return (locks.request("kaiku-refresh", run) as Promise<boolean>).catch((err: unknown) => {
+    console.warn("[Auth] Refresh lock failed:", err instanceof Error ? err.message : err);
+    return false;
+  });
 }
 
 /** The `error` code of a refused refresh, if the body names one. */
@@ -867,11 +890,7 @@ async function sendHttpRequest<T>(
       // C27: this needs a full session (passkey or phone sign-in). The app
       // shows one dialog; repeats within 2 s do not stack it.
       if (response.status === 403 && codeIs(errorBody.error, "FULL_SESSION_REQUIRED")) {
-        const now = Date.now();
-        if (typeof window !== "undefined" && now - lastFullSessionEventAt >= FULL_SESSION_EVENT_GAP_MS) {
-          lastFullSessionEventAt = now;
-          window.dispatchEvent(new CustomEvent(FULL_SESSION_REQUIRED_EVENT));
-        }
+        reportFullSessionRequired();
       }
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     }

@@ -169,6 +169,44 @@ describe("withStepUp", () => {
     ua.mockRestore();
   });
 
+  it("desktop: a native STEP_UP_REQUIRED gets the one retry too", async () => {
+    // Fable m1: Rust's bare codes carry no status.
+    const { nativeAuthError } = await import("../tauri/auth");
+    const run = vi.fn().mockRejectedValueOnce(nativeAuthError("STEP_UP_REQUIRED")).mockResolvedValueOnce("ok");
+    const p = withStepUp(req, run);
+    await confirm();
+    await confirm();
+    await expect(p).resolves.toBe("ok");
+    expect(run).toHaveBeenCalledTimes(2);
+    expect((nativeAuthError("FULL_SESSION_REQUIRED") as HttpError).status).toBe(403);
+    expect((nativeAuthError("NOT_ADMIN") as HttpError).status).toBe(403);
+  });
+
+  it("a second step-up settles the first instead of leaving it hanging", async () => {
+    // Fable m8, Argon review 5 #4.
+    let signal!: AbortSignal;
+    stepUp.mockImplementationOnce((_a: string, _t: string, s: AbortSignal) => {
+      signal = s;
+      return new Promise(() => {});
+    });
+    const first = withStepUp(req, vi.fn());
+    await confirm();
+    const second = withStepUp({ ...req, targetLabel: "Laptop" }, vi.fn().mockResolvedValue("two"));
+    await expect(first).rejects.toBeInstanceOf(StepUpCancelled);
+    expect(signal.aborted).toBe(true);
+    expect(await screen.findByText("Remove the device Laptop")).toBeTruthy();
+    await confirm();
+    await expect(second).resolves.toBe("two");
+  });
+
+  it("a chat-only session found while loading the methods opens no step-up", async () => {
+    methods.mockRejectedValueOnce(new HttpError(403, "x", "FULL_SESSION_REQUIRED"));
+    const run = vi.fn();
+    await expect(withStepUp(req, run)).rejects.toBeInstanceOf(StepUpCancelled);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("every action of the table has a label", () => {
     for (const a of STEP_UP_ACTIONS) expect(STEP_UP_LABELS[a]).toMatch(/^security\.stepUp\./);
   });

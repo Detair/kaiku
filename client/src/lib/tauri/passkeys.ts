@@ -341,6 +341,7 @@ async function createCredential(
   signal: AbortSignal,
 ): Promise<PublicKeyCredential> {
   if (isTauri() || !isWebAuthnAvailable()) throw new PasskeyError("PASSKEY_NOT_SUPPORTED");
+  if (signal.aborted) throw new PasskeyError("ABORTED");
   try {
     const created = await navigator.credentials.create({
       publicKey: creationOptionsFromJSON(options.publicKey),
@@ -369,6 +370,8 @@ export async function createPasskeyCredential(options: unknown, signal: AbortSig
 /** Add a passkey (browser only; needs a `passkey.add` grant first). */
 export async function registerPasskey(o: { label: string; signal: AbortSignal }): Promise<Passkey> {
   if (isTauri() || !isWebAuthnAvailable()) throw new PasskeyError("PASSKEY_NOT_SUPPORTED");
+  // Already cancelled: no ceremony is started on the server (Argon 5 #8).
+  if (o.signal.aborted) throw new PasskeyError("ABORTED");
   const start = await httpRequest<CeremonyStart>("POST", "/auth/passkeys/register/start", {
     label: o.label,
   });

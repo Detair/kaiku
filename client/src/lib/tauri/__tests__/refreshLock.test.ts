@@ -66,4 +66,14 @@ describe("refresh across tabs", () => {
     expect(browserState.accessToken).toBeNull();
     window.removeEventListener(SESSION_ENDED_EVENT, ended);
   });
+
+  it("a refused Web Lock request resolves false instead of rejecting", async () => {
+    // Fable m7: callers treat a refresh as never throwing.
+    const request = vi.fn(async () => {
+      throw new DOMException("denied", "SecurityError");
+    });
+    Object.defineProperty(navigator, "locks", { configurable: true, value: { request } });
+    await expect(refreshAccessToken()).resolves.toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

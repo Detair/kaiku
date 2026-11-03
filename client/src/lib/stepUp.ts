@@ -106,7 +106,7 @@ function requestGrant(req: StepUpRequest, passkeyOk: boolean): Promise<void> {
         try {
           await stepUpWithPasskey(req.action, req.target, abort.signal);
           if (abort.signal.aborted) return;
-          setPending(null);
+          setPending((cur) => (cur === entry ? null : cur));
           resolve();
         } catch (err) {
           if (!abort.signal.aborted) setError(err);
@@ -116,16 +116,20 @@ function requestGrant(req: StepUpRequest, passkeyOk: boolean): Promise<void> {
       },
       cancel: () => {
         abort.abort();
-        setPending(null);
+        setPending((cur) => (cur === entry ? null : cur));
         reject(new StepUpCancelled());
       },
     };
+    // One step-up at a time: an older one is cancelled (its ceremony
+    // aborted, its caller told), never left hanging (Fable m8, Argon 5 #4).
+    pending()?.cancel();
     setPending(entry);
   });
 }
 
+/** The code is specific; desktop errors have no reliable status (Fable m1). */
 function isStepUpRequired(err: unknown): boolean {
-  return err instanceof HttpError && err.status === 403 && codeIs(err.code, "STEP_UP_REQUIRED");
+  return err instanceof HttpError && codeIs(err.code, "STEP_UP_REQUIRED");
 }
 
 export async function withStepUp<T>(req: StepUpRequest, run: () => Promise<T>): Promise<T> {
@@ -137,6 +141,11 @@ export async function withStepUp<T>(req: StepUpRequest, run: () => Promise<T>): 
   try {
     passkeyOk = (await getStepUpMethods()).passkey;
   } catch (err) {
+    // A session that is chat-only or gone gets its own dialog, not a
+    // step-up on top of it (Argon review 5 #4).
+    if (err instanceof HttpError && (err.status === 401 || codeIs(err.code, "FULL_SESSION_REQUIRED"))) {
+      throw new StepUpCancelled(codeIs(err.code, "FULL_SESSION_REQUIRED") ? "FULL_SESSION_REQUIRED" : "SESSION_ENDED");
+    }
     console.warn("[StepUp] Loading the methods failed:", err instanceof Error ? err.message : err);
   }
   await requestGrant(req, passkeyOk);

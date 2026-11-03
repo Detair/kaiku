@@ -17,6 +17,7 @@ import {
   browserState,
   clearBrowserTokens,
   expireNativeSession,
+  reportFullSessionRequired,
   fetchApi,
   getServerUrl,
   getUploadAuth,
@@ -94,13 +95,35 @@ export function nativeAuthError(error: unknown): unknown {
 const NATIVE_CODE_STATUS: Partial<Record<string, number>> = {
   INVALID_CREDENTIALS: 401,
   INVALID_MFA: 401,
+  REQUEST_FACTOR_INVALID: 401,
   ACCOUNT_BANNED: 403,
+  // The step-up retry and the full-session dialog look for 403 (Fable m1,
+  // Argon review 5 #2): Rust's bare codes carry no status.
+  STEP_UP_REQUIRED: 403,
+  FULL_SESSION_REQUIRED: 403,
+  NOT_ADMIN: 403,
+  KEY_DEVICE_REQUIRED: 403,
+  ADMIN_TARGET_IS_ADMIN: 403,
+  CANCEL_NOT_ALLOWED: 403,
+  REPUDIATE_NOT_ALLOWED: 403,
+  TOTP_UNAVAILABLE: 403,
+  LOGIN_ATTEMPT_UNKNOWN: 404,
+  ENROLLMENT_TOKEN_INVALID: 404,
+  NO_PRE_SESSION_SECRET: 404,
   USER_EXISTS: 409,
   EMAIL_TAKEN: 409,
-  LOGIN_ATTEMPT_UNKNOWN: 404,
+  LOGIN_ATTEMPT_NOT_READY: 409,
+  ACCOUNT_REQUEST_OPEN: 409,
+  ACCOUNT_REQUEST_COMPLETED: 409,
+  NO_INDEPENDENT_CANCELLER: 409,
+  ENROLLMENT_LIMIT: 409,
+  ENROLLMENT_STATE: 409,
+  LAST_STRONG_AUTHENTICATOR: 409,
   LOGIN_ATTEMPT_ENDED: 410,
+  ENROLLMENT_FAILED: 410,
   TOO_MANY_ATTEMPTS: 429,
   SERVICE_UNAVAILABLE: 503,
+  KEYRING_UNAVAILABLE: 503,
 };
 
 /** Server codes the native SSO commands report as bare strings. */
@@ -148,7 +171,9 @@ export async function nativeSessionRequest<T>(
       throw new HttpError(401, error, "INVALID_CREDENTIALS");
     }
     // Bare codes with their fields (STEP_UP_REQUIRED, PASSWORD_REJECTED {reason}, …).
-    throw nativeAuthError(error);
+    const mapped = nativeAuthError(error);
+    if (mapped instanceof HttpError && codeIs(mapped.code, "FULL_SESSION_REQUIRED")) reportFullSessionRequired();
+    throw mapped;
   }
 }
 
