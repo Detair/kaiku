@@ -11,6 +11,7 @@ export const SECURITY_ERRORS: Partial<Record<string, MessageKey>> = {
   FULL_SESSION_REQUIRED: "security.stepUp.error.fullSession",
   STEP_UP_REQUIRED: "security.stepUp.error.generic",
   ADMIN_TARGET_IS_ADMIN: "security.error.adminTarget",
+  ENROLLMENT_LIMIT: "security.setupPhone.limit",
 };
 
 const PASSWORD_REASONS: Record<string, MessageKey> = {

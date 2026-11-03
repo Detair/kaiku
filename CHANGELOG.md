@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A phone becomes a key by opening a setup link or code and confirming a 6-digit code shown on it; phones without a screen lock or a hardware key store are refused at the start.
 - Your phone can be a key for your account: it confirms sensitive actions with its screen lock, and you can see and remove your key phones in the security settings.
 - Security notices: sign-ins and changes to how you sign in appear in a read-only chat with **Kaiku** and in a security log in your account settings; admins get a copy of important ones. They cannot be deleted from a signed-in session.
+- **Set up a phone:** make the Kaiku app on your phone your key from the desktop or web app: scan the code, then type the 6 digits the phone shows.
 - Security settings list your phones, passkeys, sessions and recovery contact; recovery codes replace backup codes.
 - **Sign in with your phone:** the sign-in page shows a QR code; scan it with the Kaiku app on your phone to sign in.
 - Desktop app on Linux: an advanced "Show all ALSA devices" option in the audio settings also lists surround, S/PDIF, raw hardware and plugin devices that the short device list hides. It is off by default, and a device you picked stays listed when you turn it off.

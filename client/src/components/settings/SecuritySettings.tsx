@@ -43,7 +43,9 @@ import KeyDevicesSection from "./security/KeyDevicesSection";
 import PasswordSection from "./security/PasswordSection";
 import RecoveryCodesSection from "./security/RecoveryCodesSection";
 import RecoveryContactSection from "./security/RecoveryContactSection";
-import { ReadOnlyNote } from "./security/SectionCard";
+import { ReadOnlyNote, secondaryButton as setupPhoneButton } from "./security/SectionCard";
+import SetupPhoneModal from "./security/SetupPhoneModal";
+import { t } from "@/i18n";
 import { securityErrorText } from "./security/securityErrors";
 // TODO(LP rebase): LP's <PasskeysSection /> mounts above the TOTP section.
 
@@ -81,6 +83,7 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
   const [isDisabling, setIsDisabling] = createSignal(false);
   const [disableError, setDisableError] = createSignal("");
   const [mfaError, setMfaError] = createSignal<string | null>(null);
+  const [showSetupPhone, setShowSetupPhone] = createSignal(false);
 
   const isMfaEnabled = () => authState.user?.mfa_enabled ?? false;
 
@@ -284,7 +287,16 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
 
       {/* How this account signs in (v1.0): overview, phones, password, codes, contact */}
       <SecurityOverview />
-      <KeyDevicesSection />
+      <KeyDevicesSection
+        setupPhone={
+          <button type="button" class={setupPhoneButton} onClick={() => setShowSetupPhone(true)}>
+            {t("security.setupPhone.button")}
+          </button>
+        }
+      />
+      <Show when={showSetupPhone()}>
+        <SetupPhoneModal onClose={() => setShowSetupPhone(false)} />
+      </Show>
       {/* Passkeys (C29) */}
       <div class="pt-6 border-t border-white/10 space-y-4">
         <PasskeysSection />
