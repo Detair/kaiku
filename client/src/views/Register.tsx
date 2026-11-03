@@ -111,9 +111,11 @@ const Register: Component = () => {
       return;
     }
 
+    // Registering is a choice too: a running SSO sign-up is stale now, and
+    // this one is once the user picks SSO or leaves (Codex r3 M1).
+    const choice = beginSignInChoice();
+    const stale = () => disposed || !choice.isCurrent();
     try {
-      // Registering is a choice too: a running SSO sign-up is stale now.
-      beginSignInChoice();
       await register(
         serverUrl(),
         username(),
@@ -121,10 +123,13 @@ const Register: Component = () => {
         email() || undefined,
         displayName() || undefined,
       );
+      // The ticket waits in Rust or memory (30 min); a later sign-up replaces it.
+      if (stale()) return;
       // F8: no session yet; bind a sign-in method within 30 minutes.
       const back = safeReturnUrl(searchParams.returnUrl);
       navigate(back ? `/register/bind?returnUrl=${encodeURIComponent(back)}` : "/register/bind", { replace: true });
     } catch (err) {
+      if (stale()) return;
       if (!authState.error) {
         setLocalError(
           errorText(

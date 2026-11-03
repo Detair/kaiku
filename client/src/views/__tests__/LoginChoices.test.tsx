@@ -41,7 +41,7 @@ vi.mock("@/lib/tauri/common", async () => {
 import Login from "../Login";
 import Register from "../Register";
 import { leaveFlow, loginFlow } from "@/stores/loginFlow";
-import { setAuthState } from "@/stores/auth";
+import { beginSignInChoice, setAuthState } from "@/stores/auth";
 
 const SSO_ATTEMPT = "66666666-6666-4666-8666-666666666666";
 const QR_ATTEMPT = "55555555-5555-4555-8555-555555555555";
@@ -128,6 +128,47 @@ describe("one sign-in choice at a time", () => {
     sso.resolve({ mode: "tauri", step: ssoStep() });
     await waitFor(() => expect(api.cancelAttempt).toHaveBeenCalledWith(SSO_ATTEMPT));
     expect(loginFlow().step).toBe("form");
+  });
+
+  async function startPasswordSignUp() {
+    const reg = deferred<unknown>();
+    api.register.mockReturnValue(reg.promise);
+    await renderAt("/register");
+    fireEvent.input(await screen.findByTestId("register-username"), { target: { value: "alice" } });
+    fireEvent.input(screen.getByTestId("register-password"), { target: { value: "a-good-password" } });
+    fireEvent.input(screen.getByTestId("register-password-confirm"), { target: { value: "a-good-password" } });
+    fireEvent.click(screen.getByTestId("register-submit"));
+    await waitFor(() => expect(api.register).toHaveBeenCalled());
+    return reg;
+  }
+  const registered = {
+    user_id: "u1",
+    username: "alice",
+    ticket_expires_at: new Date(Date.now() + 1_800_000).toISOString(),
+  };
+
+  it("Register: a password sign-up answered after another sign-in choice never navigates (Codex r3 M1)", async () => {
+    // The page's own SSO buttons are disabled while it registers; any other
+    // choice (the sign-in page's SSO, phone, passkey) begins a new one.
+    const reg = await startPasswordSignUp();
+    beginSignInChoice();
+    reg.resolve(registered);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(window.location.pathname).toBe("/register");
+  });
+
+  it("Register: a password sign-up answered after leaving the page never navigates", async () => {
+    const reg = await startPasswordSignUp();
+    cleanup();
+    reg.resolve(registered);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(window.location.pathname).toBe("/register");
+  });
+
+  it("Register: a password sign-up that is still current goes on to the bind step", async () => {
+    const reg = await startPasswordSignUp();
+    reg.resolve(registered);
+    await waitFor(() => expect(window.location.pathname).toBe("/register/bind"));
   });
 
   it("Register: a desktop SSO sign-up the user left never navigates or applies", async () => {
