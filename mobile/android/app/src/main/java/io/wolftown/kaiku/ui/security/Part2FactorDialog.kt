@@ -46,7 +46,11 @@ fun Part2FactorDialog(onSubmit: (Part2Factor) -> Unit, onDismiss: () -> Unit) {
                     onValueChange = { code = it.take(32) },
                     label = { Text(stringResource(if (recovery) R.string.security_part2_recovery else R.string.security_part2_totp)) },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = if (recovery) KeyboardType.Ascii else KeyboardType.NumberPassword),
+                    // Password keyboards never learn or suggest what is typed (a recovery code is a secret).
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = if (recovery) KeyboardType.Password else KeyboardType.NumberPassword,
+                        autoCorrectEnabled = false,
+                    ),
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
                 Text(stringResource(R.string.security_part2_hint), modifier = Modifier.padding(top = 8.dp))

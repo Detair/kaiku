@@ -12,7 +12,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.pluralStringResource
@@ -48,6 +48,9 @@ fun PhoneSignInScreen(
     onLeave: () -> Unit,
 ) {
     BackHandler(onBack = onLeave)
+    // The QR carries a sign-in token and the TOTP step a code: no screenshots or
+    // screen recording on any step (one reference-counted protection for all).
+    SecureScreen()
     when (screen) {
         is LoginAttemptUi.ShowQr -> ShowQr(screen, onPhoneNotAtHand, onLeave)
         is LoginAttemptUi.Totp -> TotpStep(screen, busy, onSubmitTotp, onLeave)
@@ -61,8 +64,6 @@ fun PhoneSignInScreen(
 
 @Composable
 private fun ShowQr(qr: LoginAttemptUi.ShowQr, onPhoneNotAtHand: () -> Unit, onLeave: () -> Unit) {
-    // The QR carries a sign-in token: no screenshots or screen recording.
-    SecureScreen()
     KeyScreen {
         val other = qr.via == AttemptVia.OTHER_PHONE
         KeyTitle(stringResource(if (other) R.string.auth_phone_title_other else R.string.auth_phone_title_confirm))
@@ -86,7 +87,8 @@ private fun ShowQr(qr: LoginAttemptUi.ShowQr, onPhoneNotAtHand: () -> Unit, onLe
 
 @Composable
 private fun TotpStep(step: LoginAttemptUi.Totp, busy: Boolean, onSubmit: (String) -> Unit, onLeave: () -> Unit) {
-    var code by rememberSaveable { mutableStateOf("") }
+    // Memory only: an authenticator code never goes into saved instance state.
+    var code by remember { mutableStateOf("") }
     KeyScreen {
         KeyTitle(stringResource(R.string.auth_totp_title))
         KeyBody(stringResource(R.string.auth_totp_body))
@@ -97,7 +99,7 @@ private fun TotpStep(step: LoginAttemptUi.Totp, busy: Boolean, onSubmit: (String
             singleLine = true,
             textStyle = TextStyle(fontSize = 32.sp, letterSpacing = 4.sp),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { if (!busy) onSubmit(code) }),
+            keyboardActions = KeyboardActions(onDone = { if (!busy && code.any(Char::isDigit)) onSubmit(code) }),
             enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
         )

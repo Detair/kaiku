@@ -1,5 +1,6 @@
 package io.wolftown.kaiku.ui.settings.security
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,6 +25,8 @@ fun RecoveryCodesCard(left: Int, readOnly: Boolean, onCreate: () -> Unit) {
 @Composable
 fun RecoveryCodesShownOnce(codes: List<String>, onDone: () -> Unit) {
     SecureScreen()
+    // The codes exist only here: Back never discards them, only "I've written them down" does.
+    BackHandler(enabled = true) {}
     KeyScreen {
         KeyTitle(stringResource(R.string.security_recovery_codes))
         KeyNotice(stringResource(R.string.security_recovery_codes_new), warning = true)
