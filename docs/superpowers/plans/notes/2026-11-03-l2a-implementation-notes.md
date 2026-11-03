@@ -1,6 +1,7 @@
 # L2a (desktop/web) implementation notes — 2026-11-03
 
-Branch `feat/v1.0-login-l2a`, based on `origin/main` 7a9e7677. Plan:
+Branch `feat/v1.0-login-l2a`, based on `origin/main` 7a9e7677; since 2026-11-03 rebased onto
+LP `origin/feat/v1.0-login-lp` 203b822c (on L1a 267e4c78), see "LP rebase" at the end. Plan:
 `docs/superpowers/plans/2026-11-03-v1.0-login-clients.md` section A (A1–A14). Spec rev 5 and
 contracts C26–C28 win where the plan differs. L1a, LP and L1b are not on main: everything is
 built against the frozen contracts with mocked `fetch` / Tauri `invoke` / wiremock.
@@ -13,10 +14,10 @@ follow it (L2a-2).
 | Task | Status |
 |---|---|
 | A1 wire types, API wrappers | done |
-| A2 desktop Rust: attempts, pre-session secrets, refresh reasons | done except the OIDC loopback delivery (LP seam) |
-| A3 sign-in screen (phone QR, confirmation, TOTP, neutral answers) | done; PasskeyButton mount is an LP seam |
-| A4 probation banner, full-session dialog, Web Locks, SESSION_REUSED | done; passkey sign-in through the seam |
-| A5 step-up | partly: `withStepUp`, `StepUpDialog`, action table done; the LP-file edits wait for the LP rebase (below) |
+| A2 desktop Rust: attempts, pre-session secrets, refresh reasons | done; OIDC loopback delivery (C29 step 8) on LP's listener since the LP rebase |
+| A3 sign-in screen (phone QR, confirmation, TOTP, neutral answers) | done; LP's PasskeyButton first since the LP rebase |
+| A4 probation banner, full-session dialog, Web Locks, SESSION_REUSED | done; passkey sign-in through LP's attempt logic |
+| A5 step-up | done at the LP rebase (ReauthDialog and C24 re-auth removed, elevation, linked accounts, Linux hint, empty passkey list) |
 | A6 security settings | done (+ follow-up: AccountSettings uses `PasswordSection`, old `ChangePasswordModal` removed) |
 | A7 set up a phone, CodeEntry | done |
 | A8 `/setup` page | done |
@@ -25,9 +26,9 @@ follow it (L2a-2).
 | A11 recovery, "Secure my account", request client | done |
 | A12 registration ticket, bind step | done |
 | A13 admin per-user security, passwordless create, open requests | done |
-| A14 gate | partly: CHANGELOG lines added per task; the rebase onto L1a → LP → L1b and the browser/desktop checks cannot run yet |
+| A14 gate | partly: CHANGELOG lines added per task; rebased onto LP (on L1a); the rebase onto main after L1a, LP and L1b merge and the browser/desktop checks are still open |
 
-## LP seams (replace at the LP rebase)
+## LP seams (replaced at the LP rebase, 2026-11-03; kept as the record)
 
 1. `client/src/lib/passkeySeam.ts` — `registerPasskeyCeremonies` / `passkeyCeremonies()`:
    - `signIn` → LP `stores/auth.ts::loginWithPasskey(serverUrl, {mediation, signal})`
@@ -176,3 +177,101 @@ Gates after round 1: `bun run test:run` 176 files / 1742 tests passed; `bunx tsc
 `cargo test -p vc-client --lib` 268 passed, 2 ignored; `cargo fmt --check` clean;
 `SQLX_OFFLINE=true cargo clippy -p vc-client --all-targets`: no finding in the files this round
 touches (the known findings in untouched files remain).
+
+## LP rebase (2026-11-03)
+
+Safety ref `l2a-pre-lp-rebase` = 7febc1f5 (the branch before). `git rebase --onto
+origin/feat/v1.0-login-lp 7a9e7677`: 24 commits replayed, 16 of them with conflicts, 26 file
+conflicts in all; 13 were `CHANGELOG.md` (both sides kept, LP's lines first) and
+`locales/de.json` (key-level three-way merge, then `i18n:sync`). LP's review fixes are unchanged:
+web adoption after `/auth/me` with `live()` and `endStaleSession`, attempt generations and
+already-aborted signals, the debounced autofill restart and `stopConditional` clearing
+`serverChangeTimer`, `ServerMismatch`, `ceremony_url`, `bare_code`, the listener's cap and
+backlog.
+
+| Replayed commit | File | Resolution |
+|---|---|---|
+| wire types (A1) | `lib/tauri/common.ts` | L2a's `HttpError(status, message, code, details = {}, retryAfter)` (details without `error`/`message`; LP only reads `details.ready_at`) and `isPreSessionPath`, which already lists `/auth/passkeys/login` (LP's two `AUTH_ENDPOINTS` entries) |
+| wire types | `lib/tauri/index.ts` | both export lists |
+| desktop Rust (A2) | `commands/mod.rs` | both module lists |
+| desktop Rust | `session/mod.rs` | L2a's move of `login`/`register`/`exchange_oidc_code` to `session/attempts.rs`; LP's `passkey_flow_post`, `start_passkey_flow`, `redeem_passkey_flow`, `identity_generation`, `current_user_id`, `ServerMismatch` kept |
+| sign-in (A3) | `stores/auth.ts` | **hard:** LP's `loginWithPasskey` and generations kept beside L2a's step `login` and `completeSignIn`; `invalidatePasskeySignIns` in `login`, `completeSignIn` and `logout` (LP had it in `login`, `completeNativeOidcLogin`, `loginWithOidc`, which L2a removed); `mfaRequired` dropped |
+| sign-in | `views/Login.tsx` | **hard:** LP's autofill, button and desktop box moved into L2a's `form` step, `PasskeyButton` first, LP's divider dropped (the phone button follows); autofill stops when a step replaces the form and starts again when it comes back (new; LP stopped it only for the password submit) |
+| sign-in | `lib/authErrors.ts` | both (`PASSKEY_ERRORS`, `formatPasskeyError`, `loginErrorText`) |
+| step-up (A5 part) | `i18n/en.ts` | both areas |
+| settings (A6, A7) | `SecuritySettings.tsx` | LP's `PasskeysSection` + `PasskeyBrowserSetting` after the key devices, before the password |
+| fixes (round 0) | `views/Login.tsx` | both imports |
+| round 1 M2 | `session/mod.rs` | **hard:** LP's `adopt_tokens_for` (account check) and L2a's `adopt_tokens_if` (`wanted()` checks) share `adopt_tokens_checked`; `adopt_tokens` → `adopt_tokens_for(None)` |
+| round 1 (Argon M2) | `lib.rs` | LP's `passkey_*` commands kept, `oidc_reauth*` removed; `reauth.rs` loses its `dead_code` allow (LP uses the registry) |
+
+After the replay (`e0313e00`): LP's `passkey.rs::code_of` matched `SessionError::AccountBanned`,
+which L2a's bare codes removed (one line in an LP file; a banned account stays
+`ACCOUNT_BANNED` through `Server(403, code)`), and LP's login-page tests drove the C24
+password sign-in. The replayed commits between A2 and `e0313e00` do not build the Rust crate.
+
+### Seams replaced
+
+| Seam | Now |
+|---|---|
+| `lib/passkeySeam.ts` | deleted. `replaceSessionWithPasskey` runs LP's attempt logic (`runPasskeySignIn`, shared with `loginWithPasskey`); `withStepUp` → `stepUpWithPasskey`; setup links, requests, tickets → `createPasskeyCredential` (new in `lib/tauri/passkeys.ts`, LP's WebAuthn helpers; `registerPasskey` uses the same `createCredential`); offers depend on `canUsePasskeys()` (desktop or WebAuthn) |
+| `Login.tsx` | `PasskeyButton` first; QR "Use a passkey instead" leaves the attempt and runs the button's ceremony |
+| `LinuxPasskeyHint` | extracted with LP's key `passkeys.login.linuxHint` from **Login.tsx's** desktop box (LP has no hint in `PasskeyButton`); shown in the login box, `StepUpDialog`, `FullSessionRequiredDialog` and `ProbationBanner` while the desktop app waits |
+| `SecuritySettings` | LP's `PasskeysSection` mounted (rebase); its empty state gets L2's first steps |
+| `SecurityPromptBanner` `add_passkey` | still opens Security settings: LP's section has no direct "Add" and WebAuthn needs the click there |
+| `oidc_authorize`, `request_oidc_factor` | `commands/oidc_delivery.rs`: `loopback_post::bind()` first, start with `loopback_port` + `callback_path` + `client_challenge`, `open_browser_with(app, url, settings.passkey_browser)`, `wait_for_post` (5 min); sign-in → exchange → `LoginStep`, request factor → `{oidc_code}` with the verifier kept; the GET sign-in hand-back is gone (`LoginCallback` lives on only as a test parser in `oidc_loopback`) |
+
+`grep -rn "TODO(LP rebase" client/` is empty.
+
+### A5 done
+
+- `ReauthDialog` and its test deleted; `ElevateDialog` → `withStepUp({action: "admin.elevate"})` →
+  LP's `elevateWithStepUp(null)`; on a PC without a passkey the dialog points to the phone.
+- C24 paths deleted: `lib/reauth.ts` keeps `reauthErrorText` (NOT_ADMIN, FULL_SESSION_REQUIRED,
+  STEP_UP_REQUIRED, LP's passkey texts); `startOidcReauth`, `getReauthMethods`,
+  `adminElevate(password)`, `elevateSession`, `confirmElevation`, `ReauthRequest`,
+  `ReauthMethodsResponse`, 26 `admin.reauth.*` keys and LP's `passkeys.reauth.method` removed.
+- `LinkedAccountsSection`: `identity.link` step-up before "Link now" (the popup still opens in
+  that click; ELEVATION_REQUIRED comes before the grant is spent on the server), `identity.unlink`
+  for that identity; STEP_UP_REQUIRED asks to confirm again.
+- LP's `StepUpAction` / `StepUpGrant` (already the full 22 actions in LP, not narrow) come from
+  `lib/types/login.ts`; `stepUpActions.test.ts` compares `STEP_UP_ACTIONS` with the server's
+  `StepUpAction::ALL` read from `server/src/auth/step_up.rs`. NOT_ADMIN → "Only a server admin
+  can do this." in `StepUpDialog` and `reauthErrorText`.
+- Empty passkey list: "Set up a phone" (full session) and "Secure my account"
+  (`PasskeyFirstSteps`, passed as `PasskeysSection`'s `empty` slot).
+- Tests from Step 1: elevation posts only the reason after the step-up, no password/SSO
+  re-auth, the empty state, the Linux hint (step-up dialog and login), plus NOT_ADMIN, the
+  link/unlink grants and unmount-cancel. CHANGELOG `### Changed` line added (also one for the
+  desktop SSO browser).
+
+### Interfaces that differ from the plan (LP's real ones used)
+
+- `commands::auth::open_browser_with(app, url, PasskeyBrowser)` (plan: `open_browser`);
+  `loopback_post::wait_for_post(listener, cb, flow_id, deadline, read_deadline)` without
+  `cors_origin` (LP shipped the form POST, no `fetch()` fallback).
+- The OIDC start's `flow_id`: C29 step 8 does not name the field; L1b's branch answers desktop
+  starts with `{url, flow_id}`, which L2a reads. **For L1b:** the request OIDC factor start
+  (`POST …/oidc/authorize/{provider_id}` with `{loopback_port, callback_path,
+  client_challenge}`) is assumed to answer the same way.
+
+### Left / residuals
+
+- A14 step 1 (rebase onto main after L1a, LP, L1b) and step 3 (browser/desktop checks).
+- The desktop OIDC wait cannot be cancelled from the webview (as before; it ends after 5 min).
+- LP's `adopt_tokens_for` leaves an `ACCOUNT_MISMATCH` session to lapse on its own (LP
+  behaviour, unchanged).
+- Task V greps: client hits are test assertions and one comment; the Android hits
+  (`qr/redeem`, `mfa_code`, `kaiku://qr/login`) are Section B (L2b).
+
+### Gates (after the LP rebase, `e9b29f38`)
+
+- `bun run test:run`: 184 files / 1763 tests passed. `bunx tsc --noEmit`: clean.
+  `bun run i18n:check`: 1215 web keys, 235 Android strings (duplicate-text warnings only).
+  `bun run lint`: 0 errors, 140 warnings (none new in the touched files; 145 before the rebase).
+  `bun run lint:tauri-commands`: 88 commands, all registered.
+- `cargo fmt --check` and `cargo +nightly fmt --check -p vc-client`: clean.
+  `SQLX_OFFLINE=true cargo clippy -p vc-client -- -D warnings`: fails only in
+  `voice/video_decoder.rs` and `voice/connection_stats.rs` (untouched by LP and L2a; known).
+  `cargo test -p vc-client --lib`: 304 passed, 2 ignored. `cargo test -p vc-client` stops at
+  `examples/capture_vp8_fixture.rs` (vpx-encode API; unchanged since main, pre-existing).
+- `git diff origin/feat/v1.0-login-lp --stat -- server/`: empty.
