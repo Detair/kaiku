@@ -1013,7 +1013,8 @@ impl SessionManager {
             }
             let text = response.text().await.map_err(|e| network(&e))?;
             if !(200..300).contains(&status) {
-                return Err(server_error(status, &text));
+                // Bare code with its fields (STEP_UP_REQUIRED, PASSWORD_REJECTED {reason}).
+                return Err(attempts::code_error_from(status, None, &text));
             }
             if text.trim().is_empty() {
                 return Ok(Value::Null);
@@ -1524,6 +1525,32 @@ mod tests {
         assert!(result.user.is_none());
         assert_eq!(result.error_reason.as_deref(), Some("session_expired"));
         assert!(store.get().is_none());
+    }
+
+    #[tokio::test]
+    async fn session_request_reports_the_bare_code_with_fields() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = logged_in(&server, &store).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/me/password"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(
+                json!({"error": "PASSWORD_REJECTED", "message": "Too common", "reason": "breached"}),
+            ))
+            .mount(&server)
+            .await;
+        let err = m
+            .session_request(
+                "POST",
+                "/auth/me/password",
+                Some(json!({"new_password": "x"})),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            r#"PASSWORD_REJECTED::{"reason":"breached"}"#
+        );
     }
 
     #[tokio::test]

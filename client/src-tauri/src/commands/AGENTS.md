@@ -64,7 +64,8 @@ clipboard.
   method + path pairs (no query) with `X-Kaiku-Request-Secret` /
   `X-Kaiku-Ticket`; anything else is `PATH_NOT_ALLOWED` without a request.
 - **Errors are bare server codes** (`SessionError::Server` displays the code;
-  `CODE:<secs>` when a `Retry-After` came with it). The webview maps them with
+  `CODE:<secs>` with a `Retry-After`, `CODE:<secs?>:{json}` with the extra error
+  fields such as `tries_left`; `session_request` too). The webview maps them with
   `nativeAuthError` + `errorText`.
 - **Refresh end reasons:** 401 `SESSION_REUSED` → `SessionEvent::Expired(Reused)`,
   any other 401/403 → `Expired(Expired)`; the `auth:session_expired` event

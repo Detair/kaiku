@@ -8,6 +8,14 @@ const fetchMock = vi.hoisted(() => {
   return f;
 });
 
+const order = vi.hoisted(() => [] as string[]);
+vi.mock("@/stores/websocket", async (orig) => ({
+  ...(await orig<object>()),
+  disconnect: vi.fn(async () => {
+    order.push("ws-stop");
+  }),
+}));
+
 import FullSessionRequiredDialog from "../FullSessionRequiredDialog";
 import { browserState, FULL_SESSION_REQUIRED_EVENT, httpRequest } from "@/lib/tauri/common";
 import { registerPasskeyCeremonies } from "@/lib/passkeySeam";
@@ -62,8 +70,15 @@ describe("FullSessionRequiredDialog", () => {
       };
     });
     registerPasskeyCeremonies({ signIn, stepUp: vi.fn() } as never);
-    fetchMock.mockImplementation(async () => new Response(null, { status: 204 }));
+    order.length = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).endsWith("/auth/logout")) order.push("logout-old");
+      return new Response(null, { status: 204 });
+    });
     await replaceSessionWithPasskey();
+    // The old socket is closed before its session ends, so its SESSION_REVOKED cannot end the new one.
+    expect(order.indexOf("ws-stop")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("ws-stop")).toBeLessThan(order.indexOf("logout-old"));
     expect(signIn).toHaveBeenCalledWith("https://chat.example.com", expect.objectContaining({ mediation: "optional" }));
     const logout = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/auth/logout"));
     expect(logout).toBeTruthy();
@@ -71,5 +86,28 @@ describe("FullSessionRequiredDialog", () => {
     expect(init.method).toBe("POST");
     expect(init.credentials).toBe("omit");
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer old-token");
+  });
+
+  it("a passkey of another account reloads the app instead of mixing two accounts", async () => {
+    browserState.serverUrl = "https://chat.example.com";
+    browserState.accessToken = "old-token";
+    setAuthState({ user: { id: "u1", username: "a", session: { id: "s1", assurance: "probation" } } as never });
+    const reload = vi.fn();
+    const original = window.location;
+    Object.defineProperty(window, "location", { configurable: true, value: { ...original, reload } });
+    registerPasskeyCeremonies({
+      signIn: vi.fn(async () => {
+        browserState.accessToken = "new-token";
+        return { user: { id: "u2", session: { id: "s9", assurance: "full" } }, setup_required: false, password_change_required: false };
+      }),
+      stepUp: vi.fn(),
+    } as never);
+    fetchMock.mockImplementation(async () => new Response(null, { status: 204 }));
+    try {
+      await replaceSessionWithPasskey();
+    } finally {
+      Object.defineProperty(window, "location", { configurable: true, value: original });
+    }
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });

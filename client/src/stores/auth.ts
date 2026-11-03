@@ -834,11 +834,24 @@ export async function replaceSessionWithPasskey(signal?: AbortSignal): Promise<U
   const ceremonies = passkeyCeremonies();
   if (!ceremonies) throw new Error("PASSKEYS_UNAVAILABLE");
   const serverUrl = tauri.getServerUrl();
+  const previousUserId = authState.user?.id ?? null;
   const oldToken = isTauri() ? null : tauri.getAccessToken();
   const result = await ceremonies.signIn(serverUrl, {
     mediation: "optional",
     signal: signal ?? new AbortController().signal,
   });
+  // Close the old session's socket first: ending that session makes the
+  // server send SESSION_REVOKED on it, which must not end the new one.
+  await requestStop();
+  if (previousUserId && result.user.id !== previousUserId) {
+    // A passkey of another account: never mix two accounts' state in one run.
+    clearAllDrafts();
+    cleanupDrafts();
+    resetE2EEState();
+    if (oldToken) await endOldBrowserSession(serverUrl, oldToken);
+    window.location.reload();
+    return result.user;
+  }
   if (oldToken && oldToken !== tauri.getAccessToken()) {
     try {
       await fetch(`${serverUrl.replace(/\/+$/, "")}/auth/logout`, {
@@ -851,6 +864,19 @@ export async function replaceSessionWithPasskey(signal?: AbortSignal): Promise<U
     }
   }
   return completeSignIn(serverUrl, result);
+}
+
+/** End only the old browser session: its bearer, no cookies (best effort). */
+async function endOldBrowserSession(serverUrl: string, oldToken: string): Promise<void> {
+  try {
+    await fetch(`${serverUrl.replace(/\/+$/, "")}/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${oldToken}` },
+      credentials: "omit",
+    });
+  } catch (err) {
+    console.warn("[Auth] Ending the chat-only session failed:", err instanceof Error ? err.message : err);
+  }
 }
 
 /** Thrown when the new password is saved but the session could not start yet. */

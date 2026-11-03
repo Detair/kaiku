@@ -250,4 +250,32 @@ describe("login flow store", () => {
       "Wrong username or password, or password sign-in is not available for this account. Use a passkey or 'Sign in with phone', or ask an admin.",
     );
   });
+
+  it("a collect that outlives the attempt's expiry still signs in", async () => {
+    pendingPolls();
+    let finishCollect!: (r: unknown) => void;
+    api.collectAttempt.mockImplementation(() => new Promise((r) => (finishCollect = r)));
+    api.createQrAttempt.mockResolvedValue(attempt({ expires_at: new Date(Date.now() + 2000).toISOString() }));
+    api.pollAttempt.mockResolvedValueOnce(attempt({ state: "approved", qr: null }));
+    await startPhoneSignIn("https://chat.example.com");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(api.collectAttempt).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(5000);
+    finishCollect({ user: { id: "u1" }, setup_required: false, password_change_required: false });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(authStore.completeSignIn).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaving during the password call cancels the attempt it returns", async () => {
+    let answer!: (s: unknown) => void;
+    authStore.login.mockImplementation(() => new Promise((r) => (answer = r)));
+    const pending = submitPassword("https://chat.example.com", "alice", "pw");
+    await vi.advanceTimersByTimeAsync(0);
+    await leaveFlow();
+    answer({ status: "confirmation_required", attempt: attempt({ kind: "password" }) });
+    await pending;
+    expect(loginFlow().step).toBe("form");
+    expect(api.pollAttempt).not.toHaveBeenCalled();
+    expect(api.cancelAttempt).toHaveBeenCalledWith(ID);
+  });
 });

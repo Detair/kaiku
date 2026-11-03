@@ -36,6 +36,9 @@ pub const TICKET_TTL: Duration = Duration::from_mins(30);
 /// An OIDC factor's verifier is used within the 60-s life of its code.
 const OIDC_FACTOR_TTL: Duration = Duration::from_mins(2);
 
+/// Written and removed once before a request starts, to know the keyring works.
+const KEYRING_PROBE_ENTRY: &str = "account_request_probe";
+
 /// Keyring entry naming the server of the open request.
 pub const REQUEST_SERVER_ENTRY: &str = "account_request_server";
 
@@ -199,6 +202,16 @@ impl SessionManager {
                     body[key]["verifier"] = json!(verifier.as_str());
                 }
             }
+        }
+        // A request whose secret cannot be kept could neither be followed
+        // nor withdrawn (and would block a new one): check the keyring first.
+        if let Err(e) = self
+            .store
+            .save_secret(KEYRING_PROBE_ENTRY, "1")
+            .and_then(|()| self.store.clear_secret(KEYRING_PROBE_ENTRY))
+        {
+            warn!(error = %e, "The OS keyring cannot keep an account-request secret");
+            return Err(SessionError::Server(503, "KEYRING_UNAVAILABLE".to_string()));
         }
         let response = self
             .http
@@ -415,6 +428,27 @@ mod tests {
         assert_eq!(sent["first"]["verifier"], "ver-1");
         // Single use.
         assert!(take_fresh(&m.pre_session.oidc_verifier, &server.uri(), OIDC_FACTOR_TTL).is_none());
+    }
+
+    #[tokio::test]
+    async fn keyring_failure_refuses_before_starting_a_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/account-requests"))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_json(json!({"request": request("waiting"), "request_secret": "s"})),
+            )
+            .expect(0)
+            .mount(&server)
+            .await;
+        let store = Arc::new(MemoryTokenStore::new());
+        store.set_fail_save(true);
+        let err = manager(&store)
+            .account_request_start(&server.uri(), json!({"username": "alice"}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "KEYRING_UNAVAILABLE");
     }
 
     #[tokio::test]

@@ -203,9 +203,8 @@ describe("native auth", () => {
     const expired = vi.fn();
     window.addEventListener("kaiku:session-expired", expired);
     try {
-      await expect(auth.revokeAllOtherSessions()).rejects.toBe(
-        "Connection failed: offline",
-      );
+      // Mapped like every native failure: a network error the UI words as such.
+      await expect(auth.revokeAllOtherSessions()).rejects.toBeInstanceOf(TypeError);
       expect(expired).not.toHaveBeenCalled();
       expect(common.getAccessToken()).toBe("tok");
     } finally {

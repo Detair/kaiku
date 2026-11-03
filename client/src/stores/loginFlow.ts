@@ -124,10 +124,17 @@ function currentAttempt(): LoginAttempt | null {
 }
 
 async function collect(myRun: number, attemptId: string): Promise<void> {
+  // The attempt is approved: its expiry no longer matters, and a session
+  // that the server already made must never be dropped.
+  clearExpiry();
   setFlowBusy(true);
   try {
     const result = await collectAttempt(attemptId);
-    if (myRun !== run) return;
+    if (myRun !== run) {
+      // The user left meanwhile; the session exists already, so finish it.
+      await completeSignIn(serverUrl, result);
+      return;
+    }
     run += 1;
     clearExpiry();
     await completeSignIn(serverUrl, result);
@@ -265,7 +272,13 @@ export async function startPhoneSignIn(url: string): Promise<void> {
 export async function submitPassword(url: string, username: string, password: string): Promise<void> {
   await leaveFlow();
   serverUrl = url;
+  const myRun = run;
   const step = await passwordSignIn(url, username, password);
+  if (myRun !== run) {
+    // Left (or submitted again) while the password was checked.
+    void cancelAttempt(step.attempt.attempt_id).catch(() => undefined);
+    return;
+  }
   applyLoginStep(step, "password");
 }
 

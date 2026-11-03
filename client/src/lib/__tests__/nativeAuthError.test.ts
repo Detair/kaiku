@@ -39,6 +39,18 @@ describe("nativeAuthError", () => {
     expect(nativeAuthError("CLIENT_OUTDATED")).toMatchObject({ status: 400, code: "CLIENT_OUTDATED" });
   });
 
+  it("keeps the extra error-body fields of a native code", () => {
+    expect(nativeAuthError('ENROLL_CODE_WRONG::{"tries_left":2}')).toMatchObject({
+      code: "ENROLL_CODE_WRONG",
+      details: { tries_left: 2 },
+    });
+    expect(nativeAuthError('TOO_MANY_ATTEMPTS:60:{"x":1}')).toMatchObject({ retryAfter: 60, details: { x: 1 } });
+  });
+
+  it("maps a native proxy error to its status (transient)", () => {
+    expect(nativeAuthError("Server error (502)")).toMatchObject({ status: 502 });
+  });
+
   it("passes unknown errors through unchanged", () => {
     const other = new Error("boom");
     expect(nativeAuthError(other)).toBe(other);

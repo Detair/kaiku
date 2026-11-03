@@ -130,19 +130,36 @@ fn retry_after(response: &reqwest::Response) -> Option<u64> {
         .ok()
 }
 
-/// A refused call as its bare server code (`CODE`, or `CODE:<secs>` with a
-/// `Retry-After`), so the webview maps it with `errorText`.
+/// A refused call as its bare server code, so the webview maps it with
+/// `errorText`: `CODE`, `CODE:<secs>` with a `Retry-After`, and
+/// `CODE:<secs?>:{json}` with the body's extra fields (`tries_left`,
+/// `recovery_codes_left`, `state`, `reason`, …; never `message`).
 pub async fn code_error(response: reqwest::Response) -> SessionError {
     let status = response.status().as_u16();
     let wait = retry_after(&response);
     let text = response.text().await.unwrap_or_default();
-    match super::error_code(&text) {
-        Some(code) => match wait {
-            Some(secs) => SessionError::Server(status, format!("{code}:{secs}")),
-            None => SessionError::Server(status, code),
+    code_error_from(status, wait, &text)
+}
+
+pub fn code_error_from(status: u16, wait: Option<u64>, text: &str) -> SessionError {
+    let Some(code) = super::error_code(text) else {
+        return super::server_error(status, text);
+    };
+    let extra = serde_json::from_str::<Value>(text).ok().and_then(|v| {
+        let mut fields = v.as_object()?.clone();
+        fields.remove("error");
+        fields.remove("message");
+        (!fields.is_empty()).then(|| Value::Object(fields).to_string())
+    });
+    let secs = wait.map(|s| s.to_string()).unwrap_or_default();
+    SessionError::Server(
+        status,
+        match extra {
+            Some(json) => format!("{code}:{secs}:{json}"),
+            None if wait.is_some() => format!("{code}:{secs}"),
+            None => code,
         },
-        None => super::server_error(status, &text),
-    }
+    )
 }
 
 /// Parse a JSON answer (an empty body is `null`).
@@ -562,9 +579,26 @@ mod tests {
             .await;
         assert_eq!(
             m.poll_attempt(ID, 0).await.unwrap_err().to_string(),
-            "LOGIN_ATTEMPT_ENDED"
+            r#"LOGIN_ATTEMPT_ENDED::{"state":"expired"}"#
         );
         assert!(m.attempt_verifiers().get(ID).is_none());
+    }
+
+    #[tokio::test]
+    async fn bare_code_keeps_the_extra_error_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/auth/login"))
+            .respond_with(ResponseTemplate::new(410).set_body_json(
+                json!({"error": "LOGIN_ATTEMPT_ENDED", "message": "gone", "state": "denied"}),
+            ))
+            .mount(&server)
+            .await;
+        let err = manager().login(&server.uri(), "a", "b").await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            r#"LOGIN_ATTEMPT_ENDED::{"state":"denied"}"#
+        );
     }
 
     #[tokio::test]

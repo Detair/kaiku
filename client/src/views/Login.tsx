@@ -1,7 +1,7 @@
 import { Component, createEffect, createMemo, createSignal, createResource, Match, Show, Switch, For, on, onCleanup, onMount } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import { authState, clearError, loginWithPasskey } from "@/stores/auth";
-import { fetchServerSettings, getDefaultServerUrl, oidcAuthorize } from "@/lib/tauri";
+import { cancelAttempt, fetchServerSettings, getDefaultServerUrl, oidcAuthorize } from "@/lib/tauri";
 import { decodeLoginStep, type OidcProvider } from "@/lib/types";
 import { KeyRound, Smartphone } from "lucide-solid";
 import { Github, Chrome } from "@/components/icons/BrandIcons";
@@ -313,6 +313,11 @@ const Login: Component = () => {
 
       if (result.mode === "tauri") {
         // Tauri: Rust redeemed the hand-off code; the PC confirms next (F3).
+        setOidcLoading(null);
+        if (disposed) {
+          void cancelAttempt(result.step.attempt.attempt_id).catch(() => undefined);
+          return;
+        }
         setFlowServer(serverUrl());
         applyLoginStep(result.step, "oidc");
         setOidcLoading(null);

@@ -66,18 +66,31 @@ export function nativeAuthError(error: unknown): unknown {
     return new HttpError(409, text);
   }
   // Bare server codes (`SessionError::Server` displays the code), optionally
-  // with `:<seconds>` from a Retry-After (`TOO_MANY_ATTEMPTS:120`).
-  const bare = text ? /^([A-Z][A-Z0-9_]*)(?::(\d+))?$/.exec(text) : null;
+  // with `:<seconds>` from a Retry-After and `:{json}` with the extra error
+  // fields (`ENROLL_CODE_WRONG::{"tries_left":2}`).
+  const bare = text ? /^([A-Z][A-Z0-9_]*)(?::(\d*)(?::(\{.*\}))?)?$/s.exec(text) : null;
   if (bare) {
     const code = bare[1];
+    let details: Record<string, unknown> = {};
+    if (bare[3]) {
+      try {
+        const parsed: unknown = JSON.parse(bare[3]);
+        if (parsed && typeof parsed === "object") details = parsed as Record<string, unknown>;
+      } catch {
+        details = {};
+      }
+    }
     return new HttpError(
       NATIVE_CODE_STATUS[code] ?? 400,
       code,
       code,
-      {},
-      bare[2] === undefined ? undefined : Number(bare[2]),
+      details,
+      bare[2] ? Number(bare[2]) : undefined,
     );
   }
+  // A proxy or server failure without a JSON body (`SessionError::Server`).
+  const status = text ? /^Server error \((\d{3})\)$/.exec(text) : null;
+  if (status) return new HttpError(Number(status[1]), text!);
   return error;
 }
 
@@ -136,7 +149,8 @@ export async function nativeSessionRequest<T>(
     if (error === "Invalid credentials") {
       throw new HttpError(401, error, "INVALID_CREDENTIALS");
     }
-    throw error;
+    // Bare codes with their fields (STEP_UP_REQUIRED, PASSWORD_REJECTED {reason}, …).
+    throw nativeAuthError(error);
   }
 }
 
