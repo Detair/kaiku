@@ -20,10 +20,12 @@ import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.domain.model.AuthResponse
 import io.wolftown.kaiku.domain.model.User
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -114,12 +116,14 @@ class AuthRepositoryLoginRaceTest {
             noTeardown(authState)
         )
 
-        val result = realRepository.completeAttempt("https://a.example.com", null) { attempts.collect("a-1", "verifier") }
+        // On a real dispatcher: the bounded best-effort logout's timeout must run on the real clock,
+        // as the mock engine answers on real threads (on the test's virtual clock it can lapse at once).
+        val result = withContext(Dispatchers.Default) {
+            realRepository.completeAttempt("https://a.example.com", null) { attempts.collect("a-1", "verifier") }
+        }
 
         assertTrue(result.isFailure)
         // The minted session never reaches B: A gets the collect, then the logout that ends it there.
-        // (How many logout tries run depends on the bounded best-effort timeout, which runs on the
-        // test's virtual clock while the mock engine answers on real threads: at least one.)
         assertTrue(requests.all { it.first == "a.example.com" })
         assertEquals("/auth/login-attempts/a-1/collect", requests.first().second)
         val logouts = requests.drop(1)
