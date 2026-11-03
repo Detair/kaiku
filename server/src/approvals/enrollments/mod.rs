@@ -845,9 +845,9 @@ async fn expire(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Confirm with `code` (SM2 "confirm"):
+/// Confirm with `code` (SM2 "confirm").
 ///
-/// the issuer is re-checked first (B.7 rule 4), then the code in constant time. A wrong code
+/// The issuer is re-checked first (B.7 rule 4), then the code in constant time. A wrong code
 /// counts a try (400 `ENROLL_CODE_WRONG {tries_left}`, the third → 410 `ENROLLMENT_FAILED`) —
 /// the caller commits that. At `done` the device row is created in this transaction.
 pub async fn confirm_tx(
