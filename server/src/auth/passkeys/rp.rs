@@ -17,8 +17,6 @@ pub enum PasskeyFailure {
     Invalid,
     /// `credProps.rk == false` at registration (`PASSKEY_NOT_DISCOVERABLE`).
     NotDiscoverable,
-    /// The signature counter went backwards (DC4: refused, audited).
-    CounterRegressed,
     /// A discoverable assertion without a user handle.
     UserHandleMissing,
     Internal(String),
@@ -270,18 +268,12 @@ fn internal(e: impl std::fmt::Display) -> PasskeyFailure {
     PasskeyFailure::Internal(e.to_string())
 }
 
-/// Crate refusals: a counter regression is its own signal (DC4); every
-/// other error is `Invalid` (logged at debug, never returned to clients).
+/// Crate refusals are `Invalid` (logged at debug, never returned to
+/// clients). The crate's counter refusal cannot occur: it verifies a copy
+/// with counter 0, and LP records a regression as a signal (B.1).
 fn refusal(e: webauthn_rs::prelude::WebauthnError) -> PasskeyFailure {
-    match e {
-        webauthn_rs::prelude::WebauthnError::CredentialPossibleCompromise => {
-            PasskeyFailure::CounterRegressed
-        }
-        other => {
-            tracing::debug!(error = %other, "passkey verification refused");
-            PasskeyFailure::Invalid
-        }
-    }
+    tracing::debug!(error = %e, "passkey verification refused");
+    PasskeyFailure::Invalid
 }
 
 /// UV must be set; BE must equal the value stored at registration (§6.1.3).
@@ -315,6 +307,17 @@ pub fn aaguid_from_attestation_object(att: &[u8]) -> Option<Uuid> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_crate_counter_refusal_is_plain_invalid() {
+        // Review round 2 (Fable): the zero-counter copy makes the crate's
+        // counter refusal unreachable; should it ever come, it is an
+        // ordinary PASSKEY_INVALID, not a counter signal of its own.
+        assert_eq!(
+            refusal(webauthn_rs::prelude::WebauthnError::CredentialPossibleCompromise),
+            PasskeyFailure::Invalid
+        );
+    }
     use crate::config::PublicOrigin;
 
     #[test]

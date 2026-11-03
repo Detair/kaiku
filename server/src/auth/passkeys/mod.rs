@@ -56,9 +56,7 @@ pub(crate) fn rp_of(state: &AppState) -> AuthResult<&PasskeyRp> {
 /// The client-facing code of a verification failure.
 pub(crate) fn failure(f: PasskeyFailure) -> AuthError {
     match f {
-        PasskeyFailure::Invalid
-        | PasskeyFailure::CounterRegressed
-        | PasskeyFailure::UserHandleMissing => AuthError::PasskeyInvalid,
+        PasskeyFailure::Invalid | PasskeyFailure::UserHandleMissing => AuthError::PasskeyInvalid,
         PasskeyFailure::NotDiscoverable => AuthError::PasskeyNotDiscoverable,
         PasskeyFailure::Internal(e) => AuthError::Internal(format!("passkey: {e}")),
     }
