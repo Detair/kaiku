@@ -306,8 +306,10 @@ mod tests {
 
     #[test]
     fn instrument_skip_list_contract_is_present() {
+        // The password login never records its body (the e-mail reset
+        // handlers that carried the old fragment are gone, L1b Task 25).
         let auth = include_str!("../auth/login.rs");
-        assert_contains(auth, "#[tracing::instrument(skip(state, body)");
+        assert_contains(auth, "#[tracing::instrument(skip(state, jar, headers, body,");
 
         let chat = include_str!("../chat/messages.rs");
         assert_contains(chat, "#[tracing::instrument(skip(state, body)");
