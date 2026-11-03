@@ -1,0 +1,951 @@
+//! Enrolment of a key device (SM2, C26) with the attestation minimum.
+//!
+//! Run with: `cargo test --test integration enrollments`
+
+use axum::body::Body;
+use axum::http::Method;
+use p256::ecdsa::SigningKey;
+use serde_json::{json, Value};
+use sqlx::PgPool;
+use uuid::Uuid;
+use vc_server::approvals::context::ClaimantCheck;
+use vc_server::approvals::enrollments::{
+    cancel_tx, confirm_tx, issue_tx, Confirmer, EnrollmentCanceller, EnrollmentIssued,
+    EnrollmentVariant, IssueParams, Issuer,
+};
+use vc_server::approvals::error::ApprovalError;
+use vc_server::approvals::secrets::{b64u_decode, b64u_encode};
+use vc_server::approvals::signing::{message, Decision};
+use vc_server::auth::ctx::AuthCtx;
+
+use super::approvals_core::post;
+use super::helpers::approvals::{spki_der, KeyDeviceFixture};
+use super::helpers::attestation::{chain, chain_without_extension, Reported};
+use super::helpers::login::peer_request;
+use super::helpers::{body_to_json, create_test_user, TestApp};
+
+async fn public(app: &TestApp, path: &str, body: Value) -> (u16, Value) {
+    let req = peer_request(Method::POST, path)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    let status = resp.status().as_u16();
+    (status, body_to_json(resp).await)
+}
+
+async fn issue(
+    app: &TestApp,
+    subject: Uuid,
+    variant: EnrollmentVariant,
+    issuer: Issuer,
+) -> Result<EnrollmentIssued, ApprovalError> {
+    let ctx = AuthCtx::from(&app.state);
+    let mut tx = app.pool.begin().await.unwrap();
+    let r = issue_tx(
+        &mut tx,
+        &ctx,
+        IssueParams {
+            variant,
+            subject_id: subject,
+            issuer,
+            claimant: ClaimantCheck::None,
+            claimant_note: None,
+            lost_device_ids: Vec::new(),
+        },
+    )
+    .await;
+    tx.commit().await.unwrap();
+    r
+}
+
+/// The new phone: its key and install id.
+struct Phone {
+    key: SigningKey,
+    device_id: Uuid,
+}
+
+impl Phone {
+    fn new() -> Self {
+        Self {
+            key: SigningKey::random(&mut rand::rngs::OsRng),
+            device_id: Uuid::new_v4(),
+        }
+    }
+
+    fn sign(&self, prefix_b64u: &str, decision: Decision, response: &[u8]) -> String {
+        use p256::ecdsa::signature::Signer;
+        let prefix = b64u_decode(prefix_b64u).unwrap();
+        let sig: p256::ecdsa::Signature = self.key.sign(&message(&prefix, decision, response));
+        b64u_encode(sig.to_der().as_bytes())
+    }
+
+    fn public_key(&self) -> String {
+        b64u_encode(&spki_der(&self.key))
+    }
+}
+
+/// open → pop-challenge → claim with `label`, `reported` and `uv_class`.
+async fn claim_with(
+    app: &TestApp,
+    token: &str,
+    phone: &Phone,
+    label: &str,
+    reported: Option<Reported>,
+    uv_class: &str,
+) -> (u16, Value) {
+    let (status, opened) =
+        public(app, "/auth/enrollments/open", json!({"setup_token": token})).await;
+    assert_eq!(status, 200, "{opened}");
+    let nonce = b64u_decode(opened["enrollment_nonce"].as_str().unwrap()).unwrap();
+    let (status, pop) = public(
+        app,
+        "/auth/enrollments/pop-challenge",
+        json!({"setup_token": token, "device_id": phone.device_id, "public_key": phone.public_key()}),
+    )
+    .await;
+    assert_eq!(status, 201, "{pop}");
+    let c = &pop["challenge"];
+    let chain: Vec<String> = match reported {
+        Some(mut r) => {
+            if r.challenge.is_empty() {
+                r.challenge = nonce;
+            }
+            chain(&r).iter().map(|d| b64u_encode(d)).collect()
+        }
+        None => Vec::new(),
+    };
+    public(
+        app,
+        "/auth/enrollments/claim",
+        json!({
+            "setup_token": token,
+            "challenge_id": c["challenge_id"],
+            "signature": phone.sign(c["signing_prefix"].as_str().unwrap(), Decision::Approve, b""),
+            "public_key": phone.public_key(),
+            "attestation_chain": chain,
+            "label": label,
+            "uv_class": uv_class,
+            "api_level": 34,
+        }),
+    )
+    .await
+}
+
+fn good() -> Option<Reported> {
+    Some(Reported::good(&[]))
+}
+
+async fn confirm_cli(app: &TestApp, id: Uuid, code: &str) -> Result<Value, ApprovalError> {
+    let ctx = AuthCtx::from(&app.state);
+    let mut tx = app.pool.begin().await.unwrap();
+    let r = confirm_tx(&mut tx, &ctx, id, Confirmer::Cli, code.as_bytes()).await;
+    tx.commit().await.unwrap();
+    r.map(|(e, after)| {
+        let state = app.state.clone();
+        tokio::spawn(
+            async move { vc_server::approvals::enrollments::after_done(&state, after).await },
+        );
+        serde_json::to_value(e).unwrap()
+    })
+}
+
+async fn status(app: &TestApp, id: Uuid, secret: &str) -> (u16, Value) {
+    public(
+        app,
+        "/auth/enrollments/status",
+        json!({"enrollment_id": id, "claim_secret": secret}),
+    )
+    .await
+}
+
+#[sqlx::test]
+async fn cli_enrolment_end_to_end(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, username) = create_test_user(&pool).await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let phone = Phone::new();
+    let (status_code, (pop_subject, claimed)) = {
+        let (s, pop) = public(
+            &app,
+            "/auth/enrollments/pop-challenge",
+            json!({"setup_token": issued.setup_token, "device_id": phone.device_id, "public_key": phone.public_key()}),
+        )
+        .await;
+        assert_eq!(s, 201);
+        let subject = pop["subject"].clone();
+        let (s, claimed) = claim_with(
+            &app,
+            &issued.setup_token,
+            &phone,
+            "Pixel 8",
+            good(),
+            "per_use",
+        )
+        .await;
+        (s, (subject, claimed))
+    };
+    assert_eq!(pop_subject["username"], username);
+    assert_eq!(status_code, 201, "{claimed}");
+    assert_eq!(claimed["state"], "claimed");
+    let code = claimed["code"].as_str().unwrap().to_string();
+    assert!(code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit()));
+    let secret = claimed["claim_secret"].as_str().unwrap().to_string();
+    assert_eq!(secret.len(), 43);
+    let (s, st) = status(&app, issued.enrollment_id, &secret).await;
+    assert_eq!((s, st["state"].as_str()), (200, Some("claimed")));
+
+    let e = confirm_cli(&app, issued.enrollment_id, &code)
+        .await
+        .unwrap();
+    assert_eq!(e["state"], "done");
+    assert_eq!(e["claimed"]["label"], "Pixel 8");
+    let (state, via): (String, String) = sqlx::query_as(
+        "SELECT state, enrolled_via FROM approval_devices WHERE user_id = $1 AND device_id = $2",
+    )
+    .bind(user)
+    .bind(phone.device_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((state.as_str(), via.as_str()), ("active", "cli"));
+    let (_, st) = status(&app, issued.enrollment_id, &secret).await;
+    assert_eq!(st["state"], "done");
+    assert_eq!(st["authenticator_state"], "active");
+    let added: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_events WHERE subject_id = $1 AND event_type = 'authenticator_added' AND severity = 'high'",
+    )
+    .bind(user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(added, 1);
+    // A wrong claim secret learns nothing.
+    let (s, _) = status(&app, issued.enrollment_id, &b64u_encode(&[7u8; 32])).await;
+    assert_eq!(s, 404);
+}
+
+#[sqlx::test]
+async fn open_never_consumes(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        let (s, b) = public(
+            &app,
+            "/auth/enrollments/open",
+            json!({"setup_token": issued.setup_token}),
+        )
+        .await;
+        assert_eq!(s, 200, "{b}");
+        assert!(b["server_name"].as_str().is_some());
+    }
+    let (s, _) = claim_with(
+        &app,
+        &issued.setup_token,
+        &Phone::new(),
+        "Pixel 8",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201);
+    let (s, b) = public(
+        &app,
+        "/auth/enrollments/open",
+        json!({"setup_token": b64u_encode(&[1u8; 32])}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (404, Some("ENROLLMENT_TOKEN_INVALID"))
+    );
+}
+
+#[sqlx::test]
+async fn second_claim_is_already_used(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    assert_eq!(
+        claim_with(
+            &app,
+            &issued.setup_token,
+            &Phone::new(),
+            "A",
+            good(),
+            "per_use"
+        )
+        .await
+        .0,
+        201
+    );
+    let (s, b) = public(
+        &app,
+        "/auth/enrollments/open",
+        json!({"setup_token": issued.setup_token}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("ENROLLMENT_ALREADY_CLAIMED"))
+    );
+
+    // Concurrent claims of one valid challenge, 25×: one wins.
+    for _ in 0..25 {
+        let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE enrollments SET state = 'cancelled' WHERE subject_id = $1 AND id <> $2 AND state IN ('issued','claimed')")
+            .bind(user)
+            .bind(issued.enrollment_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let phone = Phone::new();
+        let (_, opened) = public(
+            &app,
+            "/auth/enrollments/open",
+            json!({"setup_token": issued.setup_token}),
+        )
+        .await;
+        let nonce = b64u_decode(opened["enrollment_nonce"].as_str().unwrap()).unwrap();
+        let (_, pop) = public(&app, "/auth/enrollments/pop-challenge", json!({"setup_token": issued.setup_token, "device_id": phone.device_id, "public_key": phone.public_key()})).await;
+        let body = json!({
+            "setup_token": issued.setup_token,
+            "challenge_id": pop["challenge"]["challenge_id"],
+            "signature": phone.sign(pop["challenge"]["signing_prefix"].as_str().unwrap(), Decision::Approve, b""),
+            "public_key": phone.public_key(),
+            "attestation_chain": chain(&Reported::good(&nonce)).iter().map(|d| b64u_encode(d)).collect::<Vec<_>>(),
+            "label": "A",
+            "uv_class": "per_use",
+        });
+        let (a, b) = tokio::join!(
+            public(&app, "/auth/enrollments/claim", body.clone()),
+            public(&app, "/auth/enrollments/claim", body.clone())
+        );
+        let mut statuses = [a.0, b.0];
+        statuses.sort_unstable();
+        assert_eq!(statuses[0], 201, "{} / {}", a.1, b.1);
+        assert_eq!(statuses[1], 409, "{} / {}", a.1, b.1);
+    }
+}
+
+#[sqlx::test]
+async fn wrong_codes_count_and_the_third_fails(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let (_, c) = claim_with(
+        &app,
+        &issued.setup_token,
+        &Phone::new(),
+        "A",
+        good(),
+        "per_use",
+    )
+    .await;
+    let code = c["code"].as_str().unwrap();
+    let wrong = if code == "000000" { "111111" } else { "000000" };
+    for left in [2, 1] {
+        match confirm_cli(&app, issued.enrollment_id, wrong).await {
+            Err(ApprovalError::EnrollCodeWrong { tries_left }) => assert_eq!(tries_left, left),
+            other => panic!("{other:?}"),
+        }
+    }
+    assert!(matches!(
+        confirm_cli(&app, issued.enrollment_id, wrong).await,
+        Err(ApprovalError::EnrollmentFailed)
+    ));
+    assert!(
+        confirm_cli(&app, issued.enrollment_id, code).await.is_err(),
+        "failed is terminal"
+    );
+}
+
+#[sqlx::test]
+async fn code_expires_after_5_minutes(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let (_, c) = claim_with(
+        &app,
+        &issued.setup_token,
+        &Phone::new(),
+        "A",
+        good(),
+        "per_use",
+    )
+    .await;
+    let until: chrono::DateTime<chrono::Utc> =
+        c["code_expires_at"].as_str().unwrap().parse().unwrap();
+    assert!((until - chrono::Utc::now()).num_seconds() <= 300);
+    sqlx::query(
+        "UPDATE enrollments SET code_expires_at = NOW() - INTERVAL '1 second' WHERE id = $1",
+    )
+    .bind(issued.enrollment_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        confirm_cli(&app, issued.enrollment_id, c["code"].as_str().unwrap()).await,
+        Err(ApprovalError::EnrollmentState)
+    ));
+}
+
+#[sqlx::test]
+async fn setup_token_expires_after_10_minutes(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    assert!((issued.expires_at - chrono::Utc::now()).num_seconds() <= 600);
+    sqlx::query("UPDATE enrollments SET created_at = created_at - INTERVAL '11 minutes', expires_at = created_at - INTERVAL '1 minute' WHERE id = $1")
+        .bind(issued.enrollment_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, _) = public(
+        &app,
+        "/auth/enrollments/open",
+        json!({"setup_token": issued.setup_token}),
+    )
+    .await;
+    assert_eq!(s, 404);
+    vc_server::auth::timers::run_once(&app.state).await.unwrap();
+    let state: String = sqlx::query_scalar("SELECT state FROM enrollments WHERE id = $1")
+        .bind(issued.enrollment_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "expired");
+}
+
+#[sqlx::test]
+async fn five_open_per_issuer(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let issuer = Issuer::KeyDevice {
+        session_id: dev.session_id.unwrap(),
+        device_id: dev.row_id,
+    };
+    for _ in 0..5 {
+        issue(&app, user, EnrollmentVariant::Own, issuer)
+            .await
+            .unwrap();
+    }
+    assert!(matches!(
+        issue(&app, user, EnrollmentVariant::Own, issuer).await,
+        Err(ApprovalError::EnrollmentLimit)
+    ));
+}
+
+/// An `own` enrolment issued by a key device, claimed by a new phone.
+async fn own_claimed(app: &TestApp, dev: &KeyDeviceFixture) -> (EnrollmentIssued, Value, Phone) {
+    let issuer = Issuer::KeyDevice {
+        session_id: dev.session_id.unwrap(),
+        device_id: dev.row_id,
+    };
+    let issued = issue(app, dev.user_id, EnrollmentVariant::Own, issuer)
+        .await
+        .unwrap();
+    let phone = Phone::new();
+    let (s, claimed) = claim_with(
+        app,
+        &issued.setup_token,
+        &phone,
+        "Pixel 9",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201, "{claimed}");
+    (issued, claimed, phone)
+}
+
+async fn enroll_challenge(app: &TestApp, dev: &KeyDeviceFixture, id: Uuid) -> (u16, Value) {
+    post(
+        app,
+        &format!("/auth/enrollments/{id}/challenge"),
+        &dev.access_token,
+        json!({}),
+    )
+    .await
+}
+
+#[sqlx::test]
+async fn enroll_approval_on_the_issuing_key_device(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, username) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (issued, claimed, phone) = own_claimed(&app, &dev).await;
+    let (s, c) = enroll_challenge(&app, &dev, issued.enrollment_id).await;
+    assert_eq!(s, 201, "{c}");
+    assert_eq!(c["kind"], "enroll");
+    assert_eq!(c["variant"], "own");
+    let ctx = &c["context"];
+    assert_eq!(ctx["enrollment_id"], issued.enrollment_id.to_string());
+    assert_eq!(ctx["subject_username"], username);
+    assert_eq!(ctx["claimant_check"], "none");
+    assert_eq!(ctx["authenticator_type"], "key_device");
+    assert_eq!(ctx["label"], "Pixel 9");
+    let key_hash = b64u_encode(&sha2::Digest::finalize(
+        <sha2::Sha256 as sha2::Digest>::new_with_prefix(spki_der(&phone.key)),
+    ));
+    assert_eq!(ctx["new_key_hash"], key_hash);
+
+    let code = claimed["code"].as_str().unwrap();
+    let (s, body) = super::approvals_core::answer(&app, &dev, &c, code.as_bytes()).await;
+    assert_eq!(s, 200, "{body}");
+    assert_eq!(body["state"], "consumed");
+    assert_eq!(body["enrollment"]["state"], "done");
+    let (state, via): (String, String) =
+        sqlx::query_as("SELECT state, enrolled_via FROM approval_devices WHERE device_id = $1")
+            .bind(phone.device_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((state.as_str(), via.as_str()), ("active", "own"));
+}
+
+#[sqlx::test]
+async fn signature_checked_before_code(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (issued, claimed, phone) = own_claimed(&app, &dev).await;
+    let (_, c) = enroll_challenge(&app, &dev, issued.enrollment_id).await;
+    // Signed by the new phone's key (not the issuer's), with the right code.
+    let code = claimed["code"].as_str().unwrap();
+    let sig = phone.sign(
+        c["signing_prefix"].as_str().unwrap(),
+        Decision::Approve,
+        code.as_bytes(),
+    );
+    let (s, b) = post(
+        &app,
+        &format!(
+            "/api/approvals/{}/answer",
+            c["challenge_id"].as_str().unwrap()
+        ),
+        &dev.access_token,
+        json!({"decision": "approve", "response": b64u_encode(code.as_bytes()), "signature": sig}),
+    )
+    .await;
+    assert_eq!((s, b["error"].as_str()), (400, Some("SIGNATURE_INVALID")));
+    let tries: i16 = sqlx::query_scalar("SELECT tries FROM enrollments WHERE id = $1")
+        .bind(issued.enrollment_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tries, 0);
+    // A wrong code with a valid signature counts and spends the challenge.
+    let wrong = if code == "000000" { "111111" } else { "000000" };
+    let (s, b) = super::approvals_core::answer(&app, &dev, &c, wrong.as_bytes()).await;
+    assert_eq!(
+        (s, b["error"].as_str(), b["tries_left"].as_i64()),
+        (400, Some("ENROLL_CODE_WRONG"), Some(2))
+    );
+    let (s, _) = super::approvals_core::answer(&app, &dev, &c, code.as_bytes()).await;
+    assert_eq!(s, 409, "the challenge is spent");
+}
+
+#[sqlx::test]
+async fn expired_enroll_challenge_is_replaced_by_a_new_one(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (issued, claimed, _) = own_claimed(&app, &dev).await;
+    let (_, first) = enroll_challenge(&app, &dev, issued.enrollment_id).await;
+    let first_id = Uuid::parse_str(first["challenge_id"].as_str().unwrap()).unwrap();
+    sqlx::query("UPDATE approvals SET created_at = created_at - INTERVAL '5 minutes', expires_at = created_at - INTERVAL '4 minutes' WHERE id = $1")
+        .bind(first_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let code = claimed["code"].as_str().unwrap();
+    let (s, b) = super::approvals_core::answer(&app, &dev, &first, code.as_bytes()).await;
+    assert_eq!((s, b["error"].as_str()), (410, Some("APPROVAL_EXPIRED")));
+    // A new challenge works while the code is valid, and voids the open one.
+    let (_, second) = enroll_challenge(&app, &dev, issued.enrollment_id).await;
+    let (_, third) = enroll_challenge(&app, &dev, issued.enrollment_id).await;
+    let (s, _) = super::approvals_core::answer(&app, &dev, &second, code.as_bytes()).await;
+    assert_eq!(s, 410, "voided by the newer one");
+    let (s, b) = super::approvals_core::answer(&app, &dev, &third, code.as_bytes()).await;
+    assert_eq!(s, 200, "{b}");
+}
+
+#[sqlx::test]
+async fn deny_cancels_the_enrolment(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (issued, claimed, _) = own_claimed(&app, &dev).await;
+    let (_, c) = enroll_challenge(&app, &dev, issued.enrollment_id).await;
+    let req = TestApp::request(
+        Method::POST,
+        &format!(
+            "/api/approvals/{}/deny",
+            c["challenge_id"].as_str().unwrap()
+        ),
+    )
+    .header("Authorization", format!("Bearer {}", dev.access_token))
+    .body(Body::empty())
+    .unwrap();
+    assert_eq!(app.oneshot(req).await.status(), 204);
+    let (_, st) = status(
+        &app,
+        issued.enrollment_id,
+        claimed["claim_secret"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(st["state"], "cancelled");
+}
+
+#[sqlx::test]
+async fn confirm_and_cancel_race_one_wins(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    for _ in 0..25 {
+        let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+            .await
+            .unwrap();
+        let (_, c) = claim_with(
+            &app,
+            &issued.setup_token,
+            &Phone::new(),
+            "A",
+            good(),
+            "per_use",
+        )
+        .await;
+        let code = c["code"].as_str().unwrap().to_string();
+        let cancel = async {
+            let ctx = AuthCtx::from(&app.state);
+            let mut tx = app.pool.begin().await.unwrap();
+            let r = cancel_tx(
+                &mut tx,
+                &ctx,
+                issued.enrollment_id,
+                EnrollmentCanceller::Issuer,
+            )
+            .await;
+            tx.commit().await.unwrap();
+            r.is_ok()
+        };
+        let (confirmed, cancelled) =
+            tokio::join!(confirm_cli(&app, issued.enrollment_id, &code), cancel);
+        assert!(confirmed.is_ok() != cancelled, "exactly one wins");
+    }
+}
+
+#[sqlx::test]
+async fn confirm_retry_after_done_creates_no_second_device(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let (_, c) = claim_with(
+        &app,
+        &issued.setup_token,
+        &Phone::new(),
+        "A",
+        good(),
+        "per_use",
+    )
+    .await;
+    let code = c["code"].as_str().unwrap();
+    confirm_cli(&app, issued.enrollment_id, code).await.unwrap();
+    assert!(matches!(
+        confirm_cli(&app, issued.enrollment_id, code).await,
+        Err(ApprovalError::EnrollmentState)
+    ));
+    let n: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM approval_devices WHERE enrollment_id = $1")
+            .bind(issued.enrollment_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 1);
+}
+
+#[sqlx::test]
+async fn issuer_session_end_expires_the_enrolment(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let (issued, _, _) = own_claimed(&app, &dev).await;
+    let ctx = AuthCtx::from(&app.state);
+    let mut tx = pool.begin().await.unwrap();
+    vc_server::auth::revocation::end_sessions_tx(
+        &mut tx,
+        &ctx,
+        user,
+        &[dev.session_id.unwrap()],
+        vc_server::auth::revocation::EndReason::Logout,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let state: String = sqlx::query_scalar("SELECT state FROM enrollments WHERE id = $1")
+        .bind(issued.enrollment_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "expired");
+}
+
+async fn unsuitable(
+    app: &TestApp,
+    user: Uuid,
+    reported: Option<Reported>,
+    uv_class: &str,
+) -> Value {
+    let issued = issue(app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let (s, b) = claim_with(
+        app,
+        &issued.setup_token,
+        &Phone::new(),
+        "A",
+        reported,
+        uv_class,
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (400, Some("DEVICE_UNSUITABLE")),
+        "{b}"
+    );
+    sqlx::query("UPDATE enrollments SET state = 'cancelled' WHERE id = $1")
+        .bind(issued.enrollment_id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    b
+}
+
+#[sqlx::test]
+async fn attestation_minimum(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    // no_chain_is_unsuitable
+    assert_eq!(
+        unsuitable(&app, user, None, "per_use").await["reason"],
+        "attestation_missing"
+    );
+    // A leaf without the extension.
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let phone = Phone::new();
+    let (_, pop) = public(&app, "/auth/enrollments/pop-challenge", json!({"setup_token": issued.setup_token, "device_id": phone.device_id, "public_key": phone.public_key()})).await;
+    let (s, b) = public(&app, "/auth/enrollments/claim", json!({
+        "setup_token": issued.setup_token, "challenge_id": pop["challenge"]["challenge_id"],
+        "signature": phone.sign(pop["challenge"]["signing_prefix"].as_str().unwrap(), Decision::Approve, b""),
+        "public_key": phone.public_key(),
+        "attestation_chain": chain_without_extension().iter().map(|d| b64u_encode(d)).collect::<Vec<_>>(),
+        "label": "A", "uv_class": "per_use",
+    })).await;
+    assert_eq!(
+        (s, b["reason"].as_str()),
+        (400, Some("attestation_missing"))
+    );
+    sqlx::query("UPDATE enrollments SET state = 'cancelled' WHERE id = $1")
+        .bind(issued.enrollment_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let props = |f: &dyn Fn(&mut Reported)| {
+        let mut r = Reported::good(&[]);
+        f(&mut r);
+        Some(r)
+    };
+    // software_level_is_unsuitable, no_user_auth_is_unsuitable
+    assert_eq!(
+        unsuitable(&app, user, props(&|r| r.level = 0), "per_use").await["reason"],
+        "attestation_properties"
+    );
+    assert_eq!(
+        unsuitable(&app, user, props(&|r| r.user_auth = false), "per_use").await["reason"],
+        "attestation_properties"
+    );
+    // timeout_over_10s_is_unsuitable, uv_class_mismatch_is_unsuitable
+    assert_eq!(
+        unsuitable(&app, user, props(&|r| r.timeout = Some(30)), "window_10s").await["reason"],
+        "attestation_properties"
+    );
+    assert_eq!(
+        unsuitable(&app, user, props(&|r| r.timeout = Some(5)), "per_use").await["reason"],
+        "attestation_properties"
+    );
+    assert_eq!(
+        unsuitable(&app, user, props(&|_| {}), "window_10s").await["reason"],
+        "attestation_properties"
+    );
+    // wrong_challenge_is_unsuitable
+    assert_eq!(
+        unsuitable(&app, user, props(&|r| r.challenge = vec![9; 32]), "per_use").await["reason"],
+        "attestation_properties"
+    );
+    // A 10 s window with a PIN-only phone is fine.
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let (s, _) = claim_with(
+        &app,
+        &issued.setup_token,
+        &Phone::new(),
+        "A",
+        props(&|r| r.timeout = Some(10)),
+        "window_10s",
+    )
+    .await;
+    assert_eq!(s, 201);
+    // chain_is_stored_unverified (a self-signed leaf is accepted and kept).
+    let stored: Vec<Vec<u8>> =
+        sqlx::query_scalar("SELECT claimed_attestation FROM enrollments WHERE id = $1")
+            .bind(issued.enrollment_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored.len(), 1);
+}
+
+#[sqlx::test]
+async fn label_is_cleaned_and_truncated_before_it_enters_the_context(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    let issuer = Issuer::KeyDevice {
+        session_id: dev.session_id.unwrap(),
+        device_id: dev.row_id,
+    };
+    let issued = issue(&app, user, EnrollmentVariant::Own, issuer)
+        .await
+        .unwrap();
+    let raw = format!("Ev\u{202e}il\n{}", "x".repeat(300));
+    let (s, _) = claim_with(
+        &app,
+        &issued.setup_token,
+        &Phone::new(),
+        &raw,
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201);
+    let stored: String = sqlx::query_scalar("SELECT claimed_label FROM enrollments WHERE id = $1")
+        .bind(issued.enrollment_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored.chars().count(), 64);
+    assert!(!stored.contains('\u{202e}') && !stored.contains('\n'));
+    assert!(stored.starts_with("Evilx"));
+    let (_, c) = enroll_challenge(&app, &dev, issued.enrollment_id).await;
+    assert_eq!(c["context"]["label"], stored);
+}
+
+#[sqlx::test]
+async fn valkey_flush_mid_enrolment_completes(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let (_, c) = claim_with(
+        &app,
+        &issued.setup_token,
+        &Phone::new(),
+        "A",
+        good(),
+        "per_use",
+    )
+    .await;
+    // Enrolments live in PostgreSQL only: nothing in Valkey to lose. (The
+    // shared test Valkey is not flushed; no enrolment key exists there.)
+    // A Valkey "flush" for this flow: the only Valkey state it touches are
+    // rate-limit counters, which a flush resets; the enrolment itself is a
+    // PostgreSQL row, so the flow completes.
+    let state: String = sqlx::query_scalar("SELECT state FROM enrollments WHERE id = $1")
+        .bind(issued.enrollment_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "claimed");
+    assert!(
+        confirm_cli(&app, issued.enrollment_id, c["code"].as_str().unwrap())
+            .await
+            .is_ok()
+    );
+}
+
+#[test]
+fn setup_url_format() {
+    let token = b64u_encode(&[3u8; 32]);
+    let url = format!("https://chat.example.com/setup#v=1&t={token}");
+    assert_eq!(token.len(), 43);
+    assert!(url.starts_with("https://chat.example.com/setup#v=1&t="));
+}
+
+#[sqlx::test]
+async fn issued_setup_url_points_to_the_origin(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    assert_eq!(
+        issued.setup_url,
+        format!(
+            "https://chat.example.com/setup#v=1&t={}",
+            issued.setup_token
+        )
+    );
+    assert_eq!(issued.setup_token.len(), 43);
+}
+
+#[sqlx::test]
+async fn public_routes_never_ip_blocked(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    // The test peer's IP is blocked for failed logins.
+    let _: () = fred::interfaces::KeysInterface::set(
+        &app.state.redis,
+        "ratelimit:block:203.0.113.9",
+        "1",
+        Some(fred::types::Expiration::EX(60)),
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let (s, _) = claim_with(
+        &app,
+        &issued.setup_token,
+        &Phone::new(),
+        "A",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201);
+}

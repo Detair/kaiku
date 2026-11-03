@@ -29,6 +29,7 @@ pub async fn on_sessions_ended(
         return Ok(());
     }
     crate::auth::step_up::void_for_sessions(conn, sids).await?;
+    super::enrollments::expire_for_sessions(conn, sids).await?;
     Ok(())
 }
 
@@ -55,5 +56,8 @@ pub async fn on_authenticator_revoked(
     let ended_sessions =
         end_sessions_tx(conn, ctx, user_id, &sids, EndReason::AuthenticatorRevoked).await?;
     crate::auth::step_up::void_for_authenticator(conn, a).await?;
+    if a.kind == crate::auth::strong::AuthenticatorKind::KeyDevice {
+        super::enrollments::expire_for_device(conn, a.id).await?;
+    }
     Ok(CascadeOutcome { ended_sessions })
 }

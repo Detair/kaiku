@@ -6,6 +6,7 @@ pub mod cascade;
 pub mod context;
 pub mod core;
 pub mod devices;
+pub mod enrollments;
 pub mod error;
 pub mod handlers;
 pub mod secrets;
@@ -40,4 +41,42 @@ pub fn devices_router() -> Router<AppState> {
         .route("/", get(devices::handlers::list))
         .route("/{id}", delete(devices::handlers::remove))
         .route("/{id}/invalidated", post(devices::handlers::invalidated))
+}
+
+/// The server's display name (setup wizard `server_name`), shown before a
+/// phone sends anything and signed in `login` contexts. Default "Kaiku".
+pub async fn server_name(conn: &mut sqlx::PgConnection) -> sqlx::Result<String> {
+    Ok(sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT value FROM server_config WHERE key = 'server_name'",
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .and_then(|v| v.as_str().map(str::to_string))
+    .filter(|s| !s.is_empty())
+    .unwrap_or_else(|| "Kaiku".to_string()))
+}
+
+/// Public enrolment routes (`AuthFlow` per IP, never IP-blocked) and the
+/// issuing key device's `/enrollments/{id}/challenge`, merged into `/auth`.
+pub fn flow_router(state: &AppState) -> Router<AppState> {
+    use crate::ratelimit::rate_limit_by_ip;
+    let public = Router::new()
+        .route("/enrollments/open", post(enrollments::handlers::open))
+        .route(
+            "/enrollments/pop-challenge",
+            post(enrollments::handlers::pop_challenge),
+        )
+        .route("/enrollments/claim", post(enrollments::handlers::claim))
+        .route("/enrollments/status", post(enrollments::handlers::status))
+        .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
+        .layer(from_fn(with_category(RateLimitCategory::AuthFlow)));
+    let bearer = Router::new()
+        .route(
+            "/enrollments/{id}/challenge",
+            post(enrollments::handlers::issuer_challenge),
+        )
+        .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
+        .layer(from_fn(with_category(RateLimitCategory::ApprovalLogin)))
+        .layer(from_fn_with_state(state.clone(), crate::auth::require_auth));
+    public.merge(bearer)
 }

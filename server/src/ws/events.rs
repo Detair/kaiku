@@ -963,6 +963,14 @@ pub enum ServerEvent {
     /// A DM channel was newly created with this user as a participant (sent
     /// to every participant, including the creator's other devices). Open
     /// sockets are subscribed to the channel before this event is delivered.
+    /// An enrolment the user issued changed state (C26): the issuer's screen
+    /// refetches it.
+    EnrollmentUpdated {
+        enrollment_id: Uuid,
+        /// `issued`, `claimed`, `done`, `cancelled`, `expired` or `failed`.
+        state: String,
+    },
+
     /// A key device, passkey, TOTP or password of the user changed (C26):
     /// clients refetch and never act on the hint alone.
     AuthenticatorsChanged {

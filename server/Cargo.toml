@@ -49,6 +49,8 @@ sha2.workspace = true
 hmac.workspace = true
 hkdf.workspace = true
 p256.workspace = true
+# Android key attestation: read the leaf's KeyDescription (unverified chain, B.1)
+x509-parser = { version = "0.16", default-features = false }
 subtle = "2.6"
 zeroize.workspace = true
 url = "2.5"
@@ -136,6 +138,8 @@ dotenvy = "0.15"
 tokio-util = { version = "0.7.18", features = ["io", "compat"] }
 
 [dev-dependencies]
+# Test attestation chains (key attestation fixtures)
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring"] }
 tokio-test = "0.4"
 http-body-util = "0.1"
 reqwest = { version = "0.12", features = ["json"] }

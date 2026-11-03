@@ -10795,6 +10795,7 @@ dependencies = [
  "p256",
  "pulldown-cmark",
  "rand 0.8.5",
+ "rcgen",
  "regex",
  "reqwest 0.12.28",
  "rsa",
@@ -10830,6 +10831,7 @@ dependencies = [
  "vc-crypto",
  "webrtc",
  "woothee",
+ "x509-parser",
  "zeroize",
  "zip 9.2.2",
 ]

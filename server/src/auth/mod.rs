@@ -82,6 +82,8 @@ use crate::ratelimit::{
 /// - POST /reauth/oidc/authorize/{provider} - Start an OIDC re-authentication that elevates the
 ///   session (rate limited)
 pub fn router(state: AppState) -> Router<AppState> {
+    // Phone setup and device-key sign-in (C26), merged under `/auth`.
+    let flow_routes = crate::approvals::flow_router(&state);
     // Login route with IP block check and rate limiting
     let login_route = Router::new()
         .route("/login", post(login::login))
@@ -281,6 +283,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         )));
 
     public_routes
+        .merge(flow_routes)
         .merge(password_change_routes)
         .merge(password_route)
         .merge(mfa_reauth_routes)

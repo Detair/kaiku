@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 
 pub mod approvals;
+pub mod attestation;
 pub mod login;
 pub mod migrations;
 

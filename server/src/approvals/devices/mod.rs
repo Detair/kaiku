@@ -5,6 +5,7 @@
 //! its challenges and grants in the same transaction (B.7 rule 2), and its
 //! push subscription is deleted after its last notice was sent.
 
+pub mod attestation;
 pub mod handlers;
 
 use chrono::{DateTime, Utc};

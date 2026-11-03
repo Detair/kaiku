@@ -198,3 +198,30 @@ is listed here, per task. "Coordinator" marks items that need a decision.
   categories (`is_auth`), i.e. they fail closed on a Valkey outage like the other auth limits.
 - `queries.rs` files of the plan's file list were not split out; the queries live next to the
   functions that use them (small modules).
+
+## Task 11 — enrolment core (SM2) and the attestation minimum
+
+- **Status of a void/expired enrolment (client question 1):** `POST
+  /auth/enrollments/status` answers **200** with `state` for every known enrolment whose claim
+  secret matches, including `cancelled`, `expired` and `failed` (C26 status returns the
+  state). **404 `ENROLLMENT_TOKEN_INVALID`** only for an unknown id or a wrong claim secret.
+  `open`/`pop-challenge`/`claim` with a token of a cancelled or expired enrolment answer 404
+  `ENROLLMENT_TOKEN_INVALID`; of a claimed or done one 409 `ENROLLMENT_ALREADY_CLAIMED`. A
+  confirm after the code expired answers 409 `ENROLLMENT_STATE` (and marks it expired).
+- The code hash is `keyed_hash(EnrollCode, enrollment_id ‖ code)`, so a code's hash is bound
+  to its enrolment.
+- Attestation fixtures are generated at test time with `rcgen` (dev-dependency) rather than
+  stored under `server/tests/fixtures/attestation/`. The `KeyDescription` reader is a small
+  bounded DER reader (x509-parser only parses the certificate and finds the extension). The
+  security level used is the lower of `attestationSecurityLevel` and `keyMintSecurityLevel`;
+  user authentication = no `noAuthRequired` and a `userAuthType`; the timeout is
+  `authTimeout` (absent or 0 for `per_use`, 1..=10 for `window_10s`).
+- An empty label after cleaning becomes "Android phone" (the column needs 1..64 characters).
+- A device that re-enrols on the same install replaces its own earlier live row (revoked with
+  `owner`) — the `(user_id, device_id)` live-row index allows one.
+- `≤ 5 open per issuer`: per key device / session / request / ticket; for the CLI per subject
+  account.
+- `OwnClaim` (the issuing client's own claim) answers `VALIDATION_ERROR` in L1a; L1b Tasks 19
+  and 22 implement it. `Confirmer::Pc`/`Request`/`Ticket` answer 404 in L1a.
+- The answer route commits a wrong-code try (`ENROLL_CODE_WRONG`, `ENROLLMENT_FAILED`) and
+  the spent challenge even though it answers an error.

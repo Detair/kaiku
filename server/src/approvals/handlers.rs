@@ -217,6 +217,38 @@ pub async fn answer(
                 enrollment: None,
             }))
         }
+        Some(Kind::Enroll) => {
+            let enrollment = super::enrollments::answer_enroll_tx(
+                &mut tx,
+                &ctx,
+                &dev,
+                &row,
+                decision,
+                &response,
+                &body.signature,
+            )
+            .await;
+            match enrollment {
+                Ok((enrollment, after)) => {
+                    tx.commit().await?;
+                    super::enrollments::after_done(&state, after).await;
+                    Ok(Json(AnswerResponse {
+                        state: "consumed".into(),
+                        grant: None,
+                        enrollment: Some(serde_json::to_value(enrollment).unwrap_or_default()),
+                    }))
+                }
+                // A wrong code spends the challenge and counts a try: keep it.
+                Err(
+                    e @ (ApprovalError::EnrollCodeWrong { .. } | ApprovalError::EnrollmentFailed),
+                ) => {
+                    tx.commit().await?;
+                    super::enrollments::notify_issuer_after_failure(&state, row.requester_id).await;
+                    Err(e)
+                }
+                Err(e) => Err(e),
+            }
+        }
         // `login` arrives with L1b; proofs answered at their own routes.
         _ => Err(ApprovalError::NotFound),
     }
@@ -238,7 +270,7 @@ pub async fn deny(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApprovalError> {
-    let _ctx = AuthCtx::from(&state);
+    let ctx = AuthCtx::from(&state);
     let mut tx = state.db.begin().await?;
     let dev = key_device_session(&mut tx, &auth).await?;
     let row = match lock_for_answer(&mut tx, id, dev.device.device_id).await {
@@ -249,9 +281,29 @@ pub async fn deny(
         }
         Err(e) => return Err(e),
     };
-    // Only `enroll` (Task 11) and `login` (L1b) can be denied.
-    drop(row);
-    Err(ApprovalError::NotFound)
+    // Only `enroll` and `login` (L1b) can be denied.
+    match row.kind() {
+        Some(Kind::Enroll) => {
+            set_state(
+                &mut tx,
+                row.id,
+                &[ChallengeState::Issued],
+                ChallengeState::Denied,
+            )
+            .await?;
+            super::enrollments::cancel_tx(
+                &mut tx,
+                &ctx,
+                row.requester_id,
+                super::enrollments::EnrollmentCanceller::Issuer,
+            )
+            .await?;
+            tx.commit().await?;
+            super::enrollments::notify_issuer_after_failure(&state, row.requester_id).await;
+            Ok(StatusCode::NO_CONTENT)
+        }
+        _ => Err(ApprovalError::NotFound),
+    }
 }
 
 /// Back / dismissed (C26): only `login` claims return to `open` (L1b).
