@@ -240,3 +240,159 @@ server receives no request). The web/desktop step-up wrapper passes the session'
   matrix, D1–D6, the external reviews (Fable, Codex, Gemini Argon), the PR.
 - Size: `git diff --stat c07f402e..HEAD` ≈ 13.4k insertions (server ≈ 8.2k, clients ≈ 4.7k), above
   the 7k threshold: the split point is the commit marked "LP-1 boundary" (Tasks 1–10, 28e4ee38).
+
+## Review round 1 (2026-11-03)
+
+Reviews: Codex (REQUEST CHANGES), Gemini Argon client, Argon-a (Android, infra, desktop flow),
+Argon-b (server rest), Fable (all APPROVE WITH FIXES). Branch rebased by the coordinator onto L1a
+267e4c78 (6fd3ab54); the fixes sit on top. Every finding was checked against the code first.
+
+### C29 addition (coordinator, 2026-11-03)
+
+`POST /auth/passkeys/desktop/flows` with `purpose: "sign_in"` takes an optional
+`username: string|null` (trimmed, at most 64 characters, refused for `step_up`). It is kept in
+the flow state and compared case-insensitively after verification in `desktop::finish`, as
+`login/finish` does. A mismatch deletes the flow and hands back `error=PASSKEY_USER_MISMATCH`, no
+session. The desktop app passes the typed name (`passkey_sign_in` → `run_flow` → start body) and,
+on redemption, adopts the tokens only when `/auth/me` is the redeemed `user_id`
+(`adopt_tokens_for`, `ACCOUNT_MISMATCH` otherwise).
+
+### Signature counter (coordinator decision 2: the spec wins over DC4)
+
+B.1: the counter is a signal, never a lockout. webauthn-rs-core 0.5.5 hardcodes
+`require_valid_counter_value: true`, so `rp.rs` hands the crate a working copy of the stored
+passkey with counter 0 (`without_counter`, needs `danger-credential-internals`). With a stored
+counter of 0 the crate skips only the counter comparison. It still checks the challenge, origin,
+RP ID hash, UV, BE and the signature over `authenticatorData`. The copy is never stored. Why the
+danger feature is safe here: it only exposes the `Credential` fields to this module; the copy
+exists for one verification call; LP compares the received counter with the stored one itself
+(`counter_regressed`: stored > 0 and received <= stored) and writes the regression as an audit
+signal (`passkey_counter_regressed`, label, stored, received); `record_use` persists
+`GREATEST(stored, received)` in one `UPDATE` (no read-modify-write, so the order in which two
+uses complete does not matter). Tests: regressed counter signs in / steps up and is audited, a
+tampered signature still fails, the stored counter never decreases (reversed completion order).
+
+### Findings
+
+| Finding | Reviewer | Result |
+|---|---|---|
+| M1 desktop sign-in drops the typed user name | Fable | fixed (C29 addition above), 4c83866e, 549b9afd |
+| m1 `user_handle` writes on every read | Fable | fixed: SELECT first, `UPDATE … IS NULL` only when unset (217de2d2) |
+| m2 desktop ceremonies not bound to their flow | Fable | fixed: `flow_id` in `CeremonyKind::{SignIn, StepUp}`, web routes refuse flow ceremonies, `finish` needs the flow's current ceremony (4c83866e) |
+| m3 bidi/format characters in labels | Fable | fixed: general category Cf refused (217de2d2) |
+| m4 loopback error code passed verbatim | Fable | fixed: `[A-Z0-9_]` filter, else `PASSKEY_FAILED` (549b9afd) |
+| m5 one 30/min bucket for login page and desktop hand-off | Fable | fixed: ceremony page GET outside the bucket, default 60/60 (217de2d2) |
+| m6 no `ready_at` on the desktop hand-off | Fable | deferred to L1b (hand-off page shared with OIDC delivery) |
+| m7 Android string-matches provider messages | Fable | fixed: DOM error type only (49d48e51) |
+| Condition: one real browser run | Fable | done, see "Browser run" (b18a0259) |
+| 1 (Major) stale web ceremony replaces the session | Codex | fixed: attempt generation checked after every await, stale success ends its own session (6a6119b8) |
+| 2 (Major) counter regression refuses sign-in | Codex | fixed (decision 2, 1f0b430e) |
+| 3 counter can roll back | Codex | fixed: `GREATEST` in one `UPDATE` (1f0b430e) |
+| 4 desktop step-up page vague | Codex | fixed: every action has an en/de sentence with an owner-scoped label; an action without one is refused at start (e5eda80b) |
+| 5 desktop sign-in drops the user name | Codex | fixed (= Fable M1) |
+| M1 desktop user name, redeemed user not checked, conditional name | Argon | fixed: C29 addition, `adopt_tokens_for`, name read when the passkey is picked |
+| M2 loopback listener serves connections one by one | Argon | fixed: `JoinSet`, at most 16 at once (549b9afd) |
+| M3 desktop flow read-modify-write races | Argon | fixed: Lua compare-and-set for options/finish/cancel (4c83866e) |
+| M4 conditional mediation sets the server early, stops after errors | Argon | fixed: server state set after success only, restart on server change, backoff restart (6a6119b8) |
+| m1 desktop step-up grant/session not checked | Argon | fixed: same user, unchanged session identity, grant action and target match (549b9afd) |
+| m2 `signalUnknown` / `ready_at` missing outside the login page | Argon | fixed: `serverError` signals, `formatPasskeyError` everywhere (6a6119b8) |
+| m3 Android checks sign-in state after `loginFinish` | Argon | fixed: before start and again before finish (49d48e51) |
+| m4 Android `InvalidStateError` / `NotAllowedError` | Argon | fixed (49d48e51) |
+| m5 Android PATCH missing, id not encoded | Argon | fixed (49d48e51) |
+| m6 duplicate `Host` / `Content-Type` accepted | Argon | fixed (549b9afd) |
+| m7 `.env.example` Android comment | Argon | fixed (3690fa93) |
+| m8 no `isWebAuthnAvailable` guards | Argon | fixed (6a6119b8) |
+| M1 pending result TTL (KEEPTTL) and options/finish race | Argon-a | fixed: compare-and-set; the pending result gets exactly 60 s, also near the flow's end (4c83866e, f123eaf9) |
+| M2 Android `mapDom` misses `TYPE_SECURITY_ERROR`, `InvalidStateError` | Argon-a | fixed: `mapDomError(e.domError)` (49d48e51) |
+| m1 Android passkey sign-in mints a session while signed in | Argon-a | fixed (= Argon m3) |
+| m2 Android `ready_at` unformatted, no reload after removal | Argon-a | fixed (49d48e51) |
+| m3 ceremony page reload loop, CSP silently dropped | Argon-a | fixed: options end a flow that cannot continue, reload only on 400/404, CSP `expect` (4c83866e) |
+| m4 desktop user name | Argon-a | fixed (= Fable M1) |
+| M1 `strong::is_active` races revocation | Argon-b | fixed: `FOR SHARE` (217de2d2) |
+| M2 `must_change_password` sessions cannot step up for `password.set` | Argon-b | rejected, see below |
+| M3 `user_handle` writes on read | Argon-b | fixed (= Fable m1) |
+| m1 step-up leaks foreign credential existence | Argon-b | fixed: origin first, revoked rows are unknown; residual below |
+| m2 registration checks `credProps` before verification, no UV check | Argon-b | fixed (217de2d2) |
+| m3 `activate` ignores the limit; `revoke_all_live` outside the locked users | Argon-b | fixed (217de2d2) |
+| m4 `passkey.remove` label for non-active passkeys | Argon-b | fixed (217de2d2) |
+
+Counts: 39 findings, 37 fixed, 1 rejected, 1 deferred.
+
+**Rejected, Argon-b M2.** On this branch `POST /auth/me/password` checks the current password,
+not a `password.set` grant (`profile::update_password`), and it runs behind
+`require_auth_allow_password_change`. C4 allows only the password change, `/auth/me`, refresh
+and logout while `must_change_password` is set; passkey routes are not on that list, so refusing
+them is the contract. When `/auth/me/password` moves onto a `password.set` grant (F7, L1b), that
+package must decide how a forced change gets its grant; noted for L1b.
+
+### Earlier deferred minors (final review m1–m14)
+
+| Minor | Result |
+|---|---|
+| m1 admin guide wrong about QR PCs | fixed (passkeys.md) |
+| m2 autofill stops after a failure | fixed: backoff restart; also after a failed password sign-in (de92e56a) |
+| m3 removing the sign-in passkey signs out unannounced | fixed: the confirmation says so (web en/de, Android) (a397ea23) |
+| m4 Safari may refuse `create()` after the step-up | deferred: needs the Safari device check (D3); a second button is the fallback |
+| m5 no refresh on 401 for desktop passkey requests | fixed: one refresh and retry; the server checks the bearer before it takes the flow (test `an_expired_bearer_leaves_the_step_up_unspent`) (bbdbd300) |
+| m6 cancel can lose to redemption | deferred: the session that results is real, announced by the sign-in notice and listed under sessions; a fix needs a cancel protocol in the shared `run_cancellable` (OIDC uses it too) |
+| m7 `Debug` carries the callback path / tokens | fixed: redacting `Debug` for `LoopbackTarget`, `DesktopFlowRequest`, `DesktopSignInRedeemed` (03e9b114) |
+| m8 hand-off drops `ready_at`, no unknown signal | deferred to L1b (= Fable m6) |
+| m9 vague step-up page | fixed (= Codex 4) |
+| m10 browser setting writes stale settings | fixed: writes onto the stored settings, shows the stored choice after a failed save (b13b43d5) |
+| m11 Valkey race | fixed (= Argon M3) |
+| m12 no release certificate | deferred: maintainer data (Q1); `.env.example` now says it must be set |
+| m13 admin guide overstates shared-IP protection | fixed (docs, 60/min default) |
+| m14 regenerated Tauri schema churn | fixed again: a build in this round regenerated it (a6cfad1e) |
+
+### Browser run (Fable's condition)
+
+`scripts/passkey-browser-check.sh` (opt-in: `KAIKU_PASSKEY_BROWSER=1`, a throwaway
+`DATABASE_URL`, `REDIS_URL`; not in CI) starts vc-server (`PUBLIC_URL=https://localhost:5173`,
+fresh Ed25519 JWT keys) and the web dev server, then `client/scripts/passkey-browser-check.mjs`
+drives Chromium (Playwright) with a CDP virtual authenticator (CTAP 2.1, internal, resident keys,
+UV). Steps: web autofill sign-in with a seeded passkey (fixture like `seed_passkey`: the product
+path to a first passkey is a key phone); "Add a passkey" refused while the authenticator holds
+the account's passkey (`excludeCredentials` → "This passkey is already added."); "Add a passkey"
+(step-up, then a new discoverable credential with the account's user handle); button sign-in
+with only the new passkey (the pending autofill request is aborted); desktop sign-in through the
+ceremony page, the auto-submitted hand-off from the `https` page to a test listener on
+`http://127.0.0.1:P/callback/<path>` (method, path, `Host`, content type checked), and
+redemption with the verifier (`/auth/me` is the test user; the typed name was upper case);
+desktop step-up (`passkey.remove`, the page names the passkey, the grant matches).
+
+Result (fresh database): all six steps pass with Chrome for Testing 145 and Chromium 156.
+Found and fixed while writing it: nothing in the product code. Limits: the page origin is
+loopback (dev proxy), so Chrome's rules for a public origin posting to 127.0.0.1 (Local Network
+Access) are not exercised; the virtual authenticator answers conditional requests at once, so
+"the user picks the autofill entry" is simulated; Playwright accepts the dev certificate. D4/D6
+on real devices stay the RC gate.
+
+### Residuals
+
+- Argon-b m1: a foreign *active* credential still answers `PASSKEY_USER_MISMATCH` (an unknown or
+  revoked one answers `PASSKEY_UNKNOWN`). Answering "unknown" would make the client tell a
+  shared authenticator to drop another person's passkey. The answer reveals existence only, and
+  credential ids are random and not guessable.
+- Commit 4c83866e carries three interleaved `desktop.rs` fixes (user name, flow-bound
+  ceremonies, compare-and-set); one commit, not three.
+- The desktop step-up "session replaced meanwhile" check (`identity_generation`) has no test of
+  its own; the grant/user checks next to it do.
+- Android `minSdk` 26: lint warns that passkeys need API 28 (`PublicKeyCredential`); on Android 8
+  the sheet fails with the generic error. Hiding passkeys below API 28 is left for later.
+- `cargo clippy --all-targets` reports pedantic test-only lints in LP's integration tests (same
+  kinds as the existing suites); the gate (`-p vc-server` without test targets) is clean.
+
+### Gates (review round 1)
+
+- `cargo test --no-fail-fast -p vc-server --lib --bins --tests`: lib 694 passed; integration
+  1175 passed, 7 failed, 33 ignored. The 7 (`dm_calls` ×2, `optional_features` ×4,
+  `session_revocation::test_ban_closes_socket_without_session_rows`, the known flaky family of
+  Task 15) pass on rerun with `--test-threads=1`; the passkey suites (138 tests) pass.
+- `cargo +nightly fmt --all -- --check` clean; `SQLX_OFFLINE=true cargo clippy -p vc-server --
+  -D warnings` clean; `cargo deny check`: advisories, bans, licenses, sources ok.
+- `cargo test -p vc-client --lib`: 276 passed, 2 ignored.
+- Client: vitest 149 files / 1598 tests passed; `tsc --noEmit` clean; `i18n:check` ok (874 web
+  keys, 235 Android strings); `lint:tauri-commands` ok (82); `bun run lint` 0 errors.
+- Android: `:app:testDebugUnitTest` 893 tests, 0 failures; `lintDebug` passes (the
+  `UnusedResources` error is gone).
+- Browser run: passed (see above).
