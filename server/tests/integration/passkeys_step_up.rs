@@ -842,3 +842,70 @@ async fn device_admin_step_up_needs_an_admin(pool: PgPool) {
     assert_eq!(s, 201, "{c}");
     assert_eq!(c["context"]["target_label"], "Their secret phone", "{c}");
 }
+
+/// Merge of L1a review round 3: `grant_tx` now takes the account lock
+/// (`FOR UPDATE` on `users`) before the session row. The passkey grant wrote
+/// its audit row first, whose `actor_id` foreign key holds a key-share lock
+/// on the same account, so two concurrent grants each held that lock and
+/// waited for the other's to take the account (40P01, a 500). The grant
+/// transaction now takes the account lock first.
+#[sqlx::test]
+async fn concurrent_passkey_step_ups_never_deadlock(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let handle = queries::user_handle(&app.pool, user).await.unwrap();
+    let mut finishes = Vec::new();
+    for _ in 0..2 {
+        let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
+        let (s, start) = post(
+            &app,
+            "/auth/passkeys/step-up/start",
+            Some(&token),
+            json!({"action": "passkey.add", "target": ""}),
+        )
+        .await;
+        assert_eq!(s, 200, "{start}");
+        let cred = auth.assert(
+            TEST_ORIGIN,
+            &start["options"],
+            &row.credential_id,
+            Some(handle),
+            true,
+        );
+        finishes.push((
+            token,
+            json!({"ceremony_id": start["ceremony_id"], "credential": cred}),
+        ));
+    }
+    // Another transaction holds a key-share lock on the account (as any
+    // insert that references it does), so both grants reach their account
+    // lock before either commits.
+    let mut holder = app.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR KEY SHARE")
+        .bind(user)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let release = async {
+        crate::helpers::wait_for_lock_waiters(&app.pool, 2).await;
+        holder.commit().await.unwrap();
+    };
+    let (a, b, ()) = tokio::join!(
+        post(
+            &app,
+            "/auth/passkeys/step-up/finish",
+            Some(&finishes[0].0),
+            finishes[0].1.clone(),
+        ),
+        post(
+            &app,
+            "/auth/passkeys/step-up/finish",
+            Some(&finishes[1].0),
+            finishes[1].1.clone(),
+        ),
+        release,
+    );
+    assert_eq!(a.0, 200, "first grant: {}", a.1);
+    assert_eq!(b.0, 200, "second grant: {}", b.1);
+}
