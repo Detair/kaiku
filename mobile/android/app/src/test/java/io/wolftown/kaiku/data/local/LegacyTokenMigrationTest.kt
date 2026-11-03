@@ -146,4 +146,38 @@ class LegacyTokenMigrationTest {
         assertEquals("rotated-access", TokenStorage(target).getAccessToken())
         assertEquals("rotated-refresh", TokenStorage(target).getRefreshToken())
     }
+
+    @Test fun `a failed move is void once the person signs in and out before the next start`() {
+        val legacy = InMemorySharedPreferences().apply {
+            edit().putString("access_token", "old-access").putString("refresh_token", "old-refresh").putString("user_id", "u1").commit()
+        }
+        var failNow = true
+        val flaky = object : ValueCipher {
+            private val ok = testValueCipher()
+            override fun encrypt(plain: ByteArray, aad: ByteArray): ByteArray =
+                if (failNow) throw java.security.ProviderException("keystore busy") else ok.encrypt(plain, aad)
+            override fun decrypt(blob: ByteArray, aad: ByteArray): ByteArray = ok.decrypt(blob, aad)
+        }
+        val store = KeystoreWrappedPreferences(InMemorySharedPreferences(), flaky)
+        var legacyExists = true
+        var failedWrites = 0
+        fun start() = LegacyTokenMigration.run(legacyExists, { legacy }, { legacyExists = false }, store, TokenStorage.STORED_KEYS, failedWrites) { failedWrites = it }
+
+        assertFalse(start()) // the write failed: the old store is kept for the next start
+        assertTrue(legacyExists)
+
+        // As StorageModule wires it: a sign-in or logout voids the pending move.
+        val storage = TokenStorage(store, null) {
+            LegacyTokenMigration.discardPending(legacyExists, { legacyExists = false }, failedWrites) { failedWrites = it }
+        }
+        failNow = false // the Keystore works again
+        storage.saveTokens("new-access", "new-refresh", 900, "u2") // the person signs in
+        storage.clear() // and out again
+
+        assertTrue(start()) // the next start: nothing is moved in
+        assertFalse(legacyExists)
+        assertEquals(0, failedWrites)
+        assertNull(TokenStorage(store).getAccessToken())
+        assertNull(TokenStorage(store).getRefreshToken())
+    }
 }

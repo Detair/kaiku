@@ -31,6 +31,12 @@ class TokenStorage internal constructor(
      * the process and a damaged secure store. Null keeps it in memory only.
      */
     private val noticeStore: SharedPreferences?,
+    /**
+     * Runs when a new session is stored or the stored one is removed (a sign-in,
+     * a logout): a move of the old store's session still pending after a failed
+     * write is void from then on (Codex r3), so an old session never comes back.
+     */
+    private val sessionChanged: () -> Unit = {},
 ) {
 
     @Inject
@@ -165,6 +171,7 @@ class TokenStorage internal constructor(
         // Bump before writing, so a reader that sees the new tokens also sees the new generation.
         sessionGeneration++
         writeTokens(accessToken, refreshToken, expiresIn, userId)
+        sessionChanged()
     }
 
     /**
@@ -276,6 +283,7 @@ class TokenStorage internal constructor(
     }
 
     private fun removeTokens() {
+        sessionChanged()
         val success = prefs.edit()
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)

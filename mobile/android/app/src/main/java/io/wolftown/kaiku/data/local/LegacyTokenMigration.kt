@@ -16,6 +16,17 @@ object LegacyTokenMigration {
     private const val ACCESS_TOKEN = "access_token"
     private const val REFRESH_TOKEN = "refresh_token"
 
+    /**
+     * Ends a pending move for good (Codex r3): once this phone has a new session or signed
+     * out, the old store's session must never be moved in later. Deletes the old store and
+     * the retry counter; nothing to do when no move is pending.
+     */
+    fun discardPending(legacyExists: Boolean, deleteLegacy: () -> Unit, failedWrites: Int, recordFailedWrites: (Int) -> Unit) {
+        if (!legacyExists && failedWrites == 0) return
+        deleteLegacy()
+        recordFailedWrites(0)
+    }
+
     /** Starts with a failed write before the old store is given up (Fable m7). */
     const val MAX_WRITE_ATTEMPTS = 3
 

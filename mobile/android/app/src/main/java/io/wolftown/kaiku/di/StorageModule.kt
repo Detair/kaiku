@@ -28,6 +28,8 @@ object StorageModule {
 
     private const val APP_STATE_FILE = "kaiku_app_state"
 
+    private fun legacyFile(context: Context) = File(context.applicationInfo.dataDir, "shared_prefs/$LEGACY_FILE.xml")
+
     /** Starts whose session move failed on the write side (bounded retry, LegacyTokenMigration). */
     private const val KEY_MIGRATION_FAILED_WRITES = "legacy_migration_failed_writes"
 
@@ -50,13 +52,13 @@ object StorageModule {
         )
         val appState = context.getSharedPreferences(APP_STATE_FILE, Context.MODE_PRIVATE)
         val migrated = LegacyTokenMigration.run(
-            legacyExists = File(context.applicationInfo.dataDir, "shared_prefs/$LEGACY_FILE.xml").exists(),
+            legacyExists = legacyFile(context).exists(),
             openLegacy = { openLegacy(context) },
             deleteLegacy = { context.deleteSharedPreferences(LEGACY_FILE) },
             target = prefs,
             keys = TokenStorage.STORED_KEYS,
             failedWrites = appState.getInt(KEY_MIGRATION_FAILED_WRITES, 0),
-            recordFailedWrites = { n -> appState.edit().putInt(KEY_MIGRATION_FAILED_WRITES, n).apply() },
+            recordFailedWrites = { n -> appState.edit().putInt(KEY_MIGRATION_FAILED_WRITES, n).commit() },
         )
         if (!migrated) {
             // Flag for the UI to say "Please sign in again" on next launch.
@@ -88,6 +90,15 @@ object StorageModule {
         @ApplicationContext context: Context
     ): TokenStorage {
         // The app-state flag is also set above when the old store was lost at the move.
-        return TokenStorage(prefs, context.getSharedPreferences(APP_STATE_FILE, Context.MODE_PRIVATE))
+        val appState = context.getSharedPreferences(APP_STATE_FILE, Context.MODE_PRIVATE)
+        return TokenStorage(prefs, appState) {
+            // A sign-in or logout voids a move still pending after a failed write (durably: commit).
+            LegacyTokenMigration.discardPending(
+                legacyExists = legacyFile(context).exists(),
+                deleteLegacy = { context.deleteSharedPreferences(LEGACY_FILE) },
+                failedWrites = appState.getInt(KEY_MIGRATION_FAILED_WRITES, 0),
+                recordFailedWrites = { n -> appState.edit().putInt(KEY_MIGRATION_FAILED_WRITES, n).commit() },
+            )
+        }
     }
 }
