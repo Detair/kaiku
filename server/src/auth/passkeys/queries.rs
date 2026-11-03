@@ -83,7 +83,17 @@ const COLS: &str = "id, user_id, credential_id, credential, label, aaguid, backu
 
 /// The account's `WebAuthn` user handle: a random v4 UUID set at first use
 /// (never `users.id`), stable afterwards.
-pub async fn user_handle(db: impl PgExecutor<'_>, user_id: Uuid) -> sqlx::Result<Uuid> {
+pub async fn user_handle(db: impl PgExecutor<'_> + Copy, user_id: Uuid) -> sqlx::Result<Uuid> {
+    // Read first: once set, the handle never changes and the account row is
+    // not touched (no row lock behind `lock_accounts`, no dead tuple).
+    let existing: Option<Option<Uuid>> =
+        sqlx::query_scalar("SELECT webauthn_user_handle FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?;
+    if let Some(Some(handle)) = existing {
+        return Ok(handle);
+    }
     sqlx::query_scalar(
         "UPDATE users SET webauthn_user_handle = COALESCE(webauthn_user_handle, $2)
           WHERE id = $1 RETURNING webauthn_user_handle",
@@ -143,8 +153,12 @@ pub async fn insert(
 }
 
 /// `pending` → `active` (L1b's "Finish"); marks the first activity. False
-/// if the row was not pending.
-pub async fn activate(conn: &mut PgConnection, user_id: Uuid, id: Uuid) -> sqlx::Result<bool> {
+/// if the row was not pending; 409 `PASSKEY_LIMIT` at 10 active passkeys
+/// (the caller holds the account lock, B.7 rule 1).
+pub async fn activate(conn: &mut PgConnection, user_id: Uuid, id: Uuid) -> AuthResult<bool> {
+    if active_count(&mut *conn, user_id).await? >= super::MAX_ACTIVE_PASSKEYS as i64 {
+        return Err(crate::auth::AuthError::PasskeyLimit);
+    }
     let done = sqlx::query(
         "UPDATE passkeys SET state = 'active', ready_at = NULL
           WHERE id = $1 AND user_id = $2 AND state = 'pending'",
@@ -320,13 +334,16 @@ pub async fn revoke_all_live(
             .fetch_all(&mut *conn)
             .await?;
     crate::approvals::transition::lock_accounts(conn, &users).await?;
+    // Only the accounts locked above (a passkey added meanwhile waits for the
+    // next start).
     let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
         "UPDATE passkeys SET state = 'revoked', revoked_at = NOW(), revoke_reason = $1,
                              ready_at = NULL
-          WHERE state <> 'revoked'
+          WHERE state <> 'revoked' AND user_id = ANY($2)
          RETURNING id, user_id",
     )
     .bind(reason)
+    .bind(&users)
     .fetch_all(&mut *conn)
     .await?;
     for (id, user_id) in &rows {

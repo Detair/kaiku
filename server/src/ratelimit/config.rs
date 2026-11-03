@@ -135,7 +135,7 @@ impl Default for RateLimits {
                 window_secs: 60,
             },
             auth_passkey: LimitConfig {
-                requests: 30,
+                requests: 60,
                 window_secs: 60,
             },
             write: LimitConfig {

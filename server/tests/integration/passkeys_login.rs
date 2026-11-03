@@ -481,7 +481,7 @@ async fn passkey_requests_have_their_own_limit(pool: PgPool) {
     let app = TestApp::with_passkeys(pool).await;
     let (router, _) = limited_router(&app).await;
     let (_, username) = create_test_user(&app.pool).await;
-    for _ in 0..30 {
+    for _ in 0..60 {
         let (s, _, _) = call(&router, "/auth/passkeys/login/start", json!({}), None).await;
         assert_eq!(s, 200);
     }
@@ -615,4 +615,23 @@ async fn stored_counter_never_decreases(pool: PgPool) {
     .await;
     assert_eq!(s, 200, "the older assertion is a signal, not a refusal");
     assert_eq!(stored_counter(&app, row.id).await, high);
+}
+
+#[sqlx::test]
+async fn the_ceremony_page_is_outside_the_passkey_limit(pool: PgPool) {
+    // Review Fable m5: page loads and assets never push a hand-off into 429.
+    let app = TestApp::with_passkeys(pool).await;
+    let (router, _) = limited_router(&app).await;
+    for path in [
+        "/auth/passkeys/assets/ceremony.js",
+        &format!("/auth/passkeys/desktop/{}", Uuid::new_v4()),
+    ] {
+        for _ in 0..70 {
+            let req = peer_request(Method::GET, path).body(Body::empty()).unwrap();
+            let resp = tower::ServiceExt::oneshot(router.clone(), req)
+                .await
+                .unwrap();
+            assert_ne!(resp.status().as_u16(), 429, "{path}");
+        }
+    }
 }

@@ -78,13 +78,14 @@ impl AuthenticatorRef {
 pub async fn is_active(conn: &mut sqlx::PgConnection, a: AuthenticatorRef) -> sqlx::Result<bool> {
     match a.kind {
         AuthenticatorKind::KeyDevice => Ok(sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE id = $1 AND state = 'active')",
+            "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE id = $1 AND state = 'active'
+                            FOR SHARE)",
         )
         .bind(a.id)
         .fetch_one(&mut *conn)
         .await?),
         AuthenticatorKind::Passkey => Ok(sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS (SELECT 1 FROM passkeys WHERE id = $1 AND state = 'active')",
+            "SELECT EXISTS (SELECT 1 FROM passkeys WHERE id = $1 AND state = 'active' FOR SHARE)",
         )
         .bind(a.id)
         .fetch_one(&mut *conn)

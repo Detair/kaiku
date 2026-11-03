@@ -88,7 +88,7 @@ impl PasskeyRp {
 
     /// The exact-string origin check (C29: Android origins first, then the
     /// web origin), on the raw `clientDataJSON` before the crate parses it.
-    fn check_origin(&self, client_data_json: &[u8]) -> Result<(), PasskeyFailure> {
+    pub(crate) fn check_origin(&self, client_data_json: &[u8]) -> Result<(), PasskeyFailure> {
         let origin = serde_json::from_slice::<serde_json::Value>(client_data_json)
             .ok()
             .and_then(|v| v.get("origin").and_then(|o| o.as_str().map(str::to_owned)))
@@ -135,14 +135,19 @@ impl PasskeyRp {
         state: &PasskeyRegistration,
     ) -> Result<VerifiedRegistration, PasskeyFailure> {
         self.check_origin(reg.response.client_data_json.as_ref())?;
-        if reg.extensions.cred_props.as_ref().and_then(|p| p.rk) == Some(false) {
-            return Err(PasskeyFailure::NotDiscoverable);
-        }
         let passkey = self
             .webauthn
             .finish_passkey_registration(reg, state)
             .map_err(refusal)?;
+        // The unsigned credProps hint only after the signed data verified.
+        if reg.extensions.cred_props.as_ref().and_then(|p| p.rk) == Some(false) {
+            return Err(PasskeyFailure::NotDiscoverable);
+        }
         let cred = webauthn_rs::prelude::Credential::from(passkey.clone());
+        // UV is required by the registration policy; checked again here.
+        if !cred.user_verified {
+            return Err(PasskeyFailure::Invalid);
+        }
         let transports = cred
             .transports
             .unwrap_or_default()

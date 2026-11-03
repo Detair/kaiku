@@ -112,6 +112,8 @@ pub async fn remove(
     let rp = rp_of(&state)?;
     require_full(&auth)?;
     let ctx = AuthCtx::from(&state);
+    // Before the account lock: setting a missing handle writes the user row.
+    let handle = queries::user_handle(&state.db, auth.id).await?;
     let mut tx = state.db.begin().await?;
     crate::approvals::transition::lock_accounts(&mut tx, &[auth.id]).await?;
     let row = queries::find_own(&mut *tx, auth.id, id)
@@ -158,7 +160,6 @@ pub async fn remove(
         .iter()
         .map(|r| b64u_encode(&r.credential_id))
         .collect();
-    let handle = queries::user_handle(&mut *tx, auth.id).await?;
     tx.commit().await?;
     crate::security_events::spawn_delivery(&state, events);
     tracing::info!("passkey removed");

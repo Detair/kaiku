@@ -54,11 +54,13 @@ async fn target_label(
                 .await?
         }
         StepUpAction::PasskeyRemove => {
-            sqlx::query_scalar("SELECT label FROM passkeys WHERE id = $1 AND user_id = $2")
-                .bind(id)
-                .bind(user_id)
-                .fetch_optional(&mut *conn)
-                .await?
+            sqlx::query_scalar(
+                "SELECT label FROM passkeys WHERE id = $1 AND user_id = $2 AND state = 'active'",
+            )
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?
         }
         StepUpAction::AdminEnrollmentIssue
         | StepUpAction::AdminMayApprove

@@ -95,8 +95,9 @@ app off. The server refuses to start when app ids are set without certificates, 
 - **Linux:** Chromium-based browsers can use a phone (over Bluetooth) as the passkey; **Firefox
   cannot**, and it has no built-in passkey store. With Firefox, register a FIDO2 security key as a
   passkey (its PIN is the verification), or choose Chromium under "Browser for passkey sign-in".
-- A PC signed in by QR code is chat-only (probation). Admin work there needs one passkey
-  confirmation per elevation.
+- A PC signed in by QR code is chat-only (probation) and cannot confirm anything with a passkey;
+  for admin work there, sign in on that PC with a passkey (that session is full), then each
+  elevation needs one passkey confirmation.
 - What the browser may show on the hand-off: no current browser warns about this form or asks for
   a permission (research of 2026-11-03). Safari might show a "This form is not secure" notice in
   some versions or when "Warn before connecting to a website over HTTP" is on: confirm it, the form
@@ -106,8 +107,12 @@ app off. The server refuses to start when app ids are set without certificates, 
 ## Limits
 
 Passkey requests have their own limit per IP address and per account (`RATE_LIMIT_AUTH_PASSKEY`,
-30 per minute by default). Failed passkey attempts never count towards the failed-login IP block,
-so a family sharing one public IP address is never locked out of passkeys or passwords by them.
+60 per minute by default; the desktop ceremony page itself does not count). Failed passkey attempts
+never count towards the failed-login IP block, so failed attempts by one person never lock others on
+the same IP address out of passwords or passkeys. The per-IP limit is shared by everyone behind one
+address (a household, a carrier NAT): a desktop sign-in takes about five requests, and the login
+page's passkey autofill one every few minutes per open tab. Raise the limit for large groups behind
+one address.
 
 ## Troubleshooting
 

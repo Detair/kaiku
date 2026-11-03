@@ -111,7 +111,6 @@ pub fn router(state: &AppState) -> Router<AppState> {
     let public = Router::new()
         .route("/passkeys/login/start", post(login::start))
         .route("/passkeys/login/finish", post(login::finish))
-        .route("/passkeys/desktop/{flow_id}", get(desktop::page))
         .route(
             "/passkeys/desktop/{flow_id}/options",
             post(desktop::options),
@@ -126,7 +125,10 @@ pub fn router(state: &AppState) -> Router<AppState> {
             state.clone(),
             crate::auth::optional_auth,
         ));
+    // The ceremony page (one Valkey read) and its assets stay outside the
+    // bucket, so page loads never push a hand-off into 429 (Fable m5).
     let assets = Router::new()
+        .route("/passkeys/desktop/{flow_id}", get(desktop::page))
         .route(
             "/passkeys/assets/ceremony.js",
             get(desktop_page::ceremony_js),

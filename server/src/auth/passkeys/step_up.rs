@@ -107,14 +107,20 @@ pub(super) async fn verify(
     let rp = rp_of(state)?;
     let cred: PublicKeyCredential =
         serde_json::from_value(credential).map_err(|_| AuthError::PasskeyInvalid)?;
+    // The origin first: nothing about stored credentials is answered to a
+    // request from outside the allow-list.
+    rp.check_origin(cred.response.client_data_json.as_ref())
+        .map_err(failure)?;
     if let Some(handle) = cred.get_user_unique_id() {
         let own = queries::user_handle(&state.db, user_id).await?;
         if handle != own.as_bytes() {
             return Err(AuthError::PasskeyUserMismatch);
         }
     }
+    // Revoked rows are unknown whoever held them (as in sign-in).
     let row = queries::find_by_credential_id(&state.db, cred.get_credential_id())
         .await?
+        .filter(|r| r.state != PasskeyState::Revoked)
         .ok_or(AuthError::PasskeyUnknown)?;
     if row.user_id != user_id {
         return Err(AuthError::PasskeyUserMismatch);

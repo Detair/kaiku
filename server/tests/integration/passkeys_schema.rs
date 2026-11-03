@@ -508,3 +508,71 @@ async fn allow_value_for_another_host_does_not_apply(pool: PgPool) {
     assert_eq!(pinned(&app.pool).await.as_deref(), Some("chat.example.com"));
     assert_eq!(queries::active_count(&app.pool, user).await.unwrap(), 1);
 }
+
+#[sqlx::test]
+async fn user_handle_reads_without_locking_the_account(pool: PgPool) {
+    // Reviews Fable m1 / Argon-b M3: a read never waits for the account lock.
+    let app = app(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let first = queries::user_handle(&app.pool, user).await.unwrap();
+    let mut locker = app.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user)
+        .execute(&mut *locker)
+        .await
+        .unwrap();
+    let again = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        queries::user_handle(&app.pool, user),
+    )
+    .await
+    .expect("user_handle waited for the account lock")
+    .unwrap();
+    assert_eq!(first, again);
+    locker.rollback().await.unwrap();
+}
+
+#[sqlx::test]
+async fn is_active_waits_for_a_concurrent_revocation(pool: PgPool) {
+    // Review Argon-b M1: no stale "active" while a revocation commits.
+    let app = app(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (_, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let mut revoker = app.pool.begin().await.unwrap();
+    sqlx::query("UPDATE passkeys SET state = 'revoked', revoked_at = NOW() WHERE id = $1")
+        .bind(row.id)
+        .execute(&mut *revoker)
+        .await
+        .unwrap();
+    let pool2 = app.pool.clone();
+    let reader = tokio::spawn(async move {
+        let mut conn = pool2.begin().await.unwrap();
+        strong::is_active(&mut conn, AuthenticatorRef::passkey(row.id))
+            .await
+            .unwrap()
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    revoker.commit().await.unwrap();
+    assert!(
+        !reader.await.unwrap(),
+        "the reader saw the committed revocation"
+    );
+}
+
+#[sqlx::test]
+async fn activating_respects_the_passkey_limit(pool: PgPool) {
+    // Review Argon-b m3.
+    let app = app(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    for _ in 0..10 {
+        seed_passkey(&app, user, PasskeyState::Active).await;
+    }
+    let (_, pending) = seed_passkey(&app, user, PasskeyState::Pending).await;
+    let mut conn = app.pool.acquire().await.unwrap();
+    let r = queries::activate(&mut conn, user, pending.id).await;
+    assert!(
+        matches!(r, Err(vc_server::auth::AuthError::PasskeyLimit)),
+        "{r:?}"
+    );
+    assert_eq!(queries::active_count(&app.pool, user).await.unwrap(), 10);
+}

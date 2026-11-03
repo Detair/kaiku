@@ -46,6 +46,17 @@ impl RegistrationVia {
     }
 }
 
+/// Unicode "format" characters (category Cf: bidi controls, zero-width and
+/// invisible marks): refused in labels, which reach the desktop ceremony
+/// heading and security notices (Fable m3).
+const fn is_format_char(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x0890..=0x0891 | 0x08E2
+        | 0x180E | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2064 | 0x2066..=0x206F
+        | 0xFEFF | 0xFFF9..=0xFFFB | 0x110BD | 0x110CD | 0x13430..=0x1343F
+        | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A | 0xE0001 | 0xE0020..=0xE007F)
+}
+
 /// The label rules (C29): trimmed, 1..=64 characters; `None` → "Passkey".
 pub fn clean_label(raw: Option<&str>) -> AuthResult<String> {
     let Some(raw) = raw else {
@@ -53,7 +64,7 @@ pub fn clean_label(raw: Option<&str>) -> AuthResult<String> {
     };
     let label = raw.trim();
     let n = label.chars().count();
-    if n == 0 || n > 64 || label.chars().any(char::is_control) {
+    if n == 0 || n > 64 || label.chars().any(|c| c.is_control() || is_format_char(c)) {
         return Err(AuthError::Validation(
             "label must be 1 to 64 characters".into(),
         ));
@@ -302,4 +313,28 @@ pub async fn finish(
     crate::security_events::spawn_delivery(&state, ids);
     tracing::info!(passkey_id = %row.id, "passkey added");
     Ok((StatusCode::CREATED, Json(PasskeyView::from(&row))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean_label;
+
+    #[test]
+    fn labels_refuse_bidi_and_invisible_characters() {
+        // Review Fable m3: the label reaches the desktop ceremony heading.
+        for bad in [
+            "\u{202e}kcod",
+            "a\u{200b}b",
+            "x\u{2066}y",
+            "\u{feff}z",
+            "a\u{00ad}b",
+            "e\u{061c}f",
+        ] {
+            assert!(clean_label(Some(bad)).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            clean_label(Some(" Bücher-Laptop 💻 ")).unwrap(),
+            "Bücher-Laptop 💻"
+        );
+    }
 }

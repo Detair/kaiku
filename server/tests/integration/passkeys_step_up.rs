@@ -671,3 +671,61 @@ async fn regressed_counter_still_steps_up(pool: PgPool) {
     .unwrap();
     assert_eq!(counter, 500);
 }
+
+#[sqlx::test]
+async fn a_foreign_revoked_credential_is_unknown(pool: PgPool) {
+    // Review Argon-b m1: no USER_MISMATCH for a revoked row of another account.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (other, _) = create_test_user(&app.pool).await;
+    seed_passkey(&app, user, PasskeyState::Active).await;
+    let (mut theirs_auth, theirs) = seed_passkey(&app, other, PasskeyState::Revoked).await;
+    let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
+    let (s, start) = post(
+        &app,
+        "/auth/passkeys/step-up/start",
+        Some(&token),
+        json!({"action": "passkey.add", "target": ""}),
+    )
+    .await;
+    assert_eq!(s, 200);
+    let cred = theirs_auth.assert(
+        TEST_ORIGIN,
+        &start["options"],
+        &theirs.credential_id,
+        None,
+        true,
+    );
+    let (s, b) = post(
+        &app,
+        "/auth/passkeys/step-up/finish",
+        Some(&token),
+        json!({"ceremony_id": start["ceremony_id"], "credential": cred}),
+    )
+    .await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (400, Some("PASSKEY_UNKNOWN")),
+        "{b}"
+    );
+}
+
+#[sqlx::test]
+async fn device_step_up_label_names_active_passkeys_only(pool: PgPool) {
+    // Review Argon-b m4.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (_, revoked) = seed_passkey(&app, user, PasskeyState::Revoked).await;
+    let dev =
+        crate::helpers::approvals::KeyDeviceFixture::insert(&app.pool, &app.config, user, "active")
+            .await;
+    let (s, c) = post(
+        &app,
+        "/api/approvals/step-up",
+        Some(&dev.access_token),
+        json!({"action": "passkey.remove", "target": revoked.id.to_string()}),
+    )
+    .await;
+    assert_eq!(s, 201, "{c}");
+    assert_eq!(c["context"]["target_label"], "", "{c}");
+}
