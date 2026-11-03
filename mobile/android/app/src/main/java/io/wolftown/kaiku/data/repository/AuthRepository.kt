@@ -6,6 +6,7 @@ import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.session.SessionTeardownRunner
+import io.wolftown.kaiku.domain.model.AuthResponse
 import io.wolftown.kaiku.domain.model.User
 import io.wolftown.kaiku.push.PushRegistrar
 import io.wolftown.kaiku.ui.auth.MfaRequiredException
@@ -199,6 +200,30 @@ class AuthRepository @Inject constructor(
             synchronized(pendingLock) {
                 if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl) tokenStorage.clear()
             }
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Installs a session from a sign-in that needed no password (a passkey,
+     * C29): `GET /auth/me` with the new token, then the same single install
+     * point as [login], only for the latest attempt and the server it went to.
+     */
+    suspend fun installNativeSignIn(authResponse: AuthResponse, serverUrl: String?): Result<User> {
+        signedInRefusal()?.let { return it }
+        val attempt = invalidateLogin()
+        if (serverUrl == null || tokenStorage.getServerUrl() != serverUrl) return supersededResult()
+        return try {
+            val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
+            sessionTeardown.awaitIdle()
+            val persisted = installSession(
+                authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id,
+                precondition = { loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl },
+            )
+            if (!persisted) supersededResult() else Result.success(user)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
             Result.failure(e)
         }
     }

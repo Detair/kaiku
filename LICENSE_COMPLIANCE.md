@@ -216,6 +216,8 @@ Libraries of the Android client (`mobile/android/app/build.gradle.kts`) added fo
 | Package | Version | License | Usage |
 |---------|---------|---------|-------|
 | androidx.work:work-runtime-ktx | 2.10.0 | Apache-2.0 | WorkManager: background fetch after a push wake signal |
+| androidx.credentials:credentials | 1.6.0 | Apache-2.0 | Passkeys through Credential Manager (C29) |
+| androidx.credentials:credentials-play-services-auth | 1.6.0 | Apache-2.0 | Credential Manager backend on Play services phones; pulls Play services client libraries (Android SDK licence, as firebase-messaging already does) |
 | androidx.hilt:hilt-work | 1.2.0 | Apache-2.0 | Hilt dependency injection for WorkManager workers |
 | androidx.hilt:hilt-compiler | 1.2.0 | Apache-2.0 | Annotation processor for `@HiltWorker` (build time only) |
 | com.google.firebase:firebase-bom | 33.7.0 | Apache-2.0 | Version alignment for Firebase libraries (no code) |

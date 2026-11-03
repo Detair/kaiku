@@ -86,6 +86,21 @@ fun LoginScreen(
 
         Spacer(modifier = Modifier.height(32.dp))
 
+        // Passkeys first (F1).
+        PasskeySignInButton(viewModel = viewModel, enabled = !uiState.isLoading)
+        uiState.passkeyErrorRes?.let { res ->
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = if (res == R.string.passkeys_error_ready_at) {
+                    stringResource(res, uiState.passkeyReadyAt?.toString().orEmpty())
+                } else {
+                    stringResource(res)
+                },
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+
         OutlinedTextField(
             value = uiState.username,
             onValueChange = viewModel::onUsernameChanged,

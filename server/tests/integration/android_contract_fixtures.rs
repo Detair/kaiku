@@ -636,3 +636,78 @@ fn android_golden_push_security_fcm() {
         }),
     );
 }
+
+/// Passkey sign-in start (C29 `POST /auth/passkeys/login/start`): the
+/// `options` JSON is passed to Credential Manager unchanged.
+#[test]
+fn android_golden_passkey_get_start() {
+    let start = vc_server::auth::passkeys::types::CeremonyStart {
+        ceremony_id: Uuid::from_u128(0x0000_0000_0000_4000_8000_0000_0000_d001),
+        options: serde_json::json!({
+            "publicKey": {
+                "challenge": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+                "timeout": 300_000,
+                "rpId": "chat.example.com",
+                "allowCredentials": [],
+                "userVerification": "required"
+            }
+        }),
+    };
+    check_golden(
+        "passkey_get_start.json",
+        serde_json::to_value(&start).expect("serialize ceremony start"),
+    );
+}
+
+const PASSKEY_ID: Uuid = Uuid::from_u128(0x0000_0000_0000_7000_8000_0000_0000_e001);
+
+/// C29 `Passkey` (a pending one, so `ready_at` is set).
+#[test]
+fn android_golden_passkey() {
+    let passkey = vc_server::auth::passkeys::types::PasskeyView {
+        id: PASSKEY_ID,
+        label: "Pixel 8".to_string(),
+        state: vc_server::auth::passkeys::queries::PasskeyState::Pending,
+        created_at: ts("2026-11-01T10:00:00Z"),
+        last_used_at: None,
+        ready_at: Some(ts("2026-11-03T10:00:00Z")),
+        backup_eligible: true,
+        backup_state: true,
+        transports: vec!["internal".to_string(), "hybrid".to_string()],
+        aaguid: Some(Uuid::from_u128(0xea9b_8d66_4d01_1d21_3ce4_b6b4_8cb5_75d4)),
+    };
+    check_golden(
+        "passkey.json",
+        serde_json::to_value(&passkey).expect("serialize passkey"),
+    );
+}
+
+/// C29 `DELETE /auth/passkeys/{id}` answer (the signal data).
+#[test]
+fn android_golden_passkey_removed() {
+    let removed = vc_server::auth::passkeys::types::PasskeyRemovedResponse {
+        rp_id: "chat.example.com".to_string(),
+        user_handle: "AAECAwQFBgcICQoLDA0ODw".to_string(),
+        credential_id: "Y3JlZGVudGlhbC0x".to_string(),
+        remaining_credential_ids: vec!["Y3JlZGVudGlhbC0y".to_string()],
+    };
+    check_golden(
+        "passkey_removed.json",
+        serde_json::to_value(&removed).expect("serialize removal"),
+    );
+}
+
+/// C26–C29 `StepUpGrant` (`via: "passkey"`).
+#[test]
+fn android_golden_step_up_grant() {
+    let grant = vc_server::auth::step_up::StepUpGrant {
+        action: vc_server::auth::step_up::StepUpAction::PasskeyRemove,
+        target: PASSKEY_ID.to_string(),
+        via: vc_server::auth::step_up::StepUpVia::Passkey,
+        expires_at: ts("2026-11-01T10:05:00Z"),
+    };
+    check_golden(
+        "step_up_grant.json",
+        serde_json::to_value(&grant).expect("serialize grant"),
+    );
+}

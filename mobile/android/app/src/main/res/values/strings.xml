@@ -236,4 +236,32 @@
     <string name="push_status_error">Off: Kaiku could not set up notifications and will try again</string>
     <string name="push_status_no_distributor">Off: choose a UnifiedPush app</string>
     <string name="push_status_checking">Checking…</string>
+    <!-- Passkeys (LP, C29); mirrors client/src/i18n/en/passkeys.ts -->
+    <string name="passkeys_login_button">Sign in with passkey</string>
+    <string name="passkeys_login_busy">Waiting for your passkey…</string>
+    <string name="passkeys_error_removed">This passkey was removed from Kaiku. Sign in another way.</string>
+    <string name="passkeys_error_ready_at">This passkey is ready at %1$s.</string>
+    <string name="passkeys_error_invalid">The passkey could not be checked. Please try again.</string>
+    <string name="passkeys_error_user_mismatch">This passkey belongs to another account.</string>
+    <string name="passkeys_error_expired">The passkey request expired. Please try again.</string>
+    <string name="passkeys_error_failed">That did not work with a passkey. Please try again.</string>
+    <string name="passkeys_error_already_registered">This passkey is already added.</string>
+    <string name="passkeys_error_limit">You already have 10 passkeys. Remove one first.</string>
+    <string name="passkeys_error_last_strong">This is your only passkey. Add another one first.</string>
+    <string name="passkeys_error_unavailable">Passkeys are not available on this server.</string>
+    <string name="passkeys_error_step_up_required">Please confirm this with a passkey first.</string>
+    <string name="passkeys_error_full_session_required">Sign in with a passkey or your key phone to do this.</string>
+    <string name="passkeys_settings_title">Passkeys</string>
+    <string name="passkeys_settings_empty">No passkeys yet.</string>
+    <string name="passkeys_settings_add">Add a passkey</string>
+    <string name="passkeys_settings_synced">Synced</string>
+    <string name="passkeys_settings_last_used">Last used %1$s</string>
+    <string name="passkeys_settings_never_used">Not used yet</string>
+    <string name="passkeys_settings_pending">Ready at %1$s</string>
+    <string name="passkeys_settings_remove">Remove</string>
+    <string name="passkeys_settings_remove_confirm">Remove the passkey “%1$s”? You confirm this with a passkey.</string>
+    <string name="passkeys_settings_remove_confirm_button">Remove passkey</string>
+    <string name="passkeys_login_cancel">Cancel</string>
+    <string name="passkeys_android_none_on_device">No passkey for this server on this phone.</string>
+    <string name="passkeys_android_not_set_up_for_app">This server is not set up for passkeys in the app yet. Sign in another way.</string>
 </resources>
