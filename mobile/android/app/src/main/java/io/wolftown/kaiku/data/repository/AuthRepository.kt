@@ -204,6 +204,9 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    /** False while a session runs: a passkey sign-in then starts nothing. */
+    fun canStartSignIn(): Boolean = signedInRefusal() == null
+
     /**
      * Installs a session from a sign-in that needed no password (a passkey,
      * C29): `GET /auth/me` with the new token, then the same single install

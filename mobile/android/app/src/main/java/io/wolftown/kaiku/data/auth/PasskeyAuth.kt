@@ -70,9 +70,15 @@ class PasskeyAuth @Inject constructor(
     private val tokenStorage: TokenStorage,
 ) {
     suspend fun loginWithPasskey(activity: Activity, username: String?): Result<User> = try {
+        // Nothing is started (or minted on the server) while a session runs
+        // or without a server; checked again before the finish.
         val serverUrl = tokenStorage.getServerUrl()
+        if (serverUrl == null || !authRepository.canStartSignIn()) throw PasskeyFailure.Server("PASSKEY_FAILED")
         val start = api.loginStart()
         val credential = ceremony { credentials.get(activity, publicKeyJson(start)) }
+        if (!authRepository.canStartSignIn() || tokenStorage.getServerUrl() != serverUrl) {
+            throw PasskeyFailure.Cancelled
+        }
         val response = try {
             api.loginFinish(start.ceremonyId, credential, username)
         } catch (e: PasskeyApiException) {

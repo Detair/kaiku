@@ -33,6 +33,8 @@ data class PasskeysUiState(
     val canAdd: Boolean = false,
     val busy: Boolean = false,
     @StringRes val errorRes: Int? = null,
+    /** With `passkeys_error_ready_at`: the ready time to show. */
+    val readyAt: String? = null,
 )
 
 /**
@@ -105,7 +107,7 @@ class PasskeysViewModel @Inject constructor(
 
     private fun run(action: suspend () -> Unit) {
         if (_state.value.busy) return
-        _state.update { it.copy(busy = true, errorRes = null) }
+        _state.update { it.copy(busy = true, errorRes = null, readyAt = null) }
         viewModelScope.launch {
             try {
                 action()
@@ -119,7 +121,11 @@ class PasskeysViewModel @Inject constructor(
                     is PasskeyApiException -> passkeyErrorRes(PasskeyFailure.Server(e.normalizedCode ?: "PASSKEY_FAILED"))
                     else -> passkeyErrorRes(e)
                 }
-                _state.update { it.copy(busy = false, errorRes = res) }
+                _state.update {
+                    it.copy(busy = false, errorRes = res, readyAt = (e as? PasskeyFailure.Pending)?.readyAt)
+                }
+                // A passkey the server no longer knows leaves the list.
+                if (e is PasskeyFailure.Removed) reload()
             }
         }
     }

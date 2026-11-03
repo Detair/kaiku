@@ -97,4 +97,19 @@ class PasskeyApiTest {
         assertEquals("PASSKEY_PENDING", e.normalizedCode)
         assertEquals("2026-11-05T10:00:00Z", e.readyAt)
     }
+
+    @Test
+    fun `rename and delete encode the id`() = runTest {
+        // Review Argon minor 5.
+        val p = api { req ->
+            if (req.method == HttpMethod.Patch) respond(Golden.load("passkey.json"), HttpStatusCode.OK, json)
+            else respond(Golden.load("passkey_removed.json"), HttpStatusCode.OK, json)
+        }
+        p.rename("a/b c", "Work")
+        p.delete("a/b c")
+        assertEquals(HttpMethod.Patch, requests[0].method)
+        assertEquals("/auth/passkeys/a%2Fb%20c", requests[0].url.encodedPath)
+        assertEquals("/auth/passkeys/a%2Fb%20c", requests[1].url.encodedPath)
+        assertEquals("Work", (Json.parseToJsonElement(bodies[0]).jsonObject["label"] as JsonPrimitive).content)
+    }
 }

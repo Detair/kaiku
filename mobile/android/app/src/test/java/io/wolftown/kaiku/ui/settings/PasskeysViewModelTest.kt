@@ -132,4 +132,22 @@ class PasskeysViewModelTest {
         assertTrue(p.isPending)
         assertEquals("2026-11-05T10:00:00Z", p.readyAt)
     }
+
+    @Test
+    fun `a removed passkey reloads the list and a pending one keeps its ready time`() = runTest(dispatcher) {
+        // Review Argon-a m2.
+        coEvery { passkeyStepUp.stepUp(any(), "passkey.remove", any()) } returns
+            Result.failure(io.wolftown.kaiku.data.auth.PasskeyFailure.Removed)
+        val vm = vm(listOf(active))
+        advanceUntilIdle()
+        vm.remove(activity, active)
+        advanceUntilIdle()
+        coVerify(exactly = 2) { api.list() }
+        coEvery { passkeyStepUp.stepUp(any(), "passkey.remove", any()) } returns
+            Result.failure(io.wolftown.kaiku.data.auth.PasskeyFailure.Pending("2026-11-05T10:00:00Z"))
+        vm.remove(activity, active)
+        advanceUntilIdle()
+        assertEquals(R.string.passkeys_error_ready_at, vm.state.value.errorRes)
+        assertEquals("2026-11-05T10:00:00Z", vm.state.value.readyAt)
+    }
 }

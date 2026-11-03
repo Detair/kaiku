@@ -56,6 +56,7 @@ class LoginViewModelPasskeyTest {
     fun setUp() {
         Dispatchers.setMain(dispatcher)
         every { tokenStorage.getServerUrl() } returns "https://chat.example.com"
+        every { repo.canStartSignIn() } returns true
         val probe: ServerProbe = mockk()
         coEvery { probe.probe(any()) } returns ProbeResult.Ok(registrationOpen = false)
         coEvery { api.loginStart() } returns start
@@ -115,5 +116,15 @@ class LoginViewModelPasskeyTest {
         assertNotNull(vm.uiState.value.passkeyReadyAt)
         assertEquals(R.string.passkeys_error_ready_at, vm.uiState.value.passkeyErrorRes)
         coVerify(exactly = 0) { credentials.signalRemoved(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `already signed in starts no ceremony`() = runTest(dispatcher) {
+        // Reviews Argon minor 3 / Argon-a m1: nothing is minted on the server.
+        every { repo.canStartSignIn() } returns false
+        vm.onPasskeySignIn(activity)
+        advanceUntilIdle()
+        coVerify(exactly = 0) { api.loginStart() }
+        coVerify(exactly = 0) { api.loginFinish(any(), any(), any()) }
     }
 }

@@ -16,6 +16,10 @@ import androidx.credentials.exceptions.CreateCredentialException
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
+import androidx.credentials.exceptions.domerrors.DomError
+import androidx.credentials.exceptions.domerrors.InvalidStateError
+import androidx.credentials.exceptions.domerrors.NotAllowedError
+import androidx.credentials.exceptions.domerrors.SecurityError
 import androidx.credentials.exceptions.publickeycredential.CreatePublicKeyCredentialDomException
 import androidx.credentials.exceptions.publickeycredential.GetPublicKeyCredentialDomException
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -66,9 +70,9 @@ class CredentialManagerPasskeys @Inject constructor(
     } catch (_: NoCredentialException) {
         PasskeyOutcome.NoCredential
     } catch (e: GetPublicKeyCredentialDomException) {
-        mapDom(e.type, e.errorMessage?.toString())
-    } catch (e: GetCredentialException) {
-        notAssociatedOr(e.errorMessage?.toString())
+        mapDomError(e.domError)
+    } catch (_: GetCredentialException) {
+        PasskeyOutcome.Failed("PASSKEY_FAILED")
     }
 
     override suspend fun create(activity: Activity, requestJson: String): PasskeyOutcome = try {
@@ -81,9 +85,9 @@ class CredentialManagerPasskeys @Inject constructor(
     } catch (_: CreateCredentialCancellationException) {
         PasskeyOutcome.Cancelled
     } catch (e: CreatePublicKeyCredentialDomException) {
-        mapDom(e.type, e.errorMessage?.toString())
-    } catch (e: CreateCredentialException) {
-        notAssociatedOr(e.errorMessage?.toString())
+        mapDomError(e.domError)
+    } catch (_: CreateCredentialException) {
+        PasskeyOutcome.Failed("PASSKEY_FAILED")
     }
 
     override suspend fun signalRemoved(
@@ -113,19 +117,20 @@ class CredentialManagerPasskeys @Inject constructor(
         }
     }
 
-    private fun mapDom(type: String, message: String?): PasskeyOutcome =
-        if (type.contains("SecurityError")) PasskeyOutcome.NotAssociated else notAssociatedOr(message)
-
-    private fun notAssociatedOr(message: String?): PasskeyOutcome =
-        if (message?.contains("not associated", ignoreCase = true) == true ||
-            message?.contains("asset", ignoreCase = true) == true
-        ) {
-            PasskeyOutcome.NotAssociated
-        } else {
-            PasskeyOutcome.Failed("PASSKEY_FAILED")
-        }
-
     private companion object {
         val logger: Logger = Logger.getLogger("CredentialManagerPasskeys")
     }
+}
+
+/**
+ * A WebAuthn DOM error by its type (never by provider message text):
+ * `SecurityError` = the domain is not verified for this app
+ * (`assetlinks.json`); `InvalidStateError` = an excluded credential, i.e.
+ * already registered; `NotAllowedError` = the user dismissed the sheet.
+ */
+internal fun mapDomError(error: DomError): PasskeyOutcome = when (error) {
+    is SecurityError -> PasskeyOutcome.NotAssociated
+    is InvalidStateError -> PasskeyOutcome.Failed("PASSKEY_ALREADY_REGISTERED")
+    is NotAllowedError -> PasskeyOutcome.Cancelled
+    else -> PasskeyOutcome.Failed("PASSKEY_FAILED")
 }

@@ -14,11 +14,13 @@ import io.wolftown.kaiku.ui.settings.findActivity
 
 /** "Sign in with passkey" (F1): first on the login screen, 48 dp. */
 @Composable
-fun PasskeySignInButton(viewModel: LoginViewModel, enabled: Boolean, modifier: Modifier = Modifier) {
+fun PasskeySignInButton(viewModel: LoginViewModel, busy: Boolean, modifier: Modifier = Modifier) {
     val activity = LocalContext.current.findActivity()
     Button(
         onClick = { activity?.let(viewModel::onPasskeySignIn) },
-        enabled = enabled && activity != null,
+        enabled = !busy && activity != null,
         modifier = modifier.fillMaxWidth().heightIn(min = 48.dp),
-    ) { Text(stringResource(R.string.passkeys_login_button)) }
+    ) {
+        Text(stringResource(if (busy) R.string.passkeys_login_busy else R.string.passkeys_login_button))
+    }
 }

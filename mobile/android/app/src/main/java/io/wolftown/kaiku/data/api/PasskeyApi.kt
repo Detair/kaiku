@@ -6,10 +6,12 @@ import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.encodeURLPathPart
 import io.ktor.http.isSuccess
 import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.domain.model.AuthResponse
@@ -32,6 +34,7 @@ interface PasskeyApi {
     suspend fun registerStart(label: String?): CeremonyStart
     suspend fun registerFinish(ceremonyId: String, credential: JsonObject): Passkey
     suspend fun list(): PasskeyList
+    suspend fun rename(id: String, label: String): Passkey
     suspend fun delete(id: String): PasskeyRemoved
     suspend fun reauthMethods(): ReauthMethods
 }
@@ -61,6 +64,9 @@ private data class StepUpStartBody(val action: String, val target: String)
 
 @Serializable
 private data class RegisterStartBody(val label: String?)
+
+@Serializable
+private data class RenameBody(val label: String)
 
 class PasskeyApiImpl @Inject constructor(
     private val httpClient: HttpClient,
@@ -101,8 +107,14 @@ class PasskeyApiImpl @Inject constructor(
 
     override suspend fun list(): PasskeyList = httpClient.get("/auth/passkeys") { android() }.ok()
 
+    override suspend fun rename(id: String, label: String): Passkey =
+        httpClient.patch("/auth/passkeys/${id.encodeURLPathPart()}") {
+            android()
+            setBody(RenameBody(label))
+        }.ok()
+
     override suspend fun delete(id: String): PasskeyRemoved =
-        httpClient.delete("/auth/passkeys/$id") { android() }.ok()
+        httpClient.delete("/auth/passkeys/${id.encodeURLPathPart()}") { android() }.ok()
 
     override suspend fun reauthMethods(): ReauthMethods = httpClient.get("/auth/reauth/methods") { android() }.ok()
 

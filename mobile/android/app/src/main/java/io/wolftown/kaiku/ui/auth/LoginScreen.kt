@@ -87,12 +87,12 @@ fun LoginScreen(
         Spacer(modifier = Modifier.height(32.dp))
 
         // Passkeys first (F1).
-        PasskeySignInButton(viewModel = viewModel, enabled = !uiState.isLoading)
+        PasskeySignInButton(viewModel = viewModel, busy = uiState.isLoading)
         uiState.passkeyErrorRes?.let { res ->
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = if (res == R.string.passkeys_error_ready_at) {
-                    stringResource(res, uiState.passkeyReadyAt?.toString().orEmpty())
+                    stringResource(res, io.wolftown.kaiku.ui.settings.formatReadyAt(uiState.passkeyReadyAt?.toString()))
                 } else {
                     stringResource(res)
                 },

@@ -37,6 +37,14 @@ internal fun Context.findActivity(): Activity? {
     return null
 }
 
+/** A server time (RFC 3339) in the phone's local date and time. */
+internal fun formatReadyAt(raw: String?): String = raw?.let {
+    runCatching {
+        java.time.format.DateTimeFormatter.ofLocalizedDateTime(java.time.format.FormatStyle.MEDIUM)
+            .format(java.time.Instant.parse(it).atZone(java.time.ZoneId.systemDefault()))
+    }.getOrDefault(it)
+}.orEmpty()
+
 /** "Passkeys" in Settings (C29); 48 dp targets. */
 @Composable
 fun PasskeysSection(viewModel: PasskeysViewModel = hiltViewModel()) {
@@ -59,7 +67,14 @@ fun PasskeysSection(viewModel: PasskeysViewModel = hiltViewModel()) {
                 modifier = Modifier.heightIn(min = 48.dp),
             ) { Text(stringResource(R.string.passkeys_settings_add)) }
         }
-        state.errorRes?.let { Text(stringResource(it), color = MaterialTheme.colorScheme.error) }
+        state.errorRes?.let { res ->
+            val text = if (res == R.string.passkeys_error_ready_at) {
+                stringResource(res, formatReadyAt(state.readyAt))
+            } else {
+                stringResource(res)
+            }
+            Text(text, color = MaterialTheme.colorScheme.error)
+        }
     }
 }
 
@@ -78,7 +93,7 @@ private fun PasskeyRow(
             if (p.backupState) Text(stringResource(R.string.passkeys_settings_synced))
         }
         when {
-            p.isPending -> Text(stringResource(R.string.passkeys_settings_pending, p.readyAt.orEmpty()))
+            p.isPending -> Text(stringResource(R.string.passkeys_settings_pending, formatReadyAt(p.readyAt)))
             p.lastUsedAt != null -> Text(stringResource(R.string.passkeys_settings_last_used, p.lastUsedAt))
             else -> Text(stringResource(R.string.passkeys_settings_never_used))
         }
