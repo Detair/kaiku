@@ -28,16 +28,18 @@ UPDATE sessions
    SET ended_at = NOW(), end_reason = 'absolute_cap'
  WHERE absolute_expires_at <= NOW();
 
+-- Elevations from before the upgrade (password + TOTP or OIDC re-auth) do
+-- not survive it: elevation now needs a full session and a step-up (F7),
+-- and every pre-upgrade session is probation.
+DELETE FROM elevated_sessions;
+
 CREATE INDEX idx_sessions_user_live ON sessions (user_id) WHERE ended_at IS NULL;
 CREATE INDEX idx_sessions_authenticator ON sessions (authenticator_id) WHERE ended_at IS NULL;
 
 -- B.0 "new account": set once at the first password, TOTP, recovery code,
--- authenticator or session, never cleared.
+-- authenticator or session, never cleared. Every account that exists at the
+-- upgrade is an existing account: it had a password (local accounts needed
+-- one) or a session (OIDC accounts are created at their first sign-in) --
+-- also when the old cleanup already deleted its expired session rows.
 ALTER TABLE users ADD COLUMN first_activity_at TIMESTAMPTZ;
-UPDATE users
-   SET first_activity_at = created_at
- WHERE NOT is_system
-   AND (password_hash IS NOT NULL
-        OR mfa_secret IS NOT NULL
-        OR EXISTS (SELECT 1 FROM mfa_backup_codes b WHERE b.user_id = users.id)
-        OR EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = users.id));
+UPDATE users SET first_activity_at = created_at WHERE NOT is_system;

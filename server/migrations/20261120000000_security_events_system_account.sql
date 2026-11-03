@@ -9,15 +9,39 @@ ALTER TABLE users ADD COLUMN is_system BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE users DROP CONSTRAINT local_user_has_password;
 
 -- `kaiku` is reserved. A pre-existing account with that name keeps its id,
--- data and sessions but is renamed (deterministic, matches username_format);
--- its owner signs in with the new name.
-UPDATE users
-   SET username = 'kaiku_' || left(replace(id::text, '-', ''), 8)
- WHERE username = 'kaiku'
-   AND id <> '6b61696b-7500-4000-8000-000000000001';
+-- data and sessions but is renamed to `kaiku_` + the first 8 (else 12, 16,
+-- ... 24) hex digits of its id, the first that is free (usernames are lower
+-- case by `username_format`, so the exact match is complete); its owner
+-- signs in with the new name. The rename is in the admin audit log.
+DO $$
+DECLARE
+    renamed UUID;
+    candidate TEXT;
+    digits INT := 8;
+BEGIN
+    SELECT id INTO renamed FROM users
+     WHERE username = 'kaiku' AND id <> '6b61696b-7500-4000-8000-000000000001';
+    IF renamed IS NOT NULL THEN
+        LOOP
+            candidate := 'kaiku_' || left(replace(renamed::text, '-', ''), digits);
+            EXIT WHEN NOT EXISTS (SELECT 1 FROM users WHERE username = candidate);
+            digits := digits + 4;
+            IF digits > 24 THEN
+                RAISE EXCEPTION 'the username kaiku is reserved: rename account % by hand', renamed;
+            END IF;
+        END LOOP;
+        UPDATE users SET username = candidate WHERE id = renamed;
+    END IF;
 
-INSERT INTO users (id, username, display_name, auth_method, is_system)
-     VALUES ('6b61696b-7500-4000-8000-000000000001', 'kaiku', 'Kaiku', 'local', true);
+    INSERT INTO users (id, username, display_name, auth_method, is_system)
+         VALUES ('6b61696b-7500-4000-8000-000000000001', 'kaiku', 'Kaiku', 'local', true);
+
+    IF renamed IS NOT NULL THEN
+        INSERT INTO system_audit_log (actor_id, action, target_type, target_id, details)
+             VALUES ('6b61696b-7500-4000-8000-000000000001', 'system.username_reserved', 'user',
+                     renamed, jsonb_build_object('old_username', 'kaiku', 'new_username', candidate));
+    END IF;
+END $$;
 
 -- At most one system account, and it is always the fixed id.
 CREATE UNIQUE INDEX users_single_system_account ON users ((is_system)) WHERE is_system;

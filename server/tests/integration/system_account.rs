@@ -208,3 +208,41 @@ async fn system_account_hidden_everywhere(pool: PgPool) {
         .unwrap();
     assert!(ids.is_empty());
 }
+
+/// Review round 1 (Codex m6, Fable m8): a pre-existing `kaiku` account is
+/// renamed to a free name, even when the first candidate is taken, and the
+/// rename is in the admin audit log.
+#[sqlx::test(migrations = false)]
+async fn pre_existing_kaiku_is_renamed_to_a_free_name(pool: PgPool) {
+    use super::helpers::migrations::{apply_from, apply_until};
+    apply_until(&pool, 20_261_120_000_000).await;
+    let owner = Uuid::parse_str("0123abcd-4567-4890-8abc-def012345678").unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, display_name, password_hash)
+         VALUES ($1, 'kaiku', 'K', 'x'), (gen_random_uuid(), 'kaiku_0123abcd', 'Taken', 'x')",
+    )
+    .bind(owner)
+    .execute(&pool)
+    .await
+    .unwrap();
+    apply_from(&pool, 20_261_120_000_000).await;
+    let name: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+        .bind(owner)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(name, "kaiku_0123abcd4567", "the next free candidate");
+    let audit: (Uuid, serde_json::Value) = sqlx::query_as(
+        "SELECT actor_id, details FROM system_audit_log
+          WHERE action = 'system.username_reserved' AND target_id = $1",
+    )
+    .bind(owner)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit.0, SYSTEM_USER_ID);
+    assert_eq!(
+        audit.1,
+        serde_json::json!({"old_username": "kaiku", "new_username": "kaiku_0123abcd4567"})
+    );
+}

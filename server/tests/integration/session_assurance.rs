@@ -148,6 +148,76 @@ async fn legacy_sessions_backfill_to_probation(pool: PgPool) {
     );
 }
 
+/// Review round 1 (Fable M1 / Argon B2): every account that exists at the
+/// upgrade is an existing account (B.0), also a dormant OIDC-only account
+/// whose expired session rows the old cleanup already deleted.
+#[sqlx::test(migrations = false)]
+async fn dormant_oidc_account_is_existing_after_the_upgrade(pool: PgPool) {
+    apply_until(&pool, 20_261_120_000_100).await;
+    let user: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (username, display_name, auth_method, external_id)
+         VALUES ('oidc_only', 'O', 'oidc', 'idp|sub-1') RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    apply_from(&pool, 20_261_120_000_100).await;
+    let first: Option<DateTime<Utc>> =
+        sqlx::query_scalar("SELECT first_activity_at FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(first.is_some(), "an admin setup of it must wait (SM3)");
+    let system: Option<DateTime<Utc>> =
+        sqlx::query_scalar("SELECT first_activity_at FROM users WHERE id = $1")
+            .bind(SYSTEM_USER_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(system.is_none(), "the system account has no activity");
+}
+
+/// Review round 1 (Codex M5): an elevation from before the upgrade (by
+/// password or OIDC re-auth) does not survive it; elevation now needs a
+/// full session and a step-up.
+#[sqlx::test(migrations = false)]
+async fn legacy_elevations_end_at_the_upgrade(pool: PgPool) {
+    apply_until(&pool, 20_261_120_000_100).await;
+    let user: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (username, display_name, password_hash) VALUES ('legacy_admin', 'A', 'x')
+         RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let sid = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, token_hash, expires_at)
+         VALUES ($1, $2, 'legacy-elevated', NOW() + INTERVAL '1 day')",
+    )
+    .bind(sid)
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO elevated_sessions (user_id, session_id, ip_address, expires_at, reason)
+         VALUES ($1, $2, '127.0.0.1', NOW() + INTERVAL '15 minutes', 'legacy')",
+    )
+    .bind(user)
+    .bind(sid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    apply_from(&pool, 20_261_120_000_100).await;
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM elevated_sessions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
 #[sqlx::test]
 async fn new_password_session_is_probation(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;

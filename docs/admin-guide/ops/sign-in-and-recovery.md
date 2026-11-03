@@ -70,3 +70,16 @@ Removing a key phone ends its sessions, voids its open confirmations and stops
 its notifications after the last notice. The account and all admins get a
 notice. If it was the account's only key, give the person a new one with
 `enroll`.
+
+## After the upgrade to v1.0
+
+- Every session from before the upgrade is a limited session: chat, calls and
+  the own profile, but not the admin area and not elevation. Give each admin a
+  key phone with `kaiku-admin enroll` and sign in with it to use the admin area.
+- Elevations from before the upgrade end with it.
+- A refresh token copied before the upgrade is recognised as reused only from
+  the second refresh after the upgrade on. If you suspect that tokens leaked,
+  end the account's sessions with `kaiku-admin sessions end <username> --all`.
+- The username `kaiku` is reserved for the system account. An existing account
+  with that name is renamed to `kaiku_` and part of its id; the admin audit log
+  records the new name (action `system.username_reserved`). Tell its owner.
