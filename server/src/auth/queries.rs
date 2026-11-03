@@ -33,7 +33,9 @@ pub async fn lock_setup_complete(conn: &mut PgConnection) -> Result<(), AuthErro
 
 /// Count all users (used for first-user detection inside a registration tx).
 pub async fn count_users(conn: &mut PgConnection) -> Result<i64, AuthError> {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+    // The system account (C28) is not a user: the first registered user
+    // still becomes the admin.
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE NOT is_system")
         .fetch_one(conn)
         .await?;
     Ok(count)
@@ -114,118 +116,6 @@ pub async fn insert_oidc_user(
 // Sessions
 // ============================================================================
 
-/// Parameters for inserting a new session row.
-pub struct InsertSessionParams<'a> {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub token_hash: &'a str,
-    pub expires_at: DateTime<Utc>,
-    pub ip_address: Option<&'a str>,
-    pub user_agent: Option<&'a str>,
-    pub city: Option<&'a str>,
-    pub country: Option<&'a str>,
-}
-
-/// Insert a session row inside a transaction.
-pub async fn insert_session_tx(
-    conn: &mut PgConnection,
-    params: &InsertSessionParams<'_>,
-) -> Result<(), AuthError> {
-    sqlx::query(
-        r"INSERT INTO sessions (id, user_id, token_hash, expires_at, ip_address, user_agent, city, country)
-          VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $8)",
-    )
-    .bind(params.id)
-    .bind(params.user_id)
-    .bind(params.token_hash)
-    .bind(params.expires_at)
-    .bind(params.ip_address)
-    .bind(params.user_agent)
-    .bind(params.city)
-    .bind(params.country)
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
-/// Lock a session row by `token_hash` for token rotation. Returns `None`
-/// when the session does not exist or has expired.
-pub async fn lock_session_by_token_hash_tx(
-    conn: &mut PgConnection,
-    token_hash: &str,
-) -> Result<Option<Session>, AuthError> {
-    let session: Option<Session> = sqlx::query_as(
-        r"
-        SELECT id, user_id, token_hash, expires_at, host(ip_address) as ip_address, user_agent, city, country, created_at
-        FROM sessions
-        WHERE token_hash = $1 AND expires_at > NOW()
-        FOR UPDATE
-        ",
-    )
-    .bind(token_hash)
-    .fetch_optional(conn)
-    .await?;
-    Ok(session)
-}
-
-/// Rotate a session's refresh token in place.
-///
-/// The session keeps its id, so the `sid` carried by every access token of
-/// this login stays the same across refreshes: revoking the session reaches
-/// tokens and sockets opened before any refresh.
-pub async fn rotate_session_tx(
-    conn: &mut PgConnection,
-    session_id: Uuid,
-    params: &InsertSessionParams<'_>,
-) -> Result<(), AuthError> {
-    sqlx::query(
-        r"UPDATE sessions
-          SET token_hash = $2, expires_at = $3, ip_address = $4::inet,
-              user_agent = $5, city = $6, country = $7
-          WHERE id = $1",
-    )
-    .bind(session_id)
-    .bind(params.token_hash)
-    .bind(params.expires_at)
-    .bind(params.ip_address)
-    .bind(params.user_agent)
-    .bind(params.city)
-    .bind(params.country)
-    .execute(conn)
-    .await?;
-    Ok(())
-}
-
-/// Delete one session of `user_id` inside a transaction. Returns the deleted
-/// id, or `None` when no such session belongs to the user.
-pub async fn delete_user_session_tx(
-    conn: &mut PgConnection,
-    user_id: Uuid,
-    session_id: Uuid,
-) -> sqlx::Result<Option<Uuid>> {
-    sqlx::query_scalar("DELETE FROM sessions WHERE id = $1 AND user_id = $2 RETURNING id")
-        .bind(session_id)
-        .bind(user_id)
-        .fetch_optional(conn)
-        .await
-}
-
-/// Delete every session of `user_id` except `keep` (`None` deletes all) and
-/// return the deleted ids.
-pub async fn delete_user_sessions_except(
-    tx: &mut PgConnection,
-    user_id: Uuid,
-    keep: Option<Uuid>,
-) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(
-        "DELETE FROM sessions WHERE user_id = $1 AND ($2::uuid IS NULL OR id <> $2) RETURNING id",
-    )
-    .bind(user_id)
-    .bind(keep)
-    .fetch_all(tx)
-    .await
-}
-
 /// Whether the user has an active global ban (no expiry, or one in the future).
 pub async fn is_user_globally_banned(pool: &PgPool, user_id: Uuid) -> sqlx::Result<bool> {
     sqlx::query_scalar(
@@ -239,14 +129,47 @@ pub async fn is_user_globally_banned(pool: &PgPool, user_id: Uuid) -> sqlx::Resu
     .await
 }
 
-/// List all non-expired sessions belonging to a user.
-pub async fn list_user_sessions(pool: &PgPool, user_id: Uuid) -> Result<Vec<Session>, AuthError> {
-    let sessions: Vec<Session> = sqlx::query_as(
-        r"SELECT id, user_id, token_hash, expires_at, host(ip_address) as ip_address,
-                 user_agent, city, country, created_at
-          FROM sessions
-          WHERE user_id = $1 AND expires_at > NOW()
-          ORDER BY created_at DESC",
+/// One live session of a user, for `GET /auth/sessions`.
+#[derive(Debug, sqlx::FromRow)]
+pub struct LiveSessionRow {
+    pub id: Uuid,
+    pub token_hash: String,
+    pub expires_at: DateTime<Utc>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub city: Option<String>,
+    pub country: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub assurance: String,
+    pub client_class: String,
+    pub auth_methods: Vec<String>,
+    pub authenticator_type: Option<String>,
+    pub authenticator_id: Option<Uuid>,
+    /// The authenticator's current display label (C27 `authenticator.label`;
+    /// key devices; LP adds passkeys).
+    pub authenticator_label: Option<String>,
+    pub last_used_at: DateTime<Utc>,
+    pub absolute_expires_at: DateTime<Utc>,
+}
+
+/// List the live sessions of a user (ended and expired ones are not
+/// listed), newest first.
+pub async fn list_user_sessions(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> Result<Vec<LiveSessionRow>, AuthError> {
+    let sessions: Vec<LiveSessionRow> = sqlx::query_as(
+        r"SELECT s.id, s.token_hash, s.expires_at, host(s.ip_address) as ip_address,
+                 s.user_agent, s.city, s.country, s.created_at, s.assurance, s.client_class,
+                 s.auth_methods, s.authenticator_type, s.authenticator_id,
+                 d.label AS authenticator_label, s.last_used_at, s.absolute_expires_at
+          FROM sessions s
+          LEFT JOIN approval_devices d
+                 ON s.authenticator_type = 'key_device' AND d.id = s.authenticator_id
+                AND d.user_id = s.user_id
+          WHERE s.user_id = $1 AND s.ended_at IS NULL
+            AND s.expires_at > NOW() AND s.absolute_expires_at > NOW()
+          ORDER BY s.created_at DESC",
     )
     .bind(user_id)
     .fetch_all(pool)

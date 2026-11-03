@@ -99,9 +99,16 @@ pub struct AuthResponse {
     /// Whether the user must set a new password before using the rest of the
     /// API (admin-created account still on its temporary password).
     pub password_change_required: bool,
+    /// The session (stable across refreshes; the access token's `sid`).
+    pub session_id: Uuid,
+    /// The session's assurance, fixed at creation (C27).
+    pub assurance: super::assurance::Assurance,
+    /// When the session ends at the latest (absolute cap, B.4).
+    pub absolute_expires_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// User profile response.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UserProfile {
     /// User ID.
@@ -123,6 +130,45 @@ pub struct UserProfile {
     pub deletion_scheduled_at: Option<String>,
     /// Whether the user must set a new password before using the rest of the API.
     pub password_change_required: bool,
+    /// The "Kaiku" system account (C28); always false for a signed-in user.
+    pub is_system: bool,
+    /// The calling session (C27); absent only outside a session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<CurrentSession>,
+    /// Whether this account's key devices may confirm sign-ins and add
+    /// phones (B.1; only an admin changes it).
+    pub may_approve: bool,
+}
+
+/// `GET /auth/me` `session` (C27).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct CurrentSession {
+    pub id: Uuid,
+    pub assurance: super::assurance::Assurance,
+    pub auth_methods: Vec<String>,
+    pub auth_time: chrono::DateTime<chrono::Utc>,
+    /// `web`, `desktop` or `android`.
+    pub client_class: String,
+    pub absolute_expires_at: chrono::DateTime<chrono::Utc>,
+    /// The key device whose own session this is, if any.
+    pub key_device_id: Option<Uuid>,
+}
+
+impl From<&super::SessionMeta> for CurrentSession {
+    fn from(s: &super::SessionMeta) -> Self {
+        Self {
+            id: s.id,
+            assurance: s.assurance,
+            auth_methods: s.auth_methods.clone(),
+            auth_time: s.auth_time,
+            client_class: s.client_class.as_str().to_string(),
+            absolute_expires_at: s.absolute_expires_at,
+            key_device_id: s
+                .authenticator
+                .filter(|a| a.kind == super::strong::AuthenticatorKind::KeyDevice)
+                .map(|a| a.id),
+        }
+    }
 }
 
 /// MFA setup response.
@@ -242,6 +288,29 @@ pub struct SessionInfo {
     pub expires_at: chrono::DateTime<chrono::Utc>,
     /// Whether this is the currently active session.
     pub is_current: bool,
+    /// Assurance fixed at creation (C27).
+    pub assurance: super::assurance::Assurance,
+    /// `web`, `desktop` or `android`.
+    pub client_class: String,
+    /// How the session was created (C27).
+    pub auth_methods: Vec<String>,
+    /// The passkey or key device behind a full session (a key device's own
+    /// session is shown as "Remove device").
+    pub authenticator: Option<SessionAuthenticator>,
+    /// Last sign-in or refresh.
+    pub last_used_at: chrono::DateTime<chrono::Utc>,
+    /// The absolute cap (B.4).
+    pub absolute_expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// `GET /auth/sessions` `authenticator` (C27).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SessionAuthenticator {
+    pub id: Uuid,
+    /// `passkey` or `key_device`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub label: Option<String>,
 }
 
 /// Response containing the list of active auth sessions.
@@ -339,52 +408,13 @@ pub struct OidcHandoffExchangeRequest {
     pub verifier: String,
 }
 
-/// Body of `POST /auth/reauth/oidc/authorize/{provider}` (C24).
-///
-/// A JSON body, so the TOTP code never appears in a URL.
-#[derive(Deserialize, Validate, utoipa::ToSchema)]
-pub struct OidcReauthRequest {
-    /// Desktop loopback return address; omit (or `null`) for the browser flow.
-    #[serde(default)]
-    pub redirect_uri: Option<String>,
-    /// Elevation reason for the audit log (max 255 characters).
-    #[serde(default)]
-    #[validate(length(max = 255))]
-    pub reason: Option<String>,
-    /// Current TOTP code; required when the account has MFA on.
-    #[serde(default)]
-    #[validate(length(max = 16))]
-    pub mfa_code: Option<String>,
-}
-
-impl std::fmt::Debug for OidcReauthRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OidcReauthRequest")
-            .field("redirect_uri", &self.redirect_uri)
-            .field("reason", &self.reason)
-            .field("mfa_code", &self.mfa_code.as_ref().map(|_| "[REDACTED]"))
-            .finish()
-    }
-}
-
-/// A linked provider that can confirm a fresh sign-in.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct ReauthOidcProvider {
-    /// Provider slug (path segment of the authorize endpoint).
-    pub provider_id: String,
-    /// Human-readable provider name.
-    pub display_name: String,
-}
-
-/// `GET /auth/reauth/methods`: how the caller can re-authenticate (C24).
+/// `GET /auth/reauth/methods`: how the caller can step up (C27, F7).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ReauthMethodsResponse {
-    /// The account has a password (`POST /api/admin/elevate` with `password`).
-    pub password: bool,
-    /// The password path also needs a current TOTP code (`mfa_code`).
-    pub mfa_required: bool,
-    /// Linked providers usable for `POST /auth/reauth/oidc/authorize/{provider_id}`.
-    pub oidc: Vec<ReauthOidcProvider>,
+    /// A passkey can confirm the action (set by LP).
+    pub passkey: bool,
+    /// An active key device of the account can confirm it (`device_stepup`).
+    pub device: bool,
 }
 
 /// Forgot password request.

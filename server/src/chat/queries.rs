@@ -509,7 +509,8 @@ pub async fn list_dm_participants(
             u.username,
             u.display_name,
             u.avatar_url,
-            dp.joined_at
+            dp.joined_at,
+            u.is_system
            FROM dm_participants dp
            JOIN users u ON u.id = dp.user_id
            WHERE dp.channel_id = $1

@@ -132,7 +132,7 @@ pub async fn rate_limit_by_ip(
             retry_after = result.retry_after,
             "Rate limit exceeded"
         );
-        return Err(RateLimitError::LimitExceeded(result));
+        return Err(RateLimitError::exceeded(category, result));
     }
 
     // Run the request and add rate limit headers to response
@@ -233,7 +233,7 @@ pub async fn rate_limit_by_user(
             retry_after = result.retry_after,
             "Rate limit exceeded"
         );
-        return Err(RateLimitError::LimitExceeded(result));
+        return Err(RateLimitError::exceeded(category, result));
     }
 
     // Run the request and add rate limit headers to response

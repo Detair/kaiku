@@ -211,6 +211,8 @@ pub async fn update(
     let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, id)
         .await
         .map_err(|_| ChatError::Forbidden)?;
+    // The Kaiku DM is read-only (C28).
+    super::read_only::ensure_writable(&state.db, id).await?;
 
     if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
         return Err(ChatError::Forbidden);
@@ -252,6 +254,8 @@ pub async fn delete(
     let ctx = crate::permissions::require_channel_access(&state.db, auth_user.id, id)
         .await
         .map_err(|_| ChatError::Forbidden)?;
+    // The Kaiku DM is read-only (C28).
+    super::read_only::ensure_writable(&state.db, id).await?;
 
     if !ctx.has_permission(crate::permissions::GuildPermissions::MANAGE_CHANNELS) {
         return Err(ChatError::Forbidden);

@@ -178,32 +178,46 @@ async fn spawn_via_proxy(
 
 /// The session denylist check fails closed: an authenticated request gets a
 /// quick 503 instead of hanging or being let through unchecked.
+/// B.4 rev 5: an unreachable denylist is skipped and the committed session
+/// row decides. A live session keeps working; an ended one stays refused.
 #[sqlx::test]
-async fn authenticated_request_fails_fast_with_503_when_valkey_hangs(pool: PgPool) {
+async fn unreachable_denylist_is_skipped(pool: PgPool) {
     let proxy = ValkeyProxy::spawn().await;
     let (state, config) = state_via_proxy(pool.clone(), &proxy, None).await;
     let router = create_router(state);
     let (user_id, _) = create_test_user(&pool).await;
-    let token = generate_access_token(&config, user_id);
+    let live = generate_access_token(&config, user_id);
+    let (ended_sid, ended) =
+        super::helpers::create_session_with_token(&pool, &config, user_id).await;
+    sqlx::query("UPDATE sessions SET ended_at = NOW(), end_reason = 'logout' WHERE id = $1")
+        .bind(ended_sid)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     proxy.freeze();
 
-    let request = axum::http::Request::builder()
-        .method(Method::GET)
-        .uri("/auth/me")
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let started = Instant::now();
-    let response = tokio::time::timeout(HANG_GUARD, tower::ServiceExt::oneshot(router, request))
+    for (token, want) in [(&live, StatusCode::OK), (&ended, StatusCode::UNAUTHORIZED)] {
+        let request = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/auth/me")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let started = Instant::now();
+        let response = tokio::time::timeout(
+            HANG_GUARD,
+            tower::ServiceExt::oneshot(router.clone(), request),
+        )
         .await
         .expect("authenticated request hung while Valkey was unavailable")
         .unwrap();
-
-    assert!(started.elapsed() < HANG_GUARD);
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body = body_to_json(response).await;
-    assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
+        assert!(started.elapsed() < HANG_GUARD);
+        assert_eq!(response.status(), want);
+        if want == StatusCode::UNAUTHORIZED {
+            assert_eq!(body_to_json(response).await["error"], "INVALID_TOKEN");
+        }
+    }
 }
 
 /// General rate limits fail open with the default config
@@ -283,12 +297,33 @@ async fn register_fails_closed_with_503_when_valkey_hangs(pool: PgPool) {
     assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
 }
 
-/// Header-based WebSocket auth cannot check the session denylist: the upgrade
-/// is refused with the shared JSON 503 body.
+/// Wait for the close frame of a socket that must never become ready.
+async fn close_code_without_ready(ws: &mut super::helpers::WsClient) -> u16 {
+    let close = tokio::time::timeout(HANG_GUARD, async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Close(frame))) => return frame,
+                Some(Ok(Message::Text(text))) => {
+                    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    assert_ne!(v["type"], "ready", "no socket goes ready without Valkey");
+                }
+                Some(Ok(_)) => {}
+                other => panic!("socket ended without a close frame: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("WebSocket hung while Valkey was unavailable");
+    close.expect("close frame carries a code").code.into()
+}
+
+/// B.4 rev 5: header-based WebSocket auth skips an unreachable denylist and
+/// decides from the session row, so the upgrade is no longer refused with
+/// 503. Without Valkey the socket cannot subscribe and closes for a resync
+/// (1011/1013); it never becomes ready.
 #[sqlx::test]
-async fn websocket_header_auth_answers_503_when_valkey_hangs(pool: PgPool) {
+async fn websocket_header_auth_skips_unreachable_denylist(pool: PgPool) {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::Error as WsError;
 
     let proxy = ValkeyProxy::spawn().await;
     let (server, config) = spawn_via_proxy(pool.clone(), &proxy, None).await;
@@ -302,25 +337,25 @@ async fn websocket_header_auth_answers_503_when_valkey_hangs(pool: PgPool) {
         .unwrap();
     request.headers_mut().insert(
         "Sec-WebSocket-Protocol",
-        format!("access_token.{token}").parse().unwrap(),
+        format!("access_token, access_token.{token}")
+            .parse()
+            .unwrap(),
     );
-    let result = tokio::time::timeout(HANG_GUARD, tokio_tungstenite::connect_async(request))
-        .await
-        .expect("WebSocket header auth hung while Valkey was unavailable");
-
-    let Err(WsError::Http(response)) = result else {
-        panic!("expected an HTTP error response, got {result:?}");
-    };
-    assert_eq!(response.status(), 503);
-    let body: serde_json::Value =
-        serde_json::from_slice(response.body().as_deref().unwrap_or_default()).expect("JSON body");
-    assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
+    let (mut ws, response) =
+        tokio::time::timeout(HANG_GUARD, tokio_tungstenite::connect_async(request))
+            .await
+            .expect("WebSocket header auth hung while Valkey was unavailable")
+            .expect("the upgrade is admitted");
+    assert_eq!(response.status(), 101);
+    let code = close_code_without_ready(&mut ws).await;
+    assert!(code == 1011 || code == 1013, "close code {code}");
 }
 
-/// WebSocket post-connect auth cannot check the session denylist: the socket
-/// is closed with 1013 (try again later) instead of hanging or being admitted.
+/// Post-connect auth skips an unreachable denylist too; the socket then
+/// cannot subscribe and closes for a resync instead of hanging or being
+/// admitted.
 #[sqlx::test]
-async fn websocket_auth_closes_with_try_again_later_when_valkey_hangs(pool: PgPool) {
+async fn websocket_auth_closes_for_resync_when_valkey_hangs(pool: PgPool) {
     let proxy = ValkeyProxy::spawn().await;
     let (server, config) = spawn_via_proxy(pool.clone(), &proxy, None).await;
     let (user_id, _) = create_test_user(&pool).await;
@@ -329,20 +364,8 @@ async fn websocket_auth_closes_with_try_again_later_when_valkey_hangs(pool: PgPo
     proxy.freeze();
 
     let mut ws = ws_connect(&server, &token).await;
-    let close = tokio::time::timeout(HANG_GUARD, async {
-        loop {
-            match ws.next().await {
-                Some(Ok(Message::Close(frame))) => return frame,
-                Some(Ok(_)) => {}
-                other => panic!("socket ended without a close frame: {other:?}"),
-            }
-        }
-    })
-    .await
-    .expect("WebSocket auth hung while Valkey was unavailable");
-
-    let code: u16 = close.expect("close frame carries a code").code.into();
-    assert_eq!(code, 1013);
+    let code = close_code_without_ready(&mut ws).await;
+    assert!(code == 1011 || code == 1013, "close code {code}");
 }
 
 // ============================================================================
@@ -542,4 +565,37 @@ async fn login_with_mfa_fails_closed_with_503_when_valkey_hangs(pool: PgPool) {
     assert_eq!(response.status(), 503);
     let body: serde_json::Value = response.json().await.expect("JSON body");
     assert_eq!(body["error"], "SERVICE_UNAVAILABLE", "{body}");
+}
+
+/// Review round 3 (Argon coverage, part 3 M2): ending many sessions while
+/// Valkey hangs costs one command timeout, not two per session, inside the
+/// revoking transaction (its account and session locks are held meanwhile).
+#[sqlx::test]
+async fn ending_many_sessions_waits_for_a_hung_valkey_once(pool: PgPool) {
+    let proxy = ValkeyProxy::spawn().await;
+    let (state, _config) = state_via_proxy(pool.clone(), &proxy, None).await;
+    let (user, _) = create_test_user(&pool).await;
+    for _ in 0..7 {
+        super::helpers::insert_session_row(&pool, uuid::Uuid::now_v7(), user, false).await;
+    }
+    proxy.freeze();
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&state);
+    let started = std::time::Instant::now();
+    let mut tx = pool.begin().await.unwrap();
+    let ended = vc_server::auth::revocation::end_all_sessions_tx(
+        &mut tx,
+        &ctx,
+        user,
+        None,
+        vc_server::auth::revocation::EndReason::Ban,
+    )
+    .await
+    .expect("the row decides; a hung denylist never fails the end");
+    tx.commit().await.unwrap();
+    assert_eq!(ended.len(), 8);
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "ended in {:?}",
+        started.elapsed()
+    );
 }

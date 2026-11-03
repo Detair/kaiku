@@ -30,7 +30,7 @@ variables marked "empty = unset".
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. The desktop app origins `tauri://localhost`, `http://tauri.localhost` and `https://tauri.localhost` are added automatically to an explicit list |
 | `ENABLE_API_DOCS` | `false` in release builds | Serve the OpenAPI docs |
 | `ENABLE_GUILD_DISCOVERY` | `true` | Enable the public server browser (guild discovery). When off, `/api/settings` reports `guild_discovery: false` and clients hide the Explore button and all discovery options |
-| `GEOIP_API_URL` | `http://ip-api.com/json/{ip}?fields=city,country` | GeoIP lookup endpoint for session locations; `{ip}` is replaced |
+| `MAX_SESSIONS_PER_USER` | `50` | At most this many open sessions per account (1–1000); a new sign-in beyond that ends the least recently used session, and the account gets a security notice |
 | `KAIKU_OPTIONAL_FEATURES` | unset (all off) | Comma-separated list of optional features to turn on: `forum` (forum channels), `announcements` (announcement channels and crossposting), `events` (scheduled events and their reminders), `screening` (membership screening). While a feature is off, its routes answer 404 `FEATURE_DISABLED`, new channels of that type are refused, crossposts and event reminders do not run, and members are never held for screening (members already waiting are treated as accepted until screening is turned on again). Existing data is kept and comes back when the feature is turned on again. Unknown names are logged as a warning at startup and ignored |
 | `MAX_GUILDS_PER_USER` | `100` | Guilds a user can join (minimum 1) |
 | `MAX_MEMBERS_PER_GUILD` | `1000` | Members per guild (minimum 1) |
@@ -70,13 +70,14 @@ Rate limiting also uses Valkey; see [rate-limiting.md](rate-limiting.md).
 | `MFA_ENCRYPTION_KEY` | unset (empty = unset) | 32-byte hex key that encrypts MFA secrets at rest |
 | `REQUIRE_E2EE_SETUP` | `false` | Require users to set up end-to-end encryption |
 | `BLOCK_CHECK_FAIL_OPEN` | `false` | Allow DMs/calls when the Valkey block check fails (default fail-closed) |
-| `COOKIE_SECURE` | `true` in release builds | `Secure` flag on the refresh cookie |
+| `COOKIE_SECURE` | `true` in release builds | `Secure` flag on the refresh cookie; with it the cookie is named `__Secure-kaiku_refresh` (without it, for local development only, `kaiku_refresh`) |
 | `COOKIE_DOMAIN` | unset | Domain of the refresh cookie |
-| `COOKIE_SAMESITE` | `lax` | `lax`, `strict` or `none`; `none` requires `COOKIE_SECURE=true` |
+| `COOKIE_SAMESITE` | `lax` | `lax`, `strict` or `none`; `none` requires `COOKIE_SECURE=true`. The refresh cookie is always `SameSite=Strict` |
 | `OIDC_ISSUER_URL` | unset (empty = unset) | OIDC provider issuer URL (seeds an OIDC provider) |
 | `OIDC_CLIENT_ID` | unset (empty = unset) | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | unset (empty = unset) | OIDC client secret |
-| `PUBLIC_URL` | unset (empty = unset); **required for OIDC** | Public URL of the server, e.g. `https://chat.example.com` (a trailing slash is ignored). Every OIDC sign-in and account link — web and desktop — returns from the provider to `$PUBLIC_URL/auth/oidc/callback`; register exactly that URL as the redirect URI at your identity provider |
+| `PUBLIC_URL` | **required**; the server does not start without it | The public `https://` address users open, e.g. `https://chat.example.com` (one trailing slash is ignored; no path, query, user name or IP address; `http://` only for `localhost`). Sign-in confirmations from key phones and passkeys are bound to this origin: **changing the domain later invalidates every key phone and passkey**, and users must set them up again. Every OIDC sign-in and account link returns from the provider to `$PUBLIC_URL/auth/oidc/callback`; register exactly that URL as the redirect URI at your identity provider |
+| `AUTH_HMAC_KEY` | unset (derived from `JWT_PRIVATE_KEY`) | 64 hex characters (`openssl rand -hex 32`). Server key for the keyed hashes of sign-in codes, setup links and other short-lived secrets; they are never stored in plain. Unset derives it from the JWT signing key with HKDF. Changing either key voids open sign-ins, phone setups and account requests (they answer as unknown); anything other than 64 hex characters refuses startup |
 | `SMTP_HOST` | unset (empty = unset) | SMTP server for outgoing mail |
 | `SMTP_PORT` | `587` | SMTP port |
 | `SMTP_USERNAME` | unset (empty = unset) | SMTP username |

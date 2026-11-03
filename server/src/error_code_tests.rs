@@ -141,6 +141,11 @@ async fn admin_and_auth_codes_are_upper_snake() {
     let auth = vec![
         AuthError::InvalidCredentials,
         AuthError::UserNotFound,
+        AuthError::SessionReused,
+        AuthError::LastStrongAuthenticator,
+        AuthError::FullSessionRequired,
+        AuthError::StepUpRequired,
+        AuthError::SessionExpired,
         AuthError::NotFound(s()),
         AuthError::Forbidden,
         AuthError::UserAlreadyExists,
@@ -164,6 +169,7 @@ async fn admin_and_auth_codes_are_upper_snake() {
         AuthError::AuthMethodDisabled,
         AuthError::PasswordChangeRequired,
         AuthError::AccountBanned,
+        AuthError::NotAdmin,
         AuthError::ElevationRequired,
         AuthError::CannotUnlinkLastIdentity,
         AuthError::ServiceUnavailable,
@@ -182,6 +188,7 @@ async fn chat_codes_are_upper_snake() {
     let mut chat = vec![
         ChatError::ChannelNotFound,
         ChatError::Forbidden,
+        ChatError::ChannelReadOnly,
         ChatError::PasswordChangeRequired,
         ChatError::SessionEnded,
         ChatError::ServiceUnavailable,
@@ -226,6 +233,7 @@ async fn chat_codes_are_upper_snake() {
             ReactionsError::ChannelNotFound,
             ReactionsError::InvalidEmoji,
             ReactionsError::Forbidden,
+            ReactionsError::ChannelReadOnly,
             ReactionsError::Database(db()),
         ],
     )
@@ -239,6 +247,7 @@ async fn chat_codes_are_upper_snake() {
             ChannelPinsError::NotGuildChannel,
             ChannelPinsError::PinLimitReached,
             ChannelPinsError::Forbidden,
+            ChannelPinsError::ChannelReadOnly,
             ChannelPinsError::FeatureDisabled,
             ChannelPinsError::Database(db()),
         ],
@@ -384,6 +393,48 @@ async fn guild_codes_are_upper_snake() {
 
 #[tokio::test]
 async fn platform_codes_are_upper_snake() {
+    {
+        use crate::approvals::error::ApprovalError as E;
+        assert_codes(
+            "ApprovalError",
+            "error",
+            [
+                E::NotFound,
+                E::State,
+                E::Expired,
+                E::SignatureInvalid,
+                E::NotAllowed,
+                E::KeyDeviceRequired,
+                E::KeyDeviceUnknown,
+                E::KeyDevicePending { ready_at: None },
+                E::KeyDeviceRevoked,
+                E::EnrollmentTokenInvalid,
+                E::EnrollmentAlreadyClaimed,
+                E::EnrollCodeWrong { tries_left: 2 },
+                E::EnrollmentFailed,
+                E::EnrollmentState,
+                E::EnrollmentLimit,
+                E::EnrollmentDeviceInUse,
+                E::DeviceUnsuitable {
+                    reason: "attestation_missing",
+                },
+                E::AccountBanned,
+                E::Validation(s()),
+                E::Unavailable,
+                E::Database(db()),
+            ],
+        )
+        .await;
+    }
+    assert_codes(
+        "SecurityEventsError",
+        "error",
+        [
+            crate::security_events::handlers::SecurityEventsError::Validation(s()),
+            crate::security_events::handlers::SecurityEventsError::Database(db()),
+        ],
+    )
+    .await;
     assert_codes(
         "FavoritesError",
         "error",
@@ -522,6 +573,7 @@ async fn platform_codes_are_upper_snake() {
             GovernanceError::StorageNotConfigured,
             GovernanceError::Validation(s()),
             GovernanceError::Database(db()),
+            GovernanceError::ServiceUnavailable,
             GovernanceError::Internal(s()),
         ],
     )
@@ -576,6 +628,13 @@ async fn rate_limit_voice_and_call_codes_are_upper_snake() {
         [
             RateLimitError::RedisUnavailable,
             RateLimitError::LimitExceeded(RateLimitResult {
+                allowed: false,
+                limit: 1,
+                remaining: 0,
+                reset_at: 0,
+                retry_after: 1,
+            }),
+            RateLimitError::TooManyAttempts(RateLimitResult {
                 allowed: false,
                 limit: 1,
                 remaining: 0,

@@ -1,0 +1,97 @@
+{
+  "attachments": [],
+  "author": {
+    "avatar_url": null,
+    "display_name": "Kaiku",
+    "id": "6b61696b-7500-4000-8000-000000000001",
+    "is_system": true,
+    "status": "offline",
+    "username": "kaiku"
+  },
+  "channel_id": "00000000-0000-4000-8000-000000005003",
+  "content": "Security notice: sign in (2)",
+  "created_at": "2026-11-03T12:00:00Z",
+  "edited_at": "2026-11-03T12:04:00Z",
+  "encrypted": false,
+  "id": "00000000-0000-4000-8000-000000005002",
+  "message_type": "security",
+  "parent_id": null,
+  "pinned": false,
+  "reply_to": null,
+  "security_notice": {
+    "count": 2,
+    "event_type": "sign_in",
+    "events": [
+      {
+        "actions": [],
+        "actor": {
+          "kind": "self",
+          "user_id": "00000000-0000-4000-8000-00000000a001",
+          "username": "alice"
+        },
+        "authenticator": null,
+        "client": {
+          "class": "desktop",
+          "label": "Kaiku desktop on Windows"
+        },
+        "created_at": "2026-11-03T12:04:00Z",
+        "details": {
+          "assurance": "probation",
+          "auth_methods": [
+            "qr"
+          ]
+        },
+        "event_type": "sign_in",
+        "id": "00000000-0000-4000-8000-000000005012",
+        "ip": "203.0.113.7",
+        "place": null,
+        "repudiated_at": null,
+        "request_id": null,
+        "session_id": null,
+        "severity": "normal",
+        "subject_id": "00000000-0000-4000-8000-00000000a001"
+      },
+      {
+        "actions": [],
+        "actor": {
+          "kind": "self",
+          "user_id": "00000000-0000-4000-8000-00000000a001",
+          "username": "alice"
+        },
+        "authenticator": null,
+        "client": {
+          "class": "desktop",
+          "label": "Kaiku desktop on Windows"
+        },
+        "created_at": "2026-11-03T12:00:00Z",
+        "details": {
+          "assurance": "probation",
+          "auth_methods": [
+            "qr"
+          ]
+        },
+        "event_type": "sign_in",
+        "id": "00000000-0000-4000-8000-000000005011",
+        "ip": "203.0.113.7",
+        "place": null,
+        "repudiated_at": null,
+        "request_id": null,
+        "session_id": null,
+        "severity": "normal",
+        "subject_id": "00000000-0000-4000-8000-00000000a001"
+      }
+    ],
+    "events_truncated": false,
+    "first_at": "2026-11-03T12:00:00Z",
+    "last_at": "2026-11-03T12:04:00Z",
+    "notice_id": "00000000-0000-4000-8000-000000005001",
+    "severity": "normal",
+    "subject": {
+      "display_name": "Alice",
+      "user_id": "00000000-0000-4000-8000-00000000a001",
+      "username": "alice"
+    }
+  },
+  "thread_last_reply_at": null,
+  "thread_reply_count": 0
+}

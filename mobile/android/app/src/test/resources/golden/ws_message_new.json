@@ -6,6 +6,7 @@
       "avatar_url": null,
       "display_name": "Alice",
       "id": "00000000-0000-4000-8000-00000000a001",
+      "is_system": false,
       "status": "offline",
       "username": "alice"
     },
@@ -19,6 +20,7 @@
     "parent_id": null,
     "pinned": false,
     "reply_to": null,
+    "security_notice": null,
     "thread_last_reply_at": null,
     "thread_reply_count": 0
   },

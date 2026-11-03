@@ -19,27 +19,29 @@ pub fn hash_token(token: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Extract a refresh token from either the JSON body or `HttpOnly` cookie.
-pub(super) fn extract_refresh_token(
+/// Read the refresh token: the JSON body (native clients) first, then the
+/// refresh cookie, then once the pre-v1.0 cookie name. The flag says the
+/// legacy cookie was used (the caller clears it).
+pub(super) fn extract_refresh_token_with_source(
     body_token: Option<String>,
     jar: &CookieJar,
-) -> AuthResult<String> {
+    config: &crate::config::Config,
+) -> AuthResult<(String, bool)> {
     if let Some(token) = body_token.filter(|t| !t.is_empty()) {
-        tracing::debug!("Refresh token provided via request body");
-        return Ok(token);
+        return Ok((token, false));
     }
-
-    if let Some(cookie) = jar.get(cookies::REFRESH_COOKIE_NAME) {
-        let value = cookie.value().to_owned();
-        if value.is_empty() {
-            tracing::warn!("Refresh cookie present but empty");
-        } else {
-            tracing::debug!("Refresh token provided via HttpOnly cookie");
-            return Ok(value);
+    let current = cookies::cookie_name(cookies::REFRESH_COOKIE, config);
+    if let Some(cookie) = jar.get(current).filter(|c| !c.value().is_empty()) {
+        return Ok((cookie.value().to_owned(), false));
+    }
+    if current != cookies::LEGACY_REFRESH_COOKIE {
+        if let Some(cookie) = jar
+            .get(cookies::LEGACY_REFRESH_COOKIE)
+            .filter(|c| !c.value().is_empty())
+        {
+            return Ok((cookie.value().to_owned(), true));
         }
     }
-
-    tracing::debug!("No refresh token found in body or cookie");
     Err(AuthError::InvalidToken)
 }
 
@@ -68,9 +70,16 @@ pub(super) fn should_return_refresh_token(headers: &HeaderMap) -> bool {
 /// Browser clients send the refresh token via an `HttpOnly` cookie.
 /// Tauri clients cannot use cookies for same-origin requests to the API, so they
 /// send the refresh token via the `X-Refresh-Token` header instead.
-pub(super) fn extract_current_token_hash(headers: &HeaderMap, jar: &CookieJar) -> Option<String> {
+pub(super) fn extract_current_token_hash(
+    headers: &HeaderMap,
+    jar: &CookieJar,
+    config: &crate::config::Config,
+) -> Option<String> {
     // Try cookie first (browser clients)
-    if let Some(cookie) = jar.get(cookies::REFRESH_COOKIE_NAME) {
+    if let Some(cookie) = jar
+        .get(cookies::cookie_name(cookies::REFRESH_COOKIE, config))
+        .or_else(|| jar.get(cookies::LEGACY_REFRESH_COOKIE))
+    {
         return Some(hash_token(cookie.value()));
     }
     // Fall back to X-Refresh-Token header (Tauri clients)

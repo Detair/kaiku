@@ -50,6 +50,9 @@ pub async fn authorize_send(
         .await
         .map_err(|_| ChatError::Forbidden)?;
 
+    // The Kaiku DM is read-only (C28).
+    super::read_only::ensure_writable(&state.db, channel_id).await?;
+
     // For guild channels, also check SEND_MESSAGES permission (and ATTACH_FILES
     // when the message carries a file)
     if channel.guild_id.is_some() {

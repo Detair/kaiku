@@ -191,6 +191,32 @@ pub async fn download_export(
 // Account Deletion Handlers
 // ============================================================================
 
+/// End every session of the account (account-deletion logout, C25) in the
+/// revocation order: `ended_at`, denylist, NOTIFY, commit. Any failure is
+/// 503 `SERVICE_UNAVAILABLE` (the contract's outage answer; a retry of the
+/// request ends them), logged here and never echoed.
+async fn end_all_for_deletion(
+    state: &AppState,
+    user_id: uuid::Uuid,
+) -> Result<(), GovernanceError> {
+    let unavailable = |e: &dyn std::fmt::Display| {
+        tracing::error!(error = %e, %user_id, "ending the sessions of a deletion failed");
+        GovernanceError::ServiceUnavailable
+    };
+    let mut tx = state.db.begin().await.map_err(|e| unavailable(&e))?;
+    crate::auth::revocation::end_all_sessions_tx(
+        &mut tx,
+        &crate::auth::ctx::AuthCtx::from(state),
+        user_id,
+        None,
+        crate::auth::revocation::EndReason::AccountDeleted,
+    )
+    .await
+    .map_err(|e| unavailable(&e))?;
+    tx.commit().await.map_err(|e| unavailable(&e))?;
+    Ok(())
+}
+
 /// Request account deletion with a 30-day grace period.
 #[utoipa::path(
     post,
@@ -226,18 +252,7 @@ pub async fn request_deletion(
     // them again before answering: any remaining rows plus the caller's own
     // session are denylisted and every open socket of the user is closed.
     if user.deletion_scheduled_at.is_some() {
-        let mut ended = {
-            let mut conn = state.db.acquire().await?;
-            crate::auth::queries::delete_user_sessions_except(&mut conn, auth.id, None).await?
-        };
-        if let Some(own) = auth.session_id {
-            if !ended.contains(&own) {
-                ended.push(own);
-            }
-        }
-        crate::auth::revocation::end_all_sessions(&state, auth.id, &ended)
-            .await
-            .map_err(|e| GovernanceError::Internal(e.to_string()))?;
+        end_all_for_deletion(&state, auth.id).await?;
         return Err(GovernanceError::DeletionAlreadyScheduled);
     }
 
@@ -276,16 +291,8 @@ pub async fn request_deletion(
 
     queries::schedule_account_deletion(&state.db, auth.id, now, scheduled_at).await?;
 
-    // Invalidate all sessions (force logout everywhere): delete the rows,
-    // then end them right away (access tokens and every open socket). A
-    // Valkey failure answers 500; the deletion stands and a retry is safe.
-    let ended = {
-        let mut conn = state.db.acquire().await?;
-        crate::auth::queries::delete_user_sessions_except(&mut conn, auth.id, None).await?
-    };
-    crate::auth::revocation::end_all_sessions(&state, auth.id, &ended)
-        .await
-        .map_err(|e| GovernanceError::Internal(e.to_string()))?;
+    // End every session (force logout everywhere) in the revocation order.
+    end_all_for_deletion(&state, auth.id).await?;
 
     tracing::info!(
         user_id = %auth.id,

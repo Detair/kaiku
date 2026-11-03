@@ -234,6 +234,7 @@ pub async fn create(
                             display_name: "Unknown User".to_string(),
                             avatar_url: None,
                             status: "offline".to_string(),
+                            is_system: false,
                         });
                     let latency_ms = start.elapsed().as_millis();
                     let content = format!("Pong! (latency: {latency_ms}ms)");
@@ -264,6 +265,7 @@ pub async fn create(
                         embeds: None,
                         components: None,
                         webhook_id: None,
+                        security_notice: None,
                     };
 
                     let message_json = serde_json::to_value(&response).unwrap_or_default();
@@ -454,6 +456,7 @@ pub async fn create(
                                 display_name: "Unknown User".to_string(),
                                 avatar_url: None,
                                 status: "offline".to_string(),
+                                is_system: false,
                             });
 
                         let accepted = MessageResponse {
@@ -478,6 +481,7 @@ pub async fn create(
                             embeds: None,
                             components: None,
                             webhook_id: None,
+                            security_notice: None,
                         };
 
                         return Ok((StatusCode::ACCEPTED, Json(accepted)));
@@ -557,6 +561,7 @@ pub async fn create(
             display_name: "Unknown User".to_string(),
             avatar_url: None,
             status: "offline".to_string(),
+            is_system: false,
         });
 
     // Rich embeds: bot-authored only. Validate against size/URL caps, persist,
@@ -617,6 +622,7 @@ pub async fn create(
         embeds: embeds_json.clone(),
         components: components_json.clone(),
         webhook_id: None,
+        security_notice: None,
     };
 
     // Broadcast via Redis pub-sub (nonce excluded — it's only for the sender)
@@ -720,6 +726,7 @@ pub async fn update(
     )
     .await
     .map_err(|_| ChatError::Forbidden)?;
+    super::read_only::ensure_writable(&state.db, existing_message.channel_id).await?;
 
     // Content filtering on edited content: skip encrypted messages and DMs
     if !existing_message.encrypted {
@@ -790,6 +797,7 @@ pub async fn update(
             display_name: "Unknown User".to_string(),
             avatar_url: None,
             status: "offline".to_string(),
+            is_system: false,
         });
 
     // Fetch existing attachments
@@ -829,6 +837,7 @@ pub async fn update(
             .as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok()),
         webhook_id: message.webhook_id,
+        security_notice: None,
     };
 
     // Broadcast edit via Redis pub-sub
@@ -880,6 +889,7 @@ pub async fn delete(
     crate::permissions::require_channel_access(&state.db, auth_user.id, message.channel_id)
         .await
         .map_err(|_| ChatError::Forbidden)?;
+    super::read_only::ensure_writable(&state.db, message.channel_id).await?;
 
     // Check ownership (deleted/anonymized messages cannot be modified)
     if message.user_id != Some(auth_user.id) {
@@ -982,6 +992,25 @@ pub async fn build_message_responses(
     // Bulk fetch attachments
     let message_ids: Vec<Uuid> = messages.iter().map(|m| m.id).collect();
     let all_attachments = db::list_file_attachments_by_messages(pool, &message_ids).await?;
+
+    // Security notices of the Kaiku DM, as this reader sees them (C28).
+    let security_ids: Vec<Uuid> = messages
+        .iter()
+        .filter(|m| m.message_type == "security")
+        .map(|m| m.id)
+        .collect();
+    let mut security_notices = if security_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let mut conn = pool.acquire().await?;
+        crate::security_events::notices::notices_by_message(
+            &mut conn,
+            requesting_user_id,
+            Some(&security_ids),
+            None,
+        )
+        .await?
+    };
     let mut attachment_map: std::collections::HashMap<Uuid, Vec<AttachmentInfo>> =
         std::collections::HashMap::new();
     for attachment in all_attachments {
@@ -1052,6 +1081,7 @@ pub async fn build_message_responses(
                             display_name: name,
                             avatar_url: msg.webhook_avatar_url.clone(),
                             status: "offline".to_string(),
+                            is_system: false,
                         }
                     } else {
                         AuthorProfile {
@@ -1060,6 +1090,7 @@ pub async fn build_message_responses(
                             display_name: "Deleted User".to_string(),
                             avatar_url: None,
                             status: "offline".to_string(),
+                            is_system: false,
                         }
                     }
                 });
@@ -1102,6 +1133,7 @@ pub async fn build_message_responses(
                     .as_ref()
                     .and_then(|v| serde_json::from_value(v.clone()).ok()),
                 webhook_id: msg.webhook_id,
+                security_notice: security_notices.remove(&msg.id),
             }
         })
         .collect();
@@ -1548,6 +1580,7 @@ mod tests {
             deletion_scheduled_at: None,
             must_change_password: false,
             session_id: None,
+            session: None,
         }
     }
 

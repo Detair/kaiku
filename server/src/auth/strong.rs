@@ -1,0 +1,145 @@
+//! Strong authenticators (spec B.0): active passkeys and active key devices.
+//!
+//! Key devices live in `approval_devices`; LP adds the passkey arms of
+//! every function here.
+
+use uuid::Uuid;
+
+/// The kind of a strong authenticator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AuthenticatorKind {
+    Passkey,
+    KeyDevice,
+}
+
+impl AuthenticatorKind {
+    /// The stored and wire form (`authenticator_type`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Passkey => "passkey",
+            Self::KeyDevice => "key_device",
+        }
+    }
+
+    /// Parse the stored form.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "passkey" => Some(Self::Passkey),
+            "key_device" => Some(Self::KeyDevice),
+            _ => None,
+        }
+    }
+}
+
+/// One passkey or key device, by row id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AuthenticatorRef {
+    pub kind: AuthenticatorKind,
+    pub id: Uuid,
+}
+
+impl AuthenticatorRef {
+    #[must_use]
+    pub const fn passkey(id: Uuid) -> Self {
+        Self {
+            kind: AuthenticatorKind::Passkey,
+            id,
+        }
+    }
+
+    #[must_use]
+    pub const fn key_device(id: Uuid) -> Self {
+        Self {
+            kind: AuthenticatorKind::KeyDevice,
+            id,
+        }
+    }
+
+    /// The stored and wire form of the kind.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        self.kind.as_str()
+    }
+
+    /// From the stored `(authenticator_type, authenticator_id)` pair.
+    #[must_use]
+    pub fn from_columns(kind: Option<&str>, id: Option<Uuid>) -> Option<Self> {
+        Some(Self {
+            kind: AuthenticatorKind::parse(kind?)?,
+            id: id?,
+        })
+    }
+}
+
+/// Whether the authenticator is `active` (pending and revoked ones
+/// authenticate nothing, SM4). Key devices; LP adds the passkey arm.
+pub async fn is_active(conn: &mut sqlx::PgConnection, a: AuthenticatorRef) -> sqlx::Result<bool> {
+    match a.kind {
+        AuthenticatorKind::KeyDevice => Ok(sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE id = $1 AND state = 'active')",
+        )
+        .bind(a.id)
+        .fetch_one(&mut *conn)
+        .await?),
+        // LP adds passkeys.
+        AuthenticatorKind::Passkey => Ok(false),
+    }
+}
+
+/// The account's active strong authenticators (B.0). Key devices; LP adds
+/// passkeys.
+pub async fn active_strong_count(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+) -> sqlx::Result<i64> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM approval_devices WHERE user_id = $1 AND state = 'active'",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *conn)
+    .await
+}
+
+/// A user cannot remove their own last strong authenticator (SM4):
+/// 409 `LAST_STRONG_AUTHENTICATOR`. Removing one that is not active is
+/// always allowed. Call under the account lock.
+pub async fn ensure_not_last_strong(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    removing: AuthenticatorRef,
+) -> crate::auth::AuthResult<()> {
+    if is_active(conn, removing).await? && active_strong_count(conn, user_id).await? <= 1 {
+        return Err(crate::auth::AuthError::LastStrongAuthenticator);
+    }
+    Ok(())
+}
+
+/// Set `first_activity_at` once (B.0 "new account"); never cleared.
+pub async fn mark_first_activity(conn: &mut sqlx::PgConnection, user_id: Uuid) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE users SET first_activity_at = COALESCE(first_activity_at, NOW()) WHERE id = $1",
+    )
+    .bind(user_id)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// The current display label of an authenticator (the key device's model or
+/// the passkey's name), `None` if unknown. LP adds the passkey arm.
+pub async fn authenticator_label(
+    conn: &mut sqlx::PgConnection,
+    a: AuthenticatorRef,
+) -> sqlx::Result<Option<String>> {
+    match a.kind {
+        AuthenticatorKind::KeyDevice => {
+            sqlx::query_scalar("SELECT label FROM approval_devices WHERE id = $1")
+                .bind(a.id)
+                .fetch_optional(&mut *conn)
+                .await
+        }
+        AuthenticatorKind::Passkey => Ok(None),
+    }
+}

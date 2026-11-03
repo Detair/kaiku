@@ -5,9 +5,11 @@
 
 pub mod admin;
 pub mod api;
+pub mod approvals;
 pub mod auth;
 pub mod bots;
 pub mod chat;
+pub mod cli;
 pub mod config;
 pub mod connectivity;
 pub mod crypto;
@@ -29,9 +31,11 @@ pub mod presence;
 pub mod push;
 pub mod ratelimit;
 pub mod search;
+pub mod security_events;
 pub mod settings;
 pub mod setup;
 pub mod social;
+pub mod system_account;
 pub mod util;
 pub mod validation;
 pub mod voice;

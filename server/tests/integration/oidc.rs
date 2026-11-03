@@ -13,7 +13,7 @@ use vc_server::auth::oidc::{
     append_collision_suffix, client_challenge_matches, client_return_url,
     generate_username_from_claims, is_loopback_client_redirect, is_valid_client_challenge,
     resolve_flow_redirects, FlowRedirectError, OidcFlowPurpose, OidcFlowState, OidcProviderManager,
-    OidcReauthBinding, OidcUserInfo,
+    OidcUserInfo,
 };
 
 // ============================================================================
@@ -378,32 +378,6 @@ fn test_flow_state_legacy_link_user_id_stays_a_link() {
             session_id: None
         }
     );
-}
-
-#[test]
-fn test_flow_state_purpose_is_exclusive() {
-    // A re-authentication state round-trips as exactly that purpose.
-    let binding = OidcReauthBinding {
-        user_id: uuid::Uuid::new_v4(),
-        session_id: uuid::Uuid::new_v4(),
-        reason: None,
-        mfa_verified: true,
-    };
-    let state = OidcFlowState {
-        slug: "google".to_string(),
-        pkce_verifier: "v".to_string(),
-        nonce: "n".to_string(),
-        redirect_uri: "https://x/cb".to_string(),
-        created_at: 0,
-        purpose: OidcFlowPurpose::Reauth(binding.clone()),
-        client_redirect_uri: None,
-        client_challenge: None,
-    };
-    let json = serde_json::to_value(&state).unwrap();
-    assert_eq!(json["purpose"]["kind"], "reauth");
-    assert!(json.get("link_user_id").is_none());
-    let back: OidcFlowState = serde_json::from_value(json).unwrap();
-    assert_eq!(back.purpose, OidcFlowPurpose::Reauth(binding));
 }
 
 #[test]

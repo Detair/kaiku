@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- `kaiku-admin` on the server host can set up a key phone for any account and remove devices or end sessions; every use is logged and notified.
+- A key phone signs itself in again with its screen lock after its session lapsed, without a password.
+- A phone becomes a key by opening a setup link or code and confirming a 6-digit code shown on it; phones without a screen lock or a hardware key store are refused at the start.
+- Your phone can be a key for your account: it confirms sensitive actions with its screen lock, and you can see and remove your key phones in the security settings.
+- Security notices: sign-ins and changes to how you sign in appear in a read-only chat with **Kaiku** and in a security log in your account settings; admins get a copy of important ones. They cannot be deleted from a signed-in session.
 - Desktop app on Linux: an advanced "Show all ALSA devices" option in the audio settings also lists surround, S/PDIF, raw hardware and plugin devices that the short device list hides. It is off by default, and a device you picked stays listed when you turn it off.
 - **Web client image** `ghcr.io/detair/kaiku-web`: Kaiku in the browser, served on the same domain as the server (your reverse proxy sends `/api/`, `/auth/`, `/ws` and `/health` to the server, everything else to the web container). It runs unprivileged with a read-only root filesystem and sends its own security headers, including a Content-Security-Policy. The compose setup now runs it behind Caddy. See `docs/admin-guide/ops/web-client.md`.
 - Admins can add a new account to servers while creating it.
@@ -63,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Admins elevate by confirming on their phone (or with a passkey) instead of typing their password and code.
+- Every sign-in now records how strongly it was confirmed; sessions from before this release are limited to chat and calls until you sign in again with a passkey or your phone. Signed-in requests keep working while Valkey is unavailable, and an ended session stays refused.
+- The admin area needs a session signed in with your key phone (or a passkey); other sessions, and every session from before this release, are not let in, and elevations from before this release end with the upgrade.
+- **Breaking:** the server no longer starts without `PUBLIC_URL`, the public `https://` address users open. Sign-in confirmations are bound to it; read the admin guide before changing your domain.
 - Switches, disabled buttons and placeholders are easier to read in every theme: switches always show their knob, sit left with an outlined track when off and right on the accent colour with a check mark when on; disabled buttons keep a readable label with a dashed outline instead of fading into the background, and say why they are disabled (for example "Enter a channel name to continue."); placeholders are dimmer than typed text and read as examples ("e.g. voice-lounge"). Selected cards and options are marked more clearly, keyboard focus is visible on every button, and the Solarized themes reach the documented text contrast.
 - The banner picker when creating a server is a themed "Choose image" button with the file name instead of the browser's unstyled file control.
 - Desktop auto-updates are signed with a new updater key. Builds from before 1.0.0-rc.1 never shipped the previous key in a release, so no installed app is affected.
@@ -100,6 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opening a channel with unreads scrolls to your last read position
 
 ### Security
+- A session ends automatically when its refresh token is used twice, browser sessions end after 30 days and app sessions after 90 days, and an account can have at most 50 open sessions.
+- Sign-in IP addresses are no longer sent to an external GeoIP service.
 - Update `pulldown-cmark` 0.13.1 → 0.13.6 (RUSTSEC-2026-0414, exponential output with the wikilinks option; Kaiku does not enable that option).
 - Bot, webhook and content-filter requests no longer send your sign-in token to a program listening on your own computer; they go only to your Kaiku server.
 - Signing in with an identity provider in the desktop app no longer passes your session tokens through the browser: the browser only receives a one-time code that expires after 60 seconds and that only the app that started the sign-in can redeem. The app also ignores any other requests to its temporary sign-in address. Older desktop apps must be updated to sign in with an identity provider.
@@ -146,6 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: update `dompurify` 3.4.2 → 3.4.11 (eight HTML-sanitizer XSS advisories — the markdown preview's runtime sanitizer), `vite` 8.0.0 → 8.0.16 (the `server.fs.deny` bypass and `__open-in-editor` NTLM dev-server CVEs), and add transitive overrides for `undici` → 7.28.0 (seven HTTP-client advisories via jsdom) and `@babel/core` → 7.29.6 (via vite-plugin-solid). The remaining flagged instance is the test-only vite 7.3.1 nested under vitest, whose fix is blocked by a JSX-transform incompatibility (documented as a justified, dev-server-only exception); the production bundle is built with the patched vite 8.0.16. This restores the weekly OSV scanner to green.
 
 ### Removed
+- `GEOIP_API_URL`.
 - The 'appear offline' status is no longer available.
 
 ### Fixed

@@ -27,13 +27,14 @@ COPY third_party/ third_party/
 # Create dummy source files for dependency caching
 RUN mkdir -p \
         shared/vc-common/src shared/vc-crypto/src \
-        server/src \
+        server/src server/src/bin \
         client/src-tauri/src \
         client/src-tauri/vp8-decoder/src && \
     echo "fn main() {}" > shared/vc-common/src/lib.rs && \
     echo "fn main() {}" > shared/vc-crypto/src/lib.rs && \
     echo "fn main() {}" > server/src/lib.rs && \
     echo "fn main() {}" > server/src/main.rs && \
+    echo "fn main() {}" > server/src/bin/kaiku_admin.rs && \
     echo "fn main() {}" > client/src-tauri/src/lib.rs && \
     echo "fn main() {}" > client/src-tauri/src/main.rs && \
     echo "fn main() {}" > client/src-tauri/vp8-decoder/src/lib.rs
@@ -73,6 +74,8 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /build/target/release/vc-server /app/vc-server
+# Host CLI for key phones and sessions: `docker compose exec server kaiku-admin …`
+COPY --from=builder /build/target/release/kaiku-admin /usr/local/bin/kaiku-admin
 
 # Copy migrations for runtime application
 COPY server/migrations /app/migrations

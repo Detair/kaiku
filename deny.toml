@@ -30,7 +30,10 @@ ignore = [
     # ephemeral keys (P-256 on webrtc-rs<->webrtc-rs handshakes, i.e. desktop
     # <-> SFU; browsers negotiate X25519). Long-term fix: webrtc-rs 0.21
     # (rustls/ring based DTLS, no p256/p384). Re-check when dtls/jsonwebtoken/openidconnect move to
-    # elliptic-curve 0.14.
+    # elliptic-curve 0.14. vc-server also uses p256 0.13 directly to verify
+    # device signatures (C26) on public inputs only (public keys, messages and
+    # signatures sent by the device); it never signs or holds a private key.
+    # Re-check when LP brings the 0.14 stack.
     "RUSTSEC-2026-0387",
     # rand unsoundness with custom `log` logger — flagged against rand 0.7.3,
     # 0.8.5, 0.9.2, AND 0.10.0 (all versions; the underlying API contract

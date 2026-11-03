@@ -34,7 +34,7 @@ pub async fn list_sessions(
 ) -> AuthResult<Json<SessionListResponse>> {
     // Try to identify the current session from cookie (browser) or header (Tauri).
     // Best-effort: if neither is available, all sessions will have is_current = false.
-    let current_hash = extract_current_token_hash(&headers, &jar);
+    let current_hash = extract_current_token_hash(&headers, &jar, &state.config);
 
     let sessions = queries::list_user_sessions(&state.db, auth_user.id).await?;
 
@@ -55,8 +55,25 @@ pub async fn list_sessions(
                 country: s.country.clone(),
                 created_at: s.created_at,
                 expires_at: s.expires_at,
-                is_current: auth_user.session_id == Some(s.id)
+                // The token's `sid` decides; the refresh token only when
+                // there is none (as `current_session_id`).
+                is_current: auth_user.session_id.map_or_else(
                     || current_hash.as_deref() == Some(&s.token_hash),
+                    |sid| sid == s.id,
+                ),
+                assurance: super::assurance::Assurance::parse(&s.assurance),
+                client_class: s.client_class.clone(),
+                auth_methods: s.auth_methods.clone(),
+                authenticator: match (&s.authenticator_type, s.authenticator_id) {
+                    (Some(kind), Some(id)) => Some(super::types::SessionAuthenticator {
+                        id,
+                        kind: kind.clone(),
+                        label: s.authenticator_label.clone(),
+                    }),
+                    _ => None,
+                },
+                last_used_at: s.last_used_at,
+                absolute_expires_at: s.absolute_expires_at,
             }
         })
         .collect();
@@ -102,16 +119,17 @@ pub async fn revoke_session(
         return Err(AuthError::Forbidden);
     }
 
-    // Delete the row (no more refreshes) and commit, then end the session
-    // (its access tokens and sockets stop now). A Valkey failure after the
-    // commit answers 500; the deletion stands.
+    // End it in the revocation order (B.4) and commit.
     let mut tx = state.db.begin().await?;
-    let ended: Vec<Uuid> = queries::delete_user_session_tx(&mut tx, auth_user.id, session_id)
-        .await?
-        .into_iter()
-        .collect();
+    super::revocation::end_sessions_tx(
+        &mut tx,
+        &super::ctx::AuthCtx::from(&state),
+        auth_user.id,
+        &[session_id],
+        super::revocation::EndReason::Revoked,
+    )
+    .await?;
     tx.commit().await?;
-    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
 
     tracing::info!(user_id = %auth_user.id, session_id = %session_id, "Session revoked");
 
@@ -149,9 +167,15 @@ pub async fn revoke_all_other_sessions(
         })?;
 
     let mut tx = state.db.begin().await?;
-    let ended = queries::delete_user_sessions_except(&mut tx, auth_user.id, Some(current)).await?;
+    let ended = super::revocation::end_all_sessions_tx(
+        &mut tx,
+        &super::ctx::AuthCtx::from(&state),
+        auth_user.id,
+        Some(current),
+        super::revocation::EndReason::OthersRevoked,
+    )
+    .await?;
     tx.commit().await?;
-    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
     let revoked_count = ended.len() as i64;
     tracing::info!(user_id = %auth_user.id, revoked_count, "All other sessions revoked");
 
@@ -169,7 +193,7 @@ pub(super) async fn current_session_id(
     if let Some(sid) = auth_user.session_id {
         return Ok(Some(sid));
     }
-    let Some(hash) = extract_current_token_hash(headers, jar) else {
+    let Some(hash) = extract_current_token_hash(headers, jar, &state.config) else {
         return Ok(None);
     };
     Ok(crate::db::find_session_by_token_hash(&state.db, &hash)

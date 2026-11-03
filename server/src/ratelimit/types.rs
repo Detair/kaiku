@@ -13,6 +13,10 @@ pub enum RateLimitCategory {
     AuthPasswordReset,
     /// Other auth operations (token refresh, etc.)
     AuthOther,
+    /// `/api/approvals/*` per user (C26 `login` limit class).
+    ApprovalLogin,
+    /// Public enrolment and device-key sign-in routes per IP (never IP-blocked).
+    AuthFlow,
     /// Write operations (create/update/delete)
     Write,
     /// Social operations (friend requests, invites)
@@ -43,6 +47,8 @@ impl RateLimitCategory {
             Self::AuthRegister => "auth_register",
             Self::AuthPasswordReset => "auth_pwd_reset",
             Self::AuthOther => "auth_other",
+            Self::ApprovalLogin => "approval_login",
+            Self::AuthFlow => "auth_flow",
             Self::Write => "write",
             Self::Social => "social",
             Self::Read => "read",
@@ -68,8 +74,16 @@ impl RateLimitCategory {
                 | Self::AuthRegister
                 | Self::AuthPasswordReset
                 | Self::AuthOther
+                | Self::ApprovalLogin
+                | Self::AuthFlow
                 | Self::FailedAuth
         )
+    }
+
+    /// The v1.0 sign-in categories (contract "Errors": 429 `TOO_MANY_ATTEMPTS`).
+    #[must_use]
+    pub const fn is_sign_in_flow(&self) -> bool {
+        matches!(self, Self::ApprovalLogin | Self::AuthFlow)
     }
 
     /// Returns all categories except `FailedAuth` (which is handled separately).
@@ -79,6 +93,8 @@ impl RateLimitCategory {
             Self::AuthRegister,
             Self::AuthPasswordReset,
             Self::AuthOther,
+            Self::ApprovalLogin,
+            Self::AuthFlow,
             Self::Write,
             Self::Social,
             Self::Read,
@@ -103,6 +119,8 @@ mod outage_policy_tests {
             RateLimitCategory::AuthRegister,
             RateLimitCategory::AuthPasswordReset,
             RateLimitCategory::AuthOther,
+            RateLimitCategory::ApprovalLogin,
+            RateLimitCategory::AuthFlow,
             RateLimitCategory::FailedAuth,
         ] {
             assert!(category.is_auth(), "{category:?}");

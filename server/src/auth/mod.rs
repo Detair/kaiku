@@ -2,10 +2,13 @@
 //!
 //! Handles local authentication, SSO/OIDC, MFA, and session management.
 
+pub mod assurance;
 mod backup_codes;
+pub mod client_class;
 pub(crate) mod cookies;
+pub mod ctx;
 pub(crate) mod error;
-pub mod geoip;
+pub mod guards;
 mod helpers;
 pub(crate) mod identities;
 pub mod jwt;
@@ -18,9 +21,15 @@ mod password;
 pub(crate) mod profile;
 pub(crate) mod queries;
 pub(crate) mod reauth;
+pub mod refresh;
 pub(crate) mod register;
-pub(crate) mod revocation;
+pub mod revocation;
+pub mod session_check;
+pub mod session_issue;
 pub(crate) mod sessions;
+pub mod step_up;
+pub mod strong;
+pub mod timers;
 pub mod types;
 pub mod ua_parser;
 
@@ -30,7 +39,7 @@ use axum::{middleware as axum_middleware, Router};
 pub use error::{AuthError, AuthResult};
 pub use helpers::hash_token;
 pub use jwt::Claims;
-pub use middleware::{require_auth, require_auth_allow_password_change, AuthUser};
+pub use middleware::{require_auth, require_auth_allow_password_change, AuthUser, SessionMeta};
 pub use password::{hash_password, verify_password};
 
 use crate::api::AppState;
@@ -73,6 +82,8 @@ use crate::ratelimit::{
 /// - POST /reauth/oidc/authorize/{provider} - Start an OIDC re-authentication that elevates the
 ///   session (rate limited)
 pub fn router(state: AppState) -> Router<AppState> {
+    // Phone setup and device-key sign-in (C26), merged under `/auth`.
+    let flow_routes = crate::approvals::flow_router(&state);
     // Login route with IP block check and rate limiting
     let login_route = Router::new()
         .route("/login", post(login::login))
@@ -101,7 +112,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     // Refresh route with rate limiting
     let refresh_route = Router::new()
-        .route("/refresh", post(login::refresh_token))
+        .route("/refresh", post(refresh::refresh_token))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             rate_limit_by_ip,
@@ -220,10 +231,6 @@ pub fn router(state: AppState) -> Router<AppState> {
     ));
     let mfa_reauth_routes = with_reauth_limits(
         Router::new()
-            .route(
-                "/reauth/oidc/authorize/{provider}",
-                post(reauth::oidc_reauth_authorize),
-            )
             .route("/mfa/verify", post(mfa::mfa_verify))
             .route("/mfa/disable", post(mfa::mfa_disable))
             .route("/mfa/backup-codes", post(mfa::mfa_generate_backup_codes))
@@ -276,6 +283,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         )));
 
     public_routes
+        .merge(flow_routes)
         .merge(password_change_routes)
         .merge(password_route)
         .merge(mfa_reauth_routes)

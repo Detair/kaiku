@@ -11,7 +11,11 @@ use crate::api::AppState;
 use crate::auth::AuthUser;
 use crate::permissions::queries::get_system_admin;
 
-/// Middleware that requires the user to be a system admin.
+/// Middleware that requires a system admin with a `full` session.
+///
+/// C27 "What each may do": `/api/admin/*` is in the full row; a probation
+/// session reads and changes nothing here (B.4). Non-admins get `NOT_ADMIN`
+/// whatever their assurance; `/api/admin/status` is outside.
 #[tracing::instrument(skip(state, request, next))]
 pub async fn require_system_admin(
     State(state): State<AppState>,
@@ -27,6 +31,9 @@ pub async fn require_system_admin(
     let admin = get_system_admin(&state.db, auth.id)
         .await?
         .ok_or(AdminError::NotAdmin)?;
+    // The assurance comes from the committed session row `require_auth`
+    // read (B.4 rev 5), never from the token.
+    crate::auth::guards::require_full(&auth)?;
 
     let admin_user = SystemAdminUser {
         user_id: auth.id,

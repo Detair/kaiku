@@ -1,0 +1,133 @@
+{
+  "description": "C26 golden vectors (normative). Inputs and signatures are copied from contract C26; c_hex, context_hash_hex, signing_prefix_b64u and message_hex are computed (KAIKU_UPDATE_GOLDEN=1). The key is a public test key: d = SHA-256(\"kaiku-sig-v1 golden key\"); never use it outside tests.",
+  "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaGyjIg4bpThSbH_2lxjxOCbet8d6OXzr6dvBwmYvZkX9zHpvoOqY5gJuY5LHJQSE3ny7KokI1Ds-0iPwEDhAZQ",
+  "vectors": [
+    {
+      "c_hex": "4444444444444444844444444444444413d31e961a1ad8ec2f16b10c4c982e0876a878ad6df144566ee1894acb70f9c30102000000184b61696b75206465736b746f70206f6e2057696e646f7773000000006ae9ccc00000000f46616d696c6965204dc3bc6c6c65720000000b48616d627572672c20444500000005616c696365",
+      "challenge_id": "33333333-3333-4333-8333-333333333301",
+      "context": {
+        "attempt_id": "44444444-4444-4444-8444-444444444444",
+        "client_class": "desktop",
+        "client_label": "Kaiku desktop on Windows",
+        "collection_hash": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+        "created_at": 1793707200,
+        "place": "Hamburg, DE",
+        "server_name": "Familie Müller",
+        "username": "alice",
+        "variant": "qr"
+      },
+      "context_hash_hex": "2e0d6af64a671a1cc0a3cf4435231ffe08b56f6c3dbe9b74791da593e017fadf",
+      "decision": "approve",
+      "device_id": "22222222-2222-4222-8222-222222222222",
+      "expires_at": 1793707320,
+      "kind": "login",
+      "message_hex": "6b61696b752d7369672d76310133333333333343338333333333333301000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000006ae9cd380000001868747470733a2f2f636861742e6578616d706c652e636f6d11111111111141118111111111111111222222222222422282222222222222222e0d6af64a671a1cc0a3cf4435231ffe08b56f6c3dbe9b74791da593e017fadf0100000020a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "name": "V01",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "origin": "https://chat.example.com",
+      "response_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "signature": "MEUCIDrPmE2yrciCLF2DnvgaeI1DzcPWXyyyPlD46qZ8WGQ8AiEAlpz219hjp91A-xULRpmddZWXEwsijLT5tAREO3WzLe0",
+      "signing_prefix_b64u": "a2Fpa3Utc2lnLXYxATMzMzMzM0MzgzMzMzMzMwEAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHwAAAABq6c04AAAAGGh0dHBzOi8vY2hhdC5leGFtcGxlLmNvbREREREREUERgREREREREREiIiIiIiJCIoIiIiIiIiIiLg1q9kpnGhzAo89ENSMf_gi1b2w9vpt0eR2lk-AX-t8",
+      "user_id": "11111111-1111-4111-8111-111111111111",
+      "variant": "qr"
+    },
+    {
+      "c_hex": "5555555555554555855555555555555566666666666646668666666666666666000000036f6d61020106ce47f2ac3cd013e3ecada739938e70c625399b3a2a1387b75c480ca1ccffd400000007506978656c203802",
+      "challenge_id": "33333333-3333-4333-8333-333333333302",
+      "context": {
+        "authenticator_type": "key_device",
+        "claimant_check": "called_back",
+        "enrollment_id": "55555555-5555-4555-8555-555555555555",
+        "label": "Pixel 8",
+        "new_key_hash": "Bs5H8qw80BPj7K2nOZOOcMYlOZs6KhOHt1xIDKHM_9Q",
+        "subject_id": "66666666-6666-4666-8666-666666666666",
+        "subject_username": "oma",
+        "variant": "admin"
+      },
+      "context_hash_hex": "95cc384c6457731aa857a59bceeb1709add698e15c1cdce489bc8c2eeaed3c1b",
+      "decision": "approve",
+      "device_id": "22222222-2222-4222-8222-222222222222",
+      "expires_at": 1793707320,
+      "kind": "enroll",
+      "message_hex": "6b61696b752d7369672d76310233333333333343338333333333333302000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000006ae9cd380000001868747470733a2f2f636861742e6578616d706c652e636f6d111111111111411181111111111111112222222222224222822222222222222295cc384c6457731aa857a59bceeb1709add698e15c1cdce489bc8c2eeaed3c1b0100000006313233343536",
+      "name": "V02",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "origin": "https://chat.example.com",
+      "response_hex": "313233343536",
+      "signature": "MEUCIE4YiBVDbJKd0nzIeslFWb5lP4OWx3fF5__aB5oaCk0HAiEAy8QaPa9Zeh43i9i9wVVDEKfPMsdM-ELJ2Y22NEF96pU",
+      "signing_prefix_b64u": "a2Fpa3Utc2lnLXYxAjMzMzMzM0MzgzMzMzMzMwIAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHwAAAABq6c04AAAAGGh0dHBzOi8vY2hhdC5leGFtcGxlLmNvbREREREREUERgREREREREREiIiIiIiJCIoIiIiIiIiIilcw4TGRXcxqoV6WbzusXCa3WmOFcHNzkibyMLurtPBs",
+      "user_id": "11111111-1111-4111-8111-111111111111",
+      "variant": "admin"
+    },
+    {
+      "c_hex": "03",
+      "challenge_id": "33333333-3333-4333-8333-333333333303",
+      "context": {
+        "client_class": "android"
+      },
+      "context_hash_hex": "7bc190cbec9880136fdb564f293739d948deb11aeeb8dcaf95aa92c0424e29ae",
+      "decision": "approve",
+      "device_id": "22222222-2222-4222-8222-222222222222",
+      "expires_at": 1793707320,
+      "kind": "device_login",
+      "message_hex": "6b61696b752d7369672d76310333333333333343338333333333333303000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000006ae9cd380000001868747470733a2f2f636861742e6578616d706c652e636f6d11111111111141118111111111111111222222222222422282222222222222227bc190cbec9880136fdb564f293739d948deb11aeeb8dcaf95aa92c0424e29ae0100000000",
+      "name": "V03",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "origin": "https://chat.example.com",
+      "response_hex": "",
+      "signature": "MEUCIQCfAESPWEcAVeTeo_Q3BDjOPw2yx_3eadQyYLl-b4MSZQIgIU0y3dtcSXviAGAepmzXTihWxL7LZHTuUZNH2lqMHp8",
+      "signing_prefix_b64u": "a2Fpa3Utc2lnLXYxAzMzMzMzM0MzgzMzMzMzMwMAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHwAAAABq6c04AAAAGGh0dHBzOi8vY2hhdC5leGFtcGxlLmNvbREREREREUERgREREREREREiIiIiIiJCIoIiIiIiIiIie8GQy-yYgBNv21ZPKTc52UjesRruuNyvlaqSwEJOKa4",
+      "user_id": "11111111-1111-4111-8111-111111111111",
+      "variant": null
+    },
+    {
+      "c_hex": "77777777777747778777777777777777000000116b65795f6465766963652e72656d6f7665249895243dc67001ed138ad73a3cf6f8f60798146055289b12bbf12c0db7ceaf00000007506978656c2038",
+      "challenge_id": "33333333-3333-4333-8333-333333333304",
+      "context": {
+        "action": "key_device.remove",
+        "sid": "77777777-7777-4777-8777-777777777777",
+        "target": "99999999-9999-4999-8999-999999999999",
+        "target_label": "Pixel 8"
+      },
+      "context_hash_hex": "daa72edfe0362bf796d8c7ee30267354b9491e0ec97e36087db40e8d362f61c9",
+      "decision": "approve",
+      "device_id": "22222222-2222-4222-8222-222222222222",
+      "expires_at": 1793707320,
+      "kind": "device_stepup",
+      "message_hex": "6b61696b752d7369672d76310433333333333343338333333333333304000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000006ae9cd380000001868747470733a2f2f636861742e6578616d706c652e636f6d1111111111114111811111111111111122222222222242228222222222222222daa72edfe0362bf796d8c7ee30267354b9491e0ec97e36087db40e8d362f61c90100000000",
+      "name": "V04",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "origin": "https://chat.example.com",
+      "response_hex": "",
+      "signature": "MEYCIQDiXOgsy-XH9ewnDUbhcwC9s_NVOqI2QMCXDlGVgwWxzAIhAN5ZtWtqQTFZ9KTwykkn6uoRkWJwFyt7Ww8bCMWZXT0P",
+      "signing_prefix_b64u": "a2Fpa3Utc2lnLXYxBDMzMzMzM0MzgzMzMzMzMwQAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHwAAAABq6c04AAAAGGh0dHBzOi8vY2hhdC5leGFtcGxlLmNvbREREREREUERgREREREREREiIiIiIiJCIoIiIiIiIiIi2qcu3-A2K_eW2MfuMCZzVLlJHg7JfjYIfbQOjTYvYck",
+      "user_id": "11111111-1111-4111-8111-111111111111",
+      "variant": null
+    },
+    {
+      "c_hex": "5555555555554555855555555555555548d5d9dd65d94e4d608344c215dd4fea099dccfd51c1aa3d86ca9783e4ac5f5d404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f000000036f6d61",
+      "challenge_id": "33333333-3333-4333-8333-333333333305",
+      "context": {
+        "attestation_challenge": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+        "enrollment_id": "55555555-5555-4555-8555-555555555555",
+        "new_key_hash": "SNXZ3WXZTk1gg0TCFd1P6gmdzP1Rwao9hsqXg-SsX10",
+        "subject_username": "oma"
+      },
+      "context_hash_hex": "0849d9cc3c467e1e5652673387a8847ba2a2803531cd9734256c5f58758122fc",
+      "decision": "approve",
+      "device_id": "88888888-8888-4888-8888-888888888888",
+      "expires_at": 1793707320,
+      "kind": "enroll_pop",
+      "message_hex": "6b61696b752d7369672d76310533333333333343338333333333333305000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000006ae9cd380000001868747470733a2f2f636861742e6578616d706c652e636f6d66666666666646668666666666666666888888888888488888888888888888880849d9cc3c467e1e5652673387a8847ba2a2803531cd9734256c5f58758122fc0100000000",
+      "name": "V05",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "origin": "https://chat.example.com",
+      "response_hex": "",
+      "signature": "MEUCIQDUWAn2yLiDOjJD_wRjiR_Y-SJQESYfWARIuGnkEVzPZAIgJ4dKWYPvbvjKfpgkCU0H_byn4nO4hz3_ZTQYmJALFzY",
+      "signing_prefix_b64u": "a2Fpa3Utc2lnLXYxBTMzMzMzM0MzgzMzMzMzMwUAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHwAAAABq6c04AAAAGGh0dHBzOi8vY2hhdC5leGFtcGxlLmNvbWZmZmZmZkZmhmZmZmZmZmaIiIiIiIhIiIiIiIiIiIiICEnZzDxGfh5WUmczh6iEe6KigDUxzZc0JWxfWHWBIvw",
+      "user_id": "66666666-6666-4666-8666-666666666666",
+      "variant": null
+    }
+  ],
+  "version": 1
+}

@@ -18,7 +18,7 @@ use super::helpers::{body_to_json, create_test_user, generate_access_token, Test
 async fn create_passwordless_user(pool: &PgPool, external_id: &str) -> Uuid {
     let suffix = &Uuid::new_v4().to_string()[..8];
     let username = format!("oidconly_{suffix}");
-    sqlx::query_scalar::<_, Uuid>(
+    let id = sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO users (username, display_name, auth_method, external_id)
          VALUES ($1, 'OIDC Only', 'oidc', $2) RETURNING id",
     )
@@ -26,7 +26,9 @@ async fn create_passwordless_user(pool: &PgPool, external_id: &str) -> Uuid {
     .bind(external_id)
     .fetch_one(pool)
     .await
-    .expect("passwordless user insert should succeed")
+    .expect("passwordless user insert should succeed");
+    super::helpers::ensure_test_session(pool, id).await;
+    id
 }
 
 async fn get_identities(app: &TestApp, token: &str) -> (u16, serde_json::Value) {

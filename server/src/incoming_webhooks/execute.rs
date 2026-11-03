@@ -63,6 +63,7 @@ pub(super) fn webhook_message_response(message: Message) -> MessageResponse {
             display_name: name,
             avatar_url: message.webhook_avatar_url.clone(),
             status: "offline".to_string(),
+            is_system: false,
         },
         content: message.content,
         encrypted: false,
@@ -86,6 +87,7 @@ pub(super) fn webhook_message_response(message: Message) -> MessageResponse {
             .and_then(|v| serde_json::from_value(v.clone()).ok()),
         components: None,
         webhook_id: message.webhook_id,
+        security_notice: None,
     }
 }
 

@@ -71,6 +71,21 @@ channel.
   coalescing and without state (no read gate); eviction is retried at most
   once per second.
 
+## Security notices (C28)
+
+- `t=security` (`security_events::push::SecurityPush`), sent by
+  `security_events::notices` for every new notice in the Kaiku DM and at most
+  once per notice per 60 s while it is updated. FCM data (strings):
+  `{"t":"security","notice_id","event_type","severity":"high"|"normal","count":"<n>","subject_id"}`,
+  plus `actor_id` only when an admin or the recovery contact acted;
+  UnifiedPush: the same JSON with `count` as a number.
+- Always HIGH, `collapse_key` = `security-<notice_id>`, TTL `86400s`. Sent to
+  every subscription of the recipient through `deliver_with`, outside the C20
+  coalescer and the notification settings (the server has no quiet hours;
+  clients must not suppress `high`). No content beyond these fields; no
+  notice carries an action that approves anything. Kaiku DM messages never
+  produce a `t=dm` wake (they are not sent through the message pipeline).
+
 ## Call wakes (C20 addendum)
 
 - Payload (FCM data-only, every value a string; UnifiedPush gets the same

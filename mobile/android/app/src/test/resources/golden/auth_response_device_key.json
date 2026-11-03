@@ -1,0 +1,11 @@
+{
+  "absolute_expires_at": "2027-02-01T12:00:00Z",
+  "access_token": "fixture-device-access-token",
+  "assurance": "full",
+  "expires_in": 900,
+  "password_change_required": false,
+  "refresh_token": "fixture-device-refresh-token",
+  "session_id": "00000000-0000-4000-8000-00000000d001",
+  "setup_required": false,
+  "token_type": "Bearer"
+}

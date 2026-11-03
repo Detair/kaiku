@@ -37,6 +37,7 @@ async fn main() -> Result<()> {
         );
     }
     info!(features = ?config.optional_features, "Optional features");
+    info!(origin = %config.public_origin.origin, "Public origin");
 
     // Initialize database
     let db_pool = db::create_pool(&config.database_url).await?;
@@ -186,6 +187,17 @@ async fn main() -> Result<()> {
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to cleanup expired sessions");
+                }
+                _ => {}
+            }
+
+            // Finished approval challenges and enrolments after 30 days
+            match db::cleanup_finished_approvals(&db_pool_clone).await {
+                Ok(count) if count > 0 => {
+                    tracing::debug!(count, "Cleaned up finished approvals and enrolments");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to cleanup finished approvals");
                 }
                 _ => {}
             }
@@ -411,6 +423,14 @@ async fn main() -> Result<()> {
             .expect("Failed to create HTTP client"),
     });
 
+    // Minute sweep of the login state machines (notice outbox, timers).
+    let auth_timers_handle = vc_server::auth::timers::spawn(state.clone());
+    // Committed session ends close their sockets (DC5).
+    let session_end_listener_handle = vc_server::auth::revocation::spawn_session_end_listener(
+        state.db.clone(),
+        state.redis.clone(),
+    );
+
     // Remove voice peers whose connection failed and did not recover.
     let stale_peer_reaper_handle = state
         .sfu
@@ -449,6 +469,8 @@ async fn main() -> Result<()> {
     stale_peer_reaper_handle.abort();
     db_cleanup_handle.abort();
     webhook_worker_handle.abort();
+    auth_timers_handle.abort();
+    session_end_listener_handle.abort();
     rtp_flush_handle.abort();
     retention_handle.abort();
     voice_health_handle.abort();

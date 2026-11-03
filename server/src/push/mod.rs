@@ -622,6 +622,26 @@ pub async fn delete_device(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Delete every push subscription of one install of `user_id` (a revoked
+/// key device, after its last notice; C19 amendment 3 in C26).
+///
+/// # Errors
+/// The delete failed.
+pub async fn delete_device_subscriptions(
+    db: &sqlx::PgPool,
+    user_id: Uuid,
+    device_id: Uuid,
+) -> Result<u64, sqlx::Error> {
+    Ok(
+        sqlx::query("DELETE FROM push_subscriptions WHERE device_id = $1 AND user_id = $2")
+            .bind(device_id)
+            .bind(user_id)
+            .execute(db)
+            .await?
+            .rows_affected(),
+    )
+}
+
 /// Router mounted at `/api/me/push-subscriptions`.
 pub fn router() -> axum::Router<AppState> {
     use axum::routing::{delete, get};

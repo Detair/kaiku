@@ -120,8 +120,6 @@ pub(super) const LINK_SESSION_INVALID: &str = "LINK_SESSION_INVALID";
 /// Hand-back code for a system admin linking from a non-elevated session
 /// (same code as the admin middleware's 403).
 pub(super) const ELEVATION_REQUIRED: &str = "ELEVATION_REQUIRED";
-/// Hand-back code when Valkey cannot confirm the session (fails closed).
-pub(super) const SERVICE_UNAVAILABLE: &str = "SERVICE_UNAVAILABLE";
 /// Hand-back code for a banned account.
 pub(super) const ACCOUNT_BANNED: &str = "ACCOUNT_BANNED";
 
@@ -150,9 +148,9 @@ pub(super) async fn admin_may_link(
 /// `Some(code)` refuses the link with that hand-back code.
 ///
 /// Refused when the state names no session (legacy `link_user_id` states),
-/// the session is missing, expired or denylisted, the account is banned, or a
-/// system admin's session is no longer elevated. An unreadable denylist
-/// fails closed ([`SERVICE_UNAVAILABLE`]).
+/// the session is missing, ended, expired or denylisted, the account is
+/// banned, or a system admin's session is no longer elevated. The committed
+/// session row decides; an unreadable denylist is skipped (B.4 rev 5).
 pub(super) async fn link_refusal(
     state: &AppState,
     user_id: Uuid,
@@ -167,10 +165,12 @@ pub(super) async fn link_refusal(
     if !live {
         return Ok(Some(LINK_SESSION_INVALID));
     }
-    match super::revocation::is_session_revoked(&state.redis, &sid.to_string()).await {
-        Ok(false) => {}
-        Ok(true) => return Ok(Some(LINK_SESSION_INVALID)),
-        Err(_) => return Ok(Some(SERVICE_UNAVAILABLE)),
+    // The committed row above decides; a denylist hit only rejects
+    // earlier, and an unreachable denylist is skipped (B.4 rev 5).
+    if super::session_check::denylist(&state.redis, sid).await
+        == super::session_check::Denylist::Hit
+    {
+        return Ok(Some(LINK_SESSION_INVALID));
     }
     if super::queries::is_user_globally_banned(&state.db, user_id).await? {
         return Ok(Some(ACCOUNT_BANNED));

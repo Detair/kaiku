@@ -7,7 +7,6 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use axum_extra::extract::CookieJar;
-use chrono::{Duration, Utc};
 use fred::prelude::*;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
@@ -15,20 +14,19 @@ use validator::Validate;
 
 use super::backup_codes::{find_matching_backup_code, generate_backup_codes, BACKUP_CODE_COUNT};
 use super::error::{AuthError, AuthResult};
-use super::helpers::{extract_user_agent, should_return_refresh_token};
-use super::jwt::generate_token_pair;
+use super::helpers::should_return_refresh_token;
 use super::mfa_crypto::encrypt_mfa_secret;
 use super::middleware::AuthUser;
+use super::reauth;
 use super::types::{
     AuthResponse, BackupCodesRequest, MfaBackupCodeCountResponse, MfaBackupCodesResponse,
     MfaSetupResponse, MfaVerifyRequest, QrCreateResponse, QrRedeemRequest,
 };
-use super::{cookies, hash_token, reauth};
 use crate::api::AppState;
 use crate::db::{
-    count_all_mfa_backup_codes, count_unused_mfa_backup_codes, create_session,
-    delete_mfa_backup_codes, find_user_by_id, get_unused_mfa_backup_codes, is_setup_complete,
-    mark_mfa_backup_code_used, set_mfa_secret, store_mfa_backup_codes,
+    count_all_mfa_backup_codes, count_unused_mfa_backup_codes, delete_mfa_backup_codes,
+    find_user_by_id, get_unused_mfa_backup_codes, mark_mfa_backup_code_used, set_mfa_secret,
+    store_mfa_backup_codes,
 };
 
 /// Setup MFA (TOTP).
@@ -514,55 +512,30 @@ pub async fn qr_redeem(
         return Err(AuthError::AccountBanned);
     }
 
-    // Issue tokens
-    let tokens = generate_token_pair(
-        user_id,
-        &state.config.jwt_private_key,
-        state.config.jwt_access_expiry,
-        state.config.jwt_refresh_expiry,
-    )?;
-
-    // Compute refresh token hash for session tracking
-    let token_hash = hash_token(&tokens.refresh_token);
-    let expires_at = Utc::now() + Duration::seconds(state.config.jwt_refresh_expiry);
-
-    // Create session with IP and user agent from the redeeming client
-    let user_agent = extract_user_agent(&headers);
-    create_session(
-        &state.db,
-        tokens.refresh_token_id,
-        user_id,
-        &token_hash,
-        expires_at,
-        Some(&addr.ip().to_string()),
-        user_agent.as_deref(),
-        None,
-        None,
+    // Create the session (probation, CC4) with the redeeming client.
+    let client = super::session_issue::SessionClient::from_request(&state, &headers, addr);
+    let issued = super::session_issue::issue_session(
+        &super::ctx::AuthCtx::from(&state),
+        &super::session_issue::NewSession {
+            user_id,
+            method: super::session_issue::SignInMethod::LegacyQrRedeem,
+            client: &client,
+            client_class: super::client_class::ClientClass::from_headers(&headers),
+            authenticator: None,
+        },
     )
     .await?;
-
-    let setup_complete = is_setup_complete(&state.db).await?;
+    crate::security_events::spawn_delivery(&state, issued.event_ids.clone());
 
     tracing::info!(user_id = %user_id, "QR login token redeemed");
     crate::observability::metrics::record_auth_login_attempt(true);
 
     let include_refresh_token = should_return_refresh_token(&headers);
 
-    let jar = jar.add(cookies::build_refresh_cookie(
-        &tokens.refresh_token,
-        state.config.jwt_refresh_expiry,
-        &state.config,
-    ));
+    let jar = jar.add(issued.refresh_cookie(&state.config));
 
     Ok((
         jar,
-        Json(AuthResponse {
-            access_token: tokens.access_token,
-            refresh_token: include_refresh_token.then_some(tokens.refresh_token),
-            expires_in: tokens.access_expires_in,
-            token_type: "Bearer".to_string(),
-            setup_required: !setup_complete,
-            password_change_required: user.must_change_password,
-        }),
+        Json(issued.into_response(user.must_change_password, include_refresh_token)),
     ))
 }

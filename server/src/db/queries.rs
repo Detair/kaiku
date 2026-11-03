@@ -66,7 +66,9 @@ pub async fn find_user_id_by_identity(
     subject: &str,
 ) -> sqlx::Result<Option<Uuid>> {
     sqlx::query_scalar::<_, Uuid>(
-        "SELECT user_id FROM user_identities WHERE provider_slug = $1 AND subject = $2",
+        "SELECT i.user_id FROM user_identities i
+           JOIN users u ON u.id = i.user_id
+          WHERE i.provider_slug = $1 AND i.subject = $2 AND NOT u.is_system",
     )
     .bind(provider_slug)
     .bind(subject)
@@ -456,10 +458,42 @@ pub async fn delete_all_user_sessions(pool: &PgPool, user_id: Uuid) -> sqlx::Res
 
 /// Clean up expired sessions (for background job).
 pub async fn cleanup_expired_sessions(pool: &PgPool) -> sqlx::Result<u64> {
-    let result = sqlx::query("DELETE FROM sessions WHERE expires_at < NOW()")
-        .execute(pool)
-        .await?;
+    // Ended rows are kept 30 days (DC4: refresh-reuse recognition and
+    // audit); so are lapsed ones after their last expiry.
+    let result = sqlx::query(
+        "DELETE FROM sessions
+          WHERE (ended_at IS NOT NULL AND ended_at < NOW() - INTERVAL '30 days')
+             OR (ended_at IS NULL
+                 AND LEAST(expires_at, absolute_expires_at) < NOW() - INTERVAL '30 days')",
+    )
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected())
+}
+
+/// Delete finished challenges and ended enrolments after 30 days (for background job).
+///
+/// Open challenges are swept to `expired` by the minute timer first; step-up
+/// grants go with their session rows.
+pub async fn cleanup_finished_approvals(pool: &PgPool) -> sqlx::Result<u64> {
+    let mut tx = pool.begin().await?;
+    let challenges = sqlx::query(
+        "DELETE FROM approvals
+          WHERE state IN ('consumed', 'denied', 'reported', 'expired')
+            AND expires_at < NOW() - INTERVAL '30 days'",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    let enrollments = sqlx::query(
+        "DELETE FROM enrollments
+          WHERE ended_at IS NOT NULL AND ended_at < NOW() - INTERVAL '30 days'",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
+    Ok(challenges + enrollments)
 }
 
 /// Clean up claimed prekeys older than 7 days (for background job).
@@ -2011,7 +2045,7 @@ pub async fn mark_setup_complete(pool: &PgPool, updated_by: Uuid) -> sqlx::Resul
 /// Count total number of users in the database.
 /// Used in critical first-user registration path - errors must be logged for debugging.
 pub async fn count_users(pool: &PgPool) -> sqlx::Result<i64> {
-    let row = sqlx::query("SELECT COUNT(*) as count FROM users")
+    let row = sqlx::query("SELECT COUNT(*) as count FROM users WHERE NOT is_system")
         .fetch_one(pool)
         .await
         .map_err(|e| {

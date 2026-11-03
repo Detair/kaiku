@@ -29,6 +29,8 @@
 - `mfa_crypto.rs` — TOTP generation, verification, and QR code creation
 - `oidc.rs` — OpenID Connect provider configuration and callback handling
 - `error.rs` — AuthError and AuthResult types
+- `session_issue.rs` — `issue_session_tx`: every new session (account lock, session limit, absolute cap by client class); device-key sign-in lives in `crate::approvals::device_login`
+- `../cli/` + `../bin/kaiku_admin.rs` — `kaiku-admin` host CLI (enrol a key phone, remove devices, end sessions; audit rows with the system account as actor)
 
 ## For AI Agents
 
@@ -120,6 +122,8 @@ Config::default()  // Uses OWASP-recommended defaults
 - `AuthLogin`: 5 req/60s per IP + IP blocking after 10 failures
 - `AuthRegister`: 3 req/3600s per IP (prevent mass registration)
 - `AuthOther`: 40 req/60s per IP by default (refresh, OIDC authorize/callback, desktop hand-off exchange)
+- `AuthFlow`: 60 req/60s per IP (phone setup `/auth/enrollments/*`, device-key sign-in `/auth/device-login*`); never behind `check_ip_not_blocked`, 429 `TOO_MANY_ATTEMPTS`
+- `ApprovalLogin`: 30 req/60s per user (`/api/approvals/*`), 429 `TOO_MANY_ATTEMPTS`
 
 **IP Blocking**: `check_ip_not_blocked` middleware reads `ratelimit:block:{ip}` key from Redis. If exists, return 403. Login failures increment `ratelimit:login_failures:{ip}`, block at 10 failures for 1 hour.
 
@@ -139,104 +143,38 @@ Config::default()  // Uses OWASP-recommended defaults
 - Audit token expiry changes (longer = more risk)
 - Test auth flows with expired/malformed tokens
 
-### Session end (C25)
+### Session check (B.4 rev 5)
 
-A ban (single or bulk), a single-session revoke, "revoke all other sessions", a password change with `revoke_others`, a password reset, logout and the account-deletion logout end the affected sessions right away.
+The committed `sessions` row is the authority for every authenticated request, every WebSocket handshake and re-check, the `?token=` download path, refresh and device-key sign-in.
 
-- **Order:**
-  1. Commit the durable change first: the ban row, the session-row deletion, the password, and the admin audit entry.
-  2. Then call `revocation::end_sessions` (a list of ids) or `end_all_sessions` (every socket of the user).
-- **What ending does:**
-  - It denylists each session id (`canis:revoked_sid:{sid}`, TTL `jwt_access_expiry` + 60 s).
-  - It publishes the internal `session_revoked` / `all_sessions_revoked` notice on `user:{id}`. Sockets consume the notice (it is never forwarded) and answer with an `error` event `SESSION_REVOKED`, then close 1008.
-- **Bans:** every authenticated request and every WS handshake re-checks the ban in the DB. A Valkey problem can never undo a ban.
-- **Bounded failure window:** if Valkey fails after the commit, the request answers 500 and the durable change stands.
-  - The session rows are gone, so refresh is impossible.
-  - Open sockets close anyway, because their pub/sub pipeline fails as well (close 1011), and no new socket can become ready while Valkey is down.
-  - The residual exposure is an access token that is not denylisted, until it expires (`jwt_access_expiry`, 15 min).
-  - Every ending call is idempotent, so a retry finishes the job.
-- **Stable session id:** refresh rotates the session row in place, so the `sid` stays the same for the whole login. Do not change refresh back to delete-and-insert: sockets and tokens from before a refresh would then escape revocation.
-- **Possible follow-up:** a durable revocation outbox (a DB row per pending end, drained to Valkey) would close the residual window.
+- **Live** = `ended_at IS NULL AND expires_at > NOW() AND absolute_expires_at > NOW()`, read by primary key (`session_check::load_live`: session, user and ban state in one query, DC6).
+- **Order:** the Valkey denylist first (`session_check::denylist`): `Hit` rejects at once; `Miss` and `Unavailable` fall through to the row. A missing, empty or unreachable denylist never makes a session valid.
+- **Refusals:** no `sid` claim, no row, not live, another user's session, the system account → 401 `INVALID_TOKEN`; banned → 403 `ACCOUNT_BANNED`.
+- **No positive cache** of live sessions. A cache added later must be invalidated synchronously inside the revoking transaction's commit path and needs a security review.
+- **WebSocket:** the handshake runs the same check (bounded by the auth timeout; a database error closes 1013 / answers 503); the socket loop re-reads the row every `session_recheck_secs` (≤ 60 s): not live → `error SESSION_REVOKED`, close 1008; database error → close 1013.
+- **Assurance** (`full` | `probation`) is stored at creation by `session_issue::issue_session_tx` and never changes. The access JWT's `assurance` claim is for client display only; the server decides from `AuthUser::session` (the row). Sessions from before the upgrade are `probation`, `{legacy}`, web, capped at `created_at + 30 d` (DC3).
+- **Creation:** every sign-in path goes through `issue_session_tx` (account row lock, absolute cap by client class — web 30 d, desktop and Android 90 d — `expires_at = min(now + 7 d, absolute)`, `first_activity_at`). IP and User-Agent are stored for display and audit only; there is no GeoIP lookup.
 
-### Re-authentication (C24)
+### Session end (C25, B.4 revocation order)
 
-Admin elevation and backup-code regeneration ask the caller to prove the account again (`reauth.rs`).
+A ban (single or bulk), a single-session revoke, "revoke all other sessions", a password change with `revoke_others`, a password reset, logout, account deletion (request or admin) end the affected sessions right away.
 
-- **Password path:** `POST /api/admin/elevate` with `{"password": string, "mfa_code": string|null, "reason": string|null}`.
-  - When MFA is on, a current TOTP code is required. Backup codes are never accepted.
-  - `POST /auth/mfa/backup-codes` takes `{"mfa_code": string}`, which must be a current TOTP code.
-- **TOTP replay:** `accept_totp` accepts each 30 s step once per user (`mfa:totp_step:{user_id}`, 90 s TTL).
-  - It is used by elevation, the OIDC start, backup-code regeneration and `/auth/mfa/verify` (also behind `/auth/mfa/disable`).
-  - A replayed code counts as a wrong code.
-  - If Valkey errors, the request gets 503 `SERVICE_UNAVAILABLE` (fail closed).
-- **OIDC path (elevation only):** `POST /auth/reauth/oidc/authorize/{provider_id}` (bearer, system admin) with the JSON body `{"redirect_uri": string|null, "reason": string|null, "mfa_code": string|null}`.
-  - It answers 200 `{"url": string}` (the provider URL to open); there is no redirect variant.
-  - Secrets never go into a URL. A missing or invalid body is 400 `VALIDATION_ERROR`; `reason` has a 255-character limit.
-  - When MFA is on, `mfa_code` (TOTP) is verified here, with the same lockout and replay protection. The result is bound into the flow state. `amr` never replaces it.
-  - The provider is asked for a fresh login (`prompt=login`, `max_age=0`); normal login flows do not get these parameters.
-  - The provider always redirects to `{PUBLIC_URL}/auth/oidc/callback` (`Config::public_url`, trailing slash ignored).
-  - A desktop loopback `redirect_uri` is stored as `client_redirect_uri` and used only for the hand-back.
-  - The flow state is encrypted and single use (300 s TTL). `OidcFlowState.purpose` is one `OidcFlowPurpose` (`Login`, `Link {user_id, session_id}` or `Reauth(binding)`), so link and reauth exclude each other.
-  - Legacy states deserialize as before: a bare `link_user_id` becomes `Link`, nothing becomes `Login`.
-  - The binding holds the user, the token's `sid`, the reason and `mfa_verified`.
-  - The callback dispatches a reauth state before any login or link work. `complete_oidc_reauth` then checks, in this order:
-    1. ID token signature, issuer, audience, expiry and nonce;
-    2. `auth_time` present, with no fallback;
-    3. `auth_time` at most 300 s old and at most 30 s in the future;
-    4. (provider, `sub`) linked to that user;
-    5. the session still live and not revoked (fail closed);
-    6. the identity eligible for that session (see below);
-    7. the user still a system admin;
-    8. TOTP verified at the start when MFA is on.
-  - Only then does `admin::system::record_elevation` elevate that session. It writes the same row, cache and audit entry as the password path.
-  - Hand-back works like the identity-link flow (`login::oidc_hand_back`):
-    - desktop: a 307 to `client_redirect_uri` with `reauth=elevated&expires_at=<RFC 3339>` or `reauth_error=<CODE>`;
-    - browser: a `postMessage` of `{"type": "oidc-reauth-callback", "success", "error_code", "expires_at"}`.
-    - a provider error (callback without `code`) and server faults also hand back, as `reauth_error=OIDC_PROVIDER_ERROR` / `REAUTH_FAILED` (`reauth::reauth_failure_response`, used by `login::flow_failure_response` for reauth states).
-- **Eligible identity:** linked no later than the session's original start (`sessions.created_at`, stable across refresh), or linked from an elevated session (`user_identities.linked_while_elevated`).
-  - An identity linked in a non-elevated session can confirm only sessions that start later.
-  - **Admin links need elevation:** a system admin may link an identity only from an elevated session. `GET /auth/me/identities/authorize/{provider}` answers 403 `ELEVATION_REQUIRED` (same body as the admin middleware) otherwise; non-admins are unaffected. Without this, a stolen non-elevated admin token could link an attacker's identity, sign in through it (a new, later session) and elevate from there. With it, every identity an admin links carries `linked_while_elevated`.
-  - **Link callback re-checks the starting session** (`identities::link_refusal`, before anything is inserted). Refusals go back through the link hand-back (`?link_error=` / `oidc-link-callback`):
-    - `LINK_SESSION_INVALID`: the state names no session (legacy `link_user_id` states), or the session is missing, expired or denylisted;
-    - `SERVICE_UNAVAILABLE`: the denylist cannot be read (fail closed);
-    - `ACCOUNT_BANNED`: the account is banned;
-    - `ELEVATION_REQUIRED`: a system admin's session is no longer elevated.
-  - "Usable" means: an enabled provider with OIDC discovery (plain OAuth2 has no ID token, so no `auth_time`), and OIDC sign-in allowed.
-- **Methods:** `GET /auth/reauth/methods` (bearer) returns `{"password": bool, "mfa_required": bool, "oidc": [{"provider_id": string, "display_name": string}]}`.
-  - `mfa_required` applies to both paths.
-  - `oidc` lists the usable, eligible providers for the calling session.
-- **Audit:** `details.method` names the factors actually verified: `password`, `password+totp`, `oidc` or `oidc+totp`.
-- **Errors:**
-  - 400 `VALIDATION_ERROR` (missing field or body)
-  - 400 `MFA_CODE_REQUIRED` (both paths)
-  - 401 `INVALID_CREDENTIALS` (wrong or replayed password or code; it never says which)
-  - 400 `REAUTH_OIDC_REQUIRED` (no password, but a usable, eligible provider exists)
-  - 400 `REAUTH_UNAVAILABLE` (neither)
-  - 400 `REAUTH_PROVIDER_UNAVAILABLE` (OIDC start for a provider that is not linked, not usable or not eligible)
-  - 403 (OIDC start by a non-admin; `GET` on the start path is 405)
-  - 429 (rate limited or locked)
-  - 503 `SERVICE_UNAVAILABLE` (replay store, re-auth limiter or session denylist unavailable)
-- **Callback codes:**
-  - `REAUTH_AUTH_TIME_MISSING`
-  - `REAUTH_STALE`
-  - `REAUTH_IDENTITY_MISMATCH`
-  - `REAUTH_SESSION_INVALID`
-  - `REAUTH_IDENTITY_NOT_ELIGIBLE`
-  - `REAUTH_NOT_ALLOWED`
-  - `MFA_CODE_REQUIRED`
-  - `OIDC_EXCHANGE_FAILED` (bad signature, wrong nonce, failed exchange)
-  - `OIDC_PROVIDER_ERROR` (the provider returned an error instead of a code)
-  - `REAUTH_FAILED` (server fault, logged)
-  - A missing or reused state is HTTP 400 `OIDC_STATE_MISMATCH`.
-- **Session binding:** an elevation belongs to the access token's `sid`. It comes from the flow state, never from cookies.
-  - `require_elevated`, `/api/admin/status` and the WebSocket admin subscription look up `(user_id, session_id)`.
-  - The Valkey cache key is `admin:elevated:{session_id}`. Ending a session (`revocation::end_sessions` / `end_all_sessions`) deletes it too (best effort, logged).
-  - `DELETE /api/admin/elevate` de-elevates only the caller's session.
-- **Limits:**
-  - These routes have `check_ip_not_blocked`, `AuthOther` and `rate_limit_by_user` (`with_reauth_limits`): `/auth/me/password`, `/auth/mfa/verify`, `/auth/mfa/disable`, `/auth/mfa/backup-codes`, `/auth/qr/create`, `/auth/reauth/oidc/authorize/*` and `POST /api/admin/elevate`.
-  - The login MFA step is part of `/auth/login` (`AuthLogin`, with IP blocking).
-  - Each wrong password or code is recorded per IP and per account (`reauth:{user_id}`). Ten failures lock both, including the OIDC start.
-  - Limiter errors fail closed with 503 `SERVICE_UNAVAILABLE` (`RateLimiter::allow_during_outage(FailedAuth)`, so `RATE_LIMIT_FAIL_OPEN=true` opens them like the other auth limits).
+- **API:** `revocation::end_sessions_tx(conn, ctx, user_id, sids, reason)` and `end_all_sessions_tx(conn, ctx, user_id, keep, reason)`, called inside the transaction of the change after its locks and re-checks. `EndReason` is stored in `sessions.end_reason`.
+- **Order inside the transaction:** `ended_at` + `end_reason` (the row is kept 30 days, DC4) → the sessions' `elevated_sessions` rows deleted and `admin:elevated:{sid}` cleared → each `sid` written to the denylist (`canis:revoked_sid:{sid}`, TTL `jwt_access_expiry` + 60 s; a Valkey error is logged and never stops the transition) → `pg_notify('kaiku_session_ended', {user_id, session_ids, all})` in chunks of ≤ 100 ids (the 8000-byte payload limit; `all` on the first) → the caller commits.
+- **After commit:** `spawn_session_end_listener` (one per process, its own connection) republishes the notice as `session_revoked` / `all_sessions_revoked` on `user:{id}`; sockets answer with an `error` event `SESSION_REVOKED` and close 1008. Every socket re-checks its committed row at least every 60 s (the backstop when Valkey or the listener is down). The CLI's ends reach the server through the same `NOTIFY`.
+- **Failure directions:** a rolled-back transaction leaves a denylist entry that only over-revokes until it expires (safe). A failed denylist write leaves the commit authoritative: every request reads the row.
+- **Cleanup:** `cleanup_expired_sessions` deletes ended rows 30 days after `ended_at` and lapsed rows 30 days after their last expiry (their step-up grants go with them); `cleanup_finished_approvals` deletes finished challenges and ended enrolments 30 days after they ended.
+- **Stable session id:** refresh rotates the session row in place, so the `sid` stays the same for the whole login. Do not change refresh back to delete-and-insert.
+
+### Step-up and the two guards (F7, C27; replaces C24)
+
+- **Guards** (`guards.rs`): `require_full` / the `require_full_session` layer → 403 `FULL_SESSION_REQUIRED` unless the committed session row is `full`. The step-up guard is `step_up::consume_tx(conn, auth, action, target)` → 403 `STEP_UP_REQUIRED`, called **inside the action's transaction**.
+- **Grants** (`step_up_grants`): one action of the C27 registry (`StepUpAction`) and one canonical target (`StepUpTarget`: lowercase UUID, `others`, `""`; `target_hash = SHA-256(lp(target))`), ≤ 300 s (DB CHECK), single use, bound to the `sid` of a full session. `grant_tx`, `peek_tx` and `consume_tx` lock the caller's account (B.7 rule 1), then the session row, and re-check it live and full (B.7 rule 4); `consume_tx` also refuses a grant whose authenticator is no longer active. Ending a session or revoking an authenticator voids its open grants (`approvals::cascade`).
+- **Methods:** a passkey assertion (LP: `grant_tx(.., StepUpVia::Passkey, AuthenticatorRef::passkey(id))`) or a `device_stepup` signature (C26). Never a password, TOTP, recovery code or OIDC. `GET /auth/reauth/methods` → `{passkey, device}`.
+- **Admin area:** every `/api/admin/*` route except `/status` needs a full session (`require_system_admin` checks it after the admin check; C27). Pre-upgrade elevations are deleted by the assurance migration.
+- **Admin elevation:** `POST /api/admin/elevate {reason|null}` = `require_full` + `consume_tx(admin.elevate, "")` + the elevation row and audit entry (`details.method` = `step_up:device` / `step_up:passkey`) in one transaction; 15 minutes, bound to the `sid`. Old bodies with `password`/`mfa_code` are ignored (still 403 without a grant). The password/TOTP and OIDC re-auth paths, `POST /auth/reauth/oidc/authorize/{provider_id}` and its callback branch are removed.
+- **Still on the old checks until L1b Task 16:** `/auth/me/password`, `/auth/mfa/*`, `/auth/mfa/backup-codes` use `reauth::verify_reauth` / `accept_totp` (TOTP replay store, per-account lockout, `with_reauth_limits`).
+- **Elevation binding:** `require_elevated`, `/api/admin/status` and the WebSocket admin subscription look up `(user_id, session_id)`; the cache key is `admin:elevated:{session_id}`, dropped when the session ends. `DELETE /api/admin/elevate` de-elevates only the caller's session.
 
 ### Error Handling
 

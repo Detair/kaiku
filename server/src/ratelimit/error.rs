@@ -17,6 +17,10 @@ pub enum RateLimitError {
     /// Request exceeded the rate limit.
     #[error("Rate limit exceeded")]
     LimitExceeded(RateLimitResult),
+    /// A v1.0 sign-in route exceeded its limit: 429 `TOO_MANY_ATTEMPTS`
+    /// with `Retry-After` (contract "Errors"; same body as `LimitExceeded`).
+    #[error("Too many attempts")]
+    TooManyAttempts(RateLimitResult),
     /// IP is temporarily blocked due to repeated failures.
     #[error("IP blocked. Retry after {retry_after}s")]
     IpBlocked { retry_after: u64 },
@@ -37,8 +41,29 @@ pub struct RateLimitErrorResponse {
     pub remaining: u32,
 }
 
+impl RateLimitError {
+    /// The limit error for `category`: the v1.0 sign-in categories answer
+    /// `TOO_MANY_ATTEMPTS`, every older one keeps `RATE_LIMITED`.
+    #[must_use]
+    pub const fn exceeded(
+        category: crate::ratelimit::RateLimitCategory,
+        result: RateLimitResult,
+    ) -> Self {
+        if category.is_sign_in_flow() {
+            Self::TooManyAttempts(result)
+        } else {
+            Self::LimitExceeded(result)
+        }
+    }
+}
+
 impl IntoResponse for RateLimitError {
     fn into_response(self) -> Response {
+        let limit_code = if matches!(self, Self::TooManyAttempts(_)) {
+            "TOO_MANY_ATTEMPTS"
+        } else {
+            "RATE_LIMITED"
+        };
         match self {
             Self::RedisUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -48,9 +73,9 @@ impl IntoResponse for RateLimitError {
                 })),
             )
                 .into_response(),
-            Self::LimitExceeded(result) => {
+            Self::LimitExceeded(result) | Self::TooManyAttempts(result) => {
                 let body = RateLimitErrorResponse {
-                    error: "RATE_LIMITED",
+                    error: limit_code,
                     message: format!("Too many requests. Wait {} seconds.", result.retry_after),
                     retry_after: result.retry_after,
                     limit: result.limit,

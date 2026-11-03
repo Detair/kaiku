@@ -33,9 +33,13 @@ use crate::ws::broadcast_user_patch;
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(fields(user_id = %auth_user.id))]
-pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
-    Json(UserProfile {
+#[tracing::instrument(skip(state, auth_user), fields(user_id = %auth_user.id))]
+pub async fn get_profile(
+    axum::extract::State(state): axum::extract::State<crate::api::AppState>,
+    auth_user: AuthUser,
+) -> super::AuthResult<Json<UserProfile>> {
+    let may_approve = may_approve(&state.db, auth_user.id).await?;
+    Ok(Json(UserProfile {
         id: auth_user.id.to_string(),
         username: auth_user.username,
         display_name: auth_user.display_name,
@@ -45,7 +49,24 @@ pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
         mfa_enabled: auth_user.mfa_enabled,
         deletion_scheduled_at: auth_user.deletion_scheduled_at.map(|dt| dt.to_rfc3339()),
         password_change_required: auth_user.must_change_password,
-    })
+        is_system: false,
+        session: auth_user
+            .session
+            .as_ref()
+            .map(super::types::CurrentSession::from),
+        may_approve,
+    }))
+}
+
+/// The account's `may_approve` flag (B.1).
+async fn may_approve(pool: &sqlx::PgPool, user_id: uuid::Uuid) -> super::AuthResult<bool> {
+    Ok(
+        sqlx::query_scalar::<_, bool>("SELECT may_approve FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(false),
+    )
 }
 
 /// Upload user avatar.
@@ -182,6 +203,12 @@ pub async fn upload_avatar(
         mfa_enabled: user.mfa_secret.is_some(),
         deletion_scheduled_at: user.deletion_scheduled_at.map(|dt| dt.to_rfc3339()),
         password_change_required: user.must_change_password,
+        is_system: user.is_system,
+        session: auth_user
+            .session
+            .as_ref()
+            .map(super::types::CurrentSession::from),
+        may_approve: may_approve(&state.db, auth_user.id).await?,
     }))
 }
 
@@ -371,16 +398,19 @@ pub async fn update_password(
 
     let ended = match keep {
         Some(keep) => {
-            queries::delete_user_sessions_except(&mut tx, auth_user.id, Some(keep)).await?
+            super::revocation::end_all_sessions_tx(
+                &mut tx,
+                &super::ctx::AuthCtx::from(&state),
+                auth_user.id,
+                Some(keep),
+                super::revocation::EndReason::PasswordChanged,
+            )
+            .await?
         }
         None => Vec::new(),
     };
 
     tx.commit().await.map_err(AuthError::Database)?;
-
-    // End the deleted sessions now that the change is committed (their access
-    // tokens and sockets stop); a Valkey failure answers 500, retry is safe.
-    super::revocation::end_sessions(&state, auth_user.id, &ended).await?;
     let revoked_count = ended.len() as u64;
 
     tracing::info!(user_id = %auth_user.id, revoked_others = body.revoke_others, revoked_count, "Password updated");

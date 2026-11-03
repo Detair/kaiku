@@ -284,10 +284,11 @@ mod postgres_tests {
             .await
             .expect("Failed to create user");
 
-        // Create expired session (created 2 hours ago, expired 1 hour ago)
+        // Create a session that lapsed 31 days ago (rows are kept 30 days
+        // after their last expiry for reuse recognition, DC4).
         // Direct SQL insert to bypass constraint by setting both created_at and expires_at
-        let created_time = Utc::now() - Duration::hours(2);
-        let expired_time = Utc::now() - Duration::hours(1);
+        let created_time = Utc::now() - Duration::days(40);
+        let expired_time = Utc::now() - Duration::days(31);
         sqlx::query(
             "INSERT INTO sessions (user_id, token_hash, expires_at, created_at)
              VALUES ($1, $2, $3, $4)",
