@@ -106,7 +106,7 @@ pub async fn ticket_id_by_secret(
     // its row is locked (the caller holds the account lock).
     sqlx::query_scalar(
         "SELECT id FROM registration_tickets
-          WHERE ticket_hash = $1 AND expires_at > NOW() AND bound_at IS NULL
+          WHERE ticket_hash = $1 AND expires_at > clock_timestamp() AND bound_at IS NULL
           FOR UPDATE",
     )
     .bind(ticket_hash(ctx, secret).to_vec())
@@ -114,11 +114,14 @@ pub async fn ticket_id_by_secret(
     .await
 }
 
-/// Under the account lock: ticket `id` is unexpired and unbound (every
-/// binding path; a concurrent bind wins).
+/// Under the account lock: ticket `id` is unexpired and unbound.
+///
+/// Every binding path uses it; a concurrent bind wins. Expiry is wall-clock time
+/// (`clock_timestamp()`), not the transaction's start: a lock wait past the
+/// expiry binds nothing (Codex r6).
 pub async fn ticket_unbound_tx(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<bool> {
     Ok(sqlx::query_scalar(
-        "SELECT bound_at IS NULL AND expires_at > NOW() FROM registration_tickets
+        "SELECT bound_at IS NULL AND expires_at > clock_timestamp() FROM registration_tickets
           WHERE id = $1 FOR UPDATE",
     )
     .bind(id)

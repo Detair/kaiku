@@ -223,8 +223,12 @@ pub async fn account_failure(
         return Ok(());
     }
     let result = failure_effects(state, user, n, failure.throttle).await;
-    if result.is_err() && failure.throttle {
-        let _ = limiter.release_throttle(counter).await;
+    if failure.throttle {
+        let _ = if result.is_ok() {
+            limiter.confirm_throttle(counter, &failure).await
+        } else {
+            limiter.release_throttle(counter, &failure).await
+        };
     }
     result
 }

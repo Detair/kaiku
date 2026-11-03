@@ -25,6 +25,9 @@ pub const MAX_DELAY_SECS: u64 = 3600;
 pub const NOTICE_EVERY: u32 = 20;
 /// Failures that throttle the factor (B.1 `throttled`).
 pub const THROTTLE_AT: u32 = 100;
+/// A throttle claim whose effects neither committed nor gave it back (the
+/// claimant died) is taken over after this long (Codex r6).
+pub const THROTTLE_CLAIM_SECS: i64 = 300;
 /// How long a counter lives without failures.
 const COUNTER_TTL_SECS: i64 = 24 * 3600;
 
@@ -85,7 +88,7 @@ pub struct Delay {
 }
 
 /// One counted failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
     /// The consecutive count.
     pub count: u32,
@@ -93,6 +96,9 @@ pub struct Failure {
     pub epoch: i64,
     /// This failure claimed the epoch's throttle (count ≥ [`THROTTLE_AT`]).
     pub throttle: bool,
+    /// The claim token (`p:{epoch}:{claimed_at}`), for
+    /// [`AccountLimiter::release_throttle`] / [`AccountLimiter::confirm_throttle`].
+    claim: Option<String>,
 }
 
 /// The per-account limiter.
@@ -142,31 +148,44 @@ impl<'a> AccountLimiter<'a> {
     /// expiry and the throttle claim are one script, so a success never
     /// interleaves with a half-recorded failure and leaves a stale delay
     /// (Codex r4 #3). `throttle` is set for the first failure at or past
-    /// [`THROTTLE_AT`] in this epoch (`HSETNX thr`): the 100th applies once,
-    /// and a count past it still throttles if the 100th's effects were lost
-    /// (Flash r5); [`Self::release_throttle`] gives the claim back when the
-    /// effects fail.
+    /// [`THROTTLE_AT`] in this epoch: the 100th applies once, and a count
+    /// past it still throttles if the 100th's effects were lost (Flash r5).
+    /// The claim `thr` is `p:{epoch}:{claimed_at}` while its effects run and
+    /// `d` once they committed; a pending claim older than
+    /// [`THROTTLE_CLAIM_SECS`] is taken over (its claimant died, Codex r6).
     pub async fn count_failure(&self, key: &CounterKey) -> Result<Failure, RateLimitError> {
         use fred::interfaces::LuaInterface;
-        let (n, epoch, first): (i64, i64, i64) = self
+        let (n, epoch, claim): (i64, i64, String) = self
             .redis
             .eval(
                 "local c = redis.call('HINCRBY', KEYS[1], 'count', 1)
                  local e = tonumber(redis.call('HGET', KEYS[1], 'epoch') or '0')
+                 local now = tonumber(ARGV[4])
                  local free = tonumber(ARGV[1])
                  if c >= free then
                    local secs = tonumber(ARGV[3])
                    if c - free < 7 then
                      secs = math.min(tonumber(ARGV[2]) * 2 ^ (c - free), secs)
                    end
-                   redis.call('HSET', KEYS[1], 'next', string.format('%d', tonumber(ARGV[4]) + secs))
+                   redis.call('HSET', KEYS[1], 'next', string.format('%d', now + secs))
                  end
-                 local first = 0
-                 if c >= tonumber(ARGV[6]) and redis.call('HSETNX', KEYS[1], 'thr', 1) == 1 then
-                   first = 1
+                 local claim = ''
+                 if c >= tonumber(ARGV[6]) then
+                   local thr = redis.call('HGET', KEYS[1], 'thr')
+                   local take = not thr
+                   if thr then
+                     local at = string.match(thr, '^p:%-?%d+:(%d+)$')
+                     if at and now - tonumber(at) > tonumber(ARGV[7]) then
+                       take = true
+                     end
+                   end
+                   if take then
+                     claim = string.format('p:%d:%d', e, now)
+                     redis.call('HSET', KEYS[1], 'thr', claim)
+                   end
                  end
                  redis.call('EXPIRE', KEYS[1], ARGV[5])
-                 return {c, e, first}",
+                 return {c, e, claim}",
                 vec![key.redis_key()],
                 vec![
                     FREE_FAILURES.to_string(),
@@ -175,6 +194,7 @@ impl<'a> AccountLimiter<'a> {
                     Utc::now().timestamp().to_string(),
                     COUNTER_TTL_SECS.to_string(),
                     THROTTLE_AT.to_string(),
+                    THROTTLE_CLAIM_SECS.to_string(),
                 ],
             )
             .await
@@ -182,17 +202,60 @@ impl<'a> AccountLimiter<'a> {
         Ok(Failure {
             count: u32::try_from(n).unwrap_or(u32::MAX),
             epoch,
-            throttle: first == 1,
+            throttle: !claim.is_empty(),
+            claim: (!claim.is_empty()).then_some(claim),
         })
     }
 
-    /// Give back a throttle claim whose effects did not commit, so the next
-    /// failure applies them.
-    pub async fn release_throttle(&self, key: &CounterKey) -> Result<(), RateLimitError> {
-        self.redis
-            .hdel::<(), _, _>(key.redis_key(), "thr")
+    /// Give back `failure`'s throttle claim when its effects did not commit,
+    /// so the next failure applies them: only while the stored claim is
+    /// still that one (never a later epoch's or a takeover's; Codex r6).
+    pub async fn release_throttle(
+        &self,
+        key: &CounterKey,
+        failure: &Failure,
+    ) -> Result<(), RateLimitError> {
+        self.settle_claim(key, failure, false).await
+    }
+
+    /// Mark `failure`'s throttle claim done after its effects committed (it
+    /// is never taken over in this epoch).
+    pub async fn confirm_throttle(
+        &self,
+        key: &CounterKey,
+        failure: &Failure,
+    ) -> Result<(), RateLimitError> {
+        self.settle_claim(key, failure, true).await
+    }
+
+    async fn settle_claim(
+        &self,
+        key: &CounterKey,
+        failure: &Failure,
+        done: bool,
+    ) -> Result<(), RateLimitError> {
+        use fred::interfaces::LuaInterface;
+        let Some(claim) = &failure.claim else {
+            return Ok(());
+        };
+        let _: i64 = self
+            .redis
+            .eval(
+                "if redis.call('HGET', KEYS[1], 'thr') == ARGV[1] then
+                   if ARGV[2] == '1' then
+                     redis.call('HSET', KEYS[1], 'thr', 'd')
+                   else
+                     redis.call('HDEL', KEYS[1], 'thr')
+                   end
+                   return 1
+                 end
+                 return 0",
+                vec![key.redis_key()],
+                vec![claim.clone(), if done { "1" } else { "0" }.to_string()],
+            )
             .await
-            .map_err(|_| RateLimitError::RedisUnavailable)
+            .map_err(|_| RateLimitError::RedisUnavailable)?;
+        Ok(())
     }
 
     /// A success starts a new epoch: the count and the delay go, and

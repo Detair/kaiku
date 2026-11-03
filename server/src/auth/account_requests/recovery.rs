@@ -246,7 +246,9 @@ async fn password_ok(hash: Option<String>, password: &str) -> AuthResult<bool> {
     let has_real = hash.is_some();
     let hash = hash.unwrap_or_else(|| crate::auth::password::DUMMY_PASSWORD_HASH.clone());
     tokio::task::spawn_blocking(move || {
-        has_real && crate::auth::verify_password(&password, &hash).unwrap_or(false)
+        // The verify always runs (same work for every account, Codex r6).
+        let ok = crate::auth::verify_password(&password, &hash).unwrap_or(false);
+        has_real && ok
     })
     .await
     .map_err(|e| AuthError::Internal(format!("password check failed: {e}")))

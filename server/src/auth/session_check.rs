@@ -38,7 +38,7 @@ pub struct RequestSession {
 #[macro_export]
 macro_rules! live_clause {
     () => {
-        "s.ended_at IS NULL AND s.expires_at > NOW() AND s.absolute_expires_at > NOW()"
+        "s.ended_at IS NULL AND s.expires_at > clock_timestamp() AND s.absolute_expires_at > clock_timestamp()"
     };
 }
 

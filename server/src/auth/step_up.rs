@@ -297,7 +297,7 @@ async fn lock_full_session(conn: &mut PgConnection, auth: &AuthUser) -> AuthResu
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT assurance FROM sessions
           WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
-            AND expires_at > NOW() AND absolute_expires_at > NOW()
+            AND expires_at > clock_timestamp() AND absolute_expires_at > clock_timestamp()
           FOR UPDATE",
     )
     .bind(sid)
@@ -378,12 +378,12 @@ async fn open_grant(
     let sql = if lock {
         "SELECT id, via, authenticator_type, authenticator_id FROM step_up_grants
           WHERE session_id = $1 AND action = $2 AND target_hash = $3
-            AND used_at IS NULL AND voided_at IS NULL AND expires_at > NOW()
+            AND used_at IS NULL AND voided_at IS NULL AND expires_at > clock_timestamp()
           ORDER BY created_at, id LIMIT 1 FOR UPDATE"
     } else {
         "SELECT id, via, authenticator_type, authenticator_id FROM step_up_grants
           WHERE session_id = $1 AND action = $2 AND target_hash = $3
-            AND used_at IS NULL AND voided_at IS NULL AND expires_at > NOW()
+            AND used_at IS NULL AND voided_at IS NULL AND expires_at > clock_timestamp()
           ORDER BY created_at, id LIMIT 1"
     };
     let grant: OpenGrant = sqlx::query_as(sql)

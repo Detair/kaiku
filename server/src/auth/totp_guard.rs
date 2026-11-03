@@ -81,11 +81,17 @@ pub async fn after(
             config: &config,
         };
         let result = effects(&ctx, user, n, epoch, throttle, used).await;
-        if result.is_err() && throttle {
-            // Flash r5: the claim goes back, so the next failure throttles.
-            let _ = AccountLimiter::new(&redis)
-                .release_throttle(&CounterKey::totp(user, used.totp_generation))
-                .await;
+        if throttle {
+            // Flash r5 / Codex r6: this claim is settled, never another one:
+            // done after a commit, given back (the next failure throttles)
+            // after an error.
+            let limiter = AccountLimiter::new(&redis);
+            let key = CounterKey::totp(user, used.totp_generation);
+            let _ = if result.is_ok() {
+                limiter.confirm_throttle(&key, &failure).await
+            } else {
+                limiter.release_throttle(&key, &failure).await
+            };
         }
         match result {
             Ok(()) => {

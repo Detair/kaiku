@@ -741,3 +741,126 @@ async fn new_recovery_codes_record_the_step_up_action(pool: PgPool) {
     .unwrap();
     assert_eq!(n, 1);
 }
+
+/// Codex r6 #1: a ticket that expires naturally while its TOTP verify waits
+/// for the account lock binds nothing (the expiry is wall-clock time, not
+/// the transaction's start).
+#[sqlx::test]
+async fn a_ticket_expiring_during_the_lock_wait_binds_no_totp(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, ticket) = register(&app, "flash_natural_expiry", Some(PASSWORD)).await;
+    let (s, setup) = call(
+        &app,
+        Method::POST,
+        "/auth/registration/totp",
+        &[("X-Kaiku-Ticket", &ticket)],
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 200, "{setup}");
+    let totp = totp_rs::TOTP::new(
+        totp_rs::Algorithm::SHA1,
+        6,
+        1,
+        30,
+        totp_rs::Secret::Encoded(setup["secret"].as_str().unwrap().to_string())
+            .to_bytes()
+            .unwrap(),
+        Some("Kaiku".into()),
+        "flash_natural_expiry".into(),
+    )
+    .unwrap();
+    sqlx::query(
+        "UPDATE registration_tickets SET expires_at = NOW() + INTERVAL '2 seconds' WHERE user_id = $1",
+    )
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut hold = pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut hold, &[user])
+        .await
+        .unwrap();
+    let hdrs = [("X-Kaiku-Ticket", ticket.as_str())];
+    let ((s, b), ()) = tokio::join!(
+        call(
+            &app,
+            Method::POST,
+            "/auth/registration/totp/verify",
+            &hdrs,
+            json!({"code": totp.generate_current().unwrap()}),
+        ),
+        async {
+            wait_for_lock_waiters(&pool, 1).await;
+            tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+            hold.commit().await.unwrap();
+        }
+    );
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (404, Some("REGISTRATION_TICKET_INVALID")),
+        "{b}"
+    );
+}
+
+/// Codex r6 #3: epoch E's failed effects give back only E's claim; the
+/// claim of the next epoch stays.
+#[sqlx::test]
+async fn a_stale_release_keeps_the_next_epochs_claim(pool: PgPool) {
+    use vc_server::ratelimit::account::AccountLimiter;
+    let app = TestApp::with_pool(pool.clone()).await;
+    let limiter = AccountLimiter::new(&app.state.redis);
+    let key = CounterKey::totp(Uuid::new_v4(), 1);
+    set_count(&app, &key, 99).await;
+    let old = limiter.count_failure(&key).await.unwrap();
+    assert!(old.throttle, "epoch 0 claims");
+    // A success (epoch 1), then 100 failures again: epoch 1 claims.
+    limiter.reset_epoch(&key).await.unwrap();
+    {
+        use fred::interfaces::HashesInterface;
+        let _: () = app
+            .state
+            .redis
+            .hset(key.redis_key(), ("count", 99))
+            .await
+            .unwrap();
+    }
+    let new = limiter.count_failure(&key).await.unwrap();
+    assert!(new.throttle, "epoch 1 claims");
+    // Epoch 0's effects fail late and give their claim back.
+    limiter.release_throttle(&key, &old).await.unwrap();
+    let again = limiter.count_failure(&key).await.unwrap();
+    assert!(
+        !again.throttle,
+        "epoch 1 is still claimed: no second claimant"
+    );
+}
+
+/// Codex r6 #3: a claim whose process died before its effects ran is taken
+/// over after the claim timeout.
+#[sqlx::test]
+async fn an_abandoned_claim_is_taken_over(pool: PgPool) {
+    use fred::interfaces::HashesInterface;
+    use vc_server::ratelimit::account::{AccountLimiter, THROTTLE_CLAIM_SECS};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let limiter = AccountLimiter::new(&app.state.redis);
+    let key = CounterKey::totp(Uuid::new_v4(), 1);
+    set_count(&app, &key, 99).await;
+    assert!(limiter.count_failure(&key).await.unwrap().throttle);
+    assert!(
+        !limiter.count_failure(&key).await.unwrap().throttle,
+        "claimed"
+    );
+    // The claim is older than the timeout (its claimant died).
+    let stale = chrono::Utc::now().timestamp() - THROTTLE_CLAIM_SECS - 1;
+    let _: () = app
+        .state
+        .redis
+        .hset(key.redis_key(), ("thr", format!("p:0:{stale}")))
+        .await
+        .unwrap();
+    assert!(
+        limiter.count_failure(&key).await.unwrap().throttle,
+        "taken over"
+    );
+}

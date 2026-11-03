@@ -227,7 +227,7 @@ pub async fn request_id_by_secret(
 ) -> sqlx::Result<Option<Uuid>> {
     sqlx::query_scalar(
         "SELECT id FROM account_requests
-          WHERE request_secret_hash = $1 AND state = 'ready' AND expires_at > NOW()",
+          WHERE request_secret_hash = $1 AND state = 'ready' AND expires_at > clock_timestamp()",
     )
     .bind(secret_hash(ctx, secret).to_vec())
     .fetch_optional(&mut *conn)
