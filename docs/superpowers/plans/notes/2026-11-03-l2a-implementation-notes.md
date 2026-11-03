@@ -487,3 +487,10 @@ Fable), 1 is partly rejected but its real part fixed (p3 #2), and 1 is rejected 
   vc-client --lib` 328 passed, 2 ignored. (Two store tests timed out once under full-suite load
   and passed alone and in the rerun.)
 
+
+### Codex r5 on dd40f4aa (coordinator decision, 2026-11-03)
+
+Codex asked to take the five optional English areas out of the startup-gated security chunk ("a failed fetch blocks the app"; "the larger chunk stays render-blocking"). Rejected, no change:
+- The areas join the same chunk as the security texts, so dd40f4aa adds no request and no new failure point. The security chunk is mandatory anyway (Fable round 2, R6: a security notice must never render without its words).
+- These bytes were in the initial bundle before dd40f4aa, which is render-blocking too. They now load in parallel with the entry instead of inside it. Neither the number nor the size of the bytes before first render grew.
+- Startup timing (target < 3 s) is part of the A14 step 3 desktop and web checks.
