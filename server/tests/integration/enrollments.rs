@@ -1444,3 +1444,74 @@ async fn replaced_key_carries_the_variants_reason(pool: PgPool) {
             .unwrap();
     assert_eq!(reason.as_deref(), Some("owner"));
 }
+
+/// Review round 3 (Argon coverage, part 1 M3): an `admin` enrolment's
+/// answer locks the admin's and the subject's accounts together, in id
+/// order, before the device and session rows (`lock_challenge`). A
+/// transaction that holds the lower account and then takes the higher one
+/// never deadlocks with it, whichever role has the lower id.
+async fn admin_enroll_answer_against(pool: PgPool, subject_is_lower: bool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    let (low, high) = if a < b { (a, b) } else { (b, a) };
+    let (subject, admin) = if subject_is_lower {
+        (low, high)
+    } else {
+        (high, low)
+    };
+    super::helpers::make_admin(&pool, admin).await;
+    sqlx::query("UPDATE users SET first_activity_at = NULL WHERE id = $1")
+        .bind(subject)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let admin_dev = KeyDeviceFixture::insert(&pool, &app.config, admin, "active").await;
+    let issuer = Issuer::KeyDevice {
+        session_id: admin_dev.session_id.unwrap(),
+        device_id: admin_dev.row_id,
+    };
+    let issued = issue(&app, subject, EnrollmentVariant::Admin, issuer)
+        .await
+        .unwrap();
+    let (s, claimed) = claim_with(
+        &app,
+        &issued.setup_token,
+        &Phone::new(),
+        "Pixel 9",
+        good(),
+        "per_use",
+    )
+    .await;
+    assert_eq!(s, 201, "{claimed}");
+    let (_, c) = enroll_challenge(&app, &admin_dev, issued.enrollment_id).await;
+    let code = claimed["code"].as_str().unwrap().to_string();
+
+    let mut other = app.pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut other, &[low])
+        .await
+        .unwrap();
+    let holder = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        vc_server::approvals::transition::lock_accounts(&mut other, &[high])
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        other.commit().await.map_err(|e| e.to_string())
+    };
+    let ((status, body), held) = tokio::join!(
+        super::approvals_core::answer(&app, &admin_dev, &c, code.as_bytes()),
+        holder
+    );
+    assert!(held.is_ok(), "the other transaction commits: {held:?}");
+    assert_eq!(status, 200, "no deadlock on the answer side: {body}");
+}
+
+#[sqlx::test]
+async fn admin_enroll_answer_never_deadlocks_subject_lower(pool: PgPool) {
+    admin_enroll_answer_against(pool, true).await;
+}
+
+#[sqlx::test]
+async fn admin_enroll_answer_never_deadlocks_admin_lower(pool: PgPool) {
+    admin_enroll_answer_against(pool, false).await;
+}
