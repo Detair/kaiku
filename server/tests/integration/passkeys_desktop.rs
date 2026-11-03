@@ -1113,6 +1113,27 @@ async fn a_pending_result_is_never_clobbered(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_finish_near_the_flow_end_still_gets_60_s(pool: PgPool) {
+    // Review Argon-a M1: C29 step 4 keeps the pending result 60 s; the TTL
+    // is set, not cut down to what the flow had left.
+    use fred::interfaces::KeysInterface;
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let flow = start(&app.router, start_body("sign_in", None, None), None).await;
+    let _: bool = app
+        .state
+        .redis
+        .expire(format!("passkey:flow:{}", flow.id), 5, None)
+        .await
+        .unwrap();
+    let h = finish_with(&app.router, &app.pool, &flow, &mut auth, &row, user).await;
+    assert!(hidden(&h.body, "code").is_some(), "{}", h.body);
+    let ttl = flow_ttl(&app, &flow).await;
+    assert!((55..=60).contains(&ttl), "pending result TTL {ttl}");
+}
+
+#[sqlx::test]
 async fn options_without_active_passkeys_end_the_flow(pool: PgPool) {
     // Review Argon-a m3: no reload loop on a live flow that cannot proceed.
     let app = TestApp::with_passkeys(pool).await;

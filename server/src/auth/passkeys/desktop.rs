@@ -121,7 +121,8 @@ async fn take(state: &AppState, flow_id: Uuid) -> AuthResult<Option<DesktopFlow>
 
 /// Compare-and-set on the flow key in one script: only if the stored JSON is
 /// still `expected`. `ttl_ms = None` keeps the TTL (never extends or
-/// shortens it); `Some(ms)` sets `min(remaining, ms)`; `new = None` deletes.
+/// shortens it); `Some(ms)` sets exactly `ms` (the pending result's 60 s of
+/// C29 step 4, also near the flow's end); `new = None` deletes.
 const FLOW_CAS: &str = r"
 local cur = redis.call('GET', KEYS[1])
 if (not cur) or cur ~= ARGV[1] then return 0 end
@@ -130,10 +131,7 @@ if ARGV[3] == 'del' then
 elseif ARGV[3] == 'keep' then
   redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL')
 else
-  local ttl = tonumber(ARGV[3])
-  local pttl = redis.call('PTTL', KEYS[1])
-  if pttl > 0 and pttl < ttl then ttl = pttl end
-  redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+  redis.call('SET', KEYS[1], ARGV[2], 'PX', tonumber(ARGV[3]))
 end
 return 1
 ";
@@ -628,7 +626,7 @@ pub async fn finish(
         outcome,
         created_at: chrono::Utc::now().timestamp(),
     });
-    // The pending result lives 60 s (never longer than the flow itself).
+    // The pending result lives 60 s (C29 step 4), also near the flow's end.
     match cas(
         &state,
         flow_id,
