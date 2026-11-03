@@ -99,6 +99,16 @@ pub async fn set_may_approve(
         .bind(body.may_approve)
         .execute(&mut *tx)
         .await?;
+    let changed = record(
+        &mut tx,
+        NewSecurityEvent::new(
+            account,
+            EventType::MayApproveChanged,
+            Actor::Admin(auth.id),
+            serde_json::json!({"may_approve": body.may_approve, "by": "admin"}),
+        ),
+    )
+    .await?;
     crate::permissions::queries::write_audit_log(
         &mut *tx,
         auth.id,
@@ -111,7 +121,7 @@ pub async fn set_may_approve(
     .await
     .map_err(|e| AuthError::Internal(e.to_string()))?;
     tx.commit().await?;
-    spawn_delivery(&state, vec![ev]);
+    spawn_delivery(&state, vec![ev, changed]);
     Ok(Json(body))
 }
 
@@ -188,7 +198,7 @@ pub async fn set_factor_state(
             ));
         }
     }
-    let events = vec![
+    let mut events = vec![
         consume(
             &mut tx,
             &auth,
@@ -215,8 +225,19 @@ pub async fn set_factor_state(
                 Actor::Admin(auth.id),
             )
             .await?;
-        } else {
-            factors::clear_throttle_tx(&mut tx, account, f, ExitPath::Admin).await?;
+        } else if factors::clear_throttle_tx(&mut tx, account, f, ExitPath::Admin).await? {
+            events.push(
+                record(
+                    &mut tx,
+                    NewSecurityEvent::new(
+                        account,
+                        EventType::ThrottleReset,
+                        Actor::Admin(auth.id),
+                        serde_json::json!({"factor": f.as_str(), "by": "admin"}),
+                    ),
+                )
+                .await?,
+            );
         }
     }
     let after = factors::states(&mut tx, account).await?;

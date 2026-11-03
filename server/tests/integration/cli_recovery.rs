@@ -155,11 +155,28 @@ async fn every_cli_action_is_audited_and_notified(pool: PgPool) {
     let (other_admin, _) = create_test_user(&pool).await;
     make_admin(&pool, other_admin).await;
     let (user, name) = create_test_user(&pool).await;
-    let (contact, contact_name) = create_test_user(&pool).await;
+    let (_, contact_name) = create_test_user(&pool).await;
+    sqlx::query(
+        "UPDATE users SET password_hash = 'x', mfa_secret = 'y', password_state = 'compromised',
+                totp_state = 'throttled' WHERE id = $1",
+    )
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let dev = KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
     cli(&app, &["recovery-contact", &name, &contact_name])
         .await
         .unwrap();
+    cli(&app, &["factor", "reset", &name, "password"])
+        .await
+        .unwrap();
+    cli(&app, &["throttle", "reset", &name]).await.unwrap();
+    cli(&app, &["may-approve", &name, "off"]).await.unwrap();
     cli(&app, &["sessions", "end", &name, "--all"])
+        .await
+        .unwrap();
+    cli(&app, &["devices", "remove", &name, &dev.row_id.to_string()])
         .await
         .unwrap();
     cli(&app, &["recovery-contact", &name, "--none"])
@@ -169,20 +186,64 @@ async fn every_cli_action_is_audited_and_notified(pool: PgPool) {
         audit_actions(&pool, user).await,
         [
             "cli.recovery_contact",
+            "cli.factor.reset",
+            "cli.throttle.reset",
+            "cli.may_approve",
             "cli.sessions.end",
+            "cli.devices.remove",
             "cli.recovery_contact"
         ]
     );
-    // The high sessions_ended event reached the other admin.
-    let notices: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM security_notices
-          WHERE subject_id = $1 AND recipient_id = $2 AND event_type = 'sessions_ended'",
+    let events: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "SELECT event_type, details FROM security_events
+          WHERE subject_id = $1 AND actor_kind = 'cli' ORDER BY created_at, id",
     )
     .bind(user)
-    .bind(other_admin)
-    .fetch_one(&pool)
+    .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(notices, 1);
-    let _ = contact;
+    let types: Vec<&str> = events.iter().map(|(t, _)| t.as_str()).collect();
+    for t in [
+        "recovery_contact_named",
+        "factor_restored",
+        "throttle_reset",
+        "may_approve_changed",
+        "sessions_ended",
+        "authenticator_removed",
+        "recovery_contact_changed",
+    ] {
+        assert!(types.contains(&t), "{t}: {types:?}");
+    }
+    let restored = &events
+        .iter()
+        .find(|(t, _)| t == "factor_restored")
+        .unwrap()
+        .1;
+    assert_eq!(
+        *restored,
+        serde_json::json!({"factor": "password", "by": "cli"})
+    );
+    let may = &events
+        .iter()
+        .find(|(t, _)| t == "may_approve_changed")
+        .unwrap()
+        .1;
+    assert_eq!(*may, serde_json::json!({"may_approve": false, "by": "cli"}));
+    // High events reach every admin (the sweep delivers what is pending).
+    vc_server::security_events::notices::deliver_pending(&app.state)
+        .await
+        .unwrap();
+    for t in ["factor_restored", "may_approve_changed", "sessions_ended"] {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM security_notices
+              WHERE subject_id = $1 AND recipient_id = $2 AND event_type = $3",
+        )
+        .bind(user)
+        .bind(other_admin)
+        .bind(t)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(n, 1, "{t} to the other admin");
+    }
 }

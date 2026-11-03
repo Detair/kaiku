@@ -149,6 +149,23 @@ pub async fn login(
     if !password_valid {
         account_failure(&state, &counter, typed_account).await?;
     }
+    // Codex B2: the verified hash must still be the account's, with the
+    // generation the attempt records (a replacement in between → neutral).
+    let step = match (&user, step) {
+        (Some(u), Some((step, generation))) => {
+            let same: bool = sqlx::query_scalar(
+                "SELECT password_hash = $2 AND password_generation = $3 FROM users WHERE id = $1",
+            )
+            .bind(u.id)
+            .bind(u.password_hash.as_deref())
+            .bind(generation)
+            .fetch_optional(&state.db)
+            .await?
+            .unwrap_or(false);
+            same.then_some((step, generation))
+        }
+        _ => None,
+    };
     let (Some(user), Some((step, generation))) = (user, step) else {
         record_failed_auth!();
         crate::observability::metrics::record_auth_login_attempt(false);

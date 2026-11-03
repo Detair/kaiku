@@ -129,6 +129,19 @@ async fn may_approve_and_factor_toggles_are_audited(pool: PgPool) {
 
     let ev = events(&pool, user).await;
     assert!(ev.contains(&"password_compromised".to_string()), "{ev:?}");
+    // C28: the admin's toggles are events too.
+    for t in ["may_approve_changed", "throttle_reset"] {
+        assert!(ev.contains(&t.to_string()), "{t}: {ev:?}");
+    }
+    let by: Vec<Value> = sqlx::query_scalar(
+        "SELECT details->'by' FROM security_events
+          WHERE subject_id = $1 AND event_type IN ('may_approve_changed', 'throttle_reset')",
+    )
+    .bind(user)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(by.iter().all(|b| b == "admin"), "{by:?}");
     let audit: Vec<String> = sqlx::query_scalar(
         "SELECT action FROM system_audit_log
           WHERE target_id = $1 AND action LIKE 'admin.users.%' ORDER BY created_at",

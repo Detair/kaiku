@@ -1,8 +1,8 @@
 //! `kaiku-admin` recovery commands (F6 item 4; L1b Task 28).
 //!
 //! Each runs as one B.7 transition with `Actor::Cli` under the account lock,
-//! writes its `cli.*` audit row and, where C28 has an event for it, records
-//! that event (high events reach the account's contact and every admin).
+//! writes its `cli.*` audit row and records its C28 event (high events reach
+//! the account's contact and every admin).
 //! They work on admin accounts too.
 
 use uuid::Uuid;
@@ -23,6 +23,11 @@ pub async fn factor_reset(
     let mut tx = ctx.db.begin().await?;
     let user = account(&mut tx, username).await?;
     lock_accounts(&mut tx, &[user]).await?;
+    let before = factors::states(&mut tx, user).await?;
+    let was = match factor {
+        Factor::Password => before.password.state,
+        _ => before.totp.state,
+    };
     let changed = factors::clear_throttle_tx(&mut tx, user, factor, ExitPath::Cli).await?;
     audit(
         &mut tx,
@@ -31,7 +36,29 @@ pub async fn factor_reset(
         serde_json::json!({ "factor": factor.as_str(), "changed": changed }),
     )
     .await?;
+    let mut events = Vec::new();
+    if changed {
+        // C28: `factor_restored` (high) / `throttle_reset` (normal).
+        let event_type = if was == factors::FactorState::Compromised {
+            EventType::FactorRestored
+        } else {
+            EventType::ThrottleReset
+        };
+        events.push(
+            record(
+                &mut tx,
+                NewSecurityEvent::new(
+                    user,
+                    event_type,
+                    Actor::Cli,
+                    serde_json::json!({ "factor": factor.as_str(), "by": "cli" }),
+                ),
+            )
+            .await?,
+        );
+    }
     tx.commit().await?;
+    deliver(ctx, events).await;
     reset_counters(ctx, username, user, Some(factor)).await;
     io.print(&if changed {
         format!("The {} of {username} is active again.", factor.as_str())
@@ -69,7 +96,23 @@ pub async fn throttle_reset(
         serde_json::json!({ "cleared": cleared }),
     )
     .await?;
+    let mut events = Vec::new();
+    for f in &cleared {
+        events.push(
+            record(
+                &mut tx,
+                NewSecurityEvent::new(
+                    user,
+                    EventType::ThrottleReset,
+                    Actor::Cli,
+                    serde_json::json!({ "factor": f, "by": "cli" }),
+                ),
+            )
+            .await?,
+        );
+    }
     tx.commit().await?;
+    deliver(ctx, events).await;
     reset_counters(ctx, username, user, None).await;
     io.print(&format!(
         "Cleared the sign-in delays of {username}{}.",
@@ -117,7 +160,18 @@ pub async fn may_approve(
         serde_json::json!({ "may_approve": on }),
     )
     .await?;
+    let event = record(
+        &mut tx,
+        NewSecurityEvent::new(
+            user,
+            EventType::MayApproveChanged,
+            Actor::Cli,
+            serde_json::json!({ "may_approve": on, "by": "cli" }),
+        ),
+    )
+    .await?;
     tx.commit().await?;
+    deliver(ctx, vec![event]).await;
     io.print(&format!(
         "Phone confirmations for {username} are {}.",
         if on { "on" } else { "off" }
