@@ -69,8 +69,8 @@ const FAILED: &str = "PASSKEY_FAILED";
 
 fn code_of(e: &SessionError) -> String {
     match e {
+        // A banned account is `Server(403, "ACCOUNT_BANNED")` (bare codes).
         SessionError::Server(_, code) => bare_code(code),
-        SessionError::AccountBanned => "ACCOUNT_BANNED".to_string(),
         SessionError::ServerMismatch => "SESSION_SERVER_MISMATCH".to_string(),
         _ => FAILED.to_string(),
     }
