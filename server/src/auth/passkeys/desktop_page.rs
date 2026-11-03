@@ -317,6 +317,7 @@ struct Texts {
     linux_other: &'static str,
     working: &'static str,
     expired: &'static str,
+    unavailable: &'static str,
 }
 
 const EN: Texts = Texts {
@@ -333,6 +334,7 @@ const EN: Texts = Texts {
     linux_other: "No phone option? Use a security key.",
     working: "Waiting for your passkey\u{2026}",
     expired: "This link has expired or was already used. Start again in the Kaiku app.",
+    unavailable: "Kaiku is not reachable right now. Go back to the app and try again.",
 };
 
 const DE: Texts = Texts {
@@ -351,6 +353,7 @@ const DE: Texts = Texts {
     linux_other: "Keine Handy-Option? Nutze einen Sicherheitsschl\u{fc}ssel.",
     working: "Warte auf deinen Passkey\u{2026}",
     expired: "Dieser Link ist abgelaufen oder wurde schon benutzt. Starte in der Kaiku-App neu.",
+    unavailable: "Kaiku ist gerade nicht erreichbar. Geh zur\u{fc}ck zur App und versuche es noch einmal.",
 };
 
 const fn texts(lang: Lang) -> &'static Texts {
@@ -389,6 +392,20 @@ pub fn expired_page(lang: Lang) -> Response {
         lang,
         StatusCode::NOT_FOUND,
         &format!("<h1>Kaiku</h1><p>{}</p>", esc(t.expired)),
+    )
+}
+
+/// 503: the flow's state could not be written (Valkey error).
+///
+/// No hand-off: a terminal callback might end the app's wait for another,
+/// still live page of the flow; the app waits until the flow expires or the
+/// user cancels there.
+pub fn unavailable_page(lang: Lang) -> Response {
+    let t = texts(lang);
+    page(
+        lang,
+        StatusCode::SERVICE_UNAVAILABLE,
+        &format!("<h1>Kaiku</h1><p>{}</p>", esc(t.unavailable)),
     )
 }
 

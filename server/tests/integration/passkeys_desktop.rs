@@ -1440,3 +1440,78 @@ async fn a_foreign_ceremony_id_consumes_nothing(pool: PgPool) {
     .await;
     assert!(hidden(&h.body, "code").is_some(), "{}", h.body);
 }
+
+/// Finish the flow's current ceremony while the passkey row is held, break
+/// the flow key's type meanwhile (so the final compare-and-set fails with a
+/// Valkey error), then let the finish go on.
+async fn finish_with_a_failing_cas(app: &TestApp, username: Option<&str>) -> Resp {
+    use fred::interfaces::{KeysInterface, ListInterface};
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(app, user, PasskeyState::Active).await;
+    let handle = queries::user_handle(&app.pool, user).await.unwrap();
+    let flow = start(&app.router, sign_in_body_with(username), None).await;
+    let o = options_of(app, &flow).await;
+    let cred = auth.assert(
+        TEST_ORIGIN,
+        &o["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    let mut lock = app.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM passkeys WHERE id = $1 FOR UPDATE")
+        .bind(row.id)
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    let finish = {
+        let router = app.router.clone();
+        let path = format!("{}/finish", flow.path);
+        let id = o["ceremony_id"].as_str().unwrap().to_string();
+        tokio::spawn(async move {
+            form(
+                &router,
+                &path,
+                &[("credential", &cred.to_string()), ("ceremony_id", &id)],
+            )
+            .await
+        })
+    };
+    wait_for_lock_waiter(&app.pool).await;
+    let key = format!("passkey:flow:{}", flow.id);
+    let _: i64 = app.state.redis.del(&key).await.unwrap();
+    let _: i64 = app.state.redis.lpush(&key, "not a flow").await.unwrap();
+    lock.rollback().await.unwrap();
+    finish.await.unwrap()
+}
+
+#[sqlx::test]
+async fn a_valkey_error_at_the_result_hands_back_nothing(pool: PgPool) {
+    // Review round 3 (Codex): the final compare-and-set fails with an error;
+    // the page tells the user to go back and makes no loopback callback.
+    let app = TestApp::with_passkeys(pool).await;
+    let h = finish_with_a_failing_cas(&app, None).await;
+    assert_eq!(h.status, 503, "{}", h.body);
+    assert!(
+        hidden(&h.body, "error").is_none() && hidden(&h.body, "code").is_none(),
+        "{}",
+        h.body
+    );
+    assert!(!h.body.contains("127.0.0.1"), "{}", h.body);
+    assert!(h.body.contains("not reachable"), "{}", h.body);
+}
+
+#[sqlx::test]
+async fn a_valkey_error_when_ending_a_flow_hands_back_nothing(pool: PgPool) {
+    // Review round 3 (Codex): fail() cannot end the flow (Valkey error); it
+    // makes no loopback callback either.
+    let app = TestApp::with_passkeys(pool).await;
+    let h = finish_with_a_failing_cas(&app, Some("someone_else")).await;
+    assert_eq!(h.status, 503, "{}", h.body);
+    assert!(
+        hidden(&h.body, "error").is_none() && hidden(&h.body, "code").is_none(),
+        "{}",
+        h.body
+    );
+    assert!(!h.body.contains("127.0.0.1"), "{}", h.body);
+}

@@ -21,8 +21,8 @@ use uuid::Uuid;
 
 use super::ceremony::{self, CeremonyKind, CeremonyRecord, CeremonyState};
 use super::desktop_page::{
-    ceremony_page, expired_page, handoff_page, stale_page, HandoffField, Lang, LoopbackTarget,
-    PageHeading,
+    ceremony_page, expired_page, handoff_page, stale_page, unavailable_page, HandoffField, Lang,
+    LoopbackTarget, PageHeading,
 };
 use super::queries::{self, PasskeyState};
 use super::{failure, login, rp_of, step_up};
@@ -548,7 +548,11 @@ async fn fail(
     match cas(state, flow_id, &stored.raw, None, None).await {
         Ok(true) => {}
         Ok(false) => return stale_page(lang),
-        Err(err) => tracing::warn!(error = %err, "could not end a passkey flow"),
+        // Not known whether the flow is still this one: no callback.
+        Err(err) => {
+            tracing::warn!(error = %err, "could not end a passkey flow");
+            return unavailable_page(lang);
+        }
     }
     let (_, code) = e.status_and_code();
     tracing::info!(code, "desktop passkey finish refused");
@@ -661,11 +665,12 @@ pub async fn finish(
         // Another page changed the flow meanwhile: this finish lost; the
         // winner's hand-off must not be cut short by an error here.
         Ok(false) => stale_page(lang),
-        Err(_) => handoff_page(
-            &flow.loopback,
-            flow_id,
-            HandoffField::Error("SERVICE_UNAVAILABLE"),
-        ),
+        // Not known whether this finish won: no callback (the app waits
+        // until the flow expires or the user cancels).
+        Err(err) => {
+            tracing::warn!(error = %err, "could not store a passkey result");
+            unavailable_page(lang)
+        }
     }
 }
 
