@@ -169,3 +169,65 @@ decision. "For L2" marks interface facts the clients need.
   (role `Contact`, never `ip`/`place`).
 - `cascade::on_contact_changed` is the hook Task 21 fills (requests that recorded the old
   contact).
+
+## Task 21 — account requests with recorded cancellers (SM3)
+
+- `POST /auth/account-requests` (public, `AuthFlow` per IP): bootstrap now; recovery start is
+  filled in Task 27. → 201 `{request, request_secret?}` (native body; web cookie
+  `__Secure-kaiku_request`, Path `/auth/account-requests`). Request client header
+  `X-Kaiku-Request-Secret`. `GET/DELETE /auth/account-requests/current` (DELETE = withdraw, no
+  effects). Bearer: `GET /api/me/account-requests`, `POST /api/account-requests/{id}/cancel`
+  (owner rule B.2: part 1/contact/admin with the grant `request.cancel`/id; `part2` only while the
+  account has no active strong authenticator); `GET /api/admin/account-requests?state=open`
+  (elevated).
+- Cancellers are recorded as JSON routes `{route, id, type?}` (admin, contact, own authenticator)
+  and re-evaluated live: an admin route needs the admin to still be admin with an active strong
+  authenticator, a contact route a confirmed contact (confirmed ≥ one delay period before the
+  start) with one, an authenticator route the authenticator still active. No route at start →
+  409 `NO_INDEPENDENT_CANCELLER`; none left → `void`.
+- `lock_accounts` and the factor generation locks take `FOR NO KEY UPDATE` (was `FOR UPDATE`):
+  `FOR UPDATE` conflicts with the `FOR KEY SHARE` of FK inserts, and a notice delivery inserting
+  rows for two accounts deadlocked (40P01, reproduced) with a cancel holding both account locks.
+  Transitions still serialise. **L1a review:** this changes `approvals/transition.rs`.
+- Cascades for requests of other accounts (an admin's or contact's authenticator revoked) update
+  those rows without their account locks (void is idempotent; completion re-checks routes under
+  its own lock and the row lock serialises the two).
+- WS hint `account_request_updated {request_id, subject_id, state}` to the subject, the contact
+  and all admins. New codes (C27 list): `ACCOUNT_REQUEST_OPEN`, `NO_INDEPENDENT_CANCELLER`,
+  `ACCOUNT_REQUEST_COMPLETED`, `CANCEL_NOT_ALLOWED`, `REQUEST_FACTOR_INVALID
+  {recovery_codes_left}`, `ACCOUNT_REQUEST_NOT_READY {state}` (appended; **for L2**).
+- The start budget table `account_request_starts` exists now and is used in Task 27.
+- Not written (time): tests for demoted admins voiding their admin requests, notices to lost
+  devices, the WS hint, and the cancel-vs-completion / contact-change race tests
+  (`concurrent_starts_one_open` exists).
+
+## Task 22 — request client: staging and Finish
+
+- Routes (request secret, else 404; state `ready`, else 409 `ACCOUNT_REQUEST_NOT_READY {state}`;
+  past the deadline before the sweep → `state: "expired"`): `PUT …/current/password {password}`
+  (blocklist; Argon2id hash staged), `POST …/current/totp` → `{secret, otpauth_uri}`, `POST
+  …/current/totp/verify {code}` (the encrypted secret staged), `PUT …/current/recovery-contact
+  {username}` (exists, not system, not admin, not self), issuer routes `POST
+  …/current/enrollments`, `GET`/`DELETE …/current/enrollments/{id}`, `POST
+  …/current/enrollments/{id}/confirm {code}`, `POST …/current/passkey/{start,finish}` → 201
+  `Passkey` (`pending`, `ready_at` = the request's), `POST …/current/finish` → 200 `{request,
+  recovery_codes}` and clears the request cookie. Staging answers the updated `AccountRequest`.
+- One staged authenticator: a new phone or passkey replaces the previous pending one (a pending
+  device is revoked with reason `request`, a pending passkey deleted); a new setup link voids the
+  old one.
+- The Android app's own key: a claim with `X-Kaiku-Request-Secret` of a `ready`, unexpired
+  request → `{state: "done", authenticator_state: "pending", ready_at}`, no code.
+- `KEY_DEVICE_PENDING {ready_at}` (device login) and the own-claim/status `ready_at` come from the
+  request that staged the device (coordinator item 4).
+- Finish locks the subject and the staged contact in ascending order, then runs
+  `complete_locked_tx`. Two Task 21 bugs fixed here, both found by the new tests: the request is
+  set `completed` before its effects (replacing the staged password's generation otherwise
+  cascaded onto the request and voided it mid-completion), and the session sweep now also ends
+  PC sessions without an authenticator (`NOT (NULL AND …)` kept them). Completion also cancels
+  the request's open child enrolments.
+- A second Finish → 409 `{state: "completed"}`, no new codes. Rule 4 failures (generation
+  changed, no route left) → 409 `{state: "void"}`, nothing applied.
+- A contact that became admin between staging and Finish fails Finish with 400
+  `RECOVERY_CONTACT_INVALID` (stage another).
+- The TOTP replay store is per account: a staged TOTP code in the same 30 s step as an old-secret
+  code is refused (harmless: a real client stages at least a day after the start).
