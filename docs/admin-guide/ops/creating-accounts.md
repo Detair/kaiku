@@ -93,29 +93,25 @@ GET /auth/reauth/methods
 Authorization: Bearer <admin access token>
 ```
 
-Elevate with password (send `"mfa_code": null` and `"reason": null` if unused):
+It answers `{"passkey": bool, "device": bool}`. Elevate:
 
 ```http
 POST /api/admin/elevate
 Authorization: Bearer <admin access token>
 Content-Type: application/json
 
-{"password": "<your password>", "mfa_code": "123456", "reason": "create family accounts"}
+{"reason": "create family accounts"}
 ```
 
-`200` elevates the session of this access token for 15 minutes. Errors:
-`400 MFA_CODE_REQUIRED` (MFA is on, code missing), `401 INVALID_CREDENTIALS`
-(wrong password or code), `400 REAUTH_OIDC_REQUIRED` (account has no password,
-use a provider below), `400 REAUTH_UNAVAILABLE` (no way to confirm; ask another
-admin), `400 VALIDATION_ERROR`, `429` (too many attempts; wait).
-
-Accounts that use a provider: `POST /auth/reauth/oidc/authorize/{provider_id}`
-with `{"redirect_uri": null, "reason": "...", "mfa_code": "<if MFA is on>"}`
-returns a `url`; open it and sign in at the provider again. Poll
-`GET /api/admin/status` (`is_elevated`) for the result. A provider linked after
-this sign-in works only after you sign in again, unless you linked it while
-elevated. Setup: [environment variables](../configuration/environment.md)
-(`OIDC_*`, `PUBLIC_URL` is required).
+Elevation needs a **full** session (signed in on your key phone, or with a
+passkey) and a confirmation of the action `admin.elevate` on your phone (or with
+a passkey) just before; passwords and codes are no longer accepted for it. `200`
+elevates the session of this access token for 15 minutes. Errors:
+`403 FULL_SESSION_REQUIRED` (this session was signed in with a password, QR or
+TOTP; sign in on your phone or with a passkey), `403 STEP_UP_REQUIRED` (confirm
+on your phone first), `400 VALIDATION_ERROR`. The first admin gets a key phone
+with `kaiku-admin enroll <admin>` on the server host (see
+[sign-in and recovery](sign-in-and-recovery.md)).
 
 Create the account:
 

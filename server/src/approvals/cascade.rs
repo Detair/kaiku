@@ -21,13 +21,14 @@ pub struct CascadeOutcome {
 
 /// The cascade of ended sessions (called by `end_sessions_tx`).
 pub async fn on_sessions_ended(
-    _conn: &mut PgConnection,
+    conn: &mut PgConnection,
     _ctx: &AuthCtx<'_>,
     sids: &[Uuid],
 ) -> AuthResult<()> {
     if sids.is_empty() {
         return Ok(());
     }
+    crate::auth::step_up::void_for_sessions(conn, sids).await?;
     Ok(())
 }
 
@@ -53,5 +54,6 @@ pub async fn on_authenticator_revoked(
     .await?;
     let ended_sessions =
         end_sessions_tx(conn, ctx, user_id, &sids, EndReason::AuthenticatorRevoked).await?;
+    crate::auth::step_up::void_for_authenticator(conn, a).await?;
     Ok(CascadeOutcome { ended_sessions })
 }

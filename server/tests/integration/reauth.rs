@@ -132,20 +132,6 @@ fn next_step_code(totp: &TOTP) -> String {
     totp.generate(now + 30)
 }
 
-/// `details.method` of the user's latest elevation audit entry.
-async fn last_elevation_method(pool: &PgPool, user_id: Uuid) -> Option<String> {
-    sqlx::query_scalar(
-        "SELECT details->>'method' FROM system_audit_log
-         WHERE actor_id = $1 AND action = 'admin.session.elevated'
-         ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(user_id)
-    .fetch_optional(pool)
-    .await
-    .expect("audit query")
-    .flatten()
-}
-
 async fn post_json(
     server: &TestServer,
     path: &str,
@@ -177,125 +163,6 @@ async fn get_json(server: &TestServer, path: &str, token: &str) -> (u16, Value) 
     (status, json)
 }
 
-#[sqlx::test]
-async fn test_elevate_requires_password(pool: PgPool) {
-    let (server, config, _) = plain_server(&pool).await;
-    let (admin, _) = create_user_with_password(&pool).await;
-    make_admin(&pool, admin).await;
-    let (_, token) = create_session_with_token(&pool, &config, admin).await;
-
-    let (status, body) = post_json(&server, "/api/admin/elevate", &token, Some(json!({}))).await;
-    assert_eq!(status, 400, "missing password: {body}");
-    assert_eq!(body["error"], "VALIDATION_ERROR");
-
-    let (status, body) = post_json(
-        &server,
-        "/api/admin/elevate",
-        &token,
-        Some(json!({ "password": "wrong-password" })),
-    )
-    .await;
-    assert_eq!(status, 401, "wrong password: {body}");
-    assert_eq!(body["error"], "INVALID_CREDENTIALS");
-
-    let (status, body) = post_json(
-        &server,
-        "/api/admin/elevate",
-        &token,
-        Some(json!({ "password": PASSWORD, "reason": "test" })),
-    )
-    .await;
-    assert_eq!(status, 200, "right password: {body}");
-    assert_eq!(body["elevated"], true);
-}
-
-#[sqlx::test]
-async fn test_elevate_requires_totp_when_mfa_enabled(pool: PgPool) {
-    let (server, config, _) = plain_server(&pool).await;
-    let (admin, username) = create_user_with_password(&pool).await;
-    make_admin(&pool, admin).await;
-    let totp = enable_mfa(&pool, &config, admin, &username).await;
-    let (_, token) = create_session_with_token(&pool, &config, admin).await;
-
-    let (status, body) = post_json(
-        &server,
-        "/api/admin/elevate",
-        &token,
-        Some(json!({ "password": PASSWORD })),
-    )
-    .await;
-    assert_eq!(status, 400, "no code: {body}");
-    assert_eq!(body["error"], "MFA_CODE_REQUIRED");
-
-    let (status, body) = post_json(
-        &server,
-        "/api/admin/elevate",
-        &token,
-        Some(json!({ "password": PASSWORD, "mfa_code": wrong_code(&totp) })),
-    )
-    .await;
-    assert_eq!(status, 401, "wrong code: {body}");
-    assert_eq!(body["error"], "INVALID_CREDENTIALS");
-
-    let code = totp.generate_current().expect("code");
-    let (status, body) = post_json(
-        &server,
-        "/api/admin/elevate",
-        &token,
-        Some(json!({ "password": PASSWORD, "mfa_code": code })),
-    )
-    .await;
-    assert_eq!(status, 200, "valid code: {body}");
-}
-
-#[sqlx::test]
-async fn test_elevation_is_bound_to_session(pool: PgPool) {
-    let (server, config, state) = plain_server(&pool).await;
-    let (admin, _) = create_user_with_password(&pool).await;
-    make_admin(&pool, admin).await;
-    let (session_a, token_a) = create_session_with_token(&pool, &config, admin).await;
-    let (session_b, token_b) = create_session_with_token(&pool, &config, admin).await;
-
-    let (status, body) = post_json(
-        &server,
-        "/api/admin/elevate",
-        &token_a,
-        Some(json!({ "password": PASSWORD })),
-    )
-    .await;
-    assert_eq!(status, 200, "elevate on A: {body}");
-
-    // `GET /api/admin/users` is open to non-elevated admins; the report list
-    // is an elevated route.
-    let (status, body) = get_json(&server, "/api/admin/reports", &token_b).await;
-    assert_eq!(status, 403, "session B must not be elevated: {body}");
-    assert_eq!(body["error"], "ELEVATION_REQUIRED");
-
-    let (status, body) = get_json(&server, "/api/admin/reports", &token_a).await;
-    assert_eq!(status, 200, "session A is elevated: {body}");
-
-    let (_, status_b) = get_json(&server, "/api/admin/status", &token_b).await;
-    assert_eq!(status_b["is_elevated"], false);
-    let (_, status_a) = get_json(&server, "/api/admin/status", &token_a).await;
-    assert_eq!(status_a["is_elevated"], true);
-
-    // The WebSocket admin-event check follows the same session binding.
-    assert!(vc_server::admin::is_elevated_admin(&state.redis, &pool, admin, session_a).await);
-    assert!(!vc_server::admin::is_elevated_admin(&state.redis, &pool, admin, session_b).await);
-
-    // De-elevating ends the elevation (and its cached status) for A.
-    let resp = reqwest::Client::new()
-        .delete(format!("{}/api/admin/elevate", server.url))
-        .bearer_auth(&token_a)
-        .send()
-        .await
-        .expect("de-elevate");
-    assert_eq!(resp.status().as_u16(), 200);
-    let (status, _) = get_json(&server, "/api/admin/reports", &token_a).await;
-    assert_eq!(status, 403);
-    assert!(!vc_server::admin::is_elevated_admin(&state.redis, &pool, admin, session_a).await);
-}
-
 /// `DELETE /api/admin/elevate` ends only the caller's elevation; another
 /// elevated session of the same admin stays elevated.
 #[sqlx::test]
@@ -305,15 +172,18 @@ async fn test_de_elevation_is_bound_to_session(pool: PgPool) {
     make_admin(&pool, admin).await;
     let (session_a, token_a) = create_session_with_token(&pool, &config, admin).await;
     let (session_b, token_b) = create_session_with_token(&pool, &config, admin).await;
-    for token in [&token_a, &token_b] {
-        let (status, body) = post_json(
-            &server,
-            "/api/admin/elevate",
-            token,
-            Some(json!({ "password": PASSWORD })),
+    // Elevation itself is a step-up now (see `step_up_grants`); elevate
+    // both sessions directly.
+    for sid in [session_a, session_b] {
+        sqlx::query(
+            "INSERT INTO elevated_sessions (user_id, session_id, ip_address, expires_at, reason)
+             VALUES ($1, $2, '127.0.0.1'::inet, NOW() + INTERVAL '15 minutes', 'test')",
         )
-        .await;
-        assert_eq!(status, 200, "elevate: {body}");
+        .bind(admin)
+        .bind(sid)
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 
     let resp = reqwest::Client::new()
@@ -401,9 +271,9 @@ async fn test_reauth_attempts_are_rate_limited(pool: PgPool) {
     for attempt in 1..=10 {
         let (status, body) = post_json(
             &server,
-            "/api/admin/elevate",
+            "/auth/mfa/backup-codes",
             &token,
-            Some(json!({ "password": PASSWORD, "mfa_code": bad })),
+            Some(json!({ "mfa_code": bad })),
         )
         .await;
         assert_eq!(status, 401, "attempt {attempt}: {body}");
@@ -411,9 +281,9 @@ async fn test_reauth_attempts_are_rate_limited(pool: PgPool) {
 
     let (status, body) = post_json(
         &server,
-        "/api/admin/elevate",
+        "/auth/mfa/backup-codes",
         &token,
-        Some(json!({ "password": PASSWORD, "mfa_code": bad })),
+        Some(json!({ "mfa_code": bad })),
     )
     .await;
     assert_eq!(status, 429, "11th attempt: {body}");
@@ -421,15 +291,12 @@ async fn test_reauth_attempts_are_rate_limited(pool: PgPool) {
     let code = totp.generate_current().expect("code");
     let (status, body) = post_json(
         &server,
-        "/api/admin/elevate",
+        "/auth/mfa/backup-codes",
         &token,
-        Some(json!({ "password": PASSWORD, "mfa_code": code })),
+        Some(json!({ "mfa_code": code })),
     )
     .await;
     assert_eq!(status, 429, "a correct attempt is still refused: {body}");
-
-    let (_, status_body) = get_json(&server, "/api/admin/status", &token).await;
-    assert_eq!(status_body["is_elevated"], false, "never elevated");
 }
 
 #[sqlx::test]
@@ -461,73 +328,22 @@ async fn test_password_change_is_rate_limited(pool: PgPool) {
 #[sqlx::test]
 async fn test_totp_code_is_accepted_once(pool: PgPool) {
     let (server, config, _) = plain_server(&pool).await;
-    let (admin, username) = create_user_with_password(&pool).await;
-    make_admin(&pool, admin).await;
-    let totp = enable_mfa(&pool, &config, admin, &username).await;
-    let (_, token) = create_session_with_token(&pool, &config, admin).await;
+    let (user, username) = create_user_with_password(&pool).await;
+    let totp = enable_mfa(&pool, &config, user, &username).await;
+    let (_, token) = create_session_with_token(&pool, &config, user).await;
     let code = totp.generate_current().expect("code");
-    let body = json!({ "password": PASSWORD, "mfa_code": code });
+    let body = json!({ "mfa_code": code });
 
-    let (status, _) = post_json(&server, "/api/admin/elevate", &token, Some(body.clone())).await;
-    assert_eq!(status, 200);
-    let resp = reqwest::Client::new()
-        .delete(format!("{}/api/admin/elevate", server.url))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .expect("de-elevate");
-    assert_eq!(resp.status().as_u16(), 200);
-
-    let (status, body) = post_json(&server, "/api/admin/elevate", &token, Some(body)).await;
-    assert_eq!(status, 401, "replayed code: {body}");
-    assert_eq!(body["error"], "INVALID_CREDENTIALS");
-    let (status, _) = post_json(
+    let (status, first) = post_json(
         &server,
         "/auth/mfa/backup-codes",
         &token,
-        Some(json!({ "mfa_code": code })),
+        Some(body.clone()),
     )
     .await;
-    assert_eq!(status, 401, "replayed code on backup codes");
-}
-
-#[sqlx::test]
-async fn test_elevation_audit_records_verified_factors(pool: PgPool) {
-    let (server, config, _) = plain_server(&pool).await;
-
-    let (plain, _) = create_user_with_password(&pool).await;
-    make_admin(&pool, plain).await;
-    let (_, token) = create_session_with_token(&pool, &config, plain).await;
-    // An mfa_code sent for an account without MFA is not a verified factor.
-    let (status, _) = post_json(
-        &server,
-        "/api/admin/elevate",
-        &token,
-        Some(json!({ "password": PASSWORD, "mfa_code": "123456" })),
-    )
-    .await;
-    assert_eq!(status, 200);
-    assert_eq!(
-        last_elevation_method(&pool, plain).await.as_deref(),
-        Some("password")
-    );
-
-    let (mfa_admin, username) = create_user_with_password(&pool).await;
-    make_admin(&pool, mfa_admin).await;
-    let totp = enable_mfa(&pool, &config, mfa_admin, &username).await;
-    let (_, token) = create_session_with_token(&pool, &config, mfa_admin).await;
-    let (status, _) = post_json(
-        &server,
-        "/api/admin/elevate",
-        &token,
-        Some(json!({ "password": PASSWORD, "mfa_code": totp.generate_current().expect("code") })),
-    )
-    .await;
-    assert_eq!(status, 200);
-    assert_eq!(
-        last_elevation_method(&pool, mfa_admin).await.as_deref(),
-        Some("password+totp")
-    );
+    assert_eq!(status, 200, "{first}");
+    let (status, body) = post_json(&server, "/auth/mfa/backup-codes", &token, Some(body)).await;
+    assert_eq!(status, 401, "replayed code: {body}");
 }
 
 /// A TOTP code works once at sign-in: the same code again is refused with the

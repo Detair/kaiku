@@ -157,6 +157,14 @@ pub enum AuthError {
     },
 
     /// Internal server error.
+    /// The action needs a full session (B.4).
+    #[error("Sign in with a passkey or your phone to do this")]
+    FullSessionRequired,
+
+    /// The action needs a step-up grant for this action and target (F7).
+    #[error("Confirm this action first")]
+    StepUpRequired,
+
     /// A user cannot remove their own last strong authenticator (SM4).
     #[error("This is your last way to sign in securely; add another first")]
     LastStrongAuthenticator,
@@ -228,6 +236,8 @@ impl IntoResponse for AuthError {
                 (StatusCode::BAD_REQUEST, "REAUTH_PROVIDER_UNAVAILABLE")
             }
             Self::TooManyAttempts { .. } => (StatusCode::TOO_MANY_REQUESTS, "TOO_MANY_ATTEMPTS"),
+            Self::FullSessionRequired => (StatusCode::FORBIDDEN, "FULL_SESSION_REQUIRED"),
+            Self::StepUpRequired => (StatusCode::FORBIDDEN, "STEP_UP_REQUIRED"),
             Self::LastStrongAuthenticator => (StatusCode::CONFLICT, "LAST_STRONG_AUTHENTICATOR"),
             Self::SessionReused => (StatusCode::UNAUTHORIZED, "SESSION_REUSED"),
             Self::SessionExpired => (StatusCode::UNAUTHORIZED, "SESSION_EXPIRED"),

@@ -152,3 +152,25 @@ is listed here, per task. "Coordinator" marks items that need a decision.
   `IssuedSession.event_ids` lets the sign-in handlers deliver them right after commit (the
   minute sweep is the fallback). The reuse notice is delivered by a spawned
   `deliver_pending` after the 401.
+
+## Task 9 — step-up grants, guards, elevation
+
+- `consume_tx` picks the oldest **unexpired** open grant (an expired one is simply not
+  found → `STEP_UP_REQUIRED`), then re-checks its authenticator is active.
+- `grant_tx` refuses a grant whose producing authenticator is not active
+  (`STEP_UP_REQUIRED`).
+- Elevation consumes the grant, writes the elevation row and its audit entry in one
+  transaction (`create_elevated_session` now takes any executor); the old
+  `record_elevation` helper (shared with the removed OIDC path) is gone. `ElevateRequest` is
+  `{reason}` only; unknown fields (`password`, `mfa_code`) are ignored by serde.
+- OIDC re-auth removal also removed `OidcFlowPurpose::Reauth`, `OidcReauthBinding`, the
+  `prompt=login` path of `start_oidc_flow` and the `oidc_hand_back` helper (only re-auth used
+  it). L1b's account-request "fresh OIDC" factor needs its own flow purpose.
+- The mock OIDC provider of the deleted `reauth_oidc.rs` tests is kept as
+  `tests/integration/oidc_mock.rs` (shared with `oidc_handoff.rs`), with the one login-flow
+  test that did not depend on re-auth.
+- `reauth.rs` tests that elevated by password were removed; the rate-limit and TOTP-replay
+  tests now drive `/auth/mfa/backup-codes` (still on `verify_reauth` until L1b Task 16).
+- Admin guide (`creating-accounts.md`) updated for elevation by step-up.
+- Found while running the lib suite: `db::tests::test_cleanup_expired_sessions` had failed
+  since Task 6 (30-day retention); fixed in this commit.

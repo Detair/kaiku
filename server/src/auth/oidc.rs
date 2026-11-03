@@ -105,9 +105,6 @@ pub enum OidcFlowPurpose {
         #[serde(default)]
         session_id: Option<Uuid>,
     },
-    /// Re-authenticate this user and elevate the bound session (C24). Asks
-    /// the provider for a fresh login and uses a shorter state TTL.
-    Reauth(OidcReauthBinding),
 }
 
 impl OidcFlowPurpose {
@@ -116,7 +113,6 @@ impl OidcFlowPurpose {
         match self {
             Self::Login => "login",
             Self::Link { .. } => "link",
-            Self::Reauth(_) => "reauth",
         }
     }
 }
@@ -161,21 +157,6 @@ impl From<OidcFlowStateWire> for OidcFlowState {
             client_challenge: wire.client_challenge,
         }
     }
-}
-
-/// What a re-authentication flow is bound to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OidcReauthBinding {
-    /// The signed-in user who started the flow.
-    pub user_id: Uuid,
-    /// The session (access token `sid`) to elevate.
-    pub session_id: Uuid,
-    /// Elevation reason for the audit log.
-    pub reason: Option<String>,
-    /// A TOTP code was verified when the flow started (required when the
-    /// account has MFA on).
-    #[serde(default)]
-    pub mfa_verified: bool,
 }
 
 /// Verified ID token claims needed for re-authentication.

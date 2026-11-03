@@ -408,52 +408,13 @@ pub struct OidcHandoffExchangeRequest {
     pub verifier: String,
 }
 
-/// Body of `POST /auth/reauth/oidc/authorize/{provider}` (C24).
-///
-/// A JSON body, so the TOTP code never appears in a URL.
-#[derive(Deserialize, Validate, utoipa::ToSchema)]
-pub struct OidcReauthRequest {
-    /// Desktop loopback return address; omit (or `null`) for the browser flow.
-    #[serde(default)]
-    pub redirect_uri: Option<String>,
-    /// Elevation reason for the audit log (max 255 characters).
-    #[serde(default)]
-    #[validate(length(max = 255))]
-    pub reason: Option<String>,
-    /// Current TOTP code; required when the account has MFA on.
-    #[serde(default)]
-    #[validate(length(max = 16))]
-    pub mfa_code: Option<String>,
-}
-
-impl std::fmt::Debug for OidcReauthRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OidcReauthRequest")
-            .field("redirect_uri", &self.redirect_uri)
-            .field("reason", &self.reason)
-            .field("mfa_code", &self.mfa_code.as_ref().map(|_| "[REDACTED]"))
-            .finish()
-    }
-}
-
-/// A linked provider that can confirm a fresh sign-in.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct ReauthOidcProvider {
-    /// Provider slug (path segment of the authorize endpoint).
-    pub provider_id: String,
-    /// Human-readable provider name.
-    pub display_name: String,
-}
-
-/// `GET /auth/reauth/methods`: how the caller can re-authenticate (C24).
+/// `GET /auth/reauth/methods`: how the caller can step up (C27, F7).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ReauthMethodsResponse {
-    /// The account has a password (`POST /api/admin/elevate` with `password`).
-    pub password: bool,
-    /// The password path also needs a current TOTP code (`mfa_code`).
-    pub mfa_required: bool,
-    /// Linked providers usable for `POST /auth/reauth/oidc/authorize/{provider_id}`.
-    pub oidc: Vec<ReauthOidcProvider>,
+    /// A passkey can confirm the action (set by LP).
+    pub passkey: bool,
+    /// An active key device of the account can confirm it (`device_stepup`).
+    pub device: bool,
 }
 
 /// Forgot password request.

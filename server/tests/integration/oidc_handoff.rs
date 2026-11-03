@@ -15,7 +15,7 @@ use uuid::Uuid;
 use vc_server::auth::mfa_crypto::{decrypt_mfa_secret, encrypt_mfa_secret};
 use vc_server::auth::oidc::{handoff_key, OidcFlowState};
 
-use super::reauth_oidc::{
+use super::oidc_mock::{
     client, create_user, follow, fresh, issue, link, query_of, setup, setup_with, Ctx,
     DESKTOP_RETURN,
 };

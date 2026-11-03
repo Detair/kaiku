@@ -8,6 +8,7 @@ pub mod client_class;
 pub(crate) mod cookies;
 pub mod ctx;
 pub(crate) mod error;
+pub mod guards;
 mod helpers;
 pub(crate) mod identities;
 pub mod jwt;
@@ -26,6 +27,7 @@ pub mod revocation;
 pub mod session_check;
 pub mod session_issue;
 pub(crate) mod sessions;
+pub mod step_up;
 pub mod strong;
 pub mod timers;
 pub mod types;
@@ -227,10 +229,6 @@ pub fn router(state: AppState) -> Router<AppState> {
     ));
     let mfa_reauth_routes = with_reauth_limits(
         Router::new()
-            .route(
-                "/reauth/oidc/authorize/{provider}",
-                post(reauth::oidc_reauth_authorize),
-            )
             .route("/mfa/verify", post(mfa::mfa_verify))
             .route("/mfa/disable", post(mfa::mfa_disable))
             .route("/mfa/backup-codes", post(mfa::mfa_generate_backup_codes))

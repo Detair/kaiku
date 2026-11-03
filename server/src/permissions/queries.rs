@@ -120,8 +120,8 @@ pub async fn get_elevated_session(
 /// Create or update an elevated session.
 ///
 /// Uses ON CONFLICT UPDATE to extend an existing session's expiration.
-pub async fn create_elevated_session(
-    pool: &PgPool,
+pub async fn create_elevated_session<'e, E: sqlx::PgExecutor<'e>>(
+    pool: E,
     user_id: Uuid,
     session_id: Uuid,
     ip_address: &str,

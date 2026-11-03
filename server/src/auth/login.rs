@@ -345,8 +345,6 @@ fn is_desktop_client(headers: &HeaderMap) -> bool {
 
 /// Flow-state TTL of a login or link flow.
 const OIDC_STATE_TTL_SECS: i64 = 600;
-/// Flow-state TTL of a re-authentication flow.
-const OIDC_REAUTH_STATE_TTL_SECS: i64 = 300;
 
 /// Begin an OIDC authorization flow and redirect to the provider.
 ///
@@ -369,7 +367,6 @@ pub async fn start_oidc_flow(
     purpose: OidcFlowPurpose,
     want_json: bool,
 ) -> Result<Response, AuthError> {
-    let is_reauth = matches!(purpose, OidcFlowPurpose::Reauth(_));
     let auth_methods = get_auth_methods_allowed(&state.db).await?;
     if !auth_methods.oidc {
         return Err(AuthError::AuthMethodDisabled);
@@ -424,7 +421,7 @@ pub async fn start_oidc_flow(
     };
 
     let (auth_url, csrf_state, nonce, pkce_verifier) = oidc_manager
-        .generate_auth_url_with(provider, &redirects.provider_redirect_uri, is_reauth)
+        .generate_auth_url_with(provider, &redirects.provider_redirect_uri, false)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, provider = %provider, "Failed to generate OIDC auth URL");
@@ -444,11 +441,7 @@ pub async fn start_oidc_flow(
         client_redirect_uri: redirects.client_redirect_uri,
         client_challenge,
     };
-    let ttl = if is_reauth {
-        OIDC_REAUTH_STATE_TTL_SECS
-    } else {
-        OIDC_STATE_TTL_SECS
-    };
+    let ttl = OIDC_STATE_TTL_SECS;
 
     let flow_json =
         serde_json::to_string(&flow_state).map_err(|e| AuthError::Internal(e.to_string()))?;
@@ -505,11 +498,9 @@ pub async fn start_oidc_flow(
         (status = 400, description = "Invalid or unknown state"),
     ),
 )]
-#[tracing::instrument(skip(state, jar, headers, query))]
+#[tracing::instrument(skip(state, jar, query))]
 pub async fn oidc_callback(
     State(state): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     jar: CookieJar,
     axum::extract::Query(query): axum::extract::Query<OidcCallbackQuery>,
 ) -> Result<Response, AuthError> {
@@ -558,14 +549,6 @@ pub async fn oidc_callback(
             return Ok(flow_failure_response(&flow_state, OIDC_PROVIDER_ERROR));
         }
     };
-
-    // Re-authentication flow: verify the fresh provider login and elevate the
-    // bound session; never logs in or links.
-    if let OidcFlowPurpose::Reauth(ref binding) = flow_state.purpose {
-        let client_ip = super::reauth::client_ip(&state, &headers, addr);
-        return super::reauth::complete_oidc_reauth(&state, &flow_state, binding, code, client_ip)
-            .await;
-    }
 
     // Exchange code for tokens (also verifies ID token nonce for OIDC providers)
     let access_token = match oidc_manager
@@ -1110,12 +1093,8 @@ const OIDC_EXCHANGE_FAILED: &str = "OIDC_EXCHANGE_FAILED";
 /// |-------|------------------------|------------------------------------------------------|
 /// | login | `?error=CODE`          | `{type: "oidc-callback", error}`                     |
 /// | link  | `?link_error=CODE`     | `{type: "oidc-link-callback", success: false, error_code}` |
-/// | reauth | `?reauth_error=CODE`  | `{type: "oidc-reauth-callback", success: false, error_code, expires_at: null}` |
 fn flow_failure_response(flow_state: &OidcFlowState, code: &'static str) -> Response {
     let is_link = match flow_state.purpose {
-        OidcFlowPurpose::Reauth(_) => {
-            return super::reauth::reauth_failure_response(flow_state, code);
-        }
         OidcFlowPurpose::Link { .. } => true,
         OidcFlowPurpose::Login => false,
     };
@@ -1161,29 +1140,6 @@ if (window.opener) {{
 document.body.innerText = "{fallback}";
 </script></body></html>"#,
     )
-}
-
-/// Hand a token-less OIDC flow result back to the client that started it.
-///
-/// Desktop (`return_url`, see [`client_return_url`]): redirect there with
-/// `query` appended. Browser: a popup page that posts `payload` to the opener
-/// window and closes itself.
-pub(super) fn oidc_hand_back(
-    return_url: Option<openidconnect::url::Url>,
-    query: &[(&str, String)],
-    payload: &serde_json::Value,
-) -> Response {
-    if let Some(mut redirect_url) = return_url {
-        {
-            let mut pairs = redirect_url.query_pairs_mut();
-            for (key, value) in query {
-                pairs.append_pair(key, value);
-            }
-        }
-        loopback_redirect(&redirect_url)
-    } else {
-        axum::response::Html(popup_result_page(payload, true)).into_response()
-    }
 }
 
 // ============================================================================

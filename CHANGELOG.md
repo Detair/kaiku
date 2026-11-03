@@ -64,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop client now displays remote screen shares via native VP8 decode
 
 ### Changed
+- Admins elevate by confirming on their phone (or with a passkey) instead of typing their password and code.
 - Every sign-in now records how strongly it was confirmed; sessions from before this release are limited to chat and calls until you sign in again with a passkey or your phone. Signed-in requests keep working while Valkey is unavailable, and an ended session stays refused.
 - **Breaking:** the server no longer starts without `PUBLIC_URL`, the public `https://` address users open. Sign-in confirmations are bound to it; read the admin guide before changing your domain.
 - Switches, disabled buttons and placeholders are easier to read in every theme: switches always show their knob, sit left with an outlined track when off and right on the accent colour with a check mark when on; disabled buttons keep a readable label with a dashed outline instead of fading into the background, and say why they are disabled (for example "Enter a channel name to continue."); placeholders are dimmer than typed text and read as examples ("e.g. voice-lounge"). Selected cards and options are marked more clearly, keyboard focus is visible on every button, and the Solarized themes reach the documented text contrast.

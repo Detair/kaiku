@@ -193,9 +193,10 @@ pub async fn get_admin_stats(
 ///
 /// `POST /api/admin/elevate`
 ///
-/// Re-authenticates the admin (password, plus a current TOTP code when MFA is
-/// on) and elevates the session of the calling access token for 15 minutes
-/// (C24). Other sessions of the same admin stay non-elevated.
+/// Consumes an `admin.elevate` step-up grant of the calling full session
+/// (F7: a passkey or `device_stepup`, never a password or TOTP) and elevates
+/// that session for 15 minutes, in one transaction. Other sessions of the
+/// same admin stay non-elevated.
 #[utoipa::path(
     post,
     path = "/api/admin/elevate",
@@ -203,9 +204,8 @@ pub async fn get_admin_stats(
     request_body = ElevateRequest,
     responses(
         (status = 200, body = ElevateResponse),
-        (status = 400, description = "VALIDATION_ERROR, MFA_CODE_REQUIRED or REAUTH_UNAVAILABLE"),
-        (status = 401, description = "INVALID_CREDENTIALS"),
-        (status = 429, description = "Too many failed attempts"),
+        (status = 400, description = "VALIDATION_ERROR"),
+        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
     ),
     security(("bearer_auth" = []))
 )]
@@ -222,56 +222,44 @@ pub async fn elevate_session(
     body.validate()
         .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
 
-    // The elevation belongs to the access token's session. It must be a live
-    // session row (elevated_sessions.session_id references sessions.id).
-    let session_id = auth
-        .session_id
-        .ok_or_else(|| AdminError::Validation("No active session found".to_string()))?;
-    if !queries::is_active_session(&state.db, admin.user_id, session_id).await? {
-        return Err(AdminError::Validation(
-            "No active session found".to_string(),
-        ));
-    }
+    crate::auth::guards::require_full(&auth)?;
+    let session_id = auth.session_id.ok_or(AuthError::InvalidToken)?;
+    let client_ip = crate::auth::reauth::client_ip(&state, &headers, addr).to_string();
 
-    let client_ip = crate::auth::reauth::client_ip(&state, &headers, addr);
-    let factors = match crate::auth::reauth::verify_reauth(
-        &state,
-        admin.user_id,
-        Some(&body.password),
-        body.mfa_code.as_deref(),
-        true,
-        client_ip,
-    )
-    .await
-    {
-        Ok(factors) => factors,
-        // No password: point to a provider that can confirm this session.
-        Err(AuthError::ReauthUnavailable) => {
-            let providers = crate::auth::reauth::linked_reauth_providers(
-                &state,
-                admin.user_id,
-                Some(session_id),
-            )
-            .await?;
-            return Err(if providers.is_empty() {
-                AuthError::ReauthUnavailable
-            } else {
-                AuthError::ReauthOidcRequired
-            }
-            .into());
-        }
-        Err(e) => return Err(e.into()),
-    };
-
-    let elevated = record_elevation(
-        &state,
-        admin.user_id,
-        session_id,
-        &client_ip.to_string(),
-        body.reason.as_deref(),
-        &factors.method(None),
+    let mut tx = state.db.begin().await?;
+    let grant = crate::auth::step_up::consume_tx(
+        &mut tx,
+        &auth,
+        crate::auth::step_up::StepUpAction::AdminElevate,
+        &crate::auth::step_up::StepUpTarget::None,
     )
     .await?;
+    let method = format!("step_up:{}", grant.via.as_str());
+    let elevated = create_elevated_session(
+        &mut *tx,
+        admin.user_id,
+        session_id,
+        &client_ip,
+        ELEVATION_MINUTES,
+        body.reason.as_deref(),
+    )
+    .await?;
+    write_audit_log(
+        &mut *tx,
+        admin.user_id,
+        "admin.session.elevated",
+        Some("user"),
+        Some(admin.user_id),
+        Some(serde_json::json!({
+            "reason": body.reason,
+            "session_id": session_id,
+            "method": method,
+        })),
+        Some(&client_ip),
+    )
+    .await?;
+    tx.commit().await?;
+    super::cache_elevated_status(&state.redis, session_id, true, ELEVATION_MINUTES * 60).await;
 
     Ok(Json(ElevateResponse {
         elevated: true,
@@ -282,50 +270,6 @@ pub async fn elevate_session(
 
 /// Elevation lifetime in minutes.
 const ELEVATION_MINUTES: i64 = 15;
-
-/// Elevate `session_id` of a re-authenticated admin: create (or extend) the
-/// elevation record, cache it per session and write the audit entry.
-///
-/// Shared by the password path (`elevate_session`) and the OIDC
-/// re-authentication callback; the caller has already verified the admin.
-pub(crate) async fn record_elevation(
-    state: &AppState,
-    user_id: Uuid,
-    session_id: Uuid,
-    ip_address: &str,
-    reason: Option<&str>,
-    method: &str,
-) -> Result<crate::permissions::ElevatedSession, AdminError> {
-    let elevated = create_elevated_session(
-        &state.db,
-        user_id,
-        session_id,
-        ip_address,
-        ELEVATION_MINUTES,
-        reason,
-    )
-    .await?;
-
-    // Cache elevated status in Redis for the elevation's lifetime
-    super::cache_elevated_status(&state.redis, session_id, true, ELEVATION_MINUTES * 60).await;
-
-    write_audit_log(
-        &state.db,
-        user_id,
-        "admin.session.elevated",
-        Some("user"),
-        Some(user_id),
-        Some(serde_json::json!({
-            "reason": reason,
-            "session_id": session_id,
-            "method": method,
-        })),
-        Some(ip_address),
-    )
-    .await?;
-
-    Ok(elevated)
-}
 
 /// De-elevate the caller's session (the access token's `sid`); other
 /// sessions of the same admin stay elevated.

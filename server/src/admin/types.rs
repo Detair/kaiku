@@ -24,29 +24,15 @@ pub struct ElevatedAdmin {
 
 // Request types
 
-/// `POST /api/admin/elevate` body (C24): the caller confirms the password,
-/// plus a current TOTP code when MFA is on.
-#[derive(Deserialize, Validate, utoipa::ToSchema)]
+/// `POST /api/admin/elevate` body (C27): `{reason|null}`; the caller holds an
+/// `admin.elevate` step-up grant.
+#[derive(Debug, Deserialize, Validate, utoipa::ToSchema)]
 pub struct ElevateRequest {
-    /// The account password.
-    #[validate(length(min = 1))]
-    pub password: String,
-    /// Current TOTP code; required when the account has MFA on.
-    #[validate(length(max = 16))]
-    pub mfa_code: Option<String>,
-    /// Why the admin elevates (stored in the audit log).
+    /// Why the admin elevates (stored in the audit log). Old clients may
+    /// still send `password` / `mfa_code`; they are ignored (F7).
+    #[serde(default)]
     #[validate(length(max = 255))]
     pub reason: Option<String>,
-}
-
-impl std::fmt::Debug for ElevateRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ElevateRequest")
-            .field("password", &"[REDACTED]")
-            .field("mfa_code", &self.mfa_code.as_ref().map(|_| "[REDACTED]"))
-            .field("reason", &self.reason)
-            .finish()
-    }
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
