@@ -441,8 +441,6 @@
     <string name="security_key_device_this">This phone</string>
     <string name="security_remove">Remove</string>
     <string name="security_add_phone">Add a phone</string>
-    <string name="security_passkeys">Passkeys</string>
-    <string name="security_passkeys_count">Passkeys on this account: %1$d</string>
     <string name="security_sessions">Where you\'re signed in</string>
     <string name="security_session_full">Full sign-in</string>
     <string name="security_session_probation">Chat only</string>

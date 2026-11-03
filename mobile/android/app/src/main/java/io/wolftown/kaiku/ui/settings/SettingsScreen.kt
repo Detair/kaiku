@@ -131,10 +131,6 @@ fun SettingsScreen(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
-            PasskeysSection()
-
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
             // L2: phones, sessions, recovery codes and contact, the security log.
             OutlinedButton(
                 onClick = onOpenSecurity,

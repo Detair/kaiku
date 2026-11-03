@@ -43,16 +43,17 @@ import io.wolftown.kaiku.domain.model.FactorState
 import io.wolftown.kaiku.domain.model.KeyDeviceStatus
 import io.wolftown.kaiku.ui.auth.setup.parseInstant
 import io.wolftown.kaiku.ui.auth.setup.readyText
+import io.wolftown.kaiku.ui.settings.PasskeysSection
 import io.wolftown.kaiku.ui.shared.KeyNotice
 import io.wolftown.kaiku.ui.shared.KeyScreenSizes
 import io.wolftown.kaiku.ui.shared.currentFragmentActivity
 import kotlinx.coroutines.launch
 
 /**
- * Security settings (Task B11): this phone, your phones, passkeys (count; LP's
- * section mounts here after the LP rebase), sessions, recovery codes, recovery
- * contact, password and TOTP read-only, and the security log. In a probation
- * session everything is read-only.
+ * Security settings (Task B11): this phone, your phones, passkeys (LP's
+ * [PasskeysSection]), sessions, recovery codes, recovery contact, password and
+ * TOTP read-only, and the security log. In a probation session everything
+ * L2 owns is read-only; LP's section keeps its own rules.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -127,8 +128,10 @@ fun SecuritySettingsScreen(
             }
             if (ui.canAddPhone && !ui.readOnly) Action(stringResource(R.string.security_add_phone), onClick = onAddPhone)
 
-            Section(stringResource(R.string.security_passkeys))
-            Body(stringResource(R.string.security_passkeys_count, ui.me?.passkeys ?: 0))
+            // LP's section, unchanged (C29); its Add reaches the key's step-up through
+            // the @DeviceStepUp binding (DC1).
+            HorizontalDivider(Modifier.padding(top = 12.dp))
+            PasskeysSection()
 
             Section(stringResource(R.string.security_sessions))
             SessionsList(
