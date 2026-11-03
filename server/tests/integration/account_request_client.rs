@@ -319,7 +319,7 @@ async fn android_app_enrols_itself_with_the_request_secret(pool: PgPool) {
         (HEADER, &wrong),
     )
     .await;
-    assert_ne!(s, 201);
+    assert_eq!(s, 404, "an unknown issuer proof is an unknown setup");
 }
 
 #[sqlx::test]

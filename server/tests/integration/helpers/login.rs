@@ -253,3 +253,19 @@ pub async fn f4_sign_in(
     app.oneshot(req.body(Body::from(body.to_string())).unwrap())
         .await
 }
+
+/// Valkey outlives the test database: clear the per-account password
+/// counters (B.5) of fixed names a test types, so reruns within a day do
+/// not meet the delay.
+pub async fn forget_password_counters(redis: &fred::clients::Client, names: &[&str]) {
+    use fred::interfaces::KeysInterface;
+    for name in names {
+        if let vc_server::ratelimit::account::CounterKey::Password(h) =
+            vc_server::ratelimit::account::CounterKey::password(name)
+        {
+            let _: Result<(), _> = redis
+                .del::<(), _>(format!("ratelimit:acct:password:{h}"))
+                .await;
+        }
+    }
+}

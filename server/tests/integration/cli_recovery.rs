@@ -145,8 +145,9 @@ async fn cli_cancels_a_request(pool: PgPool) {
             .unwrap();
     assert_eq!(state, "cancelled");
     assert_eq!(by["kind"], "cli");
-    // A second cancel fails.
-    assert!(cli(&app, &["request", "cancel", &id]).await.is_err());
+    // A second cancel fails (the request is no longer open).
+    let err = cli(&app, &["request", "cancel", &id]).await.unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("cancel"), "{err}");
 }
 
 #[sqlx::test]

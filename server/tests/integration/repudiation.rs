@@ -252,8 +252,12 @@ async fn part1_needs_an_older_strong_authenticator(pool: PgPool) {
         json!({"auth_methods": ["device_key"]}),
     )
     .await;
-    let (s, _) = repudiate(&app, &own, id).await;
-    assert_eq!(s, 403);
+    let (s, b) = repudiate(&app, &own, id).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("REPUDIATE_NOT_ALLOWED")),
+        "{b}"
+    );
 }
 
 #[sqlx::test]

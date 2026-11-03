@@ -81,7 +81,7 @@ async fn may_approve_and_factor_toggles_are_audited(pool: PgPool) {
         .unwrap();
     assert!(!may);
     // One grant per action.
-    let (s, _) = call(
+    let (s, b) = call(
         &app,
         Method::PUT,
         &uri,
@@ -89,7 +89,32 @@ async fn may_approve_and_factor_toggles_are_audited(pool: PgPool) {
         json!({"may_approve": true}),
     )
     .await;
-    assert_eq!(s, 403);
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("STEP_UP_REQUIRED")),
+        "{b}"
+    );
+    // The other admin routes need their grant too.
+    let (contact, _) = create_test_user(&pool).await;
+    for (m, u, body) in [
+        (
+            Method::PUT,
+            format!("/api/admin/users/{user}/factors"),
+            json!({"password": "compromised"}),
+        ),
+        (
+            Method::PUT,
+            format!("/api/admin/users/{user}/recovery-contact"),
+            json!({"user_id": contact}),
+        ),
+    ] {
+        let (s, b) = call(&app, m, &u, &token, body).await;
+        assert_eq!(
+            (s, b["error"].as_str()),
+            (403, Some("STEP_UP_REQUIRED")),
+            "{u}: {b}"
+        );
+    }
 
     // Mark the password unsafe, then a throttled TOTP allowed again.
     sqlx::query(
@@ -238,8 +263,12 @@ async fn remove_device_now_notifies_the_removed_device_last(pool: PgPool) {
         "/api/admin/users/{user}/authenticators/{}/remove",
         dev.row_id
     );
-    let (s, _) = call(&app, Method::POST, &uri, &token, json!({})).await;
-    assert_eq!(s, 403, "needs the grant");
+    let (s, b) = call(&app, Method::POST, &uri, &token, json!({})).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("STEP_UP_REQUIRED")),
+        "{b}"
+    );
     grant_step_up(
         &pool,
         sid,

@@ -465,3 +465,17 @@ async fn browser_setup_link_registers_a_passkey(pool: PgPool) {
         "{st}"
     );
 }
+
+#[sqlx::test]
+async fn probation_sessions_cannot_add_a_phone(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let (_, token) =
+        super::helpers::create_probation_session_with_token(&pool, &app.config, user).await;
+    let (s, b) = call(&app, Method::POST, "/auth/enrollments", &token, json!({})).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("FULL_SESSION_REQUIRED")),
+        "{b}"
+    );
+}

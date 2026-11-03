@@ -55,9 +55,14 @@ async fn events(pool: &PgPool, user: Uuid, ty: &str) -> Vec<Value> {
     .unwrap()
 }
 
+async fn forget_counters(app: &TestApp, names: &[&str]) {
+    super::helpers::login::forget_password_counters(&app.state.redis, names).await;
+}
+
 #[sqlx::test]
 async fn neutral_answer_is_identical(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
+    forget_counters(&app, &["kaiku", "no_such_user_xyz"]).await;
     let (with_totp, totp_name) = password_user(&pool, PASSWORD).await;
     enable_totp(&pool, &app.config, with_totp, &totp_name).await;
     let (compromised, compromised_name) = password_user(&pool, PASSWORD).await;
@@ -502,4 +507,45 @@ async fn collect_rechecks_window_and_generation(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(n, 0, "no session was minted");
+}
+
+#[sqlx::test]
+async fn passwordless_banned_and_system_accounts(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    forget_counters(&app, &["kaiku"]).await;
+    // Passwordless: the neutral answer.
+    let (user, name) = create_test_user(&pool).await;
+    sqlx::query("UPDATE users SET password_hash = NULL WHERE id = $1")
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, b, _) = login_native(&app, &name, PASSWORD).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (401, Some("INVALID_CREDENTIALS")),
+        "{b}"
+    );
+    // The system account: the neutral answer.
+    let (s, b, _) = login_native(&app, "kaiku", PASSWORD).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (401, Some("INVALID_CREDENTIALS")),
+        "{b}"
+    );
+    // Banned with the right password and a second step: 403 ACCOUNT_BANNED
+    // (coordinator decision: a banned person is told so).
+    let (user, name) = password_user(&pool, PASSWORD).await;
+    KeyDeviceFixture::insert(&pool, &app.config, user, "active").await;
+    sqlx::query("INSERT INTO global_bans (user_id, reason) VALUES ($1, 'test')")
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, b, _) = login_native(&app, &name, PASSWORD).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (403, Some("ACCOUNT_BANNED")),
+        "{b}"
+    );
 }
