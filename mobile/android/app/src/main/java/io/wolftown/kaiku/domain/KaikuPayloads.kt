@@ -66,7 +66,8 @@ object KaikuPayloads {
 
     private fun parseSetupUrl(uri: URI, scheme: String): ScanPayload {
         val path = uri.rawPath ?: return ScanPayload.NotKaiku
-        if (path != "/setup" && !path.endsWith("/setup")) return ScanPayload.NotKaiku
+        // C27: `{PUBLIC_URL}/setup` exactly, as the App Link filter (Fable m8).
+        if (path != "/setup") return ScanPayload.NotKaiku
         val origin = canonicalOrigin(uri.toString()) ?: return ScanPayload.NotKaiku
         if (scheme == "http" && !secureOrDev(origin)) return ScanPayload.NotKaiku
         val f = params(uri.rawFragment)

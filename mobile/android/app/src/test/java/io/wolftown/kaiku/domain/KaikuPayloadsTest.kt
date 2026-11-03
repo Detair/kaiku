@@ -72,4 +72,11 @@ class KaikuPayloadsTest {
         assertEquals(ScanPayload.OtherServer("https://evil.example.com"), KaikuPayloads.pin(ScanPayload.Login("https://evil.example.com", token), "https://chat.example.com"))
         assertEquals(ScanPayload.OtherServer("https://chat.example.com:8443"), KaikuPayloads.pin(ScanPayload.Setup("https://chat.example.com:8443", token), "https://chat.example.com"))
     }
+
+    @Test fun `a setup url needs exactly the setup path`() {
+        val token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        assertEquals(ScanPayload.NotKaiku, KaikuPayloads.parse("https://chat.example.com/evil/setup#v=1&t=$token"))
+        assertEquals(ScanPayload.NotKaiku, KaikuPayloads.parse("https://chat.example.com/setup/#v=1&t=$token"))
+        assertEquals(ScanPayload.Setup("https://chat.example.com", token), KaikuPayloads.parse("https://chat.example.com/setup#v=1&t=$token"))
+    }
 }
