@@ -318,4 +318,33 @@
     <string name="scan_old_kaiku_code">This code comes from an older Kaiku on the PC. Update Kaiku there.</string>
     <string name="scan_not_kaiku">This is not a Kaiku code.</string>
     <string name="scan_action">Scan</string>
+
+    <!-- Confirming a PC sign-in on the key phone (F2, F3) -->
+    <string name="approval_checking">Checking the code…</string>
+    <string name="approval_question">Are you signing in on a PC in front of you right now?</string>
+    <string name="approval_client_labelled">%1$s</string>
+    <string name="approval_client_desktop">Kaiku desktop</string>
+    <string name="approval_client_web">A web browser</string>
+    <string name="approval_client_android">A phone</string>
+    <string name="approval_field_server">Server</string>
+    <string name="approval_field_account">Account</string>
+    <string name="approval_field_time">Started</string>
+    <string name="approval_field_place">Approximate place (can be wrong)</string>
+    <string name="approval_after_password">This comes after someone entered your password.</string>
+    <string name="approval_after_sso">This comes after someone signed in with single sign-on.</string>
+    <string name="approval_yes">Yes, sign in</string>
+    <string name="approval_no">No</string>
+    <string name="approval_not_me">I didn\'t start this</string>
+    <string name="approval_uv_approve">Sign in on the PC</string>
+    <string name="approval_uv_report">Stop this sign-in</string>
+    <string name="approval_done">Done. The PC is signing in.</string>
+    <string name="approval_denied">Not confirmed. The PC was not signed in.</string>
+    <string name="approval_reported">Stopped. Nobody was signed in.</string>
+    <string name="approval_reported_password">Stopped. Your password was marked unsafe. Set a new one.</string>
+    <string name="approval_reported_oidc">Stopped. Change your password at your sign-in provider.</string>
+    <string name="approval_code_changed">This code has just changed – scan the new one</string>
+    <string name="approval_already_claimed">Another phone is already confirming this sign-in.</string>
+    <string name="approval_other_account">This code belongs to another account.</string>
+    <string name="approval_expired">That took too long. Scan the code again.</string>
+    <string name="approval_mismatch">Something about this sign-in doesn\'t match. Nothing was confirmed.</string>
 </resources>

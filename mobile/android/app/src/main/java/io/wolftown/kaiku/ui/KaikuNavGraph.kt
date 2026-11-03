@@ -24,6 +24,7 @@ import io.wolftown.kaiku.ui.auth.ConfirmItsYouScreen
 import io.wolftown.kaiku.domain.ScanMode
 import io.wolftown.kaiku.navigation.ScanHandoff
 import io.wolftown.kaiku.ui.scan.ScanScreen
+import io.wolftown.kaiku.ui.approval.LoginApprovalScreen
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import io.wolftown.kaiku.navigation.PendingNavigationRules
@@ -278,6 +279,16 @@ fun KaikuNavGraph(
                             navController.navigate(SETUP_FLOW_ROUTE) { popUpTo(SCAN_ROUTE) { inclusive = true } }
                         },
                         onBack = { navController.popBackStack() },
+                    )
+                }
+
+                composable(APPROVE_LOGIN_ROUTE) {
+                    LoginApprovalScreen(
+                        takePayload = ScanHandoff::takeLogin,
+                        onRescan = {
+                            navController.navigate(SCAN_ROUTE) { popUpTo(APPROVE_LOGIN_ROUTE) { inclusive = true } }
+                        },
+                        onDone = { navController.popBackStack() },
                     )
                 }
 
