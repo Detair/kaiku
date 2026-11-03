@@ -350,3 +350,64 @@ async fn probation_cannot_cancel_or_repudiate_without_part2(pool: PgPool) {
     );
     let _ = event;
 }
+
+/// Fable r2 M-B: an admin whose only key re-enrols on the same install
+/// keeps being a route; another account's request that records only that
+/// admin stays open (the new key exists before the old one's cascade).
+#[sqlx::test]
+async fn same_install_re_enrolment_keeps_the_admin_route(pool: PgPool) {
+    use super::enrollments::{claim_with, good, Phone};
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (admin, adev) = admin_with_device(&app).await;
+    let (_, id, _) = started(&app).await;
+    // The admin re-enrols the same install (a host CLI setup: the issuing
+    // device itself may not, L1a ENROLLMENT_DEVICE_IN_USE).
+    let same = Phone {
+        key: p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng),
+        device_id: adev.device_id,
+    };
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&app.state);
+    let mut tx = pool.begin().await.unwrap();
+    let cli = vc_server::approvals::enrollments::issue_tx(
+        &mut tx,
+        &ctx,
+        vc_server::approvals::enrollments::IssueParams {
+            variant: vc_server::approvals::enrollments::EnrollmentVariant::Cli,
+            subject_id: admin,
+            issuer: vc_server::approvals::enrollments::Issuer::Cli,
+            claimant: vc_server::approvals::context::ClaimantCheck::None,
+            claimant_note: None,
+            lost_device_ids: Vec::new(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let (s, claimed) =
+        claim_with(&app, &cli.setup_token, &same, "Pixel 9", good(), "per_use").await;
+    assert_eq!(s, 201, "{claimed}");
+    let mut tx = pool.begin().await.unwrap();
+    vc_server::approvals::enrollments::confirm_tx(
+        &mut tx,
+        &ctx,
+        cli.enrollment_id,
+        vc_server::approvals::enrollments::Confirmer::Cli,
+        claimed["code"].as_str().unwrap().as_bytes(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let live: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM approval_devices WHERE user_id = $1 AND state = 'active'",
+    )
+    .bind(admin)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(live, 1, "the new key replaced the old one");
+    assert_eq!(
+        state(&pool, id).await,
+        "waiting",
+        "the request keeps its route"
+    );
+}

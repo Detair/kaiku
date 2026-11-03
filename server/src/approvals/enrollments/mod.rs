@@ -1209,11 +1209,48 @@ pub async fn confirm_tx(
         .fetch_optional(&mut *conn)
         .await?
         .ok_or(ApprovalError::EnrollmentTokenInvalid)?;
-    let mut accounts = vec![subject_id];
+    let mut actors = Vec::new();
     if let Confirmer::KeyDeviceAnswer(dev) = &by {
-        accounts.push(dev.auth.id);
+        actors.push(dev.auth.id);
     }
-    let locked = super::transition::lock_accounts(conn, &accounts).await?;
+    // What the `done` may do decides the lock set (B.7 rule 1, read without
+    // a lock, re-read under it): an `admin` enrolment of an existing account
+    // starts a request (every possible canceller, Codex r2 M7), a live key
+    // on the claimed install is replaced (the accounts recording its routes,
+    // Fable r2 M-B).
+    let (variant, claimed_install): (String, Option<Uuid>) =
+        sqlx::query_as("SELECT variant, claimed_device_id FROM enrollments WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut *conn)
+            .await?;
+    let live_on_install: Option<Uuid> = match claimed_install {
+        Some(install) => {
+            sqlx::query_scalar(
+                "SELECT id FROM approval_devices
+                  WHERE user_id = $1 AND device_id = $2 AND state <> 'revoked'",
+            )
+            .bind(subject_id)
+            .bind(install)
+            .fetch_optional(&mut *conn)
+            .await?
+        }
+        None => None,
+    };
+    let locked = if variant == "admin" {
+        super::transition::lock_for_start(conn, subject_id, &actors).await?
+    } else if let Some(old) = live_on_install {
+        super::transition::lock_route_change(
+            conn,
+            subject_id,
+            &actors,
+            &[AuthenticatorRef::key_device(old)],
+        )
+        .await?
+    } else {
+        let mut accounts = vec![subject_id];
+        accounts.extend(actors.iter().copied());
+        super::transition::lock_accounts(conn, &accounts).await?
+    };
     let row = lock_by_id(conn, id).await?;
     match row.state.as_str() {
         "claimed" => {}
@@ -1353,7 +1390,11 @@ pub async fn finish_done_tx(
     // keyed by (account, install id) and now belongs to the new key of the
     // same install.
     let mut event_ids = Vec::with_capacity(2);
-    if let Some(old) = replaceable_on_install(conn, row, claimed_device_id, state, true).await? {
+    let replaced = replaceable_on_install(conn, row, claimed_device_id, state, true).await?;
+    if let Some(old) = replaced {
+        // Out of the live index first; its cascade runs once the new key
+        // exists (Fable r2 M-B: an admin whose only key re-enrols stays a
+        // route of the requests that record them).
         sqlx::query(
             "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(), revoke_reason = $2
               WHERE id = $1",
@@ -1362,16 +1403,6 @@ pub async fn finish_done_tx(
         .bind(replaced_reason(variant))
         .execute(&mut *conn)
         .await?;
-        let old = AuthenticatorRef::key_device(old);
-        super::cascade::on_authenticator_revoked(conn, ctx, row.subject_id, old).await?;
-        let mut ev = NewSecurityEvent::new(
-            row.subject_id,
-            EventType::AuthenticatorRemoved,
-            actor,
-            serde_json::json!({"type": "key_device", "by": removed_by(actor)}),
-        );
-        ev.authenticator = Some(old);
-        event_ids.push(record(conn, ev).await?);
     }
     sqlx::query(
         "INSERT INTO approval_devices (id, user_id, device_id, public_key, public_key_hash,
@@ -1407,6 +1438,18 @@ pub async fn finish_done_tx(
     .bind(row.id)
     .execute(&mut *conn)
     .await?;
+    if let Some(old) = replaced {
+        let old = AuthenticatorRef::key_device(old);
+        super::cascade::on_authenticator_revoked(conn, ctx, row.subject_id, old).await?;
+        let mut ev = NewSecurityEvent::new(
+            row.subject_id,
+            EventType::AuthenticatorRemoved,
+            actor,
+            serde_json::json!({"type": "key_device", "by": removed_by(actor)}),
+        );
+        ev.authenticator = Some(old);
+        event_ids.push(record(conn, ev).await?);
+    }
     sqlx::query(
         "UPDATE enrollments SET state = 'done', done_at = NOW(), ended_at = NOW() WHERE id = $1",
     )

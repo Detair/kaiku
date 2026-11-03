@@ -270,6 +270,31 @@ pub async fn accounts_recording(
         .fetch_all(&mut *conn)
         .await?;
         out.extend(ids);
+        // Codex r2 M7: also the `admin` requests the admin (or the admin's
+        // device) started; a demotion or revocation voids them.
+        let started: Vec<Uuid> = match a {
+            AffectedRoute::Admin(admin) => {
+                sqlx::query_scalar(
+                    "SELECT DISTINCT user_id FROM account_requests
+                      WHERE state IN ('waiting', 'ready') AND kind = 'admin' AND started_by = $1",
+                )
+                .bind(admin)
+                .fetch_all(&mut *conn)
+                .await?
+            }
+            AffectedRoute::Authenticator(r) => {
+                sqlx::query_scalar(
+                    "SELECT DISTINCT user_id FROM account_requests
+                      WHERE state IN ('waiting', 'ready') AND kind = 'admin'
+                        AND started_by_device = $1",
+                )
+                .bind(r.id)
+                .fetch_all(&mut *conn)
+                .await?
+            }
+            AffectedRoute::Contact(_) => Vec::new(),
+        };
+        out.extend(started);
     }
     out.sort_unstable();
     out.dedup();
