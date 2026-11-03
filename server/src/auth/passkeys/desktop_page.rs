@@ -102,11 +102,12 @@ pub fn handoff_page(loopback: &LoopbackTarget, flow_id: Uuid, field: HandoffFiel
         *HANDOFF_SCRIPT_SHA256
     );
     let mut response = (StatusCode::OK, axum::response::Html(html)).into_response();
-    if let Ok(v) = HeaderValue::from_str(&csp) {
-        response
-            .headers_mut()
-            .insert(header::CONTENT_SECURITY_POLICY, v);
-    }
+    // Never serve the hand-off without its CSP: the port is a number and the
+    // path is validated b64u, so the value is always a valid header.
+    let csp = HeaderValue::from_str(&csp).expect("valid hand-off CSP header");
+    response
+        .headers_mut()
+        .insert(header::CONTENT_SECURITY_POLICY, csp);
     no_store(response)
 }
 
@@ -310,7 +311,8 @@ pub fn ceremony_page(lang: Lang, heading: &PageHeading, flow_id: Uuid) -> Respon
          <p id=\"linux-other\" class=\"hint\" hidden>{linux_other}</p>\
          <button id=\"start\" type=\"button\" data-retry=\"{retry}\">{start}</button>\
          <form id=\"finish\" method=\"post\" action=\"{base}/finish\" hidden>\
-         <input type=\"hidden\" name=\"credential\" value=\"\"></form>\
+         <input type=\"hidden\" name=\"credential\" value=\"\">\
+         <input type=\"hidden\" name=\"ceremony_id\" value=\"\"></form>\
          <form id=\"cancel\" method=\"post\" action=\"{base}/cancel\">\
          <button type=\"submit\" class=\"secondary\">{back}</button></form>\
          <script src=\"/auth/passkeys/assets/ceremony.js\"></script>",

@@ -20,7 +20,11 @@ pub fn new_ceremony_id() -> Uuid {
 /// What the ceremony is for, and whom it is bound to.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CeremonyKind {
-    SignIn,
+    /// `flow_id` is set for a desktop flow's ceremony: it finishes only there.
+    SignIn {
+        #[serde(default)]
+        flow_id: Option<Uuid>,
+    },
     /// Bound to the account, the session (`sid`) and one action + target.
     StepUp {
         user_id: Uuid,
@@ -28,6 +32,9 @@ pub enum CeremonyKind {
         action: crate::auth::step_up::StepUpAction,
         /// `StepUpTarget::canonical()`.
         target: String,
+        /// Set for a desktop flow's ceremony (see `SignIn`).
+        #[serde(default)]
+        flow_id: Option<Uuid>,
     },
     /// Bound to the account and a session (L1b: request, ticket, enrolment).
     Register {

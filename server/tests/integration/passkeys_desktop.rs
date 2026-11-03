@@ -150,10 +150,17 @@ async fn finish_with(
         Some(handle),
         true,
     );
+    let ceremony_id = opts.json()["ceremony_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     form(
         router,
         &format!("{}/finish", flow.path),
-        &[("credential", &cred.to_string())],
+        &[
+            ("credential", &cred.to_string()),
+            ("ceremony_id", &ceremony_id),
+        ],
     )
     .await
 }
@@ -687,28 +694,39 @@ async fn reloaded_page_gets_fresh_options(pool: PgPool) {
         Some(handle),
         true,
     );
+    let stale_id = o1["ceremony_id"].as_str().unwrap().to_string();
     let h = form(
         &app.router,
         &format!("{}/finish", flow.path),
-        &[("credential", &stale.to_string())],
+        &[
+            ("credential", &stale.to_string()),
+            ("ceremony_id", &stale_id),
+        ],
     )
     .await;
-    assert_eq!(
-        hidden(&h.body, "error").as_deref(),
-        Some("PASSKEY_INVALID"),
-        "{}",
-        h.body
+    // A stale tab gets the "expired" page and hands nothing back; the flow
+    // stays usable for the current page.
+    assert_eq!(h.status, 400, "{}", h.body);
+    assert!(hidden(&h.body, "error").is_none() && hidden(&h.body, "code").is_none());
+    let current = auth.assert(
+        TEST_ORIGIN,
+        &o2["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
     );
-    // A fresh flow: the second options' assertion completes.
-    let flow = start(&app.router, start_body("sign_in", None, None), None).await;
-    api(
+    let h = form(
         &app.router,
-        &format!("{}/options", flow.path),
-        json!({}),
-        false,
-        None,
+        &format!("{}/finish", flow.path),
+        &[
+            ("credential", &current.to_string()),
+            ("ceremony_id", o2["ceremony_id"].as_str().unwrap()),
+        ],
     )
     .await;
+    assert!(hidden(&h.body, "code").is_some(), "{}", h.body);
+    // And a fresh flow works as before.
+    let flow = start(&app.router, start_body("sign_in", None, None), None).await;
     let h = finish_with(&app.router, &app.pool, &flow, &mut auth, &row, user).await;
     assert!(hidden(&h.body, "code").is_some(), "{}", h.body);
 }
@@ -883,4 +901,213 @@ async fn failed_redeems_never_block_the_ip(pool: PgPool) {
         assert_invalid(&r);
     }
     assert!(!limiter.is_blocked("203.0.113.9").await.unwrap());
+}
+
+fn sign_in_body_with(username: Option<&str>) -> Value {
+    let mut b = start_body("sign_in", None, None);
+    b["username"] = json!(username);
+    b
+}
+
+#[sqlx::test]
+async fn desktop_sign_in_username_hint_is_enforced(pool: PgPool) {
+    // C29 addition (coordinator, 2026-11-03): the typed user name.
+    let app = TestApp::with_passkeys(pool).await;
+    let (grandma, _) = create_test_user(&app.pool).await;
+    let (_, fabian) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, grandma, PasskeyState::Active).await;
+    let flow = start(&app.router, sign_in_body_with(Some(&fabian)), None).await;
+    let h = finish_with(&app.router, &app.pool, &flow, &mut auth, &row, grandma).await;
+    assert_eq!(
+        hidden(&h.body, "error").as_deref(),
+        Some("PASSKEY_USER_MISMATCH"),
+        "{}",
+        h.body
+    );
+    assert!(hidden(&h.body, "code").is_none());
+    assert_eq!(
+        page(&app.router, &flow.path, None).await.status,
+        404,
+        "the flow is gone"
+    );
+    // The right name, in another case, passes.
+    let name: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+        .bind(grandma)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let flow = start(
+        &app.router,
+        sign_in_body_with(Some(&name.to_uppercase())),
+        None,
+    )
+    .await;
+    let h = finish_with(&app.router, &app.pool, &flow, &mut auth, &row, grandma).await;
+    let code = hidden(&h.body, "code").expect("code");
+    assert_eq!(
+        redeem(&app.router, &flow.id, &code, VERIFIER, None)
+            .await
+            .status,
+        200
+    );
+    // A blank name is no hint.
+    let flow = start(&app.router, sign_in_body_with(Some("  ")), None).await;
+    let h = finish_with(&app.router, &app.pool, &flow, &mut auth, &row, grandma).await;
+    assert!(hidden(&h.body, "code").is_some());
+}
+
+async fn options_of(app: &TestApp, flow: &Flow) -> Value {
+    api(
+        &app.router,
+        &format!("{}/options", flow.path),
+        json!({}),
+        false,
+        None,
+    )
+    .await
+    .json()
+}
+
+#[sqlx::test]
+async fn desktop_ceremony_cannot_finish_on_web_routes(pool: PgPool) {
+    // Review Fable m2: a desktop ceremony is bound to its flow.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let handle = queries::user_handle(&app.pool, user).await.unwrap();
+    let flow = start(&app.router, start_body("sign_in", None, None), None).await;
+    let o = options_of(&app, &flow).await;
+    let cred = auth.assert(
+        TEST_ORIGIN,
+        &o["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    let r = api(
+        &app.router,
+        "/auth/passkeys/login/finish",
+        json!({"ceremony_id": o["ceremony_id"], "credential": cred}),
+        false,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (r.status, r.json()["error"].as_str()),
+        (400, Some("PASSKEY_CEREMONY_INVALID")),
+        "{}",
+        r.body
+    );
+    // A web ceremony cannot finish a desktop flow either.
+    let web = api(
+        &app.router,
+        "/auth/passkeys/login/start",
+        json!({}),
+        false,
+        None,
+    )
+    .await
+    .json();
+    let flow = start(&app.router, start_body("sign_in", None, None), None).await;
+    options_of(&app, &flow).await;
+    let cred = auth.assert(
+        TEST_ORIGIN,
+        &web["options"],
+        &row.credential_id,
+        Some(handle),
+        true,
+    );
+    let h = form(
+        &app.router,
+        &format!("{}/finish", flow.path),
+        &[
+            ("credential", &cred.to_string()),
+            ("ceremony_id", web["ceremony_id"].as_str().unwrap()),
+        ],
+    )
+    .await;
+    assert!(hidden(&h.body, "code").is_none(), "{}", h.body);
+}
+
+async fn flow_ttl(app: &TestApp, flow: &Flow) -> i64 {
+    use fred::interfaces::KeysInterface;
+    app.state
+        .redis
+        .ttl(format!("passkey:flow:{}", flow.id))
+        .await
+        .unwrap()
+}
+
+#[sqlx::test]
+async fn a_pending_result_is_never_clobbered(pool: PgPool) {
+    // Reviews Argon M3 / Argon-a M1: options and cancel after a finish.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (mut auth, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let flow = start(&app.router, start_body("sign_in", None, None), None).await;
+    let before = flow_ttl(&app, &flow).await;
+    assert!(before > 500, "{before}");
+    options_of(&app, &flow).await;
+    assert!(
+        flow_ttl(&app, &flow).await > 500,
+        "options keep the flow's TTL"
+    );
+    let h = finish_with(&app.router, &app.pool, &flow, &mut auth, &row, user).await;
+    let code = hidden(&h.body, "code").unwrap();
+    let ttl = flow_ttl(&app, &flow).await;
+    assert!(
+        (1..=60).contains(&ttl),
+        "a pending result lives 60 s: {ttl}"
+    );
+    let o = api(
+        &app.router,
+        &format!("{}/options", flow.path),
+        json!({}),
+        false,
+        None,
+    )
+    .await;
+    assert_eq!(o.status, 400, "{}", o.body);
+    assert_eq!(
+        form(&app.router, &format!("{}/cancel", flow.path), &[])
+            .await
+            .status,
+        404
+    );
+    assert_eq!(
+        redeem(&app.router, &flow.id, &code, VERIFIER, None)
+            .await
+            .status,
+        200
+    );
+}
+
+#[sqlx::test]
+async fn options_without_active_passkeys_end_the_flow(pool: PgPool) {
+    // Review Argon-a m3: no reload loop on a live flow that cannot proceed.
+    let app = TestApp::with_passkeys(pool).await;
+    let (user, _) = create_test_user(&app.pool).await;
+    let (_, row) = seed_passkey(&app, user, PasskeyState::Active).await;
+    let (_, token) = create_session_with_token(&app.pool, &app.config, user).await;
+    let flow = start(
+        &app.router,
+        start_body("step_up", Some("admin.elevate"), Some("")),
+        Some(&token),
+    )
+    .await;
+    sqlx::query("UPDATE passkeys SET state = 'revoked', revoked_at = NOW() WHERE id = $1")
+        .bind(row.id)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let o = api(
+        &app.router,
+        &format!("{}/options", flow.path),
+        json!({}),
+        false,
+        None,
+    )
+    .await;
+    assert_eq!(o.status, 400);
+    assert_eq!(page(&app.router, &flow.path, None).await.status, 404);
 }

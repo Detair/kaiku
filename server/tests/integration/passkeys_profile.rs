@@ -298,7 +298,7 @@ async fn redis() -> fred::clients::Client {
 fn record() -> CeremonyRecord {
     let (_, state) = test_passkey_rp().start_sign_in().unwrap();
     CeremonyRecord {
-        kind: CeremonyKind::SignIn,
+        kind: CeremonyKind::SignIn { flow_id: None },
         state: CeremonyState::SignIn(state),
         created_at: chrono::Utc::now().timestamp(),
     }

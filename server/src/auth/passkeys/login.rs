@@ -49,7 +49,7 @@ pub(super) async fn new_sign_in_ceremony(state: &AppState) -> AuthResult<Ceremon
         &state.redis,
         ceremony_id,
         &CeremonyRecord {
-            kind: CeremonyKind::SignIn,
+            kind: CeremonyKind::SignIn { flow_id: None },
             state: CeremonyState::SignIn(st),
             created_at: chrono::Utc::now().timestamp(),
         },
@@ -98,6 +98,27 @@ pub(super) async fn verify_sign_in(
     passkey.update_credential(&result);
     queries::record_use(&state.db, row.id, &passkey, result.backup_state()).await?;
     Ok((row, result))
+}
+
+/// The typed user name, if any, must be the passkey's account
+/// (case-insensitive): a shared device never signs in someone else.
+pub(super) async fn check_username_hint(
+    state: &AppState,
+    user_id: Uuid,
+    hint: Option<&str>,
+) -> AuthResult<()> {
+    let Some(hint) = hint.map(str::trim).filter(|h| !h.is_empty()) else {
+        return Ok(());
+    };
+    let username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&state.db)
+        .await?;
+    if username.eq_ignore_ascii_case(hint) {
+        Ok(())
+    } else {
+        Err(AuthError::PasskeyUserMismatch)
+    }
 }
 
 /// Create the new full session of a verified passkey and record the C28
@@ -221,24 +242,13 @@ async fn finish_inner(
     let rec = ceremony::take(&state.redis, body.ceremony_id)
         .await?
         .ok_or(AuthError::PasskeyCeremonyInvalid)?;
-    let (CeremonyKind::SignIn, CeremonyState::SignIn(st)) = (rec.kind, rec.state) else {
+    // A desktop flow's ceremony never finishes here (it would mint a web session).
+    let (CeremonyKind::SignIn { flow_id: None }, CeremonyState::SignIn(st)) = (rec.kind, rec.state)
+    else {
         return Err(AuthError::PasskeyCeremonyInvalid);
     };
     let (row, _) = verify_sign_in(state, st, body.credential).await?;
-    if let Some(hint) = body
-        .username
-        .as_deref()
-        .map(str::trim)
-        .filter(|h| !h.is_empty())
-    {
-        let username: String = sqlx::query_scalar("SELECT username FROM users WHERE id = $1")
-            .bind(row.user_id)
-            .fetch_one(&state.db)
-            .await?;
-        if !username.eq_ignore_ascii_case(hint) {
-            return Err(AuthError::PasskeyUserMismatch);
-        }
-    }
+    check_username_hint(state, row.user_id, body.username.as_deref()).await?;
     let client = SessionClient::from_request(state, headers, addr);
     let client_class = ClientClass::from_headers(headers);
     let (issued, must_change) = issue(state, &row, &client, client_class).await?;

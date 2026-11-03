@@ -43,7 +43,12 @@ pub const PENDING_RESULT_TTL_SECS: i64 = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlowPurpose {
-    SignIn,
+    /// `username`: the name typed in the app (C29 addition, 2026-11-03); the
+    /// passkey must be that account's.
+    SignIn {
+        #[serde(default)]
+        username: Option<String>,
+    },
     StepUp {
         user_id: Uuid,
         session_id: Uuid,
@@ -86,13 +91,23 @@ fn unavailable(e: &fred::error::Error) -> AuthError {
     AuthError::ServiceUnavailable
 }
 
-async fn load(state: &AppState, flow_id: Uuid) -> AuthResult<Option<DesktopFlow>> {
+/// A flow as stored, with the exact stored JSON for compare-and-set.
+struct Stored {
+    raw: String,
+    flow: DesktopFlow,
+}
+
+async fn load(state: &AppState, flow_id: Uuid) -> AuthResult<Option<Stored>> {
     let raw: Option<String> = state
         .redis
         .get(key(flow_id))
         .await
         .map_err(|e| unavailable(&e))?;
-    Ok(raw.and_then(|r| serde_json::from_str(&r).ok()))
+    Ok(raw.and_then(|raw| {
+        serde_json::from_str(&raw)
+            .ok()
+            .map(|flow| Stored { raw, flow })
+    }))
 }
 
 async fn take(state: &AppState, flow_id: Uuid) -> AuthResult<Option<DesktopFlow>> {
@@ -104,28 +119,52 @@ async fn take(state: &AppState, flow_id: Uuid) -> AuthResult<Option<DesktopFlow>
     Ok(raw.and_then(|r| serde_json::from_str(&r).ok()))
 }
 
-/// Update a live flow in place (`SET XX KEEPTTL`); false if it is gone.
-async fn update(state: &AppState, flow_id: Uuid, flow: &DesktopFlow) -> AuthResult<bool> {
-    let json = serde_json::to_string(flow).map_err(|e| AuthError::Internal(e.to_string()))?;
-    let set: Option<String> = state
+/// Compare-and-set on the flow key in one script: only if the stored JSON is
+/// still `expected`. `ttl_ms = None` keeps the TTL (never extends or
+/// shortens it); `Some(ms)` sets `min(remaining, ms)`; `new = None` deletes.
+const FLOW_CAS: &str = r"
+local cur = redis.call('GET', KEYS[1])
+if (not cur) or cur ~= ARGV[1] then return 0 end
+if ARGV[3] == 'del' then
+  redis.call('DEL', KEYS[1])
+elseif ARGV[3] == 'keep' then
+  redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL')
+else
+  local ttl = tonumber(ARGV[3])
+  local pttl = redis.call('PTTL', KEYS[1])
+  if pttl > 0 and pttl < ttl then ttl = pttl end
+  redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+end
+return 1
+";
+
+async fn cas(
+    state: &AppState,
+    flow_id: Uuid,
+    expected: &str,
+    new: Option<&DesktopFlow>,
+    ttl_ms: Option<i64>,
+) -> AuthResult<bool> {
+    use fred::interfaces::LuaInterface;
+    let new_json = match new {
+        Some(f) => serde_json::to_string(f).map_err(|e| AuthError::Internal(e.to_string()))?,
+        None => String::new(),
+    };
+    let mode = match (new, ttl_ms) {
+        (None, _) => "del".to_string(),
+        (Some(_), None) => "keep".to_string(),
+        (Some(_), Some(ms)) => ms.to_string(),
+    };
+    let done: i64 = state
         .redis
-        .set(
-            key(flow_id),
-            json,
-            Some(fred::types::Expiration::KEEPTTL),
-            Some(fred::types::SetOptions::XX),
-            false,
+        .eval(
+            FLOW_CAS,
+            vec![key(flow_id)],
+            vec![expected.to_string(), new_json, mode],
         )
         .await
         .map_err(|e| unavailable(&e))?;
-    Ok(set.is_some())
-}
-
-async fn delete(state: &AppState, flow_id: Uuid) {
-    let r: Result<i64, _> = state.redis.del(key(flow_id)).await;
-    if let Err(e) = r {
-        tracing::warn!(error = %e, "could not delete a passkey flow");
-    }
+    Ok(done == 1)
 }
 
 fn require_desktop(headers: &HeaderMap) -> AuthResult<()> {
@@ -148,6 +187,9 @@ pub struct DesktopFlowRequest {
     pub loopback_port: u32,
     pub callback_path: String,
     pub client_challenge: String,
+    /// `sign_in` only: the user name typed in the app, `null` for none.
+    #[serde(default)]
+    pub username: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -199,9 +241,21 @@ pub async fn start(
             if body.action.is_some() || body.target.as_deref().is_some_and(|t| !t.is_empty()) {
                 return Err(invalid("sign_in takes no action or target"));
             }
-            FlowPurpose::SignIn
+            let username = body
+                .username
+                .as_deref()
+                .map(str::trim)
+                .filter(|u| !u.is_empty())
+                .map(str::to_owned);
+            if username.as_ref().is_some_and(|u| u.chars().count() > 64) {
+                return Err(invalid("username is too long"));
+            }
+            FlowPurpose::SignIn { username }
         }
         "step_up" => {
+            if body.username.is_some() {
+                return Err(invalid("step_up takes no username"));
+            }
             let Some(Extension(auth)) = auth else {
                 return Err(AuthError::MissingAuthHeader);
             };
@@ -308,7 +362,7 @@ pub async fn page(
         return expired_page(lang);
     };
     let flow = match load(&state, flow_id).await {
-        Ok(Some(f)) if f.result.is_none() => f,
+        Ok(Some(s)) if s.flow.result.is_none() => s.flow,
         Ok(_) => return expired_page(lang),
         Err(e) => return e.into_response(),
     };
@@ -321,28 +375,35 @@ pub async fn page(
 #[derive(Debug, Serialize)]
 pub struct FlowOptions {
     pub ceremony: &'static str,
+    /// The page sends it back with `finish`, so a stale tab can never finish
+    /// the current ceremony (additive to C29).
+    pub ceremony_id: Uuid,
     pub options: serde_json::Value,
 }
 
 /// Fresh `get` options for the page (a reload gets new ones; the previous
-/// ceremony can no longer finish).
+/// ceremony can no longer finish). The flow update is a compare-and-set that
+/// keeps the TTL; a flow that holds a result is never touched.
 #[tracing::instrument(skip_all)]
 pub async fn options(
     State(state): State<AppState>,
     Path(flow_id): Path<Uuid>,
 ) -> AuthResult<Json<FlowOptions>> {
     let rp = rp_of(&state)?;
-    let mut flow = load(&state, flow_id)
+    let stored = load(&state, flow_id)
         .await?
-        .filter(|f| f.result.is_none())
+        .filter(|s| s.flow.result.is_none())
         .ok_or(AuthError::PasskeyCeremonyInvalid)?;
+    let mut flow = stored.flow.clone();
     let (rcr, record) = match &flow.purpose {
-        FlowPurpose::SignIn => {
+        FlowPurpose::SignIn { .. } => {
             let (rcr, st) = rp.start_sign_in().map_err(failure)?;
             (
                 serde_json::to_value(&rcr),
                 CeremonyRecord {
-                    kind: CeremonyKind::SignIn,
+                    kind: CeremonyKind::SignIn {
+                        flow_id: Some(flow_id),
+                    },
                     state: CeremonyState::SignIn(st),
                     created_at: chrono::Utc::now().timestamp(),
                 },
@@ -361,6 +422,8 @@ pub async fn options(
                 .map(|r| r.credential.0)
                 .collect();
             if creds.is_empty() {
+                // Nothing can ever finish: end the flow (no reload loop).
+                cas(&state, flow_id, &stored.raw, None, None).await?;
                 return Err(AuthError::PasskeyCeremonyInvalid);
             }
             let (rcr, st) = rp.start_step_up(&creds).map_err(failure)?;
@@ -372,6 +435,7 @@ pub async fn options(
                         session_id: *session_id,
                         action: *action,
                         target: target.clone(),
+                        flow_id: Some(flow_id),
                     },
                     state: CeremonyState::StepUp(st),
                     created_at: chrono::Utc::now().timestamp(),
@@ -382,14 +446,18 @@ pub async fn options(
     let options = rcr.map_err(|e| AuthError::Internal(e.to_string()))?;
     let ceremony_id = ceremony::new_ceremony_id();
     ceremony::put_new(&state.redis, ceremony_id, &record).await?;
-    if let Some(old) = flow.ceremony_id.replace(ceremony_id) {
-        let _ = ceremony::take(&state.redis, old).await;
-    }
-    if !update(&state, flow_id, &flow).await? {
+    let old = flow.ceremony_id.replace(ceremony_id);
+    if !cas(&state, flow_id, &stored.raw, Some(&flow), None).await? {
+        // The flow changed meanwhile (a finish, a cancel, another reload).
+        let _ = ceremony::take(&state.redis, ceremony_id).await;
         return Err(AuthError::PasskeyCeremonyInvalid);
+    }
+    if let Some(old) = old {
+        let _ = ceremony::take(&state.redis, old).await;
     }
     Ok(Json(FlowOptions {
         ceremony: "get",
+        ceremony_id,
         options,
     }))
 }
@@ -398,6 +466,20 @@ pub async fn options(
 pub struct FinishForm {
     #[serde(default)]
     pub credential: String,
+    /// The ceremony the page ran (from `options`).
+    #[serde(default)]
+    pub ceremony_id: Option<String>,
+}
+
+/// End a flow after a failed finish and hand back the code.
+async fn fail(state: &AppState, flow_id: Uuid, stored: &Stored, e: &AuthError) -> Response {
+    // A failed finish ends the flow; the app starts a new one.
+    if let Err(err) = cas(state, flow_id, &stored.raw, None, None).await {
+        tracing::warn!(error = %err, "could not end a passkey flow");
+    }
+    let (_, code) = e.status_and_code();
+    tracing::info!(code, "desktop passkey finish refused");
+    handoff_page(&stored.flow.loopback, flow_id, HandoffField::Error(code))
 }
 
 /// Verify the assertion and hand back a one-time code (or the error) to
@@ -410,33 +492,58 @@ pub async fn finish(
     Form(form): Form<FinishForm>,
 ) -> Response {
     let lang = Lang::from_headers(&headers);
-    let mut flow = match load(&state, flow_id).await {
-        Ok(Some(f)) => f,
+    let stored = match load(&state, flow_id).await {
+        Ok(Some(s)) => s,
         Ok(None) => return expired_page(lang),
         Err(e) => return e.into_response(),
     };
-    if flow.result.is_some() {
+    if stored.flow.result.is_some() {
         return stale_page(lang);
     }
-    // GETDEL the current ceremony: of two racing finishes only one proceeds.
-    let Some(ceremony_id) = flow.ceremony_id else {
+    // The ceremony the page ran; an old page (no field) means the current one.
+    let submitted = match form.ceremony_id.as_deref().filter(|c| !c.is_empty()) {
+        Some(raw) => match Uuid::parse_str(raw) {
+            Ok(id) => Some(id),
+            Err(_) => {
+                return fail(&state, flow_id, &stored, &AuthError::PasskeyCeremonyInvalid).await
+            }
+        },
+        None => stored.flow.ceremony_id,
+    };
+    let Some(ceremony_id) = submitted else {
         return stale_page(lang);
     };
+    // GETDEL: of two racing finishes only one proceeds.
     let rec = match ceremony::take(&state.redis, ceremony_id).await {
         Ok(Some(r)) => r,
         Ok(None) => return stale_page(lang),
         Err(e) => return e.into_response(),
     };
+    let bound = match &rec.kind {
+        CeremonyKind::SignIn { flow_id: f } | CeremonyKind::StepUp { flow_id: f, .. } => {
+            *f == Some(flow_id)
+        }
+        CeremonyKind::Register { .. } => false,
+    };
+    if !bound || stored.flow.ceremony_id != Some(ceremony_id) {
+        // Another flow's or a web ceremony, or a stale tab's.
+        return fail(&state, flow_id, &stored, &AuthError::PasskeyCeremonyInvalid).await;
+    }
     let credential = serde_json::from_str::<serde_json::Value>(&form.credential)
         .unwrap_or(serde_json::Value::Null);
-    let verified = match (&flow.purpose, rec.state) {
-        (FlowPurpose::SignIn, CeremonyState::SignIn(st)) => {
-            login::verify_sign_in(&state, st, credential)
-                .await
-                .map(|(row, _)| FlowOutcome::SignIn {
-                    user_id: row.user_id,
-                    passkey_id: row.id,
-                })
+    let verified = match (&stored.flow.purpose, rec.state) {
+        (FlowPurpose::SignIn { username }, CeremonyState::SignIn(st)) => {
+            match login::verify_sign_in(&state, st, credential).await {
+                Ok((row, _)) => {
+                    login::check_username_hint(&state, row.user_id, username.as_deref())
+                        .await
+                        .map(|()| FlowOutcome::SignIn {
+                            user_id: row.user_id,
+                            passkey_id: row.id,
+                        })
+                }
+                Err(e) => Err(e),
+            }
         }
         (FlowPurpose::StepUp { user_id, .. }, CeremonyState::StepUp(st)) => {
             step_up::verify(&state, *user_id, &st, credential)
@@ -447,16 +554,11 @@ pub async fn finish(
     };
     let outcome = match verified {
         Ok(o) => o,
-        Err(e) => {
-            // A failed finish ends the flow; the app starts a new one.
-            delete(&state, flow_id).await;
-            let (_, code) = e.status_and_code();
-            tracing::info!(code, "desktop passkey finish refused");
-            return handoff_page(&flow.loopback, flow_id, HandoffField::Error(code));
-        }
+        Err(e) => return fail(&state, flow_id, &stored, &e).await,
     };
     let code = new_handoff_code();
     let ctx = AuthCtx::from(&state);
+    let mut flow = stored.flow.clone();
     flow.ceremony_id = None;
     flow.result = Some(PendingResult {
         code_hash: keyed_hash(
@@ -467,9 +569,18 @@ pub async fn finish(
         outcome,
         created_at: chrono::Utc::now().timestamp(),
     });
-    match update(&state, flow_id, &flow).await {
+    // The pending result lives 60 s (never longer than the flow itself).
+    match cas(
+        &state,
+        flow_id,
+        &stored.raw,
+        Some(&flow),
+        Some(PENDING_RESULT_TTL_SECS * 1000),
+    )
+    .await
+    {
         Ok(true) => handoff_page(&flow.loopback, flow_id, HandoffField::Code(&code)),
-        Ok(false) => expired_page(lang),
+        Ok(false) => fail(&state, flow_id, &stored, &AuthError::PasskeyCeremonyInvalid).await,
         Err(_) => handoff_page(
             &flow.loopback,
             flow_id,
@@ -486,18 +597,23 @@ pub async fn cancel(
     headers: HeaderMap,
 ) -> Response {
     let lang = Lang::from_headers(&headers);
-    match take(&state, flow_id).await {
-        Ok(Some(flow)) => {
-            if let Some(c) = flow.ceremony_id {
+    let stored = match load(&state, flow_id).await {
+        Ok(Some(s)) if s.flow.result.is_none() => s,
+        Ok(_) => return expired_page(lang),
+        Err(e) => return e.into_response(),
+    };
+    match cas(&state, flow_id, &stored.raw, None, None).await {
+        Ok(true) => {
+            if let Some(c) = stored.flow.ceremony_id {
                 let _ = ceremony::take(&state.redis, c).await;
             }
             handoff_page(
-                &flow.loopback,
+                &stored.flow.loopback,
                 flow_id,
                 HandoffField::Error("PASSKEY_CANCELLED"),
             )
         }
-        Ok(None) => expired_page(lang),
+        Ok(false) => expired_page(lang),
         Err(e) => e.into_response(),
     }
 }
@@ -596,7 +712,7 @@ async fn redeem_inner(
     }
     match (flow.purpose, result.outcome) {
         (
-            FlowPurpose::SignIn,
+            FlowPurpose::SignIn { .. },
             FlowOutcome::SignIn {
                 user_id,
                 passkey_id,

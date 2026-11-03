@@ -81,6 +81,7 @@ pub async fn start(
                 session_id: auth.session_id.ok_or(AuthError::InvalidToken)?,
                 action,
                 target: target.canonical(),
+                flow_id: None,
             },
             state: CeremonyState::StepUp(st),
             created_at: chrono::Utc::now().timestamp(),
@@ -207,6 +208,7 @@ pub async fn finish(
             session_id,
             action,
             target,
+            flow_id: None,
         },
         CeremonyState::StepUp(st),
     ) = (rec.kind, rec.state)

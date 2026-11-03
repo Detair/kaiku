@@ -71,10 +71,14 @@
     setStatus(statusEl.getAttribute("data-working"));
     fetch(base + "/options", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", credentials: "omit" })
       .then(function (res) {
-        if (!res.ok) { location.reload(); throw new Error("options"); }
+        // An ended flow: show the server's "expired" page once (no loop:
+        // the server ends a flow that cannot continue).
+        if (res.status === 400 || res.status === 404) { location.reload(); throw new Error("options"); }
+        if (!res.ok) throw new Error("retry");
         return res.json();
       })
       .then(function (body) {
+        finishForm.elements.ceremony_id.value = body.ceremony_id || "";
         return navigator.credentials.get({ publicKey: requestOptions(body.options.publicKey) });
       })
       .then(function (cred) {
