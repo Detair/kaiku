@@ -16,6 +16,7 @@
 //! (rate limiting, request IDs, etc.) instead of `tower::ServiceExt::oneshot`.
 #![allow(dead_code)]
 
+pub mod approvals;
 pub mod login;
 pub mod migrations;
 

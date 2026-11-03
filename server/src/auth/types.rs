@@ -108,6 +108,7 @@ pub struct AuthResponse {
 }
 
 /// User profile response.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UserProfile {
     /// User ID.
@@ -134,6 +135,9 @@ pub struct UserProfile {
     /// The calling session (C27); absent only outside a session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<CurrentSession>,
+    /// Whether this account's key devices may confirm sign-ins and add
+    /// phones (B.1; only an admin changes it).
+    pub may_approve: bool,
 }
 
 /// `GET /auth/me` `session` (C27).

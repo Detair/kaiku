@@ -196,15 +196,13 @@ pub async fn issue_session_tx(
     }
     // Account lock (B.7 rule 1): serialises sign-ins of one account, so the
     // session limit holds under concurrency.
-    let account: Option<(bool,)> =
-        sqlx::query_as("SELECT is_system FROM users WHERE id = $1 FOR UPDATE")
-            .bind(new.user_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    match account {
+    let locked = crate::approvals::transition::lock_accounts(conn, &[new.user_id]).await?;
+    match locked.get(&new.user_id) {
+        Some(a) if !a.exists => return Err(AuthError::UserNotFound),
+        Some(a) if a.is_system => return Err(AuthError::InvalidCredentials),
+        Some(a) if a.banned => return Err(AuthError::AccountBanned),
+        Some(_) => {}
         None => return Err(AuthError::UserNotFound),
-        Some((true,)) => return Err(AuthError::InvalidCredentials),
-        Some((false,)) => {}
     }
 
     // Session limit (B.4): at the limit, end the least recently used
@@ -297,12 +295,7 @@ pub async fn issue_session_tx(
     .execute(&mut *conn)
     .await?;
 
-    sqlx::query(
-        "UPDATE users SET first_activity_at = COALESCE(first_activity_at, NOW()) WHERE id = $1",
-    )
-    .bind(new.user_id)
-    .execute(&mut *conn)
-    .await?;
+    super::strong::mark_first_activity(conn, new.user_id).await?;
 
     let setup_complete = sqlx::query_scalar::<_, serde_json::Value>(
         "SELECT value FROM server_config WHERE key = 'setup_complete'",

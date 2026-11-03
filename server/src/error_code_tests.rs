@@ -142,6 +142,7 @@ async fn admin_and_auth_codes_are_upper_snake() {
         AuthError::InvalidCredentials,
         AuthError::UserNotFound,
         AuthError::SessionReused,
+        AuthError::LastStrongAuthenticator,
         AuthError::SessionExpired,
         AuthError::NotFound(s()),
         AuthError::Forbidden,

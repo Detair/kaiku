@@ -206,6 +206,8 @@ async fn after_update(
         .bind(payload)
         .execute(&mut *conn)
         .await?;
+    // B.7 rule 2: what the ended sessions issued or hold.
+    crate::approvals::cascade::on_sessions_ended(conn, ctx, ended).await?;
     Ok(())
 }
 

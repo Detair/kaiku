@@ -72,6 +72,7 @@ mod setup_integration;
 mod system_account;
 mod tenancy_isolation;
 mod threads;
+mod transition_locks;
 mod unread;
 mod upload_limits;
 mod uploads_http;

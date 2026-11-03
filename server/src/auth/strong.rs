@@ -1,7 +1,7 @@
 //! Strong authenticators (spec B.0): active passkeys and active key devices.
 //!
-//! Task 3 defines the reference types; Task 8 adds the queries. LP adds the
-//! passkey arms.
+//! Key devices live in `approval_devices`; LP adds the passkey arms of
+//! every function here.
 
 use uuid::Uuid;
 
@@ -73,12 +73,73 @@ impl AuthenticatorRef {
     }
 }
 
+/// Whether the authenticator is `active` (pending and revoked ones
+/// authenticate nothing, SM4). Key devices; LP adds the passkey arm.
+pub async fn is_active(conn: &mut sqlx::PgConnection, a: AuthenticatorRef) -> sqlx::Result<bool> {
+    match a.kind {
+        AuthenticatorKind::KeyDevice => Ok(sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE id = $1 AND state = 'active')",
+        )
+        .bind(a.id)
+        .fetch_one(&mut *conn)
+        .await?),
+        // LP adds passkeys.
+        AuthenticatorKind::Passkey => Ok(false),
+    }
+}
+
+/// The account's active strong authenticators (B.0). Key devices; LP adds
+/// passkeys.
+pub async fn active_strong_count(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+) -> sqlx::Result<i64> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM approval_devices WHERE user_id = $1 AND state = 'active'",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *conn)
+    .await
+}
+
+/// A user cannot remove their own last strong authenticator (SM4):
+/// 409 `LAST_STRONG_AUTHENTICATOR`. Removing one that is not active is
+/// always allowed. Call under the account lock.
+pub async fn ensure_not_last_strong(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    removing: AuthenticatorRef,
+) -> crate::auth::AuthResult<()> {
+    if is_active(conn, removing).await? && active_strong_count(conn, user_id).await? <= 1 {
+        return Err(crate::auth::AuthError::LastStrongAuthenticator);
+    }
+    Ok(())
+}
+
+/// Set `first_activity_at` once (B.0 "new account"); never cleared.
+pub async fn mark_first_activity(conn: &mut sqlx::PgConnection, user_id: Uuid) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE users SET first_activity_at = COALESCE(first_activity_at, NOW()) WHERE id = $1",
+    )
+    .bind(user_id)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// The current display label of an authenticator (the key device's model or
-/// the passkey's name), `None` if unknown. Key devices arrive in Task 8;
-/// LP adds the passkey arm.
+/// the passkey's name), `None` if unknown. LP adds the passkey arm.
 pub async fn authenticator_label(
-    _conn: &mut sqlx::PgConnection,
-    _a: AuthenticatorRef,
+    conn: &mut sqlx::PgConnection,
+    a: AuthenticatorRef,
 ) -> sqlx::Result<Option<String>> {
-    Ok(None)
+    match a.kind {
+        AuthenticatorKind::KeyDevice => {
+            sqlx::query_scalar("SELECT label FROM approval_devices WHERE id = $1")
+                .bind(a.id)
+                .fetch_optional(&mut *conn)
+                .await
+        }
+        AuthenticatorKind::Passkey => Ok(None),
+    }
 }

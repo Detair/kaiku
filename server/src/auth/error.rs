@@ -157,6 +157,10 @@ pub enum AuthError {
     },
 
     /// Internal server error.
+    /// A user cannot remove their own last strong authenticator (SM4).
+    #[error("This is your last way to sign in securely; add another first")]
+    LastStrongAuthenticator,
+
     /// A refresh token was used twice: the session has ended (B.4).
     #[error("This session was ended because its key was used twice")]
     SessionReused,
@@ -224,6 +228,7 @@ impl IntoResponse for AuthError {
                 (StatusCode::BAD_REQUEST, "REAUTH_PROVIDER_UNAVAILABLE")
             }
             Self::TooManyAttempts { .. } => (StatusCode::TOO_MANY_REQUESTS, "TOO_MANY_ATTEMPTS"),
+            Self::LastStrongAuthenticator => (StatusCode::CONFLICT, "LAST_STRONG_AUTHENTICATOR"),
             Self::SessionReused => (StatusCode::UNAUTHORIZED, "SESSION_REUSED"),
             Self::SessionExpired => (StatusCode::UNAUTHORIZED, "SESSION_EXPIRED"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),

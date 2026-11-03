@@ -33,9 +33,13 @@ use crate::ws::broadcast_user_patch;
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(fields(user_id = %auth_user.id))]
-pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
-    Json(UserProfile {
+#[tracing::instrument(skip(state, auth_user), fields(user_id = %auth_user.id))]
+pub async fn get_profile(
+    axum::extract::State(state): axum::extract::State<crate::api::AppState>,
+    auth_user: AuthUser,
+) -> super::AuthResult<Json<UserProfile>> {
+    let may_approve = may_approve(&state.db, auth_user.id).await?;
+    Ok(Json(UserProfile {
         id: auth_user.id.to_string(),
         username: auth_user.username,
         display_name: auth_user.display_name,
@@ -50,7 +54,19 @@ pub async fn get_profile(auth_user: AuthUser) -> Json<UserProfile> {
             .session
             .as_ref()
             .map(super::types::CurrentSession::from),
-    })
+        may_approve,
+    }))
+}
+
+/// The account's `may_approve` flag (B.1).
+async fn may_approve(pool: &sqlx::PgPool, user_id: uuid::Uuid) -> super::AuthResult<bool> {
+    Ok(
+        sqlx::query_scalar::<_, bool>("SELECT may_approve FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(false),
+    )
 }
 
 /// Upload user avatar.
@@ -192,6 +208,7 @@ pub async fn upload_avatar(
             .session
             .as_ref()
             .map(super::types::CurrentSession::from),
+        may_approve: may_approve(&state.db, auth_user.id).await?,
     }))
 }
 
