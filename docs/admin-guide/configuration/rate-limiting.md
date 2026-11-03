@@ -36,6 +36,8 @@ Each category can be configured using environment variables in the format `reque
 | `RATE_LIMIT_AUTH_REGISTER` | `5,60` | 5 requests per 60 seconds |
 | `RATE_LIMIT_AUTH_PASSWORD_RESET` | `2,60` | 2 requests per 60 seconds |
 | `RATE_LIMIT_AUTH_OTHER` | `20,60` | 20 requests per 60 seconds |
+| `RATE_LIMIT_APPROVAL_LOGIN` | `30,60` | Key-phone approval routes (`/api/approvals/*`), per user |
+| `RATE_LIMIT_AUTH_FLOW` | `60,60` | Phone setup (`/auth/enrollments/*`) and phone sign-in (`/auth/device-login*`), per IP; never blocked by failed-login IP blocks |
 | `RATE_LIMIT_WRITE` | `30,60` | 30 requests per 60 seconds |
 | `RATE_LIMIT_SOCIAL` | `20,60` | 20 requests per 60 seconds |
 | `RATE_LIMIT_READ` | `200,60` | 200 requests per 60 seconds |

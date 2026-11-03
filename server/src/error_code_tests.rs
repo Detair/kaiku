@@ -392,6 +392,38 @@ async fn guild_codes_are_upper_snake() {
 
 #[tokio::test]
 async fn platform_codes_are_upper_snake() {
+    {
+        use crate::approvals::error::ApprovalError as E;
+        assert_codes(
+            "ApprovalError",
+            "error",
+            [
+                E::NotFound,
+                E::State,
+                E::Expired,
+                E::SignatureInvalid,
+                E::NotAllowed,
+                E::KeyDeviceRequired,
+                E::KeyDeviceUnknown,
+                E::KeyDevicePending { ready_at: None },
+                E::KeyDeviceRevoked,
+                E::EnrollmentTokenInvalid,
+                E::EnrollmentAlreadyClaimed,
+                E::EnrollCodeWrong { tries_left: 2 },
+                E::EnrollmentFailed,
+                E::EnrollmentState,
+                E::EnrollmentLimit,
+                E::DeviceUnsuitable {
+                    reason: "attestation_missing",
+                },
+                E::AccountBanned,
+                E::Validation(s()),
+                E::Unavailable,
+                E::Database(db()),
+            ],
+        )
+        .await;
+    }
     assert_codes(
         "SecurityEventsError",
         "error",

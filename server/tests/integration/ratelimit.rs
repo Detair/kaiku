@@ -46,6 +46,14 @@ async fn create_test_limiter(redis: fred::clients::Client) -> RateLimiter {
                 requests: 10,
                 window_secs: 60,
             },
+            approval_login: LimitConfig {
+                requests: 30,
+                window_secs: 60,
+            },
+            auth_flow: LimitConfig {
+                requests: 60,
+                window_secs: 60,
+            },
             write: LimitConfig {
                 requests: 10,
                 window_secs: 60,

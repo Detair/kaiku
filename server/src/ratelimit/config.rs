@@ -36,6 +36,10 @@ pub struct RateLimits {
     pub auth_password_reset: LimitConfig,
     /// Other auth operations (token refresh, etc.)
     pub auth_other: LimitConfig,
+    /// Approval routes per user (`RATE_LIMIT_APPROVAL_LOGIN`, C26).
+    pub approval_login: LimitConfig,
+    /// Public enrolment and device-key sign-in per IP (`RATE_LIMIT_AUTH_FLOW`).
+    pub auth_flow: LimitConfig,
     /// Write operations (create/update/delete)
     pub write: LimitConfig,
     /// Social operations (friend requests, invites)
@@ -118,6 +122,14 @@ impl Default for RateLimits {
             },
             auth_other: LimitConfig {
                 requests: 40,
+                window_secs: 60,
+            },
+            approval_login: LimitConfig {
+                requests: 30,
+                window_secs: 60,
+            },
+            auth_flow: LimitConfig {
+                requests: 60,
                 window_secs: 60,
             },
             write: LimitConfig {
@@ -260,6 +272,16 @@ impl RateLimitConfig {
         if let Some(val) = get("RATE_LIMIT_AUTH_OTHER") {
             if let Some(limit) = parse_limit_config(&val) {
                 config.limits.auth_other = limit;
+            }
+        }
+        if let Some(val) = get("RATE_LIMIT_APPROVAL_LOGIN") {
+            if let Some(limit) = parse_limit_config(&val) {
+                config.limits.approval_login = limit;
+            }
+        }
+        if let Some(val) = get("RATE_LIMIT_AUTH_FLOW") {
+            if let Some(limit) = parse_limit_config(&val) {
+                config.limits.auth_flow = limit;
             }
         }
         if let Some(val) = get("RATE_LIMIT_WRITE") {

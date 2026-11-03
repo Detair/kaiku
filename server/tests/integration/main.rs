@@ -7,6 +7,8 @@ mod admin_elevation;
 mod admin_reports;
 mod android_contract_fixtures;
 mod announcements_http;
+mod approval_devices_http;
+mod approvals_core;
 mod auth;
 mod blocking;
 mod bot_ecosystem;

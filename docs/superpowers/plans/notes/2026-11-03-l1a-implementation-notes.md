@@ -174,3 +174,27 @@ is listed here, per task. "Coordinator" marks items that need a decision.
 - Admin guide (`creating-accounts.md`) updated for elevation by step-up.
 - Found while running the lib suite: `db::tests::test_cleanup_expired_sessions` had failed
   since Task 6 (30-day retention); fixed in this commit.
+
+## Task 10 — approvals core, key devices, device step-up
+
+- `KeyDeviceSession` is a function (`devices::key_device_session`) rather than an axum
+  extractor: it needs the transaction the handler then uses, so the device row is read under
+  the same lock. `pending`/`revoked` devices and non-device sessions → 403
+  `KEY_DEVICE_REQUIRED`.
+- A `device_stepup` answer must come from the session that asked for the challenge
+  (`requester_id` = the caller's `sid`), approve only, with an empty response; otherwise 404 /
+  400. The grant is bound to that same `sid` (the one signed in the context).
+- "Voiding" a challenge (revoked device) sets `state = 'expired'`: the challenge state CHECK
+  has no separate `void` value (B.2 lists `expired` as the terminal for open challenges).
+- `lock_for_answer` marks a past-due challenge `expired` and the handler commits that mark
+  before answering 410.
+- Challenge `expires_at` is stored in whole seconds (it is signed as i64 Unix seconds).
+- `target_label` (signed): device label for key-device targets, username for account targets,
+  the parsed User-Agent for a session id, "all other sessions" for `others`, `""` otherwise.
+- The device list returns every row of the account (pending, active and revoked), newest
+  first. `ready_at` is null in L1a (it comes from the account request in L1b).
+- Rate limits: `ApprovalLogin` (`approval_login`, 30/60 s per user) on `/api/approvals/*`;
+  `AuthFlow` (`auth_flow`, 60/60 s per IP) added here for Tasks 11–12. Both count as auth
+  categories (`is_auth`), i.e. they fail closed on a Valkey outage like the other auth limits.
+- `queries.rs` files of the plan's file list were not split out; the queries live next to the
+  functions that use them (small modules).

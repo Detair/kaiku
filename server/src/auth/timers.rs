@@ -42,5 +42,17 @@ pub async fn run_once(state: &AppState) -> anyhow::Result<()> {
         }
     }
 
+    // 2. Expire challenges past their deadline (B.2).
+    let expired = match state.db.acquire().await {
+        Ok(mut conn) => crate::approvals::core::expire_due(&mut conn).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = expired {
+        tracing::warn!(error = %e, "sweep: challenge expiry failed");
+        if first_err.is_none() {
+            first_err = Some(e.into());
+        }
+    }
+
     first_err.map_or(Ok(()), Err)
 }

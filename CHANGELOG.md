@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- Your phone can be a key for your account: it confirms sensitive actions with its screen lock, and you can see and remove your key phones in the security settings.
 - Security notices: sign-ins and changes to how you sign in appear in a read-only chat with **Kaiku** and in a security log in your account settings; admins get a copy of important ones. They cannot be deleted from a signed-in session.
 - Desktop app on Linux: an advanced "Show all ALSA devices" option in the audio settings also lists surround, S/PDIF, raw hardware and plugin devices that the short device list hides. It is off by default, and a device you picked stays listed when you turn it off.
 - **Web client image** `ghcr.io/detair/kaiku-web`: Kaiku in the browser, served on the same domain as the server (your reverse proxy sends `/api/`, `/auth/`, `/ws` and `/health` to the server, everything else to the web container). It runs unprivileged with a read-only root filesystem and sends its own security headers, including a Content-Security-Policy. The compose setup now runs it behind Caddy. See `docs/admin-guide/ops/web-client.md`.

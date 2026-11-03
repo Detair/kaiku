@@ -234,6 +234,8 @@ pub fn create_router(state: AppState) -> Router {
         .nest("/api/me/connection", connectivity::router())
         .nest("/api/me/preferences", preferences::router())
         .nest("/api/me/security-events", crate::security_events::router())
+        .nest("/api/approvals", crate::approvals::approvals_router(&state))
+        .nest("/api/approval-devices", crate::approvals::devices_router())
         .route(
             "/api/me/pins",
             get(chat::pins::list_pins).post(chat::pins::create_pin),

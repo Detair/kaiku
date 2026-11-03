@@ -8,6 +8,19 @@
 
 - `secrets.rs` — pre-session secrets: `Secret256` (256-bit CSPRNG, `[REDACTED]` Debug, zeroized on drop), `keyed_hash` (HMAC-SHA256 under the server key, one domain per `SecretPurpose`), `ct_eq`, strict b64u, `random_digits` (rejection sampling).
 
+- `signing.rs`, `context.rs` — the `kaiku-sig-v1` bytes and canonical contexts (C26, golden vectors in `mobile/android/app/src/test/resources/golden/kaiku_sig_v1.json`; never regenerate the signatures).
+- `transition.rs` — B.7 rule 1: `lock_accounts` (one statement, ascending id order), `lock_scope`.
+- `cascade.rs` — B.7 rule 2: `on_sessions_ended` (grants, enrolments), `on_authenticator_revoked` (sessions, grants; devices also void their challenges).
+- `core.rs` — challenges: `issue` (v4 id, 32-byte nonce, ≤ 10 min), `lock_for_answer` (`FOR UPDATE`; another device's → 404; past due → expired, 410; not `issued` → 409), `verify`, `set_state`, `expire_due` (minute sweep).
+- `handlers.rs` — `/api/approvals/*` (`ApprovalLogin` limit per user): `step-up` (key-device session only), `answer` (dispatch by kind), `deny`, `release`.
+- `devices/` — key devices (SM4): list (any session), remove (full + `key_device.remove` grant, never the last strong authenticator), `invalidated` (the device's own session), `revoke_tx` (+ cascade + notice event), `after_revoke` (deliver the notice, then delete the device's push subscriptions).
+
+## Order of checks (answer)
+
+1. The caller's session is a key-device session (its authenticator is an `active` key device of the same user), else 403 `KEY_DEVICE_REQUIRED`.
+2. Lock the challenge; it must name this device's install id (else 404), be `issued` and not past due.
+3. Per kind: `device_stepup` — approve only, empty response, answered from the session that asked; verify the signature; `consumed`; `grant_tx` in the same transaction. `enroll` — signature first, then the code (B.2 rev 4). `login` — L1b (response compared first).
+
 ## Rules
 
 - Secrets are 256-bit CSPRNG values (codes: 6 digits), single use, stored only as `keyed_hash` under `Config::auth_hmac_key` (DC1), compared with `ct_eq`. Never a UUID (v4 or v7) as a secret, never a plain SHA-256 of a code.

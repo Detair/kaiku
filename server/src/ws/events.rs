@@ -963,6 +963,13 @@ pub enum ServerEvent {
     /// A DM channel was newly created with this user as a participant (sent
     /// to every participant, including the creator's other devices). Open
     /// sockets are subscribed to the channel before this event is delivered.
+    /// A key device, passkey, TOTP or password of the user changed (C26):
+    /// clients refetch and never act on the hint alone.
+    AuthenticatorsChanged {
+        /// The account whose authenticators changed.
+        user_id: Uuid,
+    },
+
     /// A coalesced security notice in the Kaiku DM changed (C28): sent to
     /// the notice's recipient only. Clients replace the message's
     /// `security_notice` and never act on the hint alone.
