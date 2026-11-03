@@ -12,16 +12,15 @@ use tracing::{debug, info};
 use url::Url;
 
 use super::oidc_loopback::{self, LinkCallback, LoginCallback};
-use crate::session::{AuthInfo, AuthResult, RegisterRequest, SessionError, SessionRestoreResult};
+use crate::session::{AuthInfo, RegisterRequest, SessionError, SessionRestoreResult};
 use crate::AppState;
 
-/// Login request from frontend.
+/// Login request from frontend (C27: no `mfa_code`; the TOTP step is its own call).
 #[derive(Deserialize)]
 pub struct LoginRequest {
     pub server_url: String,
     pub username: String,
     pub password: String,
-    pub mfa_code: Option<String>,
 }
 
 impl std::fmt::Debug for LoginRequest {
@@ -30,36 +29,32 @@ impl std::fmt::Debug for LoginRequest {
             .field("server_url", &self.server_url)
             .field("username", &self.username)
             .field("password", &"[REDACTED]")
-            .field("mfa_code", &self.mfa_code.as_ref().map(|_| "[REDACTED]"))
             .finish()
     }
 }
 
-/// Login with username and password.
+/// Username + password (F3). Returns the `LoginStep` JSON (never a session);
+/// the attempt's verifier stays in Rust.
 #[command]
 pub async fn login(
     state: State<'_, AppState>,
     request: LoginRequest,
-) -> Result<AuthResult, String> {
+) -> Result<serde_json::Value, String> {
     info!("Attempting login for user: {}", request.username);
     state
         .session
-        .login(
-            &request.server_url,
-            &request.username,
-            &request.password,
-            request.mfa_code,
-        )
+        .login(&request.server_url, &request.username, &request.password)
         .await
         .map_err(|e| e.to_string())
 }
 
-/// Register a new user.
+/// Register a new user (F8): `{user_id, username, ticket_expires_at}`, no
+/// session; the registration ticket stays in Rust.
 #[command]
 pub async fn register(
     state: State<'_, AppState>,
     request: RegisterRequest,
-) -> Result<AuthResult, String> {
+) -> Result<serde_json::Value, String> {
     info!("Attempting registration for user: {}", request.username);
     state
         .session
@@ -272,12 +267,16 @@ pub async fn oidc_authorize(
     app_handle: tauri::AppHandle,
     server_url: String,
     provider_slug: String,
-) -> Result<AuthResult, String> {
+) -> Result<serde_json::Value, String> {
     info!("Starting OIDC flow for provider: {}", provider_slug);
 
     let server_url = server_url.trim_end_matches('/');
     let (listener, flow, redirect_uri) = bind_loopback().await?;
-    let verifier = oidc_loopback::new_secret();
+    // TODO(LP rebase, C29 step 8): bind with `loopback_post::bind()` first, send
+    // `loopback_port` + `callback_path` instead of `redirect_uri`, open with
+    // `open_browser(app, url, settings.passkey_browser)` and wait with
+    // `loopback_post::wait_for_post`; then delete this GET hand-back.
+    let verifier = zeroize::Zeroizing::new(oidc_loopback::new_secret());
     let challenge = oidc_loopback::s256_challenge(&verifier);
     debug!("OIDC loopback listener bound");
 
@@ -313,13 +312,15 @@ pub async fn oidc_authorize(
         LoginCallback::Error(error) => return Err(error),
     };
 
-    let result = state
+    // C27: the exchange answers a `LoginStep` (confirmed like a password);
+    // the verifier becomes the attempt's collection secret.
+    let step = state
         .session
-        .exchange_oidc_code(server_url, &code, &verifier)
+        .exchange_oidc_code(server_url, &code, verifier)
         .await
         .map_err(|e| e.to_string())?;
-    info!("OIDC login successful");
-    Ok(result)
+    info!("OIDC sign-in needs its confirmation step");
+    Ok(step)
 }
 
 /// Link an additional external (OIDC) identity to the signed-in account (desktop).

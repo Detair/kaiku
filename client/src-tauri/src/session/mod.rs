@@ -6,12 +6,16 @@
 //! single-flight because the server rotates the refresh token on every use:
 //! two parallel refreshes with the same token would invalidate the session.
 
+pub mod attempts;
+pub mod pre_session;
 pub mod store;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub use attempts::AttemptVerifiers;
+pub use pre_session::{PreSessionKind, PreSessionSecrets};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 pub use store::{KeyringTokenStore, StoredSession, TokenStore};
@@ -62,6 +66,25 @@ pub struct TokenResponse {
     pub setup_required: bool,
     #[serde(default)]
     pub password_change_required: bool,
+    /// C27: the session's id, assurance and absolute cap (absent on older servers).
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub assurance: Option<String>,
+    #[serde(default)]
+    pub absolute_expires_at: Option<String>,
+}
+
+impl std::fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .field("expires_in", &self.expires_in)
+            .field("session_id", &self.session_id)
+            .field("assurance", &self.assurance)
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the webview needs to call the API itself: base URL and access token.
@@ -120,19 +143,10 @@ pub enum SessionError {
     /// The server could not be reached (transient).
     #[error("Connection failed: {0}")]
     Network(String),
-    #[error("Invalid username or password")]
-    InvalidCredentials,
-    /// The TypeScript side matches this exact string.
-    #[error("MFA_REQUIRED")]
-    MfaRequired,
-    /// The account is suspended (403 `ACCOUNT_BANNED`). The TypeScript side
-    /// matches this exact string.
-    #[error("ACCOUNT_BANNED")]
-    AccountBanned,
     /// The refresh token was rejected or there is no session: sign in again.
     #[error("Session expired")]
     Expired,
-    /// Any other non-success response (status, user-facing message).
+    /// Any other non-success response: (status, bare server code or message).
     #[error("{1}")]
     Server(u16, String),
     /// Rejected locally without contacting the server.
@@ -144,11 +158,27 @@ pub enum SessionError {
     ServerMismatch,
 }
 
+/// Why the server ended a session on refresh (C27 refresh errors).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndReason {
+    /// Rejected, inactive or past its absolute cap (`SESSION_EXPIRED`, `INVALID_TOKEN`, …).
+    Expired,
+    /// The refresh token was used twice (`SESSION_REUSED`).
+    Reused,
+}
+
 /// Events the refresh scheduler reports to the webview.
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
     TokenRefreshed(AuthInfo),
-    Expired,
+    Expired(EndReason),
+}
+
+/// A refresh the server refused for good, or any other failure.
+enum RefreshError {
+    Rejected(EndReason),
+    Other(SessionError),
 }
 
 /// `/auth/me` fields the Rust side needs (`AuthState.user`).
@@ -349,6 +379,10 @@ pub struct SessionInner {
     generation: AtomicU64,
     /// Token refreshes and server-side session ends, from any code path.
     events: broadcast::Sender<SessionEvent>,
+    /// Verifiers of the login attempts this app started (C27, SM1).
+    attempts: AttemptVerifiers,
+    /// Account-request OIDC verifier and registration ticket (C27).
+    pre_session: PreSessionSecrets,
     /// Held by a running token rotation for its whole duration. Taken (and
     /// released) after `refresh_lock` by [`SessionManager::lock`], so a
     /// rotation whose caller was dropped still finishes before anyone else
@@ -410,47 +444,54 @@ impl SessionInner {
     }
 
     /// Forget the session everywhere (caller holds `refresh_lock` or
-    /// `rotation`). `expired` = the server rejected it (the webview is told
-    /// via `SessionEvent::Expired`); `false` = user sign-out.
-    async fn clear_session(&self, server_url: &str, expired: bool) {
+    /// `rotation`). `Some(reason)` = the server rejected it (the webview is
+    /// told via `SessionEvent::Expired`); `None` = user sign-out.
+    async fn clear_session(&self, server_url: &str, expired: Option<EndReason>) {
         if let Err(e) = self.store.clear(server_url) {
             warn!(error = %e, "Could not remove the stored login from the OS keyring");
         }
         self.set_session(None, true);
-        if expired {
-            self.publish(SessionEvent::Expired);
+        if let Some(reason) = expired {
+            self.publish(SessionEvent::Expired(reason));
         }
         let mut auth = self.legacy.write().await;
         auth.access_token = None;
         auth.user = None;
     }
 
-    /// `POST /auth/refresh`. 401/403 → `Expired`; everything else that fails
-    /// is transient and leaves the stored token alone.
+    /// `POST /auth/refresh`. 401/403 → rejected (`SESSION_REUSED` → reused,
+    /// anything else → expired); everything else that fails is transient and
+    /// leaves the stored token alone.
     async fn call_refresh(
         &self,
         base: &str,
         refresh_token: &str,
-    ) -> Result<TokenResponse, SessionError> {
+    ) -> Result<TokenResponse, RefreshError> {
         let response = self
             .http
             .post(format!("{base}/auth/refresh"))
             .json(&json!({ "refresh_token": refresh_token }))
             .send()
             .await
-            .map_err(|e| network(&e))?;
+            .map_err(|e| RefreshError::Other(network(&e)))?;
         let status = response.status().as_u16();
         if status == 401 || status == 403 {
-            return Err(SessionError::Expired);
+            let text = response.text().await.unwrap_or_default();
+            let reason = if error_code(&text).as_deref() == Some("SESSION_REUSED") {
+                EndReason::Reused
+            } else {
+                EndReason::Expired
+            };
+            return Err(RefreshError::Rejected(reason));
         }
         if !response.status().is_success() {
             let text = response.text().await.unwrap_or_default();
-            return Err(server_error(status, &text));
+            return Err(RefreshError::Other(server_error(status, &text)));
         }
         response
             .json()
             .await
-            .map_err(|e| invalid_response(status, &e))
+            .map_err(|e| RefreshError::Other(invalid_response(status, &e)))
     }
 
     /// Rotate the tokens of `current` and commit them (memory, keyring,
@@ -461,11 +502,11 @@ impl SessionInner {
             .await
         {
             Ok(tokens) => tokens,
-            Err(SessionError::Expired) => {
+            Err(RefreshError::Rejected(reason)) => {
                 match kind {
                     Rotation::Refresh => {
-                        info!("Refresh token rejected; session ended");
-                        self.clear_session(&current.server_url, true).await;
+                        info!(?reason, "Refresh token rejected; session ended");
+                        self.clear_session(&current.server_url, Some(reason)).await;
                     }
                     Rotation::Restore => {
                         info!("Stored login was rejected by the server");
@@ -476,7 +517,7 @@ impl SessionInner {
                 }
                 return Err(SessionError::Expired);
             }
-            Err(e) => return Err(e),
+            Err(RefreshError::Other(e)) => return Err(e),
         };
 
         let session = Session::from_tokens(&current.server_url, &tokens, current.user);
@@ -513,6 +554,8 @@ impl SessionManager {
                 generation: AtomicU64::new(0),
                 events: broadcast::channel(16).0,
                 rotation: Arc::new(Mutex::new(())),
+                attempts: AttemptVerifiers::default(),
+                pre_session: PreSessionSecrets::default(),
             }),
         }
     }
@@ -535,117 +578,14 @@ impl SessionManager {
         self.events.subscribe()
     }
 
-    /// Forget the session everywhere. `expired` = the server rejected it (the
-    /// webview is told via `SessionEvent::Expired`); `false` = user sign-out.
-    async fn end_session(&self, _lock: &LockGuard<'_>, server_url: &str, expired: bool) {
-        self.inner.clear_session(server_url, expired).await;
+    /// Forget the session after a user sign-out (the webview is not told).
+    async fn end_session(&self, _lock: &LockGuard<'_>, server_url: &str) {
+        self.inner.clear_session(server_url, None).await;
     }
 
     /// Current base URL and access token, if signed in.
     pub fn auth_info(&self) -> Option<AuthInfo> {
         self.snapshot().map(|s| s.auth_info())
-    }
-
-    pub async fn login(
-        &self,
-        server_url: &str,
-        username: &str,
-        password: &str,
-        mfa_code: Option<String>,
-    ) -> Result<AuthResult, SessionError> {
-        let base = normalize_server_url(server_url)?;
-        let mut body = json!({ "username": username, "password": password });
-        if let Some(code) = mfa_code {
-            body["mfa_code"] = json!(code);
-        }
-        let response = self
-            .http
-            .post(format!("{base}/auth/login"))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| network(&e))?;
-        let status = response.status().as_u16();
-        if !response.status().is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(match status {
-                401 => SessionError::InvalidCredentials,
-                403 if error_code(&text).as_deref() == Some("MFA_REQUIRED") => {
-                    SessionError::MfaRequired
-                }
-                403 if error_code(&text).as_deref() == Some("ACCOUNT_BANNED") => {
-                    SessionError::AccountBanned
-                }
-                _ => server_error(status, &text),
-            });
-        }
-        let tokens: TokenResponse = response
-            .json()
-            .await
-            .map_err(|e| invalid_response(status, &e))?;
-        self.adopt_tokens(&base, tokens).await
-    }
-
-    pub async fn register(&self, req: RegisterRequest) -> Result<AuthResult, SessionError> {
-        let base = normalize_server_url(&req.server_url)?;
-        let response = self
-            .http
-            .post(format!("{base}/auth/register"))
-            .json(&json!({
-                "username": req.username,
-                "email": req.email,
-                "password": req.password,
-                "display_name": req.display_name,
-            }))
-            .send()
-            .await
-            .map_err(|e| network(&e))?;
-        let status = response.status().as_u16();
-        if !response.status().is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(if status == 409 {
-                SessionError::Server(409, "Username or email already exists".to_string())
-            } else {
-                server_error(status, &text)
-            });
-        }
-        let tokens: TokenResponse = response
-            .json()
-            .await
-            .map_err(|e| invalid_response(status, &e))?;
-        self.adopt_tokens(&base, tokens).await
-    }
-
-    /// Redeem a desktop SSO hand-off code with the flow's verifier
-    /// (`POST /auth/oidc/desktop/exchange`) and take over the token pair.
-    /// The code is single use; a refused code is `OIDC_HANDOFF_INVALID`.
-    pub async fn exchange_oidc_code(
-        &self,
-        server_url: &str,
-        code: &str,
-        verifier: &str,
-    ) -> Result<AuthResult, SessionError> {
-        let base = normalize_server_url(server_url)?;
-        let response = self
-            .http
-            .post(format!("{base}/auth/oidc/desktop/exchange"))
-            .json(&json!({ "code": code, "verifier": verifier }))
-            .send()
-            .await
-            .map_err(|e| network(&e))?;
-        let status = response.status().as_u16();
-        if !response.status().is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(match error_code(&text) {
-                Some(code) => SessionError::Server(status, code),
-                None => server_error(status, &text),
-            });
-        }
-        let tokens: TokenResponse = response
-            .json()
-            .await
-            .map_err(|e| invalid_response(status, &e))?;
-        self.adopt_tokens(&base, tokens).await
     }
 
     /// A desktop passkey flow request (C29 steps 2 and 6): `POST {base}{path}`
@@ -748,8 +688,10 @@ impl SessionManager {
             .map(str::to_owned)
     }
 
-    /// Take over a fresh token pair (login, registration, OIDC): fetch the
-    /// profile, store the refresh token, publish the session.
+    /// Take over a fresh token pair (attempt collect, TOTP step, and later
+    /// LP's passkey sign-in): fetch the profile, store the refresh token,
+    /// publish the session. A session that was live before ends on the server
+    /// (best effort): signing in again never leaves the old one running (F1).
     pub async fn adopt_tokens(
         &self,
         server_url: &str,
@@ -777,24 +719,56 @@ impl SessionManager {
         let password_change_required =
             tokens.password_change_required || flag(&user, "password_change_required");
 
-        let _guard = self.lock().await;
+        let guard = self.lock().await;
+        let previous = self
+            .snapshot()
+            .filter(|old| old.refresh_token != tokens.refresh_token);
         let mut session = Session::from_tokens(&base, &tokens, Some(user.clone()));
         session.password_change_required = password_change_required;
         let persisted = self.persist(&session);
         self.set_session(Some(session), true);
         {
             let mut auth = self.legacy.write().await;
-            auth.server_url = Some(base);
+            auth.server_url = Some(base.clone());
             auth.access_token = Some(tokens.access_token);
             auth.user = Some(legacy_user);
         }
+        drop(guard);
         info!("Signed in");
+        if let Some(old) = previous {
+            self.end_previous_session(&old, &base).await;
+        }
         Ok(AuthResult {
             user,
             setup_required: tokens.setup_required,
             password_change_required,
             persisted,
         })
+    }
+
+    /// End a replaced session on its server (only that session: its own
+    /// bearer and refresh token). Failures are logged, never shown.
+    async fn end_previous_session(&self, old: &Session, new_base: &str) {
+        let result = self
+            .http
+            .post(format!("{}/auth/logout", old.server_url))
+            .bearer_auth(&old.access_token)
+            .json(&json!({ "refresh_token": old.refresh_token }))
+            .send()
+            .await;
+        match result {
+            Ok(r) if r.status().is_success() => info!("Ended the previous session"),
+            Ok(r) => warn!(
+                status = r.status().as_u16(),
+                "Could not end the previous session"
+            ),
+            Err(e) => warn!(error = %e, "Could not end the previous session"),
+        }
+        if old.server_url != new_base {
+            if let Err(e) = self.store.clear(&old.server_url) {
+                warn!(error = %e, "Could not remove the previous login from the OS keyring");
+            }
+        }
     }
 
     async fn fetch_me(&self, base: &str, access_token: &str) -> Result<Value, SessionError> {
@@ -990,10 +964,10 @@ impl SessionManager {
                 Ok(r) => warn!(status = r.status().as_u16(), "Server-side logout failed"),
                 Err(e) => warn!(error = %e, "Server-side logout failed"),
             }
-            self.end_session(&guard, &session.server_url, false).await;
+            self.end_session(&guard, &session.server_url).await;
         } else {
             match self.store.load() {
-                Ok(Some(stored)) => self.end_session(&guard, &stored.server_url, false).await,
+                Ok(Some(stored)) => self.end_session(&guard, &stored.server_url).await,
                 Ok(None) => self.set_session(None, true),
                 Err(e) => warn!(error = %e, "Could not read the stored login from the OS keyring"),
             }
@@ -1147,7 +1121,9 @@ pub fn spawn_refresh_scheduler(app: tauri::AppHandle, mgr: Arc<SessionManager>) 
             };
             let result = match event {
                 SessionEvent::TokenRefreshed(info) => app.emit("auth:token_refreshed", info),
-                SessionEvent::Expired => app.emit("auth:session_expired", ()),
+                SessionEvent::Expired(reason) => {
+                    app.emit("auth:session_expired", json!({ "reason": reason }))
+                }
             };
             if let Err(e) = result {
                 warn!(error = %e, "Could not deliver session event to the webview");
@@ -1213,25 +1189,26 @@ mod tests {
             .await;
     }
 
+    /// Take over the tokens a sign-in returned (collect, TOTP step, passkey).
+    async fn sign_in(m: &SessionManager, server: &MockServer, body: Value) -> AuthResult {
+        m.adopt_tokens(&server.uri(), serde_json::from_value(body).unwrap())
+            .await
+            .unwrap()
+    }
+
     async fn logged_in(server: &MockServer, store: &Arc<MemoryTokenStore>) -> SessionManager {
         mount_login(server, "at-1", "rt-1").await;
         let m = manager(store);
-        m.login(&server.uri(), "alice", "pw", None).await.unwrap();
+        sign_in(&m, server, tokens("at-1", "rt-1")).await;
         m
     }
 
     #[tokio::test]
-    async fn login_returns_full_user_and_flags() {
+    async fn adopt_tokens_returns_full_user_and_flags() {
         let server = MockServer::start().await;
         let mut body = tokens("at-1", "rt-1");
         body["setup_required"] = json!(true);
         body["password_change_required"] = json!(true);
-        Mock::given(method("POST"))
-            .and(path("/auth/login"))
-            .and(body_json(json!({"username": "alice", "password": "pw"})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(body))
-            .mount(&server)
-            .await;
         let mut user = me();
         user["is_admin"] = json!(true);
         Mock::given(method("GET"))
@@ -1244,7 +1221,10 @@ mod tests {
         let m = manager(&store);
 
         let result = m
-            .login(&format!("{}/", server.uri()), "alice", "pw", None)
+            .adopt_tokens(
+                &format!("{}/", server.uri()),
+                serde_json::from_value(body).unwrap(),
+            )
             .await
             .unwrap();
 
@@ -1282,56 +1262,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_maps_lowercase_mfa_required() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/auth/login"))
-            .respond_with(
-                ResponseTemplate::new(403).set_body_json(json!({"error": "mfa_required"})),
-            )
-            .mount(&server)
-            .await;
-        let store = Arc::new(MemoryTokenStore::new());
-
-        let err = manager(&store)
-            .login(&server.uri(), "alice", "pw", None)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, SessionError::MfaRequired));
-    }
-
-    #[tokio::test]
-    async fn oidc_exchange_posts_code_and_verifier() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/auth/oidc/desktop/exchange"))
-            .and(body_json(json!({"code": "c-1", "verifier": "v-1"})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(tokens("at-1", "rt-1")))
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/auth/me"))
-            .and(header("authorization", "Bearer at-1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(me()))
-            .mount(&server)
-            .await;
-        let store = Arc::new(MemoryTokenStore::new());
-        let m = manager(&store);
-
-        let result = m
-            .exchange_oidc_code(&server.uri(), "c-1", "v-1")
-            .await
-            .unwrap();
-
-        assert!(result.persisted);
-        assert_eq!(store.get().unwrap().refresh_token, "rt-1");
-        assert_eq!(m.auth_info().unwrap().access_token, "at-1");
-        assert!(!serde_json::to_string(&result).unwrap().contains("rt-1"));
-    }
-
-    #[tokio::test]
     async fn oidc_exchange_reports_the_error_code() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1344,76 +1274,16 @@ mod tests {
         let store = Arc::new(MemoryTokenStore::new());
 
         let err = manager(&store)
-            .exchange_oidc_code(&server.uri(), "c-1", "v-1")
+            .exchange_oidc_code(
+                &server.uri(),
+                "c-1",
+                zeroize::Zeroizing::new("v-1".to_string()),
+            )
             .await
             .unwrap_err();
 
         assert_eq!(err.to_string(), "OIDC_HANDOFF_INVALID");
         assert!(store.get().is_none());
-    }
-
-    #[tokio::test]
-    async fn login_maps_mfa_required() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/auth/login"))
-            .respond_with(
-                ResponseTemplate::new(403).set_body_json(json!({"error": "MFA_REQUIRED"})),
-            )
-            .mount(&server)
-            .await;
-        let store = Arc::new(MemoryTokenStore::new());
-
-        let err = manager(&store)
-            .login(&server.uri(), "alice", "pw", None)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, SessionError::MfaRequired));
-        assert_eq!(err.to_string(), "MFA_REQUIRED");
-        assert!(store.get().is_none());
-    }
-
-    #[tokio::test]
-    async fn login_maps_account_banned() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/auth/login"))
-            .respond_with(
-                ResponseTemplate::new(403).set_body_json(json!({"error": "account_banned"})),
-            )
-            .mount(&server)
-            .await;
-        let store = Arc::new(MemoryTokenStore::new());
-
-        let err = manager(&store)
-            .login(&server.uri(), "alice", "pw", None)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, SessionError::AccountBanned));
-        assert_eq!(err.to_string(), "ACCOUNT_BANNED");
-        assert!(store.get().is_none());
-    }
-
-    #[tokio::test]
-    async fn login_maps_invalid_credentials() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/auth/login"))
-            .respond_with(
-                ResponseTemplate::new(401).set_body_json(json!({"error": "INVALID_CREDENTIALS"})),
-            )
-            .mount(&server)
-            .await;
-        let store = Arc::new(MemoryTokenStore::new());
-
-        let err = manager(&store)
-            .login(&server.uri(), "alice", "bad", None)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, SessionError::InvalidCredentials));
     }
 
     #[tokio::test]
@@ -1657,6 +1527,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_session_reused_reports_reason_reused() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = logged_in(&server, &store).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(json!({"error": "SESSION_REUSED", "message": "x"})),
+            )
+            .mount(&server)
+            .await;
+        let mut events = m.subscribe();
+
+        let err = m.refresh().await.unwrap_err();
+
+        assert!(matches!(err, SessionError::Expired));
+        assert!(matches!(
+            events.try_recv(),
+            Ok(SessionEvent::Expired(EndReason::Reused))
+        ));
+        assert!(store.get().is_none());
+    }
+
+    #[tokio::test]
+    async fn refresh_session_expired_reports_reason_expired() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = logged_in(&server, &store).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/refresh"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(json!({"error": "SESSION_EXPIRED"})),
+            )
+            .mount(&server)
+            .await;
+        let mut events = m.subscribe();
+        m.refresh().await.unwrap_err();
+        assert!(matches!(
+            events.try_recv(),
+            Ok(SessionEvent::Expired(EndReason::Expired))
+        ));
+    }
+
+    #[tokio::test]
+    async fn signing_in_while_signed_in_ends_the_old_session() {
+        let server = MockServer::start().await;
+        let store = Arc::new(MemoryTokenStore::new());
+        let m = logged_in(&server, &store).await;
+        Mock::given(method("POST"))
+            .and(path("/auth/logout"))
+            .and(header("authorization", "Bearer at-1"))
+            .and(body_json(json!({"refresh_token": "rt-1"})))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        sign_in(&m, &server, tokens("at-2", "rt-2")).await;
+
+        assert_eq!(m.auth_info().unwrap().access_token, "at-2");
+        assert_eq!(store.get().unwrap().refresh_token, "rt-2");
+    }
+
+    #[test]
+    fn token_response_debug_redacts_tokens() {
+        let t: TokenResponse = serde_json::from_value(tokens("at-secret", "rt-secret")).unwrap();
+        let text = format!("{t:?}");
+        assert!(!text.contains("at-secret") && !text.contains("rt-secret"));
+    }
+
+    #[tokio::test]
     async fn keyring_failure_still_logs_in_with_persisted_false() {
         let server = MockServer::start().await;
         mount_login(&server, "at-1", "rt-1").await;
@@ -1664,7 +1606,7 @@ mod tests {
         store.set_fail_save(true);
         let m = manager(&store);
 
-        let result = m.login(&server.uri(), "alice", "pw", None).await.unwrap();
+        let result = sign_in(&m, &server, tokens("at-1", "rt-1")).await;
 
         assert!(!result.persisted);
         assert_eq!(result.user["username"], json!("alice"));
@@ -1814,7 +1756,7 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, SessionError::Expired));
-        assert!(matches!(events.try_recv(), Ok(SessionEvent::Expired)));
+        assert!(matches!(events.try_recv(), Ok(SessionEvent::Expired(_))));
         assert!(m.auth_info().is_none());
         assert!(store.get().is_none());
     }
@@ -2024,7 +1966,9 @@ mod tests {
             .mount(server)
             .await;
         let m = Arc::new(manager(store));
-        m.login(&server.uri(), "alice", "pw", None).await.unwrap();
+        let mut tokens_body = tokens("at-1", "rt-1");
+        tokens_body["expires_in"] = json!(30);
+        sign_in(&m, server, tokens_body).await;
         m
     }
 
@@ -2055,7 +1999,7 @@ mod tests {
 
         match event {
             SessionEvent::TokenRefreshed(info) => assert_eq!(info.access_token, "at-2"),
-            SessionEvent::Expired => panic!("a 503 must not end the session"),
+            SessionEvent::Expired(_) => panic!("a 503 must not end the session"),
         }
         assert_eq!(store.get().unwrap().refresh_token, "rt-2");
     }
@@ -2079,7 +2023,7 @@ mod tests {
             .unwrap();
         task.abort();
 
-        assert!(matches!(event, SessionEvent::Expired));
+        assert!(matches!(event, SessionEvent::Expired(EndReason::Expired)));
         assert!(store.get().is_none());
     }
 }

@@ -35,6 +35,10 @@ pub trait TokenStore: Send + Sync {
     fn save(&self, s: &StoredSession) -> Result<(), StoreError>;
     /// Forget the refresh token for `server_url`.
     fn clear(&self, server_url: &str) -> Result<(), StoreError>;
+    /// A named pre-session secret (the account-request secret, C27).
+    fn load_secret(&self, name: &str) -> Result<Option<String>, StoreError>;
+    fn save_secret(&self, name: &str, value: &str) -> Result<(), StoreError>;
+    fn clear_secret(&self, name: &str) -> Result<(), StoreError>;
 }
 
 // ============================================================================
@@ -75,6 +79,14 @@ impl KeyringTokenStore {
             .and_then(|entry| entry.set_password(value))
             .map_err(|e| backend(&e))
     }
+
+    fn delete(user: &str) -> Result<(), StoreError> {
+        let entry = keyring_core::Entry::new(KEYRING_SERVICE, user).map_err(|e| backend(&e))?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+            Err(e) => Err(backend(&e)),
+        }
+    }
 }
 
 impl TokenStore for KeyringTokenStore {
@@ -96,12 +108,19 @@ impl TokenStore for KeyringTokenStore {
     }
 
     fn clear(&self, server_url: &str) -> Result<(), StoreError> {
-        let entry = keyring_core::Entry::new(KEYRING_SERVICE, &token_entry(server_url))
-            .map_err(|e| backend(&e))?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
-            Err(e) => Err(backend(&e)),
-        }
+        Self::delete(&token_entry(server_url))
+    }
+
+    fn load_secret(&self, name: &str) -> Result<Option<String>, StoreError> {
+        Self::read(name)
+    }
+
+    fn save_secret(&self, name: &str, value: &str) -> Result<(), StoreError> {
+        Self::write(name, value)
+    }
+
+    fn clear_secret(&self, name: &str) -> Result<(), StoreError> {
+        Self::delete(name)
     }
 }
 
@@ -115,6 +134,7 @@ impl TokenStore for KeyringTokenStore {
 #[derive(Debug, Default)]
 pub struct MemoryTokenStore {
     session: std::sync::Mutex<Option<StoredSession>>,
+    secrets: std::sync::Mutex<std::collections::HashMap<String, String>>,
     fail_save: std::sync::atomic::AtomicBool,
 }
 
@@ -162,6 +182,26 @@ impl TokenStore for MemoryTokenStore {
         if session.as_ref().is_some_and(|s| s.server_url == server_url) {
             *session = None;
         }
+        Ok(())
+    }
+
+    fn load_secret(&self, name: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.secrets.lock().unwrap().get(name).cloned())
+    }
+
+    fn save_secret(&self, name: &str, value: &str) -> Result<(), StoreError> {
+        if self.fail_save.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(StoreError::Backend("no keyring available".into()));
+        }
+        self.secrets
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), value.to_string());
+        Ok(())
+    }
+
+    fn clear_secret(&self, name: &str) -> Result<(), StoreError> {
+        self.secrets.lock().unwrap().remove(name);
         Ok(())
     }
 }

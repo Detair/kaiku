@@ -32,11 +32,48 @@ clipboard.
 |------|---------|--------------|
 | `auth.rs` | Authentication, registration, logout | `login`, `register`, `logout`, `get_current_user` |
 | `oidc_loopback.rs` | Hardened loopback listener + secrets for the OIDC flows | — (used by `oidc_authorize`, `oidc_link_identity`) |
+| `login_flow.rs` | Login attempts (C27, SM1): phone QR, password/OIDC confirmation, TOTP step | `login_attempt_create`, `login_attempt_poll`, `login_attempt_collect`, `login_attempt_totp`, `login_attempt_cancel` |
+| `pre_session.rs` | Account requests and registration tickets (C27) | `account_request_start`, `request_oidc_factor`, `pre_session_request` |
 | `crypto.rs` | E2EE encryption operations (Olm + Megolm) | `init_e2ee`, `encrypt_message`, `decrypt_message`, `create_megolm_session`, `encrypt_group_message`, `decrypt_group_message` |
 | `voice.rs` | Voice channel join/leave, mute/deafen | `join_voice`, `leave_voice`, `set_mute`, `handle_voice_offer` |
 | `settings.rs` | User preferences (audio, theme, etc.) | `get_settings`, `update_settings` |
 | `websocket.rs` | WebSocket lifecycle and subscriptions | `ws_connect`, `ws_disconnect`, `ws_subscribe` |
 | `mod.rs` | Module root (exports all command modules) | — |
+
+## Sign-in and pre-session rules (v1.0, C27)
+
+- **Never a session from a password.** `login` returns the `LoginStep` JSON
+  (`confirmation_required` / `totp_required`); `mfa_code` is gone. Sessions
+  start only at `login_attempt_collect`, `login_attempt_totp` (both probation)
+  and LP's passkey sign-in (full), all through `SessionManager::adopt_tokens`,
+  which ends a session that was live before (best effort `POST /auth/logout`
+  with the old bearer and refresh token).
+- **Attempt verifiers stay in Rust** (`session/attempts.rs`): `login` and
+  `login_attempt_create` draw a verifier (`oidc_loopback::new_secret`) and send
+  only `client_challenge = S256(verifier)`; poll, collect, totp and cancel send
+  `{verifier}`. The verifier is dropped on a terminal state, a 404/410, collect,
+  cancel and after 10 min (at most 8 kept). The webview names the attempt id.
+- **`X-Kaiku-Client: desktop`** on every session-creating call (`/auth/login`,
+  `/auth/login-attempts*`, `/auth/oidc/desktop/exchange`, `/auth/register`,
+  `/auth/account-requests`).
+- **Pre-session secrets** (`session/pre_session.rs`): `account_request_start`
+  strips `request_secret` and keeps it in the keyring (`account_request:<base>`
+  + `account_request_server`), deleted after `finish`, a withdraw or a terminal
+  `GET …/current`. `register` keeps `registration_ticket` in memory (30 min).
+  `pre_session_request(kind, method, path, body)` sends only allowlisted
+  method + path pairs (no query) with `X-Kaiku-Request-Secret` /
+  `X-Kaiku-Ticket`; anything else is `PATH_NOT_ALLOWED` without a request.
+- **Errors are bare server codes** (`SessionError::Server` displays the code;
+  `CODE:<secs>` when a `Retry-After` came with it). The webview maps them with
+  `nativeAuthError` + `errorText`.
+- **Refresh end reasons:** 401 `SESSION_REUSED` → `SessionEvent::Expired(Reused)`,
+  any other 401/403 → `Expired(Expired)`; the `auth:session_expired` event
+  carries `{reason}`.
+- **Waiting for LP** (C29 step 8): the OIDC sign-in still uses the GET
+  hand-back of `oidc_loopback`; after the LP rebase it moves to
+  `loopback_post::{bind, wait_for_post}` and `open_browser(app, url,
+  settings.passkey_browser)`, and `request_oidc_factor` (now refusing with
+  `OIDC_UNAVAILABLE`) gets the same delivery.
 
 ## Key Patterns
 
