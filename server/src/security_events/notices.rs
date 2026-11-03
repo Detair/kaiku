@@ -75,7 +75,9 @@ pub struct SecurityNotice {
 ///
 /// The subject's own copy, and for `high` every admin other than the subject
 /// (L1b Task 20 adds the confirmed recovery contact). Never the system
-/// account, never twice.
+/// account, never twice. Sorted by user id: a delivery takes each
+/// recipient's Kaiku DM lock in this order, so two deliveries (two admins'
+/// events, each the other's copy) never wait for each other in a cycle.
 pub async fn recipients(
     conn: &mut PgConnection,
     subject_id: Uuid,
@@ -100,6 +102,7 @@ pub async fn recipients(
             role: RecipientRole::Admin,
         }));
     }
+    out.sort_by_key(|r| r.user_id);
     Ok(out)
 }
 
@@ -136,6 +139,10 @@ struct NoticeRow {
 
 /// Deliver these events (idempotent: an event already delivered, or being
 /// delivered by someone else, is skipped).
+///
+/// Each event is its own transaction; one that fails is logged and stays in
+/// the outbox, the others are still delivered, and the first error is
+/// returned at the end (so one bad event never holds back the sweep).
 #[tracing::instrument(skip(state, event_ids), fields(count = event_ids.len()))]
 pub async fn deliver(state: &AppState, event_ids: &[Uuid]) -> anyhow::Result<()> {
     let mut ordered: Vec<(DateTime<Utc>, Uuid)> =
@@ -144,11 +151,17 @@ pub async fn deliver(state: &AppState, event_ids: &[Uuid]) -> anyhow::Result<()>
             .fetch_all(&state.db)
             .await?;
     ordered.sort();
+    let mut first_err: Option<anyhow::Error> = None;
     for (_, id) in ordered {
-        let outcomes = deliver_one(state, id).await?;
-        after_commit(state, outcomes).await;
+        match deliver_one(state, id).await {
+            Ok(outcomes) => after_commit(state, outcomes).await,
+            Err(e) => {
+                tracing::warn!(event_id = %id, error = %e, "notice delivery of one event failed");
+                first_err.get_or_insert(e);
+            }
+        }
     }
-    Ok(())
+    first_err.map_or(Ok(()), Err)
 }
 
 async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>> {
@@ -175,10 +188,13 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
     let mut outcomes = Vec::new();
     for r in recipients(&mut tx, ev.subject_id, severity).await? {
         let (channel_id, created_dm) = kaiku_dm_created_tx(&mut tx, r.user_id).await?;
+        // Within the window around the notice's first event, both ways: an
+        // event delivered late joins only a notice near its own time.
         let existing = sqlx::query_as::<_, NoticeRow>(
             "SELECT id, message_id, count, last_pushed_at FROM security_notices
               WHERE recipient_id = $1 AND subject_id = $2 AND event_type = $3
                 AND first_at > $4 - make_interval(secs => $5)
+                AND first_at < $4 + make_interval(secs => $5)
               ORDER BY first_at DESC
               LIMIT 1
               FOR UPDATE",

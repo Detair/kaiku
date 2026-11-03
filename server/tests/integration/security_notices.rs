@@ -542,3 +542,161 @@ async fn there_is_no_delete_route(pool: PgPool) {
         assert_eq!(app.oneshot(req).await.status(), 405, "{uri}");
     }
 }
+
+/// Review round 3 (Argon coverage, part 5 M1): concurrent deliveries of
+/// events of one type for one recipient still coalesce into one notice:
+/// the recipient's Kaiku DM advisory lock is taken before the notice
+/// lookup, so the second delivery sees the first's notice.
+#[sqlx::test]
+async fn concurrent_deliveries_coalesce(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (u, token) = user_with_token(&app).await;
+    for _ in 0..5 {
+        let a = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
+        let b = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
+        let (ids_a, ids_b) = ([a], [b]);
+        let (ra, rb) = tokio::join!(
+            notices::deliver(&app.state, &ids_a),
+            notices::deliver(&app.state, &ids_b)
+        );
+        ra.unwrap();
+        rb.unwrap();
+    }
+    let items = kaiku_notices(&app, u, &token).await;
+    assert_eq!(items.len(), 1, "one notice");
+    assert_eq!(items[0]["security_notice"]["count"], 10);
+}
+
+/// Review round 3 (Argon coverage, part 5 M2): two admins' high events,
+/// delivered at the same time, take the recipients' locks in one order.
+/// Admin A's delivery is held after A's lock (A's Kaiku DM channel row is
+/// locked); admin B's delivery then needs A's lock. Subject-first order made
+/// A's delivery wait for B's lock in turn (40P01).
+#[sqlx::test]
+async fn admin_deliveries_never_deadlock(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (a, _) = create_test_user(&pool).await;
+    let (b, _) = create_test_user(&pool).await;
+    make_admin(&pool, a).await;
+    make_admin(&pool, b).await;
+    let (low, high) = if a < b { (a, b) } else { (b, a) };
+    let mut tx = pool.begin().await.unwrap();
+    let low_dm = vc_server::system_account::kaiku_dm_tx(&mut tx, low)
+        .await
+        .unwrap();
+    vc_server::system_account::kaiku_dm_tx(&mut tx, high)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // High severity: the other admin gets a copy.
+    let ev_low = record_one(
+        &pool,
+        event(low, EventType::AuthenticatorRemoved, Actor::User(low)),
+    )
+    .await;
+    let ev_high = record_one(
+        &pool,
+        event(high, EventType::AuthenticatorRemoved, Actor::User(high)),
+    )
+    .await;
+
+    let mut blocker = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
+        .bind(low_dm)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let (low_ids, high_ids) = ([ev_low], [ev_high]);
+    let low_delivery = notices::deliver(&app.state, &low_ids);
+    let high_delivery = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        notices::deliver(&app.state, &high_ids).await
+    };
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 2).await;
+        blocker.commit().await.unwrap();
+    };
+    let (rl, rh, ()) = tokio::join!(low_delivery, high_delivery, release);
+    assert!(rl.is_ok(), "{rl:?}");
+    assert!(rh.is_ok(), "{rh:?}");
+    let delivered: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_events WHERE id = ANY($1) AND delivered_at IS NOT NULL",
+    )
+    .bind(vec![ev_low, ev_high])
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(delivered, 2);
+}
+
+/// Review round 3 (Argon coverage, part 5 M3): an event joins a notice only
+/// within the window around the notice's first event, in both directions;
+/// an event far older than the notice (delivered late) is a notice of its
+/// own.
+#[sqlx::test]
+async fn coalescing_window_is_bounded_both_ways(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (u, token) = user_with_token(&app).await;
+    record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    // The notice's first event lies two hours after the next one.
+    sqlx::query(
+        "UPDATE security_notices SET first_at = first_at + INTERVAL '2 hours',
+                                     last_at = last_at + INTERVAL '2 hours'
+          WHERE recipient_id = $1",
+    )
+    .bind(u)
+    .execute(&pool)
+    .await
+    .unwrap();
+    record_and_deliver(&app, event(u, EventType::SignIn, Actor::User(u))).await;
+    let items = kaiku_notices(&app, u, &token).await;
+    assert_eq!(items.len(), 2, "two notices");
+    for item in &items {
+        assert_eq!(item["security_notice"]["count"], 1);
+    }
+}
+
+/// Review round 3 (Argon coverage, part 5 M4): one event that cannot be
+/// delivered does not hold back the events after it.
+#[sqlx::test]
+async fn one_failing_event_never_blocks_the_outbox(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (u, token) = user_with_token(&app).await;
+    // A test-only failure: notice messages for this event type are refused.
+    sqlx::raw_sql(
+        "CREATE FUNCTION refuse_poison() RETURNS trigger AS $$
+         BEGIN
+             IF NEW.content LIKE '%poison test%' THEN
+                 RAISE EXCEPTION 'poison';
+             END IF;
+             RETURN NEW;
+         END $$ LANGUAGE plpgsql;
+         CREATE TRIGGER refuse_poison BEFORE INSERT ON messages
+             FOR EACH ROW EXECUTE FUNCTION refuse_poison();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let poison = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO security_events (id, subject_id, event_type, severity, actor_kind, created_at)
+         VALUES ($1, $2, 'poison_test', 'normal', 'system', NOW() - INTERVAL '1 minute')",
+    )
+    .bind(poison)
+    .bind(u)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let good = record_one(&pool, event(u, EventType::SignIn, Actor::User(u))).await;
+
+    let swept = notices::deliver_pending(&app.state).await;
+    assert!(swept.is_err(), "the failure is still reported");
+    let delivered: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT delivered_at FROM security_events WHERE id = $1")
+            .bind(good)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(delivered.is_some(), "the later event is delivered");
+    assert_eq!(kaiku_notices(&app, u, &token).await.len(), 1);
+}
