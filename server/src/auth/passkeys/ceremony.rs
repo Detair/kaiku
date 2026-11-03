@@ -29,6 +29,12 @@ pub enum CeremonyKind {
         /// `StepUpTarget::canonical()`.
         target: String,
     },
+    /// Bound to the account and a session (L1b: request, ticket, enrolment).
+    Register {
+        user_id: Uuid,
+        binding: super::register::RegistrationBinding,
+        label: String,
+    },
 }
 
 /// The `webauthn-rs` state of the ceremony.
