@@ -151,6 +151,11 @@ class LoginViewModel @Inject constructor(
         _uiState.update { it.copy(password = password) }
     }
 
+    /** The typed password leaves the form once its sign-in is done (C4 keeps its own copy). */
+    fun clearPassword() {
+        _uiState.update { it.copy(password = "") }
+    }
+
     /**
      * Sign in with a passkey through Credential Manager (C29): a new full
      * session. The typed user name is sent as a hint, so a shared phone never

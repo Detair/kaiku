@@ -206,4 +206,13 @@ class LoginViewModelTest {
         vm.onChangeServerNavigated()
         assertFalse(vm.uiState.value.changeServerRequested)
     }
+
+    @Test
+    fun `the typed password leaves the form once its sign-in is done`() = runTest {
+        viewModel.onUsernameChanged("anna")
+        viewModel.onPasswordChanged("secret")
+        viewModel.clearPassword()
+        assertEquals("", viewModel.uiState.value.password)
+        assertEquals("anna", viewModel.uiState.value.username)
+    }
 }

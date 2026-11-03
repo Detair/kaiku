@@ -148,6 +148,8 @@ class LoginAttemptViewModel @Inject constructor(
 
         fun live(): Boolean = Instant.now().isBefore(expiresAt)
 
+        fun msLeft(): Long = if (expiresAt == Instant.MAX) Long.MAX_VALUE else Duration.between(Instant.now(), expiresAt).toMillis()
+
         fun minutesLeft(): Int =
             ceil(Duration.between(Instant.now(), expiresAt).seconds.coerceAtLeast(0) / 60.0).toInt()
 
@@ -216,10 +218,17 @@ class LoginAttemptViewModel @Inject constructor(
      */
     fun onOidcCallback(uri: Uri) {
         val secret = oidcSecret
+        if (secret == null) {
+            // Nobody waits for it (a stale or foreign link): a running sign-in is never touched.
+            if (!_state.value.busy && _state.value.screen == null) {
+                _state.update { it.copy(formError = R.string.auth_login_sso_failed, retryMinutes = null) }
+            }
+            return
+        }
         oidcSecret = null
         val server = tokenStorage.getServerUrl()
         val callback = oidcHandler.handleCallback(uri)
-        if (secret == null || server == null || callback !is OidcCallback.Code) {
+        if (server == null || callback !is OidcCallback.Code) {
             _state.update { it.copy(formError = R.string.auth_login_sso_failed, retryMinutes = null, busy = false) }
             return
         }
@@ -301,6 +310,8 @@ class LoginAttemptViewModel @Inject constructor(
     }
 
     private fun begin(map: (Throwable) -> Int = AuthErrorMapper::login, block: suspend () -> Unit) {
+        // One start at a time: a double tap never sends a second sign-in.
+        if (_state.value.busy) return
         dropAttempt()
         _state.update { it.copy(busy = true, screen = null, formError = null, retryMinutes = null) }
         stepJob = viewModelScope.launch {
@@ -352,7 +363,10 @@ class LoginAttemptViewModel @Inject constructor(
                         isUnknown(e) -> return@launch end(a, AttemptState.EXPIRED)
                         isEnded(e) -> return@launch end(a, endedState(e))
                         e.status == HttpStatusCode.TooManyRequests || e.status.value >= 500 -> {
-                            delay(e.fields.retryAfterSeconds?.times(1_000) ?: retryDelayMs(failures++))
+                            if (!a.live()) return@launch end(a, AttemptState.EXPIRED)
+                            // Retry-After, but never past the attempt's own end (and at most a minute).
+                            val wait = e.fields.retryAfterSeconds?.times(1_000) ?: retryDelayMs(failures++)
+                            delay(wait.coerceIn(1_000L, minOf(60_000L, a.msLeft().coerceAtLeast(1_000L))))
                             continue
                         }
                         else -> return@launch end(a, null)
@@ -449,6 +463,8 @@ class LoginAttemptViewModel @Inject constructor(
         pollJob?.cancel()
         stepJob?.cancel()
         pendingStart = null
+        // An abandoned SSO start is over too: its late callback starts nothing.
+        oidcSecret = null
         val a = current ?: return
         current = null
         appScope.launch {

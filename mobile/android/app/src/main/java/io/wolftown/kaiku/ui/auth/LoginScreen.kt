@@ -46,12 +46,14 @@ fun LoginScreen(
 
     LaunchedEffect(uiState.loginSuccess, attempt.signedIn) {
         if (uiState.loginSuccess || attempt.signedIn) {
+            viewModel.clearPassword()
             onLoginSuccess()
         }
     }
 
     LaunchedEffect(attempt.passwordChangeRequired) {
         if (attempt.passwordChangeRequired) {
+            viewModel.clearPassword()
             attemptViewModel.onPasswordChangeNavigated()
             onPasswordChangeRequired()
         }

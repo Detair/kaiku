@@ -263,6 +263,50 @@ class LoginAttemptViewModelTest {
         assertFalse(v.state.value.screen.toString().contains("T1"))
     }
 
+    @Test fun `a callback after an abandoned SSO start disturbs no running sign-in`() = runTest {
+        api.loginStep = confirmationStep()
+        val v = vm()
+        v.startOidc(mockk(relaxed = true), "google") // the Custom Tab is closed without signing in
+        v.signInWithPassword("anna", "pw")
+        runCurrent()
+        val before = v.state.value
+        v.onOidcCallback(mockk(relaxed = true)) // a late or foreign kaiku://auth/callback
+        runCurrent()
+        assertTrue(api.calls.none { it.startsWith("exchangeOidc") })
+        assertEquals(before, v.state.value)
+    }
+
+    @Test fun `a double tap sends one sign-in`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        api.loginStep = confirmationStep()
+        val slow = object : io.wolftown.kaiku.data.api.LoginAttemptApi by api {
+            override suspend fun login(username: String, password: String, clientChallenge: String): LoginStep {
+                gate.await()
+                return api.login(username, password, clientChallenge)
+            }
+        }
+        val v = LoginAttemptViewModel(slow, repo, tokenStorage, mockk(relaxed = true), appScope = backgroundScope)
+        v.signInWithPassword("anna", "pw")
+        v.signInWithPassword("anna", "pw")
+        v.startQr()
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(1, api.calls.count { it == "login:anna" })
+        assertTrue(api.calls.none { it == "createQr" })
+    }
+
+    @Test fun `server trouble never polls past the attempt's end`() = runTest {
+        api.created = attempt("a-qr", "qr", qr = "kaiku://login/v1?o=https%3A%2F%2Fchat.example.com&t=T1",
+            expiresAt = java.time.Instant.now().minusSeconds(1).toString())
+        api.polls += { throw apiError(503, "SERVICE_UNAVAILABLE") }
+        val v = vm()
+        v.startQr()
+        advanceUntilIdle()
+        assertEquals(LoginAttemptUi.Ended(R.string.auth_phone_ended_expired, AttemptVia.OTHER_PHONE), v.state.value.screen)
+        assertEquals(1, api.calls.count { it == "poll:a-qr" })
+    }
+
     /** The default (English) text of a string resource, read from `res/values/strings.xml`. */
     private fun appString(name: String): String {
         val xml = File("src/main/res/values/strings.xml").readText()
