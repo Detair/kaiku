@@ -11,7 +11,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,13 +39,25 @@ fun AdminSetupPhoneScreen(onDone: () -> Unit, viewModel: AdminUserViewModel = hi
     val ui by viewModel.ui.collectAsState()
     LaunchedEffect(Unit) { if (viewModel.ui.value.user == null) viewModel.load() }
     val u = ui.user ?: return
-    var recover by remember { mutableStateOf(false) }
-    var lost by remember { mutableStateOf(setOf<String>()) }
-    var method by remember { mutableStateOf(ClaimantCheck.IN_PERSON) }
-    var note by remember { mutableStateOf("") }
-    var issuing by remember { mutableStateOf<IssuerMode.Admin?>(null) }
+    // Saved across rotation: the issuing flow and what the admin recorded stay what they were,
+    // so a recreated screen resumes the same setup code instead of a blank form (Argon part4 #2).
+    var recover by rememberSaveable { mutableStateOf(false) }
+    var lostIds by rememberSaveable { mutableStateOf("") }
+    val lost = lostIds.split(',').filter { it.isNotEmpty() }.toSet()
+    var method by rememberSaveable { mutableStateOf(ClaimantCheck.IN_PERSON) }
+    var note by rememberSaveable { mutableStateOf("") }
+    var issuing by rememberSaveable { mutableStateOf(false) }
 
-    issuing?.let { mode ->
+    if (issuing) {
+        val mode = IssuerMode.Admin(
+            userId = u.id,
+            displayName = u.displayName.ifEmpty { u.username },
+            mode = if (recover) "recovery" else "setup",
+            claimantMethod = method,
+            note = note.trim(),
+            lostDeviceIds = if (recover) lost.toList() else emptyList(),
+            newAccount = u.isNewAccount,
+        )
         AddPhoneScreen(mode = mode, onDone = onDone, keypadHint = R.string.admin_type_code_hint)
         return
     }
@@ -61,7 +73,7 @@ fun AdminSetupPhoneScreen(onDone: () -> Unit, viewModel: AdminUserViewModel = hi
                 KeyBody(stringResource(R.string.admin_lost_devices), secondary = true)
                 u.keyDevices.forEach { d ->
                     Row(Modifier.fillMaxWidth().heightIn(min = KeyScreenSizes.secondaryButton), verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = d.id in lost, onCheckedChange = { c -> lost = if (c) lost + d.id else lost - d.id })
+                        Checkbox(checked = d.id in lost, onCheckedChange = { c -> lostIds = (if (c) lost + d.id else lost - d.id).joinToString(",") })
                         Text(d.label, fontSize = 18.sp, color = MaterialTheme.colorScheme.onBackground)
                     }
                 }
@@ -71,17 +83,7 @@ fun AdminSetupPhoneScreen(onDone: () -> Unit, viewModel: AdminUserViewModel = hi
         KeyPrimaryButton(
             stringResource(R.string.admin_issue_code),
             enabled = ClaimantCheck.noteValid(note),
-            onClick = {
-                issuing = IssuerMode.Admin(
-                    userId = u.id,
-                    displayName = u.displayName.ifEmpty { u.username },
-                    mode = if (recover) "recovery" else "setup",
-                    claimantMethod = method,
-                    note = note.trim(),
-                    lostDeviceIds = if (recover) lost.toList() else emptyList(),
-                    newAccount = u.isNewAccount,
-                )
-            },
+            onClick = { issuing = true },
         )
     }
 }

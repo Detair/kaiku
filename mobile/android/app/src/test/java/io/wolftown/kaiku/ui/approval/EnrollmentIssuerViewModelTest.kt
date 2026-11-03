@@ -50,9 +50,16 @@ class EnrollmentIssuerViewModelTest {
     private var mayApprove: Boolean? = true
 
     /** The issuer's enroll challenge for the typed digits, built as the server would (V02 shape, own variant). */
-    private fun enrollChallenge(label: String = "Pixel 8") = SigFixtures.challengeFor(
+    private fun enrollChallenge(
+        label: String = "Pixel 8",
+        subjectId: String = SigFixtures.USER_ID,
+        username: String = "alice",
+        variant: String = "own",
+        check: String = "none",
+        type: String = "key_device",
+    ) = SigFixtures.challengeFor(
         SigKind.ENROLL, 2,
-        """{"enrollment_id":"$enrollmentId","subject_id":"${SigFixtures.USER_ID}","subject_username":"alice","variant":"own","authenticator_type":"key_device","new_key_hash":"Bs5H8qw80BPj7K2nOZOOcMYlOZs6KhOHt1xIDKHM_9Q","label":"$label","claimant_check":"none"}""",
+        """{"enrollment_id":"$enrollmentId","subject_id":"$subjectId","subject_username":"$username","variant":"$variant","authenticator_type":"$type","new_key_hash":"Bs5H8qw80BPj7K2nOZOOcMYlOZs6KhOHt1xIDKHM_9Q","label":"$label","claimant_check":"$check"}""",
     )
 
     @Before fun setUp() = Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -194,6 +201,68 @@ class EnrollmentIssuerViewModelTest {
         v.cancel()
         testScheduler.runCurrent()
         assertTrue(enroll.calls.contains("cancel:$enrollmentId"))
+        assertEquals(IssuerUi.Ended(R.string.issuer_stopped), v.ui.value)
+    }
+
+    /** Claims the setup code as [c], types the digits and confirms: the signed context is then checked. */
+    private suspend fun confirmWith(v: EnrollmentIssuerViewModel, c: Enrollment = claimed()) {
+        v.start(activity, IssuerMode.Own)
+        enroll.enrollment = c
+        events.emit(ServerEvent.EnrollmentUpdated(enrollmentId, "claimed"))
+        v.onDigits("123456")
+        v.confirmCode(activity)
+    }
+
+    @Test fun `a context for another subject is refused before any prompt`() = runTest {
+        val (v, f) = vm()
+        approvals.nextChallenge = enrollChallenge(subjectId = "66666666-6666-4666-8666-666666666666")
+        confirmWith(v)
+        assertEquals(IssuerUi.Ended(R.string.approval_mismatch), v.ui.value)
+        assertTrue(f.verifier.prompts.isEmpty())
+        assertTrue("deny:${SigFixtures.challengeId(2)}" in approvals.calls)
+    }
+
+    @Test fun `variant, claimant check, name, type and key must be what was recorded`() = runTest {
+        val cases = listOf(
+            enrollChallenge(variant = "admin"),
+            enrollChallenge(check = "in_person"),
+            enrollChallenge(username = "mallory"),
+            enrollChallenge(type = "passkey"),
+        )
+        for (ch in cases) {
+            val (v, f) = vm()
+            approvals.nextChallenge = ch
+            confirmWith(v)
+            assertEquals(IssuerUi.Ended(R.string.approval_mismatch), v.ui.value)
+            assertTrue(f.verifier.prompts.isEmpty())
+        }
+        // The claim's key hash is pinned too.
+        val (v, f) = vm()
+        confirmWith(v, claimed().copy(claimed = EnrollmentClaimedBy("key_device", "Pixel 8", keyHash = "AAAA")))
+        assertEquals(IssuerUi.Ended(R.string.approval_mismatch), v.ui.value)
+        assertTrue(f.verifier.prompts.isEmpty())
+    }
+
+    @Test fun `a recreated screen starts no second issuance`() = runTest {
+        val (v, _) = vm()
+        val gate = kotlinx.coroutines.CompletableDeferred<StepUpOutcome>()
+        coEvery { stepUp.stepUp(any(), StepUpAction.ENROLLMENT_ISSUE, "", any()) } coAnswers { gate.await() }
+        v.start(activity, IssuerMode.Own)
+        v.start(activity, IssuerMode.Own) // rotation: LaunchedEffect runs again on the same ViewModel
+        gate.complete(StepUpOutcome.Granted(StepUpGrant("enrollment.issue", "", "device", "t")))
+        coVerify(exactly = 1) { stepUp.stepUp(any(), any(), any(), any()) }
+        assertEquals(1, enroll.calls.count { it == "issueOwn" })
+    }
+
+    @Test fun `a code issued after cancel is withdrawn and never shown`() = runTest {
+        val (v, _) = vm()
+        val gate = kotlinx.coroutines.CompletableDeferred<StepUpOutcome>()
+        coEvery { stepUp.stepUp(any(), StepUpAction.ENROLLMENT_ISSUE, "", any()) } coAnswers { gate.await() }
+        v.start(activity, IssuerMode.Own)
+        v.cancel()
+        gate.complete(StepUpOutcome.Granted(StepUpGrant("enrollment.issue", "", "device", "t")))
+        testScheduler.runCurrent()
+        assertTrue(enroll.calls.none { it == "issueOwn" })
         assertEquals(IssuerUi.Ended(R.string.issuer_stopped), v.ui.value)
     }
 }

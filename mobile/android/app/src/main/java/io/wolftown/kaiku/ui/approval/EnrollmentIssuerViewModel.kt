@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.approval.ChallengeRejected
+import io.wolftown.kaiku.approval.ClaimantCheck
+import io.wolftown.kaiku.approval.EnrollVariant
 import io.wolftown.kaiku.approval.Decision
 import io.wolftown.kaiku.approval.DeviceIdProvider
 import io.wolftown.kaiku.approval.DeviceSigner
@@ -141,12 +143,21 @@ class EnrollmentIssuerViewModel internal constructor(
     private var enrollmentId: String? = null
     private var openChallengeId: String? = null
     private var watch: Job? = null
+    /** The running start (step-up and issuance): a recreated screen never starts a second one. */
+    private var startJob: Job? = null
+    /** Bumped by every start and cancel: a completion for an older one is stale. */
+    private var generation = 0
+    /** The claim the keypad is for; the signed context must match it exactly. */
+    private var claimed: Enrollment? = null
 
     fun start(activity: FragmentActivity, m: IssuerMode) {
+        if (startJob?.isActive == true) return
         if (_ui.value != IssuerUi.Starting && _ui.value !is IssuerUi.Ended) return
         mode = m
+        claimed = null
         _ui.value = IssuerUi.Starting
-        viewModelScope.launch {
+        val gen = ++generation
+        startJob = viewModelScope.launch {
             if (m == IssuerMode.Own && mayApprove() == false) {
                 _ui.value = IssuerUi.Ended(R.string.scan_may_approve_off)
                 return@launch
@@ -165,10 +176,16 @@ class EnrollmentIssuerViewModel internal constructor(
                     return@launch end(R.string.security_sign_in_failed)
                 }
             }
+            if (gen != generation) return@launch
             try {
                 val issued = when (m) {
                     IssuerMode.Own -> enrollmentApi.issueOwn()
                     is IssuerMode.Admin -> issueAdmin?.invoke(m) ?: return@launch end(R.string.security_sign_in_failed)
+                }
+                if (gen != generation) {
+                    // Cancelled while issuing: the code that arrived late is withdrawn, never shown.
+                    withdraw(issued.enrollmentId)
+                    return@launch
                 }
                 enrollmentId = issued.enrollmentId
                 _ui.value = IssuerUi.ShowSetup(issued.setupUrl, parseInstant(issued.expiresAt))
@@ -215,6 +232,7 @@ class EnrollmentIssuerViewModel internal constructor(
         when (e.state) {
             EnrollmentState.CLAIMED -> {
                 watch?.cancel()
+                claimed = e
                 _ui.value = IssuerUi.TypeCode(e.claimed?.label.orEmpty(), "", e.triesLeft)
             }
             EnrollmentState.CANCELLED -> end(R.string.setup_cancelled)
@@ -247,7 +265,9 @@ class EnrollmentIssuerViewModel internal constructor(
                     return@launch mismatch(ch.challengeId)
                 }
                 val ctx = verified.context as EnrollContext
-                if (ctx.enrollmentId != id || ctx.label != t.label || !subjectMatches(ctx, local.userId)) {
+                if (ctx.enrollmentId != id || ctx.label != t.label || !subjectMatches(ctx, local.userId) ||
+                    !signsWhatWasRecorded(ctx)
+                ) {
                     return@launch mismatch(ch.challengeId)
                 }
                 val digits = t.digits.toByteArray(Charsets.US_ASCII)
@@ -288,6 +308,25 @@ class EnrollmentIssuerViewModel internal constructor(
     }
 
     /**
+     * B.2 "signs exactly what it shows": the variant is this screen's mode, the claimant check
+     * is what the admin recorded (none for an own phone), and the subject's name, the
+     * authenticator type and the new key's hash are those of the claim the keypad is for.
+     */
+    private fun signsWhatWasRecorded(ctx: EnrollContext): Boolean {
+        val (variant, check) = when (val m = mode) {
+            IssuerMode.Own -> EnrollVariant.OWN to ClaimantCheck.NONE
+            is IssuerMode.Admin -> EnrollVariant.ADMIN to ClaimantCheck.entries.firstOrNull { it.wire == m.claimantMethod }
+        }
+        if (ctx.variant != variant || ctx.claimantCheck != check) return false
+        val c = claimed ?: return true
+        if (c.subject.username.isNotEmpty() && ctx.subjectUsername != c.subject.username) return false
+        val by = c.claimed ?: return true
+        if (by.authenticatorType.isNotEmpty() && ctx.authenticatorType.wire != by.authenticatorType) return false
+        if (by.keyHash.isNotEmpty() && b64u(ctx.newKeyHash) != by.keyHash) return false
+        return true
+    }
+
+    /**
      * F5c: an existing account waits for its admin request (24–72 h, `ACCOUNT_REQUEST_DELAY_HOURS`),
      * shown with the request's own `ready_at` (never a time the phone made up); without it the
      * screen says that it waits. A new account is active at once; own phones too.
@@ -317,10 +356,24 @@ class EnrollmentIssuerViewModel internal constructor(
         end(R.string.approval_mismatch)
     }
 
+    /** A setup code issued for a start that was cancelled meanwhile: deleted at once, best effort. */
+    private fun withdraw(id: String) {
+        (appScope ?: viewModelScope).launch {
+            try {
+                enrollmentApi.cancel(id)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                logger.info("Withdraw failed: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
     /** "Cancel": the unsigned deny while a challenge is open, else the DELETE of the enrolment. */
     fun cancel() {
         val id = enrollmentId
         val ch = openChallengeId
+        generation++
         watch?.cancel()
         _ui.value = IssuerUi.Ended(R.string.issuer_stopped)
         if (id == null) return
