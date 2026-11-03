@@ -315,3 +315,21 @@ assembleDebug` → BUILD SUCCESSFUL; `:app:testDebugUnitTest` 1235 tests in 140 
 `scripts/android_check_app_links.sh` ok. `bun run i18n:check`: no errors (874 web keys, 587 Android
 strings). `git diff origin/feat/v1.0-login-lp --stat -- server/` empty; the Task V greps over Android
 `src/main` find nothing. Instrumented tests not run (no device attached).
+
+## PR review round 2 (Codex r3, Fable, Gemini Flash r3; 2026-11-03)
+
+Codex confirmed its M1–M3 fixed and found one regression; Fable APPROVE WITH FIXES; Flash (standing in
+for Argon until 2026-11-08) APPROVE / APPROVE WITH FIXES.
+
+| Finding | Verdict | Commit | Test / reason |
+|---|---|---|---|
+| Codex r3: after a failed write the kept old store can be moved in after a sign-in + logout | fixed: `TokenStorage` reports every new session and every removal; `LegacyTokenMigration.discardPending` then deletes the old store and the counter (committed) | fed47c59 | `a failed move is void once the person signs in and out before the next start` (failed move → sign-in → logout → restart → no session) |
+| Fable R1: `TokenStorage.clear()` lost `@Synchronized` and KDoc (76adc1d9) | fixed | e8c74ff6 | `concurrent logouts and sign-ins never lose a session generation` (fails without the lock: checked) |
+| Fable R2: a message heuristic forgets the key | fixed: only `KeyPermanentlyInvalidatedException` in the cause chain (no public `KeyStoreException` code exists for it, API 33–35); the rest is `Failed("KEYSTORE_…")` | 050e9726 | `only a real permanent invalidation counts …`, `a failure that only reads like an invalidation never forgets the key`, `the platform's permanent invalidation forgets the key`; this reverses round 1's message mapping (a3704860), the removed screen lock is still caught by `uvPreflight` |
+| Flash A #1: Cancel leaves `startJob` running, "Try again" blocked | fixed: `cancel()` cancels it | f2bdc55d | `try again right after cancel starts a new issuance` |
+| Flash A #2: `signOutAndRemovePhone` swallows cancellation | **rejected (no change needed):** the chain already rethrows `CancellationException` first (`KeyDeviceSignOut.kt:36`); pinned by a test. Grep of the L2b code: every other catch-all is in non-suspending code or deliberately inside `NonCancellable` (`AuthRepository` replaced-session logout and `endUnused`, `KeyInvalidation`) | f0f15840 | `a cancelled removal propagates the cancellation` |
+| Fable (optional): one alias, two setup ViewModels | fixed: only the key this instance generated, if it is still the stored one, is deleted | af7dc965 | `leaving one setup screen never deletes another one's unclaimed key` |
+
+Gates after round 2 (`--rerun-tasks`): BUILD SUCCESSFUL; `:app:testDebugUnitTest` 1241 tests in 140
+classes, 0 failures; `:lint-rules:test` 11, 0 failures; `lintDebug` 0 errors, 54 warnings; APK built;
+`i18n:check` no errors; server diff against LP empty. Instrumented tests not run (no device).
