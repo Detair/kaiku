@@ -31,6 +31,7 @@ pub mod recovery_contact;
 pub mod refresh;
 pub(crate) mod register;
 pub mod registration;
+pub mod repudiate;
 pub mod revocation;
 pub mod session_check;
 pub mod session_issue;

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- "That wasn't me" on a security notice ends the sign-in or removes the device it names and blocks the password or code that was used. Without a key phone or passkey, it needs a session from before the event and an authenticator or recovery code.
 - Delayed account changes: securing an account ("Secure my account") or a recovery waits 24 hours (configurable up to 72), tells the account's phones, its recovery contact and the admins, and can be cancelled by any of them. The device that started it can only withdraw it.
 - Name a recovery contact: another member of your server who is told about important security events on your account and can stop a recovery you did not start. They confirm the role once and get no access to your account. Admins can name one for family members who are not admins. `ACCOUNT_REQUEST_DELAY_HOURS` (24–72, default 24) sets how long account changes wait.
 - **Passkeys:** sign in with a passkey (fingerprint, face, device PIN or security key) in the browser, where the login page also offers your passkey in the user-name field, and in the desktop app, which opens your browser for it, and in the Android app. Add, rename and remove passkeys in the security settings. No password needed.

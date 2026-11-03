@@ -172,6 +172,20 @@ pub struct Part2FactorBody {
     pub code: String,
 }
 
+impl Part2Body {
+    /// The owner-rule factor (`type` must be `totp` or `recovery_code`).
+    pub fn into_factor(self) -> crate::auth::AuthResult<crate::auth::owner_rule::Part2Factor> {
+        use crate::auth::owner_rule::Part2Factor;
+        match self.factor.kind.as_str() {
+            "totp" => Ok(Part2Factor::Totp(self.factor.code)),
+            "recovery_code" => Ok(Part2Factor::RecoveryCode(self.factor.code)),
+            _ => Err(crate::auth::AuthError::Validation(
+                "part2.factor.type".into(),
+            )),
+        }
+    }
+}
+
 impl std::fmt::Debug for Part2Body {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Part2Body { .. }")

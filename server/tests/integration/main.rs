@@ -77,6 +77,7 @@ mod recovery_contact;
 mod refresh_rotation;
 mod registration_tickets;
 mod reports;
+mod repudiation;
 mod role_channel_overrides;
 mod roles_security;
 mod screening_http;

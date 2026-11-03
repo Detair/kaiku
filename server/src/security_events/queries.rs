@@ -32,6 +32,7 @@ pub struct EventRow {
 
 /// The column list every event read uses (`e` = `security_events`,
 /// `a` = the actor's `users` row). A macro so the SQL stays `&'static str`.
+#[macro_export]
 macro_rules! event_columns {
     () => {
         "e.id, e.subject_id, e.event_type, e.severity, e.actor_kind,

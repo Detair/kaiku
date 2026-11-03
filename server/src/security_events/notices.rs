@@ -524,7 +524,7 @@ pub async fn notices_by_message(
 }
 
 /// The current display label of an event's authenticator, if any.
-pub(crate) async fn authenticator_label(
+pub async fn authenticator_label(
     conn: &mut PgConnection,
     ev: &EventRow,
 ) -> sqlx::Result<Option<String>> {
