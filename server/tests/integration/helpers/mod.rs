@@ -16,6 +16,8 @@
 //! (rate limiting, request IDs, etc.) instead of `tower::ServiceExt::oneshot`.
 #![allow(dead_code)]
 
+pub mod login;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;

@@ -76,7 +76,8 @@ Rate limiting also uses Valkey; see [rate-limiting.md](rate-limiting.md).
 | `OIDC_ISSUER_URL` | unset (empty = unset) | OIDC provider issuer URL (seeds an OIDC provider) |
 | `OIDC_CLIENT_ID` | unset (empty = unset) | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | unset (empty = unset) | OIDC client secret |
-| `PUBLIC_URL` | unset (empty = unset); **required for OIDC** | Public URL of the server, e.g. `https://chat.example.com` (a trailing slash is ignored). Every OIDC sign-in and account link — web and desktop — returns from the provider to `$PUBLIC_URL/auth/oidc/callback`; register exactly that URL as the redirect URI at your identity provider |
+| `PUBLIC_URL` | **required**; the server does not start without it | The public `https://` address users open, e.g. `https://chat.example.com` (one trailing slash is ignored; no path, query, user name or IP address; `http://` only for `localhost`). Sign-in confirmations from key phones and passkeys are bound to this origin: **changing the domain later invalidates every key phone and passkey**, and users must set them up again. Every OIDC sign-in and account link returns from the provider to `$PUBLIC_URL/auth/oidc/callback`; register exactly that URL as the redirect URI at your identity provider |
+| `AUTH_HMAC_KEY` | unset (derived from `JWT_PRIVATE_KEY`) | 64 hex characters (`openssl rand -hex 32`). Server key for the keyed hashes of sign-in codes, setup links and other short-lived secrets; they are never stored in plain. Unset derives it from the JWT signing key with HKDF. Changing either key voids open sign-ins, phone setups and account requests (they answer as unknown); anything other than 64 hex characters refuses startup |
 | `SMTP_HOST` | unset (empty = unset) | SMTP server for outgoing mail |
 | `SMTP_PORT` | `587` | SMTP port |
 | `SMTP_USERNAME` | unset (empty = unset) | SMTP username |

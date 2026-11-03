@@ -3,7 +3,9 @@
 //! Handles local authentication, SSO/OIDC, MFA, and session management.
 
 mod backup_codes;
+pub mod client_class;
 pub(crate) mod cookies;
+pub mod ctx;
 pub(crate) mod error;
 pub mod geoip;
 mod helpers;

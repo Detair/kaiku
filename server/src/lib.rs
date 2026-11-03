@@ -5,6 +5,7 @@
 
 pub mod admin;
 pub mod api;
+pub mod approvals;
 pub mod auth;
 pub mod bots;
 pub mod chat;

@@ -37,6 +37,7 @@ async fn main() -> Result<()> {
         );
     }
     info!(features = ?config.optional_features, "Optional features");
+    info!(origin = %config.public_origin.origin, "Public origin");
 
     // Initialize database
     let db_pool = db::create_pool(&config.database_url).await?;

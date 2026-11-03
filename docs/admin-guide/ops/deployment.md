@@ -138,8 +138,11 @@ OIDC_CLIENT_SECRET=your-client-secret
 PUBLIC_URL=https://chat.yourdomain.com
 ```
 
-`PUBLIC_URL` is required for every OIDC flow, including sign-in from the
-desktop app. In your identity provider, register exactly
+`PUBLIC_URL` is required: the server does not start without it (the compose
+file sets it to `https://${DOMAIN}`). Sign-in confirmations from key phones and
+passkeys are bound to it, so changing your domain later invalidates every key
+phone and passkey. It is also used by every OIDC flow, including sign-in from
+the desktop app. In your identity provider, register exactly
 `https://chat.yourdomain.com/auth/oidc/callback` (`$PUBLIC_URL/auth/oidc/callback`)
 as the redirect URI. The desktop app's local `127.0.0.1` address is never sent
 to the provider and does not need to be registered.

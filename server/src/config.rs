@@ -6,6 +6,9 @@ use std::env;
 
 use anyhow::{Context, Result};
 
+mod public_origin;
+pub use public_origin::{derive_auth_hmac_key, parse_public_url, PublicOrigin};
+
 /// Observability and telemetry configuration.
 #[derive(Debug, Clone)]
 pub struct ObservabilityConfig {
@@ -168,8 +171,17 @@ pub struct Config {
     pub public_base_url: Option<String>,
 
     /// Public URL of this server (`PUBLIC_URL`). OIDC providers always
-    /// redirect to `{public_url}/auth/oidc/callback`; required for OIDC.
+    /// redirect to `{public_url}/auth/oidc/callback`. Always
+    /// `Some(public_origin.origin)` now that `PUBLIC_URL` is mandatory.
     pub public_url: Option<String>,
+
+    /// The parsed, mandatory `PUBLIC_URL` origin: the origin inside device
+    /// signatures (C26) and the passkey RP host (C29).
+    pub public_origin: PublicOrigin,
+
+    /// Server key for keyed hashes of pre-session secrets (DC1:
+    /// `AUTH_HMAC_KEY`, else derived from the JWT signing key).
+    pub auth_hmac_key: AuthHmacKey,
 
     /// MFA secret encryption key (32-byte hex string)
     pub mfa_encryption_key: Option<String>,
@@ -371,6 +383,13 @@ impl Config {
             env_opt("FCM_SERVICE_ACCOUNT_JSON"),
         )?;
         let fcm_api_base = crate::push::fcm::FCM_API_BASE.to_string();
+        let public_origin = parse_public_url(env_opt("PUBLIC_URL").as_deref())?;
+        let jwt_private_key = env::var("JWT_PRIVATE_KEY")
+            .context("JWT_PRIVATE_KEY must be set (base64-encoded PEM)")?;
+        let auth_hmac_key = AuthHmacKey(derive_auth_hmac_key(
+            env_opt("AUTH_HMAC_KEY").as_deref(),
+            &jwt_private_key,
+        )?);
         let (optional_features, unknown_optional_features) = optional_features_from_env();
         let valkey_command_timeout =
             parse_valkey_command_timeout(env_opt("VALKEY_COMMAND_TIMEOUT_MS").as_deref())?;
@@ -383,8 +402,7 @@ impl Config {
             database_url: env::var("DATABASE_URL").context("DATABASE_URL must be set")?,
             redis_url: env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into()),
             valkey_command_timeout,
-            jwt_private_key: env::var("JWT_PRIVATE_KEY")
-                .context("JWT_PRIVATE_KEY must be set (base64-encoded PEM)")?,
+            jwt_private_key,
             jwt_public_key: env::var("JWT_PUBLIC_KEY")
                 .context("JWT_PUBLIC_KEY must be set (base64-encoded PEM)")?,
             jwt_access_expiry: env::var("JWT_ACCESS_EXPIRY")
@@ -444,7 +462,9 @@ impl Config {
             voice_ice_interfaces,
             voice_ice_ip_family,
             public_base_url: env_opt("PUBLIC_BASE_URL"),
-            public_url: env_opt("PUBLIC_URL"),
+            public_url: Some(public_origin.origin.clone()),
+            public_origin,
+            auth_hmac_key,
             mfa_encryption_key: env_opt("MFA_ENCRYPTION_KEY"),
             require_e2ee_setup: env::var("REQUIRE_E2EE_SETUP")
                 .ok()
@@ -661,7 +681,14 @@ impl Config {
             voice_ice_interfaces: None,
             voice_ice_ip_family: IceIpFamily::Both,
             public_base_url: None,
-            public_url: None,
+            public_url: Some(TEST_PUBLIC_ORIGIN.into()),
+            public_origin: PublicOrigin {
+                origin: TEST_PUBLIC_ORIGIN.into(),
+                host: "chat.example.com".into(),
+            },
+            auth_hmac_key: AuthHmacKey(
+                derive_auth_hmac_key(None, TEST_JWT_PRIVATE_KEY).expect("test HMAC key derives"),
+            ),
             mfa_encryption_key: Some(TEST_MFA_ENCRYPTION_KEY.into()),
             require_e2ee_setup: false,
             block_check_fail_open: false,
@@ -707,6 +734,27 @@ impl Config {
             unknown_optional_features: Vec::new(),
             call_ring_timeout_secs: crate::voice::call_service::RING_TIMEOUT_SECS,
         }
+    }
+}
+
+/// Origin of [`Config::default_for_test`] (documentation domain).
+const TEST_PUBLIC_ORIGIN: &str = "https://chat.example.com";
+
+/// The pre-session HMAC key (DC1). `Debug` never prints it.
+#[derive(Clone)]
+pub struct AuthHmacKey(pub [u8; 32]);
+
+impl AuthHmacKey {
+    /// The key bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for AuthHmacKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
     }
 }
 
