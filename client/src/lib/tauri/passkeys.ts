@@ -208,6 +208,22 @@ async function passkeyPost<T>(
   return parsed as T;
 }
 
+/** `GET /auth/me` on `serverUrl` with a session not installed yet. */
+async function fetchMe(serverUrl: string, accessToken: string): Promise<User> {
+  const response = await fetch(`${serverUrl.replace(/\/+$/, "")}/auth/me`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    credentials: "omit",
+  });
+  const text = await response.text();
+  const parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  if (!response.ok) {
+    const code = typeof parsed.error === "string" ? parsed.error : undefined;
+    const message = typeof parsed.message === "string" ? parsed.message : `HTTP ${response.status}`;
+    throw new HttpError(response.status, message, code, parsed);
+  }
+  return parsed as unknown as User;
+}
+
 /** End a session minted by a stale attempt (best effort, its own bearer only). */
 async function endStaleSession(serverUrl: string, accessToken: string): Promise<void> {
   try {
@@ -259,15 +275,30 @@ export async function passkeySignIn(
   if (!live()) throw new PasskeyError("ABORTED");
   let response: FinishedSignIn;
   try {
-    response = await passkeyPost<FinishedSignIn>(
-      serverUrl,
-      "/auth/passkeys/login/finish",
-      { ceremony_id: start.ceremony_id, credential: credentialToJSON(cred), username: hint() },
-      o.signal,
-    );
+    // Not cancelled by the attempt's signal: once sent, finish may mint a
+    // session, so it must land to be ended if the attempt went stale.
+    response = await passkeyPost<FinishedSignIn>(serverUrl, "/auth/passkeys/login/finish", {
+      ceremony_id: start.ceremony_id,
+      credential: credentialToJSON(cred),
+      username: hint(),
+    });
   } catch (err) {
-    if (o.signal.aborted) throw new PasskeyError("ABORTED");
+    if (!live()) throw new PasskeyError("ABORTED");
     throw serverError(err, cred, rpId);
+  }
+  if (!live()) {
+    await endStaleSession(serverUrl, response.access_token);
+    throw new PasskeyError("ABORTED");
+  }
+  // The profile with the new token, before any global auth state changes;
+  // a session that cannot be completed (or went stale meanwhile) is ended.
+  let user: User;
+  try {
+    user = await fetchMe(serverUrl, response.access_token);
+  } catch (err) {
+    await endStaleSession(serverUrl, response.access_token);
+    if (!live()) throw new PasskeyError("ABORTED");
+    throw err;
   }
   if (!live()) {
     await endStaleSession(serverUrl, response.access_token);
@@ -279,7 +310,6 @@ export async function passkeySignIn(
   browserState.accessToken = response.access_token;
   browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
   scheduleTokenRefresh();
-  const user = await httpRequest<User>("GET", "/auth/me");
   return {
     user,
     setup_required: response.setup_required,
