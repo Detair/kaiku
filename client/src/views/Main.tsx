@@ -22,7 +22,7 @@ import {
 } from "solid-js";
 import { useLocation } from "@solidjs/router";
 // Account-security overlays: lazy, nothing on the startup path needs them.
-const SecurityHosts = lazy(() => import("@/components/security/SecurityHosts"));
+import SecurityHostsSlot from "@/components/security/SecurityHostsSlot";
 import { refreshMeSecurity } from "@/stores/security";
 import { Hash, Volume2, Pin } from "lucide-solid";
 import AppShell from "@/components/layout/AppShell";
@@ -161,11 +161,7 @@ const Main: Component = () => {
   return (
     <>
       {/* Chat-only banner, open-request prompt, migration prompts (B.4, SM3) */}
-      <LazyErrorBoundary name="SecurityHosts" fallback={null}>
-        <Suspense fallback={null}>
-          <SecurityHosts />
-        </Suspense>
-      </LazyErrorBoundary>
+      <SecurityHostsSlot />
 
       {/* Command Palette (Global) */}
       <CommandPalette />

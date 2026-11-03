@@ -11,7 +11,7 @@
  * by passkey; without one the dialog says to use the Kaiku app on the phone.
  */
 
-import { createSignal } from "solid-js";
+import { createSignal, untrack } from "solid-js";
 import type { MessageKey } from "@/i18n";
 import { codeIs } from "@/lib/errorCode";
 import { HttpError } from "@/lib/tauri/common";
@@ -19,7 +19,11 @@ import { getStepUpMethods } from "@/lib/tauri/security";
 import type { StepUpAction } from "@/lib/types";
 import { canUsePasskeys, stepUpWithPasskey } from "@/lib/tauri/passkeys";
 import { isProbation } from "@/stores/auth";
-import { showFullSessionRequired } from "@/lib/fullSessionRequired";
+import {
+  onSessionDialogsFailed,
+  sessionDialogsFailed,
+  showFullSessionRequired,
+} from "@/lib/fullSessionRequired";
 
 export interface StepUpRequest {
   action: StepUpAction;
@@ -34,6 +38,18 @@ export class StepUpCancelled extends Error {
   constructor(message = "STEP_UP_CANCELLED") {
     super(message);
     this.name = "StepUpCancelled";
+  }
+}
+
+/**
+ * The step-up dialog cannot be shown: its chunk failed to load (Fable r2
+ * R1). Not a cancel: callers word it as a failure, and the page already
+ * shows a reload notice.
+ */
+export class StepUpUnavailable extends Error {
+  constructor() {
+    super("STEP_UP_UNAVAILABLE");
+    this.name = "StepUpUnavailable";
   }
 }
 
@@ -87,9 +103,22 @@ const [pending, setPending] = createSignal<PendingStepUp | null>(null);
 /** The step-up the dialog host shows, if any. */
 export const pendingStepUp = pending;
 
+/** Ends a pending step-up with an error (its caller is told, never left waiting). */
+const failEntry = new WeakMap<PendingStepUp, (err: Error) => void>();
+
+// The dialog chunk failed while a step-up waited for it: that one fails now.
+onSessionDialogsFailed(() => {
+  const cur = untrack(pending);
+  if (cur) failEntry.get(cur)?.(new StepUpUnavailable());
+});
+
 /** Open the dialog and wait for one grant. Rejects `StepUpCancelled` on close. */
 function requestGrant(req: StepUpRequest, passkeyOk: boolean): Promise<void> {
   return new Promise<void>((resolve, reject) => {
+    if (sessionDialogsFailed()) {
+      reject(new StepUpUnavailable());
+      return;
+    }
     const abort = new AbortController();
     const [running, setRunning] = createSignal(false);
     const [error, setError] = createSignal<unknown>(null);
@@ -114,12 +143,14 @@ function requestGrant(req: StepUpRequest, passkeyOk: boolean): Promise<void> {
           setRunning(false);
         }
       },
-      cancel: () => {
-        abort.abort();
-        setPending((cur) => (cur === entry ? null : cur));
-        reject(new StepUpCancelled());
-      },
+      cancel: () => fail(new StepUpCancelled()),
     };
+    const fail = (err: Error) => {
+      abort.abort();
+      setPending((cur) => (cur === entry ? null : cur));
+      reject(err);
+    };
+    failEntry.set(entry, fail);
     // One step-up at a time: an older one is cancelled (its ceremony
     // aborted, its caller told), never left hanging (Fable m8, Argon 5 #4).
     pending()?.cancel();

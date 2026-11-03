@@ -41,10 +41,11 @@ import { PageFallback, LazyErrorBoundary } from "./components/ui/LazyFallback";
 import SetupWizard from "./components/SetupWizard";
 import OnboardingWizard from "./components/OnboardingWizard";
 import SessionExpiredModal from "./components/auth/SessionExpiredModal";
-// Full-session, step-up and sign-out-others dialogs: off the startup path.
-const SessionDialogHosts = lazy(() => import("./components/auth/SessionDialogHosts"));
-// Their open state stays eager: a refusal reported before the chunk has
-// loaded still opens the full-session dialog (Fable r2 R2).
+// Full-session, step-up and sign-out-others dialogs: a lazy chunk with a
+// visible failure (SessionDialogsSlot). Their state stays eager: a refusal
+// reported before the chunk has loaded still opens the full-session dialog
+// (Fable r2 R2).
+import SessionDialogsSlot from "./components/auth/SessionDialogsSlot";
 import "./lib/fullSessionRequired";
 import BlockConfirmModal from "./components/modals/BlockConfirmModal";
 import ReportModal from "./components/modals/ReportModal";
@@ -112,11 +113,7 @@ const Layout: Component<ParentProps> = (props) => {
       </div>
       <ToastContainer />
       <SessionExpiredModal />
-      <LazyErrorBoundary name="SessionDialogHosts" fallback={null}>
-        <Suspense fallback={null}>
-          <SessionDialogHosts />
-        </Suspense>
-      </LazyErrorBoundary>
+      <SessionDialogsSlot />
       <ContextMenuContainer />
 
       <Show when={blockTarget()}>
