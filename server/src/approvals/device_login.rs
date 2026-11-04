@@ -58,6 +58,23 @@ fn refusal(device: &KeyDeviceRow) -> Option<ApprovalError> {
     }
 }
 
+/// A pending device's refusal carries its account request's `ready_at`.
+async fn with_ready_at(
+    conn: &mut sqlx::PgConnection,
+    device: &KeyDeviceRow,
+    e: ApprovalError,
+) -> sqlx::Result<ApprovalError> {
+    if let ApprovalError::KeyDevicePending { .. } = e {
+        let ready_at = crate::auth::account_requests::core::pending_ready_at(
+            conn,
+            AuthenticatorRef::key_device(device.id),
+        )
+        .await?;
+        return Ok(ApprovalError::KeyDevicePending { ready_at });
+    }
+    Ok(e)
+}
+
 /// Issue a `device_login` challenge for `(user_id, device_id)`.
 ///
 /// Takes no lock: [`sign_in`] re-checks everything under the account lock.
@@ -101,7 +118,7 @@ pub async fn challenge(
         return Err(ApprovalError::AccountBanned);
     }
     if let Some(e) = refusal(&device) {
-        return Err(e);
+        return Err(with_ready_at(&mut tx, &device, e).await?);
     }
     let challenge = issue(
         &mut tx,
@@ -170,7 +187,7 @@ pub async fn sign_in(
             .filter(|d: &KeyDeviceRow| d.user_id == user_id && d.device_id == device_id)
             .ok_or(ApprovalError::KeyDeviceUnknown)?;
     if let Some(e) = refusal(&device) {
-        return Err(e);
+        return Err(with_ready_at(&mut tx, &device, e).await?);
     }
 
     let row = match lock_for_answer(&mut tx, challenge_id, user_id, device_id).await {

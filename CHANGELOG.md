@@ -16,12 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- "I lost my phone / forgot my password" on the sign-in page: a recovery code plus your password, authenticator code or a fresh single sign-on starts a recovery that completes after the waiting period unless someone cancels it; it can name all your key phones as lost. At most three starts per waiting period.
+- "That wasn't me" on a security notice ends the sign-in or removes the device it names and blocks the password or code that was used. Without a key phone or passkey, it needs a session from before the event and an authenticator or recovery code.
+- Delayed account changes: securing an account ("Secure my account") or a recovery waits 24 hours (configurable up to 72), tells the account's phones, its recovery contact and the admins, and can be cancelled by any of them. The device that started it can only withdraw it.
+- Name a recovery contact: another member of your server who is told about important security events on your account and can stop a recovery you did not start. They confirm the role once and get no access to your account. Admins can name one for family members who are not admins. `ACCOUNT_REQUEST_DELAY_HOURS` (24–72, default 24) sets how long account changes wait.
 - **Passkeys:** sign in with a passkey (fingerprint, face, device PIN or security key) in the browser, where the login page also offers your passkey in the user-name field, and in the desktop app, which opens your browser for it, and in the Android app. Add, rename and remove passkeys in the security settings. No password needed.
 - **Passkeys (server):** sign in with a passkey (fingerprint, face, device PIN or security key) and get a full session; confirm sensitive actions such as removing a passkey or admin elevation with one; add, rename and remove passkeys. The desktop app uses the system browser for its passkey sign-in. Passkeys are bound to `PUBLIC_URL`'s host: a later domain change refuses startup while passkeys exist, unless `PASSKEY_ALLOW_RP_ID_CHANGE` names the new host. See `docs/admin-guide/ops/passkeys.md`.
 - Servers publish `/.well-known/assetlinks.json` for passkeys in the Android app (`PASSKEY_ANDROID_APP_IDS`, `PASSKEY_ANDROID_CERT_SHA256`); reverse proxies must send `/.well-known/` to the server (the compose setup does). See `docs/admin-guide/ops/passkeys.md`.
 - `kaiku-admin` on the server host can set up a key phone for any account and remove devices or end sessions; every use is logged and notified.
+- `kaiku-admin` can also reset throttled or compromised passwords and codes, turn phone confirmations on or off, name a recovery contact, remove the admin role, cancel requests, and act on admin accounts.
 - A key phone signs itself in again with its screen lock after its session lapsed, without a password.
 - A phone becomes a key by opening a setup link or code and confirming a 6-digit code shown on it; phones without a screen lock or a hardware key store are refused at the start.
+- A setup link opened in a computer's browser adds a passkey instead: the browser shows a 6-digit code that the person who sent the link types in.
 - Your phone can be a key for your account: it confirms sensitive actions with its screen lock, and you can see and remove your key phones in the security settings.
 - Security notices: sign-ins and changes to how you sign in appear in a read-only chat with **Kaiku** and in a security log in your account settings; admins get a copy of important ones. They cannot be deleted from a signed-in session.
 - Desktop app on Linux: an advanced "Show all ALSA devices" option in the audio settings also lists surround, S/PDIF, raw hardware and plugin devices that the short device list hides. It is off by default, and a device you picked stays listed when you turn it off.
@@ -78,7 +84,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Android: admins set up phones from their own phone.** Create the account (no password), choose "Set up a phone", and type the code the new phone shows; existing accounts wait 24 hours with notices to everyone involved. "Remove device now" for stolen phones. See `docs/admin-guide/ops/phone-setup.md`.
 
 ### Changed
+- **Breaking:** new accounts start by adding a passkey or a key phone (or an authenticator app) within 30 minutes; a password is optional, and registering no longer signs you in. Accounts that add nothing within 30 minutes are removed. The first admin of a new server adds a passkey or a key phone.
+- **Breaking for older apps:** after your password (or single sign-on), Kaiku asks you to confirm on your phone by scanning a code, or for your authenticator code if you have no key phone. Sessions created this way are limited to chat and calls. A wrong password, an unknown user name and an account without a second step all get the same answer. The desktop app receives single sign-on results through a page that hands a one-time code to the app.
+- Signing in on a PC with your phone now shows the PC what to scan, and your phone asks you to confirm who is signing in before anything happens. Such sign-ins are limited to chat and calls; use a passkey for full access.
+- **Breaking:** changing your password, two-factor settings, recovery codes, linked accounts or other sessions, and deleting your account, now needs a confirmation on your key phone or with a passkey; a password and code alone no longer do. Creating bot tokens and incoming webhooks needs a session signed in with a passkey or your phone.
+- Backup codes are replaced by 10 longer recovery codes, which only start an account recovery (they never sign you in). New passwords are checked against a list of commonly used and leaked passwords.
 - Admins elevate by confirming on their phone (or with a passkey) instead of typing their password and code.
+- At the upgrade, sessions of accounts without two-factor authentication end; accounts with a password and an authenticator app can secure themselves with "Secure my account", and the Kaiku chat reminds them every 30 days. A new security overview lists what to set up next.
+- Admins set up a family member's phone by scanning and typing a code on their own phone; accounts created this way need no password. Setting up an existing account waits 24 hours. Admins see each member's phones, passkeys, password and authenticator state, recovery codes left, recovery contact, open requests and sessions, can mark a password or authenticator as unsafe, turn phone confirmations off, and remove a device at once ("Remove device now"); none of these immediate actions work on another admin's account.
 - Every sign-in now records how strongly it was confirmed; sessions from before this release are limited to chat and calls until you sign in again with a passkey or your phone. Signed-in requests keep working while Valkey is unavailable, and an ended session stays refused.
 - The admin area needs a session signed in with your key phone (or a passkey); other sessions, and every session from before this release, are not let in, and elevations from before this release end with the upgrade.
 - **Breaking:** the server no longer starts without `PUBLIC_URL`, the public `https://` address users open. Sign-in confirmations are bound to it; read the admin guide before changing your domain.
@@ -120,6 +133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
 ### Security
+- Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.
 - A session ends automatically when its refresh token is used twice, browser sessions end after 30 days and app sessions after 90 days, and an account can have at most 50 open sessions.
 - Sign-in IP addresses are no longer sent to an external GeoIP service.
 - Update `pulldown-cmark` 0.13.1 → 0.13.6 (RUSTSEC-2026-0414, exponential output with the wikilinks option; Kaiku does not enable that option).
@@ -170,6 +184,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Android app no longer accepts sign-in tokens from a link; single sign-on returns only a one-time code.
 
 ### Removed
+- Temporary passwords for admin-created accounts (`POST /api/admin/users` refuses `temporary_password`).
+- Password reset by e-mail. A forgotten password is replaced through an account recovery with a recovery code, or by an admin.
+- The old QR login that signed a phone in without confirmation (`/auth/qr/create`, `/auth/qr/redeem`).
 - `GEOIP_API_URL`.
 - The 'appear offline' status is no longer available.
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.

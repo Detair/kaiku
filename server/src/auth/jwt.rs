@@ -7,7 +7,9 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use chrono::{Duration, Utc};
+#[cfg(test)]
+use chrono::Duration;
+use chrono::Utc;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -85,7 +87,8 @@ fn decode_pem_key(base64_key: &str) -> AuthResult<Vec<u8>> {
 /// * `private_key` - Ed25519 private key (PEM format, base64-encoded)
 /// * `access_expiry_seconds` - Access token validity (typically 900 = 15 min)
 /// * `refresh_expiry_seconds` - Refresh token validity (typically 604800 = 7 days)
-pub fn generate_token_pair(
+#[cfg(test)]
+fn generate_token_pair(
     user_id: Uuid,
     private_key: &str,
     access_expiry_seconds: i64,
@@ -110,7 +113,8 @@ pub fn generate_token_pair(
 /// revoking the session also reaches tokens and sockets from before a refresh;
 /// the refresh token gets a fresh `jti` so every rotation yields a distinct
 /// refresh token.
-pub fn generate_token_pair_for_session(
+#[cfg(test)]
+fn generate_token_pair_for_session(
     user_id: Uuid,
     session_id: Uuid,
     private_key: &str,
@@ -264,6 +268,7 @@ pub fn verify_refresh_signature(token: &str, public_key: &str) -> AuthResult<Cla
     Ok(data.claims)
 }
 
+#[cfg(test)]
 fn build_token_pair(
     user_id: Uuid,
     session_id: Uuid,
@@ -359,7 +364,8 @@ pub fn validate_access_token(token: &str, public_key: &str) -> AuthResult<Claims
 /// Validate and decode a refresh token.
 ///
 /// Returns an error if the token is invalid, expired, or is an access token.
-pub fn validate_refresh_token(token: &str, public_key: &str) -> AuthResult<Claims> {
+#[cfg(test)]
+fn validate_refresh_token(token: &str, public_key: &str) -> AuthResult<Claims> {
     let mut validation = Validation::new(Algorithm::EdDSA);
     validation.validate_exp = true;
     validation.leeway = 0;

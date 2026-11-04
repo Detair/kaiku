@@ -228,6 +228,86 @@ pub enum AuthError {
     #[error("Please update the Kaiku app")]
     ClientOutdated,
 
+    /// A new password failed the policy (B.1): 400 `PASSWORD_REJECTED
+    /// {reason}` (C27).
+    #[error("Choose another password")]
+    PasswordRejected(crate::auth::password_policy::PasswordRejected),
+
+    /// F3's neutral answer: a wrong password, an unknown user and a closed
+    /// password path look the same (401 `INVALID_CREDENTIALS`).
+    #[error("Wrong username or password, or password sign-in is not available for this account. Use a passkey or 'Sign in with phone', or ask an admin.")]
+    NeutralSignIn,
+
+    /// TOTP is not set up, throttled or compromised (403 `TOTP_UNAVAILABLE`).
+    #[error("Your authenticator code cannot be used for this account")]
+    TotpUnavailable,
+
+    /// An admin, the account itself or the system account as recovery
+    /// contact (400 `RECOVERY_CONTACT_INVALID`, C28).
+    #[error("This person cannot be a recovery contact")]
+    RecoveryContactInvalid,
+
+    /// An immediate admin action on another admin's account (403
+    /// `ADMIN_TARGET_IS_ADMIN`, F6 rev 4).
+    #[error("This cannot be done to another admin's account")]
+    AdminTargetIsAdmin,
+
+    /// An admin sets up their own account (400 `ENROLLMENT_TARGET_SELF`,
+    /// F5c: they use "Add a phone").
+    #[error("Use \"Add a phone\" for your own account")]
+    EnrollmentTargetSelf,
+
+    /// The account already has an open request (409 `ACCOUNT_REQUEST_OPEN`).
+    #[error("This account already has an open request")]
+    AccountRequestOpen,
+
+    /// Nobody independent could cancel the request (409
+    /// `NO_INDEPENDENT_CANCELLER`, SM3).
+    #[error("Name and confirm a recovery contact first, or ask your server's operator")]
+    NoIndependentCanceller,
+
+    /// A cancel that lost against completion (409 `ACCOUNT_REQUEST_COMPLETED`).
+    #[error("This request has already completed")]
+    AccountRequestCompleted,
+
+    /// Not a canceller of this request (403 `CANCEL_NOT_ALLOWED`).
+    #[error("You cannot cancel this request")]
+    CancelNotAllowed,
+
+    /// The request client acted outside `ready` (409
+    /// `ACCOUNT_REQUEST_NOT_READY {state}`; appended to C27's list).
+    #[error("This request is not ready")]
+    AccountRequestNotReady { state: String },
+
+    /// A valid recovery code with a failed second factor (401
+    /// `REQUEST_FACTOR_INVALID {recovery_codes_left}`, B.5).
+    #[error("The second factor was not accepted")]
+    RequestFactorInvalid { recovery_codes_left: i64 },
+
+    /// "That wasn't me" is not possible for this reader (403
+    /// `REPUDIATE_NOT_ALLOWED`).
+    #[error("You cannot report this event")]
+    RepudiateNotAllowed,
+
+    /// The event was already reported (409 `EVENT_ALREADY_REPUDIATED`).
+    #[error("This event was already reported")]
+    EventAlreadyRepudiated,
+
+    /// Unknown or expired registration ticket (404
+    /// `REGISTRATION_TICKET_INVALID`; not in C27's list, appended).
+    #[error("This sign-up has expired; please register again")]
+    TicketInvalid,
+
+    /// Unknown attempt or wrong collection secret (C27).
+    #[error("This sign-in is not known")]
+    LoginAttemptUnknown,
+    /// The attempt cannot be collected yet (not approved).
+    #[error("This sign-in has not been confirmed yet")]
+    LoginAttemptNotReady,
+    /// The attempt has ended: 410 `LOGIN_ATTEMPT_ENDED {state}`.
+    #[error("This sign-in has ended")]
+    LoginAttemptEnded { state: String },
+
     #[error("Internal server error")]
     Internal(String),
 }
@@ -307,6 +387,28 @@ impl AuthError {
             Self::PasskeyLimit => (StatusCode::CONFLICT, "PASSKEY_LIMIT"),
             Self::PasskeyHandoffInvalid => (StatusCode::BAD_REQUEST, "PASSKEY_HANDOFF_INVALID"),
             Self::ClientOutdated => (StatusCode::BAD_REQUEST, "CLIENT_OUTDATED"),
+            Self::PasswordRejected(_) => (StatusCode::BAD_REQUEST, "PASSWORD_REJECTED"),
+            Self::NeutralSignIn => (StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS"),
+            Self::TicketInvalid => (StatusCode::NOT_FOUND, "REGISTRATION_TICKET_INVALID"),
+            Self::AccountRequestOpen => (StatusCode::CONFLICT, "ACCOUNT_REQUEST_OPEN"),
+            Self::NoIndependentCanceller => (StatusCode::CONFLICT, "NO_INDEPENDENT_CANCELLER"),
+            Self::AccountRequestCompleted => (StatusCode::CONFLICT, "ACCOUNT_REQUEST_COMPLETED"),
+            Self::CancelNotAllowed => (StatusCode::FORBIDDEN, "CANCEL_NOT_ALLOWED"),
+            Self::AccountRequestNotReady { .. } => {
+                (StatusCode::CONFLICT, "ACCOUNT_REQUEST_NOT_READY")
+            }
+            Self::RequestFactorInvalid { .. } => {
+                (StatusCode::UNAUTHORIZED, "REQUEST_FACTOR_INVALID")
+            }
+            Self::RepudiateNotAllowed => (StatusCode::FORBIDDEN, "REPUDIATE_NOT_ALLOWED"),
+            Self::EventAlreadyRepudiated => (StatusCode::CONFLICT, "EVENT_ALREADY_REPUDIATED"),
+            Self::RecoveryContactInvalid => (StatusCode::BAD_REQUEST, "RECOVERY_CONTACT_INVALID"),
+            Self::AdminTargetIsAdmin => (StatusCode::FORBIDDEN, "ADMIN_TARGET_IS_ADMIN"),
+            Self::EnrollmentTargetSelf => (StatusCode::BAD_REQUEST, "ENROLLMENT_TARGET_SELF"),
+            Self::TotpUnavailable => (StatusCode::FORBIDDEN, "TOTP_UNAVAILABLE"),
+            Self::LoginAttemptUnknown => (StatusCode::NOT_FOUND, "LOGIN_ATTEMPT_UNKNOWN"),
+            Self::LoginAttemptNotReady => (StatusCode::CONFLICT, "LOGIN_ATTEMPT_NOT_READY"),
+            Self::LoginAttemptEnded { .. } => (StatusCode::GONE, "LOGIN_ATTEMPT_ENDED"),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
         }
     }
@@ -316,8 +418,52 @@ impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, code) = self.status_and_code();
 
-        // C29: `PASSKEY_PENDING` carries `ready_at` next to `error`.
-        let mut response = if let Self::PasskeyPending { ready_at } = &self {
+        // C29: `PASSKEY_PENDING` carries `ready_at` next to `error`; C27:
+        // `PASSWORD_REJECTED` carries `reason`.
+        let mut response = if let Self::AccountRequestNotReady { state } = &self {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": self.to_string(),
+                    "state": state,
+                })),
+            )
+                .into_response()
+        } else if let Self::RequestFactorInvalid {
+            recovery_codes_left,
+        } = &self
+        {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": self.to_string(),
+                    "recovery_codes_left": recovery_codes_left,
+                })),
+            )
+                .into_response()
+        } else if let Self::LoginAttemptEnded { state } = &self {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": self.to_string(),
+                    "state": state,
+                })),
+            )
+                .into_response()
+        } else if let Self::PasswordRejected(reason) = &self {
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": code,
+                    "message": self.to_string(),
+                    "reason": reason.as_str(),
+                })),
+            )
+                .into_response()
+        } else if let Self::PasskeyPending { ready_at } = &self {
             (
                 status,
                 Json(serde_json::json!({

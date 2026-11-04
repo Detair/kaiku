@@ -119,7 +119,8 @@ async fn chat_forbidden_code_is_upper_snake(pool: PgPool) {
 
 #[sqlx::test]
 async fn invalid_credentials_code_is_upper_snake(pool: PgPool) {
-    let (_app, server) = server(&pool).await;
+    let (app, server) = server(&pool).await;
+    super::helpers::login::forget_password_counters(&app.state.redis, &["nobody"]).await;
     let resp = reqwest::Client::new()
         .post(format!("{}/auth/login", server.url))
         .json(&serde_json::json!({ "username": "nobody", "password": "wrong-password-1" }))

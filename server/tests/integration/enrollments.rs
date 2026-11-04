@@ -73,14 +73,14 @@ impl Phone {
         }
     }
 
-    fn sign(&self, prefix_b64u: &str, decision: Decision, response: &[u8]) -> String {
+    pub(super) fn sign(&self, prefix_b64u: &str, decision: Decision, response: &[u8]) -> String {
         use p256::ecdsa::signature::Signer;
         let prefix = b64u_decode(prefix_b64u).unwrap();
         let sig: p256::ecdsa::Signature = self.key.sign(&message(&prefix, decision, response));
         b64u_encode(sig.to_der().as_bytes())
     }
 
-    fn public_key(&self) -> String {
+    pub(super) fn public_key(&self) -> String {
         b64u_encode(&spki_der(&self.key))
     }
 }
@@ -133,6 +133,47 @@ pub(super) async fn claim_with(
         }),
     )
     .await
+}
+
+/// The issuing client's own claim (C26): open → pop → claim with its
+/// ticket or request-secret header; no code.
+pub(super) async fn claim_own(
+    app: &TestApp,
+    token: &str,
+    phone: &Phone,
+    header: (&str, &str),
+) -> (u16, Value) {
+    let (_, opened) = public(app, "/auth/enrollments/open", json!({"setup_token": token})).await;
+    let nonce = b64u_decode(opened["enrollment_nonce"].as_str().unwrap()).unwrap();
+    let (_, pop) = public(
+        app,
+        "/auth/enrollments/pop-challenge",
+        json!({"setup_token": token, "device_id": phone.device_id, "public_key": phone.public_key()}),
+    )
+    .await;
+    let c = &pop["challenge"];
+    let mut r = Reported::good(&[]);
+    r.challenge = nonce;
+    let req = peer_request(Method::POST, "/auth/enrollments/claim")
+        .header("Content-Type", "application/json")
+        .header(header.0, header.1)
+        .body(Body::from(
+            json!({
+                "setup_token": token,
+                "challenge_id": c["challenge_id"],
+                "signature": phone.sign(c["signing_prefix"].as_str().unwrap(), Decision::Approve, b""),
+                "public_key": phone.public_key(),
+                "attestation_chain": chain_for(&r, &phone.key).iter().map(|d| b64u_encode(d)).collect::<Vec<_>>(),
+                "label": "Pixel 8",
+                "uv_class": "per_use",
+                "api_level": 34,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await;
+    let status = resp.status().as_u16();
+    (status, body_to_json(resp).await)
 }
 
 pub(super) fn good() -> Option<Reported> {
@@ -1160,6 +1201,67 @@ async fn re_enrolment_records_the_removed_key(pool: PgPool) {
     assert_eq!(removed[0].1, json!({"type": "key_device", "by": "cli"}));
 }
 
+/// L1a review item (B.7 rule 1): the claim learns the subject without a
+/// lock and takes the subject's account lock before the enrolment and the
+/// challenge, like every other enrolment transition.
+#[sqlx::test]
+async fn claim_takes_the_account_lock_first(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let issued = issue(&app, user, EnrollmentVariant::Cli, Issuer::Cli)
+        .await
+        .unwrap();
+    let phone = Phone::new();
+    let (status, opened) = public(
+        &app,
+        "/auth/enrollments/open",
+        json!({"setup_token": issued.setup_token}),
+    )
+    .await;
+    assert_eq!(status, 200, "{opened}");
+    let mut r = Reported::good(&[]);
+    r.challenge = b64u_decode(opened["enrollment_nonce"].as_str().unwrap()).unwrap();
+    let (status, pop) = public(
+        &app,
+        "/auth/enrollments/pop-challenge",
+        json!({"setup_token": issued.setup_token, "device_id": phone.device_id,
+               "public_key": phone.public_key()}),
+    )
+    .await;
+    assert_eq!(status, 201, "{pop}");
+    let c = &pop["challenge"];
+    let body = json!({
+        "setup_token": issued.setup_token,
+        "challenge_id": c["challenge_id"],
+        "signature": phone.sign(c["signing_prefix"].as_str().unwrap(), Decision::Approve, b""),
+        "public_key": phone.public_key(),
+        "attestation_chain": chain_for(&r, &phone.key).iter().map(|d| b64u_encode(d)).collect::<Vec<_>>(),
+        "label": "Pixel 8",
+        "uv_class": "per_use",
+        "api_level": 34,
+    });
+
+    // A transition holds the subject's account lock.
+    let mut holder = pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut holder, &[user])
+        .await
+        .unwrap();
+    let claiming = {
+        let router = app.router.clone();
+        tokio::spawn(async move {
+            let req = peer_request(Method::POST, "/auth/enrollments/claim")
+                .header("Content-Type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let resp = tower::ServiceExt::oneshot(router, req).await.unwrap();
+            resp.status().as_u16()
+        })
+    };
+    super::helpers::wait_for_lock_waiters(&pool, 1).await;
+    holder.rollback().await.unwrap();
+    assert_eq!(claiming.await.unwrap(), 201);
+}
+
 /// Review round 3 (Argon coverage, part 1 B1): the `(subject, install id)`
 /// that a new phone names is its own choice, and the account's install ids
 /// are listed to its sessions. A `pending` key (an `admin` enrolment of an
@@ -1465,11 +1567,7 @@ async fn admin_enroll_answer_against(pool: PgPool, subject_is_lower: bool) {
         (high, low)
     };
     super::helpers::make_admin(&pool, admin).await;
-    sqlx::query("UPDATE users SET first_activity_at = NULL WHERE id = $1")
-        .bind(subject)
-        .execute(&pool)
-        .await
-        .unwrap();
+    super::helpers::make_new_account(&pool, subject).await;
     let admin_dev = KeyDeviceFixture::insert(&pool, &app.config, admin, "active").await;
     let issuer = Issuer::KeyDevice {
         session_id: admin_dev.session_id.unwrap(),

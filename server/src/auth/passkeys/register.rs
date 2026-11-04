@@ -28,13 +28,33 @@ use crate::security_events::{record, Actor, EventType, NewSecurityEvent};
 #[serde(rename_all = "snake_case")]
 pub enum RegistrationVia {
     StepUp,
+    /// A new account's registration ticket (F8, L1b).
+    Ticket,
+    /// The client of a `ready` account request (SM3, L1b).
+    Request,
+    /// A setup link opened in a browser (C29 enrolment claim, L1b).
+    Enrollment,
 }
 
 /// What the ceremony is bound to besides the account. L1b appends
 /// `Request`, `Ticket` and `Enrollment`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RegistrationBinding {
-    Session { session_id: Uuid },
+    Session {
+        session_id: Uuid,
+    },
+    /// A registration ticket (L1b Task 19).
+    Ticket {
+        ticket_id: Uuid,
+    },
+    /// An account request (L1b Task 22).
+    Request {
+        request_id: Uuid,
+    },
+    /// A setup link's enrolment (C29 browser claim, L1b Task 23).
+    Enrollment {
+        enrollment_id: Uuid,
+    },
 }
 
 impl RegistrationVia {
@@ -42,6 +62,9 @@ impl RegistrationVia {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::StepUp => "step_up",
+            Self::Ticket => "ticket",
+            Self::Request => "request",
+            Self::Enrollment => "enrollment",
         }
     }
 }
@@ -145,6 +168,31 @@ pub async fn complete_recorded(
     ready_at: Option<DateTime<Utc>>,
     via: RegistrationVia,
 ) -> AuthResult<(PasskeyRow, Uuid)> {
+    complete_recorded_by(
+        conn,
+        user_id,
+        label,
+        verified,
+        passkey_state,
+        ready_at,
+        via,
+        Actor::User(user_id),
+    )
+    .await
+}
+
+/// [`complete_recorded`] with the event's actor (an admin who set it up).
+#[allow(clippy::too_many_arguments)]
+pub async fn complete_recorded_by(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    label: &str,
+    verified: &VerifiedRegistration,
+    passkey_state: PasskeyState,
+    ready_at: Option<DateTime<Utc>>,
+    via: RegistrationVia,
+    actor: Actor,
+) -> AuthResult<(PasskeyRow, Uuid)> {
     if queries::active_count(&mut *conn, user_id).await? >= MAX_ACTIVE_PASSKEYS as i64 {
         return Err(AuthError::PasskeyLimit);
     }
@@ -166,7 +214,7 @@ pub async fn complete_recorded(
     let mut ev = NewSecurityEvent::new(
         user_id,
         EventType::AuthenticatorAdded,
-        Actor::User(user_id),
+        actor,
         serde_json::json!({
             "type": "passkey",
             "label": row.label,

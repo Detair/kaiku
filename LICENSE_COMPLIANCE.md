@@ -56,6 +56,7 @@ This document tracks all direct third-party dependencies and their licenses for 
 | argon2 | 0.5 | MIT OR Apache-2.0 | Argon2id password hashing |
 | totp-rs | 5.7 | MIT | TOTP-based MFA with QR code generation |
 | qrcodegen | 1.8 | MIT | Terminal QR code of the `kaiku-admin enroll` setup link (server) |
+| flate2 | 1 | MIT OR Apache-2.0 | Reads the bundled gzip password blocklist (server; already in the tree via zip) |
 | openidconnect | 3.5 | MIT | OpenID Connect / OAuth 2.0 client |
 | webauthn-rs (+ webauthn-rs-core, webauthn-rs-proto, webauthn-attestation-ca, base64urlsafedata) | =0.5.5 | MPL-2.0 | Passkeys: WebAuthn relying party (server, C29); used unmodified |
 | serde_cbor_2 | 0.13 | MIT OR Apache-2.0 | CBOR of the WebAuthn attestation object (passkey AAGUID; server) |
@@ -250,6 +251,16 @@ firebase-messaging pulls in Google Play services client libraries (e.g. `play-se
 - **Author:** Peter Hull
 - **Usage:** Primary UI font for pixel art theme family
 - **Compliance:** OFL-1.1 permits bundling and redistribution with attribution.
+
+## Data Files
+
+### Password blocklist (SecLists)
+
+- **File:** `server/data/password-blocklist-top100k.txt.gz` (gzip of the unmodified list)
+- **License:** MIT (Copyright (c) 2018 Daniel Miessler)
+- **Source:** https://github.com/danielmiessler/SecLists, `Passwords/Common-Credentials/xato-net-10-million-passwords-100000.txt` (formerly `10-million-password-list-top-100000.txt`), commit `c205c36a445bff37f8e58a9ec829105cd4975c58`
+- **Usage:** Offline blocklist of the 100 000 most common breached passwords; new passwords on the list are refused (spec B.1, NIST SP 800-63B §3.1.1.2). Embedded in the server binary.
+- **Compliance:** MIT permits redistribution with the copyright and permission notice (`THIRD_PARTY_NOTICES.md`).
 
 ---
 

@@ -32,6 +32,12 @@ pub struct LockedAccount {
 
 /// Lock the accounts `ids` (deduplicated) in ascending id order with ONE
 /// statement, then read their bans and roles under the locks.
+///
+/// `FOR NO KEY UPDATE`: transitions serialise on it (and on deletes), but
+/// it does not conflict with the `FOR KEY SHARE` locks that inserts
+/// referencing `users` take (notices, messages, events), so a notice
+/// delivery that inserts rows for several accounts cannot deadlock with a
+/// transition holding two account locks (found in L1b Task 21).
 #[tracing::instrument(skip(conn))]
 pub async fn lock_accounts(
     conn: &mut PgConnection,
@@ -44,7 +50,7 @@ pub async fn lock_accounts(
         "SELECT id, is_system, may_approve FROM users
           WHERE id = ANY($1)
           ORDER BY id
-          FOR UPDATE",
+          FOR NO KEY UPDATE",
     )
     .bind(&ids)
     .fetch_all(&mut *conn)
@@ -183,12 +189,117 @@ where
     Err(TransitionError::Contended)
 }
 
-/// The accounts whose open account requests record one of `affected` as an
-/// independent canceller. L1a has no account requests yet: always empty
-/// (L1b Task 21 implements it).
-pub async fn accounts_recording(
-    _conn: &mut PgConnection,
-    _affected: &[AffectedRoute],
+/// Lock a change of `user`'s routes (an authenticator removed, the role gone).
+///
+/// `user` and `actors` are locked together with every account whose open
+/// requests record `user` as admin or contact or one of `authenticators`,
+/// in one ascending statement, re-read under the locks and retried if the
+/// set grew (B.7 cross-account serialisation, Codex M7). Call it first in
+/// the transaction.
+pub async fn lock_route_change(
+    conn: &mut PgConnection,
+    user: Uuid,
+    actors: &[Uuid],
+    authenticators: &[AuthenticatorRef],
+) -> Result<BTreeMap<Uuid, LockedAccount>, TransitionError> {
+    let mut affected = vec![AffectedRoute::Admin(user), AffectedRoute::Contact(user)];
+    affected.extend(
+        authenticators
+            .iter()
+            .copied()
+            .map(AffectedRoute::Authenticator),
+    );
+    lock_scope(
+        conn,
+        &LockScope {
+            subject: user,
+            actors: actors.to_vec(),
+            affected,
+        },
+    )
+    .await
+}
+
+/// Lock a request start with every account that could cancel it.
+///
+/// The subject (and `actors`) together with each admin and the subject's
+/// contact, re-read
+/// under the locks and retried if that set changed (Codex M7). Call it
+/// first in the transaction.
+pub async fn lock_for_start(
+    conn: &mut PgConnection,
+    subject: Uuid,
+    actors: &[Uuid],
+) -> Result<BTreeMap<Uuid, LockedAccount>, TransitionError> {
+    lock_scope_with(
+        conn,
+        &LockScope {
+            subject,
+            actors: actors.to_vec(),
+            affected: Vec::new(),
+        },
+        move |c, _| Box::pin(potential_cancellers(c, subject)),
+    )
+    .await
+}
+
+pub async fn potential_cancellers(
+    conn: &mut PgConnection,
+    subject: Uuid,
 ) -> sqlx::Result<Vec<Uuid>> {
-    Ok(Vec::new())
+    sqlx::query_scalar(
+        "SELECT user_id FROM system_admins
+         UNION SELECT recovery_contact_id FROM users
+                WHERE id = $1 AND recovery_contact_id IS NOT NULL",
+    )
+    .bind(subject)
+    .fetch_all(&mut *conn)
+    .await
+}
+
+/// The accounts whose open account requests record one of `affected` as an
+/// independent canceller (GIN containment on `cancellers`).
+pub async fn accounts_recording(
+    conn: &mut PgConnection,
+    affected: &[AffectedRoute],
+) -> sqlx::Result<Vec<Uuid>> {
+    let mut out = Vec::new();
+    for a in affected {
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT user_id FROM account_requests
+              WHERE state IN ('waiting', 'ready') AND cancellers @> $1",
+        )
+        .bind(crate::auth::account_requests::core::CancellerRoute::containment(a))
+        .fetch_all(&mut *conn)
+        .await?;
+        out.extend(ids);
+        // Codex r2 M7: also the `admin` requests the admin (or the admin's
+        // device) started; a demotion or revocation voids them.
+        let started: Vec<Uuid> = match a {
+            AffectedRoute::Admin(admin) => {
+                sqlx::query_scalar(
+                    "SELECT DISTINCT user_id FROM account_requests
+                      WHERE state IN ('waiting', 'ready') AND kind = 'admin' AND started_by = $1",
+                )
+                .bind(admin)
+                .fetch_all(&mut *conn)
+                .await?
+            }
+            AffectedRoute::Authenticator(r) => {
+                sqlx::query_scalar(
+                    "SELECT DISTINCT user_id FROM account_requests
+                      WHERE state IN ('waiting', 'ready') AND kind = 'admin'
+                        AND started_by_device = $1",
+                )
+                .bind(r.id)
+                .fetch_all(&mut *conn)
+                .await?
+            }
+            AffectedRoute::Contact(_) => Vec::new(),
+        };
+        out.extend(started);
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
 }

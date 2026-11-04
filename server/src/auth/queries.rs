@@ -50,7 +50,18 @@ pub async fn grant_first_user_admin(
         "INSERT INTO system_admins (user_id, granted_by) VALUES ($1, $1)",
         user_id
     )
-    .execute(conn)
+    .execute(&mut *conn)
+    .await?;
+    // C28: every change of the role is recorded (high).
+    crate::security_events::record(
+        conn,
+        crate::security_events::NewSecurityEvent::new(
+            user_id,
+            crate::security_events::EventType::AdminRoleGranted,
+            crate::security_events::Actor::System,
+            serde_json::json!({ "by_user_id": null }),
+        ),
+    )
     .await?;
     Ok(())
 }
@@ -65,7 +76,7 @@ pub async fn insert_local_user(
     username: &str,
     display_name: &str,
     email: Option<&str>,
-    password_hash: &str,
+    password_hash: Option<&str>,
 ) -> Result<User, AuthError> {
     let user = sqlx::query_as::<_, User>(
         "INSERT INTO users (username, display_name, email, password_hash, auth_method)
@@ -217,21 +228,5 @@ pub async fn update_password_hash_tx(
     .bind(user_id)
     .execute(conn)
     .await?;
-    Ok(())
-}
-
-// ============================================================================
-// Password reset tokens
-// ============================================================================
-
-/// Mark a password reset token as consumed inside a transaction.
-pub async fn mark_reset_token_used_tx(
-    conn: &mut PgConnection,
-    token_id: Uuid,
-) -> Result<(), AuthError> {
-    sqlx::query("UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1")
-        .bind(token_id)
-        .execute(conn)
-        .await?;
     Ok(())
 }

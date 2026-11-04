@@ -308,38 +308,6 @@ pub struct Session {
     pub created_at: DateTime<Utc>,
 }
 
-/// MFA backup code model.
-#[derive(Debug, Clone, FromRow)]
-pub struct MfaBackupCode {
-    /// Code ID.
-    pub id: Uuid,
-    /// User this code belongs to.
-    pub user_id: Uuid,
-    /// Argon2id hash of the backup code.
-    pub code_hash: String,
-    /// When the code was used (None if still valid).
-    pub used_at: Option<DateTime<Utc>>,
-    /// When the code was created.
-    pub created_at: DateTime<Utc>,
-}
-
-/// Password reset token model.
-#[derive(Debug, Clone, FromRow)]
-pub struct PasswordResetToken {
-    /// Token ID.
-    pub id: Uuid,
-    /// User this token belongs to.
-    pub user_id: Uuid,
-    /// SHA256 hash of the reset token.
-    pub token_hash: String,
-    /// When the token expires.
-    pub expires_at: DateTime<Utc>,
-    /// When the token was used (None if unused).
-    pub used_at: Option<DateTime<Utc>>,
-    /// When the token was created.
-    pub created_at: DateTime<Utc>,
-}
-
 /// OIDC/OAuth2 provider configuration stored in the database.
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct OidcProviderRow {

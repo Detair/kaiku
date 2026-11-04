@@ -75,45 +75,6 @@ impl EmailService {
         Ok(())
     }
 
-    /// Send a password reset email with the given reset code.
-    pub async fn send_password_reset(
-        &self,
-        to_email: &str,
-        username: &str,
-        reset_token: &str,
-    ) -> Result<()> {
-        let to_mailbox: Mailbox = to_email
-            .parse()
-            .context("Invalid recipient email address")?;
-
-        let body = format!(
-            "Hello {username},\n\
-             \n\
-             A password reset was requested for your account.\n\
-             \n\
-             Your reset code: {reset_token}\n\
-             \n\
-             Enter this code on the password reset page to set a new password.\n\
-             This code expires in 1 hour.\n\
-             \n\
-             If you did not request this, you can safely ignore this email.\n"
-        );
-
-        let email = Message::builder()
-            .from(self.from_address.clone())
-            .to(to_mailbox)
-            .subject("Password Reset Request")
-            .body(body)
-            .context("Failed to build email message")?;
-
-        self.mailer
-            .send(email)
-            .await
-            .context("Failed to send email via SMTP")?;
-
-        Ok(())
-    }
-
     /// Send a notification that the user's data export is ready for download.
     pub async fn send_data_export_ready(&self, to_email: &str, username: &str) -> Result<()> {
         let to_mailbox: Mailbox = to_email

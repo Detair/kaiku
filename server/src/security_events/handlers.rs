@@ -82,14 +82,110 @@ fn parse_limit(raw: Option<&str>) -> Result<i64, SecurityEventsError> {
 }
 
 /// Actions the reader can take on an event (C28: computed per reader, only
-/// where usable). L1a has none; L1b Tasks 21 and 24 fill this.
+/// where usable).
 pub async fn actions_for(
-    _conn: &mut sqlx::PgConnection,
-    _reader: &AuthUser,
-    _reader_is_admin: bool,
-    _ev: &SecurityEvent,
+    conn: &mut sqlx::PgConnection,
+    reader: &AuthUser,
+    reader_is_admin: bool,
+    ev: &SecurityEvent,
 ) -> sqlx::Result<Vec<Action>> {
-    Ok(Vec::new())
+    let mut out = Vec::new();
+    if let Some((via, warning)) = crate::auth::repudiate::repudiate_action(conn, reader, ev).await?
+    {
+        out.push(Action {
+            action: "repudiate".into(),
+            via: Some(via),
+            warning,
+        });
+    }
+    // "Remove device": the owner, or an admin for another non-admin account,
+    // while the device the event added is still live.
+    if ev.event_type == "authenticator_added" {
+        if let Some(a) = &ev.authenticator {
+            let live: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM approval_devices WHERE id = $1 AND state <> 'revoked')
+                     OR EXISTS (SELECT 1 FROM passkeys WHERE id = $1 AND state <> 'revoked')",
+            )
+            .bind(a.id)
+            .fetch_one(&mut *conn)
+            .await?;
+            let subject_admin: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM system_admins WHERE user_id = $1)",
+            )
+            .bind(ev.subject_id)
+            .fetch_one(&mut *conn)
+            .await?;
+            let own = ev.subject_id == reader.id;
+            let allowed = own || (reader_is_admin && !subject_admin);
+            if live && allowed {
+                out.push(Action {
+                    action: "remove_device".into(),
+                    via: Some("step_up".into()),
+                    warning: None,
+                });
+            }
+        }
+    }
+    // "Cancel" (C28, B.2): an open request's events, for whoever may
+    // cancel it: the owner (step-up, or part 2 without a strong
+    // authenticator), its confirmed recovery contact, any admin (Flash r5).
+    if let Some(request) = ev.request_id {
+        let subject: Option<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM account_requests
+              WHERE id = $1 AND state IN ('waiting', 'ready')",
+        )
+        .bind(request)
+        .fetch_optional(&mut *conn)
+        .await?;
+        if let Some(subject) = subject {
+            let via = if subject == reader.id {
+                let strong = crate::auth::strong::active_strong_count(conn, reader.id).await? > 0;
+                Some(if strong { "step_up" } else { "part2" })
+            } else if reader_is_admin {
+                Some("step_up")
+            } else {
+                let contact: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND recovery_contact_id = $2
+                                       AND recovery_contact_confirmed_at IS NOT NULL)",
+                )
+                .bind(subject)
+                .bind(reader.id)
+                .fetch_one(&mut *conn)
+                .await?;
+                contact.then_some("step_up")
+            };
+            if let Some(via) = via {
+                out.push(Action {
+                    action: "cancel_request".into(),
+                    via: Some(via.into()),
+                    warning: None,
+                });
+            }
+        }
+    }
+    // "Confirm": the contact the event names, until confirmed.
+    if matches!(
+        ev.event_type.as_str(),
+        "recovery_contact_named" | "recovery_contact_changed"
+    ) && ev.details["contact_user_id"].as_str() == Some(reader.id.to_string().as_str())
+    {
+        let open: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND recovery_contact_id = $2
+                               AND recovery_contact_confirmed_at IS NULL)",
+        )
+        .bind(ev.subject_id)
+        .bind(reader.id)
+        .fetch_one(&mut *conn)
+        .await?;
+        if open {
+            out.push(Action {
+                action: "confirm_contact".into(),
+                via: None,
+                warning: None,
+            });
+        }
+    }
+    Ok(out)
 }
 
 async fn render(
@@ -171,7 +267,12 @@ pub async fn list_admin(
     ))
 }
 
-/// `/api/me/security-events` (GET only).
+/// `/api/me/security-events` (GET) and "That wasn't me".
 pub fn router() -> axum::Router<AppState> {
-    axum::Router::new().route("/", axum::routing::get(list_own))
+    axum::Router::new()
+        .route("/", axum::routing::get(list_own))
+        .route(
+            "/{id}/repudiate",
+            axum::routing::post(crate::auth::repudiate::repudiate),
+        )
 }

@@ -968,6 +968,16 @@ pub enum ServerEvent {
         state: String,
     },
 
+    /// An account request changed (C27): sent to the subject, its recovery
+    /// contact and every admin; clients refetch.
+    AccountRequestUpdated {
+        request_id: Uuid,
+        subject_id: Uuid,
+        /// `waiting`, `ready`, `completed`, `cancelled`, `withdrawn`,
+        /// `expired` or `void`.
+        state: String,
+    },
+
     /// A key device, passkey, TOTP or password of the user changed (C26):
     /// clients refetch and never act on the hint alone.
     AuthenticatorsChanged {

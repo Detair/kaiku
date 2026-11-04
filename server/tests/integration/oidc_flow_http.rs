@@ -109,6 +109,7 @@ fn flow(client: Option<&str>, link_user_id: Option<Uuid>) -> OidcFlowState {
         }),
         client_redirect_uri: client.map(str::to_string),
         client_challenge: None,
+        native: None,
     }
 }
 
@@ -163,6 +164,9 @@ const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 /// Desktop return address with a per-flow value.
 const LOOPBACK_WITH_FLOW: &str = "http://127.0.0.1:54321/callback?flow=perflowvalue_0123456789";
+/// The desktop listener of a v1.0 start (C29 step 8).
+const PORT: &str = "54321";
+const CALLBACK_PATH: &str = "cGF0aHBhdGhwYXRocGF0aHBhdGhwYXRocGF0aHBhdGg";
 
 /// Create an enabled OIDC provider with manual endpoints; returns its slug.
 async fn create_manual_provider(pool: &PgPool) -> String {
@@ -225,7 +229,8 @@ async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool
         &authorize_uri(
             &slug,
             &[
-                ("redirect_uri", LOOPBACK_WITH_FLOW),
+                ("loopback_port", PORT),
+                ("callback_path", CALLBACK_PATH),
                 ("client_challenge", CHALLENGE),
             ],
         ),
@@ -246,7 +251,8 @@ async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool
     );
     // Nothing of the desktop's values reaches the provider.
     assert!(!provider_url.contains(CHALLENGE));
-    assert!(!provider_url.contains("perflowvalue"));
+    assert!(!provider_url.contains(CALLBACK_PATH));
+    assert!(body["flow_id"].is_string());
 
     let stored: Option<String> = app
         .state
@@ -262,10 +268,15 @@ async fn test_authorize_desktop_wires_provider_and_client_redirects(pool: PgPool
         flow.redirect_uri,
         "https://chat.example.com/auth/oidc/callback"
     );
-    assert_eq!(
-        flow.client_redirect_uri.as_deref(),
-        Some(LOOPBACK_WITH_FLOW)
-    );
+    assert_eq!(flow.client_redirect_uri, None);
+    match flow.native {
+        Some(vc_server::auth::oidc::NativeLogin::Desktop { loopback, flow_id }) => {
+            assert_eq!(loopback.port, 54321);
+            assert_eq!(loopback.callback_path, CALLBACK_PATH);
+            assert_eq!(body["flow_id"], flow_id.to_string());
+        }
+        other => panic!("desktop start expected, got {other:?}"),
+    }
     assert_eq!(flow.client_challenge.as_deref(), Some(CHALLENGE));
     assert_eq!(flow.purpose, OidcFlowPurpose::Login);
 }
@@ -379,14 +390,34 @@ async fn test_authorize_rejects_malformed_or_misplaced_challenge(pool: PgPool) {
         &app,
         &authorize_uri(
             &slug,
-            &[("redirect_uri", LOOPBACK), ("client_challenge", "plain")],
+            &[
+                ("loopback_port", PORT),
+                ("callback_path", CALLBACK_PATH),
+                ("client_challenge", "plain"),
+            ],
         ),
         &[DESKTOP],
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert_eq!(error_code(resp).await, "VALIDATION_ERROR");
-    // No loopback: there is no desktop listener to hand a code to.
+    // A bad callback path.
+    let resp = get_with(
+        &app,
+        &authorize_uri(
+            &slug,
+            &[
+                ("loopback_port", PORT),
+                ("callback_path", "short"),
+                ("client_challenge", CHALLENGE),
+            ],
+        ),
+        &[DESKTOP],
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(resp).await, "VALIDATION_ERROR");
+    // No loopback: an app from before C29 step 8.
     let resp = get_with(
         &app,
         &authorize_uri(&slug, &[("client_challenge", CHALLENGE)]),
@@ -394,7 +425,7 @@ async fn test_authorize_rejects_malformed_or_misplaced_challenge(pool: PgPool) {
     )
     .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(error_code(resp).await, "VALIDATION_ERROR");
+    assert_eq!(error_code(resp).await, "OIDC_CLIENT_OUTDATED");
 }
 
 /// The browser flow is unchanged: no challenge needed, nothing stored for one.
@@ -463,24 +494,18 @@ async fn store_grant(app: &OidcApp, user_id: Uuid, created_at: i64) -> String {
 #[sqlx::test]
 async fn test_exchange_redeems_a_fresh_grant_once(pool: PgPool) {
     let app = oidc_app(&pool, PUBLIC_URL).await;
-    let user_id = create_test_user(&pool).await.0;
+    let (user_id, username) = create_test_user(&pool).await;
+    super::helpers::login::enable_totp(&pool, &app.config, user_id, &username).await;
     let code = store_grant(&app, user_id, chrono::Utc::now().timestamp()).await;
     let body = serde_json::json!({ "code": code, "verifier": VERIFIER });
 
     let resp = post_exchange(&app, &body).await;
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
     assert!(resp.headers().get("set-cookie").is_none(), "no cookie");
-    let tokens: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
-    assert!(tokens["access_token"]
-        .as_str()
-        .is_some_and(|t| !t.is_empty()));
-    assert!(tokens["refresh_token"]
-        .as_str()
-        .is_some_and(|t| !t.is_empty()));
-    assert_eq!(tokens["token_type"], "Bearer");
-    assert!(tokens["expires_in"].as_i64().is_some());
-    assert!(tokens["setup_required"].is_boolean());
-    assert_eq!(tokens["password_change_required"], false);
+    let step: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+    assert_eq!(step["status"], "totp_required");
+    assert_eq!(step["attempt"]["kind"], "oidc");
+    assert!(step.get("access_token").is_none(), "never a session");
 
     let left: Option<String> = app.state.redis.get(handoff_key(&code)).await.unwrap();
     assert!(left.is_none(), "grant is consumed");

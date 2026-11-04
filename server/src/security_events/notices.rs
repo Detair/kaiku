@@ -73,15 +73,18 @@ pub struct SecurityNotice {
 
 /// The recipients of an event on `subject_id`.
 ///
-/// The subject's own copy, and for `high` every admin other than the subject
-/// (L1b Task 20 adds the confirmed recovery contact). Never the system
-/// account, never twice. Sorted by user id: a delivery takes each
-/// recipient's Kaiku DM lock in this order, so two deliveries (two admins'
-/// events, each the other's copy) never wait for each other in a cycle.
+/// The subject's own copy; for `high` the confirmed recovery contact and
+/// every admin other than the subject; the contact events also to the
+/// contacts they name. Never the system account, never twice. Sorted by
+/// user id: a delivery takes each recipient's Kaiku DM lock in this order,
+/// so two deliveries (two admins' events, each the other's copy) never wait
+/// for each other in a cycle.
 pub async fn recipients(
     conn: &mut PgConnection,
     subject_id: Uuid,
     severity: Severity,
+    event_type: Option<EventType>,
+    details: &serde_json::Value,
 ) -> sqlx::Result<Vec<Recipient>> {
     let mut out = Vec::new();
     if !crate::system_account::is_system_user(subject_id) {
@@ -89,6 +92,45 @@ pub async fn recipients(
             user_id: subject_id,
             role: RecipientRole::Subject,
         });
+    }
+    // The confirmed recovery contact gets high notices (Part C); the
+    // contact events also go to the contact they name (C28).
+    let mut contacts: Vec<Uuid> = Vec::new();
+    if severity == Severity::High {
+        let confirmed: Option<Uuid> = sqlx::query_scalar(
+            "SELECT recovery_contact_id FROM users
+              WHERE id = $1 AND recovery_contact_confirmed_at IS NOT NULL",
+        )
+        .bind(subject_id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .flatten();
+        contacts.extend(confirmed);
+    }
+    if matches!(
+        event_type,
+        Some(
+            EventType::RecoveryContactNamed
+                | EventType::RecoveryContactConfirmed
+                | EventType::RecoveryContactChanged
+        )
+    ) {
+        for key in ["contact_user_id", "previous_contact_user_id"] {
+            if let Some(id) = details[key].as_str().and_then(|s| s.parse::<Uuid>().ok()) {
+                contacts.push(id);
+            }
+        }
+    }
+    for c in contacts {
+        if c != subject_id
+            && !crate::system_account::is_system_user(c)
+            && !out.iter().any(|r| r.user_id == c)
+        {
+            out.push(Recipient {
+                user_id: c,
+                role: RecipientRole::Contact,
+            });
+        }
     }
     if severity == Severity::High {
         let admins: Vec<Uuid> = sqlx::query_scalar(
@@ -100,10 +142,14 @@ pub async fn recipients(
         .bind(subject_id)
         .fetch_all(&mut *conn)
         .await?;
-        out.extend(admins.into_iter().map(|user_id| Recipient {
-            user_id,
-            role: RecipientRole::Admin,
-        }));
+        for user_id in admins {
+            if !out.iter().any(|r| r.user_id == user_id) {
+                out.push(Recipient {
+                    user_id,
+                    role: RecipientRole::Admin,
+                });
+            }
+        }
     }
     out.sort_by_key(|r| r.user_id);
     Ok(out)
@@ -173,18 +219,26 @@ async fn deliver_one(state: &AppState, id: Uuid) -> anyhow::Result<Vec<Outcome>>
     // notice rows' foreign keys take anyway, in id order). A deletion locks
     // the account and then cascades into its events, so the delivery must
     // never hold the event while it waits for the account.
-    let head: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT subject_id, severity FROM security_events WHERE id = $1 AND delivered_at IS NULL",
+    let head: Option<(Uuid, String, String, serde_json::Value)> = sqlx::query_as(
+        "SELECT subject_id, severity, event_type, details FROM security_events
+          WHERE id = $1 AND delivered_at IS NULL",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((subject_id, severity)) = head else {
+    let Some((subject_id, severity, head_type, details)) = head else {
         tx.commit().await?;
         return Ok(Vec::new());
     };
     let severity = Severity::parse(&severity).unwrap_or(Severity::High);
-    let recipients = recipients(&mut tx, subject_id, severity).await?;
+    let recipients = recipients(
+        &mut tx,
+        subject_id,
+        severity,
+        EventType::parse(&head_type),
+        &details,
+    )
+    .await?;
     let mut accounts: Vec<Uuid> = recipients.iter().map(|r| r.user_id).collect();
     accounts.push(subject_id);
     accounts.sort_unstable();
@@ -415,6 +469,17 @@ pub fn spawn_delivery(state: &AppState, event_ids: Vec<Uuid>) {
     });
 }
 
+/// Deliver every undelivered event in the background (after a transition
+/// that recorded events without returning their ids, e.g. a cascade).
+pub fn spawn_pending_delivery(state: &AppState) {
+    let state = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = deliver_pending(&state).await {
+            tracing::warn!(error = %e, "notice delivery failed; the sweep retries");
+        }
+    });
+}
+
 /// Events one sweep picks up at most.
 pub const SWEEP_BATCH: i64 = 500;
 
@@ -639,7 +704,7 @@ pub async fn notices_by_message(
 }
 
 /// The current display label of an event's authenticator, if any.
-pub(crate) async fn authenticator_label(
+pub async fn authenticator_label(
     conn: &mut PgConnection,
     ev: &EventRow,
 ) -> sqlx::Result<Option<String>> {

@@ -143,6 +143,33 @@ pub async fn ensure_not_last_strong(
     Ok(())
 }
 
+/// B.0 "new account".
+///
+/// Never an active authenticator, a password, TOTP, recovery codes or a
+/// session. `first_activity_at` is the marker; the
+/// credentials and rows themselves count too, so an account that has one
+/// without the marker (a registration with a password whose ticket is
+/// still unbound, rows written outside the usual paths) is existing
+/// (Flash r5 part 1 B1). Every caller that decides "new" uses this.
+pub async fn is_new_account(conn: &mut sqlx::PgConnection, user_id: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT u.first_activity_at IS NULL
+                AND u.password_hash IS NULL
+                AND u.mfa_secret IS NULL
+                AND NOT EXISTS (SELECT 1 FROM approval_devices d
+                                 WHERE d.user_id = u.id AND d.state <> 'pending')
+                AND NOT EXISTS (SELECT 1 FROM passkeys p
+                                 WHERE p.user_id = u.id AND p.state <> 'pending')
+                AND NOT EXISTS (SELECT 1 FROM recovery_codes rc WHERE rc.user_id = u.id)
+                AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id)
+                AND NOT EXISTS (SELECT 1 FROM user_identities i WHERE i.user_id = u.id)
+           FROM users u WHERE u.id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *conn)
+    .await
+}
+
 /// Set `first_activity_at` once (B.0 "new account"); never cleared.
 pub async fn mark_first_activity(conn: &mut sqlx::PgConnection, user_id: Uuid) -> sqlx::Result<()> {
     sqlx::query(

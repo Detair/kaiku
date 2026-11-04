@@ -165,6 +165,8 @@ pub struct EnrollmentRow {
     pub claimant_note: Option<String>,
     pub lost_device_ids: Vec<Uuid>,
     pub request_id: Option<Uuid>,
+    /// `admin` enrolments: `setup` or `recovery` (F5c).
+    pub admin_mode: Option<String>,
     pub state: String,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -228,7 +230,7 @@ impl std::fmt::Debug for EnrollmentIssued {
 impl std::fmt::Debug for ClaimResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClaimResponse")
-            .field("enrollment_id", &self.enrollment_id)
+            .field("enrollment_id", &self.enrollment_id())
             .finish_non_exhaustive()
     }
 }
@@ -275,21 +277,46 @@ pub struct ClaimRequest {
     pub api_level: Option<i32>,
 }
 
-/// `POST /auth/enrollments/claim` answer: the code goes only here.
+/// `POST /auth/enrollments/claim` answer: the code goes only here. A claim
+/// that carries the issuing client's own ticket or request secret is `done`
+/// at once, without a code (C26).
 #[derive(Clone, Serialize, utoipa::ToSchema)]
-pub struct ClaimResponse {
-    pub enrollment_id: Uuid,
-    pub state: String,
-    pub code: String,
-    pub code_expires_at: DateTime<Utc>,
-    pub claim_secret: String,
+#[serde(untagged)]
+pub enum ClaimResponse {
+    Claimed {
+        enrollment_id: Uuid,
+        state: String,
+        code: String,
+        code_expires_at: DateTime<Utc>,
+        claim_secret: String,
+    },
+    Done {
+        enrollment_id: Uuid,
+        state: String,
+        /// `active` or `pending`.
+        authenticator_state: String,
+        ready_at: Option<DateTime<Utc>>,
+    },
+}
+
+impl ClaimResponse {
+    #[must_use]
+    pub const fn enrollment_id(&self) -> Uuid {
+        match self {
+            Self::Claimed { enrollment_id, .. } | Self::Done { enrollment_id, .. } => {
+                *enrollment_id
+            }
+        }
+    }
 }
 
 /// `POST /auth/enrollments/status` body.
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct StatusRequest {
     pub enrollment_id: Uuid,
-    pub claim_secret: String,
+    /// Native clients; a browser sends the `__Secure-kaiku_enroll` cookie.
+    #[serde(default)]
+    pub claim_secret: Option<String>,
     #[serde(default)]
     pub wait: Option<u8>,
 }
@@ -362,14 +389,9 @@ const fn replaced_reason(variant: EnrollmentVariant) -> &'static str {
     }
 }
 
-/// Whether the account has never had any activity (B.0 "new account").
+/// Whether the account is new (B.0; [`crate::auth::strong::is_new_account`]).
 async fn subject_is_new(conn: &mut PgConnection, user_id: Uuid) -> Result<bool, ApprovalError> {
-    let first_activity: Option<DateTime<Utc>> =
-        sqlx::query_scalar("SELECT first_activity_at FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&mut *conn)
-            .await?;
-    Ok(first_activity.is_none())
+    Ok(crate::auth::strong::is_new_account(conn, user_id).await?)
 }
 
 /// The live key device that a `done` of `row` would replace on install
@@ -615,6 +637,16 @@ async fn by_token(
     }
 }
 
+/// `(id, subject_id)` of the open enrolment of `setup_token` (no lock).
+pub async fn issued_row(
+    ctx: &AuthCtx<'_>,
+    setup_token: &str,
+) -> Result<(Uuid, Uuid), ApprovalError> {
+    let mut conn = ctx.db.acquire().await?;
+    let row = by_token(&mut conn, ctx, setup_token, false).await?;
+    Ok((row.id, row.subject_id))
+}
+
 /// SM2 "open": the server name and the enrolment nonce; consumes nothing,
 /// takes no lock.
 pub async fn open(ctx: &AuthCtx<'_>, setup_token: &str) -> Result<OpenResponse, ApprovalError> {
@@ -691,11 +723,7 @@ pub async fn claim(
     ctx: &AuthCtx<'_>,
     req: ClaimRequest,
     own: Option<OwnClaim>,
-) -> Result<ClaimResponse, ApprovalError> {
-    if own.is_some() {
-        // L1b Tasks 19 and 22: the issuing client's own claim.
-        return Err(ApprovalError::Validation("not supported".into()));
-    }
+) -> Result<(ClaimResponse, Option<AfterDone>), ApprovalError> {
     let uv_class = UvClass::parse(&req.uv_class)
         .ok_or_else(|| ApprovalError::Validation("uv_class".into()))?;
     let der = b64u_decode(&req.public_key)
@@ -716,7 +744,17 @@ pub async fn claim(
         );
     }
     let mut tx = ctx.db.begin().await?;
+    // B.7 rule 1: learn the subject without a lock, take its account lock,
+    // then the enrolment and the challenge (the order of every enrolment
+    // transition and of the revocation cascades).
+    let subject_id = by_token(&mut tx, ctx, &req.setup_token, false)
+        .await?
+        .subject_id;
+    super::transition::lock_accounts(&mut tx, &[subject_id]).await?;
     let row = by_token(&mut tx, ctx, &req.setup_token, true).await?;
+    if row.subject_id != subject_id {
+        return Err(ApprovalError::EnrollmentTokenInvalid);
+    }
     // The pop challenge of this enrolment, answered by the claiming install.
     let challenge: Option<ChallengeRow> = sqlx::query_as("SELECT * FROM approvals WHERE id = $1")
         .bind(req.challenge_id)
@@ -768,6 +806,74 @@ pub async fn claim(
     )
     .await?;
     let label = clean_label(&req.label);
+    if let Some(own) = own {
+        // The issuing client's own key (SM2 rev 4): its ticket or request
+        // secret proves it is the issuer; no code, `done` at once.
+        let issuer_ok = match &own {
+            OwnClaim::Ticket(secret) => {
+                crate::auth::registration::ticket_id_by_secret(&mut tx, ctx, secret)
+                    .await?
+                    .is_some_and(|t| row.issuer_kind == "ticket" && row.issuer_ticket_id == Some(t))
+            }
+            OwnClaim::Request(secret) => {
+                crate::auth::account_requests::request_id_by_secret(&mut tx, ctx, secret)
+                    .await?
+                    .is_some_and(|r| {
+                        row.issuer_kind == "request" && row.issuer_request_id == Some(r)
+                    })
+            }
+        };
+        if !issuer_ok {
+            return Err(ApprovalError::EnrollmentTokenInvalid);
+        }
+        let claimed: EnrollmentRow = sqlx::query_as(
+            "UPDATE enrollments
+                SET state = 'claimed', claimed_at = NOW(), authenticator_type = 'key_device',
+                    claimed_device_id = $2, claimed_public_key = $3, claimed_key_hash = $4,
+                    claimed_label = $5, claimed_attestation = $6, claimed_properties = $7,
+                    claimed_uv_class = $8, claimed_api_level = $9
+              WHERE id = $1
+              RETURNING *",
+        )
+        .bind(row.id)
+        .bind(challenge.device_id)
+        .bind(&der)
+        .bind(new_key_hash.to_vec())
+        .bind(&label)
+        .bind(&chain)
+        .bind(serde_json::to_value(&props).unwrap_or_default())
+        .bind(uv_class.as_str())
+        .bind(req.api_level)
+        .fetch_one(&mut *tx)
+        .await?;
+        let (_, after) =
+            finish_done_tx(&mut tx, ctx, &claimed, Actor::User(row.subject_id), None).await?;
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM approval_devices WHERE enrollment_id = $1")
+                .bind(row.id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let device_id: Uuid =
+            sqlx::query_scalar("SELECT id FROM approval_devices WHERE enrollment_id = $1")
+                .bind(row.id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let ready_at = crate::auth::account_requests::core::pending_ready_at(
+            &mut tx,
+            AuthenticatorRef::key_device(device_id),
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok((
+            ClaimResponse::Done {
+                enrollment_id: row.id,
+                state: "done".into(),
+                authenticator_state: state,
+                ready_at,
+            },
+            Some(after),
+        ));
+    }
     let code = random_digits(6);
     let claim_secret = Secret256::random();
     let now = Utc::now();
@@ -804,7 +910,95 @@ pub async fn claim(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(ClaimResponse {
+    Ok((
+        ClaimResponse::Claimed {
+            enrollment_id: row.id,
+            state: "claimed".into(),
+            code,
+            code_expires_at,
+            claim_secret: claim_secret.to_b64u(),
+        },
+        None,
+    ))
+}
+
+/// The browser claim of a setup link (C29).
+///
+/// The verified passkey is held on the enrolment (`claimed`), the code goes
+/// to the browser only, and the `passkeys` row is created at `done`. Lock
+/// order as the key-device claim: the subject's account first, then the
+/// enrolment row.
+pub async fn claim_passkey_tx(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    setup_token: &str,
+    enrollment_id: Uuid,
+    verified: &crate::auth::passkeys::rp::VerifiedRegistration,
+    label: &str,
+) -> Result<ClaimResponse, ApprovalError> {
+    let seen = by_token(conn, ctx, setup_token, false).await?;
+    if seen.id != enrollment_id {
+        return Err(ApprovalError::EnrollmentTokenInvalid);
+    }
+    let locked = super::transition::lock_accounts(conn, &[seen.subject_id]).await?;
+    if locked.get(&seen.subject_id).is_some_and(|a| a.banned) {
+        return Err(ApprovalError::AccountBanned);
+    }
+    let row = by_token(conn, ctx, setup_token, true).await?;
+    if row.id != enrollment_id {
+        return Err(ApprovalError::EnrollmentTokenInvalid);
+    }
+    // Fable r2 m-a: a known credential or a full set is refused at the
+    // claim, under the lock, not only at `done`.
+    let (known, active): (bool, i64) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM passkeys WHERE credential_id = $1 AND state <> 'revoked'),
+                (SELECT COUNT(*) FROM passkeys WHERE user_id = $2 AND state = 'active')",
+    )
+    .bind(verified.passkey.cred_id().as_ref().to_vec())
+    .bind(row.subject_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if known {
+        return Err(ApprovalError::Auth(
+            crate::auth::AuthError::PasskeyAlreadyRegistered,
+        ));
+    }
+    if active >= i64::try_from(crate::auth::passkeys::MAX_ACTIVE_PASSKEYS).unwrap_or(10) {
+        return Err(ApprovalError::Auth(crate::auth::AuthError::PasskeyLimit));
+    }
+    let key_hash: [u8; 32] = Sha256::digest(verified.passkey.cred_id().as_ref()).into();
+    let code = random_digits(6);
+    let claim_secret = Secret256::random();
+    let now = Utc::now();
+    let code_expires_at = now + Duration::minutes(CODE_MINUTES);
+    sqlx::query(
+        "UPDATE enrollments
+            SET state = 'claimed', claimed_at = $2, code_hash = $3, code_expires_at = $4,
+                claim_secret_hash = $5, authenticator_type = 'passkey', claimed_passkey = $6,
+                claimed_key_hash = $7, claimed_label = $8
+          WHERE id = $1",
+    )
+    .bind(row.id)
+    .bind(now)
+    .bind(code_hash(ctx.hmac_key(), row.id, code.as_bytes()).to_vec())
+    .bind(code_expires_at)
+    .bind(
+        keyed_hash(
+            ctx.hmac_key(),
+            SecretPurpose::ClaimSecret,
+            claim_secret.as_bytes(),
+        )
+        .to_vec(),
+    )
+    .bind(
+        serde_json::to_value(verified)
+            .map_err(|e| ApprovalError::Auth(crate::auth::AuthError::Internal(e.to_string())))?,
+    )
+    .bind(key_hash.to_vec())
+    .bind(label)
+    .execute(&mut *conn)
+    .await?;
+    Ok(ClaimResponse::Claimed {
         enrollment_id: row.id,
         state: "claimed".into(),
         code,
@@ -859,7 +1053,9 @@ pub async fn status(
             "SELECT CASE WHEN e.state = 'claimed' AND e.code_expires_at <= NOW()
                          THEN 'expired' ELSE e.state END,
                     e.claim_secret_hash,
-                    (SELECT d.state FROM approval_devices d WHERE d.enrollment_id = e.id LIMIT 1)
+                    COALESCE(
+                        (SELECT d.state FROM approval_devices d WHERE d.enrollment_id = e.id LIMIT 1),
+                        (SELECT p.state FROM passkeys p WHERE p.enrollment_id = e.id LIMIT 1))
                FROM enrollments e WHERE e.id = $1",
         )
         .bind(enrollment_id)
@@ -873,10 +1069,42 @@ pub async fn status(
         }
         let changed = first_state.as_ref().is_some_and(|s| *s != state);
         if changed || state != "claimed" || started.elapsed() >= wait {
+            let passkey_ready: Option<DateTime<Utc>> = if device_state.as_deref() == Some("pending")
+            {
+                sqlx::query_scalar("SELECT ready_at FROM passkeys WHERE enrollment_id = $1")
+                    .bind(enrollment_id)
+                    .fetch_optional(ctx.db)
+                    .await?
+                    .flatten()
+            } else {
+                None
+            };
+            let ready_at = if passkey_ready.is_some() {
+                passkey_ready
+            } else if device_state.as_deref() == Some("pending") {
+                let device: Option<Uuid> =
+                    sqlx::query_scalar("SELECT id FROM approval_devices WHERE enrollment_id = $1")
+                        .bind(enrollment_id)
+                        .fetch_optional(ctx.db)
+                        .await?;
+                match device {
+                    Some(d) => {
+                        let mut conn = ctx.db.acquire().await?;
+                        crate::auth::account_requests::core::pending_ready_at(
+                            &mut conn,
+                            AuthenticatorRef::key_device(d),
+                        )
+                        .await?
+                    }
+                    None => None,
+                }
+            } else {
+                None
+            };
             return Ok(StatusResponse {
                 state,
                 authenticator_state: device_state,
-                ready_at: None,
+                ready_at,
             });
         }
         first_state.get_or_insert(state);
@@ -932,7 +1160,11 @@ pub async fn issuer_challenge_tx(
                 subject_id: row.subject_id,
                 subject_username: subject.username,
                 variant,
-                authenticator_type: AuthenticatorType::KeyDevice,
+                authenticator_type: if row.authenticator_type.as_deref() == Some("passkey") {
+                    AuthenticatorType::Passkey
+                } else {
+                    AuthenticatorType::KeyDevice
+                },
                 new_key_hash,
                 label: row.claimed_label.clone().unwrap_or_default(),
                 claimant_check: claimant,
@@ -970,6 +1202,100 @@ const fn removed_by(actor: Actor) -> &'static str {
     }
 }
 
+/// The account scope of an enrolment's confirmation, locked first.
+///
+/// The subject and `actors`, every possible canceller when an `admin`
+/// enrolment would start a request (Codex r2 M7), and the accounts that
+/// record a live key on the claimed install when `done` would replace it
+/// (Fable r2 M-B; also in the admin branch, Flash r3). One ascending
+/// `lock_accounts` before any device, session, challenge or enrolment row
+/// (Codex r3: no 40P01 against a canceller's transition); the scope and the
+/// live key are re-read under the locks and the attempt retried from a
+/// savepoint when they changed (Codex/Fable r3). Returns the locks and the
+/// live key on the install.
+pub async fn lock_confirm_scope(
+    conn: &mut PgConnection,
+    id: Uuid,
+    actors: &[Uuid],
+) -> Result<
+    (
+        std::collections::BTreeMap<Uuid, super::transition::LockedAccount>,
+        Option<Uuid>,
+    ),
+    ApprovalError,
+> {
+    use super::transition::{
+        accounts_recording, lock_accounts, potential_cancellers, AffectedRoute,
+    };
+    async fn scope(
+        conn: &mut PgConnection,
+        id: Uuid,
+    ) -> Result<(Uuid, Option<Uuid>, Vec<Uuid>), ApprovalError> {
+        let (subject, variant, install): (Uuid, String, Option<Uuid>) = sqlx::query_as(
+            "SELECT subject_id, variant, claimed_device_id FROM enrollments WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(ApprovalError::EnrollmentTokenInvalid)?;
+        let live: Option<Uuid> = match install {
+            Some(install) => {
+                sqlx::query_scalar(
+                    "SELECT id FROM approval_devices
+                      WHERE user_id = $1 AND device_id = $2 AND state <> 'revoked'",
+                )
+                .bind(subject)
+                .bind(install)
+                .fetch_optional(&mut *conn)
+                .await?
+            }
+            None => None,
+        };
+        let mut extra = Vec::new();
+        if variant == "admin" {
+            extra.extend(potential_cancellers(conn, subject).await?);
+        }
+        if let Some(old) = live {
+            extra.extend(
+                accounts_recording(
+                    conn,
+                    &[
+                        AffectedRoute::Admin(subject),
+                        AffectedRoute::Contact(subject),
+                        AffectedRoute::Authenticator(AuthenticatorRef::key_device(old)),
+                    ],
+                )
+                .await?,
+            );
+        }
+        Ok((subject, live, extra))
+    }
+    sqlx::query("SAVEPOINT kaiku_confirm_scope")
+        .execute(&mut *conn)
+        .await?;
+    for _ in 0..3 {
+        let (subject, live, extra) = scope(conn, id).await?;
+        let mut ids = vec![subject];
+        ids.extend(actors.iter().copied());
+        ids.extend(extra);
+        let locked = lock_accounts(conn, &ids).await?;
+        let (subject2, live2, extra2) = scope(conn, id).await?;
+        if subject2 == subject && live2 == live && extra2.iter().all(|a| locked.contains_key(a)) {
+            sqlx::query("RELEASE SAVEPOINT kaiku_confirm_scope")
+                .execute(&mut *conn)
+                .await?;
+            return Ok((locked, live));
+        }
+        sqlx::query("ROLLBACK TO SAVEPOINT kaiku_confirm_scope")
+            .execute(&mut *conn)
+            .await?;
+    }
+    sqlx::query("RELEASE SAVEPOINT kaiku_confirm_scope")
+        .execute(&mut *conn)
+        .await?;
+    Err(ApprovalError::Unavailable)
+}
+
 /// Confirm with `code` (SM2 "confirm").
 ///
 /// B.7 rule 1: the subject's account (and the answering device's) is locked first, in one
@@ -984,17 +1310,11 @@ pub async fn confirm_tx(
     by: Confirmer<'_>,
     code: &[u8],
 ) -> Result<(Enrollment, AfterDone), ApprovalError> {
-    // Read without a lock to learn whose account to lock first.
-    let subject_id: Uuid = sqlx::query_scalar("SELECT subject_id FROM enrollments WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&mut *conn)
-        .await?
-        .ok_or(ApprovalError::EnrollmentTokenInvalid)?;
-    let mut accounts = vec![subject_id];
+    let mut actors = Vec::new();
     if let Confirmer::KeyDeviceAnswer(dev) = &by {
-        accounts.push(dev.auth.id);
+        actors.push(dev.auth.id);
     }
-    let locked = super::transition::lock_accounts(conn, &accounts).await?;
+    let (locked, _live) = lock_confirm_scope(conn, id, &actors).await?;
     let row = lock_by_id(conn, id).await?;
     match row.state.as_str() {
         "claimed" => {}
@@ -1021,9 +1341,49 @@ pub async fn confirm_tx(
             }
             None
         }
-        // L1b: PC sessions, requests and tickets confirm through their routes.
-        Confirmer::Pc(_) | Confirmer::Request(_) | Confirmer::Ticket(_) => {
-            return Err(ApprovalError::NotFound);
+        // The registration ticket's own client (F8) and the request client
+        // (SM3) confirm the enrolments they issued.
+        Confirmer::Ticket(ticket_id) => {
+            if row.issuer_kind != "ticket" || row.issuer_ticket_id != Some(*ticket_id) {
+                return Err(ApprovalError::NotFound);
+            }
+            // Codex r2 M9: still unbound under the account lock.
+            if !crate::auth::registration::ticket_unbound_tx(conn, *ticket_id).await? {
+                return Err(ApprovalError::Auth(crate::auth::AuthError::TicketInvalid));
+            }
+            None
+        }
+        Confirmer::Request(request_id) => {
+            if row.issuer_kind != "request" || row.issuer_request_id != Some(*request_id) {
+                return Err(ApprovalError::NotFound);
+            }
+            None
+        }
+        // The issuing PC session (F5a, rule 4): still live and full, its
+        // recorded passkey still active.
+        Confirmer::Pc(auth) => {
+            if row.issuer_kind != "session" || row.issuer_session_id != auth.session_id {
+                return Err(ApprovalError::NotFound);
+            }
+            let live: Option<bool> = sqlx::query_scalar(concat!(
+                "SELECT s.assurance = 'full' FROM sessions s WHERE s.id = $1 AND ",
+                crate::live_clause!(),
+                " FOR SHARE"
+            ))
+            .bind(row.issuer_session_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+            let passkey_ok = match row.issuer_passkey_id {
+                Some(p) => {
+                    crate::auth::strong::is_active(conn, AuthenticatorRef::passkey(p)).await?
+                }
+                None => false,
+            };
+            if live != Some(true) || !passkey_ok {
+                expire(conn, row.id).await?;
+                return Err(ApprovalError::EnrollmentState);
+            }
+            Some(auth.id)
         }
     };
     if locked.get(&row.subject_id).is_some_and(|a| a.banned) {
@@ -1053,28 +1413,65 @@ pub async fn confirm_tx(
         });
     }
     // Done: the device row, the account's first activity, the notice.
-    let variant = EnrollmentVariant::parse(&row.variant).ok_or(ApprovalError::EnrollmentState)?;
-    let state = activation_state(variant, subject_is_new(conn, row.subject_id).await?);
-    let device_row_id = Uuid::new_v4();
-    let claimed_device_id = row
-        .claimed_device_id
-        .ok_or(ApprovalError::EnrollmentState)?;
     let actor = match (&by, issuer_user) {
         (Confirmer::Cli, _) => Actor::Cli,
+        (Confirmer::Ticket(_) | Confirmer::Request(_), _) => Actor::User(row.subject_id),
         (_, Some(u)) if u == row.subject_id => Actor::User(u),
         (_, Some(u)) => Actor::Admin(u),
         (_, None) => Actor::System,
     };
+    finish_done_tx(conn, ctx, &row, actor, issuer_user).await
+}
+
+/// SM2 `done`, under the subject's account lock (B.7 rule 1).
+///
+/// The key device row (`active` or `pending` by variant), a replaced live
+/// row of the same install revoked with its cascade, the first activity, a
+/// bound registration ticket, the `authenticator_added` notice.
+pub async fn finish_done_tx(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    row: &EnrollmentRow,
+    actor: Actor,
+    issuer_user: Option<Uuid>,
+) -> Result<(Enrollment, AfterDone), ApprovalError> {
+    let variant = EnrollmentVariant::parse(&row.variant).ok_or(ApprovalError::EnrollmentState)?;
+    let state = activation_state(variant, subject_is_new(conn, row.subject_id).await?);
+    // Fable r3: an `admin` enrolment completes only while its issuer is
+    // still an admin. The row is held FOR SHARE, so a demotion waits for
+    // this transaction instead of slipping in before its commit.
+    if variant == EnrollmentVariant::Admin {
+        let still: Option<Uuid> =
+            sqlx::query_scalar("SELECT user_id FROM system_admins WHERE user_id = $1 FOR SHARE")
+                .bind(issuer_user)
+                .fetch_optional(&mut *conn)
+                .await?;
+        if still.is_none() {
+            return Err(ApprovalError::NotAllowed);
+        }
+    }
+    if row.authenticator_type.as_deref() == Some("passkey") {
+        return finish_done_passkey_tx(conn, ctx, row, variant, state, issuer_user, actor).await;
+    }
+    let device_row_id = Uuid::new_v4();
+    let claimed_device_id = row
+        .claimed_device_id
+        .ok_or(ApprovalError::EnrollmentState)?;
     // A device that re-enrols as an `active` key replaces its own earlier
     // (live) row, with the revocation cascade (B.7 rule 2): its sessions end,
     // its grants and open challenges are void. Never the issuer's own row and
-    // never for a `pending` key (`replaceable_on_install`). The removal is a
-    // notice of its own (B.1: every add and remove), so an owner whose phone
-    // was replaced by a claim on its install id learns that the phone is no
-    // longer a key. The push subscription stays: it is keyed by (account,
-    // install id) and now belongs to the new key of the same install.
+    // never for a `pending` key (`replaceable_on_install`, Codex B1): a
+    // pending enrolment answers ENROLLMENT_DEVICE_IN_USE instead, so a live
+    // key stays until its replacement is active. The removal is a notice of
+    // its own (B.1: every add and remove). The push subscription stays: it is
+    // keyed by (account, install id) and now belongs to the new key of the
+    // same install.
     let mut event_ids = Vec::with_capacity(2);
-    if let Some(old) = replaceable_on_install(conn, &row, claimed_device_id, state, true).await? {
+    let replaced = replaceable_on_install(conn, row, claimed_device_id, state, true).await?;
+    if let Some(old) = replaced {
+        // Out of the live index first; its cascade runs once the new key
+        // exists (Fable r2 M-B: an admin whose only key re-enrols stays a
+        // route of the requests that record them).
         sqlx::query(
             "UPDATE approval_devices SET state = 'revoked', revoked_at = NOW(), revoke_reason = $2
               WHERE id = $1",
@@ -1083,16 +1480,6 @@ pub async fn confirm_tx(
         .bind(replaced_reason(variant))
         .execute(&mut *conn)
         .await?;
-        let old = AuthenticatorRef::key_device(old);
-        super::cascade::on_authenticator_revoked(conn, ctx, row.subject_id, old).await?;
-        let mut ev = NewSecurityEvent::new(
-            row.subject_id,
-            EventType::AuthenticatorRemoved,
-            actor,
-            serde_json::json!({"type": "key_device", "by": removed_by(actor)}),
-        );
-        ev.authenticator = Some(old);
-        event_ids.push(record(conn, ev).await?);
     }
     sqlx::query(
         "INSERT INTO approval_devices (id, user_id, device_id, public_key, public_key_hash,
@@ -1128,13 +1515,75 @@ pub async fn confirm_tx(
     .bind(row.id)
     .execute(&mut *conn)
     .await?;
+    if let Some(old) = replaced {
+        let old = AuthenticatorRef::key_device(old);
+        super::cascade::on_authenticator_revoked(conn, ctx, row.subject_id, old).await?;
+        let mut ev = NewSecurityEvent::new(
+            row.subject_id,
+            EventType::AuthenticatorRemoved,
+            actor,
+            serde_json::json!({"type": "key_device", "by": removed_by(actor)}),
+        );
+        ev.authenticator = Some(old);
+        event_ids.push(record(conn, ev).await?);
+    }
     sqlx::query(
         "UPDATE enrollments SET state = 'done', done_at = NOW(), ended_at = NOW() WHERE id = $1",
     )
     .bind(row.id)
     .execute(&mut *conn)
     .await?;
-    crate::auth::strong::mark_first_activity(conn, row.subject_id).await?;
+    let mut admin_events = Vec::new();
+    if state == DeviceState::Pending {
+        if let Some(request_id) = row.issuer_request_id {
+            crate::auth::account_requests::core::stage_authenticator_tx(
+                conn,
+                request_id,
+                AuthenticatorRef::key_device(device_row_id),
+            )
+            .await?;
+        } else if variant == EnrollmentVariant::Admin {
+            // F5c: an existing account gets an `admin` request (SM3); a
+            // request opened meanwhile → 409 ACCOUNT_REQUEST_OPEN.
+            admin_events = crate::auth::account_requests::core::start_admin_tx(
+                conn,
+                ctx,
+                row,
+                issuer_user,
+                AuthenticatorRef::key_device(device_row_id),
+            )
+            .await
+            .map_err(ApprovalError::Auth)?;
+        }
+    } else {
+        crate::auth::strong::mark_first_activity(conn, row.subject_id).await?;
+        if variant == EnrollmentVariant::Admin {
+            // F5c: a new account is active at once; the other admins learn.
+            admin_events.push(
+                record(
+                    conn,
+                    NewSecurityEvent::new(
+                        row.subject_id,
+                        EventType::AdminSetup,
+                        issuer_user.map_or(Actor::System, Actor::Admin),
+                        serde_json::json!({
+                            "mode": row.admin_mode.as_deref().unwrap_or("setup"),
+                            "admin_user_id": issuer_user,
+                            "new_account": true,
+                        }),
+                    ),
+                )
+                .await?,
+            );
+        }
+    }
+    crate::auth::registration::mark_bound_tx(conn, row.subject_id).await?;
+    // A strong authenticator active by this path consumes the bootstrap
+    // entitlement (F8 rev 4).
+    if state == DeviceState::Active {
+        crate::auth::account_requests::core::on_strong_activated(conn, ctx, row.subject_id, None)
+            .await?;
+    }
     let mut ev = NewSecurityEvent::new(
         row.subject_id,
         EventType::AuthenticatorAdded,
@@ -1143,6 +1592,138 @@ pub async fn confirm_tx(
     );
     ev.authenticator = Some(AuthenticatorRef::key_device(device_row_id));
     event_ids.push(record(conn, ev).await?);
+    event_ids.extend(admin_events);
+    let mut done = row.clone();
+    done.state = "done".into();
+    let wire = to_wire(conn, &done).await?;
+    Ok((
+        wire,
+        AfterDone {
+            subject_id: row.subject_id,
+            issuer_user,
+            enrollment_id: row.id,
+            event_ids,
+        },
+    ))
+}
+
+/// `done` of a browser passkey claim (C29): the `passkeys` row with the
+/// enrolment's id, `active` or `pending` by variant (SM2), staged on its
+/// request or starting the `admin` request, as for a key device.
+async fn finish_done_passkey_tx(
+    conn: &mut PgConnection,
+    ctx: &AuthCtx<'_>,
+    row: &EnrollmentRow,
+    variant: EnrollmentVariant,
+    state: DeviceState,
+    issuer_user: Option<Uuid>,
+    actor: Actor,
+) -> Result<(Enrollment, AfterDone), ApprovalError> {
+    use crate::auth::passkeys::queries::PasskeyState;
+    use crate::auth::passkeys::register::{complete_recorded_by, RegistrationVia};
+    let verified: crate::auth::passkeys::rp::VerifiedRegistration = row
+        .claimed_passkey
+        .clone()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .ok_or(ApprovalError::EnrollmentState)?;
+    let label = row
+        .claimed_label
+        .clone()
+        .unwrap_or_else(|| "Passkey".into());
+    let pending = state == DeviceState::Pending;
+    // A pending passkey carries its `ready_at` (the request's, or the delay
+    // of the `admin` request this `done` starts).
+    let ready_at = if pending {
+        match row.issuer_request_id {
+            Some(r) => {
+                sqlx::query_scalar("SELECT ready_at FROM account_requests WHERE id = $1")
+                    .bind(r)
+                    .fetch_optional(&mut *conn)
+                    .await?
+            }
+            None => None,
+        }
+        .or_else(|| Some(Utc::now() + Duration::hours(ctx.config.account_request_delay_hours)))
+    } else {
+        None
+    };
+    let (pk, added) = complete_recorded_by(
+        conn,
+        row.subject_id,
+        &label,
+        &verified,
+        if pending {
+            PasskeyState::Pending
+        } else {
+            PasskeyState::Active
+        },
+        ready_at,
+        RegistrationVia::Enrollment,
+        actor,
+    )
+    .await
+    .map_err(ApprovalError::Auth)?;
+    sqlx::query("UPDATE passkeys SET enrollment_id = $2 WHERE id = $1")
+        .bind(pk.id)
+        .bind(row.id)
+        .execute(&mut *conn)
+        .await?;
+    let a = AuthenticatorRef::passkey(pk.id);
+    let mut event_ids = vec![added];
+    if pending {
+        if let Some(request_id) = row.issuer_request_id {
+            crate::auth::account_requests::core::stage_authenticator_tx(conn, request_id, a)
+                .await?;
+        } else if variant == EnrollmentVariant::Admin {
+            event_ids.extend(
+                crate::auth::account_requests::core::start_admin_tx(conn, ctx, row, issuer_user, a)
+                    .await
+                    .map_err(ApprovalError::Auth)?,
+            );
+            // The passkey waits exactly as long as its request.
+            sqlx::query(
+                "UPDATE passkeys SET ready_at = (SELECT ready_at FROM account_requests
+                                                  WHERE enrollment_id = $2
+                                                    AND state IN ('waiting', 'ready'))
+                  WHERE id = $1",
+            )
+            .bind(pk.id)
+            .bind(row.id)
+            .execute(&mut *conn)
+            .await?;
+        }
+    } else {
+        crate::auth::strong::mark_first_activity(conn, row.subject_id).await?;
+        crate::auth::account_requests::core::on_strong_activated(conn, ctx, row.subject_id, None)
+            .await?;
+        if variant == EnrollmentVariant::Admin {
+            event_ids.push(
+                record(
+                    conn,
+                    NewSecurityEvent::new(
+                        row.subject_id,
+                        EventType::AdminSetup,
+                        issuer_user.map_or(Actor::System, Actor::Admin),
+                        serde_json::json!({
+                            "mode": row.admin_mode.as_deref().unwrap_or("setup"),
+                            "admin_user_id": issuer_user,
+                            "new_account": true,
+                        }),
+                    ),
+                )
+                .await?,
+            );
+        }
+    }
+    // `done` first, then the bind (it ends the ticket's other open links),
+    // as on the key-device path (Fable r3).
+    sqlx::query(
+        "UPDATE enrollments SET state = 'done', done_at = NOW(), ended_at = NOW() WHERE id = $1",
+    )
+    .bind(row.id)
+    .execute(&mut *conn)
+    .await?;
+    crate::auth::registration::mark_bound_tx(conn, row.subject_id).await?;
     let mut done = row.clone();
     done.state = "done".into();
     let wire = to_wire(conn, &done).await?;

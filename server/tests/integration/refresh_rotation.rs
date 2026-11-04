@@ -27,18 +27,26 @@ async fn password_user(pool: &PgPool) -> (Uuid, String) {
     (user.id, username)
 }
 
-/// Native login: tokens in the body.
+/// Native sign-in (F4: password, then TOTP): tokens in the body.
 async fn login(app: &TestApp, username: &str) -> Value {
-    let req = peer_request(Method::POST, "/auth/login")
-        .header("Content-Type", "application/json")
-        .header("X-Kaiku-Client", "desktop")
-        .body(Body::from(
-            serde_json::json!({"username": username, "password": PASSWORD}).to_string(),
-        ))
-        .unwrap();
-    let resp = app.oneshot(req).await;
+    let resp = sign_in(app, username, &[("X-Kaiku-Client", "desktop")]).await;
     assert_eq!(resp.status(), 200);
     body_to_json(resp).await
+}
+
+/// An F4 sign-in of `username` with `headers` (TOTP turned on for it).
+async fn sign_in(
+    app: &TestApp,
+    username: &str,
+    headers: &[(&str, &str)],
+) -> axum::response::Response {
+    let user: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+        .bind(username)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    let totp = super::helpers::login::enable_totp(&app.pool, &app.config, user, username).await;
+    super::helpers::login::f4_sign_in(app, user, username, PASSWORD, &totp, headers).await
 }
 
 async fn refresh(app: &TestApp, token: &str) -> (u16, Value) {
@@ -352,7 +360,7 @@ async fn legacy_refresh_token_rotates_once(pool: PgPool) {
     let (user, _) = password_user(&pool).await;
     // A token pair of the old format: the refresh JWT has no `sid`/`gen`.
     let sid = Uuid::new_v4();
-    let pair = vc_server::auth::jwt::generate_token_pair_for_session(
+    let pair = super::helpers::tokens::token_pair_for_session(
         user,
         sid,
         &app.config.jwt_private_key,
@@ -440,9 +448,16 @@ async fn session_limit_ends_least_recently_used(pool: PgPool) {
 #[sqlx::test]
 async fn concurrent_sign_ins_never_exceed_the_limit(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
-    let (user, username) = password_user(&pool).await;
+    let (user, _) = password_user(&pool).await;
     insert_live_sessions(&pool, user, 49).await;
-    let logins = (0..5).map(|_| login(&app, &username));
+    // Five concurrent sign-ins (the session mint of every flow).
+    let logins = (0..5).map(|_| {
+        super::helpers::login::signed_in(
+            &app.state,
+            user,
+            vc_server::auth::session_issue::SignInMethod::PasswordTotp,
+        )
+    });
     futures::future::join_all(logins).await;
     assert_eq!(live_count(&pool, user).await, 50);
 }
@@ -455,14 +470,7 @@ async fn refresh_cookie_renamed_and_strict(pool: PgPool) {
     let (_, username) = password_user(&pool).await;
 
     // A browser sign-in gets the prefixed, strict cookie and no body token.
-    let req = peer_request(Method::POST, "/auth/login")
-        .header("Content-Type", "application/json")
-        .header(header::ORIGIN, TEST_ORIGIN)
-        .body(Body::from(
-            serde_json::json!({"username": username, "password": PASSWORD}).to_string(),
-        ))
-        .unwrap();
-    let resp = app.oneshot(req).await;
+    let resp = sign_in(&app, &username, &[("Origin", TEST_ORIGIN)]).await;
     assert_eq!(resp.status(), 200);
     let set_cookie: Vec<String> = resp
         .headers()
@@ -518,30 +526,14 @@ async fn logout_clears_the_legacy_cookie(pool: PgPool) {
     let mut config = vc_server::config::Config::default_for_test();
     config.cookie_secure = true;
     let app = TestApp::with_pool_and_config(pool.clone(), config).await;
-    let (_, username) = password_user(&pool).await;
-    let req = peer_request(Method::POST, "/auth/login")
-        .header("Content-Type", "application/json")
-        .header(header::ORIGIN, TEST_ORIGIN)
-        .body(Body::from(
-            serde_json::json!({"username": username, "password": PASSWORD}).to_string(),
-        ))
-        .unwrap();
-    let resp = app.oneshot(req).await;
-    assert_eq!(resp.status(), 200);
-    let token = resp
-        .headers()
-        .get_all(header::SET_COOKIE)
-        .iter()
-        .map(|v| v.to_str().unwrap().to_string())
-        .find_map(|c| {
-            c.strip_prefix("__Secure-kaiku_refresh=")
-                .map(|t| t.split(';').next().unwrap().to_string())
-        })
-        .unwrap();
-    let access = body_to_json(resp).await["access_token"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let (user, _) = password_user(&pool).await;
+    // L1b: a password alone mints no session; the session of any flow.
+    let (access, token, _) = super::helpers::login::signed_in(
+        &app.state,
+        user,
+        vc_server::auth::session_issue::SignInMethod::PasswordTotp,
+    )
+    .await;
 
     let req = peer_request(Method::POST, "/auth/logout")
         .header(header::ORIGIN, TEST_ORIGIN)

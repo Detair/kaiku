@@ -28,6 +28,7 @@ use crate::ratelimit::{rate_limit_by_user, with_category, RateLimitCategory};
 /// `/api/approvals` (bearer; `ApprovalLogin` per user).
 pub fn approvals_router(state: &AppState) -> Router<AppState> {
     Router::new()
+        .route("/claim", post(handlers::claim))
         .route("/step-up", post(handlers::step_up))
         .route("/{id}/answer", post(handlers::answer))
         .route("/{id}/deny", post(handlers::deny))
@@ -71,6 +72,14 @@ pub fn flow_router(state: &AppState) -> Router<AppState> {
         .route("/enrollments/claim", post(enrollments::handlers::claim))
         .route("/enrollments/status", post(enrollments::handlers::status))
         .route(
+            "/enrollments/passkey/start",
+            post(enrollments::handlers::passkey_start),
+        )
+        .route(
+            "/enrollments/passkey/finish",
+            post(enrollments::handlers::passkey_finish),
+        )
+        .route(
             "/device-login/challenge",
             post(device_login::challenge_handler),
         )
@@ -78,6 +87,16 @@ pub fn flow_router(state: &AppState) -> Router<AppState> {
         .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
         .layer(from_fn(with_category(RateLimitCategory::AuthFlow)));
     let bearer = Router::new()
+        .route("/enrollments", post(enrollments::handlers::issue_own))
+        .route(
+            "/enrollments/{id}",
+            axum::routing::get(enrollments::handlers::get_issued)
+                .delete(enrollments::handlers::cancel_issued),
+        )
+        .route(
+            "/enrollments/{id}/confirm",
+            post(enrollments::handlers::confirm_pc),
+        )
         .route(
             "/enrollments/{id}/challenge",
             post(enrollments::handlers::issuer_challenge),

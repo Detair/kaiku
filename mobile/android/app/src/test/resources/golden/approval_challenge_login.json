@@ -1,0 +1,18 @@
+{
+  "challenge_id": "33333333-3333-4333-8333-333333333301",
+  "context": {
+    "attempt_id": "44444444-4444-4444-8444-444444444444",
+    "client_class": "desktop",
+    "client_label": "Kaiku desktop on Windows 10",
+    "collection_hash": "ExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExM",
+    "created_at": 1793707200,
+    "place": "",
+    "server_name": "Familie Müller",
+    "username": "alice",
+    "variant": "qr"
+  },
+  "expires_at": "2026-11-03T12:02:00Z",
+  "kind": "login",
+  "signing_prefix": "a2Fpa3Utc2lnLXYxATMzMzMzM0MzgzMzMzMzMwEAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHwAAAABq6c04AAAAGGh0dHBzOi8vY2hhdC5leGFtcGxlLmNvbREREREREUERgREREREREREiIiIiIiJCIoIiIiIiIiIi69hd24iCpq9YRELeDEShnO7tR6I_X5jZFlH-j8sgBu8",
+  "variant": "qr"
+}

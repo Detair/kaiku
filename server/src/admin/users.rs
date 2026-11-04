@@ -28,6 +28,7 @@ use crate::ws::{broadcast_admin_event, ServerEvent};
 
 /// User summary for admin listing.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct UserSummary {
     pub id: Uuid,
     pub username: String,
@@ -38,6 +39,9 @@ pub struct UserSummary {
     pub is_banned: bool,
     /// The "Kaiku" system account (C28); it is never listed, so always false.
     pub is_system: bool,
+    /// A system admin (C27 admin views).
+    pub is_admin: bool,
+    pub may_approve: bool,
 }
 
 /// User guild membership info for detail view.
@@ -63,6 +67,9 @@ pub struct UserDetailsResponse {
     pub last_login: Option<DateTime<Utc>>,
     pub guild_count: i64,
     pub guilds: Vec<UserGuildMembership>,
+    /// Sign-in state (C27 "Admin setup": admin user views).
+    #[serde(flatten)]
+    pub security: super::security::UserSecurityView,
 }
 
 /// Global ban response.
@@ -103,18 +110,34 @@ pub async fn list_users(
     let users =
         queries::list_users_filtered(&state.db, limit, offset, search_pattern.as_deref()).await?;
 
+    let ids: Vec<Uuid> = users.iter().map(|u| u.0).collect();
+    let roles: std::collections::HashMap<Uuid, (bool, bool)> = sqlx::query_as::<_, (Uuid, bool, bool)>(
+        "SELECT u.id, EXISTS (SELECT 1 FROM system_admins sa WHERE sa.user_id = u.id), u.may_approve
+           FROM users u WHERE u.id = ANY($1)",
+    )
+    .bind(&ids)
+    .fetch_all(&state.db)
+    .await?
+    .into_iter()
+    .map(|(id, a, m)| (id, (a, m)))
+    .collect();
     let items: Vec<UserSummary> = users
         .into_iter()
         .map(
-            |(id, username, display_name, email, avatar_url, created_at, is_banned)| UserSummary {
-                id,
-                username,
-                display_name,
-                email,
-                avatar_url,
-                created_at,
-                is_banned,
-                is_system: false,
+            |(id, username, display_name, email, avatar_url, created_at, is_banned)| {
+                let (is_admin, may_approve) = roles.get(&id).copied().unwrap_or_default();
+                UserSummary {
+                    id,
+                    username,
+                    display_name,
+                    email,
+                    avatar_url,
+                    created_at,
+                    is_banned,
+                    is_system: false,
+                    is_admin,
+                    may_approve,
+                }
             },
         )
         .collect();
@@ -130,7 +153,8 @@ pub async fn list_users(
 /// Most servers an admin-created account can join at once (C23).
 const MAX_GUILD_IDS: usize = 10;
 
-/// Create a local account with a temporary password.
+/// Create a passwordless local account (C27): the member then gets a phone
+/// set up by an admin (F5c) or a passkey.
 ///
 /// `POST /api/admin/users`
 ///
@@ -170,8 +194,12 @@ pub async fn create_user(
     crate::presence::validate_unicode_text(display_name, 64)
         .map_err(|e| AdminError::Validation(format!("display_name: {e}")))?;
 
-    let password_hash = crate::auth::hash_password(&body.temporary_password)
-        .map_err(|_| AdminError::Internal("Password processing failed".to_string()))?;
+    // Accounts are passwordless now (C27): a temporary password is refused.
+    if body.temporary_password.is_some() {
+        return Err(AdminError::Validation(
+            "temporary_password: no longer supported; set up a phone instead".into(),
+        ));
+    }
 
     // Deduplicated and sorted: a stable lock order across concurrent joins.
     let guild_ids: Vec<Uuid> = body
@@ -192,9 +220,20 @@ pub async fn create_user(
         }
     }
     let (id, username, display_name, email, avatar_url, created_at, is_banned) =
-        queries::insert_admin_created_user(&mut *tx, &body.username, display_name, &password_hash)
+        queries::insert_admin_created_user(&mut *tx, &body.username, display_name)
             .await?
             .ok_or_else(|| AdminError::Conflict("Username already taken".to_string()))?;
+    if let Some(contact) = body.recovery_contact_id {
+        let ctx = crate::auth::ctx::AuthCtx::from(&state);
+        crate::auth::recovery_contact::set_tx(
+            &mut tx,
+            &ctx,
+            id,
+            Some(contact),
+            crate::auth::recovery_contact::ContactActor::Admin(admin.user_id),
+        )
+        .await?;
+    }
 
     // An admin-added member is active right away, never pending screening.
     // A guild deleted after the existence check above makes the insert fail
@@ -250,6 +289,8 @@ pub async fn create_user(
             created_at,
             is_banned,
             is_system: false,
+            is_admin: false,
+            may_approve: false,
         }),
     ))
 }
@@ -326,7 +367,13 @@ pub async fn get_user_details(
         })
         .collect();
 
+    let security = {
+        let ctx = crate::auth::ctx::AuthCtx::from(&state);
+        let mut conn = state.db.acquire().await?;
+        super::security::security_view(&mut conn, &ctx, user_id, _admin.user_id).await?
+    };
     Ok(Json(UserDetailsResponse {
+        security,
         id: user.id,
         username: user.username,
         display_name: user.display_name,
