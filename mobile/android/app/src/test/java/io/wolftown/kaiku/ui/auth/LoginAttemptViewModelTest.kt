@@ -266,7 +266,8 @@ class LoginAttemptViewModelTest {
     @Test fun `a callback after an abandoned SSO start disturbs no running sign-in`() = runTest {
         api.loginStep = confirmationStep()
         val v = vm()
-        v.startOidc(mockk(relaxed = true), "google") // the Custom Tab is closed without signing in
+        v.startOidc(mockk(relaxed = true), "google")
+        runCurrent() // the start answered and the Custom Tab opened; it is closed without signing in
         v.signInWithPassword("anna", "pw")
         runCurrent()
         val before = v.state.value

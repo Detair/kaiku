@@ -65,8 +65,8 @@ class OidcHandlerTest {
         LoginAttemptViewModel(api, repo, tokenStorage, handler, appScope = backgroundScope)
 
     @Test fun `oidc callback with tokens installs nothing`() = runTest {
-        val handler = spyk(OidcHandler(tokenStorage))
-        every { handler.launchOidcLogin(any(), any(), any()) } returns Unit
+        val handler = spyk(OidcHandler())
+        every { handler.openProvider(any(), any()) } returns Unit
         val tokens = callback(mapOf("access_token" to "stolen-access", "refresh_token" to "stolen-refresh", "expires_in" to "900"))
         assertNull(handler.handleCallback(tokens))
         // A code next to tokens is refused as a whole.
@@ -75,10 +75,11 @@ class OidcHandlerTest {
 
         val v = vm(handler)
         v.startOidc(context, "google")
+        runCurrent()
         v.onOidcCallback(tokens)
         advanceUntilIdle()
 
-        assertTrue(api.calls.none { it.startsWith("exchangeOidc") })
+        assertEquals(listOf("oidcStart:google"), api.calls)
         coVerify(exactly = 0) { repo.completeAttempt(any(), any(), any()) }
         verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
         assertEquals(R.string.auth_login_sso_failed, v.state.value.formError)
@@ -86,20 +87,23 @@ class OidcHandlerTest {
     }
 
     @Test fun `oidc code is exchanged with the attempt verifier`() = runTest {
-        val handler = spyk(OidcHandler(tokenStorage))
-        var challenge: String? = null
-        every { handler.launchOidcLogin(any(), any(), any()) } answers { challenge = thirdArg() }
+        val handler = spyk(OidcHandler())
+        every { handler.openProvider(any(), any()) } returns Unit
         api.exchangeStep = LoginStep(
             LoginStepStatus.CONFIRMATION_REQUIRED,
             attempt("a-oidc", "oidc", qr = "kaiku://login/v1?o=https%3A%2F%2Fchat.example.com&t=O1"),
         )
         val v = vm(handler)
         v.startOidc(context, "google")
+        runCurrent()
+        // The start was fetched (with the challenge), then its provider page opened.
+        verify { handler.openProvider(context, "https://idp.example.com/authorize?state=s1") }
+        assertEquals(false, v.state.value.busy)
         v.onOidcCallback(callback(mapOf("code" to "one-time")))
         runCurrent()
 
-        assertEquals("exchangeOidc:one-time", api.calls.first())
-        assertEquals(challenge, s256(api.verifiers.first()))
+        assertEquals(listOf("oidcStart:google", "exchangeOidc:one-time"), api.calls.take(2))
+        assertEquals(api.challenges.single(), s256(api.verifiers.first()))
         val ui = v.state.value.screen as LoginAttemptUi.ShowQr
         assertEquals(AttemptVia.OIDC, ui.via)
         // The attempt's polls carry the same verifier the start's challenge was made from.
@@ -107,20 +111,31 @@ class OidcHandlerTest {
     }
 
     @Test fun `a callback without a waiting sign-in exchanges nothing`() = runTest {
-        val v = vm(OidcHandler(tokenStorage))
+        val v = vm(OidcHandler())
         v.onOidcCallback(callback(mapOf("code" to "one-time")))
         advanceUntilIdle()
         assertTrue(api.calls.isEmpty())
         assertEquals(R.string.auth_login_sso_failed, v.state.value.formError)
     }
 
-    @Test fun `the start sends only the attempt's client challenge`() {
-        val url = OidcHandler(tokenStorage).authorizeUrl(server, "google", "CHALLENGE")
-        assertEquals(
-            "$server/auth/oidc/authorize/google?redirect_uri=kaiku%3A%2F%2Fauth%2Fcallback&client_challenge=CHALLENGE",
-            url,
+    /**
+     * Codex v1 integration check, major 2: a refused start (an older server, or
+     * no `{url}`) shows its error and opens no Custom Tab; no callback is awaited.
+     */
+    @Test fun `a refused oidc start opens nothing and says why`() = runTest {
+        val handler = spyk(OidcHandler())
+        every { handler.openProvider(any(), any()) } returns Unit
+        api.oidcStartFailure = io.wolftown.kaiku.data.api.ApiException(
+            io.ktor.http.HttpStatusCode.BadRequest, "outdated", code = "OIDC_CLIENT_OUTDATED",
         )
-        assertFalse(url.contains("state="))
-        assertFalse(url.contains("code_challenge"))
+        val v = vm(handler)
+        v.startOidc(context, "google")
+        advanceUntilIdle()
+        verify(exactly = 0) { handler.openProvider(any(), any()) }
+        assertEquals(R.string.auth_login_client_outdated, v.state.value.formError)
+        assertFalse(v.state.value.busy)
+        v.onOidcCallback(callback(mapOf("code" to "one-time")))
+        advanceUntilIdle()
+        assertTrue(api.calls.none { it.startsWith("exchangeOidc") })
     }
 }
