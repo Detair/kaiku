@@ -1,9 +1,12 @@
 /**
  * Passkeys in the security settings (C29): list, add (browser only, after a
- * passkey step-up), rename and remove (after a step-up for that passkey).
- * The first passkey of an account comes from a key device (DC1); without a
- * passkey there is no Add button, and the empty state shows `empty` (L2's
- * "Set up a phone" and "Secure my account").
+ * `passkey.add` step-up), rename and remove (after a step-up for that
+ * passkey). A PC session steps up only with an active passkey (a device
+ * grant covers the key phone's own session), so "Add a passkey" shows only
+ * then. The first passkey in a browser comes from a setup link of the key
+ * phone's "Add a phone", opened here (the browser claim, C29); the list says
+ * so, and the empty state also shows `empty` (L2's "Set up a phone" and
+ * "Secure my account").
  */
 
 import { Component, createResource, createSignal, For, JSX, onCleanup, Show } from "solid-js";
@@ -14,6 +17,7 @@ import { isTauri } from "@/lib/tauri/common";
 import {
   deletePasskey,
   listPasskeys,
+  canUsePasskeys,
   PasskeyError,
   registerPasskey,
   renamePasskey,
@@ -21,6 +25,7 @@ import {
   type Passkey,
 } from "@/lib/tauri/passkeys";
 import { signalRemoved } from "@/lib/webauthn";
+import { StepUpCancelled, withStepUp } from "@/lib/stepUp";
 import { errorText } from "@/i18n/errors";
 
 /** "Firefox on Linux" for a new passkey's default name. */
@@ -53,7 +58,8 @@ function failureText(err: unknown): string {
 }
 
 const quiet = (err: unknown) =>
-  err instanceof PasskeyError && ["PASSKEY_CANCELLED", "ABORTED"].includes(err.code);
+  err instanceof StepUpCancelled ||
+  (err instanceof PasskeyError && ["PASSKEY_CANCELLED", "ABORTED"].includes(err.code));
 
 const btn =
   "min-h-12 px-3 rounded-lg bg-white/10 hover:bg-white/20 text-text-primary text-sm state-disabled";
@@ -70,7 +76,8 @@ const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
   onCleanup(() => ctl?.abort());
 
   const passkeys = () => data()?.passkeys.filter((p) => p.state !== "revoked") ?? [];
-  const hasActive = () => passkeys().some((p) => p.state === "active");
+  /** The `passkey.add` step-up needs an active passkey and a browser that can use it. */
+  const canAdd = () => passkeys().some((p) => p.state === "active") && canUsePasskeys();
 
   const run = async (action: (signal: AbortSignal) => Promise<void>) => {
     ctl?.abort();
@@ -89,10 +96,11 @@ const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
   };
 
   const add = () =>
-    run(async (signal) => {
-      await stepUpWithPasskey("passkey.add", null, signal);
-      await registerPasskey({ label: defaultLabel(), signal });
-    });
+    run((signal) =>
+      withStepUp({ action: "passkey.add", target: "", targetLabel: "" }, async () => {
+        await registerPasskey({ label: defaultLabel(), signal });
+      }),
+    );
 
   const remove = (p: Passkey) =>
     run(async (signal) => {
@@ -220,7 +228,10 @@ const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
             when={!desktop}
             fallback={<p class="text-sm text-text-secondary">{t("passkeys.settings.desktopNotice")}</p>}
           >
-            <Show when={hasActive()}>
+            <Show
+              when={canAdd()}
+              fallback={<p class="text-sm text-text-secondary">{t("passkeys.settings.firstFromPhone")}</p>}
+            >
               <button type="button" class="btn-primary min-h-12 px-4" disabled={busy()} onClick={() => void add()}>
                 {t("passkeys.settings.add")}
               </button>

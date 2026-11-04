@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@solidjs/testing-library";
 
 const api = vi.hoisted(() => ({
+  canUsePasskeys: vi.fn(() => true),
   listPasskeys: vi.fn(),
   stepUpWithPasskey: vi.fn(),
   registerPasskey: vi.fn(),
@@ -19,6 +20,8 @@ vi.mock("@/lib/webauthn", async () => ({
   ...(await vi.importActual<object>("@/lib/webauthn")),
   signalRemoved,
 }));
+const stepUp = vi.hoisted(() => vi.fn(async (_req: unknown, run: () => Promise<unknown>) => run()));
+vi.mock("@/lib/stepUp", async (orig) => ({ ...(await orig<object>()), withStepUp: stepUp }));
 vi.mock("@/lib/tauri/common", async () => ({
   ...(await vi.importActual<object>("@/lib/tauri/common")),
   isTauri: () => tauriMode.on,
@@ -26,6 +29,7 @@ vi.mock("@/lib/tauri/common", async () => ({
 
 import PasskeysSection from "../PasskeysSection";
 import { PasskeyError } from "@/lib/tauri/passkeys";
+import { StepUpCancelled } from "@/lib/stepUp";
 
 const ACTIVE = {
   id: "p-1",
@@ -49,7 +53,9 @@ function list(...passkeys: unknown[]) {
 beforeEach(() => {
   tauriMode.on = false;
   for (const f of Object.values(api)) f.mockReset();
+  api.canUsePasskeys.mockReturnValue(true);
   signalRemoved.mockReset();
+  stepUp.mockClear();
   api.stepUpWithPasskey.mockResolvedValue({ action: "passkey.add", target: "", via: "passkey", expires_at: "x" });
 });
 afterEach(cleanup);
@@ -71,23 +77,49 @@ describe("PasskeysSection", () => {
     expect(row.querySelectorAll("button").length).toBe(0);
   });
 
-  it("add with an existing passkey steps up then registers", async () => {
+  it("add steps up for passkey.add, then registers", async () => {
     list(ACTIVE);
     api.registerPasskey.mockResolvedValue({ ...ACTIVE, id: "p-3", label: "New" });
     render(() => <PasskeysSection />);
     fireEvent.click(await screen.findByRole("button", { name: "Add a passkey" }));
     await waitFor(() => expect(api.registerPasskey).toHaveBeenCalledOnce());
-    expect(api.stepUpWithPasskey).toHaveBeenCalledWith("passkey.add", null, expect.any(AbortSignal));
-    expect(api.stepUpWithPasskey.mock.invocationCallOrder[0]).toBeLessThan(
-      api.registerPasskey.mock.invocationCallOrder[0],
-    );
+    expect(stepUp.mock.calls[0][0]).toMatchObject({ action: "passkey.add", target: "" });
+    expect(api.stepUpWithPasskey).not.toHaveBeenCalled();
   });
 
-  it("no add button without a passkey", async () => {
+  // PR #748 review: a PC session steps up only with a passkey (a device grant
+  // covers the key phone's own session), so without one "Add" is a dead end.
+  // The first passkey comes from the key phone's setup link instead.
+  it("without a passkey step-up there is no add button, only the setup-link path", async () => {
     list();
     render(() => <PasskeysSection />);
     expect(await screen.findByText("No passkeys yet.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Add a passkey" })).toBeNull();
+    expect(screen.getByText(/open “Add a phone” in the Kaiku app on your key phone/)).toBeTruthy();
+    cleanup();
+    // A pending passkey cannot step up either.
+    list(PENDING);
+    render(() => <PasskeysSection />);
+    expect(await screen.findByText("Phone")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add a passkey" })).toBeNull();
+    expect(screen.getByText(/open “Add a phone” in the Kaiku app on your key phone/)).toBeTruthy();
+    cleanup();
+    // A browser without passkeys cannot run the step-up ceremony.
+    api.canUsePasskeys.mockReturnValue(false);
+    list(ACTIVE);
+    render(() => <PasskeysSection />);
+    expect(await screen.findByText("Laptop")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add a passkey" })).toBeNull();
+  });
+
+  it("a cancelled step-up adds nothing and says nothing", async () => {
+    list(ACTIVE);
+    stepUp.mockRejectedValueOnce(new StepUpCancelled());
+    render(() => <PasskeysSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "Add a passkey" }));
+    await waitFor(() => expect(stepUp).toHaveBeenCalled());
+    expect(api.registerPasskey).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("remove steps up for that passkey, deletes and signals", async () => {
@@ -143,7 +175,8 @@ describe("PasskeysSection", () => {
     list(ACTIVE);
     api.stepUpWithPasskey.mockRejectedValue(new PasskeyError("PASSKEY_PENDING", undefined, undefined, "2026-11-05T10:00:00Z"));
     render(() => <PasskeysSection />);
-    fireEvent.click(await screen.findByRole("button", { name: "Add a passkey" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove passkey" }));
     expect(await screen.findByText(/This passkey is ready at/)).toBeTruthy();
   });
 });

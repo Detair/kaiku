@@ -115,8 +115,9 @@ class SetupPendingViewModel @Inject constructor(
         } catch (c: CancellationException) {
             throw c
         } catch (x: ApiException) {
-            // An unknown or void enrolment: the setup is over.
-            if (x.status.value == 404 || x.status.value == 410) forget(R.string.setup_cancelled)
+            // An unknown or void enrolment, or a finished one swept 30 days after it ended
+            // (also 404): the key device decides whether the setup is over.
+            if (x.status.value == 404 || x.status.value == 410) checkServer(local)
             return false
         } catch (_: Exception) {
             // Offline or an unreadable answer: try again at the next check.

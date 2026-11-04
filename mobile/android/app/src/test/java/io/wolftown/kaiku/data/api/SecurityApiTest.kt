@@ -34,6 +34,28 @@ class SecurityApiTest {
         assertTrue(!rec.last.query.contains("before"))
     }
 
+    /**
+     * Codex v1 integration check, major 3: an event naming a passkey that went
+     * with its request may carry `authenticator.label: null` (older servers); the
+     * page and the Kaiku DM notice still decode.
+     */
+    @Test fun `an event with a null authenticator label still decodes`() = runTest {
+        val gone = res("security_event.json").replace(
+            "\"authenticator\":null",
+            "\"authenticator\":{\"id\":\"pk1\",\"type\":\"passkey\",\"label\":null}",
+        )
+        assertTrue(gone.contains("\"label\":null"))
+        rec.body = """{"items":[$gone],"has_more":false,"next_cursor":null}"""
+        val a = api.events(before = null, limit = 50).items.single().authenticator!!
+        assertEquals("pk1", a.id)
+        assertEquals("passkey", a.type)
+        assertEquals("", a.label)
+        val notice = io.wolftown.kaiku.data.KaikuJson.decodeFromString<io.wolftown.kaiku.domain.model.SecurityNotice>(
+            """{"notice_id":"n1","subject":{"user_id":"u1","username":"oma","display_name":"Oma"},"event_type":"authenticator_added","events":[$gone]}""",
+        )
+        assertEquals("", notice.events.single().authenticator!!.label)
+    }
+
     @Test fun `repudiate sends part2 null or the factor`() = runTest {
         rec.body = """{"event":${res("security_event.json")},"ended_session_ids":[],"revoked_authenticator_ids":[],"compromised":["password"],"voided_request_ids":[]}"""
         val r = api.repudiate("ev1", null)

@@ -181,6 +181,17 @@ pub async fn mark_first_activity(conn: &mut sqlx::PgConnection, user_id: Uuid) -
     Ok(())
 }
 
+/// The display name of an authenticator whose label is unknown (its row is
+/// gone: a pending passkey deleted with its request). C27/C28 labels are
+/// strings, never null.
+#[must_use]
+pub fn fallback_label(kind: &str) -> &'static str {
+    match kind {
+        "key_device" => "Key device",
+        _ => "Passkey",
+    }
+}
+
 /// The current display label of an authenticator (the key device's model or
 /// the passkey's name), `None` if unknown.
 pub async fn authenticator_label(

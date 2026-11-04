@@ -34,6 +34,8 @@ export const admin = {
   "admin.userSecurity.allowPasswordAgain": "Allow the password again",
   "admin.userSecurity.markTotpUnsafe": "Mark the authenticator app as unsafe",
   "admin.userSecurity.allowTotpAgain": "Allow the authenticator app again",
+  "admin.userSecurity.passwordNeedsReplacement": "{{name}} must set a new password before it works again.",
+  "admin.userSecurity.totpNeedsReplacement": "{{name}} must set up the authenticator app again before it works again.",
   "admin.userSecurity.contactChoose": "Choose a person",
   "admin.userSecurity.contactSave": "Save recovery contact",
   "admin.userSecurity.tooLate": "Too late: the request already completed. If the new device is not theirs, remove it now.",

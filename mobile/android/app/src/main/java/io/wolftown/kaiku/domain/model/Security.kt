@@ -71,8 +71,14 @@ data class EventActor(val kind: String, val userId: String? = null, val username
 @Serializable
 data class EventClient(@SerialName("class") val clientClass: String = "", val label: String = "")
 
+/** A key device or passkey; [label] and [type] tolerate an explicit `null` ([NullAsEmptyString]). */
 @Serializable
-data class AuthenticatorRef(val id: String, val type: String = "", val label: String = "", val state: String = "")
+data class AuthenticatorRef(
+    val id: String,
+    @Serializable(with = NullAsEmptyString::class) val type: String = "",
+    @Serializable(with = NullAsEmptyString::class) val label: String = "",
+    @Serializable(with = NullAsEmptyString::class) val state: String = "",
+)
 
 /** C28 `SecurityEvent`. */
 @Serializable
@@ -135,13 +141,13 @@ data class Part2Factor(val factor: Factor) {
 }
 
 @Serializable
-data class DeviceRef(val id: String, val label: String = "")
+data class DeviceRef(val id: String, @Serializable(with = NullAsEmptyString::class) val label: String = "")
 
 @Serializable
 data class StartedBy(val userId: String, val username: String)
 
 @Serializable
-data class NewAuthenticator(val type: String, val label: String = "")
+data class NewAuthenticator(val type: String, @Serializable(with = NullAsEmptyString::class) val label: String = "")
 
 @Serializable
 data class CancelVia(val via: String)

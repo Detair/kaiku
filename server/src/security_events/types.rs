@@ -329,7 +329,10 @@ pub struct EventAuthenticator {
     /// `passkey` or `key_device`.
     #[serde(rename = "type")]
     pub kind: String,
-    pub label: Option<String>,
+    /// Always a string (C28): the current label, else the label the event
+    /// recorded, else a neutral name (a pending passkey that went with its
+    /// request has no row).
+    pub label: String,
 }
 
 /// An action the reader can take on an event (C28; computed per reader).

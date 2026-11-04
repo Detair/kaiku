@@ -2,8 +2,12 @@ package io.wolftown.kaiku.data.api
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.request.get
+import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.http.Url
+import io.ktor.http.encodeURLPathPart
 import io.wolftown.kaiku.domain.model.AuthResponse
 import io.wolftown.kaiku.domain.model.LoginAttempt
 import io.wolftown.kaiku.domain.model.LoginStep
@@ -23,6 +27,13 @@ interface LoginAttemptApi {
     suspend fun totp(id: String, verifier: String, code: String): AuthResponse
     suspend fun cancel(id: String, verifier: String)
     suspend fun exchangeOidc(code: String, verifier: String): LoginStep
+
+    /**
+     * The native SSO start (C27 OIDC variant): `GET /auth/oidc/authorize/{provider}`
+     * with this attempt's `client_challenge` and `X-Kaiku-Client: android` →
+     * the provider page (`{url}`, `https`) for the Custom Tab.
+     */
+    suspend fun oidcAuthorizeUrl(providerSlug: String, clientChallenge: String): String
 }
 
 @Serializable
@@ -47,6 +58,9 @@ private data class VerifierRequest(val verifier: String) {
 private data class TotpRequest(val verifier: String, val code: String) {
     override fun toString() = "TotpRequest"
 }
+
+@Serializable
+private data class OidcStartResponse(val url: String)
 
 @Serializable
 private data class OidcExchangeRequest(val code: String, val verifier: String) {
@@ -91,6 +105,19 @@ class LoginAttemptApiImpl @Inject constructor(private val httpClient: HttpClient
     override suspend fun cancel(id: String, verifier: String) {
         httpClient.post("/auth/login-attempts/$id/cancel") { publicRoute(); setBody(VerifierRequest(verifier)) }
             .ensureSuccess("cancel failed")
+    }
+
+    override suspend fun oidcAuthorizeUrl(providerSlug: String, clientChallenge: String): String {
+        // The shared client sends `X-Kaiku-Client: android` on every request.
+        val r = httpClient.get("/auth/oidc/authorize/" + providerSlug.encodeURLPathPart()) {
+            publicRoute()
+            parameter("client_challenge", clientChallenge)
+        }
+        r.ensureSuccess("oidc start failed")
+        val url = r.body<OidcStartResponse>().url
+        // Only a provider page goes into the Custom Tab, never another scheme.
+        check(runCatching { Url(url).protocol.name == "https" }.getOrDefault(false)) { "oidc start: not an https url" }
+        return url
     }
 
     override suspend fun exchangeOidc(code: String, verifier: String): LoginStep {

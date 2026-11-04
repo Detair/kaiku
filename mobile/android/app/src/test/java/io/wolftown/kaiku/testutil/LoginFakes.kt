@@ -148,6 +148,15 @@ class FakeLoginAttemptApi : io.wolftown.kaiku.data.api.LoginAttemptApi {
         calls += "cancel:$id"; verifiers += verifier
     }
 
+    var oidcUrl: String = "https://idp.example.com/authorize?state=s1"
+    var oidcStartFailure: Exception? = null
+
+    override suspend fun oidcAuthorizeUrl(providerSlug: String, clientChallenge: String): String {
+        calls += "oidcStart:$providerSlug"; challenges += clientChallenge
+        oidcStartFailure?.let { throw it }
+        return oidcUrl
+    }
+
     override suspend fun exchangeOidc(code: String, verifier: String): io.wolftown.kaiku.domain.model.LoginStep {
         calls += "exchangeOidc:$code"; verifiers += verifier
         exchangeFailure?.let { throw it }

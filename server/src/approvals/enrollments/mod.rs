@@ -399,8 +399,8 @@ async fn subject_is_new(conn: &mut PgConnection, user_id: Uuid) -> Result<bool, 
 /// or the refusal (SM4: `active` → `revoked` only by the owner, an admin's
 /// "Remove device now", the CLI, a completed account request, …):
 ///
-/// - an enrolment never replaces the key device that issued it (400 `VALIDATION_ERROR`: the issuing
-///   app never claims its own link);
+/// - an enrolment never replaces the key device that issued it (400 `ENROLLMENT_DEVICE_IN_USE`, C26
+///   amendment: the issuing app never claims its own link);
 /// - a key that will be `pending` (an `admin` enrolment of an existing account, a `request` child)
 ///   never replaces a live one: that would skip the account request's wait and its cancellers and,
 ///   on another admin's account, `ADMIN_TARGET_IS_ADMIN`. Its replacement belongs to the request's

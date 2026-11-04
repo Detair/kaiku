@@ -13,6 +13,14 @@ describe("request and bind errors", () => {
     );
   });
 
+  // Fable v1 final check, minor 3: the browser's unknown or expired request
+  // secret answers 404 NOT_FOUND (the desktop's NO_PRE_SESSION_SECRET).
+  it("an unknown request secret says the request is lost", () => {
+    const lost = requestStepError(new HttpError(0, "x", "NO_PRE_SESSION_SECRET"), "auth.request.failed");
+    expect(requestStepError(new HttpError(404, "Unknown request", "NOT_FOUND"), "auth.request.failed")).toBe(lost);
+    expect(lost).not.toBe(requestStepError(new Error("x"), "auth.request.failed"));
+  });
+
   it("REGISTRATION_TICKET_INVALID says the registration ran out", () => {
     expect(bindErrorText(new HttpError(404, "x", "REGISTRATION_TICKET_INVALID"), "auth.bind.failed")).toBe(
       "This registration ran out or belongs to another device. Register again.",

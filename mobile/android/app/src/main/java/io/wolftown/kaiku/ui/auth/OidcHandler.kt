@@ -3,69 +3,63 @@ package io.wolftown.kaiku.ui.auth
 import android.content.Context
 import android.net.Uri
 import androidx.browser.customtabs.CustomTabsIntent
-import io.wolftown.kaiku.data.local.TokenStorage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.getAndUpdate
-import java.net.URLEncoder
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
 
-/** What an OIDC callback may carry (C27, C29 delivery): only a one-time code. */
+/** What an OIDC callback may carry (C27, C29 delivery): a one-time code, or the server's error. */
 sealed interface OidcCallback {
     data class Code(val code: String) : OidcCallback {
         override fun toString(): String = "OidcCallback.Code"
     }
+
+    /** `?error=CODE`: the server's code (`INVALID_CREDENTIALS`, …), null if it is not one. */
+    data class Error(val code: String?) : OidcCallback
 }
 
 /**
  * The OIDC sign-in through a Chrome Custom Tab (F3 OIDC variant, C27):
  *
- * 1. [launchOidcLogin] opens `{server}/auth/oidc/authorize/{provider}` with the
- *    attempt's `client_challenge` (S256 of a verifier that only the sign-in
- *    screen holds, in memory);
- * 2. the provider and the server redirect to `kaiku://auth/callback?code=…`;
+ * 1. the sign-in screen fetches the native start
+ *    `GET {server}/auth/oidc/authorize/{provider}?client_challenge=…` with
+ *    `X-Kaiku-Client: android` ([io.wolftown.kaiku.data.api.LoginAttemptApi.oidcAuthorizeUrl];
+ *    a Custom Tab cannot send that header, and without it the server answers
+ *    400 `OIDC_CLIENT_OUTDATED`); the answer is JSON `{url}`, the provider page;
+ * 2. [openProvider] opens that page; the provider and the server redirect to
+ *    `kaiku://auth/callback?code=…`;
  * 3. [handleCallback] reads only that one-time code, which the screen redeems
  *    at `POST /auth/oidc/desktop/exchange {code, verifier}` for a `LoginStep`.
  *
- * A callback carrying tokens is refused whole: a link can never sign the app in.
- * Nothing about the flow is stored on disk.
+ * The `client_challenge` is S256 of a verifier that only the sign-in screen
+ * holds, in memory. A callback carrying tokens is refused whole: a link can
+ * never sign the app in. Nothing about the flow is stored on disk.
  */
-class OidcHandler @Inject constructor(
-    private val tokenStorage: TokenStorage
-) {
+class OidcHandler @Inject constructor() {
 
     companion object {
-        const val REDIRECT_URI = "kaiku://auth/callback"
         private const val SCHEME = "kaiku"
         private const val HOST = "auth"
         private const val PATH = "/callback"
         /** Parameters of the old token redirect; their presence voids the callback. */
         private val TOKEN_PARAMS = setOf("access_token", "refresh_token", "expires_in", "id_token", "token")
         private val logger = Logger.getLogger("OidcHandler")
+        /** A server error code; anything else in `error` is not shown or mapped. */
+        private val ERROR_CODE = Regex("^[A-Z][A-Z0-9_]{0,63}$")
     }
 
-    /** The authorize URL on [serverUrl] for [providerSlug], bound to [clientChallenge]. */
-    fun authorizeUrl(serverUrl: String, providerSlug: String, clientChallenge: String): String =
-        serverUrl.trimEnd('/') + "/auth/oidc/authorize/" + enc(providerSlug) +
-            "?redirect_uri=" + enc(REDIRECT_URI) +
-            "&client_challenge=" + enc(clientChallenge)
-
     /**
-     * Opens a Chrome Custom Tab to the configured server's OIDC authorize endpoint.
+     * Opens the provider page of a native start (its `url`) in a Chrome Custom Tab.
      *
      * @param context Activity context needed to launch the Custom Tab
-     * @param providerSlug The OIDC provider slug (e.g., "google", "github")
-     * @param clientChallenge S256 of the sign-in attempt's verifier
+     * @param providerUrl The `url` of the start's answer (an `https` page)
      */
-    fun launchOidcLogin(context: Context, providerSlug: String, clientChallenge: String) {
-        val serverUrl = tokenStorage.getServerUrl()
-            ?: throw IllegalStateException("Server URL not configured")
+    fun openProvider(context: Context, providerUrl: String) {
         try {
-            CustomTabsIntent.Builder().build()
-                .launchUrl(context, Uri.parse(authorizeUrl(serverUrl, providerSlug, clientChallenge)))
+            CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(providerUrl))
         } catch (e: Exception) {
             logger.log(Level.WARNING, "Failed to launch OIDC login", e)
             throw e
@@ -78,9 +72,9 @@ class OidcHandler @Inject constructor(
     }
 
     /**
-     * The one-time code of an OIDC callback, or null: not a callback, no code, a
-     * provider error, or any token parameter (the pre-v1.0 token redirect),
-     * which installs nothing.
+     * The one-time code of an OIDC callback, the server's error
+     * (`?error=CODE`, for the form), or null: not a callback, no code, or any
+     * token parameter (the pre-v1.0 token redirect), which installs nothing.
      */
     fun handleCallback(uri: Uri): OidcCallback? {
         if (!isOidcCallback(uri)) return null
@@ -89,12 +83,10 @@ class OidcHandler @Inject constructor(
             logger.warning("OIDC callback with tokens refused")
             return null
         }
-        if (uri.getQueryParameter("error") != null) return null
+        uri.getQueryParameter("error")?.let { return OidcCallback.Error(it.takeIf(ERROR_CODE::matches)) }
         val code = uri.getQueryParameter("code")?.takeIf { it.isNotBlank() } ?: return null
         return OidcCallback.Code(code)
     }
-
-    private fun enc(s: String): String = URLEncoder.encode(s, Charsets.UTF_8.name())
 }
 
 /**

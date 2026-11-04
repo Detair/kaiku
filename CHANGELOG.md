@@ -207,6 +207,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
+- Android: signing in with a single sign-on provider now opens the provider's page; before, the server refused the start and the sign-in never began. A failed SSO sign-in now says why (for example that the app needs an update) instead of only "SSO login failed".
+- Android: the security log and the Kaiku chat load again when they mention a passkey that was removed while waiting for its account request.
+- Admins: a password or authenticator app paused after many wrong tries can be allowed again from the user's security panel (it no longer offers only "Mark as unsafe"); an unsafe one shows that the person must replace it instead of an "Allow again" the server refuses.
+- Recovery and "Secure my account" in the browser: when the sign-in provider fails, the form stops waiting, closes the pop-up and says what went wrong.
+- Admins can "Remove device now" for a passkey that is still waiting for its account request, and "That wasn't me" on its notice removes it; both failed before and left the passkey in place.
 - The role editor no longer throws away unsaved name, colour and permission edits when the same role is updated in the background (for example by another admin or a reconnect).
 - Danger buttons (delete, ban, leave) now meet a 4.5:1 text contrast in every theme, including on hover, using their own darker fill; the danger text colour is unchanged.
 - The Android app now has the Kaiku launcher icon (adaptive icon with round variant) instead of the system default.

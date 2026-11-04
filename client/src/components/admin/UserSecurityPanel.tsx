@@ -60,6 +60,24 @@ const FACTOR_BUTTON: Record<Factor, Record<FactorState, MessageKey>> = {
   },
 };
 
+/** Shown instead of "Allow again" for a compromised factor (B.1: it leaves only by replacement). */
+const NEEDS_REPLACEMENT: Record<Factor, MessageKey> = {
+  password: "admin.userSecurity.passwordNeedsReplacement",
+  totp: "admin.userSecurity.totpNeedsReplacement",
+};
+
+/**
+ * The admin's factor actions (B.1 exit table, C27 `PUT …/factors`): "Mark as
+ * unsafe" while `active` or `throttled`, "Allow again" (the throttle reset)
+ * only while `throttled`. The server refuses `active` for a compromised
+ * factor, so none is offered; an unknown state offers nothing.
+ */
+export function factorActions(state: string): FactorState[] {
+  if (state === "throttled") return ["active", "compromised"];
+  if (state === "active") return ["compromised"];
+  return [];
+}
+
 const small = "min-h-11 px-3 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-sm text-text-primary state-disabled";
 
 export interface UserSecurityPanelProps {
@@ -166,17 +184,23 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
   const factorText = (state: string | null) =>
     state ? t(totalKey(STATE, state, "security.overview.state.unknown")) : t("security.overview.none");
 
-  /** "Mark as unsafe" / "Allow again" for one factor, if it is set. */
-  const FactorButton = (p: { factor: Factor }) => (
+  /** "Allow again" / "Mark as unsafe" for one factor, if it is set ([factorActions]). */
+  const FactorButtons = (p: { factor: Factor }) => (
     <Show when={factors()[p.factor]}>
-      {(state) => {
-        const next = (): FactorState => (state() === "compromised" ? "active" : "compromised");
-        return (
-          <button type="button" class={small} disabled={busy()} onClick={() => void setFactorState(p.factor, next())}>
-            {t(FACTOR_BUTTON[p.factor][next()])}
-          </button>
-        );
-      }}
+      {(state) => (
+        <>
+          <For each={factorActions(state())}>
+            {(next) => (
+              <button type="button" class={small} disabled={busy()} onClick={() => void setFactorState(p.factor, next)}>
+                {t(FACTOR_BUTTON[p.factor][next])}
+              </button>
+            )}
+          </For>
+          <Show when={state() === "compromised"}>
+            <p class="w-full text-sm text-text-secondary">{t(NEEDS_REPLACEMENT[p.factor], { name: name() })}</p>
+          </Show>
+        </>
+      )}
     </Show>
   );
 
@@ -243,8 +267,8 @@ const UserSecurityPanel: Component<UserSecurityPanelProps> = (props) => {
 
       <Show when={!isAdminTarget() && (factors().password || factors().totp)}>
         <div class="flex flex-wrap gap-2">
-          <FactorButton factor="password" />
-          <FactorButton factor="totp" />
+          <FactorButtons factor="password" />
+          <FactorButtons factor="totp" />
         </div>
       </Show>
 

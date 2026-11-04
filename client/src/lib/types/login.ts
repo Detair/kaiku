@@ -459,7 +459,11 @@ export function decodeSecurityEvent(raw: unknown): SecurityEvent {
     client: e.client ?? null,
     place: e.place ?? null,
     ip: e.ip ?? null,
-    authenticator: e.authenticator ?? null,
+    // C28: `label` is a string; servers before the fix sent null for a
+    // pending passkey that went with its request.
+    authenticator: e.authenticator
+      ? { ...e.authenticator, type: e.authenticator.type ?? "", label: e.authenticator.label ?? "" }
+      : null,
     request_id: e.request_id ?? null,
     details: e.details ?? {},
     repudiated_at: e.repudiated_at ?? null,

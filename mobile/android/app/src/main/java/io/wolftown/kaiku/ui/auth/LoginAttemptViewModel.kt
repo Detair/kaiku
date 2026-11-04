@@ -195,20 +195,18 @@ class LoginAttemptViewModel @Inject constructor(
         }
     }
 
-    /** F3 OIDC variant: the Custom Tab start carries this attempt's `client_challenge`. */
+    /**
+     * F3 OIDC variant: the native start (with `X-Kaiku-Client: android` and this
+     * attempt's `client_challenge`) answers the provider page, which the Custom
+     * Tab then opens. A refused start shows its error on the form.
+     */
     fun startOidc(context: Context, providerSlug: String) {
-        if (_state.value.busy || passkeyRunning) return
-        dropAttempt()
         val secret = AttemptSecret.create()
-        try {
-            oidcHandler.launchOidcLogin(context, providerSlug, secret.challenge)
+        begin(map = AuthErrorMapper::oidc) {
+            val url = api.oidcAuthorizeUrl(providerSlug, secret.challenge)
+            oidcHandler.openProvider(context, url)
             oidcSecret = secret
-            _state.update { it.copy(formError = null, retryMinutes = null) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            oidcSecret = null
-            _state.update { it.copy(formError = AuthErrorMapper.oidc(e), retryMinutes = null) }
+            _state.update { it.copy(busy = false) }
         }
     }
 
@@ -229,6 +227,15 @@ class LoginAttemptViewModel @Inject constructor(
         oidcSecret = null
         val server = tokenStorage.getServerUrl()
         val callback = oidcHandler.handleCallback(uri)
+        if (callback is OidcCallback.Error) {
+            // The server's reason (C27 OIDC hand-back), worded like a refused start.
+            val e = callback.code?.let { code ->
+                val status = if (code == "SERVICE_UNAVAILABLE") HttpStatusCode.ServiceUnavailable else HttpStatusCode.BadRequest
+                ApiException(status, "oidc callback error", code = code)
+            } ?: IllegalStateException("oidc callback error")
+            _state.update { it.copy(formError = AuthErrorMapper.oidc(e), retryMinutes = null, busy = false) }
+            return
+        }
         if (server == null || callback !is OidcCallback.Code) {
             _state.update { it.copy(formError = R.string.auth_login_sso_failed, retryMinutes = null, busy = false) }
             return

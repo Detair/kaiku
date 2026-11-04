@@ -10,6 +10,7 @@ import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LoginAttemptApiTest {
@@ -53,6 +54,36 @@ class LoginAttemptApiTest {
         api.cancel("a1", "verifier-secret")
         assertEquals("/auth/login-attempts/a1/cancel", rec.last.path)
         assertNull(rec.last.headers["Authorization"])
+    }
+
+    /**
+     * Codex v1 integration check, major 2: the native SSO start is fetched with
+     * `X-Kaiku-Client: android` (a Custom Tab cannot send it) and answers JSON
+     * `{url}`, the provider page the Custom Tab then opens.
+     */
+    @Test fun `oidc start sends the android header and reads the provider url`() = runTest {
+        rec.body = """{"url":"https://idp.example.com/authorize?client_id=kaiku&state=s1"}"""
+        val url = api.oidcAuthorizeUrl("my provider", "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+        assertEquals("https://idp.example.com/authorize?client_id=kaiku&state=s1", url)
+        assertEquals(io.ktor.http.HttpMethod.Get, rec.last.method)
+        assertEquals("/auth/oidc/authorize/my%20provider", rec.last.path)
+        assertEquals("client_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", rec.last.query)
+        assertEquals("android", rec.last.headers["X-Kaiku-Client"])
+        assertNull(rec.last.headers["Authorization"])
+    }
+
+    @Test fun `oidc start refusals keep the server code`() = runTest {
+        rec.status = HttpStatusCode.BadRequest
+        rec.body = """{"error":"OIDC_CLIENT_OUTDATED","message":"update"}"""
+        val e = runCatching { api.oidcAuthorizeUrl("google", "c") }.exceptionOrNull() as ApiException
+        assertEquals("OIDC_CLIENT_OUTDATED", e.code)
+    }
+
+    @Test fun `oidc start without a provider url fails`() = runTest {
+        rec.body = """{"url":"kaiku://auth/callback?code=x"}"""
+        assertTrue(runCatching { api.oidcAuthorizeUrl("google", "c") }.isFailure)
+        rec.body = "{}"
+        assertTrue(runCatching { api.oidcAuthorizeUrl("google", "c") }.isFailure)
     }
 
     @Test fun `oidc exchange sends code and verifier`() = runTest {
