@@ -92,6 +92,20 @@ describe("security wrappers", () => {
     expect(page.items[0].actions[0].action).toBe("unknown");
   });
 
+  // Codex v1 integration check, major 3: a passkey deleted with its request
+  // left `authenticator.label: null` (servers before the C28 fix).
+  it("a null authenticator label decodes as a string", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json(200, {
+        items: [{ id: "e1", event_type: "authenticator_added", actions: [], authenticator: { id: "pk1", type: "passkey", label: null } }],
+        has_more: false,
+        next_cursor: null,
+      }),
+    );
+    const page = await listSecurityEvents();
+    expect(page.items[0].authenticator).toEqual({ id: "pk1", type: "passkey", label: "" });
+  });
+
   it("repudiate sends part2 as a factor only when given", async () => {
     fetchMock.mockImplementation(async () => json(200, { event: { id: "e1", event_type: "sign_in", actions: [] }, ended_session_ids: [], revoked_authenticator_ids: [], compromised: [], voided_request_ids: [] }));
     await repudiateEvent("e1", null);

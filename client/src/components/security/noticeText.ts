@@ -111,7 +111,7 @@ function params(ev: SecurityEvent | undefined, subject: Subject, meId: string, c
   return {
     subject: subjectText(subject, meId),
     actor: ev?.actor?.username ?? t("security.notice.someone"),
-    device: ev?.authenticator?.label ?? ev?.client?.label ?? t("security.notice.aDevice"),
+    device: ev?.authenticator?.label || ev?.client?.label || t("security.notice.aDevice"),
     count,
   };
 }
