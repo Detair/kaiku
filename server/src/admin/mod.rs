@@ -10,6 +10,8 @@ pub mod guilds;
 pub mod middleware;
 pub mod observability;
 pub mod queries;
+pub mod security;
+pub mod setup;
 pub(crate) mod shared;
 pub mod system;
 pub mod types;
@@ -93,6 +95,10 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/security-events",
             get(crate::security_events::handlers::list_admin),
         )
+        .route(
+            "/account-requests",
+            get(crate::auth::account_requests::handlers::list_admin),
+        )
         .layer(from_fn_with_state(state.clone(), require_elevated));
 
     // Non-elevated admin routes (require system admin)
@@ -108,6 +114,23 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/users/export", get(users::export_users_csv))
         .route("/users/{id}/details", get(users::get_user_details))
+        .route(
+            "/users/{user_id}/recovery-contact",
+            put(crate::auth::recovery_contact::put_admin),
+        )
+        .route(
+            "/users/{user_id}/enrollments",
+            post(setup::issue_admin_enrollment),
+        )
+        .route(
+            "/users/{user_id}/may-approve",
+            put(security::set_may_approve),
+        )
+        .route("/users/{user_id}/factors", put(security::set_factor_state))
+        .route(
+            "/users/{user_id}/authenticators/{id}/remove",
+            post(security::remove_authenticator_now),
+        )
         .route("/guilds", get(guilds::list_guilds))
         .route("/guilds/export", get(guilds::export_guilds_csv))
         .route("/guilds/{id}/details", get(guilds::get_guild_details))

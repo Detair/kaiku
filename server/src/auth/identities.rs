@@ -22,6 +22,7 @@ use super::error::{AuthError, AuthResult};
 use super::login::start_oidc_flow;
 use super::middleware::AuthUser;
 use super::oidc::OidcFlowPurpose;
+use super::step_up::{self, StepUpAction, StepUpTarget};
 use super::types::{IdentityInfo, IdentityListResponse, OidcAuthorizeQuery};
 use crate::api::AppState;
 use crate::db;
@@ -96,9 +97,33 @@ pub async fn link_authorize(
     Path(provider): Path<String>,
     axum::extract::Query(query): axum::extract::Query<OidcAuthorizeQuery>,
 ) -> Result<Response, AuthError> {
+    // C27: a full session and the step-up `identity.link`, consumed when
+    // the flow starts (an OIDC identity is a sign-in method, B.1).
+    super::guards::require_full(&auth_user)?;
     if !admin_may_link(&state, auth_user.id, auth_user.session_id).await? {
         return Err(AuthError::ElevationRequired);
     }
+    let mut tx = state.db.begin().await?;
+    crate::approvals::transition::lock_accounts(&mut tx, &[auth_user.id]).await?;
+    let grant = step_up::consume_tx(
+        &mut tx,
+        &auth_user,
+        StepUpAction::IdentityLink,
+        &StepUpTarget::None,
+    )
+    .await?;
+    let event = step_up::record_action_tx(
+        &mut tx,
+        &auth_user,
+        &grant,
+        StepUpAction::IdentityLink,
+        &provider,
+    )
+    .await?;
+    // The grant is spent before the provider round trip (no transaction is
+    // held across it); a failed start needs a new step-up.
+    tx.commit().await?;
+    crate::security_events::spawn_delivery(&state, vec![event]);
     let want_json = query.response.as_deref() == Some("json");
     start_oidc_flow(
         &state,
@@ -202,15 +227,40 @@ pub async fn unlink_identity(
     auth_user: AuthUser,
     Path(identity_id): Path<Uuid>,
 ) -> AuthResult<StatusCode> {
-    // Ownership check, last-login-method guard, and delete run atomically under
-    // a user-row lock (see unlink_identity_guarded). Ownership failure is a 404
-    // so other accounts' identity IDs can't be probed.
-    match db::unlink_identity_guarded(&state.db, auth_user.id, identity_id).await? {
+    // C27: a full session and the step-up `identity.unlink`/id. Ownership,
+    // the last-sign-in-method guard, the grant and the delete run in one
+    // transaction under the account lock. Ownership failure is a 404 so
+    // other accounts' identity ids cannot be probed.
+    super::guards::require_full(&auth_user)?;
+    let target = StepUpTarget::Id(identity_id);
+    let mut tx = state.db.begin().await?;
+    crate::approvals::transition::lock_accounts(&mut tx, &[auth_user.id]).await?;
+    let label =
+        step_up::target_label_tx(&mut tx, auth_user.id, StepUpAction::IdentityUnlink, &target)
+            .await?;
+    match db::unlink_identity_tx(&mut tx, auth_user.id, identity_id).await? {
         db::UnlinkOutcome::Deleted => {
+            let grant =
+                step_up::consume_tx(&mut tx, &auth_user, StepUpAction::IdentityUnlink, &target)
+                    .await?;
+            let event = step_up::record_action_tx(
+                &mut tx,
+                &auth_user,
+                &grant,
+                StepUpAction::IdentityUnlink,
+                &label,
+            )
+            .await?;
+            tx.commit().await?;
+            crate::security_events::spawn_delivery(&state, vec![event]);
             tracing::info!(user_id = %auth_user.id, identity_id = %identity_id, "Unlinked OIDC identity");
             Ok(StatusCode::NO_CONTENT)
         }
-        db::UnlinkOutcome::NotFound => Err(AuthError::NotFound("Identity not found".to_string())),
+        db::UnlinkOutcome::NotFound => {
+            // The grant check comes first for an existing identity only, so
+            // an unknown id answers the same with or without a grant.
+            Err(AuthError::NotFound("Identity not found".to_string()))
+        }
         db::UnlinkOutcome::WouldLockOut => Err(AuthError::CannotUnlinkLastIdentity),
     }
 }

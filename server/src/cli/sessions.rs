@@ -77,7 +77,23 @@ pub async fn end(
         serde_json::json!({ "session_ids": ended }),
     )
     .await?;
+    let mut events = Vec::new();
+    if !ended.is_empty() {
+        events.push(
+            crate::security_events::record(
+                &mut tx,
+                crate::security_events::NewSecurityEvent::new(
+                    user_id,
+                    crate::security_events::EventType::SessionsEnded,
+                    crate::security_events::Actor::Cli,
+                    serde_json::json!({ "count": ended.len(), "by": "cli" }),
+                ),
+            )
+            .await?,
+        );
+    }
     tx.commit().await?;
+    super::deliver(ctx, events).await;
     io.print(&format!("Ended {} session(s) of {username}.", ended.len()));
     Ok(())
 }

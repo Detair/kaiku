@@ -53,6 +53,23 @@ Configure failed auth blocking using the format `max_failures,block_duration_sec
 |----------|---------|-------------|
 | `RATE_LIMIT_FAILED_AUTH` | `10,900,300` | 10 failures within 5 minutes triggers a 15-minute block |
 
+### Per-account throttling (passwords and codes)
+
+Besides the per-IP limits, every account name has a counter of consecutive
+wrong passwords, and every account a counter of wrong authenticator codes at
+sign-in (Valkey keys `ratelimit:acct:password:<sha256 of the lower-case
+name>` and `ratelimit:acct:totp:<user id>`). Unknown names count like real
+ones. From the 5th failure on, the next try waits 30 seconds, doubling with
+every further failure up to one hour (429 `TOO_MANY_ATTEMPTS` with
+`Retry-After`); a success resets the counter. Every 20th failure the account
+and the admins get a "guessing" notice; at 100 the password (or the code) is
+throttled, and 100 wrong codes after a correct password also mark that
+password as compromised.
+
+Passkey, key-phone (device) and QR sign-ins never consult these counters, and
+the per-IP failed-auth block applies only to passwords and codes, so a family
+sharing one IP is not locked out of their phones.
+
 ## Rate Limit Categories
 
 | Category | Purpose | Default Limit |

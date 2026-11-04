@@ -1410,9 +1410,28 @@ pub async fn handle_client_message(
         ClientEvent::AdminSubscribe => {
             // Check if this socket's session is elevated (an elevation
             // belongs to one session, C24)
+            // The cached elevation counts only for a live full session (the
+            // HTTP admin guard's committed-row check, B.4 rev 5): a probation
+            // session never subscribes, even with an old elevation cached.
             let is_elevated = match msg_state.session_id {
                 Some(session_id) => {
-                    crate::admin::is_elevated_admin(&state.redis, &state.db, user_id, session_id)
+                    let full = matches!(
+                        crate::auth::session_check::load_live(&state.db, session_id).await,
+                        Ok(Some(ref s)) if s.user.id == user_id
+                            && crate::auth::SessionMeta::from(s).assurance
+                                == crate::auth::assurance::Assurance::Full
+                    );
+                    let admin = matches!(
+                        crate::permissions::queries::get_system_admin(&state.db, user_id).await,
+                        Ok(Some(_))
+                    );
+                    full && admin
+                        && crate::admin::is_elevated_admin(
+                            &state.redis,
+                            &state.db,
+                            user_id,
+                            session_id,
+                        )
                         .await
                 }
                 None => false,

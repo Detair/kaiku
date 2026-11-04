@@ -42,6 +42,8 @@ argon2.workspace = true
 totp-rs.workspace = true
 # Terminal QR code of the CLI setup link (MIT; already in the tree via totp-rs).
 qrcodegen = "1.8"
+# Gzip reader for the bundled password blocklist (MIT OR Apache-2.0; already in the tree via zip).
+flate2 = "1"
 openidconnect.workspace = true
 webauthn-rs.workspace = true
 serde_cbor_2.workspace = true

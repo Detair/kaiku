@@ -40,6 +40,10 @@ pub enum GovernanceError {
     #[error(transparent)]
     Database(#[from] sqlx::Error),
 
+    /// A guard of the auth layer (full session, step-up grant).
+    #[error(transparent)]
+    Auth(#[from] crate::auth::AuthError),
+
     /// The database or Valkey could not be used for a step that must
     /// happen (ending the sessions of a deletion): retry.
     #[error("Service temporarily unavailable")]
@@ -51,7 +55,11 @@ pub enum GovernanceError {
 
 impl IntoResponse for GovernanceError {
     fn into_response(self) -> Response {
+        if let Self::Auth(e) = self {
+            return e.into_response();
+        }
         let (status, code, message) = match &self {
+            Self::Auth(_) => unreachable!("handled above"),
             Self::ExportNotFound => (StatusCode::NOT_FOUND, "NOT_FOUND", self.to_string()),
             Self::ExportAlreadyPending => (StatusCode::CONFLICT, "CONFLICT", self.to_string()),
             Self::ExportExpired => (StatusCode::GONE, "EXPORT_EXPIRED", self.to_string()),

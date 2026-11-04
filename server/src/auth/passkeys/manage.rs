@@ -118,7 +118,17 @@ pub async fn remove(
     // Before the account lock: setting a missing handle writes the user row.
     let handle = queries::user_handle(&state.db, auth.id).await?;
     let mut tx = state.db.begin().await?;
-    crate::approvals::transition::lock_accounts(&mut tx, &[auth.id]).await?;
+    crate::approvals::transition::lock_route_change(
+        &mut tx,
+        auth.id,
+        &[],
+        &[AuthenticatorRef::passkey(id)],
+    )
+    .await
+    .map_err(|e| match e {
+        crate::approvals::transition::TransitionError::Db(d) => AuthError::Database(d),
+        _ => AuthError::ServiceUnavailable,
+    })?;
     let row = queries::find_own(&mut *tx, auth.id, id)
         .await?
         .filter(|r| r.state == PasskeyState::Active)

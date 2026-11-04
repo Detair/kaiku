@@ -36,12 +36,32 @@ pub struct RegisterRequest {
     /// Email address (optional).
     #[validate(email)]
     pub email: Option<String>,
-    /// Password (8-128 characters).
-    #[validate(length(min = 8, max = 128))]
-    pub password: String,
+    /// Password (optional, B.1; 8–128 characters and the blocklist when
+    /// given).
+    #[serde(default)]
+    pub password: Option<String>,
     /// Display name (optional, defaults to username).
     #[validate(length(max = 64))]
     pub display_name: Option<String>,
+}
+
+/// `POST /auth/register` answer (C27): the account and its registration
+/// ticket (native clients; browsers get the cookie), never a session.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct RegisterResponse {
+    pub user_id: Uuid,
+    pub username: String,
+    pub ticket_expires_at: chrono::DateTime<chrono::Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_ticket: Option<String>,
+}
+
+impl std::fmt::Debug for RegisterResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisterResponse")
+            .field("user_id", &self.user_id)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Login request.
@@ -51,8 +71,13 @@ pub struct LoginRequest {
     pub username: String,
     /// Password.
     pub password: String,
-    /// MFA code (required if MFA is enabled).
+    /// Gone in v1.0 (C27): sent → 400 `CLIENT_OUTDATED`.
+    #[serde(default)]
     pub mfa_code: Option<String>,
+    /// Native clients: S256 of their verifier (the attempt's collection
+    /// secret); browsers get the attempt cookie instead.
+    #[serde(default)]
+    pub client_challenge: Option<String>,
 }
 
 impl std::fmt::Debug for LoginRequest {
@@ -60,8 +85,7 @@ impl std::fmt::Debug for LoginRequest {
         f.debug_struct("LoginRequest")
             .field("username", &self.username)
             .field("password", &"[REDACTED]")
-            .field("mfa_code", &self.mfa_code.as_ref().map(|_| "[REDACTED]"))
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -180,20 +204,26 @@ pub struct MfaSetupResponse {
     pub qr_code_url: String,
 }
 
-/// MFA backup codes response (shown exactly once upon generation).
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MfaBackupCodesResponse {
-    /// Plaintext backup codes (shown to user once; store them securely).
-    pub codes: Vec<String>,
+/// `POST /auth/recovery-codes` (C27): the new set, shown once.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct RecoveryCodesResponse {
+    /// 10 codes, `ABCDE-FGHIJ-KLM`.
+    pub recovery_codes: Vec<String>,
 }
 
-/// MFA backup code count response.
+impl std::fmt::Debug for RecoveryCodesResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecoveryCodesResponse")
+            .field("recovery_codes", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// `GET /auth/recovery-codes/count` (C27).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MfaBackupCodeCountResponse {
-    /// Number of remaining unused backup codes.
-    pub remaining: i64,
-    /// Total number of codes originally generated.
-    pub total: i64,
+pub struct RecoveryCodesCountResponse {
+    /// Unused codes of the current set.
+    pub left: i64,
 }
 
 /// MFA verification request.
@@ -201,25 +231,6 @@ pub struct MfaBackupCodeCountResponse {
 pub struct MfaVerifyRequest {
     /// 6-digit TOTP code.
     pub code: String,
-}
-
-/// Request to generate new MFA backup codes (C24).
-///
-/// Needs a current TOTP code from the authenticator app; backup codes are
-/// not accepted here.
-#[derive(Deserialize, Validate, utoipa::ToSchema)]
-pub struct BackupCodesRequest {
-    /// Current 6-digit TOTP code.
-    #[validate(length(min = 1, max = 16))]
-    pub mfa_code: String,
-}
-
-impl std::fmt::Debug for BackupCodesRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BackupCodesRequest")
-            .field("mfa_code", &"[REDACTED]")
-            .finish()
-    }
 }
 
 /// Update profile request.
@@ -245,25 +256,19 @@ pub struct UpdateProfileResponse {
     pub updated: Vec<String>,
 }
 
-/// Update password request.
-#[derive(Deserialize, Validate, utoipa::ToSchema)]
+/// `POST /auth/me/password {new_password}` (C27). `current_password` and
+/// `revoke_others` of older clients are ignored: the step-up grant
+/// `password.set` authorises the change.
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdatePasswordRequest {
-    /// Current password.
-    pub current_password: String,
-    /// New password (8-128 characters).
-    #[validate(length(min = 8, max = 128))]
+    /// New password (8–128 characters, blocklist, B.1).
     pub new_password: String,
-    /// Whether to revoke all other sessions after password change.
-    #[serde(default)]
-    pub revoke_others: bool,
 }
 
 impl std::fmt::Debug for UpdatePasswordRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UpdatePasswordRequest")
-            .field("current_password", &"[REDACTED]")
             .field("new_password", &"[REDACTED]")
-            .field("revoke_others", &self.revoke_others)
             .finish()
     }
 }
@@ -353,22 +358,6 @@ pub struct RevokeAllResponse {
     pub revoked_count: i64,
 }
 
-/// QR login token redemption request.
-#[derive(Deserialize, utoipa::ToSchema)]
-pub struct QrRedeemRequest {
-    /// One-time QR login token.
-    pub token: String,
-}
-
-/// QR login token creation response.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct QrCreateResponse {
-    /// One-time QR login token.
-    pub token: String,
-    /// Token lifetime in seconds.
-    pub expires_in: u64,
-}
-
 /// OIDC callback query parameters.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct OidcCallbackQuery {
@@ -392,6 +381,10 @@ pub struct OidcAuthorizeQuery {
     /// `code` that only that verifier can redeem at
     /// `POST /auth/oidc/desktop/exchange`. Missing → 400 `OIDC_CLIENT_OUTDATED`.
     pub client_challenge: Option<String>,
+    /// Desktop sign-in (C29 step 8): the loopback listener's port …
+    pub loopback_port: Option<u16>,
+    /// … and its per-flow path (43 b64u characters).
+    pub callback_path: Option<String>,
     /// When `"json"`, return the provider authorization URL as a JSON body
     /// (`{"url": ...}`) instead of a 307 redirect. Used by the browser link
     /// flow, which calls this endpoint as an authenticated XHR (a top-level
@@ -415,20 +408,4 @@ pub struct ReauthMethodsResponse {
     pub passkey: bool,
     /// An active key device of the account can confirm it (`device_stepup`).
     pub device: bool,
-}
-
-/// Forgot password request.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct ForgotPasswordRequest {
-    /// Email address of the account.
-    pub email: String,
-}
-
-/// Reset password request.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct ResetPasswordRequest {
-    /// The reset token (raw, as received via email).
-    pub token: String,
-    /// The new password (8-128 characters).
-    pub new_password: String,
 }

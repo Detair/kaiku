@@ -32,6 +32,22 @@ Setting up and removing a key phone also posts a security notice to the
 account's Kaiku chat and to every admin, so nobody is changed silently. Ended
 sessions are signed out on their devices within seconds.
 
+### Recovery commands
+
+| Command | Effect |
+|---|---|
+| `kaiku-admin factor reset <username> (password \| totp)` | A throttled or compromised password or authenticator app works again; its sign-in delay is cleared. |
+| `kaiku-admin throttle reset <username>` | Clears throttled states and sign-in delays of password and authenticator app. |
+| `kaiku-admin may-approve <username> (on \| off)` | Turns phone confirmations for the account on or off. |
+| `kaiku-admin recovery-contact <username> (<contact> \| --none)` | Names or removes the recovery contact (they still confirm it in the app). |
+| `kaiku-admin admin demote <username>` | Removes the admin role; the admin's open admin requests are void. |
+| `kaiku-admin request cancel <request-id>` | Cancels an open account request. |
+
+They also work on admin accounts. Every command writes a `cli.*` audit row;
+changes with a security event (contact, sessions ended, devices removed, admin
+role removed, request cancelled) notify the account, its recovery contact and
+every admin.
+
 ## Give the first admin a key phone
 
 On a new server, or when the only admin lost their phone:
@@ -71,7 +87,30 @@ its notifications after the last notice. The account and all admins get a
 notice. If it was the account's only key, give the person a new one with
 `enroll`.
 
+## Before the upgrade to v1.0 (checklist)
+
+1. Set `PUBLIC_URL` to the address members use; passkeys and setup links are
+   bound to it.
+2. Admins who sign in with a password only: turn on an authenticator app
+   before the upgrade. Sessions of accounts with neither an authenticator app
+   nor a key phone or passkey end at the upgrade.
+3. Give the first admin a key phone with `kaiku-admin enroll <admin>` on the
+   server host.
+4. Name a recovery contact for every account and have them confirm it. A
+   contact counts for a request only when they confirmed at least one delay
+   period (`ACCOUNT_REQUEST_DELAY_HOURS`) before it started.
+5. On a server with a single admin, accounts without another canceller can
+   only be recovered with `kaiku-admin` on the host. Consider a second admin.
+
+E-mail password reset is gone: a forgotten password is replaced through an
+account recovery with a recovery code, or by an admin.
+
 ## After the upgrade to v1.0
+
+- Accounts with a password (or a sign-in provider) and an authenticator app,
+  but no key phone or passkey, get **Secure my account**: a delayed request
+  that adds a phone or passkey. The Kaiku chat reminds them every 30 days
+  until they do.
 
 - Every session from before the upgrade is a limited session: chat, calls and
   the own profile, but not the admin area and not elevation. Give each admin a

@@ -33,10 +33,12 @@ pub struct RequestSession {
     pub absolute_expires_at: DateTime<Utc>,
 }
 
-/// The `WHERE` clause that makes a session live.
+/// The `WHERE` clause that makes a session live (alias `s`; the one source
+/// of truth, also for the lock-time re-checks).
+#[macro_export]
 macro_rules! live_clause {
     () => {
-        "s.ended_at IS NULL AND s.expires_at > NOW() AND s.absolute_expires_at > NOW()"
+        "s.ended_at IS NULL AND s.expires_at > clock_timestamp() AND s.absolute_expires_at > clock_timestamp()"
     };
 }
 

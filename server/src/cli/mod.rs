@@ -16,6 +16,7 @@
 
 pub mod devices;
 pub mod enroll;
+pub mod recovery;
 pub mod sessions;
 
 use std::future::Future;
@@ -34,7 +35,13 @@ pub const USAGE: &str = "Usage:
   kaiku-admin devices list <username>
   kaiku-admin devices remove <username> <device-id>
   kaiku-admin sessions list <username>
-  kaiku-admin sessions end <username> (<session-id> | --all)";
+  kaiku-admin sessions end <username> (<session-id> | --all)
+  kaiku-admin factor reset <username> (password | totp)
+  kaiku-admin throttle reset <username>
+  kaiku-admin may-approve <username> (on | off)
+  kaiku-admin recovery-contact <username> (<contact-username> | --none)
+  kaiku-admin admin demote <username>
+  kaiku-admin request cancel <request-id>";
 
 /// A CLI command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +65,29 @@ pub enum Command {
     SessionsEnd {
         username: String,
         session: Option<Uuid>,
+    },
+    /// Clear a throttled or compromised password or TOTP.
+    FactorReset {
+        username: String,
+        factor: crate::auth::factors::Factor,
+    },
+    ThrottleReset {
+        username: String,
+    },
+    MayApprove {
+        username: String,
+        on: bool,
+    },
+    /// `None` removes the contact.
+    RecoveryContact {
+        username: String,
+        contact: Option<String>,
+    },
+    AdminDemote {
+        username: String,
+    },
+    RequestCancel {
+        request: Uuid,
     },
 }
 
@@ -96,6 +126,35 @@ impl Command {
             ["sessions", "end", u, s] => Ok(Self::SessionsEnd {
                 username: username(u),
                 session: Some(uuid_arg(s, "<session-id>")?),
+            }),
+            ["factor", "reset", u, "password"] => Ok(Self::FactorReset {
+                username: username(u),
+                factor: crate::auth::factors::Factor::Password,
+            }),
+            ["factor", "reset", u, "totp"] => Ok(Self::FactorReset {
+                username: username(u),
+                factor: crate::auth::factors::Factor::Totp,
+            }),
+            ["throttle", "reset", u] => Ok(Self::ThrottleReset {
+                username: username(u),
+            }),
+            ["may-approve", u, on @ ("on" | "off")] => Ok(Self::MayApprove {
+                username: username(u),
+                on: *on == "on",
+            }),
+            ["recovery-contact", u, "--none"] => Ok(Self::RecoveryContact {
+                username: username(u),
+                contact: None,
+            }),
+            ["recovery-contact", u, c] => Ok(Self::RecoveryContact {
+                username: username(u),
+                contact: Some(username(c)),
+            }),
+            ["admin", "demote", u] => Ok(Self::AdminDemote {
+                username: username(u),
+            }),
+            ["request", "cancel", r] => Ok(Self::RequestCancel {
+                request: uuid_arg(r, "request-id")?,
             }),
             [] => Err(UsageError("No command given.".into())),
             _ => Err(UsageError("Unknown command or wrong arguments.".into())),
@@ -230,5 +289,30 @@ pub async fn run(ctx: &CliCtx, cmd: Command, io: &mut impl CliIo) -> anyhow::Res
         Command::SessionsEnd { username, session } => {
             sessions::end(ctx, &username, session, io).await
         }
+        Command::FactorReset { username, factor } => {
+            recovery::factor_reset(ctx, &username, factor, io).await
+        }
+        Command::ThrottleReset { username } => recovery::throttle_reset(ctx, &username, io).await,
+        Command::MayApprove { username, on } => recovery::may_approve(ctx, &username, on, io).await,
+        Command::RecoveryContact { username, contact } => {
+            recovery::recovery_contact(ctx, &username, contact.as_deref(), io).await
+        }
+        Command::AdminDemote { username } => recovery::admin_demote(ctx, &username, io).await,
+        Command::RequestCancel { request } => recovery::request_cancel(ctx, request, io).await,
+    }
+}
+
+/// Deliver notices right after a commit (the minute sweep retries).
+pub(crate) async fn deliver(ctx: &CliCtx, events: Vec<Uuid>) {
+    if events.is_empty() {
+        return;
+    }
+    match ctx.app_state() {
+        Ok(state) => {
+            if let Err(e) = crate::security_events::notices::deliver(&state, &events).await {
+                tracing::warn!(error = %e, "notice delivery failed; the sweep retries");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "no server state for notices; the sweep delivers"),
     }
 }

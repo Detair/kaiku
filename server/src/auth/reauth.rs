@@ -1,20 +1,10 @@
-//! Re-authentication for sensitive actions (C24).
+//! Shared TOTP acceptance and `GET /auth/reauth/methods` (C27).
 //!
-//! Admin elevation and backup-code regeneration ask the caller to prove the
-//! account again: the password and, when MFA is on, a current TOTP code
-//! (backup codes are not accepted). A password change checks the current
-//! password with the same helpers.
-//!
-//! Admin elevation can instead be confirmed with a fresh sign-in at a linked
-//! OIDC provider (`POST /auth/reauth/oidc/authorize/{provider}`); the shared
-//! OIDC callback hands that flow to [`complete_oidc_reauth`].
-//! `GET /auth/reauth/methods` reports which methods the caller has.
-//!
-//! Every failure is recorded twice with `RateLimiter::record_failed_auth`:
-//! - per client IP, which the `check_ip_not_blocked` layer on these routes (and on `/auth/login`)
-//!   enforces;
-//! - per account (`reauth:{user_id}`), enforced here, so failures spread over several addresses
-//!   still lock the account's re-authentication.
+//! C24's password/TOTP and OIDC re-authentication is gone: sensitive actions
+//! need a full session and an action-bound step-up grant (`step_up`, F7).
+//! What remains here is the TOTP replay store ([`accept_totp`]) used by the
+//! TOTP sign-in step and the TOTP setup, the client IP helper, and the list
+//! of step-up methods the caller has.
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -28,16 +18,9 @@ use uuid::Uuid;
 use super::error::{AuthError, AuthResult};
 use super::mfa_crypto::decrypt_mfa_secret;
 use super::middleware::AuthUser;
-use super::password::verify_password;
 use super::types::ReauthMethodsResponse;
 use crate::api::AppState;
-use crate::db::find_user_by_id;
-use crate::ratelimit::{extract_client_ip, normalize_ip, RateLimitCategory};
-
-/// Failed-attempt key of an account's re-authentication.
-fn account_key(user_id: Uuid) -> String {
-    format!("reauth:{user_id}")
-}
+use crate::ratelimit::extract_client_ip;
 
 /// The client IP as the rate limiter sees it (trusted proxies applied).
 pub fn client_ip(state: &AppState, headers: &HeaderMap, addr: SocketAddr) -> IpAddr {
@@ -49,65 +32,6 @@ pub fn client_ip(state: &AppState, headers: &HeaderMap, addr: SocketAddr) -> IpA
         ),
         None => addr.ip(),
     }
-}
-
-/// Refuse while the account's re-authentication is locked after failures.
-pub async fn ensure_not_locked(state: &AppState, user_id: Uuid) -> AuthResult<()> {
-    let Some(ref limiter) = state.rate_limiter else {
-        return Ok(());
-    };
-    let key = account_key(user_id);
-    match limiter.is_blocked(&key).await {
-        Ok(false) => Ok(()),
-        Ok(true) => {
-            let retry_after = limiter
-                .get_block_ttl(&key)
-                .await
-                .unwrap_or_else(|| limiter.config().limits.failed_auth.block_duration_secs);
-            Err(AuthError::TooManyAttempts { retry_after })
-        }
-        // Fails closed (503), like recording a failure and the other auth
-        // limits (unless the operator set `RATE_LIMIT_FAIL_OPEN=true`).
-        Err(e) => {
-            tracing::debug!(error = %e, %user_id, "Cannot check re-authentication lock");
-            if limiter.allow_during_outage(RateLimitCategory::FailedAuth) {
-                Ok(())
-            } else {
-                Err(AuthError::ServiceUnavailable)
-            }
-        }
-    }
-}
-
-/// Record a failed re-authentication for the client IP and the account.
-///
-/// Fails closed: if the failure cannot be recorded the request is refused
-/// with 503 `SERVICE_UNAVAILABLE`, so a limiter outage cannot be used to
-/// guess without limit (unless the operator set `RATE_LIMIT_FAIL_OPEN=true`).
-pub async fn record_failure(state: &AppState, user_id: Uuid, client_ip: IpAddr) -> AuthResult<()> {
-    let Some(ref limiter) = state.rate_limiter else {
-        return Ok(());
-    };
-    for key in [normalize_ip(client_ip), account_key(user_id)] {
-        if let Err(e) = limiter.record_failed_auth(&key).await {
-            tracing::debug!(error = %e, %user_id, "Cannot record failed re-authentication");
-            if !limiter.allow_during_outage(RateLimitCategory::FailedAuth) {
-                return Err(AuthError::ServiceUnavailable);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Check a password against an Argon2 hash off the async runtime.
-///
-/// A malformed stored hash counts as a mismatch.
-pub async fn password_matches(password: &str, hash: &str) -> AuthResult<bool> {
-    let password = password.to_owned();
-    let hash = hash.to_owned();
-    tokio::task::spawn_blocking(move || verify_password(&password, &hash).unwrap_or(false))
-        .await
-        .map_err(|e| AuthError::Internal(format!("Password check failed: {e}")))
 }
 
 /// Lifetime of the last accepted TOTP step per user (covers the ±1 step
@@ -127,9 +51,12 @@ return 1
 
 /// Build the TOTP generator of an account (no skew; steps are checked one by
 /// one so the matching step is known).
-fn account_totp(state: &AppState, encrypted_secret: &str, username: &str) -> AuthResult<TOTP> {
-    let encryption_key = state
-        .config
+fn account_totp(
+    config: &crate::config::Config,
+    encrypted_secret: &str,
+    username: &str,
+) -> AuthResult<TOTP> {
+    let encryption_key = config
         .mfa_encryption_key
         .as_ref()
         .ok_or_else(|| AuthError::Internal("MFA encryption not configured".to_string()))?;
@@ -165,9 +92,27 @@ pub async fn accept_totp(
     username: &str,
     code: &str,
 ) -> AuthResult<bool> {
+    accept_totp_ctx(
+        &super::ctx::AuthCtx::from(state),
+        user_id,
+        encrypted_secret,
+        username,
+        code,
+    )
+    .await
+}
+
+/// [`accept_totp`] on borrowed handles (core functions, the CLI).
+pub async fn accept_totp_ctx(
+    ctx: &super::ctx::AuthCtx<'_>,
+    user_id: Uuid,
+    encrypted_secret: &str,
+    username: &str,
+    code: &str,
+) -> AuthResult<bool> {
     use fred::interfaces::LuaInterface;
 
-    let totp = account_totp(state, encrypted_secret, username)?;
+    let totp = account_totp(ctx.config, encrypted_secret, username)?;
     let now = u64::try_from(Utc::now().timestamp()).unwrap_or(0);
     let current = now / 30;
     let matched = [current.saturating_sub(1), current, current + 1]
@@ -177,7 +122,7 @@ pub async fn accept_totp(
         return Ok(false);
     };
 
-    let stored: i64 = state
+    let stored: i64 = ctx
         .redis
         .eval(
             TOTP_ACCEPT_SCRIPT,
@@ -193,93 +138,6 @@ pub async fn accept_totp(
         tracing::info!(%user_id, "Replayed TOTP code refused");
     }
     Ok(stored == 1)
-}
-
-/// The factors a successful [`verify_reauth`] actually checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReauthFactors {
-    /// The password was verified.
-    pub password: bool,
-    /// A TOTP code was verified.
-    pub totp: bool,
-}
-
-/// Confirm the account again before a sensitive action (C24).
-///
-/// - `require_password`: the account password must be given and match; an account without a local
-///   password gets `REAUTH_UNAVAILABLE` (the elevate handler turns that into `REAUTH_OIDC_REQUIRED`
-///   when a usable linked provider exists).
-/// - When the account has MFA on, `mfa_code` must be a current TOTP code (`MFA_CODE_REQUIRED` when
-///   missing). Backup codes are not accepted, and a code is accepted only once.
-/// - A wrong password or code answers `INVALID_CREDENTIALS` without saying which one was wrong, and
-///   is recorded as a failed attempt.
-/// - While the account is locked after failures the answer is 429.
-///
-/// The missing-code check runs before any secret is verified, so that answer
-/// says nothing about the password. Returns the factors that were verified.
-pub async fn verify_reauth(
-    state: &AppState,
-    user_id: Uuid,
-    password: Option<&str>,
-    mfa_code: Option<&str>,
-    require_password: bool,
-    client_ip: IpAddr,
-) -> Result<ReauthFactors, AuthError> {
-    ensure_not_locked(state, user_id).await?;
-
-    let user = find_user_by_id(&state.db, user_id)
-        .await
-        .map_err(AuthError::Database)?
-        .ok_or(AuthError::UserNotFound)?;
-
-    let password = password.filter(|p| !p.is_empty());
-    let mfa_code = mfa_code.map(str::trim).filter(|c| !c.is_empty());
-
-    let password_check = if require_password {
-        let hash = user
-            .password_hash
-            .as_deref()
-            .ok_or(AuthError::ReauthUnavailable)?;
-        let given =
-            password.ok_or_else(|| AuthError::Validation("password: is required".to_string()))?;
-        Some((given, hash))
-    } else {
-        None
-    };
-
-    let mfa_secret = user.mfa_secret.as_deref();
-    if mfa_secret.is_some() && mfa_code.is_none() {
-        return Err(AuthError::MfaCodeRequired);
-    }
-    if password_check.is_none() && mfa_secret.is_none() {
-        // Nothing to confirm the account with.
-        return Err(AuthError::ReauthUnavailable);
-    }
-
-    let mut confirmed = true;
-    let mut factors = ReauthFactors {
-        password: false,
-        totp: false,
-    };
-    if let Some((given, hash)) = password_check {
-        let ok = password_matches(given, hash).await?;
-        confirmed &= ok;
-        factors.password = ok;
-    }
-    // The TOTP step is only consumed when the password was right.
-    if let (Some(secret), Some(code)) = (mfa_secret, mfa_code) {
-        let ok = confirmed && accept_totp(state, user_id, secret, &user.username, code).await?;
-        confirmed &= ok;
-        factors.totp = ok;
-    }
-
-    if confirmed {
-        Ok(factors)
-    } else {
-        record_failure(state, user_id, client_ip).await?;
-        tracing::info!(%user_id, "Re-authentication failed");
-        Err(AuthError::InvalidCredentials)
-    }
 }
 
 // ============================================================================
@@ -314,106 +172,4 @@ pub async fn get_reauth_methods(
     .await?;
     let passkey = super::passkeys::queries::active_count(&state.db, auth_user.id).await? > 0;
     Ok(Json(ReauthMethodsResponse { passkey, device }))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-    use std::time::Duration;
-
-    use axum::response::IntoResponse;
-    use fred::prelude::{ClientLike, Config as ValkeyConfig, PerformanceConfig};
-    use sqlx::PgPool;
-
-    use super::*;
-    use crate::api::AppStateConfig;
-    use crate::config::Config;
-    use crate::ratelimit::{RateLimitConfig, RateLimiter, RateLimits, TrustedProxies};
-
-    /// App state whose rate limiter talks to a Valkey client that fails every
-    /// command (connected, then closed; a short command timeout turns the wait
-    /// into an error).
-    async fn state_with_failing_limiter(pool: PgPool, fail_open: bool) -> AppState {
-        let config = Config::default_for_test();
-        let redis = crate::db::create_redis_client(&config.redis_url)
-            .await
-            .expect("Valkey");
-        let failing = fred::clients::Client::new(
-            ValkeyConfig::from_url(&config.redis_url).expect("Valkey URL"),
-            Some(PerformanceConfig {
-                default_command_timeout: Duration::from_millis(300),
-                ..PerformanceConfig::default()
-            }),
-            None,
-            None,
-        );
-        failing.connect();
-        failing.wait_for_connect().await.expect("connect Valkey");
-        failing.quit().await.expect("quit Valkey");
-        let limiter = RateLimiter::new(
-            failing,
-            RateLimitConfig {
-                enabled: true,
-                redis_key_prefix: format!("test:rl:{}", Uuid::new_v4()),
-                fail_open,
-                trusted_proxies: TrustedProxies::default(),
-                allowlist: HashSet::new(),
-                limits: RateLimits::default(),
-            },
-        );
-        AppState::new(AppStateConfig {
-            db: pool,
-            redis,
-            config: config.clone(),
-            s3: None,
-            sfu: crate::voice::SfuServer::new(std::sync::Arc::new(config), None)
-                .expect("SfuServer"),
-            rate_limiter: Some(limiter),
-            screen_share_limiter: None,
-            email: None,
-            oidc_manager: None,
-            http_client: reqwest::Client::new(),
-        })
-    }
-
-    fn status_of(err: AuthError) -> u16 {
-        err.into_response().status().as_u16()
-    }
-
-    /// Re-auth lock checks and failure recording fail closed with 503
-    /// `SERVICE_UNAVAILABLE` (not 500) when the limiter cannot reach Valkey.
-    #[sqlx::test]
-    async fn reauth_limiter_outage_answers_503(pool: PgPool) {
-        let state = state_with_failing_limiter(pool, false).await;
-        let user_id = Uuid::new_v4();
-        let ip: IpAddr = "203.0.113.7".parse().expect("ip");
-
-        let err = ensure_not_locked(&state, user_id)
-            .await
-            .expect_err("lock check fails closed");
-        assert!(matches!(err, AuthError::ServiceUnavailable), "{err:?}");
-        assert_eq!(status_of(err), 503);
-
-        let err = record_failure(&state, user_id, ip)
-            .await
-            .expect_err("failure recording fails closed");
-        assert!(matches!(err, AuthError::ServiceUnavailable), "{err:?}");
-        assert_eq!(status_of(err), 503);
-    }
-
-    /// `RATE_LIMIT_FAIL_OPEN=true` (explicit operator opt-in) also opens the
-    /// re-auth limiter during an outage, like the other auth limits.
-    #[sqlx::test]
-    async fn reauth_limiter_outage_respects_fail_open(pool: PgPool) {
-        let state = state_with_failing_limiter(pool, true).await;
-        let user_id = Uuid::new_v4();
-        let ip: IpAddr = "203.0.113.7".parse().expect("ip");
-
-        ensure_not_locked(&state, user_id)
-            .await
-            .expect("fail-open lets the check pass");
-        record_failure(&state, user_id, ip)
-            .await
-            .expect("fail-open lets the request continue");
-    }
 }

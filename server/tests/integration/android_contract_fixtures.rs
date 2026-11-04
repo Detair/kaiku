@@ -711,3 +711,68 @@ fn android_golden_step_up_grant() {
         serde_json::to_value(&grant).expect("serialize grant"),
     );
 }
+
+/// C27 `LoginAttempt` with a freshly minted QR (F2, F3).
+#[test]
+fn android_golden_login_attempt() {
+    let attempt = vc_server::auth::login_attempts::types::LoginAttempt {
+        attempt_id: Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap(),
+        kind: "password".into(),
+        state: "open".into(),
+        expires_at: ts("2026-11-03T12:10:00Z"),
+        qr: Some(vc_server::auth::login_attempts::types::LoginQr {
+            payload: "kaiku://login/v1?o=https%3A%2F%2Fchat.example.com&t=oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8".into(),
+            expires_at: ts("2026-11-03T12:01:00Z"),
+        }),
+        totp_available: true,
+    };
+    check_golden(
+        "login_attempt.json",
+        serde_json::to_value(&attempt).expect("serialize attempt"),
+    );
+}
+
+/// C26 `ApprovalChallenge` of kind `login` (its prefix and context hash are
+/// computed by the server's own code).
+#[test]
+fn android_golden_approval_challenge_login() {
+    use vc_server::approvals::context::{CanonicalContext, LoginContext, Variant};
+    use vc_server::approvals::core::ChallengeRow;
+    let attempt_id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
+    let context = CanonicalContext::Login(LoginContext {
+        attempt_id,
+        collection_hash: [0x13; 32],
+        variant: Variant::Qr,
+        client_class: vc_server::auth::client_class::ClientClass::Desktop,
+        client_label: "Kaiku desktop on Windows 10".into(),
+        created_at: ts("2026-11-03T12:00:00Z").timestamp(),
+        server_name: "Familie Müller".into(),
+        place: String::new(),
+        username: "alice".into(),
+    });
+    let row = ChallengeRow {
+        id: Uuid::parse_str("33333333-3333-4333-8333-333333333301").unwrap(),
+        kind: "login".into(),
+        variant: Some("qr".into()),
+        approver_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+        subject_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+        device_id: Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
+        requester_kind: "login_attempt".into(),
+        requester_id: attempt_id,
+        nonce: (0u8..32).collect(),
+        context_hash: context.hash().to_vec(),
+        context: context.to_json(),
+        display: serde_json::json!({}),
+        transfer_hash: None,
+        state: "issued".into(),
+        created_at: ts("2026-11-03T12:00:00Z"),
+        expires_at: ts("2026-11-03T12:02:00Z"),
+        decided_at: None,
+        consumed_at: None,
+    };
+    check_golden(
+        "approval_challenge_login.json",
+        serde_json::to_value(row.to_wire("https://chat.example.com").expect("wire"))
+            .expect("serialize challenge"),
+    );
+}

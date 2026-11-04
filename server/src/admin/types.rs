@@ -63,9 +63,7 @@ pub struct CreateAnnouncementRequest {
     pub ends_at: Option<DateTime<Utc>>,
 }
 
-/// Request to create a local account with a temporary password.
-///
-/// The new user must replace the temporary password at first sign-in.
+/// Request to create a passwordless local account (C27).
 #[derive(Deserialize, Validate, utoipa::ToSchema)]
 pub struct CreateUserRequest {
     /// Username (3-32 lowercase alphanumeric + underscore).
@@ -77,9 +75,14 @@ pub struct CreateUserRequest {
     /// Display name (optional, defaults to the username).
     #[validate(length(max = 64))]
     pub display_name: Option<String>,
-    /// Temporary password handed to the user (8-128 characters).
-    #[validate(length(min = 8, max = 128))]
-    pub temporary_password: String,
+    /// Removed in v1.0 (accounts are passwordless): sending it → 400
+    /// `VALIDATION_ERROR`.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, deprecated)]
+    pub temporary_password: Option<serde_json::Value>,
+    /// The new account's recovery contact (C28; not an admin).
+    #[serde(default)]
+    pub recovery_contact_id: Option<Uuid>,
     /// Servers (guilds) the new account joins as an active member. Optional,
     /// at most 10; duplicates are ignored and every id must exist.
     #[serde(default)]
@@ -92,7 +95,11 @@ impl std::fmt::Debug for CreateUserRequest {
         f.debug_struct("CreateUserRequest")
             .field("username", &self.username)
             .field("display_name", &self.display_name)
-            .field("temporary_password", &"[REDACTED]")
+            .field(
+                "temporary_password",
+                &self.temporary_password.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("recovery_contact_id", &self.recovery_contact_id)
             .field("guild_ids", &self.guild_ids)
             .finish()
     }

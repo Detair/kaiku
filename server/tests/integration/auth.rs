@@ -352,32 +352,33 @@ async fn test_login_from_tauri_origin_returns_refresh_token_in_body(pool: PgPool
     )
     .await;
     let server = spawn_test_server(app.router.clone()).await;
+    let _ = &server;
     let username = format!("tauri_{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let hash = hash_password("password123").expect("hash");
-    vc_server::db::create_user(&pool, &username, "Tauri", None, &hash)
+    let user = vc_server::db::create_user(&pool, &username, "Tauri", None, &hash)
         .await
         .expect("create user");
+    let totp = super::helpers::login::enable_totp(&pool, &app.config, user.id, &username).await;
 
-    let login = |origin: &'static str| {
-        let url = format!("{}/auth/login", server.url);
-        let username = username.clone();
-        async move {
-            reqwest::Client::new()
-                .post(url)
-                .header("Origin", origin)
-                .json(&serde_json::json!({ "username": username, "password": "password123" }))
-                .send()
-                .await
-                .expect("login")
-        }
-    };
-
-    let body: serde_json::Value = login("tauri://localhost").await.json().await.unwrap();
-    assert!(body["refresh_token"].as_str().is_some(), "{body}");
-
-    let body: serde_json::Value = login("https://kaiku.example").await.json().await.unwrap();
-    assert!(
-        body.get("refresh_token").map_or(true, |v| v.is_null()),
-        "{body}"
-    );
+    // v1.0: the session comes from the second step (here TOTP, F4).
+    for (origin, in_body) in [
+        ("tauri://localhost", true),
+        ("https://kaiku.example", false),
+    ] {
+        let resp = super::helpers::login::f4_sign_in(
+            &app,
+            user.id,
+            &username,
+            "password123",
+            &totp,
+            &[("Origin", origin)],
+        )
+        .await;
+        let body = super::helpers::body_to_json(resp).await;
+        assert_eq!(
+            body["refresh_token"].as_str().is_some(),
+            in_body,
+            "{origin}: {body}"
+        );
+    }
 }

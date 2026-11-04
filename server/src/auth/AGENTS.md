@@ -70,9 +70,7 @@ Config::default()  // Uses OWASP-recommended defaults
 
 **Timing Attacks**: `hash_password()` and `verify_password()` are constant-time. Never implement custom comparison.
 
-**Password Requirements**: Enforced client-side and in handlers:
-- Minimum 8 characters (consider 12+ in production)
-- No maximum (bcrypt has 72-byte limit, Argon2id does not)
+**Password Requirements** (`password_policy.rs`): 8–128 characters, not in the bundled top-100k blocklist, no context words (`kaiku`, username, display name, server name) → 400 `PASSWORD_REJECTED {reason}`. A password is only a first factor (F3); its state and generation live in `factors.rs` (B.1: `active`/`throttled`/`compromised`, a new generation on every replacement, `cascade::on_generation_ended`).
 
 ### MFA (TOTP)
 
@@ -82,13 +80,17 @@ Config::default()  // Uses OWASP-recommended defaults
 3. `POST /auth/mfa/verify` with first TOTP code enables MFA
 4. `mfa_secret` stored in users table (encrypted if `encryption_key` in config)
 
-**Login Flow**:
-1. Username/password validates user
-2. If `mfa_enabled`, return `AuthError::MfaRequired` (HTTP 428)
-3. Client sends second request with `totp_code` in login body
-4. `reauth::accept_totp()` checks the code (30s window, ±1 step tolerance) and accepts each code once per user (Valkey replay store, shared with the re-auth paths); a replayed code falls through to the backup-code check and then answers `INVALID_MFA` (401); a replay-store failure answers 503 `SERVICE_UNAVAILABLE`
+**Sign-in** (v1.0): `/auth/login` never takes the code. A correct password with a second step creates a login attempt (`login_attempts/`, SM1) answered 202 `LoginStep`; the phone confirms it (`login` approval) or the PC sends the code to `/auth/login-attempts/{id}/totp`. `reauth::accept_totp_ctx()` accepts each 30 s step once per account (Valkey replay store); a replay-store failure answers 503.
 
-**Backup Codes**: Implemented (`backup_codes.rs`, `mfa::mfa_generate_backup_codes`) — single-use hashed codes accepted by the login MFA path.
+**Recovery codes** (`recovery_codes.rs`): 10 single-use codes, Argon2-hashed, one generation; they only start an account request (F6), never sign in. Legacy backup codes are gone (dropped at the upgrade).
+
+### Login attempts and account requests (L1b)
+
+- `login_attempts/`: SM1 (QR, password, OIDC). Lock order: device side accounts → device → session → challenge → attempt; PC side account → attempt. The collection secret (desktop verifier, Android verifier, web cookie `__Secure-kaiku_attempt`) is compared in constant time.
+- `registration.rs`: `POST /auth/register` returns a ticket, never a session; nothing bound within 30 min → the account is deleted.
+- `account_requests/`: SM3. One open request per account; recorded cancellers (other admins, a contact confirmed one delay period earlier, the account's own strong authenticators) re-checked live; `complete_locked_tx` marks the row `completed` before its effects (their cascades must not void it) and re-checks generations and routes (rule 4). Request client routes need the request secret (`X-Kaiku-Request-Secret` or the request cookie) and state `ready`.
+- `owner_rule.rs`: B.2 part 1 / part 2 / contact / admin (and `Cli`) for Cancel and "That wasn't me" (`repudiate.rs`).
+- `recovery_contact.rs`, `security_overview.rs` (`GET /api/me/security`, the 30-day `bootstrap_reminder`).
 
 ### OIDC Integration
 
@@ -125,7 +127,9 @@ Config::default()  // Uses OWASP-recommended defaults
 - `AuthFlow`: 60 req/60s per IP (phone setup `/auth/enrollments/*`, device-key sign-in `/auth/device-login*`); never behind `check_ip_not_blocked`, 429 `TOO_MANY_ATTEMPTS`
 - `ApprovalLogin`: 30 req/60s per user (`/api/approvals/*`), 429 `TOO_MANY_ATTEMPTS`
 
-**IP Blocking**: `check_ip_not_blocked` middleware reads `ratelimit:block:{ip}` key from Redis. If exists, return 403. Login failures increment `ratelimit:login_failures:{ip}`, block at 10 failures for 1 hour.
+**IP Blocking**: `check_ip_not_blocked` middleware reads `ratelimit:block:{ip}` key from Redis. If exists, return 403. Login failures increment `ratelimit:login_failures:{ip}`, block at 10 failures for 1 hour. Only the password route is behind it; QR, passkey, device-login, enrolment and attempt routes never are.
+
+**Per account (B.5)**: `ratelimit/account.rs` counts consecutive wrong passwords per account name (unknown names alike) and wrong sign-in codes per account; from the 5th a delay (30 s doubling to 1 h, 429 `TOO_MANY_ATTEMPTS` + `Retry-After`), a `guessing` notice every 20, `throttled` at 100 (100 wrong codes also compromise the attempt's password generation). Strong sign-ins never consult it.
 
 ### Common Security Mistakes to Avoid
 
@@ -173,7 +177,8 @@ A ban (single or bulk), a single-session revoke, "revoke all other sessions", a 
 - **Methods:** a passkey assertion (LP: `grant_tx(.., StepUpVia::Passkey, AuthenticatorRef::passkey(id))`) or a `device_stepup` signature (C26). Never a password, TOTP, recovery code or OIDC. `GET /auth/reauth/methods` → `{passkey, device}`.
 - **Admin area:** every `/api/admin/*` route except `/status` needs a full session (`require_system_admin` checks it after the admin check; C27). Pre-upgrade elevations are deleted by the assurance migration.
 - **Admin elevation:** `POST /api/admin/elevate {reason|null}` = `require_full` + `consume_tx(admin.elevate, "")` + the elevation row and audit entry (`details.method` = `step_up:device` / `step_up:passkey`) in one transaction; 15 minutes, bound to the `sid`. Old bodies with `password`/`mfa_code` are ignored (still 403 without a grant). The password/TOTP and OIDC re-auth paths, `POST /auth/reauth/oidc/authorize/{provider_id}` and its callback branch are removed.
-- **Still on the old checks until L1b Task 16:** `/auth/me/password`, `/auth/mfa/*`, `/auth/mfa/backup-codes` use `reauth::verify_reauth` / `accept_totp` (TOTP replay store, per-account lockout, `with_reauth_limits`).
+- **Own-account routes (L1b, C27):** full + a consumed grant, in one transaction under `lock_accounts([caller])`: `POST /auth/me/password {new_password}` (`password.set`, blocklist → 400 `PASSWORD_REJECTED {reason}`), `DELETE /auth/me/password` (`password.remove`; 409 `LAST_STRONG_AUTHENTICATOR` without an active strong authenticator), `/auth/mfa/setup` (peeks `totp.set`) + `/auth/mfa/verify` (consumes it), `/auth/mfa/disable` (`totp.remove`; a code in the body is ignored), `POST /auth/recovery-codes` (`recovery_codes.create`), `/auth/me/identities/authorize/{provider}` (`identity.link`, consumed when the flow starts), `DELETE /auth/me/identities/{id}` (`identity.unlink`/id), `DELETE /auth/sessions/{id}` (`sessions.end`/id), `DELETE /auth/sessions` (`sessions.end`/`others`), `POST /api/me/delete-account` (`account.delete`). Each records `step_up_action {action, target_label}` (`step_up::record_action_tx`) besides its own event. Password and TOTP changes start a new factor generation (`factors::replace_tx`). `current_password`, `revoke_others` and TOTP codes in these bodies are ignored; `verify_reauth`, the `reauth:{user_id}` lock and `with_reauth_limits` on these routes are gone.
+- **Full without a grant:** `/api/admin/*` (except `/status`), bot token creation and reset (`/api/applications/{id}/bot`, `/reset-token`) and incoming-webhook creation (`require_full_session` layer on the handler). The WebSocket `admin_subscribe` re-reads the socket's session row: live, full, a system admin, then the elevation (the cache is never enough on its own).
 - **Elevation binding:** `require_elevated`, `/api/admin/status` and the WebSocket admin subscription look up `(user_id, session_id)`; the cache key is `admin:elevated:{session_id}`, dropped when the session ends. `DELETE /api/admin/elevate` de-elevates only the caller's session.
 
 ### Passkeys (LP, C29)
