@@ -227,8 +227,9 @@ pub async fn repudiate_tx(
             }
             AuthenticatorKind::Passkey => {
                 let n = sqlx::query(
+                    // `ready_at` goes with `pending` (passkeys CHECK).
                     "UPDATE passkeys SET state = 'revoked', revoked_at = NOW(),
-                            revoke_reason = 'repudiated'
+                            revoke_reason = 'repudiated', ready_at = NULL
                       WHERE id = $1 AND user_id = $2 AND state <> 'revoked'",
                 )
                 .bind(a.id)

@@ -694,3 +694,162 @@ async fn existing_account_browser_passkey_waits_for_its_request(pool: PgPool) {
     .await;
     assert_eq!(s, 404, "{b5}");
 }
+
+/// An account with earlier activity, a second admin with a key (the
+/// request's independent canceller) and, when `own_key`, the account's own
+/// older key device (its owner's authority for "That wasn't me").
+struct ExistingAccount {
+    user: Uuid,
+    other_admin: KeyDeviceFixture,
+    own_key: Option<KeyDeviceFixture>,
+}
+
+async fn existing_account(app: &TestApp, own_key: bool) -> ExistingAccount {
+    let (b, _) = create_test_user(&app.pool).await;
+    make_admin(&app.pool, b).await;
+    let other_admin = KeyDeviceFixture::insert(&app.pool, &app.config, b, "active").await;
+    let (user, _) = create_test_user(&app.pool).await;
+    sqlx::query("UPDATE users SET first_activity_at = NOW() - INTERVAL '1 day' WHERE id = $1")
+        .bind(user)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    let own_key = if own_key {
+        Some(KeyDeviceFixture::insert(&app.pool, &app.config, user, "active").await)
+    } else {
+        None
+    };
+    // Every later event is younger than the keys above.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    ExistingAccount {
+        user,
+        other_admin,
+        own_key,
+    }
+}
+
+/// A browser setup-link passkey named "Laptop" through `done` (C29): pending
+/// on its `admin` request for an existing account, active for a new one.
+/// → (passkey id, enrolment id).
+async fn browser_passkey(app: &TestApp, user: Uuid) -> (Uuid, Uuid) {
+    use super::helpers::login::TEST_ORIGIN;
+    use super::helpers::passkeys::SoftAuthenticator;
+    let (adev, issued) = admin_link(app, user).await;
+    let token = issued["setup_token"].as_str().unwrap();
+    let (s, start, _) = browser(
+        app,
+        "/auth/enrollments/passkey/start",
+        None,
+        json!({"setup_token": token}),
+    )
+    .await;
+    assert_eq!(s, 200, "{start}");
+    let mut soft = SoftAuthenticator::new();
+    let credential = soft.register(TEST_ORIGIN, &start["options"]);
+    let (s, claimed, _) = browser(
+        app,
+        "/auth/enrollments/passkey/finish",
+        None,
+        json!({"setup_token": token, "ceremony_id": start["ceremony_id"],
+               "credential": credential, "label": "Laptop"}),
+    )
+    .await;
+    assert_eq!(s, 201, "{claimed}");
+    let id = claimed["enrollment_id"].as_str().unwrap();
+    let (s, b) = type_code_on(app, &adev, id, claimed["code"].as_str().unwrap()).await;
+    assert_eq!(s, 200, "{b}");
+    let enrollment = Uuid::parse_str(id).unwrap();
+    let passkey: Uuid = sqlx::query_scalar("SELECT id FROM passkeys WHERE enrollment_id = $1")
+        .bind(enrollment)
+        .fetch_one(&app.pool)
+        .await
+        .unwrap();
+    (passkey, enrollment)
+}
+
+async fn passkey_row(pool: &PgPool, id: Uuid) -> (String, bool, Option<String>) {
+    sqlx::query_as("SELECT state, ready_at IS NULL, revoke_reason FROM passkeys WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Codex v1 integration check, blocker 1: "Remove device now" of a pending
+/// browser-setup passkey revokes it (`ready_at` cleared with the state, as
+/// the passkeys CHECK requires) instead of failing the whole action.
+#[sqlx::test]
+async fn admin_removes_a_pending_browser_passkey_now(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool.clone()).await;
+    let acct = existing_account(&app, false).await;
+    let (passkey, _) = browser_passkey(&app, acct.user).await;
+    assert_eq!(
+        passkey_row(&pool, passkey).await,
+        ("pending".into(), false, None)
+    );
+    let admin = &acct.other_admin;
+    grant_step_up(
+        &pool,
+        admin.session_id.unwrap(),
+        "admin.authenticator.remove",
+        &passkey.to_string(),
+    )
+    .await;
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        &format!(
+            "/api/admin/users/{}/authenticators/{passkey}/remove",
+            acct.user
+        ),
+        &admin.access_token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 204, "{b}");
+    assert_eq!(
+        passkey_row(&pool, passkey).await,
+        ("revoked".into(), true, Some("admin".into()))
+    );
+}
+
+/// Codex v1 integration check, blocker 1: "That wasn't me" on the
+/// `authenticator_added` of a pending browser-setup passkey revokes it.
+#[sqlx::test]
+async fn repudiating_a_pending_browser_passkey_revokes_it(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool.clone()).await;
+    let acct = existing_account(&app, true).await;
+    let (passkey, _) = browser_passkey(&app, acct.user).await;
+    assert_eq!(passkey_row(&pool, passkey).await.0, "pending");
+    let added: Uuid = sqlx::query_scalar(
+        "SELECT id FROM security_events
+          WHERE subject_id = $1 AND event_type = 'authenticator_added' AND authenticator_id = $2",
+    )
+    .bind(acct.user)
+    .bind(passkey)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let own = acct.own_key.as_ref().unwrap();
+    grant_step_up(
+        &pool,
+        own.session_id.unwrap(),
+        "event.repudiate",
+        &added.to_string(),
+    )
+    .await;
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        &format!("/api/me/security-events/{added}/repudiate"),
+        &own.access_token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["revoked_authenticator_ids"], json!([passkey]));
+    assert_eq!(
+        passkey_row(&pool, passkey).await,
+        ("revoked".into(), true, Some("repudiated".into()))
+    );
+}

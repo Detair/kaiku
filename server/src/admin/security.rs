@@ -370,7 +370,10 @@ pub async fn remove_authenticator_now(
         events.extend(ev);
     } else {
         sqlx::query(
-            "UPDATE passkeys SET state = 'revoked', revoked_at = NOW(), revoke_reason = 'admin'
+            // `ready_at` goes with `pending` (passkeys CHECK): a pending
+            // setup-link passkey is removed too.
+            "UPDATE passkeys SET state = 'revoked', revoked_at = NOW(), revoke_reason = 'admin',
+                                 ready_at = NULL
               WHERE id = $1 AND user_id = $2 AND state <> 'revoked'",
         )
         .bind(id)
