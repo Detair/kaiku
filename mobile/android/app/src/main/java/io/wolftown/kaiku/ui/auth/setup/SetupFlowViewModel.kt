@@ -519,8 +519,7 @@ class SetupFlowViewModel internal constructor(
                 // Only a gone enrolment ends the setup; the issuer may still confirm the code
                 // through an outage, and the key must then still exist.
                 if (x is ApiException && (x.status.value == 404 || x.status.value == 410)) {
-                    keyDevices.forget()
-                    return fail(x)
+                    return afterGoneEnrolment(local, x)
                 }
                 val retryAfterMs = (x as? ApiException)?.fields?.retryAfterSeconds?.times(1000)
                 delay(retryAfterMs ?: backoff)
@@ -536,6 +535,26 @@ class SetupFlowViewModel internal constructor(
                 EnrollmentState.FAILED -> return forgetAndEnd(R.string.setup_code_failed)
                 else -> Unit
             }
+        }
+    }
+
+    /**
+     * The enrolment status answered 404/410. A finished enrolment is swept 30 days after it
+     * ended and then answers 404 too, so the key device decides (the device-login probe): only
+     * a key the server does not know is forgotten; unreachable keeps it for a retry.
+     */
+    private suspend fun afterGoneEnrolment(local: LocalKeyDevice, x: Exception) {
+        when (val st = probe.probe(local.userId, local.origin)) {
+            ServerKeyState.Active -> onDone(local, "active", null)
+            is ServerKeyState.Pending -> {
+                keyDevices.markPending(local, st.readyAt)
+                _ui.value = SetupUi.Pending(st.readyAt)
+            }
+            ServerKeyState.Gone -> {
+                keyDevices.forget()
+                fail(x)
+            }
+            ServerKeyState.Unknown -> end(R.string.setup_claim_unsure, canRetry = true)
         }
     }
 

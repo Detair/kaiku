@@ -352,12 +352,43 @@ class SetupFlowViewModelTest {
     @Test fun `an unknown enrolment during the code wait ends the setup`() = runTest {
         env.pinned = SigFixtures.ORIGIN
         enroll.statusFailures += apiError(404, "ENROLLMENT_TOKEN_INVALID")
+        // The server knows no key device for this phone either.
+        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
         val (v, f) = vm()
         v.start(entry)
         v.confirmSubject(activity)
         runCurrent()
         assertFalse(f.keyStore.hasKey())
         assertTrue(v.ui.value is SetupUi.Ended)
+    }
+
+    /**
+     * Fable v1 final check, minor 4: the status route also answers 404 once the
+     * finished enrolment was swept (30 days after it ended); the key device decides.
+     */
+    @Test fun `a swept enrolment of an active key keeps the key`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.statusFailures += apiError(404, "NOT_FOUND")
+        approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        runCurrent()
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        assertEquals(KeyDevicePhase.ACTIVE, f.repo.phase())
+    }
+
+    @Test fun `a gone enrolment while the server is unreachable keeps the key`() = runTest {
+        env.pinned = SigFixtures.ORIGIN
+        enroll.statusFailures += apiError(410, "ENROLLMENT_FAILED")
+        approval.failWith = IOException("offline")
+        val (v, f) = vm()
+        v.start(entry)
+        v.confirmSubject(activity)
+        runCurrent()
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(SetupUi.Ended(R.string.setup_claim_unsure, canRetry = true), v.ui.value)
     }
 
     @Test fun `a new code after an ended setup starts again`() = runTest {

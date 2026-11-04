@@ -126,6 +126,51 @@ class SetupPendingViewModelTest {
         assertFalse(enroll.calls.contains("status"))
     }
 
+    /**
+     * Fable v1 final check, minor 4: a 404 from the enrolment status may only
+     * mean the finished enrolment was swept (30 days); the key device decides.
+     */
+    @Test fun `a swept enrolment of a confirmed key keeps the key`() = runTest {
+        val (repo, f) = repo()
+        repo.saveClaimed(pendingDevice())
+        enroll.statusFailures += apiError(404, "NOT_FOUND")
+        approval.nextChallenge = SigFixtures.challengeFor(SigKind.DEVICE_LOGIN, 3, SigFixtures.V03_CONTEXT)
+
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        v.check()
+
+        assertEquals(SetupUi.SigningIn, v.ui.value)
+        assertEquals(KeyDevicePhase.ACTIVE, repo.phase())
+        assertTrue(f.keyStore.hasKey())
+    }
+
+    @Test fun `an unknown enrolment without a key device forgets the key`() = runTest {
+        val (repo, f) = repo()
+        repo.saveClaimed(pendingDevice())
+        enroll.statusFailures += apiError(404, "NOT_FOUND")
+        approval.failWith = apiError(404, "KEY_DEVICE_UNKNOWN")
+
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        v.check()
+
+        assertEquals(SetupUi.Ended(R.string.setup_cancelled, canRetry = false), v.ui.value)
+        assertEquals(KeyDeviceState.None, repo.current())
+        assertFalse(f.keyStore.hasKey())
+    }
+
+    @Test fun `a gone enrolment while the server is unreachable keeps the key`() = runTest {
+        val (repo, f) = repo()
+        repo.saveClaimed(pendingDevice())
+        enroll.statusFailures += apiError(410, "ENROLLMENT_FAILED")
+        approval.failWith = java.io.IOException("offline")
+
+        val v = SetupPendingViewModel(enroll.api, repo, deviceSignIn, probe)
+        v.check()
+
+        assertTrue(f.keyStore.hasKey())
+        assertEquals(KeyDevicePhase.CLAIMED, repo.phase())
+    }
+
     @Test fun `a claim that never landed is dropped at app start`() = runTest {
         val (repo, f) = repo()
         repo.saveClaiming(pendingDevice().copy(claimSecret = null))
