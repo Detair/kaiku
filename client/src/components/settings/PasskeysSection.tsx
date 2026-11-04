@@ -1,9 +1,9 @@
 /**
  * Passkeys in the security settings (C29): list, add (browser only, after a
- * passkey step-up), rename and remove (after a step-up for that passkey).
- * The first passkey of an account comes from a key device (DC1); without a
- * passkey there is no Add button, and the empty state shows `empty` (L2's
- * "Set up a phone" and "Secure my account").
+ * `passkey.add` step-up), rename and remove (after a step-up for that
+ * passkey). `passkey.add` takes any step-up, so a key phone confirms the
+ * first passkey of an account (DC1; C26 device grant). The empty state also
+ * shows `empty` (L2's "Set up a phone" and "Secure my account").
  */
 
 import { Component, createResource, createSignal, For, JSX, onCleanup, Show } from "solid-js";
@@ -21,6 +21,7 @@ import {
   type Passkey,
 } from "@/lib/tauri/passkeys";
 import { signalRemoved } from "@/lib/webauthn";
+import { StepUpCancelled, withStepUp } from "@/lib/stepUp";
 import { errorText } from "@/i18n/errors";
 
 /** "Firefox on Linux" for a new passkey's default name. */
@@ -53,7 +54,8 @@ function failureText(err: unknown): string {
 }
 
 const quiet = (err: unknown) =>
-  err instanceof PasskeyError && ["PASSKEY_CANCELLED", "ABORTED"].includes(err.code);
+  err instanceof StepUpCancelled ||
+  (err instanceof PasskeyError && ["PASSKEY_CANCELLED", "ABORTED"].includes(err.code));
 
 const btn =
   "min-h-12 px-3 rounded-lg bg-white/10 hover:bg-white/20 text-text-primary text-sm state-disabled";
@@ -70,7 +72,6 @@ const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
   onCleanup(() => ctl?.abort());
 
   const passkeys = () => data()?.passkeys.filter((p) => p.state !== "revoked") ?? [];
-  const hasActive = () => passkeys().some((p) => p.state === "active");
 
   const run = async (action: (signal: AbortSignal) => Promise<void>) => {
     ctl?.abort();
@@ -88,11 +89,13 @@ const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
     }
   };
 
+  // A passkey or a key phone confirms it (the server accepts either grant).
   const add = () =>
-    run(async (signal) => {
-      await stepUpWithPasskey("passkey.add", null, signal);
-      await registerPasskey({ label: defaultLabel(), signal });
-    });
+    run((signal) =>
+      withStepUp({ action: "passkey.add", target: "", targetLabel: "" }, async () => {
+        await registerPasskey({ label: defaultLabel(), signal });
+      }),
+    );
 
   const remove = (p: Passkey) =>
     run(async (signal) => {
@@ -220,11 +223,9 @@ const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
             when={!desktop}
             fallback={<p class="text-sm text-text-secondary">{t("passkeys.settings.desktopNotice")}</p>}
           >
-            <Show when={hasActive()}>
-              <button type="button" class="btn-primary min-h-12 px-4" disabled={busy()} onClick={() => void add()}>
-                {t("passkeys.settings.add")}
-              </button>
-            </Show>
+            <button type="button" class="btn-primary min-h-12 px-4" disabled={busy()} onClick={() => void add()}>
+              {t("passkeys.settings.add")}
+            </button>
           </Show>
         </Show>
       </Show>
