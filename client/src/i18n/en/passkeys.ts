@@ -27,6 +27,8 @@ export const passkeys = {
   "passkeys.settings.intro": "Sign in and confirm changes with your fingerprint, face, device PIN or a security key.",
   "passkeys.settings.empty": "No passkeys yet.",
   "passkeys.settings.add": "Add a passkey",
+  "passkeys.settings.firstFromPhone":
+    "To add a passkey in this browser, open “Add a phone” in the Kaiku app on your key phone, send the setup link to this computer and open it here. Then type the code shown here into your phone. No key phone? Ask an admin for a setup link.",
   "passkeys.settings.desktopNotice": "To add a passkey, open Kaiku in your browser or in the Android app.",
   "passkeys.settings.synced": "Synced",
   "passkeys.settings.lastUsed": "Last used {{time}}",

@@ -1,9 +1,12 @@
 /**
  * Passkeys in the security settings (C29): list, add (browser only, after a
  * `passkey.add` step-up), rename and remove (after a step-up for that
- * passkey). `passkey.add` takes any step-up, so a key phone confirms the
- * first passkey of an account (DC1; C26 device grant). The empty state also
- * shows `empty` (L2's "Set up a phone" and "Secure my account").
+ * passkey). A PC session steps up only with an active passkey (a device
+ * grant covers the key phone's own session), so "Add a passkey" shows only
+ * then. The first passkey in a browser comes from a setup link of the key
+ * phone's "Add a phone", opened here (the browser claim, C29); the list says
+ * so, and the empty state also shows `empty` (L2's "Set up a phone" and
+ * "Secure my account").
  */
 
 import { Component, createResource, createSignal, For, JSX, onCleanup, Show } from "solid-js";
@@ -14,6 +17,7 @@ import { isTauri } from "@/lib/tauri/common";
 import {
   deletePasskey,
   listPasskeys,
+  canUsePasskeys,
   PasskeyError,
   registerPasskey,
   renamePasskey,
@@ -72,6 +76,8 @@ const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
   onCleanup(() => ctl?.abort());
 
   const passkeys = () => data()?.passkeys.filter((p) => p.state !== "revoked") ?? [];
+  /** The `passkey.add` step-up needs an active passkey and a browser that can use it. */
+  const canAdd = () => passkeys().some((p) => p.state === "active") && canUsePasskeys();
 
   const run = async (action: (signal: AbortSignal) => Promise<void>) => {
     ctl?.abort();
@@ -89,7 +95,6 @@ const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
     }
   };
 
-  // A passkey or a key phone confirms it (the server accepts either grant).
   const add = () =>
     run((signal) =>
       withStepUp({ action: "passkey.add", target: "", targetLabel: "" }, async () => {
@@ -223,9 +228,14 @@ const PasskeysSection: Component<{ empty?: JSX.Element }> = (props) => {
             when={!desktop}
             fallback={<p class="text-sm text-text-secondary">{t("passkeys.settings.desktopNotice")}</p>}
           >
-            <button type="button" class="btn-primary min-h-12 px-4" disabled={busy()} onClick={() => void add()}>
-              {t("passkeys.settings.add")}
-            </button>
+            <Show
+              when={canAdd()}
+              fallback={<p class="text-sm text-text-secondary">{t("passkeys.settings.firstFromPhone")}</p>}
+            >
+              <button type="button" class="btn-primary min-h-12 px-4" disabled={busy()} onClick={() => void add()}>
+                {t("passkeys.settings.add")}
+              </button>
+            </Show>
           </Show>
         </Show>
       </Show>

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@solidjs/testing-library";
 
 const api = vi.hoisted(() => ({
+  canUsePasskeys: vi.fn(() => true),
   listPasskeys: vi.fn(),
   stepUpWithPasskey: vi.fn(),
   registerPasskey: vi.fn(),
@@ -52,6 +53,7 @@ function list(...passkeys: unknown[]) {
 beforeEach(() => {
   tauriMode.on = false;
   for (const f of Object.values(api)) f.mockReset();
+  api.canUsePasskeys.mockReturnValue(true);
   signalRemoved.mockReset();
   stepUp.mockClear();
   api.stepUpWithPasskey.mockResolvedValue({ action: "passkey.add", target: "", via: "passkey", expires_at: "x" });
@@ -75,8 +77,6 @@ describe("PasskeysSection", () => {
     expect(row.querySelectorAll("button").length).toBe(0);
   });
 
-  // Fable v1 final check, minor 1: `passkey.add` takes any step-up (C26
-  // device grant or a passkey), so a key phone confirms the first passkey.
   it("add steps up for passkey.add, then registers", async () => {
     list(ACTIVE);
     api.registerPasskey.mockResolvedValue({ ...ACTIVE, id: "p-3", label: "New" });
@@ -87,18 +87,33 @@ describe("PasskeysSection", () => {
     expect(api.stepUpWithPasskey).not.toHaveBeenCalled();
   });
 
-  it("the first passkey is added the same way", async () => {
+  // PR #748 review: a PC session steps up only with a passkey (a device grant
+  // covers the key phone's own session), so without one "Add" is a dead end.
+  // The first passkey comes from the key phone's setup link instead.
+  it("without a passkey step-up there is no add button, only the setup-link path", async () => {
     list();
-    api.registerPasskey.mockResolvedValue({ ...ACTIVE, id: "p-3", label: "New" });
     render(() => <PasskeysSection />);
     expect(await screen.findByText("No passkeys yet.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
-    await waitFor(() => expect(api.registerPasskey).toHaveBeenCalledOnce());
-    expect(stepUp.mock.calls[0][0]).toMatchObject({ action: "passkey.add", target: "" });
+    expect(screen.queryByRole("button", { name: "Add a passkey" })).toBeNull();
+    expect(screen.getByText(/open “Add a phone” in the Kaiku app on your key phone/)).toBeTruthy();
+    cleanup();
+    // A pending passkey cannot step up either.
+    list(PENDING);
+    render(() => <PasskeysSection />);
+    expect(await screen.findByText("Phone")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add a passkey" })).toBeNull();
+    expect(screen.getByText(/open “Add a phone” in the Kaiku app on your key phone/)).toBeTruthy();
+    cleanup();
+    // A browser without passkeys cannot run the step-up ceremony.
+    api.canUsePasskeys.mockReturnValue(false);
+    list(ACTIVE);
+    render(() => <PasskeysSection />);
+    expect(await screen.findByText("Laptop")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add a passkey" })).toBeNull();
   });
 
   it("a cancelled step-up adds nothing and says nothing", async () => {
-    list();
+    list(ACTIVE);
     stepUp.mockRejectedValueOnce(new StepUpCancelled());
     render(() => <PasskeysSection />);
     fireEvent.click(await screen.findByRole("button", { name: "Add a passkey" }));
