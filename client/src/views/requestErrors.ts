@@ -33,6 +33,8 @@ export function requestStartError(err: unknown, purpose: "recovery" | "bootstrap
 /** The steps of a running request (`/account-request`). */
 const REQUEST_STEP_ERRORS = {
   NO_PRE_SESSION_SECRET: "auth.request.lost",
+  // The browser's request secret is unknown or expired (the server's 404).
+  NOT_FOUND: "auth.request.lost",
   ACCOUNT_REQUEST_COMPLETED: "auth.request.completed",
 } as const;
 
