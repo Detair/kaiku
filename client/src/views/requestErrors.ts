@@ -23,6 +23,8 @@ export function requestStartError(err: unknown, purpose: "recovery" | "bootstrap
     ACCOUNT_REQUEST_OPEN: "auth.recover.alreadyOpen",
     NO_INDEPENDENT_CANCELLER: "auth.recover.noCanceller",
     PASSKEY_BROWSER_FAILED: "passkeys.error.browserFailed",
+    OIDC_PROVIDER_ERROR: "auth.sso.providerError",
+    OIDC_EXCHANGE_FAILED: "auth.sso.exchangeFailed",
     OIDC_TIMEOUT: "auth.sso.timeout",
     SERVER_OUTDATED: "auth.login.serverOutdated",
   });

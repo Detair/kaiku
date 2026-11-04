@@ -16,6 +16,8 @@ import { requestOidcAuthorize } from "../tauri/accountRequests";
 import { requestOidcCode, safeProviderUrl } from "../requestOidc";
 import { errorText } from "@/i18n/errors";
 import { LOGIN_ERRORS, REGISTER_ERRORS } from "../authErrors";
+import { HttpError } from "../tauri/common";
+import { requestStartError } from "@/views/requestErrors";
 
 beforeEach(() => {
   tauriMode.on = true;
@@ -123,6 +125,63 @@ describe("request OIDC popup", () => {
       }),
     );
     await expect(p).resolves.toBe("one-time");
+    expect(popup.close).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  // Codex v1 integration check, minor 5: the server reports a provider or
+  // exchange failure as `{type, status: "error", error}` and leaves the popup
+  // open; the form must stop waiting and say why.
+  it("an error callback rejects with its code and closes the popup", async () => {
+    tauriMode.on = false;
+    const popup = { closed: false, close: vi.fn(), location: { href: "" } };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ url: "https://idp.example.com/auth" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+    const p = requestOidcCode("https://chat.example.com", "kc");
+    await vi.waitFor(() => expect(popup.location.href).toBe("https://idp.example.com/auth"));
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        origin: "https://chat.example.com",
+        source: popup as unknown as MessageEventSource,
+        data: { type: "oidc-request-callback", status: "error", error: "OIDC_PROVIDER_ERROR" },
+      }),
+    );
+    const err = await p.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).code).toBe("OIDC_PROVIDER_ERROR");
+    expect(popup.close).toHaveBeenCalled();
+    expect(requestStartError(err)).toBe("The sign-in provider did not complete the sign-in. Please try again.");
+    expect(requestStartError(new HttpError(400, "OIDC_EXCHANGE_FAILED", "OIDC_EXCHANGE_FAILED"))).toBe(
+      "The server could not confirm the sign-in with the provider. Please try again.",
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("an error callback without a known code still ends the wait", async () => {
+    tauriMode.on = false;
+    const popup = { closed: false, close: vi.fn(), location: { href: "" } };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ url: "https://idp.example.com/auth" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+    const p = requestOidcCode("https://chat.example.com", "kc");
+    await vi.waitFor(() => expect(popup.location.href).toBe("https://idp.example.com/auth"));
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        origin: "https://chat.example.com",
+        source: popup as unknown as MessageEventSource,
+        data: { type: "oidc-request-callback", status: "error" },
+      }),
+    );
+    await expect(p).rejects.toThrow("OIDC_FAILED");
     expect(popup.close).toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
