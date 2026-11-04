@@ -12,10 +12,14 @@ import { X, ShieldCheck, QrCode, KeyRound } from "lucide-solid";
 import { mfaSetup, mfaVerify } from "@/lib/tauri";
 import type { MfaSetupResponse } from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
-import BackupCodesDisplay from "./BackupCodesDisplay";
+import RecoveryCodesDisplay from "@/components/auth/RecoveryCodesDisplay";
 import QRCode from "qrcode";
 import { createDialog } from "@/lib/a11y/dialog";
 import { t } from "@/i18n";
+import { HttpError } from "@/lib/tauri/common";
+import { codeIs } from "@/lib/errorCode";
+import { withStepUp } from "@/lib/stepUp";
+import { securityErrorText } from "./security/securityErrors";
 
 type Step = "qr" | "verify" | "backup";
 
@@ -50,7 +54,7 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
       setQrDataUrl(dataUrl);
       setStep("qr");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(securityErrorText(err, "security.totp.failed") ?? "");
     } finally {
       setIsLoading(false);
     }
@@ -69,7 +73,17 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
     setIsLoading(true);
     setError("");
     try {
-      const result = await mfaVerify(verifyCode());
+      // C27: `/auth/mfa/setup` only checks the `totp.set` grant, verify
+      // spends it. A scan that took longer than the grant (300 s) gets one
+      // new step-up and one retry (Argon review 3 #1).
+      const verify = () => mfaVerify(verifyCode());
+      let result: Awaited<ReturnType<typeof mfaVerify>>;
+      try {
+        result = await verify();
+      } catch (err) {
+        if (!(err instanceof HttpError && codeIs(err.code, "STEP_UP_REQUIRED"))) throw err;
+        result = await withStepUp({ action: "totp.set", target: "", targetLabel: "" }, verify);
+      }
       if (result.backup_codes && result.backup_codes.length > 0) {
         setBackupCodes(result.backup_codes);
       }
@@ -81,9 +95,7 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
         duration: 5000,
       });
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Invalid code. Please try again.",
-      );
+      setError(securityErrorText(err, "security.totp.failed") ?? "");
     } finally {
       setIsLoading(false);
     }
@@ -310,13 +322,16 @@ const MfaSetupModal: Component<MfaSetupModalProps> = (props) => {
                   </p>
                 </div>
 
-                <Show when={backupCodes().length > 0}>
-                  <BackupCodesDisplay codes={backupCodes()} />
+                <Show
+                  when={backupCodes().length > 0}
+                  fallback={
+                    <button onClick={handleComplete} class="btn-primary w-full min-h-12">
+                      {t("common.close")}
+                    </button>
+                  }
+                >
+                  <RecoveryCodesDisplay codes={backupCodes()} onDone={handleComplete} />
                 </Show>
-
-                <button onClick={handleComplete} class="btn-primary w-full">
-                  Done
-                </button>
               </div>
             </Match>
           </Switch>

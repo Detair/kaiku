@@ -45,7 +45,6 @@ const CASES: Case[] = [
   { fn: "adminDeElevate", module: "admin", args: [], method: "DELETE", path: "/api/admin/elevate", oldCommand: "admin_de_elevate" },
   { fn: "getMessages", module: "messages", args: ["c"], method: "GET", path: "/api/messages/channel/c", oldCommand: "get_messages" },
   { fn: "mfaSetup", module: "auth", args: [], method: "POST", path: "/auth/mfa/setup", oldCommand: "mfa_setup" },
-  { fn: "qrLoginCreate", module: "auth", args: [], method: "POST", path: "/auth/qr/create", oldCommand: "qr_login_create" },
 ];
 
 const MODULES: Record<string, () => Promise<unknown>> = {

@@ -1,14 +1,9 @@
 import { Component, createSignal, createResource, Show, For, onCleanup } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
-import {
-  register,
-  loginWithOidc,
-  completeNativeOidcLogin,
-  authState,
-  clearError,
-} from "@/stores/auth";
-import { fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
-import type { OidcProvider } from "@/lib/types";
+import { register, authState, beginSignInChoice, clearError } from "@/stores/auth";
+import { cancelAttempt, fetchServerSettings, oidcAuthorize } from "@/lib/tauri";
+import { decodeLoginStep, type LoginStep, type OidcProvider } from "@/lib/types";
+import { applyLoginStep, setFlowServer } from "@/stores/loginFlow";
 import { KeyRound, ShieldAlert } from "lucide-solid";
 import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
@@ -47,13 +42,20 @@ const Register: Component = () => {
     setPopupClosed(false);
     setOidcLoading(null);
   };
+  /** The SSO flow of the current choice (desktop: cancels the Rust wait). */
+  let oidcCtl: AbortController | undefined;
   onCleanup(() => {
     disposed = true;
+    oidcCtl?.abort();
     stopWatching?.();
     ssoPopup?.close();
   });
   const [searchParams] = useSearchParams();
-  const afterRegister = () => safeReturnUrl(searchParams.returnUrl) ?? "/";
+  /** The sign-in page keeps the return URL (an SSO sign-up confirms there). */
+  const loginPath = () => {
+    const back = safeReturnUrl(searchParams.returnUrl);
+    return back ? `/login?returnUrl=${encodeURIComponent(back)}` : "/login";
+  };
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
   const [serverUrl] = createSignal(defaultServerUrl);
   const [username, setUsername] = createSignal("");
@@ -109,6 +111,10 @@ const Register: Component = () => {
       return;
     }
 
+    // Registering is a choice too: a running SSO sign-up is stale now, and
+    // this one is once the user picks SSO or leaves (Codex r3 M1).
+    const choice = beginSignInChoice();
+    const stale = () => disposed || !choice.isCurrent();
     try {
       await register(
         serverUrl(),
@@ -117,8 +123,13 @@ const Register: Component = () => {
         email() || undefined,
         displayName() || undefined,
       );
-      navigate(afterRegister(), { replace: true });
+      // The ticket waits in Rust or memory (30 min); a later sign-up replaces it.
+      if (stale()) return;
+      // F8: no session yet; bind a sign-in method within 30 minutes.
+      const back = safeReturnUrl(searchParams.returnUrl);
+      navigate(back ? `/register/bind?returnUrl=${encodeURIComponent(back)}` : "/register/bind", { replace: true });
     } catch (err) {
+      if (stale()) return;
       if (!authState.error) {
         setLocalError(
           errorText(
@@ -136,6 +147,20 @@ const Register: Component = () => {
     setLocalError("");
     clearError();
 
+    // One choice at a time (Codex review M1, Argon 10 #4): the result of an
+    // SSO sign-up the user left (another choice, or this page went away) is
+    // never applied, and its attempt is cancelled.
+    const choice = beginSignInChoice();
+    const server = serverUrl();
+    oidcCtl?.abort();
+    const ctl = new AbortController();
+    oidcCtl = ctl;
+    choice.signal.addEventListener("abort", () => ctl.abort(), { once: true });
+    const stale = () => disposed || ctl.signal.aborted || !choice.isCurrent();
+    const dropStale = (attemptId: string) => {
+      void cancelAttempt(attemptId).catch(() => undefined);
+    };
+
     // Browser: open the popup inside the click, before any await, or popup
     // blockers reject it. It is pointed at the provider once the server answers.
     stopWatching?.();
@@ -146,59 +171,72 @@ const Register: Component = () => {
       return;
     }
     setOidcLoading(provider.slug);
+    ctl.signal.addEventListener(
+      "abort",
+      () => {
+        stopWatching?.();
+        popup?.close();
+        if (oidcLoading() === provider.slug) setOidcLoading(null);
+      },
+      { once: true },
+    );
 
     try {
-      const result = await oidcAuthorize(serverUrl(), provider.slug);
+      const result = await oidcAuthorize(server, provider.slug, ctl.signal);
 
       if (result.mode === "tauri") {
-        // Tauri: Rust kept the tokens and returned the user
-        await completeNativeOidcLogin(serverUrl(), result.result);
-        navigate(afterRegister(), { replace: true });
+        if (stale()) {
+          dropStale(result.step.attempt.attempt_id);
+          return;
+        }
+        // Tauri: the SSO sign-in is confirmed on the sign-in page (C27, F3).
+        setFlowServer(server);
+        applyLoginStep(result.step, "oidc", server, choice);
         setOidcLoading(null);
+        navigate(loginPath(), { replace: true });
         return;
       }
 
       // The view went away while the server answered: start nothing.
-      if (disposed) {
+      if (stale()) {
         popup?.close();
         return;
       }
 
       // Browser: send the popup to the provider and wait for its callback
-      const expectedOrigin = new URL(serverUrl()).origin;
+      const expectedOrigin = new URL(server).origin;
       stopWatching = watchSsoPopup({
         popup: popup!,
         expectedOrigin,
         onResult: (data) => {
-          loginWithOidc(
-            serverUrl(),
-            data.access_token,
-            data.refresh_token,
-            data.expires_in || 900,
-            data.setup_required ?? false,
-          )
-            .then(() => {
-              navigate(afterRegister(), { replace: true });
-            })
-            .catch((err) => {
-              if (!authState.error) {
-                setLocalError(errorText(err, "auth.register.ssoFailed"));
-              }
-            })
-            .finally(() => {
-              setOidcLoading(null);
-            });
+          // The callback carries the next sign-in step (C27), never a token.
+          setOidcLoading(null);
+          let step: LoginStep;
+          try {
+            step = decodeLoginStep(data);
+          } catch (err) {
+            setLocalError(errorText(err, "auth.register.ssoFailed", SSO_ERRORS.byCode));
+            return;
+          }
+          if (stale()) {
+            dropStale(step.attempt.attempt_id);
+            return;
+          }
+          setFlowServer(server);
+          applyLoginStep(step, "oidc", server, choice);
+          navigate(loginPath(), { replace: true });
         },
         onClosedWithoutResult: () => {
           // Closed by the user, or the callback lost its opener (IdP with
           // COOP) after the sign-in already set the refresh cookie.
-          setPopupClosed(true);
+          if (!stale()) setPopupClosed(true);
         },
       });
       popup!.location.href = result.authUrl;
     } catch (err) {
       stopWatching?.();
       popup?.close();
+      if (stale()) return;
       setLocalError(errorText(err, "auth.register.ssoFailed", SSO_ERRORS.byCode));
       setOidcLoading(null);
     }

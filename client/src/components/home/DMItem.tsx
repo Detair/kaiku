@@ -5,7 +5,8 @@
  */
 
 import { Component, Show } from "solid-js";
-import { Phone } from "lucide-solid";
+import { isKaikuDM } from "@/lib/kaikuDm";
+import { Phone, ShieldCheck } from "lucide-solid";
 import type { DMListItem } from "@/lib/types";
 import { dmsState, selectDM } from "@/stores/dms";
 import { hasActiveCallInChannel, callState } from "@/stores/call";
@@ -19,6 +20,7 @@ interface DMItemProps {
 }
 
 const DMItem: Component<DMItemProps> = (props) => {
+  const kaiku = () => isKaikuDM(props.dm);
   const isSelected = () => dmsState.selectedDMId === props.dm.id;
 
   // Filter out the current user from participants
@@ -107,6 +109,14 @@ const DMItem: Component<DMItemProps> = (props) => {
         {/* Avatar */}
         <div class="relative flex-shrink-0">
           <Show
+            when={!kaiku()}
+            fallback={
+              <div class="w-10 h-10 rounded-full bg-surface-layer2 flex items-center justify-center">
+                <ShieldCheck class="w-5 h-5 text-text-primary" aria-hidden="true" />
+              </div>
+            }
+          >
+          <Show
             when={props.dm.icon_url}
             fallback={
               <Show
@@ -141,9 +151,10 @@ const DMItem: Component<DMItemProps> = (props) => {
               />
             </div>
           </Show>
+          </Show>
 
-          {/* Online indicator for 1:1 DMs */}
-          <Show when={!isGroupDM() && isOnline()}>
+          {/* Online indicator for 1:1 DMs (the Kaiku system account has no presence) */}
+          <Show when={!kaiku() && !isGroupDM() && isOnline()}>
             <div class="absolute bottom-0 right-0 w-3 h-3 bg-green-500 border-2 border-surface-base rounded-full" />
           </Show>
 
@@ -166,8 +177,13 @@ const DMItem: Component<DMItemProps> = (props) => {
         <div class="flex-1 min-w-0">
           <div class="flex items-center justify-between gap-2">
             <span class="font-medium text-text-primary truncate">
-              {displayName()}
+              {kaiku() ? t("security.dm.name") : displayName()}
             </span>
+            <Show when={kaiku()}>
+              <span class="px-1.5 py-0.5 text-[11px] rounded-md border border-white/15 text-text-primary flex-shrink-0">
+                {t("security.dm.label")}
+              </span>
+            </Show>
             <Show when={props.dm.last_message}>
               <span class="text-xs text-text-secondary flex-shrink-0">
                 {formatTimestamp(props.dm.last_message!.created_at)}

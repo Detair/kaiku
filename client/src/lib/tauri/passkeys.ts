@@ -16,10 +16,12 @@ import {
   HttpError,
   isTauri,
   scheduleTokenRefresh,
+  setBrowserToken,
   setSessionRestoreBlocked,
   type AuthResult,
 } from "./common";
 import type { User } from "../types";
+import type { StepUpAction, StepUpGrant } from "../types/login";
 import {
   credentialToJSON,
   creationOptionsFromJSON,
@@ -32,38 +34,12 @@ import {
 
 export type { PasskeyRemovedResponse } from "../webauthn";
 
-/** The step-up registry (C27 common rules); passkeys consume two of them. */
-export type StepUpAction =
-  | "passkey.add"
-  | "passkey.remove"
-  | "key_device.remove"
-  | "enrollment.issue"
-  | "password.set"
-  | "password.remove"
-  | "totp.set"
-  | "totp.remove"
-  | "recovery_codes.create"
-  | "identity.link"
-  | "identity.unlink"
-  | "sessions.end"
-  | "recovery_contact.set"
-  | "request.cancel"
-  | "event.repudiate"
-  | "account.delete"
-  | "admin.elevate"
-  | "admin.enrollment.issue"
-  | "admin.authenticator.remove"
-  | "admin.may_approve"
-  | "admin.factor.set_state"
-  | "admin.recovery_contact.set";
-
-export interface StepUpGrant {
-  action: StepUpAction;
-  /** Canonical target: lowercase UUID, `others` or `""`. */
-  target: string;
-  via: "passkey" | "device";
-  expires_at: string;
-}
+/**
+ * The step-up action table and grant (C26–C29 common rules), defined once
+ * in `lib/types/login.ts` next to `STEP_UP_ACTIONS` (the server's
+ * `StepUpAction::ALL`); passkeys consume two of them.
+ */
+export type { StepUpAction, StepUpGrant };
 
 /** C29 `Passkey`. */
 export interface Passkey {
@@ -304,11 +280,10 @@ export async function passkeySignIn(
     await endStaleSession(serverUrl, response.access_token);
     throw new PasskeyError("ABORTED");
   }
-  browserState.serverUrl = serverUrl;
-  localStorage.setItem("serverUrl", serverUrl);
+  // L2a: the token is bound to the server that issued it.
+  setBrowserToken(serverUrl, response.access_token, response.expires_in);
+  localStorage.setItem("serverUrl", browserState.serverUrl);
   setSessionRestoreBlocked(false);
-  browserState.accessToken = response.access_token;
-  browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
   scheduleTokenRefresh();
   return {
     user,
@@ -355,24 +330,52 @@ export async function stepUpWithPasskey(
   }
 }
 
-/** Add a passkey (browser only; needs a `passkey.add` grant first). */
-export async function registerPasskey(o: { label: string; signal: AbortSignal }): Promise<Passkey> {
+/** Whether this client can run a passkey ceremony (desktop: the system browser). */
+export function canUsePasskeys(): boolean {
+  return isTauri() || isWebAuthnAvailable();
+}
+
+/** `navigator.credentials.create` for C29 registration options (browser only). */
+async function createCredential(
+  options: CeremonyStart["options"],
+  signal: AbortSignal,
+): Promise<PublicKeyCredential> {
   if (isTauri() || !isWebAuthnAvailable()) throw new PasskeyError("PASSKEY_NOT_SUPPORTED");
-  const start = await httpRequest<CeremonyStart>("POST", "/auth/passkeys/register/start", {
-    label: o.label,
-  });
-  let cred: PublicKeyCredential;
+  if (signal.aborted) throw new PasskeyError("ABORTED");
   try {
     const created = await navigator.credentials.create({
-      publicKey: creationOptionsFromJSON(start.options.publicKey),
-      signal: o.signal,
+      publicKey: creationOptionsFromJSON(options.publicKey),
+      signal,
     });
     if (!created) throw new PasskeyError("PASSKEY_FAILED");
-    cred = created as PublicKeyCredential;
+    return created as PublicKeyCredential;
   } catch (err) {
     if (err instanceof PasskeyError) throw err;
     throw new PasskeyError(webAuthnErrorCode(err));
   }
+}
+
+/**
+ * Create a passkey from C29 registration `options` (`{publicKey}`) and answer
+ * its `credential` JSON, for the routes that finish elsewhere: setup links,
+ * account requests and registration tickets (browser only).
+ */
+export async function createPasskeyCredential(options: unknown, signal: AbortSignal): Promise<unknown> {
+  if (typeof options !== "object" || options === null) throw new PasskeyError("PASSKEY_FAILED");
+  const o = options as Partial<CeremonyStart["options"]>;
+  const publicKey = o.publicKey ?? (options as Record<string, unknown>);
+  return credentialToJSON(await createCredential({ publicKey }, signal));
+}
+
+/** Add a passkey (browser only; needs a `passkey.add` grant first). */
+export async function registerPasskey(o: { label: string; signal: AbortSignal }): Promise<Passkey> {
+  if (isTauri() || !isWebAuthnAvailable()) throw new PasskeyError("PASSKEY_NOT_SUPPORTED");
+  // Already cancelled: no ceremony is started on the server (Argon 5 #8).
+  if (o.signal.aborted) throw new PasskeyError("ABORTED");
+  const start = await httpRequest<CeremonyStart>("POST", "/auth/passkeys/register/start", {
+    label: o.label,
+  });
+  const cred = await createCredential(start.options, o.signal);
   try {
     return await httpRequest<Passkey>("POST", "/auth/passkeys/register/finish", {
       ceremony_id: start.ceremony_id,

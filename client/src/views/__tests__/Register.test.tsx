@@ -23,7 +23,7 @@ afterEach(() => {
 
 function Landing() {
   const location = useLocation();
-  return <div data-testid="landed">{location.pathname}</div>;
+  return <div data-testid="landed">{location.pathname + location.search}</div>;
 }
 
 async function registerAs(search: string): Promise<void> {
@@ -33,7 +33,7 @@ async function registerAs(search: string): Promise<void> {
     auth_methods: { local: true },
     registration_policy: "invite_only",
   });
-  mocks.register.mockResolvedValue({ id: "u1", username: "newbie" });
+  mocks.register.mockResolvedValue({ user_id: "u1", username: "newbie", ticket_expires_at: "2026-11-03T12:30:00Z" });
   window.history.pushState({}, "", "/register" + search);
   render(() => (
     <Router>
@@ -50,13 +50,17 @@ async function registerAs(search: string): Promise<void> {
 }
 
 describe("Register", () => {
-  it("register returns to the invite from returnUrl", async () => {
+  it("register shows the bind step instead of signing in", async () => {
     await registerAs("?returnUrl=" + encodeURIComponent("/invite/AbCd1234"));
-    await waitFor(() => expect(screen.getByTestId("landed").textContent).toBe("/invite/AbCd1234"));
+    await waitFor(() =>
+      expect(screen.getByTestId("landed").textContent).toBe(
+        "/register/bind?returnUrl=" + encodeURIComponent("/invite/AbCd1234"),
+      ),
+    );
   });
 
   it("register ignores an external returnUrl", async () => {
     await registerAs("?returnUrl=" + encodeURIComponent("//evil.example/x"));
-    await waitFor(() => expect(screen.getByTestId("landed").textContent).toBe("/"));
+    await waitFor(() => expect(screen.getByTestId("landed").textContent).toBe("/register/bind"));
   });
 });

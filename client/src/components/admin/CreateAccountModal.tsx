@@ -10,13 +10,13 @@ import { X } from "lucide-solid";
 import { adminState, createUser } from "@/stores/admin";
 import { guildsState } from "@/stores/guilds";
 import { getServerUrl } from "@/lib/tauri";
-import { generateTemporaryPassword } from "@/lib/passwords";
 import { showToast } from "@/components/ui/Toast";
 import { copyHandoverText, canDismissCreateAccount } from "@/lib/adminHandover";
 import { t } from "@/i18n";
 import { createDialog } from "@/lib/a11y/dialog";
 import { errorText } from "@/i18n/errors";
 import ElevateDialog from "./ElevateDialog";
+import { contactCandidates } from "./recoveryContacts";
 
 /** Most servers one admin-created account can join at creation (contract C23). */
 const MAX_GUILDS = 10;
@@ -25,12 +25,14 @@ const USERNAME_RE = /^[a-z0-9_]{3,32}$/;
 
 interface CreateAccountModalProps {
   onClose: () => void;
+  /** The creating admin: never offered as a recovery contact (C28). */
+  meId?: string;
 }
 
 const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
   const [username, setUsername] = createSignal("");
   const [displayName, setDisplayName] = createSignal("");
-  const [password, setPassword] = createSignal(generateTemporaryPassword());
+  const [contactId, setContactId] = createSignal("");
   const [error, setError] = createSignal("");
   const [submitting, setSubmitting] = createSignal(false);
   const [unlocking, setUnlocking] = createSignal(false);
@@ -54,7 +56,6 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
   const [created, setCreated] = createSignal<{
     name: string;
     username: string;
-    password: string;
     server: string;
   } | null>(null);
 
@@ -87,18 +88,13 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
       setError(t("admin.createAccount.usernameInvalid"));
       return;
     }
-    const pw = password();
-    if (pw.length < 8 || pw.length > 128) {
-      setError(t("admin.createAccount.passwordLength"));
-      return;
-    }
     setError("");
     setSubmitting(true);
     try {
       const user = await createUser({
         username: name,
         display_name: displayName().trim() || null,
-        temporary_password: pw,
+        recovery_contact_id: contactId() || null,
         guild_ids: guildsState.guilds
           .map((g) => g.id)
           .filter((id) => checkedGuilds().has(id)),
@@ -106,7 +102,6 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
       setCreated({
         name: user.display_name || user.username,
         username: user.username,
-        password: pw,
         server: getServerUrl(),
       });
     } catch (err) {
@@ -210,34 +205,20 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
                 />
               </label>
 
-              <div class="space-y-1">
-                <label for="create-account-password" class="text-sm text-text-secondary">
-                  {t("admin.createAccount.password")}
-                </label>
-                <input
-                  id="create-account-password"
-                  type="text"
-                  value={password()}
-                  onInput={(e) => setPassword(e.currentTarget.value)}
+              <label class="block space-y-1">
+                <span class="text-sm text-text-secondary">{t("admin.createAccount.recoveryContact")}</span>
+                <select
+                  value={contactId()}
+                  onChange={(e) => setContactId(e.currentTarget.value)}
                   disabled={!adminState.isElevated}
-                  autocomplete="off"
-                  spellcheck={false}
-                  class={`${inputClass} font-mono`}
-                />
-                <div class="flex gap-2 pt-1">
-                  <button
-                    type="button"
-                    class={secondaryBtn}
-                    disabled={!adminState.isElevated}
-                    onClick={() => setPassword(generateTemporaryPassword())}
-                  >
-                    {t("admin.createAccount.generate")}
-                  </button>
-                  <button type="button" class={secondaryBtn} onClick={() => copy(password())}>
-                    {t("common.copy")}
-                  </button>
-                </div>
-              </div>
+                  class={inputClass}
+                >
+                  <option value="">{t("admin.createAccount.noContact")}</option>
+                  <For each={contactCandidates(adminState.users, props.meId ? [props.meId] : [])}>
+                    {(u) => <option value={u.id}>{u.display_name || u.username}</option>}
+                  </For>
+                </select>
+              </label>
 
               <fieldset class="space-y-1">
                 <legend class="text-sm text-text-secondary">
@@ -314,21 +295,15 @@ const CreateAccountModal: Component<CreateAccountModalProps> = (props) => {
                   <dt class="text-text-secondary">{t("common.username")}</dt>
                   <dd class="text-text-primary font-mono">{c().username}</dd>
                 </div>
-                <div>
-                  <dt class="text-text-secondary">{t("admin.createAccount.password")}</dt>
-                  <dd class="text-text-primary font-mono break-all">{c().password}</dd>
-                </div>
               </dl>
-              <p class="text-sm text-text-primary">
-                {t("admin.createAccount.handover", { name: c().name })}
-              </p>
+              <p class="text-sm text-text-primary">{t("admin.createAccount.phoneHint")}</p>
               <div class="flex justify-end gap-2">
                 <button
                   type="button"
                   class={secondaryBtn}
                   onClick={() =>
                     copy(
-                      `${c().server}\n${c().username}\n${c().password}`,
+                      `${c().server}\n${c().username}`,
                     )
                   }
                 >

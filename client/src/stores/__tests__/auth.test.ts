@@ -4,7 +4,8 @@ import { HttpError } from "@/lib/tauri/common";
 
 vi.mock("@/lib/tauri", () => ({
   getCurrentUser: vi.fn(),
-  login: vi.fn(),
+  passwordLogin: vi.fn(),
+  collectAttempt: vi.fn(),
   register: vi.fn(),
   logout: vi.fn(),
   oidcCompleteLogin: vi.fn(),
@@ -67,8 +68,8 @@ import {
   setAuthState,
   initAuth,
   login,
+  completeSignIn,
   register,
-  loginWithOidc,
   logout,
   clearError,
   updateUser,
@@ -120,6 +121,24 @@ function createUser(overrides: Partial<User> = {}): User {
     created_at: "2025-01-01T00:00:00Z",
     ...overrides,
   };
+}
+
+
+/** A password sign-in that needs the TOTP step, then the step's session. */
+async function signIn(url: string, username: string, password: string) {
+  vi.mocked(tauri.passwordLogin).mockResolvedValue({
+    status: "totp_required",
+    attempt: {
+      attempt_id: "a",
+      kind: "password",
+      state: "open",
+      expires_at: "",
+      qr: null,
+      totp_available: true,
+    },
+  });
+  await login(url, username, password);
+  return completeSignIn(url, await tauri.collectAttempt("a"));
 }
 
 describe("auth store", () => {
@@ -385,21 +404,19 @@ describe("auth store", () => {
         expect(tauri.getCurrentUser).toHaveBeenCalledTimes(2);
       });
 
-      it.each(["login", "register"] as const)(
+      it.each(["login"] as const)(
         "a successful %s while restore is pending stops the retry timer and listeners",
         async (kind) => {
           const user = createUser();
           vi.mocked(tauri.getCurrentUser).mockResolvedValue(offline);
           const result = { user, setup_required: false, password_change_required: false };
-          vi.mocked(tauri.login).mockResolvedValue(result);
-          vi.mocked(tauri.register).mockResolvedValue(result);
+          vi.mocked(tauri.collectAttempt).mockResolvedValue(result);
 
           await initAuth();
           expect(authState.restorePending).toBe(true);
           const calls = vi.mocked(tauri.getCurrentUser).mock.calls.length;
 
-          if (kind === "login") await login("https://server.com", "a", "p");
-          else await register("https://server.com", "a", "p");
+          if (kind === "login") await signIn("https://server.com", "a", "p");
 
           expect(authState.restorePending).toBe(false);
           await vi.advanceTimersByTimeAsync(120_000);
@@ -422,13 +439,13 @@ describe("auth store", () => {
   describe("login", () => {
     it("logs in and inits subsystems", async () => {
       const user = createUser();
-      vi.mocked(tauri.login).mockResolvedValue({ user, setup_required: false, password_change_required: false });
+      vi.mocked(tauri.collectAttempt).mockResolvedValue({ user, setup_required: false, password_change_required: false });
       vi.mocked(initWebSocket).mockResolvedValue(undefined);
       vi.mocked(initPresence).mockResolvedValue(undefined);
       vi.mocked(wsConnect).mockResolvedValue(undefined);
       vi.mocked(initPreferences).mockResolvedValue(undefined);
 
-      const result = await login("https://server.com", "alice", "password");
+      const result = await signIn("https://server.com", "alice", "password");
 
       expect(result.id).toBe(user.id);
       expect(authState.user).toEqual(user);
@@ -438,7 +455,7 @@ describe("auth store", () => {
     });
 
     it("sets setupRequired from response", async () => {
-      vi.mocked(tauri.login).mockResolvedValue({
+      vi.mocked(tauri.collectAttempt).mockResolvedValue({
         user: createUser(),
         setup_required: true,
         password_change_required: false,
@@ -448,27 +465,30 @@ describe("auth store", () => {
       vi.mocked(wsConnect).mockResolvedValue(undefined);
       vi.mocked(initPreferences).mockResolvedValue(undefined);
 
-      await login("https://server.com", "alice", "password");
+      await signIn("https://server.com", "alice", "password");
 
       expect(authState.setupRequired).toBe(true);
     });
 
     it("sets error and re-throws on failure", async () => {
-      vi.mocked(tauri.login).mockRejectedValue(
+      vi.mocked(tauri.passwordLogin).mockRejectedValue(
         new HttpError(401, "Invalid credentials", "INVALID_CREDENTIALS"),
       );
 
       await expect(
         login("https://server.com", "alice", "wrong"),
       ).rejects.toThrow("Invalid credentials");
-      expect(authState.error).toBe("Invalid username or password.");
+      expect(authState.error).toBe(
+        "Wrong username or password, or password sign-in is not available for this account. Use a passkey or 'Sign in with phone', or ask an admin.",
+      );
+      expect(authState.user).toBeNull();
       expect(authState.isLoading).toBe(false);
     });
   });
 
   describe("login with a suspended account", () => {
     it("says the account is suspended", async () => {
-      vi.mocked(tauri.login).mockRejectedValue(
+      vi.mocked(tauri.passwordLogin).mockRejectedValue(
         new HttpError(403, "Account is banned", "ACCOUNT_BANNED"),
       );
 
@@ -478,38 +498,19 @@ describe("auth store", () => {
   });
 
   describe("register", () => {
-    it("registers and inits subsystems", async () => {
-      const user = createUser();
+    it("register shows the bind step instead of signing in", async () => {
       vi.mocked(tauri.register).mockResolvedValue({
-        user,
-        setup_required: false,
-        password_change_required: false,
+        user_id: "u-new",
+        username: "alice",
+        ticket_expires_at: "2026-11-03T12:30:00Z",
       });
-      vi.mocked(initWebSocket).mockResolvedValue(undefined);
-      vi.mocked(initPresence).mockResolvedValue(undefined);
-      vi.mocked(wsConnect).mockResolvedValue(undefined);
-      vi.mocked(initPreferences).mockResolvedValue(undefined);
 
       const result = await register("https://server.com", "alice", "password");
 
-      expect(result.id).toBe(user.id);
-      expect(authState.user).toEqual(user);
-    });
-
-    it("passes setupRequired flag", async () => {
-      vi.mocked(tauri.register).mockResolvedValue({
-        user: createUser(),
-        setup_required: true,
-        password_change_required: false,
-      });
-      vi.mocked(initWebSocket).mockResolvedValue(undefined);
-      vi.mocked(initPresence).mockResolvedValue(undefined);
-      vi.mocked(wsConnect).mockResolvedValue(undefined);
-      vi.mocked(initPreferences).mockResolvedValue(undefined);
-
-      await register("https://server.com", "alice", "password");
-
-      expect(authState.setupRequired).toBe(true);
+      expect(result.user_id).toBe("u-new");
+      expect(authState.user).toBeNull();
+      expect(initWebSocket).not.toHaveBeenCalled();
+      expect(authState.isLoading).toBe(false);
     });
 
     it("sets error and re-throws on failure", async () => {
@@ -521,31 +522,6 @@ describe("auth store", () => {
         register("https://server.com", "alice", "password"),
       ).rejects.toThrow("Username taken");
       expect(authState.error).toBe("That username is already taken.");
-    });
-  });
-
-  describe("loginWithOidc", () => {
-    it("completes OIDC login", async () => {
-      const user = createUser();
-      vi.mocked(tauri.oidcCompleteLogin).mockResolvedValue(undefined);
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user, error_reason: null });
-      vi.mocked(initWebSocket).mockResolvedValue(undefined);
-      vi.mocked(initPresence).mockResolvedValue(undefined);
-      vi.mocked(wsConnect).mockResolvedValue(undefined);
-      vi.mocked(initPreferences).mockResolvedValue(undefined);
-
-      await loginWithOidc("https://server.com", "token", "refresh", 3600);
-
-      expect(authState.user).toEqual(user);
-    });
-
-    it("throws if getCurrentUser returns null", async () => {
-      vi.mocked(tauri.oidcCompleteLogin).mockResolvedValue(undefined);
-      vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: null, error_reason: null });
-
-      await expect(
-        loginWithOidc("https://server.com", "token", "refresh", 3600),
-      ).rejects.toThrow("Failed to fetch user after OIDC login");
     });
   });
 
@@ -732,12 +708,12 @@ describe("auth store", () => {
     }
 
     async function loginPending() {
-      vi.mocked(tauri.login).mockResolvedValue({
+      vi.mocked(tauri.collectAttempt).mockResolvedValue({
         user: createUser(),
         setup_required: false,
         password_change_required: true,
       });
-      await login("https://server.com", "alice", "temp-pw");
+      await signIn("https://server.com", "alice", "temp-pw");
     }
 
     afterEach(async () => {
@@ -1039,7 +1015,7 @@ describe("auth store", () => {
         error_reason: null,
       });
       const releaseOldInit = holdOnce(vi.mocked(initWebSocket));
-      vi.mocked(tauri.login).mockResolvedValue({
+      vi.mocked(tauri.collectAttempt).mockResolvedValue({
         user: createUser(),
         setup_required: false,
         password_change_required: false,
@@ -1049,7 +1025,7 @@ describe("auth store", () => {
       // wait for it (the stores cancel A's late effects on their own).
       const restoring = initAuth();
       await vi.waitFor(() => expect(initWebSocket).toHaveBeenCalledTimes(1));
-      await withinMs(login("https://server.com", "alice", "pw"));
+      await withinMs(signIn("https://server.com", "alice", "pw"));
       expect(initWebSocket).toHaveBeenCalledTimes(2);
       expect(wsConnect).toHaveBeenCalledTimes(1);
       expect(initIdleDetection).toHaveBeenCalledTimes(1);
@@ -1272,7 +1248,7 @@ describe("auth store", () => {
         mockServices();
         restoreWith();
         const release = holdOnce(vi.mocked(initWebSocket));
-        vi.mocked(tauri.login).mockResolvedValue({
+        vi.mocked(tauri.collectAttempt).mockResolvedValue({
           user: createUser(),
           setup_required: false,
           password_change_required: false,
@@ -1283,7 +1259,7 @@ describe("auth store", () => {
         const restoring = initAuth();
         await vi.waitFor(() => expect(initWebSocket).toHaveBeenCalledTimes(1));
         await withinMs(logout());
-        await withinMs(login("https://server.com", "alice", "pw"));
+        await withinMs(signIn("https://server.com", "alice", "pw"));
 
         expect(initWebSocket).toHaveBeenCalledTimes(2);
         expect(wsConnect).toHaveBeenCalledTimes(1);

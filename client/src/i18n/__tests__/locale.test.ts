@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { en } from "../en";
 
-type DeMock = { de?: Record<string, string>; fail?: boolean };
+type DeMock = { de?: Record<string, string>; fail?: boolean; areaFails?: number };
 
 /**
  * Fresh module graph per test: the locale signal is module state, and the
@@ -13,6 +14,17 @@ async function load(mock: DeMock = {}) {
     if (mock.fail) throw new Error("de.json unavailable");
     return { default: mock.de ?? {} };
   });
+  if (mock.areaFails) {
+    let left = mock.areaFails;
+    const real = await vi.importActual<typeof import("../enLazy")>("../enLazy");
+    vi.doMock("../enLazy", () => {
+      if (left > 0) {
+        left -= 1;
+        throw new Error("chunk load failed");
+      }
+      return real;
+    });
+  }
   const locale = await import("../locale");
   const i18n = await import("../index");
   return { ...locale, ...i18n };
@@ -28,6 +40,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.doUnmock("../locales/de.json");
+  vi.doUnmock("../enLazy");
 });
 
 describe("locale runtime", () => {
@@ -56,6 +69,36 @@ describe("locale runtime", () => {
     expect(hasExplicitLocale()).toBe(false);
     expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe("de");
     expect(document.documentElement.lang).toBe("en");
+  });
+
+  it("initLocale loads the on-demand English areas before the first render", async () => {
+    // `security` is kept off the startup path (bundle budget); `index.tsx`
+    // awaits `initLocale` before it renders.
+    const { initLocale, t } = await load();
+    expect(t("security.notice.missing")).not.toBe(en["security.notice.missing"]);
+    await initLocale();
+    expect(t("security.notice.missing")).toBe(en["security.notice.missing"]);
+  });
+
+  it("an on-demand area that cannot load is reported, not left blank (Codex r3)", async () => {
+    const { initLocale, lazyAreasLoaded } = await load({ areaFails: 99 });
+    await initLocale();
+    expect(lazyAreasLoaded()).toBe(false);
+  });
+
+  it("one failed load of an on-demand area is retried", async () => {
+    const { initLocale, lazyAreasLoaded, t } = await load({ areaFails: 1 });
+    await initLocale();
+    expect(lazyAreasLoaded()).toBe(true);
+    expect(t("security.notice.missing")).toBe(en["security.notice.missing"]);
+  });
+
+  it("a stored locale's values for an on-demand area count", async () => {
+    vi.stubEnv("VITE_FEATURE_LOCALE_SWITCH", "true");
+    localStorage.setItem("kaiku.locale", "de");
+    const { initLocale, t } = await load({ de: { "security.notice.missing": "Hinweis fehlt." } });
+    await initLocale();
+    expect(t("security.notice.missing")).toBe("Hinweis fehlt.");
   });
 
   it("initLocale uses the stored choice when the switch is enabled", async () => {

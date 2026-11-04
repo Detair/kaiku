@@ -83,21 +83,3 @@ export interface AdminOidcProvider {
   created_at: string;
 }
 
-/** Re-authentication for sensitive actions (contract C24). */
-export interface ReauthRequest {
-  password: string;
-  mfa_code: string | null;
-}
-
-/** `GET /auth/reauth/methods` (contract C24): how this session can re-authenticate. */
-export interface ReauthMethodsResponse {
-  /** C27 v1.0: a passkey step-up is possible (an active passkey). */
-  passkey?: boolean;
-  /** C27 v1.0: a key-device step-up is possible. */
-  device?: boolean;
-  /** Pre-v1.0 servers (C24). */
-  password?: boolean;
-  /** An authenticator code is needed on every path (pre-v1.0). */
-  mfa_required?: boolean;
-  oidc?: { provider_id: string; display_name: string }[];
-}

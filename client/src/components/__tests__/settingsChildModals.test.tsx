@@ -17,7 +17,6 @@ vi.mock("@/lib/featureFlags", () => ({ isE2EEEnabled: () => false }));
 vi.mock("qrcode", () => ({ default: { toDataURL: vi.fn() } }));
 vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 vi.mock("@/lib/clipboard", () => ({ secureCopy: vi.fn() }));
-vi.mock("../settings/BackupCodesDisplay", () => ({ default: () => null }));
 vi.mock("../settings/AccountSettings", () => ({ default: () => null }));
 vi.mock("../settings/AppearanceSettings", () => ({ default: () => null }));
 vi.mock("../settings/NotificationSettings", () => ({ default: () => null }));
@@ -29,7 +28,6 @@ vi.mock("../settings/VoiceSettings", () => ({ default: () => null }));
 
 import SettingsModal from "../settings/SettingsModal";
 import RecoveryKeyModal from "../settings/RecoveryKeyModal";
-import ChangePasswordModal from "../settings/ChangePasswordModal";
 import MfaSetupModal from "../settings/MfaSetupModal";
 
 const children: Array<[string, Component<{ onClose: () => void }>]> = [
@@ -37,7 +35,6 @@ const children: Array<[string, Component<{ onClose: () => void }>]> = [
     "RecoveryKeyModal",
     (p) => <RecoveryKeyModal keyChunks={["a"]} fullKey="a" onConfirm={() => {}} onClose={p.onClose} />,
   ],
-  ["ChangePasswordModal", (p) => <ChangePasswordModal onClose={p.onClose} />],
   ["MfaSetupModal", (p) => <MfaSetupModal onClose={p.onClose} onComplete={() => {}} />],
 ];
 

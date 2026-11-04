@@ -1,17 +1,16 @@
-import { Component, createEffect, createSignal, createResource, Show, For, on, onCleanup, onMount } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, createResource, lazy, Match, Show, Switch, For, on, onCleanup, onMount } from "solid-js";
 import { A, useNavigate, useSearchParams } from "@solidjs/router";
 import {
-  login,
-  loginWithPasskey,
-  loginWithOidc,
-  completeNativeOidcLogin,
   authState,
+  beginSignInChoice,
   clearError,
-  setAuthState,
+  currentSignInChoice,
+  loginWithPasskey,
+  type SignInChoice,
 } from "@/stores/auth";
-import { fetchServerSettings, getDefaultServerUrl, oidcAuthorize } from "@/lib/tauri";
-import type { OidcProvider } from "@/lib/types";
-import { KeyRound, ShieldCheck } from "lucide-solid";
+import { cancelAttempt, fetchServerSettings, getDefaultServerUrl, oidcAuthorize } from "@/lib/tauri";
+import { decodeLoginStep, type LoginStep, type OidcProvider } from "@/lib/types";
+import { KeyRound, Smartphone } from "lucide-solid";
 import { Github, Chrome } from "@/components/icons/BrandIcons";
 import PasswordInput from "@/components/ui/PasswordInput";
 import { getThemeImage } from "@/lib/themeImage";
@@ -19,11 +18,55 @@ import { t } from "@/i18n";
 import { isTauri } from "@/lib/tauri/common";
 import { openBlankSsoPopup, reloadAfterSsoPopup, watchSsoPopup } from "@/lib/oidcPopup";
 import { safeReturnUrl } from "@/lib/returnUrl";
+import { setSignInServer } from "@/lib/signInServer";
 import { errorText, SSO_ERRORS } from "@/i18n/errors";
-import { formatPasskeyError, LOGIN_ERRORS } from "@/lib/authErrors";
+import { formatPasskeyError, LOGIN_ERRORS, loginErrorText } from "@/lib/authErrors";
 import PasskeyButton from "@/components/auth/PasskeyButton";
+import LinuxPasskeyHint from "@/components/auth/LinuxPasskeyHint";
+import { LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import { PasskeyError } from "@/lib/tauri/passkeys";
 import { isConditionalMediationAvailable, isWebAuthnAvailable } from "@/lib/webauthn";
+import {
+  applyLoginStep,
+  leaveFlow,
+  loginFlow,
+  loginFlowBusy,
+  loginFlowError,
+  retryLoginFlow,
+  setFlowServer,
+  startPhoneSignIn,
+  submitPassword,
+  submitTotp,
+  usePhoneNotAtHand,
+} from "@/stores/loginFlow";
+// The sign-in steps after the form (QR, confirmation, TOTP, ended) are not
+// on the startup path (bundle budget): the form preloads them. No Suspense
+// around them, so the form's own resources (server settings, the QR image)
+// never blank the page while they refetch.
+const QrLoginPanel = lazy(() => import("@/components/auth/login/QrLoginPanel"));
+const ConfirmationPanel = lazy(() => import("@/components/auth/login/ConfirmationPanel"));
+const TotpStepPanel = lazy(() => import("@/components/auth/login/TotpStepPanel"));
+const AttemptEnded = lazy(() => import("@/components/auth/login/AttemptEnded"));
+const STEP_PANELS = [QrLoginPanel, ConfirmationPanel, TotpStepPanel, AttemptEnded];
+
+/** A step panel whose chunk cannot load: say so, reload, or back to the form (Flash r3 p3 #2). */
+const StepLoadFailed: Component = () => (
+  <div role="alert" class="space-y-3">
+    <p class="text-base text-text-primary">{t("common.loadFailed")}</p>
+    <div class="flex flex-wrap gap-2">
+      <button type="button" class="btn-primary min-h-11 px-4 text-base" onClick={() => window.location.reload()}>
+        {t("common.reload")}
+      </button>
+      <button
+        type="button"
+        class="min-h-11 px-4 rounded-lg border border-white/15 text-base text-text-primary hover:bg-white/5"
+        onClick={() => void leaveFlow()}
+      >
+        {t("auth.flow.back")}
+      </button>
+    </div>
+  </div>
+);
 
 /** A conditional ceremony lives 300 s on the server; restart it before. */
 const CONDITIONAL_RESTART_MS = 270_000;
@@ -61,6 +104,8 @@ const Login: Component = () => {
     disposed = true;
     stopWatching?.();
     ssoPopup?.close();
+    // SM1 "close the screen": a live attempt is cancelled.
+    void leaveFlow();
   });
   const [searchParams] = useSearchParams();
   const defaultServerUrl = import.meta.env.VITE_SERVER_URL || window.location.origin;
@@ -74,9 +119,11 @@ const Login: Component = () => {
       console.warn("[Login] Could not read default server URL:", err instanceof Error ? err.message : err);
     }
   });
+  // The pre-session pages (recover, secure my account) use this server on
+  // a desktop start without a session (Codex review M3).
+  createEffect(() => setSignInServer(serverUrl()));
   const [username, setUsername] = createSignal("");
   const [password, setPassword] = createSignal("");
-  const [mfaCode, setMfaCode] = createSignal("");
   const [localError, setLocalError] = createSignal("");
   const [oidcLoading, setOidcLoading] = createSignal<string | null>(null);
 
@@ -91,6 +138,13 @@ const Login: Component = () => {
     }
   });
 
+  // A sign-in step produced the session: continue where the user came from.
+  createEffect(() => {
+    if (authState.user && !authState.passwordChangeRequired) {
+      navigate(safeReturnUrl(searchParams.returnUrl) ?? "/", { replace: true });
+    }
+  });
+
   // Passkeys (F1, C29): autofill (conditional mediation) runs in the
   // background in browsers; the button runs a modal ceremony (desktop: the
   // system browser).
@@ -102,7 +156,14 @@ const Login: Component = () => {
   let restartTimer: ReturnType<typeof setTimeout> | undefined;
   /** A pending autofill start after a server change. */
   let serverChangeTimer: ReturnType<typeof setTimeout> | undefined;
-  const linux = typeof navigator !== "undefined" && /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent);
+
+  /**
+   * The last sign-in choice this page began that is not autofill (the
+   * button, password, phone, SSO). While it is current it is in flight: every
+   * way it ends without a session starts autofill, which begins a newer one.
+   */
+  let explicitChoice: SignInChoice | null = null;
+  const explicitInFlight = () => explicitChoice?.isCurrent() === true;
 
   // Bumped by every start and stop: a start still waiting for
   // `isConditionalMediationAvailable` gives way to anything later (Argon B R2).
@@ -134,8 +195,9 @@ const Login: Component = () => {
   const FIRST_BACKOFF_MS = 2_000;
   let conditionalBackoff = FIRST_BACKOFF_MS;
   const startConditional = async () => {
-    // Never beside the button's ceremony (it restarts autofill when done).
-    if (desktop || disposed || modalCtl || !isWebAuthnAvailable()) return;
+    // Never beside the button's ceremony (it restarts autofill when done),
+    // and only while the form (with its user-name field) is shown.
+    if (desktop || disposed || modalCtl || !onForm() || !isWebAuthnAvailable()) return;
     const generation = ++conditionalGeneration;
     const available = await isConditionalMediationAvailable();
     if (!available || disposed || generation !== conditionalGeneration) return;
@@ -175,20 +237,27 @@ const Login: Component = () => {
     on(
       serverUrl,
       () => {
-        if (modalCtl) return;
+        // Not beside another choice: autofill would begin a newer one and
+        // end it (an SSO popup closes; Fable r2 follow-up a).
+        if (modalCtl || explicitInFlight()) return;
         stopConditional();
         conditionalBackoff = FIRST_BACKOFF_MS;
-        serverChangeTimer = setTimeout(() => void startConditional(), SERVER_CHANGE_DEBOUNCE_MS);
+        serverChangeTimer = setTimeout(() => {
+          if (!explicitInFlight()) void startConditional();
+        }, SERVER_CHANGE_DEBOUNCE_MS);
       },
       { defer: true },
     ),
   );
   onMount(() => {
     void startConditional();
+    // Fetch the step panels' chunks now, so a step shows without a wait.
+    for (const panel of STEP_PANELS) void panel.preload().catch(() => {});
   });
   onCleanup(() => {
     stopConditional();
     modalCtl?.abort();
+    oidcCtl?.abort();
   });
 
   const handlePasskey = async () => {
@@ -199,12 +268,18 @@ const Login: Component = () => {
     const ctl = new AbortController();
     modalCtl = ctl;
     setPasskeyBusy(true);
+    // A new sign-in choice (begun by loginWithPasskey before it awaits): an
+    // SSO wait, a password or phone attempt in flight are stale now (Codex
+    // review M1).
+    const signingIn = loginWithPasskey(serverUrl(), {
+      mediation: "optional",
+      signal: ctl.signal,
+      username: username().trim() || undefined,
+    });
+    const choice = currentSignInChoice();
+    explicitChoice = choice;
     try {
-      await loginWithPasskey(serverUrl(), {
-        mediation: "optional",
-        signal: ctl.signal,
-        username: username().trim() || undefined,
-      });
+      await signingIn;
       afterPasskey();
     } catch (err) {
       if (!ctl.signal.aborted) showPasskeyError(err);
@@ -212,7 +287,9 @@ const Login: Component = () => {
       if (modalCtl === ctl) {
         modalCtl = undefined;
         setPasskeyBusy(false);
-        if (!disposed) void startConditional();
+        // Autofill comes back only for this choice: a newer one (SSO) that
+        // aborted the ceremony keeps the page to itself (Codex r3).
+        if (!disposed && choice?.isCurrent()) void startConditional();
       }
     }
   };
@@ -222,6 +299,27 @@ const Login: Component = () => {
     modalCtl = undefined;
     setPasskeyBusy(false);
   };
+
+  /** "Use a passkey instead" on the QR: back to the form, then the button's ceremony. */
+  const usePasskeyInstead = () => {
+    void leaveFlow();
+    void handlePasskey();
+  };
+
+  // Autofill belongs to the form: it stops while a sign-in step (QR,
+  // confirmation, TOTP) replaces the form and starts again when the form
+  // comes back.
+  const onForm = createMemo(() => loginFlow().step === "form");
+  createEffect(
+    on(
+      onForm,
+      (shown) => {
+        if (!shown) stopConditional();
+        else if (!disposed) void startConditional();
+      },
+      { defer: true },
+    ),
+  );
 
   const handleLogin = async (e: Event) => {
     e.preventDefault();
@@ -237,46 +335,58 @@ const Login: Component = () => {
       return;
     }
 
-    // If MFA is required and no code provided
-    if (authState.mfaRequired && !mfaCode().trim()) {
-      setLocalError(t("auth.login.mfaRequired"));
-      return;
-    }
-
     stopConditional();
+    // Never a session: the answer is the confirmation QR or the TOTP step.
+    const submitting = submitPassword(serverUrl(), username(), password());
+    const choice = currentSignInChoice();
+    explicitChoice = choice;
     try {
-      await login(
-        serverUrl(),
-        username(),
-        password(),
-        authState.mfaRequired ? mfaCode() : undefined,
-      );
-      // Navigate to returnUrl if valid (relative path only), otherwise home
-      navigate(safeReturnUrl(searchParams.returnUrl) ?? "/", { replace: true });
+      await submitting;
+      setPassword("");
     } catch (err) {
-      // MFA_REQUIRED is handled by the store — just reset MFA code input
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg === "MFA_REQUIRED") {
-        setMfaCode("");
-        return;
-      }
-      if (!authState.error) {
-        setLocalError(errorText(err, "auth.login.failed", LOGIN_ERRORS));
-      }
-      // The form stays: so does passkey autofill.
-      if (!disposed) void startConditional();
+      if (!authState.error) setLocalError(loginErrorText(err));
+      // The form stays: so does passkey autofill, unless another choice runs.
+      if (!disposed && choice?.isCurrent()) void startConditional();
     }
   };
 
-  const handleBackToLogin = () => {
-    setAuthState({ mfaRequired: false, error: null });
-    setMfaCode("");
-    setPassword("");
+  const handlePhoneSignIn = async () => {
+    setLocalError("");
+    clearError();
+    stopConditional();
+    const starting = startPhoneSignIn(serverUrl());
+    const choice = currentSignInChoice();
+    explicitChoice = choice;
+    await starting;
+    // A start that failed stays on the form: autofill comes back (Fable R4;
+    // startConditional itself runs only while the form is shown).
+    if (!disposed && choice?.isCurrent()) void startConditional();
   };
+
+  const handleTotp = (code: string) => {
+    submitTotp(code).catch(() => {
+      // The store keeps the step and words the failure (loginFlowError).
+    });
+  };
+
+  /** The SSO flow of the current choice (desktop: cancels the Rust wait). */
+  let oidcCtl: AbortController | undefined;
 
   const handleOidcLogin = async (provider: OidcProvider) => {
     setLocalError("");
     clearError();
+    stopConditional();
+    // One choice at a time (Codex review M1): this SSO sign-in makes every
+    // other one stale, and it is stale itself once another starts. Its
+    // server is the one chosen now, not when the answer arrives.
+    const choice = beginSignInChoice();
+    explicitChoice = choice;
+    const server = serverUrl();
+    oidcCtl?.abort();
+    const ctl = new AbortController();
+    oidcCtl = ctl;
+    const stale = () => disposed || ctl.signal.aborted || !choice.isCurrent();
+    choice.signal.addEventListener("abort", () => ctl.abort(), { once: true });
 
     // Browser: open the popup inside the click, before any await, or popup
     // blockers reject it. It is pointed at the provider once the server answers.
@@ -285,64 +395,85 @@ const Login: Component = () => {
     ssoPopup = popup;
     if (!isTauri() && !popup) {
       setLocalError(t("auth.login.popupBlocked"));
+      void startConditional();
       return;
     }
     setOidcLoading(provider.slug);
+    ctl.signal.addEventListener(
+      "abort",
+      () => {
+        stopWatching?.();
+        popup?.close();
+        if (oidcLoading() === provider.slug) setOidcLoading(null);
+      },
+      { once: true },
+    );
+
+    /** A step that arrived for a choice the user left: its attempt goes. */
+    const dropStale = (attemptId: string) => {
+      void cancelAttempt(attemptId).catch(() => undefined);
+    };
 
     try {
-      const result = await oidcAuthorize(serverUrl(), provider.slug);
+      const result = await oidcAuthorize(server, provider.slug, ctl.signal);
 
       if (result.mode === "tauri") {
-        // Tauri: Rust kept the tokens and returned the user
-        await completeNativeOidcLogin(serverUrl(), result.result);
-        navigate("/", { replace: true });
+        // Tauri: Rust redeemed the hand-off code; the PC confirms next (F3).
+        if (stale()) {
+          dropStale(result.step.attempt.attempt_id);
+          return;
+        }
         setOidcLoading(null);
+        setFlowServer(server);
+        applyLoginStep(result.step, "oidc", server, choice);
         return;
       }
 
-      // The view went away while the server answered: start nothing.
-      if (disposed) {
+      // The view went away, or another sign-in was chosen: start nothing.
+      if (stale()) {
         popup?.close();
         return;
       }
 
       // Browser: send the popup to the provider and wait for its callback
-      const expectedOrigin = new URL(serverUrl()).origin;
+      const expectedOrigin = new URL(server).origin;
       stopWatching = watchSsoPopup({
         popup: popup!,
         expectedOrigin,
         onResult: (data) => {
-          loginWithOidc(
-            serverUrl(),
-            data.access_token,
-            data.refresh_token,
-            data.expires_in || 900,
-            data.setup_required ?? false,
-          )
-            .then(() => {
-              navigate("/", { replace: true });
-            })
-            .catch((err) => {
-              if (!authState.error) {
-                setLocalError(errorText(err, "auth.login.ssoFailed"));
-              }
-            })
-            .finally(() => {
-              setOidcLoading(null);
-            });
+          // The callback carries the next step (C27), never a token.
+          setOidcLoading(null);
+          let step: LoginStep;
+          try {
+            step = decodeLoginStep(data);
+          } catch (err) {
+            setLocalError(errorText(err, "auth.login.ssoFailed", SSO_ERRORS.byCode));
+            return;
+          }
+          if (stale()) {
+            dropStale(step.attempt.attempt_id);
+            return;
+          }
+          setFlowServer(server);
+          applyLoginStep(step, "oidc", server, choice);
         },
         onClosedWithoutResult: () => {
           // Closed by the user, or the callback lost its opener (IdP with
           // COOP) after the sign-in already set the refresh cookie.
+          if (stale()) return;
           setPopupClosed(true);
+          void startConditional();
         },
       });
       popup!.location.href = result.authUrl;
     } catch (err) {
       stopWatching?.();
       popup?.close();
+      if (stale()) return;
       setLocalError(errorText(err, "auth.login.ssoFailed", SSO_ERRORS.byCode));
       setOidcLoading(null);
+      // The SSO start failed and the form stays: autofill comes back (Fable R4).
+      void startConditional();
     }
   };
 
@@ -369,7 +500,7 @@ const Login: Component = () => {
     return policy === "open" || (policy === "invite_only" && cameWithInvite());
   };
 
-  const error = () => localError() || authState.error;
+  const error = () => localError() || authState.error || loginFlowError();
 
   return (
     <div class="flex items-center justify-center min-h-dvh overflow-y-auto bg-background-primary">
@@ -387,83 +518,55 @@ const Login: Component = () => {
           {t("auth.login.subtitle")}
         </p>
 
-        {/* Server URL input hidden during beta — hardcoded to kaiku.pmind.de */}
-
-        {/* MFA Code Step */}
-        <Show when={authState.mfaRequired}>
-          <form onSubmit={handleLogin} method="post" noValidate class="space-y-4">
-            <div class="flex items-center gap-3 p-3 bg-accent-primary/10 border border-accent-primary/20 rounded-lg">
-              <ShieldCheck class="w-5 h-5 text-accent-primary flex-shrink-0" />
-              <p class="text-sm text-text-secondary">
-                {t("auth.login.mfaIntro")}
-              </p>
-            </div>
-
-            <div>
-              <label for="login-mfa-code" class="block text-sm font-medium text-text-secondary mb-1">
-                {t("auth.login.mfaCode")}
-              </label>
-              <input
-                id="login-mfa-code"
-                type="text"
-                class="input-field font-mono text-center text-lg tracking-widest"
-                name="one-time-code"
-                autocomplete="one-time-code"
-                placeholder={"000000"}
-                value={mfaCode()}
-                onInput={(e) =>
-                  setMfaCode(e.currentTarget.value.replace(/\s/g, ""))
-                }
-                disabled={authState.isLoading}
-                maxLength={20}
-                autofocus
-                required
+        <Switch>
+          <Match when={(() => { const f = loginFlow(); return f.step === "qr" ? f : null; })()}>
+            {(f) => (
+              <LazyErrorBoundary name="QrLoginPanel" fallback={<StepLoadFailed />}>
+                <QrLoginPanel
+                  attempt={f().attempt}
+                  payload={f().qrPayload}
+                  onBack={() => void leaveFlow()}
+                  onUsePasskey={showPasskey() ? usePasskeyInstead : undefined}
+                />
+              </LazyErrorBoundary>
+            )}
+          </Match>
+          <Match when={(() => { const f = loginFlow(); return f.step === "confirm" ? f : null; })()}>
+            {(f) => (
+              <LazyErrorBoundary name="ConfirmationPanel" fallback={<StepLoadFailed />}>
+                <ConfirmationPanel
+                  attempt={f().attempt}
+                  payload={f().qrPayload}
+                  via={f().via}
+                  onPhoneNotAtHand={usePhoneNotAtHand}
+                  onBack={() => void leaveFlow()}
+                />
+              </LazyErrorBoundary>
+            )}
+          </Match>
+          <Match when={loginFlow().step === "totp"}>
+            <LazyErrorBoundary name="TotpStepPanel" fallback={<StepLoadFailed />}>
+              <TotpStepPanel
+                error={loginFlowError()}
+                busy={loginFlowBusy()}
+                onSubmit={handleTotp}
+                onBack={() => void leaveFlow()}
               />
-              <p class="text-xs text-text-muted mt-1">
-                {t("auth.login.mfaHint")}
-              </p>
-            </div>
-
-            <Show when={error()}>
-              <div
-                role="alert"
-                class="p-3 rounded-md text-sm"
-                style={{"background-color":"var(--color-error-bg)","border":"1px solid var(--color-error-border)","color":"var(--color-error-text)"}}
-              >
-                {error()}
-              </div>
-            </Show>
-
-            <button
-              type="submit"
-              class="btn-primary w-full flex items-center justify-center gap-2"
-              disabled={authState.isLoading}
-            >
-              <Show
-                when={!authState.isLoading}
-                fallback={
-                  <>
-                    <span class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    {t("auth.login.verifying")}
-                  </>
-                }
-              >
-                {t("auth.login.verify")}
-              </Show>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleBackToLogin}
-              class="w-full text-sm text-text-secondary hover:text-text-primary transition-colors"
-            >
-              {t("auth.login.backToLogin")}
-            </button>
-          </form>
-        </Show>
-
-        {/* Normal Login Flow (hidden during MFA) */}
-        <Show when={!authState.mfaRequired}>
+            </LazyErrorBoundary>
+          </Match>
+          <Match when={(() => { const f = loginFlow(); return f.step === "ended" ? f : null; })()}>
+            {(f) => (
+              <LazyErrorBoundary name="AttemptEnded" fallback={<StepLoadFailed />}>
+                <AttemptEnded
+                  state={f().state}
+                  via={f().via}
+                  onRetry={() => void retryLoginFlow()}
+                  onBack={() => void leaveFlow()}
+                />
+              </LazyErrorBoundary>
+            )}
+          </Match>
+          <Match when={loginFlow().step === "form"}>
           {/* Passkeys first (F1) */}
           <Show when={showPasskey()}>
             <div class="mb-4 space-y-2">
@@ -471,9 +574,7 @@ const Login: Component = () => {
               <Show when={desktop && passkeyBusy()}>
                 <div role="status" class="p-3 rounded-lg border border-white/10 bg-white/5 text-sm text-text-primary space-y-2">
                   <p>{t("passkeys.login.browserHint")}</p>
-                  <Show when={linux}>
-                    <p class="text-text-secondary">{t("passkeys.login.linuxHint")}</p>
-                  </Show>
+                  <LinuxPasskeyHint />
                   <button
                     type="button"
                     class="w-full min-h-12 rounded-lg border border-white/10 text-text-primary hover:bg-white/10"
@@ -483,20 +584,18 @@ const Login: Component = () => {
                   </button>
                 </div>
               </Show>
-              <Show when={showOidc() || showLocalLogin()}>
-                <div class="relative my-5">
-                  <div class="absolute inset-0 flex items-center">
-                    <div class="w-full border-t border-white/10" />
-                  </div>
-                  <div class="relative flex justify-center text-xs">
-                    <span class="bg-background-secondary px-3 text-text-muted">
-                      {t("auth.login.or")}
-                    </span>
-                  </div>
-                </div>
-              </Show>
             </div>
           </Show>
+          <button
+            type="button"
+            class="btn-primary w-full min-h-12 flex items-center justify-center gap-2 text-base mb-4"
+            disabled={authState.isLoading || loginFlowBusy()}
+            onClick={handlePhoneSignIn}
+          >
+            <Smartphone class="w-5 h-5" aria-hidden="true" />
+            {t("auth.phone.signInButton")}
+          </button>
+
           {/* SSO Buttons */}
           <Show when={showOidc()}>
             <div class="space-y-2 mb-4">
@@ -506,7 +605,7 @@ const Login: Component = () => {
                   return (
                     <button
                       type="button"
-                      class="w-full flex items-center justify-center gap-3 px-4 py-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-text-primary text-sm font-medium transition-colors"
+                      class="w-full min-h-12 flex items-center justify-center gap-3 px-4 py-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-text-primary text-base font-medium transition-colors"
                       disabled={authState.isLoading || !!oidcLoading()}
                       onClick={() => handleOidcLogin(provider)}
                     >
@@ -537,19 +636,19 @@ const Login: Component = () => {
                 </span>
               </div>
             </Show>
+          </Show>
 
-            <Show when={showLocalLogin()}>
-              <div class="relative my-5">
-                <div class="absolute inset-0 flex items-center">
-                  <div class="w-full border-t border-white/10" />
-                </div>
-                <div class="relative flex justify-center text-xs">
-                  <span class="bg-background-secondary px-3 text-text-muted">
-                    {t("auth.login.or")}
-                  </span>
-                </div>
+          <Show when={showLocalLogin()}>
+            <div class="relative my-5">
+              <div class="absolute inset-0 flex items-center">
+                <div class="w-full border-t border-white/10" />
               </div>
-            </Show>
+              <div class="relative flex justify-center text-xs">
+                <span class="bg-background-secondary px-3 text-text-secondary">
+                  {t("auth.login.or")}
+                </span>
+              </div>
+            </div>
           </Show>
 
           {/* Local Login Form */}
@@ -592,15 +691,6 @@ const Login: Component = () => {
                 />
               </div>
 
-              <div class="text-right">
-                <A
-                  href="/forgot-password"
-                  class="text-sm text-primary auth-link"
-                >
-                  {t("auth.login.forgotPassword")}
-                </A>
-              </div>
-
               <Show when={error()}>
                 <div
                   role="alert"
@@ -614,7 +704,7 @@ const Login: Component = () => {
 
               <button
                 type="submit"
-                class="btn-primary w-full flex items-center justify-center gap-2"
+                class="btn-primary w-full min-h-12 flex items-center justify-center gap-2 text-base"
                 data-testid="login-submit"
                 disabled={authState.isLoading}
               >
@@ -644,6 +734,15 @@ const Login: Component = () => {
             </div>
           </Show>
 
+          <nav class="mt-5 flex flex-col items-center gap-2 text-base" aria-label={t("auth.login.helpLinks")}>
+            <A href="/recover" class="text-primary auth-link py-2">
+              {t("auth.login.lostPhone")}
+            </A>
+            <A href="/secure-account" class="text-primary auth-link py-2">
+              {t("auth.login.secureAccount")}
+            </A>
+          </nav>
+
           <Show when={showRegisterLink()}>
             <p class="flex justify-center gap-1 text-sm text-text-secondary mt-4">
               <span>{t("auth.login.noAccount")}</span>
@@ -659,7 +758,8 @@ const Login: Component = () => {
               </A>
             </p>
           </Show>
-        </Show>
+          </Match>
+        </Switch>
         </div>
       </div>
     </div>

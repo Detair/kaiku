@@ -1,0 +1,194 @@
+/**
+ * Step-up for sensitive actions (F7, C26–C29 common rules).
+ *
+ * `withStepUp(req, run)`: a chat-only session gets the full-session dialog
+ * and no ceremony; otherwise the step-up dialog names the action and target,
+ * runs the passkey ceremony (desktop: in the system browser) and then
+ * `run()`. The server keeps the grant (bound to the session, single use), so
+ * `run()` just performs the action. A 403 `STEP_UP_REQUIRED` from `run()`
+ * gets exactly one new step-up and one retry. Closing the dialog aborts the
+ * ceremony and rejects with `StepUpCancelled`. Desktop and web step up only
+ * by passkey; without one the dialog says to use the Kaiku app on the phone.
+ */
+
+import { createSignal, untrack } from "solid-js";
+import type { MessageKey } from "@/i18n";
+import { codeIs } from "@/lib/errorCode";
+import { HttpError } from "@/lib/tauri/common";
+import { getStepUpMethods } from "@/lib/tauri/security";
+import type { StepUpAction } from "@/lib/types";
+import { canUsePasskeys, stepUpWithPasskey } from "@/lib/tauri/passkeys";
+import { isProbation } from "@/stores/auth";
+import {
+  onSessionDialogsFailed,
+  sessionDialogsFailed,
+  showFullSessionRequired,
+} from "@/lib/fullSessionRequired";
+
+export interface StepUpRequest {
+  action: StepUpAction;
+  /** Canonical target: lowercase UUID, `others` or `""`. */
+  target: string;
+  /** What the dialog shows for the target ("Pixel 8"). */
+  targetLabel: string;
+}
+
+/** The user closed the step-up (or the session cannot step up). */
+export class StepUpCancelled extends Error {
+  constructor(message = "STEP_UP_CANCELLED") {
+    super(message);
+    this.name = "StepUpCancelled";
+  }
+}
+
+/**
+ * The step-up dialog cannot be shown: its chunk failed to load (Fable r2
+ * R1). Not a cancel: callers word it as a failure, and the page already
+ * shows a reload notice.
+ */
+export class StepUpUnavailable extends Error {
+  constructor() {
+    super("STEP_UP_UNAVAILABLE");
+    this.name = "StepUpUnavailable";
+  }
+}
+
+/** The action table, one literal key per action (i18n:check sees each). */
+export const STEP_UP_LABELS: Record<StepUpAction, MessageKey> = {
+  "passkey.add": "security.stepUp.action.passkeyAdd",
+  "passkey.remove": "security.stepUp.action.passkeyRemove",
+  "key_device.remove": "security.stepUp.action.keyDeviceRemove",
+  "enrollment.issue": "security.stepUp.action.enrollmentIssue",
+  "password.set": "security.stepUp.action.passwordSet",
+  "password.remove": "security.stepUp.action.passwordRemove",
+  "totp.set": "security.stepUp.action.totpSet",
+  "totp.remove": "security.stepUp.action.totpRemove",
+  "recovery_codes.create": "security.stepUp.action.recoveryCodesCreate",
+  "identity.link": "security.stepUp.action.identityLink",
+  "identity.unlink": "security.stepUp.action.identityUnlink",
+  "sessions.end": "security.stepUp.action.sessionsEnd",
+  "recovery_contact.set": "security.stepUp.action.recoveryContactSet",
+  "request.cancel": "security.stepUp.action.requestCancel",
+  "event.repudiate": "security.stepUp.action.eventRepudiate",
+  "account.delete": "security.stepUp.action.accountDelete",
+  "admin.elevate": "security.stepUp.action.adminElevate",
+  "admin.enrollment.issue": "security.stepUp.action.adminEnrollmentIssue",
+  "admin.authenticator.remove": "security.stepUp.action.adminAuthenticatorRemove",
+  "admin.may_approve": "security.stepUp.action.adminMayApprove",
+  "admin.factor.set_state": "security.stepUp.action.adminFactorSetState",
+  "admin.recovery_contact.set": "security.stepUp.action.adminRecoveryContactSet",
+};
+
+/** The label key for a request ("End all other sessions" for `others`). */
+export function stepUpLabel(req: StepUpRequest): MessageKey {
+  if (req.action === "sessions.end" && req.target === "others") return "security.stepUp.action.sessionsEndOthers";
+  return STEP_UP_LABELS[req.action];
+}
+
+/** What the open step-up dialog shows. */
+export interface PendingStepUp {
+  req: StepUpRequest;
+  /** `passkey`: a ceremony can run; `phone`: only the phone can confirm. */
+  mode: "passkey" | "phone";
+  /** Run the ceremony (the dialog's button). */
+  confirm: () => Promise<void>;
+  /** Close: aborts a running ceremony. */
+  cancel: () => void;
+  running: () => boolean;
+  error: () => unknown;
+}
+
+const [pending, setPending] = createSignal<PendingStepUp | null>(null);
+
+/** The step-up the dialog host shows, if any. */
+export const pendingStepUp = pending;
+
+/** Ends a pending step-up with an error (its caller is told, never left waiting). */
+const failEntry = new WeakMap<PendingStepUp, (err: Error) => void>();
+
+// The dialog chunk failed while a step-up waited for it: that one fails now.
+onSessionDialogsFailed(() => {
+  const cur = untrack(pending);
+  if (cur) failEntry.get(cur)?.(new StepUpUnavailable());
+});
+
+/** Open the dialog and wait for one grant. Rejects `StepUpCancelled` on close. */
+function requestGrant(req: StepUpRequest, passkeyOk: boolean): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (sessionDialogsFailed()) {
+      reject(new StepUpUnavailable());
+      return;
+    }
+    const abort = new AbortController();
+    const [running, setRunning] = createSignal(false);
+    const [error, setError] = createSignal<unknown>(null);
+    const mode = passkeyOk && canUsePasskeys() ? "passkey" : "phone";
+    const entry: PendingStepUp = {
+      req,
+      mode,
+      running,
+      error,
+      confirm: async () => {
+        if (mode !== "passkey" || running()) return;
+        setRunning(true);
+        setError(null);
+        try {
+          await stepUpWithPasskey(req.action, req.target, abort.signal);
+          if (abort.signal.aborted) return;
+          setPending((cur) => (cur === entry ? null : cur));
+          resolve();
+        } catch (err) {
+          if (!abort.signal.aborted) setError(err);
+        } finally {
+          setRunning(false);
+        }
+      },
+      cancel: () => fail(new StepUpCancelled()),
+    };
+    const fail = (err: Error) => {
+      abort.abort();
+      setPending((cur) => (cur === entry ? null : cur));
+      reject(err);
+    };
+    failEntry.set(entry, fail);
+    // One step-up at a time: an older one is cancelled (its ceremony
+    // aborted, its caller told), never left hanging (Fable m8, Argon 5 #4).
+    pending()?.cancel();
+    setPending(entry);
+  });
+}
+
+/** The code is specific; desktop errors have no reliable status (Fable m1). */
+function isStepUpRequired(err: unknown): boolean {
+  return err instanceof HttpError && codeIs(err.code, "STEP_UP_REQUIRED");
+}
+
+export async function withStepUp<T>(req: StepUpRequest, run: () => Promise<T>): Promise<T> {
+  if (isProbation()) {
+    // Without the dialog chunk the full-session dialog cannot show either:
+    // the click gets an error instead of nothing (Fable r2 follow-up b).
+    if (sessionDialogsFailed()) throw new StepUpUnavailable();
+    showFullSessionRequired();
+    throw new StepUpCancelled("FULL_SESSION_REQUIRED");
+  }
+  let passkeyOk = false;
+  try {
+    passkeyOk = (await getStepUpMethods()).passkey;
+  } catch (err) {
+    // A session that is chat-only or gone gets its own dialog, not a
+    // step-up on top of it (Argon review 5 #4).
+    if (err instanceof HttpError && (err.status === 401 || codeIs(err.code, "FULL_SESSION_REQUIRED"))) {
+      throw new StepUpCancelled(codeIs(err.code, "FULL_SESSION_REQUIRED") ? "FULL_SESSION_REQUIRED" : "SESSION_ENDED");
+    }
+    console.warn("[StepUp] Loading the methods failed:", err instanceof Error ? err.message : err);
+  }
+  await requestGrant(req, passkeyOk);
+  try {
+    return await run();
+  } catch (err) {
+    if (!isStepUpRequired(err)) throw err;
+    // The grant expired or was spent elsewhere: one new step-up, one retry.
+    await requestGrant(req, passkeyOk);
+    return run();
+  }
+}

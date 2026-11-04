@@ -12,12 +12,11 @@ import { Route } from "@solidjs/router";
 
 // Views (eager: first views users see)
 import Login from "./views/Login";
-import Register from "./views/Register";
+// Registration is not on the startup path: its own chunk.
+const Register = lazy(() => import("./views/Register"));
 import Main from "./views/Main";
 
 // Views (lazy: not part of main flow)
-const ForgotPassword = lazy(() => import("./views/ForgotPassword"));
-const ResetPassword = lazy(() => import("./views/ResetPassword"));
 const NotFound = lazy(() => import("./views/NotFound"));
 const ThemeDemo = lazy(() => import("./pages/ThemeDemo"));
 const InviteJoin = lazy(() => import("./views/InviteJoin"));
@@ -42,6 +41,12 @@ import { PageFallback, LazyErrorBoundary } from "./components/ui/LazyFallback";
 import SetupWizard from "./components/SetupWizard";
 import OnboardingWizard from "./components/OnboardingWizard";
 import SessionExpiredModal from "./components/auth/SessionExpiredModal";
+// Full-session, step-up and sign-out-others dialogs: a lazy chunk with a
+// visible failure (SessionDialogsSlot). Their state stays eager: a refusal
+// reported before the chunk has loaded still opens the full-session dialog
+// (Fable r2 R2).
+import SessionDialogsSlot from "./components/auth/SessionDialogsSlot";
+import "./lib/fullSessionRequired";
 import BlockConfirmModal from "./components/modals/BlockConfirmModal";
 import ReportModal from "./components/modals/ReportModal";
 import type { ReportTarget } from "./components/modals/ReportModal";
@@ -108,6 +113,7 @@ const Layout: Component<ParentProps> = (props) => {
       </div>
       <ToastContainer />
       <SessionExpiredModal />
+      <SessionDialogsSlot />
       <ContextMenuContainer />
 
       <Show when={blockTarget()}>
@@ -218,29 +224,34 @@ const LoginPage = () => (
     <Login />
   </Layout>
 );
-const RegisterPage = () => (
+const SetupLink = lazy(() => import("./views/SetupLink"));
+const SetupLinkPage = () => (
   <Layout>
-    <Register />
-  </Layout>
-);
-const ForgotPasswordPage = () => (
-  <Layout>
-    <LazyErrorBoundary name="ForgotPassword">
+    <LazyErrorBoundary name="SetupLink">
       <Suspense fallback={<PageFallback />}>
-        <ForgotPassword />
+        <SetupLink />
       </Suspense>
     </LazyErrorBoundary>
   </Layout>
 );
-const ResetPasswordPage = () => (
+const RecoverAccount = lazy(() => import("./views/RecoverAccount"));
+const SecureAccount = lazy(() => import("./views/SecureAccount"));
+const AccountRequestView = lazy(() => import("./views/AccountRequestView"));
+const lazyPage = (name: string, View: Component) => () => (
   <Layout>
-    <LazyErrorBoundary name="ResetPassword">
+    <LazyErrorBoundary name={name}>
       <Suspense fallback={<PageFallback />}>
-        <ResetPassword />
+        <View />
       </Suspense>
     </LazyErrorBoundary>
   </Layout>
 );
+const RegistrationBind = lazy(() => import("./views/RegistrationBind"));
+const RecoverPage = lazyPage("RecoverAccount", RecoverAccount);
+const RegistrationBindPage = lazyPage("RegistrationBind", RegistrationBind);
+const SecureAccountPage = lazyPage("SecureAccount", SecureAccount);
+const AccountRequestPage = lazyPage("AccountRequest", AccountRequestView);
+const RegisterPage = lazyPage("Register", Register);
 const MainPage = () => (
   <Layout>
     <ProtectedMain />
@@ -302,8 +313,11 @@ export const AppRoutes = (): JSX.Element => (
     {import.meta.env.DEV && <Route path="/demo" component={ThemeDemoPage} />}
     <Route path="/login" component={LoginPage} />
     <Route path="/register" component={RegisterPage} />
-    <Route path="/forgot-password" component={ForgotPasswordPage} />
-    <Route path="/reset-password" component={ResetPasswordPage} />
+    <Route path="/register/bind" component={RegistrationBindPage} />
+    <Route path="/setup" component={SetupLinkPage} />
+    <Route path="/recover" component={RecoverPage} />
+    <Route path="/secure-account" component={SecureAccountPage} />
+    <Route path="/account-request" component={AccountRequestPage} />
     <Route path="/invite/:code" component={InvitePage} />
     <Route path="/pages/:slug" component={PagePage} />
     <Route path="/guilds/:guildId/pages/:slug" component={PagePage} />

@@ -16,6 +16,26 @@ vi.mock("@/lib/tauri", () => ({
     (e instanceof Error ? e.message : String(e)).toLowerCase().includes("elevation_required"),
   unlinkIdentity: vi.fn(),
 }));
+const stepUps = vi.hoisted(() => ({ seen: [] as unknown[], cancel: false }));
+/** Like the real withStepUp: one new step-up and one retry on STEP_UP_REQUIRED. */
+const isStepUpRequired = (err: unknown) => (err as { code?: unknown })?.code === "STEP_UP_REQUIRED";
+vi.mock("@/lib/stepUp", async (orig) => {
+  const actual = await orig<typeof import("@/lib/stepUp")>();
+  return {
+    ...actual,
+    withStepUp: async (req: unknown, run: () => Promise<unknown>) => {
+      stepUps.seen.push(req);
+      if (stepUps.cancel) throw new actual.StepUpCancelled();
+      try {
+        return await run();
+      } catch (err) {
+        if (!isStepUpRequired(err)) throw err;
+        stepUps.seen.push(req);
+        return run();
+      }
+    },
+  };
+});
 vi.mock("@/components/admin/ElevateDialog", () => ({
   default: (p: { onElevated?: () => void; onClose: () => void }) => (
     <button onClick={() => (p.onElevated?.(), p.onClose())}>elevate-now</button>
@@ -23,10 +43,15 @@ vi.mock("@/components/admin/ElevateDialog", () => ({
 }));
 
 import LinkedAccountsSection from "../LinkedAccountsSection";
+import { setAuthState } from "@/stores/auth";
+import { HttpError } from "@/lib/tauri/common";
 
 const needsElevation = () => new Error("elevation_required");
-const clickLink = async () =>
+// "Link Keycloak" asks for the `identity.link` step-up; the link starts from "Link now".
+const clickLink = async () => {
   fireEvent.click(await screen.findByRole("button", { name: /Link Keycloak/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "Link now" }));
+};
 type FakePopup = { closed: boolean; close: ReturnType<typeof vi.fn>; location: { href: string } };
 const fakePopup = (): FakePopup => ({ closed: false, close: vi.fn(), location: { href: "" } });
 const popupStub = () => fakePopup() as unknown as Window;
@@ -36,6 +61,10 @@ describe("LinkedAccountsSection admin elevation", () => {
     document.body.innerHTML = "";
     linkIdentity.mockReset();
     native.on = false;
+    stepUps.seen.length = 0;
+    stepUps.cancel = false;
+    // Linking needs a full session (C27).
+    setAuthState({ user: { id: "u1", username: "a", session: { id: "s1", assurance: "full" } } as never });
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -43,7 +72,8 @@ describe("LinkedAccountsSection admin elevation", () => {
     native.on = true;
     linkIdentity.mockRejectedValueOnce(needsElevation()).mockResolvedValueOnce({ mode: "tauri" });
     render(() => <LinkedAccountsSection />);
-    await clickLink();
+    // Desktop: the link starts inside the step-up (no popup gesture).
+    fireEvent.click(await screen.findByRole("button", { name: /Link Keycloak/ }));
     fireEvent.click(await screen.findByRole("button", { name: "elevate-now" }));
     const now = await screen.findByRole("button", { name: "Link now" });
     expect(linkIdentity).toHaveBeenCalledTimes(1);
@@ -260,5 +290,91 @@ describe("LinkedAccountsSection admin elevation", () => {
     expect(lastPopup()?.close).toHaveBeenCalled();
     fireEvent.click(await screen.findByRole("button", { name: "elevate-now" }));
     expect(await screen.findByRole("button", { name: "Link now" })).toBeTruthy();
+  });
+
+  it("link asks for the identity.link step-up before anything starts", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => popupStub());
+    linkIdentity.mockResolvedValue({ mode: "browser", authUrl: "https://idp/x" });
+    render(() => <LinkedAccountsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: /Link Keycloak/ }));
+    await screen.findByRole("button", { name: "Link now" });
+    expect(stepUps.seen).toEqual([{ action: "identity.link", target: "", targetLabel: "Keycloak" }]);
+    expect(open).not.toHaveBeenCalled();
+    expect(linkIdentity).not.toHaveBeenCalled();
+  });
+
+  it("a cancelled step-up starts no link and shows no error", async () => {
+    stepUps.cancel = true;
+    render(() => <LinkedAccountsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: /Link Keycloak/ }));
+    await waitFor(() => expect(stepUps.seen).toHaveLength(1));
+    expect(screen.queryByRole("button", { name: "Link now" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("an expired link grant asks to confirm again", async () => {
+    vi.spyOn(window, "open").mockImplementation(() => popupStub());
+    linkIdentity.mockRejectedValue(new HttpError(403, "STEP_UP_REQUIRED", "STEP_UP_REQUIRED"));
+    render(() => <LinkedAccountsSection />);
+    await clickLink();
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Please confirm this with a passkey first."));
+  });
+
+  it("unlink runs under the identity.unlink grant for that identity", async () => {
+    const tauri = await import("@/lib/tauri");
+    vi.mocked(tauri.listIdentities).mockResolvedValueOnce({
+      identities: [
+        {
+          id: "0192f0c0-0000-7000-8000-0000000000aa",
+          provider_slug: "kc",
+          provider_name: "Keycloak",
+          email: null,
+          created_at: "2026-11-01T00:00:00Z",
+          last_used_at: null,
+        },
+      ],
+    } as never);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(() => <LinkedAccountsSection />);
+    fireEvent.click(await screen.findByTitle("Unlink Keycloak"));
+    await waitFor(() => expect(tauri.unlinkIdentity).toHaveBeenCalledWith("0192f0c0-0000-7000-8000-0000000000aa"));
+    expect(stepUps.seen).toEqual([
+      { action: "identity.unlink", target: "0192f0c0-0000-7000-8000-0000000000aa", targetLabel: "Keycloak" },
+    ]);
+  });
+
+  it("a chat-only session sees the links read-only (Argon review 3 #4)", async () => {
+    setAuthState({ user: { id: "u1", username: "a", session: { id: "s1", assurance: "probation" } } as never });
+    render(() => <LinkedAccountsSection />);
+    await screen.findByText("No external accounts are linked to your profile.");
+    expect(screen.queryByRole("button", { name: /Link Keycloak/ })).toBeNull();
+  });
+
+  it("an unlink refusal is worded, never the server's text (Fable m5)", async () => {
+    const tauri = await import("@/lib/tauri");
+    vi.mocked(tauri.listIdentities).mockResolvedValueOnce({
+      identities: [
+        { id: "0192f0c0-0000-7000-8000-0000000000aa", provider_slug: "kc", provider_name: "Keycloak", email: null, created_at: "2026-11-01T00:00:00Z", last_used_at: null },
+      ],
+    } as never);
+    vi.mocked(tauri.unlinkIdentity).mockRejectedValueOnce(new HttpError(409, "server text: last method", "LAST_STRONG_AUTHENTICATOR"));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(() => <LinkedAccountsSection />);
+    fireEvent.click(await screen.findByTitle("Unlink Keycloak"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).not.toContain("server text");
+  });
+
+  it("desktop: an expired link grant gets one new step-up and a retry (Argon review 3 #1)", async () => {
+    native.on = true;
+    linkIdentity
+      .mockRejectedValueOnce(new HttpError(403, "STEP_UP_REQUIRED", "STEP_UP_REQUIRED"))
+      .mockResolvedValueOnce({ mode: "tauri" });
+    render(() => <LinkedAccountsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: /Link Keycloak/ }));
+    await waitFor(() => expect(linkIdentity).toHaveBeenCalledTimes(2));
+    expect(stepUps.seen).toHaveLength(2);
+    expect(stepUps.seen[0]).toMatchObject({ action: "identity.link" });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

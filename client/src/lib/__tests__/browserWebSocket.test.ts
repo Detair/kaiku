@@ -54,6 +54,7 @@ describe("browser WebSocket close reporting", () => {
   async function load() {
     const common = await import("../tauri/common");
     common.browserState.accessToken = "tok";
+    common.browserState.tokenServerUrl = common.browserState.serverUrl;
     const ws = await import("../tauri/websocket");
     const onClose = vi.fn();
     ws.setBrowserSocketHooks({ onClose, onFrame: vi.fn() });

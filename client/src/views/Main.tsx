@@ -21,6 +21,9 @@ import {
   onCleanup,
 } from "solid-js";
 import { useLocation } from "@solidjs/router";
+// Account-security overlays: lazy, nothing on the startup path needs them.
+import SecurityHostsSlot from "@/components/security/SecurityHostsSlot";
+import { refreshMeSecurity } from "@/stores/security";
 import { Hash, Volume2, Pin } from "lucide-solid";
 import AppShell from "@/components/layout/AppShell";
 import CommandPalette from "@/components/layout/CommandPalette";
@@ -86,6 +89,9 @@ const Main: Component = () => {
   const [showPinDrawer, setShowPinDrawer] = createSignal(false);
 
   // Load guilds on mount
+  // C27: load the security overview at app start (open request, prompts).
+  onMount(() => void refreshMeSecurity());
+
   onMount(() => {
     void loadGuilds().then(landOnFirstServerIfIdle);
   });
@@ -154,6 +160,9 @@ const Main: Component = () => {
 
   return (
     <>
+      {/* Chat-only banner, open-request prompt, migration prompts (B.4, SM3) */}
+      <SecurityHostsSlot />
+
       {/* Command Palette (Global) */}
       <CommandPalette />
 

@@ -26,7 +26,6 @@ import type {
   ObsLinksResponse,
   ObsTimeRange,
   ElevateResponse,
-  ReauthRequest,
 } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import type { AuditLogFilters } from "@/lib/tauri";
@@ -279,26 +278,6 @@ export async function checkAdminStatus(): Promise<void> {
 }
 
 /**
- * Ask the server for the admin status and apply it. Unlike
- * `checkAdminStatus`, a failed call throws, so callers can fail closed.
- * Returns whether the session is elevated according to the server.
- */
-export async function confirmElevation(signal?: AbortSignal): Promise<boolean> {
-  const status = await tauri.checkAdminStatus();
-  // A cancelled attempt must not touch state.
-  if (signal?.aborted) return false;
-  setAdminState({
-    isAdmin: status.is_admin,
-    isElevated: status.is_elevated,
-    elevationExpiresAt: status.elevation_expires_at,
-  });
-  if (status.is_elevated && status.elevation_expires_at) {
-    startElevationTimer();
-  }
-  return status.is_elevated;
-}
-
-/**
  * Load admin statistics
  */
 export async function loadAdminStats(): Promise<void> {
@@ -333,35 +312,6 @@ export async function elevateWithStepUp(reason: string | null = null): Promise<E
       isElevating: false,
     });
     if (response.elevated) startElevationTimer();
-    return response;
-  } catch (err) {
-    setAdminState({ isElevating: false });
-    throw err;
-  }
-}
-
-/**
- * Elevate admin session. The caller proves who they are (contract C24); a
- * failed attempt is rethrown so the re-auth dialog can show why.
- */
-export async function elevateSession(
-  req: ReauthRequest & { reason?: string },
-): Promise<ElevateResponse> {
-  setAdminState({ isElevating: true, error: null });
-
-  try {
-    const response = await tauri.adminElevate(req);
-    setAdminState({
-      isElevated: response.elevated,
-      elevationExpiresAt: response.expires_at,
-      isElevating: false,
-    });
-
-    // Start the elevation timer
-    if (response.elevated) {
-      startElevationTimer();
-    }
-
     return response;
   } catch (err) {
     setAdminState({ isElevating: false });

@@ -5,7 +5,6 @@
 
 import type {
   IdentityListResponse,
-  ReauthMethodsResponse,
   RevokeAllResponse,
   ServerSettings,
   SessionListResponse,
@@ -13,10 +12,12 @@ import type {
   UserStatus,
 } from "../types";
 import { codeIs, messageHasCode } from "@/lib/errorCode";
+import { decodeLoginStep, type LoginStep, type RegistrationStarted } from "../types/login";
 import {
   browserState,
   clearBrowserTokens,
   expireNativeSession,
+  reportFullSessionRequired,
   fetchApi,
   getServerUrl,
   getUploadAuth,
@@ -26,12 +27,9 @@ import {
   loadNativeAuthInfo,
   NATIVE_SESSION_EXPIRED,
   refreshAccessToken,
-  scheduleTokenRefresh,
   setNativeAuthInfo,
   setSessionRestoreBlocked,
   validateFileSize,
-  type AuthResponse,
-  type AuthResult,
   type SessionRestoreResult,
 } from "./common";
 import { getBrowserWebSocket, wsSend } from "./websocket";
@@ -61,17 +59,74 @@ export function nativeAuthError(error: unknown): unknown {
   if (text === "Invalid username or password") {
     return new HttpError(401, text, "INVALID_CREDENTIALS");
   }
-  if (text === "ACCOUNT_BANNED") {
-    return new HttpError(403, text, "ACCOUNT_BANNED");
-  }
   if (text?.startsWith("Connection failed:")) {
     return new TypeError(text);
   }
-  if (text === "Username or email already exists") {
-    return new HttpError(409, text);
+  // Bare server codes (`SessionError::Server` displays the code), optionally
+  // with `:<seconds>` from a Retry-After and `:{json}` with the extra error
+  // fields (`ENROLL_CODE_WRONG::{"tries_left":2}`).
+  const bare = text ? /^([A-Z][A-Z0-9_]*)(?::(\d*)(?::(\{.*\}))?)?$/s.exec(text) : null;
+  if (bare) {
+    const code = bare[1];
+    let details: Record<string, unknown> = {};
+    if (bare[3]) {
+      try {
+        const parsed: unknown = JSON.parse(bare[3]);
+        if (parsed && typeof parsed === "object") details = parsed as Record<string, unknown>;
+      } catch {
+        details = {};
+      }
+    }
+    return new HttpError(
+      NATIVE_CODE_STATUS[code] ?? 400,
+      code,
+      code,
+      details,
+      bare[2] ? Number(bare[2]) : undefined,
+    );
   }
+  // A proxy or server failure without a JSON body (`SessionError::Server`).
+  const status = text ? /^Server error \((\d{3})\)$/.exec(text) : null;
+  if (status) return new HttpError(Number(status[1]), text!);
   return error;
 }
+
+/** Status for bare native codes whose fallback text depends on it. */
+const NATIVE_CODE_STATUS: Partial<Record<string, number>> = {
+  INVALID_CREDENTIALS: 401,
+  INVALID_MFA: 401,
+  REQUEST_FACTOR_INVALID: 401,
+  ACCOUNT_BANNED: 403,
+  // The step-up retry and the full-session dialog look for 403 (Fable m1,
+  // Argon review 5 #2): Rust's bare codes carry no status.
+  STEP_UP_REQUIRED: 403,
+  FULL_SESSION_REQUIRED: 403,
+  NOT_ADMIN: 403,
+  KEY_DEVICE_REQUIRED: 403,
+  ADMIN_TARGET_IS_ADMIN: 403,
+  CANCEL_NOT_ALLOWED: 403,
+  REPUDIATE_NOT_ALLOWED: 403,
+  TOTP_UNAVAILABLE: 403,
+  LOGIN_ATTEMPT_UNKNOWN: 404,
+  ENROLLMENT_TOKEN_INVALID: 404,
+  NO_PRE_SESSION_SECRET: 404,
+  REGISTRATION_TICKET_INVALID: 404,
+  USER_EXISTS: 409,
+  EMAIL_TAKEN: 409,
+  LOGIN_ATTEMPT_NOT_READY: 409,
+  ACCOUNT_REQUEST_OPEN: 409,
+  ACCOUNT_REQUEST_COMPLETED: 409,
+  ACCOUNT_REQUEST_NOT_READY: 409,
+  NO_INDEPENDENT_CANCELLER: 409,
+  ENROLLMENT_LIMIT: 409,
+  ENROLLMENT_STATE: 409,
+  LAST_STRONG_AUTHENTICATOR: 409,
+  LOGIN_ATTEMPT_ENDED: 410,
+  ENROLLMENT_FAILED: 410,
+  TOO_MANY_ATTEMPTS: 429,
+  SERVICE_UNAVAILABLE: 503,
+  KEYRING_UNAVAILABLE: 503,
+};
 
 /** Server codes the native SSO commands report as bare strings. */
 const NATIVE_SSO_CODES = new Set([
@@ -95,7 +150,7 @@ export function nativeSsoError(error: unknown): unknown {
 }
 
 /** Native mode: session-management request sent by Rust with the refresh token. */
-async function nativeSessionRequest<T>(
+export async function nativeSessionRequest<T>(
   method: string,
   path: string,
   body?: unknown,
@@ -117,64 +172,11 @@ async function nativeSessionRequest<T>(
     if (error === "Invalid credentials") {
       throw new HttpError(401, error, "INVALID_CREDENTIALS");
     }
-    throw error;
+    // Bare codes with their fields (STEP_UP_REQUIRED, PASSWORD_REJECTED {reason}, …).
+    const mapped = nativeAuthError(error);
+    if (mapped instanceof HttpError && codeIs(mapped.code, "FULL_SESSION_REQUIRED")) reportFullSessionRequired();
+    throw mapped;
   }
-}
-
-export async function login(
-  serverUrl: string,
-  username: string,
-  password: string,
-  mfaCode?: string,
-): Promise<AuthResult> {
-  if (isTauri()) {
-    try {
-      return await invokeNativeAuth((invoke) =>
-        invoke<AuthResult>("login", {
-          request: {
-            server_url: serverUrl,
-            username,
-            password,
-            mfa_code: mfaCode ?? null,
-          },
-        }),
-      );
-    } catch (error) {
-      throw nativeAuthError(error);
-    }
-  }
-
-  // Browser mode
-  browserState.serverUrl = serverUrl;
-  localStorage.setItem("serverUrl", serverUrl);
-  setSessionRestoreBlocked(false);
-
-  const body: Record<string, unknown> = { username, password };
-  if (mfaCode) {
-    body.mfa_code = mfaCode;
-  }
-
-  const response = await httpRequest<AuthResponse>("POST", "/auth/login", body);
-
-  // Store access token in memory; browser relies on HttpOnly cookie for refresh
-  browserState.accessToken = response.access_token;
-  browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
-
-  // Schedule automatic token refresh
-  scheduleTokenRefresh();
-
-  console.log(
-    `[Auth] Login successful, token expires in ${response.expires_in}s`,
-  );
-
-  // Fetch user profile after login
-  const user = await httpRequest<User>("GET", "/auth/me");
-
-  return {
-    user,
-    setup_required: response.setup_required,
-    password_change_required: response.password_change_required ?? false,
-  };
 }
 
 /**
@@ -198,62 +200,45 @@ export async function updateStatus(
   getBrowserWebSocket()?.send(JSON.stringify(message));
 }
 
+/**
+ * Create an account (F8). Never a session: the answer names the account and
+ * when its registration ticket ends (30 min). Browser: the ticket is the
+ * `__Secure-kaiku_ticket` cookie; desktop: Rust keeps it.
+ */
 export async function register(
   serverUrl: string,
   username: string,
   password: string,
   email?: string,
   displayName?: string,
-): Promise<AuthResult> {
+): Promise<RegistrationStarted> {
   if (isTauri()) {
     try {
-      return await invokeNativeAuth((invoke) =>
-        invoke<AuthResult>("register", {
-          request: {
-            server_url: serverUrl,
-            username,
-            email,
-            password,
-            display_name: displayName,
-          },
-        }),
-      );
+      const { invoke } = await import("@tauri-apps/api/core");
+      return await invoke<RegistrationStarted>("register", {
+        request: {
+          server_url: serverUrl,
+          username,
+          email,
+          password,
+          display_name: displayName,
+        },
+      });
     } catch (error) {
       throw nativeAuthError(error);
     }
   }
 
-  // Browser mode
   browserState.serverUrl = serverUrl;
   localStorage.setItem("serverUrl", serverUrl);
   setSessionRestoreBlocked(false);
 
-  const response = await httpRequest<AuthResponse>("POST", "/auth/register", {
+  return httpRequest<RegistrationStarted>("POST", "/auth/register", {
     username,
     password,
     email,
     display_name: displayName,
   });
-
-  // Store access token in memory; browser relies on HttpOnly cookie for refresh
-  browserState.accessToken = response.access_token;
-  browserState.tokenExpiresAt = Date.now() + response.expires_in * 1000;
-
-  // Schedule automatic token refresh
-  scheduleTokenRefresh();
-
-  console.log(
-    `[Auth] Registration successful, token expires in ${response.expires_in}s`,
-  );
-
-  // Fetch user profile after registration
-  const user = await httpRequest<User>("GET", "/auth/me");
-
-  return {
-    user,
-    setup_required: response.setup_required,
-    password_change_required: response.password_change_required ?? false,
-  };
 }
 
 export async function logout(): Promise<void> {
@@ -514,79 +499,6 @@ export function isElevationRequiredError(err: unknown): boolean {
 }
 
 // ============================================================================
-// Re-authentication (contract C24)
-// ============================================================================
-
-/** Which re-authentication methods this session can use. */
-export async function getReauthMethods(): Promise<ReauthMethodsResponse> {
-  return httpRequest<ReauthMethodsResponse>("GET", "/auth/reauth/methods");
-}
-
-/** Turn a native command error code into an `HttpError` for the shared mapping. */
-function nativeReauthError(err: unknown): HttpError {
-  const raw = typeof err === "string" ? err : err instanceof Error ? err.message : "";
-  // "HTTP_<status>" or "HTTP_<status>:<code>": the status always stays.
-  const status = /^HTTP_(\d{3})(?::(.+))?$/.exec(raw);
-  if (status) return new HttpError(Number(status[1]), raw, status[2]);
-  return new HttpError(0, raw, raw || "REAUTH_FAILED");
-}
-
-/**
- * Start re-authenticating with a sign-in provider.
- *
- * Tauri: the native command runs the whole flow (system browser, loopback
- * callback) and resolves once the server reports the confirmation. Browser:
- * the server returns the provider URL for the caller to open in a popup; the
- * result arrives as an `oidc-reauth-callback` message.
- */
-export async function startOidcReauth(
-  providerId: string,
-  opts: { reason?: string | null; mfaCode?: string | null; signal?: AbortSignal },
-): Promise<{ mode: "tauri" } | { mode: "browser"; url: string }> {
-  const abortIfCancelled = () => {
-    if (opts.signal?.aborted) {
-      const e = new Error("aborted");
-      e.name = "AbortError";
-      throw e;
-    }
-  };
-  abortIfCancelled();
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    abortIfCancelled();
-    // Lets the native side stop the listener (and not open the browser) when
-    // the user closes the dialog mid-flow.
-    const attemptId = crypto.randomUUID();
-    const cancel = () => void invoke("oidc_reauth_cancel", { attemptId }).catch(() => {});
-    opts.signal?.addEventListener("abort", cancel, { once: true });
-    try {
-      await invoke("oidc_reauth", {
-        serverUrl: getServerUrl().replace(/\/+$/, ""),
-        providerId,
-        reason: opts.reason ?? null,
-        mfaCode: opts.mfaCode ?? null,
-        attemptId,
-      });
-    } catch (err) {
-      throw nativeReauthError(err);
-    } finally {
-      opts.signal?.removeEventListener("abort", cancel);
-    }
-    return { mode: "tauri" };
-  }
-  const resp = await httpRequest<{ url: string }>(
-    "POST",
-    `/auth/reauth/oidc/authorize/${encodeURIComponent(providerId)}`,
-    {
-      redirect_uri: null,
-      reason: opts.reason ?? null,
-      mfa_code: opts.mfaCode ?? null,
-    },
-  );
-  return { mode: "browser", url: resp.url };
-}
-
-// ============================================================================
 // MFA Commands
 // ============================================================================
 
@@ -599,15 +511,6 @@ export interface MfaVerifyResponse {
   success: boolean;
   message: string;
   backup_codes?: string[];
-}
-
-export interface MfaBackupCodesResponse {
-  codes: string[];
-}
-
-export interface MfaBackupCodeCountResponse {
-  remaining: number;
-  total: number;
 }
 
 /** Setup MFA — returns TOTP secret and QR code URL. */
@@ -623,43 +526,6 @@ export async function mfaVerify(code: string): Promise<MfaVerifyResponse> {
 /** Disable MFA (requires valid TOTP or backup code). */
 export async function mfaDisable(code: string): Promise<void> {
   await httpRequest<unknown>("POST", "/auth/mfa/disable", { code });
-}
-
-/**
- * Generate (or regenerate) MFA backup codes. Needs a current authenticator
- * code; backup codes are not accepted here.
- */
-export async function mfaGenerateBackupCodes(
-  mfaCode: string,
-): Promise<string[]> {
-  const res = await httpRequest<MfaBackupCodesResponse>(
-    "POST",
-    "/auth/mfa/backup-codes",
-    { mfa_code: mfaCode },
-  );
-  return res.codes;
-}
-
-/** Get remaining MFA backup code count. */
-export async function mfaBackupCodeCount(): Promise<MfaBackupCodeCountResponse> {
-  return httpRequest<MfaBackupCodeCountResponse>(
-    "GET",
-    "/auth/mfa/backup-codes/count",
-  );
-}
-
-// ============================================================================
-// QR Login Commands
-// ============================================================================
-
-export interface QrLoginCreateResponse {
-  token: string;
-  expires_in: number;
-}
-
-/** Create a QR login token for mobile scanning. */
-export async function qrLoginCreate(): Promise<QrLoginCreateResponse> {
-  return httpRequest<QrLoginCreateResponse>("POST", "/auth/qr/create");
 }
 
 // ============================================================================
@@ -745,60 +611,60 @@ export async function fetchServerSettings(
 }
 
 /**
- * Initiate OIDC login flow.
+ * Desktop OIDC command under its own attempt id: an abort of `signal`
+ * cancels it in Rust (`oidc_cancel`), so a flow the user gave up opens no
+ * browser, redeems nothing and keeps nothing (Argon review, part 7 #2).
+ */
+export async function invokeCancellableOidc<T>(
+  run: (invoke: typeof import("@tauri-apps/api/core").invoke, attemptId: string) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  if (signal?.aborted) throw new HttpError(400, "OIDC_CANCELLED", "OIDC_CANCELLED");
+  const attemptId = crypto.randomUUID();
+  const onAbort = () => {
+    void invoke("oidc_cancel", { attemptId }).catch(() => undefined);
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await run(invoke, attemptId);
+  } catch (error) {
+    throw nativeSsoError(error);
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/**
+ * Initiate an SSO sign-in (F3 OIDC variant). Never a session by itself: the
+ * answer is a `LoginStep`, confirmed by the phone or the TOTP step (C27).
  *
- * In Tauri mode: Rust handles the entire flow (opens browser, waits for
- * callback, keeps the tokens). Returns { mode: "tauri", result }.
+ * Tauri: Rust runs the browser flow and redeems the hand-off code; the
+ * verifier stays in Rust. Returns { mode: "tauri", step }.
  *
- * In browser mode: returns the authorize URL for popup flow.
- * Returns { mode: "browser", authUrl }.
+ * Browser: returns the authorize URL for the popup, whose callback page posts
+ * `oidc-callback {status, attempt}`. Returns { mode: "browser", authUrl }.
  */
 export async function oidcAuthorize(
   serverUrl: string,
   providerSlug: string,
+  /** Desktop: aborting cancels the Rust flow (`oidc_cancel`), browser: unused. */
+  signal?: AbortSignal,
 ): Promise<
-  | { mode: "tauri"; result: AuthResult }
+  | { mode: "tauri"; step: LoginStep }
   | { mode: "browser"; authUrl: string }
 > {
   const baseUrl = serverUrl.replace(/\/+$/, "");
 
   if (isTauri()) {
-    try {
-      const result = await invokeNativeAuth((invoke) =>
-        invoke<AuthResult>("oidc_authorize", {
-          serverUrl: baseUrl,
-          providerSlug,
-        }),
-      );
-      return { mode: "tauri", result };
-    } catch (error) {
-      throw nativeSsoError(error);
-    }
+    const raw = await invokeCancellableOidc(
+      (invoke, attemptId) => invoke<unknown>("oidc_authorize", { serverUrl: baseUrl, providerSlug, attemptId }),
+      signal,
+    );
+    return { mode: "tauri", step: decodeLoginStep(raw) };
   }
 
   // Browser: return the authorize endpoint URL for popup flow
   const authUrl = `${baseUrl}/auth/oidc/authorize/${encodeURIComponent(providerSlug)}`;
   return { mode: "browser", authUrl };
-}
-
-/**
- * Complete OIDC login after callback (browser mode).
- * The access token arrives via postMessage from the callback page; the
- * refresh token is an HttpOnly cookie.
- */
-export async function oidcCompleteLogin(
-  serverUrl: string,
-  accessToken: string,
-  expiresIn: number,
-): Promise<void> {
-  const baseUrl = serverUrl.replace(/\/+$/, "");
-
-  browserState.serverUrl = baseUrl;
-  browserState.accessToken = accessToken;
-  browserState.tokenExpiresAt = Date.now() + expiresIn * 1000;
-
-  localStorage.setItem("serverUrl", baseUrl);
-  setSessionRestoreBlocked(false);
-
-  scheduleTokenRefresh();
 }

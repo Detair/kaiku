@@ -61,7 +61,7 @@ describe("native auth", () => {
     vi.unstubAllGlobals();
   });
 
-  it("login in native mode returns AuthResult and caches auth info", async () => {
+  it("collect in native mode returns AuthResult and caches auth info", async () => {
     const result = {
       user: { id: "u1", username: "alice" },
       setup_required: false,
@@ -69,15 +69,16 @@ describe("native auth", () => {
       persisted: true,
     };
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "login") return result;
+      if (cmd === "login_attempt_collect") return result;
       if (cmd === "get_auth_info") return info("tok");
       throw new Error(`unexpected ${cmd}`);
     });
 
-    const got = await auth.login("https://srv", "alice", "pw");
+    const { collectAttempt } = await import("../tauri/loginAttempts");
+    const got = await collectAttempt("44444444-4444-4444-8444-444444444444");
 
     expect(got).toEqual(result);
-    expect(invokeMock.mock.calls[0][0]).toBe("login");
+    expect(invokeMock.mock.calls[0][0]).toBe("login_attempt_collect");
     expect(invokeMock.mock.calls[1][0]).toBe("get_auth_info");
     expect(common.getServerUrl()).toBe("https://srv");
     expect((await common.getAuthContext()).accessToken).toBe("tok");
@@ -202,9 +203,8 @@ describe("native auth", () => {
     const expired = vi.fn();
     window.addEventListener("kaiku:session-expired", expired);
     try {
-      await expect(auth.revokeAllOtherSessions()).rejects.toBe(
-        "Connection failed: offline",
-      );
+      // Mapped like every native failure: a network error the UI words as such.
+      await expect(auth.revokeAllOtherSessions()).rejects.toBeInstanceOf(TypeError);
       expect(expired).not.toHaveBeenCalled();
       expect(common.getAccessToken()).toBe("tok");
     } finally {
@@ -299,6 +299,7 @@ describe("browser auth", () => {
     await common.refreshAccessToken();
     fetchMock.mockReset();
     common.browserState.accessToken = "browser-tok";
+    common.browserState.tokenServerUrl = common.browserState.serverUrl;
     fetchMock.mockResolvedValue(respond(200, { ok: true }));
 
     await common.httpRequest("GET", "/api/guilds");

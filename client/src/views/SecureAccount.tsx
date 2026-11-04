@@ -1,0 +1,129 @@
+/**
+ * /secure-account — "Secure my account" (F8 bootstrap): an account with only
+ * a password (or SSO) and an authenticator app starts a request that adds a
+ * phone or passkey after the delay.
+ */
+
+import { Component, For, Show, createResource, createSignal } from "solid-js";
+import { A, useNavigate } from "@solidjs/router";
+import { t } from "@/i18n";
+import { fetchServerSettings } from "@/lib/tauri/auth";
+import { resolveSignInServer } from "@/lib/signInServer";
+import { isAuthenticated } from "@/stores/auth";
+import PasswordInput from "@/components/ui/PasswordInput";
+import AuthPageShell, { errorStyle, fieldInput, fieldLabel } from "@/components/auth/AuthPageShell";
+import { requestServer, startBootstrap } from "@/stores/accountRequest";
+import { requestOidcCode } from "@/lib/requestOidc";
+import type { BootstrapStart } from "@/lib/types";
+import { requestStartError } from "./requestErrors";
+
+const SecureAccount: Component = () => {
+  document.title = `${t("auth.secure.title")} | Kaiku`;
+  const navigate = useNavigate();
+  // Desktop: a fresh start has no session; the sign-in page's server (or
+  // the native override) is the one to ask (Codex review M3).
+  const [serverChoice] = createResource(() => resolveSignInServer(isAuthenticated()));
+  const server = () => serverChoice() ?? requestServer();
+  // Nothing goes out before the server is known, or without one (Flash r3
+  // p3 #4): a submit while the native override still loads would go to the
+  // fallback server.
+  const serverReady = () => !serverChoice.loading && !!serverChoice();
+  const [settings] = createResource(serverChoice, async (url) => {
+    try {
+      return await fetchServerSettings(url);
+    } catch {
+      return null;
+    }
+  });
+  const [username, setUsername] = createSignal("");
+  const [first, setFirst] = createSignal<"password" | "oidc">("password");
+  const [password, setPassword] = createSignal("");
+  const [totp, setTotp] = createSignal("");
+  const [provider, setProvider] = createSignal("");
+  const [busy, setBusy] = createSignal(false);
+  const [error, setError] = createSignal<string | null>(null);
+  const providers = () => settings()?.oidc_providers ?? [];
+
+  const submit = async (e: Event) => {
+    e.preventDefault();
+    setError(null);
+    if (!serverReady()) return;
+    const code = totp().replace(/\D+/g, "");
+    if (!username().trim()) {
+      setError(t("auth.recover.missing"));
+      return;
+    }
+    const providerSlug = provider() || providers()[0]?.slug || "";
+    if ((first() === "password" && !password()) || (first() === "oidc" && !providerSlug) || code.length < 6) {
+      setError(t("auth.secure.needBoth"));
+      return;
+    }
+    setBusy(true);
+    try {
+      const factor: BootstrapStart["first"] =
+        first() === "password"
+          ? { type: "password", password: password() }
+          : { type: "oidc", oidc_code: await requestOidcCode(server(), providerSlug) };
+      await startBootstrap({ username: username().trim(), purpose: "bootstrap", first: factor, totp_code: code });
+      navigate("/account-request", { replace: true });
+    } catch (err) {
+      setError(requestStartError(err, "bootstrap"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <AuthPageShell title={t("auth.secure.title")}>
+      <p class="text-base text-text-primary">{t("auth.secure.intro")}</p>
+      <form class="space-y-4" onSubmit={submit} noValidate>
+        <div>
+          <label for="secure-username" class={fieldLabel}>{t("common.username")}</label>
+          <input id="secure-username" class={fieldInput} autocomplete="username" value={username()} onInput={(e) => setUsername(e.currentTarget.value)} />
+        </div>
+        <Show when={providers().length > 0}>
+          <fieldset class="space-y-2">
+            <legend class={fieldLabel}>{t("auth.secure.first")}</legend>
+            <For each={[["password", "auth.recover.second.password"], ["oidc", "auth.recover.second.oidc"]] as const}>
+              {([value, key]) => (
+                <label class="flex items-center gap-3 min-h-12 text-base text-text-primary">
+                  <input type="radio" name="secure-first" checked={first() === value} onClick={() => setFirst(value)} />
+                  {t(key)}
+                </label>
+              )}
+            </For>
+          </fieldset>
+        </Show>
+        {/* Every configured provider, as on /recover (Argon review 10 #2). */}
+        <Show when={first() === "oidc" && providers().length > 1}>
+          <div>
+            <label for="secure-provider" class={fieldLabel}>{t("auth.recover.provider")}</label>
+            <select id="secure-provider" class={fieldInput} value={provider()} onChange={(e) => setProvider(e.currentTarget.value)}>
+              <For each={providers()}>{(p) => <option value={p.slug}>{p.display_name}</option>}</For>
+            </select>
+          </div>
+        </Show>
+        <Show when={first() === "password"}>
+          <div>
+            <label for="secure-password" class={fieldLabel}>{t("auth.login.password")}</label>
+            <PasswordInput id="secure-password" class={fieldInput} autocomplete="current-password" value={password()} onInput={(e) => setPassword(e.currentTarget.value)} />
+          </div>
+        </Show>
+        <div>
+          <label for="secure-totp" class={fieldLabel}>{t("auth.totp.label")}</label>
+          <input id="secure-totp" class={`${fieldInput} font-mono`} inputmode="numeric" autocomplete="one-time-code" value={totp()} onInput={(e) => setTotp(e.currentTarget.value)} />
+          <p class="text-sm text-text-secondary mt-1">{t("auth.totp.hint")}</p>
+        </div>
+        <Show when={error()}>
+          <p role="alert" class="p-3 rounded-md text-sm" style={errorStyle}>{error()}</p>
+        </Show>
+        <button type="submit" class="btn-primary w-full min-h-12 text-base" disabled={busy() || !serverReady()}>
+          {t("auth.secure.submit")}
+        </button>
+      </form>
+      <A href="/login" class="text-primary auth-link text-base">{t("auth.flow.back")}</A>
+    </AuthPageShell>
+  );
+};
+
+export default SecureAccount;

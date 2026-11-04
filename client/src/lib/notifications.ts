@@ -283,3 +283,29 @@ export async function sendOsNotification(
     }
   }
 }
+
+/**
+ * A new Kaiku security notice (C28): shown even when Kaiku's own notification
+ * settings would mute the conversation, like its push (never its content
+ * beyond the event's own text).
+ */
+export async function sendSecurityNotification(title: string, body: string, tag: string): Promise<void> {
+  if (await isAppFocused()) return;
+  if (isTauri()) {
+    if (!permissionGranted) return;
+    try {
+      const { sendNotification } = await import("@tauri-apps/plugin-notification");
+      sendNotification({ title, body });
+    } catch (error) {
+      console.warn("[Notifications] Failed to send Tauri notification:", error);
+    }
+    return;
+  }
+  if (getBrowserNotificationSupport() === "supported" && Notification.permission === "granted") {
+    try {
+      new Notification(title, { body, tag: `kaiku-security-${tag}` });
+    } catch (error) {
+      console.warn("[Notifications] Failed to send web notification:", error);
+    }
+  }
+}

@@ -8,10 +8,19 @@ const tauriMode = vi.hoisted(() => ({ on: false }));
 const conditional = vi.hoisted(() => ({ available: true, gate: null as Promise<void> | null }));
 const signalUnknownMock = vi.hoisted(() => vi.fn());
 
+const pollMock = vi.hoisted(() => vi.fn());
+const cancelMock = vi.hoisted(() => vi.fn());
+
 vi.mock("@/lib/tauri", async () => {
   const passkeys = await vi.importActual<typeof import("@/lib/tauri/passkeys")>("@/lib/tauri/passkeys");
   return {
-    login: vi.fn(),
+    // C27: the password answers a sign-in step, never a session.
+    passwordLogin: vi.fn(),
+    createQrAttempt: vi.fn(),
+    pollAttempt: pollMock,
+    cancelAttempt: cancelMock,
+    collectAttempt: vi.fn(),
+    attemptTotp: vi.fn(),
     fetchServerSettings: vi.fn().mockResolvedValue(null),
     getDefaultServerUrl: vi.fn().mockResolvedValue(null),
     oidcAuthorize: vi.fn(),
@@ -37,6 +46,7 @@ vi.mock("@/lib/webauthn", async () => {
 import Login from "../Login";
 import { PasskeyError } from "@/lib/tauri/passkeys";
 import { setAuthState } from "@/stores/auth";
+import { leaveFlow } from "@/stores/loginFlow";
 
 /** A sign-in that never settles until aborted. */
 function pendingUntilAbort() {
@@ -71,12 +81,15 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  await leaveFlow();
   vi.useRealTimers();
   passkeySignInMock.mockReset();
   signalUnknownMock.mockReset();
-  setAuthState({ error: null, mfaRequired: false, isLoading: false });
+  pollMock.mockReset();
+  cancelMock.mockReset();
+  setAuthState({ error: null, isLoading: false });
 });
 
 describe("Login with a passkey", () => {
@@ -154,14 +167,14 @@ describe("Login with a passkey", () => {
   it("autofill comes back after a failed password sign-in", async () => {
     // Earlier review m2: the password submit stopped autofill for good.
     const tauri = await import("@/lib/tauri");
-    vi.mocked(tauri.login).mockRejectedValueOnce(new Error("INVALID_CREDENTIALS"));
+    vi.mocked(tauri.passwordLogin).mockRejectedValueOnce(new Error("INVALID_CREDENTIALS"));
     pendingUntilAbort();
     await renderLogin();
     await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
     fireEvent.input(screen.getByPlaceholderText("Enter your username"), { target: { value: "fabian" } });
     fireEvent.input(screen.getByPlaceholderText("Enter your password"), { target: { value: "wrong" } });
     fireEvent.click(screen.getByRole("button", { name: "Login" }));
-    await waitFor(() => expect(tauri.login).toHaveBeenCalled());
+    await waitFor(() => expect(tauri.passwordLogin).toHaveBeenCalled());
     await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(2));
     const again = passkeySignInMock.mock.calls[1][1] as { mediation: string };
     expect(again.mediation).toBe("conditional");
@@ -200,7 +213,7 @@ describe("Login with a passkey", () => {
     const tauri = await import("@/lib/tauri");
     const override = deferred<string | null>();
     vi.mocked(tauri.getDefaultServerUrl).mockReturnValueOnce(override.promise);
-    vi.mocked(tauri.login).mockReturnValueOnce(new Promise(() => {}));
+    vi.mocked(tauri.passwordLogin).mockReturnValueOnce(new Promise(() => {}));
     pendingUntilAbort();
     await renderLogin();
     await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
@@ -209,7 +222,7 @@ describe("Login with a passkey", () => {
     fireEvent.input(screen.getByPlaceholderText("Enter your username"), { target: { value: "fabian" } });
     fireEvent.input(screen.getByPlaceholderText("Enter your password"), { target: { value: "secret-pw" } });
     fireEvent.click(screen.getByRole("button", { name: "Login" }));
-    await waitFor(() => expect(tauri.login).toHaveBeenCalled());
+    await waitFor(() => expect(tauri.passwordLogin).toHaveBeenCalled());
     await vi.advanceTimersByTimeAsync(1_000);
     expect(passkeySignInMock).toHaveBeenCalledTimes(1);
   });
@@ -226,6 +239,161 @@ describe("Login with a passkey", () => {
     await new Promise((res) => setTimeout(res, 20));
     expect(passkeySignInMock).toHaveBeenCalledTimes(1);
     expect((passkeySignInMock.mock.calls[0][1] as { mediation: string }).mediation).toBe("optional");
+  });
+
+  it("autofill stops while the confirmation step replaces the form and returns with it", async () => {
+    // L2a: a password sign-in is a step (C27); the form, and with it autofill,
+    // comes back when the user leaves the step.
+    const tauri = await import("@/lib/tauri");
+    pollMock.mockReturnValue(new Promise(() => {}));
+    cancelMock.mockResolvedValue(undefined);
+    vi.mocked(tauri.passwordLogin).mockResolvedValueOnce({
+      status: "confirmation_required",
+      attempt: {
+        attempt_id: "44444444-4444-4444-8444-444444444444",
+        kind: "password",
+        state: "open",
+        expires_at: new Date(Date.now() + 600_000).toISOString(),
+        qr: { payload: "kaiku://login/v1?o=x&t=a", expires_at: "" },
+        totp_available: false,
+      },
+    } as never);
+    pendingUntilAbort();
+    await renderLogin();
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
+    const first = passkeySignInMock.mock.calls[0][1] as { signal: AbortSignal };
+    fireEvent.input(screen.getByPlaceholderText("Enter your username"), { target: { value: "fabian" } });
+    fireEvent.input(screen.getByPlaceholderText("Enter your password"), { target: { value: "secret-pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Login" }));
+    await screen.findByText("Open Kaiku on your phone and scan this code.");
+    expect(first.signal.aborted).toBe(true);
+    expect(passkeySignInMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    await screen.findByPlaceholderText("Enter your username");
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(2));
+    expect((passkeySignInMock.mock.calls[1][1] as { mediation: string }).mediation).toBe("conditional");
+  });
+
+  it("use a passkey instead on the phone QR leaves the attempt and runs the button's ceremony", async () => {
+    const tauri = await import("@/lib/tauri");
+    pollMock.mockReturnValue(new Promise(() => {}));
+    cancelMock.mockResolvedValue(undefined);
+    vi.mocked(tauri.createQrAttempt).mockResolvedValueOnce({
+      attempt_id: "55555555-5555-4555-8555-555555555555",
+      kind: "qr",
+      state: "open",
+      expires_at: new Date(Date.now() + 600_000).toISOString(),
+      qr: { payload: "kaiku://login/v1?o=x&t=a", expires_at: "" },
+      totp_available: false,
+    } as never);
+    pendingUntilAbort();
+    await renderLogin();
+    await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with your phone" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use a passkey instead" }));
+    await waitFor(() => expect(cancelMock).toHaveBeenCalledWith("55555555-5555-4555-8555-555555555555"));
+    await waitFor(() =>
+      expect(passkeySignInMock.mock.calls.some(([, o]) => (o as { mediation: string }).mediation === "optional")).toBe(true),
+    );
+    await new Promise((res) => setTimeout(res, 20));
+    // Only the button's ceremony runs: no autofill beside it.
+    const calls = passkeySignInMock.mock.calls;
+    const last = calls[calls.length - 1][1] as { mediation: string; signal: AbortSignal };
+    expect(last.mediation).toBe("optional");
+    expect(last.signal.aborted).toBe(false);
+  });
+
+  const ssoSettings = {
+    oidc_enabled: true,
+    oidc_providers: [{ slug: "kc", display_name: "Keycloak", icon_hint: null }],
+    auth_methods: { local: true },
+    registration_policy: "closed",
+  };
+  /** A popup the SSO flow can point at the provider. */
+  function fakePopup() {
+    return vi
+      .spyOn(window, "open")
+      .mockReturnValue({ closed: false, close: vi.fn(), location: { href: "" } } as unknown as Window);
+  }
+  const conditionalCalls = () =>
+    passkeySignInMock.mock.calls.filter(([, o]) => (o as { mediation: string }).mediation === "conditional").length;
+
+  it("a modal sign-in aborted by a newer SSO choice does not bring autofill back (Codex r3)", async () => {
+    const tauri = await import("@/lib/tauri");
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue(ssoSettings as never);
+    vi.mocked(tauri.oidcAuthorize).mockReturnValue(new Promise(() => {}));
+    const open = fakePopup();
+    try {
+      pendingUntilAbort();
+      await renderLogin();
+      await waitFor(() => expect(conditionalCalls()).toBe(1));
+      fireEvent.click(screen.getByRole("button", { name: "Sign in with passkey" }));
+      await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(2));
+      fireEvent.click(await screen.findByRole("button", { name: /Continue with Keycloak/ }));
+      await waitFor(() => expect(tauri.oidcAuthorize).toHaveBeenCalled());
+      await new Promise((r) => setTimeout(r, 30));
+      // Only the first autofill: nothing runs beside the SSO sign-in.
+      expect(conditionalCalls()).toBe(1);
+    } finally {
+      open.mockRestore();
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValue(null as never);
+    }
+  });
+
+  it("a server change during an SSO sign-in leaves the popup and starts no autofill (Fable r2 follow-up a)", async () => {
+    const tauri = await import("@/lib/tauri");
+    const override = deferred<string | null>();
+    vi.mocked(tauri.getDefaultServerUrl).mockReturnValueOnce(override.promise);
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue(ssoSettings as never);
+    vi.mocked(tauri.oidcAuthorize).mockReturnValue(new Promise(() => {}));
+    const close = vi.fn();
+    const open = vi
+      .spyOn(window, "open")
+      .mockReturnValue({ closed: false, close, location: { href: "" } } as unknown as Window);
+    try {
+      pendingUntilAbort();
+      await renderLogin();
+      await waitFor(() => expect(conditionalCalls()).toBe(1));
+      fireEvent.click(await screen.findByRole("button", { name: /Continue with Keycloak/ }));
+      await waitFor(() => expect(tauri.oidcAuthorize).toHaveBeenCalled());
+      override.resolve("https://other.example.com");
+      await new Promise((r) => setTimeout(r, 700));
+      expect(close).not.toHaveBeenCalled();
+      expect(conditionalCalls()).toBe(1);
+    } finally {
+      open.mockRestore();
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValue(null as never);
+    }
+  });
+
+  it("a failed phone start that stays on the form brings autofill back (Fable R4)", async () => {
+    const tauri = await import("@/lib/tauri");
+    const { HttpError } = await import("@/lib/tauri/common");
+    vi.mocked(tauri.createQrAttempt).mockRejectedValueOnce(new HttpError(503, "x", "SERVICE_UNAVAILABLE"));
+    pendingUntilAbort();
+    await renderLogin();
+    await waitFor(() => expect(conditionalCalls()).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with your phone" }));
+    await waitFor(() => expect(tauri.createQrAttempt).toHaveBeenCalled());
+    await waitFor(() => expect(conditionalCalls()).toBe(2));
+  });
+
+  it("a failed SSO start that stays on the form brings autofill back (Fable R4)", async () => {
+    const tauri = await import("@/lib/tauri");
+    vi.mocked(tauri.fetchServerSettings).mockResolvedValue(ssoSettings as never);
+    vi.mocked(tauri.oidcAuthorize).mockRejectedValueOnce(new Error("OIDC_FAILED"));
+    const open = fakePopup();
+    try {
+      pendingUntilAbort();
+      await renderLogin();
+      await waitFor(() => expect(conditionalCalls()).toBe(1));
+      fireEvent.click(await screen.findByRole("button", { name: /Continue with Keycloak/ }));
+      await waitFor(() => expect(tauri.oidcAuthorize).toHaveBeenCalled());
+      await waitFor(() => expect(conditionalCalls()).toBe(2));
+    } finally {
+      open.mockRestore();
+      vi.mocked(tauri.fetchServerSettings).mockResolvedValue(null as never);
+    }
   });
 
   it("PASSKEY_UNKNOWN shows the removed message", async () => {
@@ -248,6 +416,18 @@ describe("Login with a passkey", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign in with passkey" }));
     await screen.findByText(/This passkey is ready at/);
     expect(signalUnknownMock).not.toHaveBeenCalled();
+  });
+
+  it("desktop on Linux shows LP's Firefox hint while the browser runs", async () => {
+    tauriMode.on = true;
+    const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (X11; Linux x86_64) Kaiku");
+    pendingUntilAbort();
+    await renderLogin();
+    expect(screen.queryByText(/No phone option in Firefox\?/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with passkey" }));
+    expect(await screen.findByText(/No phone option in Firefox\?/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    ua.mockRestore();
   });
 
   it("desktop invokes passkey_sign_in and shows the browser hint", async () => {

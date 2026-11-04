@@ -8,8 +8,11 @@ import {
   Component,
   Show,
   createSignal,
+  onMount,
 } from "solid-js";
-import { Phone, Check, X } from "lucide-solid";
+import { Phone, Check, X, ShieldCheck } from "lucide-solid";
+import { isReadOnlyDM } from "@/lib/kaikuDm";
+import { loadInitialMessages } from "@/stores/messages";
 import { t, plural } from "@/i18n";
 import { isCallGlareError } from "@/lib/callEnd";
 import { errorText, CALL_START_ERRORS } from "@/i18n/errors";
@@ -29,6 +32,31 @@ import {
   validateFileSize,
   getUploadLimitText,
 } from "@/lib/tauri";
+
+/**
+ * The Kaiku DM (C28): notices only. No composer, no calls, no typing; the
+ * latest page is reloaded on every open, since coalescing edits older notices.
+ */
+const KaikuDMView: Component<{ channelId: string }> = (props) => {
+  onMount(() => {
+    void loadInitialMessages(props.channelId).catch((err) =>
+      console.warn("[Kaiku DM] Reloading notices failed:", err),
+    );
+  });
+  return (
+    <div class="flex-1 flex flex-col min-h-0 bg-surface-layer1">
+      <header class="h-12 px-4 flex items-center gap-3 border-b border-white/5 bg-surface-layer1 shadow-sm">
+        <ShieldCheck class="w-5 h-5 text-text-secondary" aria-hidden="true" />
+        <h2 class="font-semibold text-text-primary">{t("security.dm.name")}</h2>
+        <span class="px-2 py-0.5 text-xs rounded-md border border-white/15 text-text-primary">
+          {t("security.dm.label")}
+        </span>
+      </header>
+      <MessageList channelId={props.channelId} />
+      <p class="px-4 py-3 border-t border-white/5 text-base text-text-secondary">{t("security.dm.readOnly")}</p>
+    </div>
+  );
+};
 
 const DMConversation: Component = () => {
   const dm = () => getSelectedDM();
@@ -143,6 +171,7 @@ const DMConversation: Component = () => {
         </div>
       }
     >
+      <Show when={!isReadOnlyDM(dm())} fallback={<KaikuDMView channelId={dm()!.id} />}>
       <div class="flex-1 flex flex-col min-h-0 bg-surface-layer1">
         {/* Header */}
         <header class="h-12 px-4 flex items-center gap-3 border-b border-white/5 bg-surface-layer1 shadow-sm relative">
@@ -334,6 +363,7 @@ const DMConversation: Component = () => {
           )}
         </Show>
       </div>
+      </Show>
     </Show>
   );
 };

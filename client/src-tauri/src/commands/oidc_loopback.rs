@@ -1,4 +1,5 @@
-//! Loopback listener and secrets for the desktop OIDC flows.
+//! Loopback listener and secrets for the desktop OIDC identity link, plus
+//! the secrets every desktop flow draws (`new_secret`, `s256_challenge`).
 //!
 //! The desktop binds `127.0.0.1:0`, puts a random per-flow value in its return
 //! address (`http://127.0.0.1:PORT/callback?flow=<value>`) and waits for the
@@ -6,8 +7,8 @@
 //! (HTTP/1.0 or 1.1, raw path checked before any normalisation) that carries
 //! exactly that per-flow value is accepted; everything else is answered with
 //! 204 and ignored, so a stray or idle local connection can neither end nor
-//! stall the flow. Login additionally sends an S256 challenge of a random
-//! verifier and receives only a one-time code, redeemed with the verifier.
+//! stall the flow. The OIDC sign-in and the request OIDC factor use LP's
+//! POST hand-off instead (`oidc_delivery`, C29 step 8).
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -102,26 +103,6 @@ pub fn callback_params(target: &str, expected_flow: &str) -> Option<HashMap<Stri
         }
     }
     (flows == 1 && flow_ok).then_some(params)
-}
-
-/// Result of the login loopback callback.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LoginCallback {
-    /// `?code=` — one-time hand-off code to redeem with the verifier.
-    Code(String),
-    /// `?error=CODE` — generic server error code.
-    Error(String),
-}
-
-/// Recognise a login hand-back; `None` keeps waiting.
-pub fn parse_login_callback(params: &HashMap<String, String>) -> Option<LoginCallback> {
-    if let Some(code) = params.get("error") {
-        return Some(LoginCallback::Error(code.clone()));
-    }
-    params
-        .get("code")
-        .filter(|c| !c.is_empty())
-        .map(|c| LoginCallback::Code(c.clone()))
 }
 
 /// Result of the identity-link loopback callback.
@@ -222,6 +203,25 @@ pub async fn wait_for_callback<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A code hand-back in the shape of the removed GET sign-in hand-back
+    /// (C29 step 8 moved sign-in onto `loopback_post`), kept as the sample
+    /// parser for the listener tests.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum LoginCallback {
+        Code(String),
+        Error(String),
+    }
+
+    fn parse_login_callback(params: &HashMap<String, String>) -> Option<LoginCallback> {
+        if let Some(code) = params.get("error") {
+            return Some(LoginCallback::Error(code.clone()));
+        }
+        params
+            .get("code")
+            .filter(|c| !c.is_empty())
+            .map(|c| LoginCallback::Code(c.clone()))
+    }
 
     const FLOW: &str = "flow-value_0123456789abcdefghijklmnopqrstu";
 

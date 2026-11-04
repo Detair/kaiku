@@ -1,4 +1,4 @@
-import { resolveTemplate, translator } from "@solid-primitives/i18n";
+import { translator } from "@solid-primitives/i18n";
 import type { MessageKey } from "./en";
 import { activeDict, getLocale, type Locale } from "./locale";
 
@@ -10,14 +10,28 @@ export {
   getLocale,
   hasExplicitLocale,
   initLocale,
+  lazyAreasLoaded,
   setLocale,
   type Locale,
 } from "./locale";
 
 type Params = Record<string, string | number>;
 
+/**
+ * Fill `{{name}}` placeholders in one pass with a function replacer, so a
+ * value (a display name, a device label) containing `$&`, `` $` `` or
+ * `{{other}}` is inserted literally (Fable review m4). The library's
+ * `resolveTemplate` uses string replacements, which interpret `$`.
+ */
+export function fillTemplate(template: string, params?: Params): string {
+  if (!params || typeof template !== "string") return template;
+  return template.replace(/{{\s*(\w+)\s*}}/g, (match: string, name: string) =>
+    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match,
+  );
+}
+
 // Reads the locale's dictionary signal, so `t()` in JSX re-renders on setLocale.
-const translate = translator(activeDict, resolveTemplate) as unknown as (
+const translate = translator(activeDict, fillTemplate as never) as unknown as (
   key: string,
   params?: Params,
 ) => string;

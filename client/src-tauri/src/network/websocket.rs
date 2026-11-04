@@ -808,7 +808,10 @@ mod tests {
             Arc::new(RwLock::new(AuthState::default())),
         ));
         session
-            .login(&server.uri(), "alice", "pw", None)
+            .adopt_tokens(
+                &server.uri(),
+                serde_json::from_value(tokens(access, "rt-1")).unwrap(),
+            )
             .await
             .unwrap();
         session

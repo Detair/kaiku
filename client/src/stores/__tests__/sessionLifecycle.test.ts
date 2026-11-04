@@ -21,7 +21,8 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
 vi.mock("@/lib/tauri", () => ({
   // auth store
   getCurrentUser: vi.fn(),
-  login: vi.fn(),
+  passwordLogin: vi.fn(),
+  collectAttempt: vi.fn(),
   register: vi.fn(),
   logout: vi.fn(),
   oidcCompleteLogin: vi.fn(),
@@ -127,7 +128,7 @@ vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 import * as tauri from "@/lib/tauri";
 import { addMessage } from "@/stores/messages";
 import type { User } from "@/lib/types";
-import { authState, initAuth, login, logout, setAuthState } from "../auth";
+import { authState, completeSignIn, initAuth, login, logout, setAuthState } from "../auth";
 import { wsState } from "../websocket";
 import { preferences, updatePreference } from "../preferences";
 
@@ -217,6 +218,24 @@ function preferencePuts(): unknown[][] {
     );
 }
 
+
+/** A password sign-in that needs the TOTP step, then the step's session. */
+async function signIn(url: string, username: string, password: string) {
+  vi.mocked(tauri.passwordLogin).mockResolvedValue({
+    status: "totp_required",
+    attempt: {
+      attempt_id: "a",
+      kind: "password",
+      state: "open",
+      expires_at: "",
+      qr: null,
+      totp_available: true,
+    },
+  });
+  await login(url, username, password);
+  return completeSignIn(url, await tauri.collectAttempt("a"));
+}
+
 describe("session lifecycle with the real service stores", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -241,7 +260,7 @@ describe("session lifecycle with the real service stores", () => {
     vi.mocked(tauri.isPasswordChangePending).mockResolvedValue(false);
     vi.mocked(tauri.fetchApi).mockResolvedValue(prefsResponse("focused-hybrid", "2026-01-01T00:00:00Z"));
     vi.mocked(tauri.getCurrentUser).mockResolvedValue({ user: user("alice"), error_reason: null });
-    vi.mocked(tauri.login).mockResolvedValue({
+    vi.mocked(tauri.collectAttempt).mockResolvedValue({
       user: user("bob"),
       setup_required: false,
       password_change_required: false,
@@ -304,7 +323,7 @@ describe("session lifecycle with the real service stores", () => {
       // still in flight, so B's own initPreferences() has not run yet.
       vi.mocked(tauri.fetchApi).mockResolvedValue(prefsResponse("solarized-light", "2026-02-01T00:00:00Z"));
       const releaseB = holdNextListens(SESSION_LISTENERS.length);
-      const signingIn = login("https://server.test", "bob", "pw");
+      const signingIn = signIn("https://server.test", "bob", "pw");
       await flush();
       expect(tauri.fetchApi).toHaveBeenCalledTimes(1);
 
@@ -367,7 +386,7 @@ describe("session lifecycle with the real service stores", () => {
       await expectSettled(logout(), "logout");
 
       // B signs in while A's registrations are still in flight.
-      const signingIn = login("https://server.test", "bob", "pw");
+      const signingIn = signIn("https://server.test", "bob", "pw");
       await expireWaits();
       await expectSettled(signingIn, "B's sign-in");
       expect(listenerNames()).toEqual(SESSION_LISTENERS);
@@ -409,7 +428,7 @@ describe("session lifecycle with the real service stores", () => {
 
       // B signs in; the server has B's preferences.
       vi.mocked(tauri.fetchApi).mockResolvedValue(prefsResponse("solarized-light", "2026-02-01T00:00:00Z"));
-      const signingIn = login("https://server.test", "bob", "pw");
+      const signingIn = signIn("https://server.test", "bob", "pw");
       await expireWaits();
       await expectSettled(signingIn, "B's sign-in");
       expect(preferences().theme).toBe("solarized-light");
@@ -436,7 +455,7 @@ describe("session lifecycle with the real service stores", () => {
       await expireWaits();
       await expectSettled(loggingOut, "logout with a hung disconnect");
 
-      const signingIn = login("https://server.test", "bob", "pw");
+      const signingIn = signIn("https://server.test", "bob", "pw");
       await expireWaits();
       await expectSettled(signingIn, "B's sign-in");
       expect(wsState.status).toBe("connected");

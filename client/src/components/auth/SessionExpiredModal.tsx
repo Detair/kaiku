@@ -9,6 +9,7 @@ const REASON_TEXT = {
   expired: "connection.session.expired",
   revoked: "connection.session.revoked",
   banned: "connection.session.banned",
+  reused: "connection.session.reused",
 } as const;
 
 const SessionExpiredModal: Component = () => {

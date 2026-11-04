@@ -24,9 +24,6 @@ import {
   Clipboard,
   ShieldCheck,
   ShieldOff,
-  RefreshCw,
-  KeyRound,
-  Smartphone,
 } from "lucide-solid";
 import {
   getClipboardSettings,
@@ -34,23 +31,26 @@ import {
   type ClipboardSettings,
   type ProtectionLevel,
 } from "@/lib/clipboard";
-import {
-  mfaDisable,
-  mfaGenerateBackupCodes,
-  mfaBackupCodeCount,
-} from "@/lib/tauri";
-import type { MfaBackupCodeCountResponse } from "@/lib/tauri";
-import { authState } from "@/stores/auth";
+import { mfaDisable } from "@/lib/tauri";
+import { authState, isProbation } from "@/stores/auth";
 import { updateUser } from "@/stores/auth";
 import { showToast } from "@/components/ui/Toast";
-import ReauthDialog from "@/components/auth/ReauthDialog";
-import type { ReauthRequest } from "@/lib/types";
-import { t } from "@/i18n";
 import Toggle from "@/components/ui/Toggle";
+import { withStepUp } from "@/lib/stepUp";
+import { offerSignOutOthers, refreshMeSecurity } from "@/stores/security";
+import SecurityOverview from "./security/SecurityOverview";
+import KeyDevicesSection from "./security/KeyDevicesSection";
+import PasswordSection from "./security/PasswordSection";
+import RecoveryCodesSection from "./security/RecoveryCodesSection";
+import RecoveryContactSection from "./security/RecoveryContactSection";
+import { ReadOnlyNote, secondaryButton as setupPhoneButton } from "./security/SectionCard";
+import SetupPhoneModal from "./security/SetupPhoneModal";
+import PasskeyFirstSteps from "./security/PasskeyFirstSteps";
+import SecurityLogSection from "./security/SecurityLogSection";
+import { t } from "@/i18n";
+import { securityErrorText } from "./security/securityErrors";
 
 const MfaSetupModal = lazy(() => import("./MfaSetupModal"));
-const BackupCodesDisplay = lazy(() => import("./BackupCodesDisplay"));
-const QrLoginModal = lazy(() => import("./QrLoginModal"));
 
 // Type for backup status (matches Tauri command response)
 interface BackupStatus {
@@ -77,41 +77,28 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
     }
   });
 
-  // QR login state
-  const [showQrLogin, setShowQrLogin] = createSignal(false);
-
   // MFA state
   const [showMfaSetup, setShowMfaSetup] = createSignal(false);
   const [showDisableConfirm, setShowDisableConfirm] = createSignal(false);
   const [disableCode, setDisableCode] = createSignal("");
   const [isDisabling, setIsDisabling] = createSignal(false);
   const [disableError, setDisableError] = createSignal("");
-  const [backupCodeCount, setBackupCodeCount] =
-    createSignal<MfaBackupCodeCountResponse | null>(null);
-  const [showRegenCodes, setShowRegenCodes] = createSignal(false);
-  const [regenCodes, setRegenCodes] = createSignal<string[]>([]);
-  const [isRegenerating, setIsRegenerating] = createSignal(false);
-  const [showReauth, setShowReauth] = createSignal(false);
+  const [mfaError, setMfaError] = createSignal<string | null>(null);
+  const [showSetupPhone, setShowSetupPhone] = createSignal(false);
 
   const isMfaEnabled = () => authState.user?.mfa_enabled ?? false;
 
-  // Fetch backup code count when MFA is enabled
-  const fetchBackupCodeCount = async (): Promise<boolean> => {
-    if (!isMfaEnabled()) return true;
+  // TOTP setup needs the step-up `totp.set` (C27); the modal follows it.
+  const handleEnableMfa = async () => {
+    setMfaError(null);
     try {
-      const count = await mfaBackupCodeCount();
-      setBackupCodeCount(count);
-      return true;
-    } catch {
-      return false;
+      await withStepUp({ action: "totp.set", target: "", targetLabel: "" }, async () => {
+        setShowMfaSetup(true);
+      });
+    } catch (err) {
+      setMfaError(securityErrorText(err, "security.totp.failed"));
     }
   };
-
-  createEffect(() => {
-    if (isMfaEnabled()) {
-      fetchBackupCodeCount();
-    }
-  });
 
   const handleDisableMfa = async (e: Event) => {
     e.preventDefault();
@@ -123,11 +110,13 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
     setIsDisabling(true);
     setDisableError("");
     try {
-      await mfaDisable(disableCode());
+      const code = disableCode();
+      await withStepUp({ action: "totp.remove", target: "", targetLabel: "" }, () => mfaDisable(code));
       updateUser({ mfa_enabled: false });
       setShowDisableConfirm(false);
       setDisableCode("");
-      setBackupCodeCount(null);
+      void refreshMeSecurity();
+      offerSignOutOthers();
       showToast({
         type: "success",
         title: "MFA Disabled",
@@ -135,39 +124,17 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
         duration: 5000,
       });
     } catch (err) {
-      setDisableError(
-        err instanceof Error ? err.message : "Invalid code. Please try again.",
-      );
+      // Never the server's text; a closed step-up is no error (Argon 3 #3).
+      setDisableError(securityErrorText(err, "security.totp.failed") ?? "");
     } finally {
       setIsDisabling(false);
     }
   };
 
-  // Creating new backup codes asks for a current authenticator code first.
-  const handleRegenerateBackupCodes = () => setShowReauth(true);
-
-  const submitRegenerate = async (req: ReauthRequest) => {
-    setIsRegenerating(true);
-    try {
-      const codes = await mfaGenerateBackupCodes(req.mfa_code ?? "");
-      setShowReauth(false);
-      setRegenCodes(codes);
-      setShowRegenCodes(true);
-      const countLoaded = await fetchBackupCodeCount();
-      showToast({
-        type: countLoaded ? "success" : "warning",
-        title: t("settings.security.backupCodesRegenerated"),
-        message: countLoaded ? undefined : t("settings.security.backupCountFailed"),
-        duration: 5000,
-      });
-    } finally {
-      setIsRegenerating(false);
-    }
-  };
-
   const handleMfaSetupComplete = () => {
     updateUser({ mfa_enabled: true });
-    fetchBackupCodeCount();
+    void refreshMeSecurity();
+    offerSignOutOthers();
   };
 
   // Clipboard protection settings
@@ -318,11 +285,24 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
         </div>
       </Show>
 
-      {/* Passkeys (C29), above MFA */}
+      {/* How this account signs in (v1.0): overview, phones, password, codes, contact */}
+      <SecurityOverview />
+      <KeyDevicesSection
+        setupPhone={
+          <button type="button" class={setupPhoneButton} onClick={() => setShowSetupPhone(true)}>
+            {t("security.setupPhone.button")}
+          </button>
+        }
+      />
+      <Show when={showSetupPhone()}>
+        <SetupPhoneModal onClose={() => setShowSetupPhone(false)} />
+      </Show>
+      {/* Passkeys (C29) */}
       <div class="pt-6 border-t border-white/10 space-y-4">
-        <PasskeysSection />
+        <PasskeysSection empty={<PasskeyFirstSteps onSetUpPhone={() => setShowSetupPhone(true)} />} />
         <PasskeyBrowserSetting />
       </div>
+      <PasswordSection />
 
       {/* MFA Section */}
       <div class="pt-6 border-t border-white/10">
@@ -367,46 +347,17 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
             </div>
           </div>
 
-          {/* Backup Code Count (if MFA enabled) */}
-          <Show when={isMfaEnabled() && backupCodeCount()}>
-            <div class="flex items-center justify-between p-3 bg-white/5 rounded-lg">
-              <div class="flex items-center gap-2">
-                <KeyRound class="w-4 h-4 text-text-secondary" />
-                <span class="text-sm text-text-secondary">
-                  Backup codes remaining
-                </span>
-              </div>
-              <span
-                class="text-sm font-mono font-medium"
-                classList={{
-                  "text-green-400": (backupCodeCount()?.remaining ?? 0) > 3,
-                  "text-yellow-400":
-                    (backupCodeCount()?.remaining ?? 0) > 0 &&
-                    (backupCodeCount()?.remaining ?? 0) <= 3,
-                  "text-red-400": (backupCodeCount()?.remaining ?? 0) === 0,
-                }}
-              >
-                {backupCodeCount()!.remaining} / {backupCodeCount()!.total}
-              </span>
-            </div>
-
-            <Show when={(backupCodeCount()?.remaining ?? 0) <= 2}>
-              <div class="flex items-center gap-3 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                <AlertTriangle class="w-4 h-4 text-yellow-400 flex-shrink-0" />
-                <p class="text-xs text-yellow-200">
-                  {backupCodeCount()?.remaining === 0
-                    ? "You have no backup codes left. Regenerate new codes to maintain account recovery access."
-                    : "You're running low on backup codes. Consider regenerating new ones."}
-                </p>
-              </div>
-            </Show>
-          </Show>
-
           {/* Actions */}
-          <div class="pt-4 border-t border-white/10 flex flex-wrap gap-2">
+          <Show when={mfaError()}>
+            <p role="alert" class="text-sm text-text-primary">{mfaError()}</p>
+          </Show>
+          <Show when={isProbation()}>
+            <ReadOnlyNote />
+          </Show>
+          <div class="pt-4 border-t border-white/10 flex flex-wrap gap-2" classList={{ hidden: isProbation() }}>
             <Show when={!isMfaEnabled()}>
               <button
-                onClick={() => setShowMfaSetup(true)}
+                onClick={() => void handleEnableMfa()}
                 class="flex items-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
               >
                 <ShieldCheck class="w-4 h-4" />
@@ -415,20 +366,6 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
             </Show>
 
             <Show when={isMfaEnabled()}>
-              <button
-                onClick={handleRegenerateBackupCodes}
-                disabled={isRegenerating()}
-                class="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors text-text-primary text-sm state-disabled"
-              >
-                <RefreshCw
-                  class="w-4 h-4"
-                  classList={{ "animate-spin": isRegenerating() }}
-                />
-                {isRegenerating()
-                  ? "Regenerating..."
-                  : "Regenerate Backup Codes"}
-              </button>
-
               <button
                 onClick={() => {
                   setShowDisableConfirm(true);
@@ -516,40 +453,9 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
         </div>
       </Show>
 
-      <Show when={showReauth()}>
-        <ReauthDialog
-          title={t("admin.reauth.backupCodesTitle")}
-          mode="mfaOnly"
-          mfaEnabled={isMfaEnabled()}
-          methods={[]}
-          onSubmit={submitRegenerate}
-          onClose={() => setShowReauth(false)}
-        />
-      </Show>
-
-      {/* Regenerated Backup Codes Modal */}
-      <Show when={showRegenCodes()}>
-        <div
-          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-          onClick={() => setShowRegenCodes(false)}
-        >
-          <div
-            class="bg-background-secondary rounded-xl shadow-2xl w-full max-w-lg mx-4 p-6 max-h-[90vh] overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 class="text-lg font-semibold text-text-primary mb-4">
-              New Backup Codes
-            </h3>
-            <BackupCodesDisplay codes={regenCodes()} />
-            <button
-              onClick={() => setShowRegenCodes(false)}
-              class="btn-primary w-full mt-4"
-            >
-              Done
-            </button>
-          </div>
-        </div>
-      </Show>
+      <RecoveryCodesSection />
+      <RecoveryContactSection />
+      <SecurityLogSection />
 
       {/* Clipboard Protection Section */}
       <div class="pt-6 border-t border-white/10">
@@ -663,35 +569,6 @@ const SecuritySettings: Component<SecuritySettingsProps> = (props) => {
         </div>
       </div>
 
-      {/* Mobile App Section */}
-      <div class="pt-6 border-t border-white/10">
-        <div class="flex items-center gap-3 mb-4">
-          <Smartphone class="w-5 h-5 text-text-secondary" />
-          <h3 class="text-lg font-semibold text-text-primary">Mobile App</h3>
-        </div>
-
-        <div class="bg-surface-base rounded-xl p-4">
-          <p class="text-sm text-text-secondary mb-3">
-            Sign in to the Kaiku mobile app by scanning a QR code. No need to
-            enter your server URL or credentials manually.
-          </p>
-          <button
-            onClick={() => setShowQrLogin(true)}
-            class="flex items-center gap-2 px-4 py-2 bg-accent-primary hover:bg-accent-primary/80 rounded-lg transition-colors text-on-accent text-sm font-medium"
-          >
-            <Smartphone class="w-4 h-4" />
-            Link Mobile Device
-          </button>
-        </div>
-      </div>
-
-      {/* QR Login Modal */}
-      <Show when={showQrLogin()}>
-        <QrLoginModal
-          serverUrl={authState.serverUrl ?? ""}
-          onClose={() => setShowQrLogin(false)}
-        />
-      </Show>
     </div>
   );
 };

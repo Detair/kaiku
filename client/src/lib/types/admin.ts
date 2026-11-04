@@ -22,13 +22,18 @@ export interface UserSummary {
   avatar_url: string | null;
   created_at: string;
   is_banned: boolean;
+  /** C28: the "Kaiku" system account (servers hide it from lists anyway). */
+  is_system?: boolean;
+  /** Not in C27's list; when present, admins are left out of recovery-contact choices. */
+  is_admin?: boolean;
 }
 
 /** Request body for `POST /api/admin/users` (wire format). */
 export interface AdminCreateUserRequest {
   username: string;
   display_name: string | null;
-  temporary_password: string;
+  /** C27: a passwordless account; its phone is set up from the admin's phone. */
+  recovery_contact_id?: string | null;
   /** Servers the new account joins right away (contract C23, max 10). */
   guild_ids?: string[];
 }
@@ -89,6 +94,18 @@ export interface UserDetailsResponse {
   last_login: string | null;
   guild_count: number;
   guilds: UserGuildMembership[];
+  /** C27 admin user view (absent on older servers). */
+  is_admin?: boolean;
+  may_approve?: boolean;
+  key_devices?: { id: string; label: string; state: string; ready_at?: string | null }[];
+  passkeys?: { id: string; label: string; state: string; ready_at?: string | null }[];
+  password_state?: "active" | "throttled" | "compromised" | null;
+  totp_state?: "active" | "throttled" | "compromised" | null;
+  recovery_codes_left?: number;
+  bootstrap_open?: boolean;
+  recovery_contact?: { user_id: string; username: string; display_name: string; confirmed_at: string | null } | null;
+  open_request?: import("./login").AccountRequestSummary | null;
+  open_sessions?: { full: number; probation: number };
 }
 
 // Guild Detail Types

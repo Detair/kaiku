@@ -98,6 +98,7 @@ export {
   expireNativeSession,
   endBrowserSession,
   SESSION_ENDED_EVENT,
+  FULL_SESSION_REQUIRED_EVENT,
   type SessionEndReason,
   initNativeAuthEvents,
   PASSWORD_CHANGE_REQUIRED,
@@ -127,3 +128,9 @@ export * from "./search";
 export * from "./dms";
 export * from "./webhooks";
 export * from "./passkeys";
+export * from "./loginAttempts";
+// The account-security modules (`security`, `enrollments`,
+// `accountRequests`, `registration`, `adminSecurity`) are imported directly,
+// not re-exported here: through this barrel they would ride in the startup
+// chunk (bundle budget).
+export { isPreSessionPath, parseRetryAfter } from "./common";

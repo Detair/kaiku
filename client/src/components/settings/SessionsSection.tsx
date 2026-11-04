@@ -1,15 +1,28 @@
+/**
+ * Signed-in sessions (C27): each with its assurance ("Full" / "Chat only"),
+ * client, the sign-in method that created it and last use. "End" and "Sign
+ * out everywhere else" need a step-up (`sessions.end`/id or `others`). A key
+ * device's own session is shown as "Remove device" and removes the phone.
+ * A chat-only session sees the list read-only.
+ */
+
 import { Component, createSignal, onMount, For, Show } from "solid-js";
-import { Monitor, Smartphone, LogOut } from "lucide-solid";
+import { Monitor, Smartphone, Globe } from "lucide-solid";
 import * as tauri from "@/lib/tauri";
+import { removeKeyDevice } from "@/lib/tauri/security";
 import { formatRelativeTimeShort } from "@/lib/utils";
 import type { SessionInfo } from "@/lib/types";
 import { t } from "@/i18n";
-import { errorText } from "@/i18n/errors";
+import { withStepUp } from "@/lib/stepUp";
+import { isProbation } from "@/stores/auth";
+import { ReadOnlyNote, dangerButton, errorBox, errorStyle, secondaryButton } from "./security/SectionCard";
+import { securityErrorText } from "./security/securityErrors";
 
 const SessionsSection: Component = () => {
   const [sessions, setSessions] = createSignal<SessionInfo[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
+  const [busy, setBusy] = createSignal(false);
 
   const loadSessions = async () => {
     try {
@@ -18,7 +31,7 @@ const SessionsSection: Component = () => {
       const resp = await tauri.listSessions();
       setSessions(resp.sessions);
     } catch (err) {
-      setError(errorText(err, "settings.sessions.loadFailed"));
+      setError(securityErrorText(err, "settings.sessions.loadFailed"));
     } finally {
       setLoading(false);
     }
@@ -26,114 +39,140 @@ const SessionsSection: Component = () => {
 
   onMount(loadSessions);
 
-  const handleRevoke = async (sessionId: string) => {
+  const act = async (job: () => Promise<void>, fallback: "settings.sessions.revokeFailed" | "settings.sessions.revokeAllFailed") => {
+    setBusy(true);
+    setError(null);
     try {
-      await tauri.revokeSession(sessionId);
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      await job();
     } catch (err) {
-      setError(errorText(err, "settings.sessions.revokeFailed"));
+      setError(securityErrorText(err, fallback));
+    } finally {
+      setBusy(false);
     }
   };
 
-  const handleRevokeAll = async () => {
-    try {
-      await tauri.revokeAllOtherSessions();
+  const handleRevoke = (session: SessionInfo) =>
+    act(async () => {
+      await withStepUp({ action: "sessions.end", target: session.id, targetLabel: session.device }, () =>
+        tauri.revokeSession(session.id),
+      );
+      setSessions((prev) => prev.filter((s) => s.id !== session.id));
+    }, "settings.sessions.revokeFailed");
+
+  const handleRemoveDevice = (session: SessionInfo, deviceId: string, label: string) =>
+    act(async () => {
+      await withStepUp({ action: "key_device.remove", target: deviceId, targetLabel: label }, () =>
+        removeKeyDevice(deviceId),
+      );
+      setSessions((prev) => prev.filter((s) => s.id !== session.id));
+    }, "settings.sessions.revokeFailed");
+
+  const handleRevokeAll = () =>
+    act(async () => {
+      await withStepUp({ action: "sessions.end", target: "others", targetLabel: "" }, () =>
+        tauri.revokeAllOtherSessions(),
+      );
       setSessions((prev) => prev.filter((s) => s.is_current));
-    } catch (err) {
-      setError(errorText(err, "settings.sessions.revokeAllFailed"));
-    }
-  };
+    }, "settings.sessions.revokeAllFailed");
 
-  const formatLocation = (session: SessionInfo): string => {
-    if (session.city && session.country)
-      return `${session.city}, ${session.country}`;
-    if (session.country) return session.country;
-    return t("settings.sessions.unknownLocation");
-  };
-
-  const getDeviceIcon = (device: string) => {
-    const lower = device.toLowerCase();
-    if (
-      lower.includes("mobile") ||
-      lower.includes("android") ||
-      lower.includes("iphone")
-    ) {
-      return Smartphone;
-    }
+  const icon = (s: SessionInfo) => {
+    if (s.client_class === "android") return Smartphone;
+    if (s.client_class === "web") return Globe;
+    const lower = s.device.toLowerCase();
+    if (lower.includes("android") || lower.includes("iphone") || lower.includes("mobile")) return Smartphone;
     return Monitor;
   };
 
+  const keyDevice = (s: SessionInfo) => (s.authenticator?.type === "key_device" ? s.authenticator : null);
+
   return (
     <div class="space-y-3">
-      <div class="flex items-center justify-between">
-        <h4 class="text-sm font-semibold text-text-secondary uppercase tracking-wide">
-          {t("settings.sessions.title")}
-        </h4>
-        <Show when={sessions().filter((s) => !s.is_current).length > 0}>
-          <button
-            onClick={handleRevokeAll}
-            class="text-xs px-2 py-1 rounded-lg text-status-danger hover:bg-status-danger/10 transition-colors"
-          >
-            {t("settings.sessions.logOutOthers")}
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h4 class="text-base font-semibold text-text-primary">{t("settings.sessions.title")}</h4>
+        <Show when={!isProbation() && sessions().filter((s) => !s.is_current).length > 0}>
+          <button type="button" onClick={() => void handleRevokeAll()} disabled={busy()} class={dangerButton}>
+            {t("security.sessions.endAll")}
           </button>
         </Show>
       </div>
 
       <Show when={loading()}>
-        <div class="text-sm text-text-secondary py-4 text-center">
-          {t("settings.sessions.loading")}
-        </div>
+        <div class="text-base text-text-secondary py-4 text-center">{t("settings.sessions.loading")}</div>
       </Show>
 
       <Show when={error()}>
-        <div class="text-sm text-status-danger p-3 rounded-xl bg-status-danger/10 border border-status-danger/20">
+        <div role="alert" class={errorBox} style={errorStyle}>
           {error()}
         </div>
       </Show>
 
-      <Show when={!loading() && !error()}>
-        <div class="space-y-2">
+      <Show when={!loading()}>
+        <ul class="space-y-2">
           <For each={sessions()}>
             {(session) => {
-              const Icon = getDeviceIcon(session.device);
+              const Icon = icon(session);
               return (
-                <div class="flex items-center gap-3 p-3 rounded-xl bg-surface-layer2 border border-white/5">
+                <li class="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-surface-layer2 border border-white/5">
                   <div class="shrink-0 text-text-secondary">
-                    <Icon size={20} />
+                    <Icon size={20} aria-hidden="true" />
                   </div>
-                  <div class="flex-1 min-w-0">
-                    <div class="flex items-center gap-2">
-                      <span class="text-sm font-medium text-text-primary truncate">
-                        {session.device}
+                  <div class="flex-1 min-w-0 space-y-0.5">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span class="text-base font-medium text-text-primary">{session.device}</span>
+                      <span class="px-2 py-0.5 text-xs rounded-md border border-white/15 text-text-primary">
+                        {session.assurance === "full" ? t("security.sessions.full") : t("security.sessions.chatOnly")}
                       </span>
                       <Show when={session.is_current}>
-                        <span class="px-1.5 py-0.5 text-[10px] rounded-md bg-status-success/20 text-text-primary font-medium">
+                        <span class="px-2 py-0.5 text-xs rounded-md bg-status-success/20 text-text-primary font-medium">
                           {t("settings.sessions.current")}
                         </span>
                       </Show>
                     </div>
-                    <div class="flex items-center gap-2 text-xs text-text-secondary mt-0.5">
-                      <span>{formatLocation(session)}</span>
-                      <span class="opacity-40">&middot;</span>
-                      <span>{session.ip_address ?? t("settings.sessions.unknownIp")}</span>
-                      <span class="opacity-40">&middot;</span>
-                      <span>{formatRelativeTimeShort(session.created_at)}</span>
-                    </div>
+                    <Show when={session.authenticator}>
+                      {(a) => <p class="text-sm text-text-secondary">{t("security.sessions.with", { label: a().label })}</p>}
+                    </Show>
+                    <p class="text-sm text-text-secondary">
+                      {t("security.sessions.lastUsed", {
+                        time: formatRelativeTimeShort(session.last_used_at ?? session.created_at),
+                      })}
+                    </p>
                   </div>
-                  <Show when={!session.is_current}>
-                    <button
-                      onClick={() => handleRevoke(session.id)}
-                      class="shrink-0 p-1.5 rounded-lg text-text-secondary hover:text-status-danger hover:bg-status-danger/10 transition-colors"
-                      title={t("settings.sessions.revoke")}
+                  <Show when={!session.is_current && !isProbation()}>
+                    <Show
+                      when={keyDevice(session)}
+                      fallback={
+                        <button
+                          type="button"
+                          onClick={() => void handleRevoke(session)}
+                          disabled={busy()}
+                          class={secondaryButton}
+                          aria-label={t("security.stepUp.action.sessionsEnd", { target: session.device })}
+                        >
+                          {t("security.sessions.end")}
+                        </button>
+                      }
                     >
-                      <LogOut size={16} />
-                    </button>
+                      {(device) => (
+                        <button
+                          type="button"
+                          onClick={() => void handleRemoveDevice(session, device().id, device().label)}
+                          disabled={busy()}
+                          class={dangerButton}
+                          aria-label={t("security.keyDevices.removeNamed", { name: device().label })}
+                        >
+                          {t("security.keyDevices.remove")}
+                        </button>
+                      )}
+                    </Show>
                   </Show>
-                </div>
+                </li>
               );
             }}
           </For>
-        </div>
+        </ul>
+      </Show>
+      <Show when={isProbation()}>
+        <ReadOnlyNote />
       </Show>
     </div>
   );

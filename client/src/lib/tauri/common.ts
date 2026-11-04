@@ -45,6 +45,10 @@ export interface AuthResponse {
   token_type: string;
   setup_required: boolean;
   password_change_required?: boolean;
+  /** C27: the new session's id, assurance and absolute cap (absent on older servers). */
+  session_id?: string;
+  assurance?: "full" | "probation";
+  absolute_expires_at?: string;
 }
 
 /** Auth result type (returned by login/register). */
@@ -54,6 +58,8 @@ export interface AuthResult {
   password_change_required: boolean;
   /** Native mode: `false` when the OS keyring could not store the login. */
   persisted?: boolean;
+  /** Native mode: the generation the session was installed with (ends exactly it). */
+  session_generation?: number;
 }
 
 /** Native mode: base URL and access token provided by the Rust session. */
@@ -226,9 +232,40 @@ export function validateFileSize(
 export const browserState = {
   serverUrl: typeof window !== "undefined" ? window.location.origin : "",
   accessToken: null as string | null,
+  /**
+   * The server that issued `accessToken` (base URL). The bearer goes only
+   * there, even if a pre-session page names another server meanwhile
+   * (Argon review 5 #1). `null`: not bound (set directly, e.g. by tests).
+   */
+  tokenServerUrl: null as string | null,
   tokenExpiresAt: null as number | null,
   refreshTimer: null as ReturnType<typeof setTimeout> | null,
 };
+
+function trimBase(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+/**
+ * Browser: the access token, only for the server that issued it. A token
+ * without a bound server is never sent (fail closed, Fable R5): every setter
+ * binds it (`setBrowserToken`, the refresh).
+ */
+export function browserBearer(serverUrl: string = browserState.serverUrl): string | null {
+  const token = browserState.accessToken;
+  const bound = browserState.tokenServerUrl;
+  if (!token || bound === null) return null;
+  return bound === trimBase(serverUrl) ? token : null;
+}
+
+/** Browser: install a session's access token, bound to its server. */
+export function setBrowserToken(serverUrl: string, accessToken: string, expiresIn: number): void {
+  const base = trimBase(serverUrl);
+  browserState.serverUrl = base;
+  browserState.tokenServerUrl = base;
+  browserState.accessToken = accessToken;
+  browserState.tokenExpiresAt = Date.now() + expiresIn * 1000;
+}
 
 const SESSION_RESTORE_BLOCK_KEY = "kaiku:skip-session-restore";
 
@@ -282,7 +319,14 @@ if (typeof localStorage !== "undefined") {
 export const SESSION_ENDED_EVENT = "kaiku:session-ended";
 
 /** Why the session ended; selects the message shown on the sign-in prompt. */
-export type SessionEndReason = "expired" | "revoked" | "banned";
+export type SessionEndReason = "expired" | "revoked" | "banned" | "reused";
+
+/** Window event: a request needs a full session (403 `FULL_SESSION_REQUIRED`, C27). */
+export const FULL_SESSION_REQUIRED_EVENT = "kaiku:full-session-required";
+
+/** The full-session event is dispatched at most once per this interval. */
+const FULL_SESSION_EVENT_GAP_MS = 2_000;
+let lastFullSessionEventAt = -Infinity;
 
 /** Browser: drop the local session and tell the app to show the sign-in prompt. */
 export function endBrowserSession(reason: SessionEndReason): void {
@@ -299,6 +343,7 @@ export function clearBrowserTokens() {
     browserState.refreshTimer = null;
   }
   browserState.accessToken = null;
+  browserState.tokenServerUrl = null;
   browserState.tokenExpiresAt = null;
 }
 
@@ -316,6 +361,7 @@ let nativeAuthInfo: NativeAuthInfo | null = null;
  * Reset when a session hands out a token again.
  */
 let nativeSessionExpiryReported = false;
+let nativeExpiryReason: "expired" | "reused" | null = null;
 
 /** Cache (or clear) the auth info handed out by the Rust session. */
 export function setNativeAuthInfo(info: NativeAuthInfo | null): void {
@@ -323,6 +369,7 @@ export function setNativeAuthInfo(info: NativeAuthInfo | null): void {
   if (info) {
     browserState.serverUrl = info.server_url;
     nativeSessionExpiryReported = false;
+    nativeExpiryReason = null;
   }
 }
 
@@ -337,10 +384,8 @@ export async function loadNativeAuthInfo(): Promise<NativeAuthInfo | null> {
 /** Base URL and access token for the next request. */
 export async function getAuthContext(): Promise<AuthContext> {
   if (!isTauri()) {
-    return {
-      baseUrl: getServerUrl().replace(/\/+$/, ""),
-      accessToken: browserState.accessToken,
-    };
+    const baseUrl = getServerUrl().replace(/\/+$/, "");
+    return { baseUrl, accessToken: browserBearer(baseUrl) };
   }
   const info = nativeAuthInfo ?? (await loadNativeAuthInfo());
   return {
@@ -353,13 +398,34 @@ export async function getAuthContext(): Promise<AuthContext> {
  * Native mode: the Rust session has ended (refresh token rejected). Clears
  * the cache and dispatches `kaiku:session-expired` once, however many paths
  * report it (the `auth:session_expired` event, `refresh_session` returning
- * `null`, a `session_request` failing with "Session expired").
+ * `null`, a `session_request` failing with "Session expired"). A refresh
+ * token used twice (`reused`, C27) ends the session for good instead.
  */
-export function expireNativeSession(): void {
-  if (nativeSessionExpiryReported) return;
+export function expireNativeSession(reason: "expired" | "reused" = "expired"): void {
+  // A "reused" report after a plain expiry still ends the session for good
+  // with its own reason (Argon review 5 #7); anything else is reported once.
+  if (nativeSessionExpiryReported && !(reason === "reused" && nativeExpiryReason === "expired")) return;
   nativeSessionExpiryReported = true;
+  nativeExpiryReason = reason;
   setNativeAuthInfo(null);
+  if (reason === "reused") {
+    window.dispatchEvent(new CustomEvent(SESSION_ENDED_EVENT, { detail: { reason } }));
+    return;
+  }
   window.dispatchEvent(new CustomEvent("kaiku:session-expired"));
+}
+
+/**
+ * A request needs a full session (403 `FULL_SESSION_REQUIRED`): the app
+ * shows one dialog; repeats within 2 s do not stack it. Used by the browser
+ * path below and by the desktop's native requests (Argon review 5 #2).
+ */
+export function reportFullSessionRequired(): void {
+  const now = Date.now();
+  if (typeof window !== "undefined" && now - lastFullSessionEventAt >= FULL_SESSION_EVENT_GAP_MS) {
+    lastFullSessionEventAt = now;
+    window.dispatchEvent(new CustomEvent(FULL_SESSION_REQUIRED_EVENT));
+  }
 }
 
 /** `Display` of the Rust `SessionError::Expired`. */
@@ -392,8 +458,8 @@ async function registerNativeAuthEvents(): Promise<void> {
     },
   );
   try {
-    await listen("auth:session_expired", () => {
-      expireNativeSession();
+    await listen<{ reason?: string } | null>("auth:session_expired", (event) => {
+      expireNativeSession(event.payload?.reason === "reused" ? "reused" : "expired");
     });
   } catch (err) {
     unlistenRefreshed();
@@ -468,19 +534,36 @@ export function refreshAccessToken(): Promise<boolean> {
   if (refreshInFlight) {
     return refreshInFlight;
   }
-  refreshInFlight = doRefreshAccessToken().finally(() => {
+  refreshInFlight = withRefreshLock(doRefreshAccessToken).finally(() => {
     refreshInFlight = null;
   });
   return refreshInFlight;
 }
 
-/** Whether a 403 refresh response carries the `ACCOUNT_BANNED` code. */
-async function isAccountBanned(response: Response): Promise<boolean> {
+/**
+ * Browser: serialise refreshes across tabs with a Web Lock (B.4): two tabs
+ * rotating the shared refresh cookie at once would look like a reused token.
+ * Without `navigator.locks` (old browsers, the desktop app) the in-tab single
+ * flight is all there is.
+ */
+function withRefreshLock(run: () => Promise<boolean>): Promise<boolean> {
+  const locks = typeof navigator !== "undefined" ? (navigator as Navigator & { locks?: LockManager }).locks : undefined;
+  if (isTauri() || !locks?.request) return run();
+  // A refused lock request (no permission, aborted) must not reject: callers
+  // treat a refresh as never throwing (Fable m7).
+  return (locks.request("kaiku-refresh", run) as Promise<boolean>).catch((err: unknown) => {
+    console.warn("[Auth] Refresh lock failed:", err instanceof Error ? err.message : err);
+    return false;
+  });
+}
+
+/** The `error` code of a refused refresh, if the body names one. */
+async function refreshErrorCode(response: Response): Promise<unknown> {
   try {
     const body = (await response.json()) as { error?: unknown };
-    return codeIs(body?.error, "ACCOUNT_BANNED");
+    return body?.error;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -510,7 +593,8 @@ async function doRefreshAccessToken(): Promise<boolean> {
   try {
     console.log("[Auth] Refreshing access token...");
 
-    const baseUrl = browserState.serverUrl.replace(/\/+$/, "");
+    // The session's own server, even if a pre-session page named another.
+    const baseUrl = (browserState.tokenServerUrl ?? browserState.serverUrl).replace(/\/+$/, "");
 
     // The server reads the HttpOnly refresh cookie.
     const response = await fetch(`${baseUrl}/auth/refresh`, {
@@ -523,8 +607,15 @@ async function doRefreshAccessToken(): Promise<boolean> {
       // Only an explicit rejection ends the session. Other statuses (e.g. a
       // 502/503 from a proxy while the server restarts) are transient, like a
       // network error: keep the tokens so the caller can retry later.
-      if (response.status === 403 && (await isAccountBanned(response))) {
+      const code =
+        response.status === 401 || response.status === 403 ? await refreshErrorCode(response) : undefined;
+      if (response.status === 403 && codeIs(code, "ACCOUNT_BANNED")) {
         endBrowserSession("banned");
+        return false;
+      }
+      // C27: the refresh token was used twice; the server ended the session.
+      if (response.status === 401 && codeIs(code, "SESSION_REUSED")) {
+        endBrowserSession("reused");
         return false;
       }
       if (response.status === 401 || response.status === 403) {
@@ -554,6 +645,7 @@ async function doRefreshAccessToken(): Promise<boolean> {
     // Store access token in memory; browser mode relies on HttpOnly cookie
     // for the refresh token so we don't keep it in JS-accessible memory.
     browserState.accessToken = data.access_token;
+    browserState.tokenServerUrl = baseUrl;
     browserState.tokenExpiresAt = Date.now() + data.expires_in * 1000;
 
     console.log("[Auth] Token refreshed successfully");
@@ -666,12 +758,26 @@ export class HttpError extends Error {
     message: string,
     /** Server error code from the body's `error` field (contract C16). */
     public readonly code?: string,
-    /** The parsed error body (extra fields such as `ready_at`). */
-    public readonly details?: Record<string, unknown>,
+    /**
+     * Extra fields the error body carries next to `error` (C26–C29 common
+     * rules: `tries_left`, `recovery_codes_left`, `ready_at`, `state`, `reason`).
+     */
+    public readonly details: Record<string, unknown> = {},
+    /** Seconds from a `Retry-After` header (429 `TOO_MANY_ATTEMPTS`). */
+    public readonly retryAfter?: number,
   ) {
     super(message);
     this.name = "HttpError";
   }
+}
+
+/** Seconds of a `Retry-After` header (delta-seconds or an HTTP date). */
+export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  const at = Date.parse(trimmed);
+  return Number.isNaN(at) ? undefined : Math.max(0, Math.ceil((at - now) / 1000));
 }
 
 /** Server error code (contract C4) for a pending forced password change. */
@@ -680,13 +786,34 @@ export const PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
 /** Window event dispatched when a request reports `PASSWORD_CHANGE_REQUIRED`. */
 export const PASSWORD_CHANGE_REQUIRED_EVENT = "kaiku:password-change-required";
 
-const AUTH_ENDPOINTS = new Set([
-  "/auth/login",
-  "/auth/register",
-  "/auth/refresh",
-  "/auth/passkeys/login/start",
-  "/auth/passkeys/login/finish",
-]);
+const PRE_SESSION_EXACT = new Set(["/auth/login", "/auth/register", "/auth/refresh"]);
+
+/** Prefixes matched as the path itself or the path followed by `/`. */
+const PRE_SESSION_PREFIXES = [
+  "/auth/login-attempts",
+  "/auth/account-requests/current",
+  "/auth/account-requests/oidc",
+  "/auth/registration",
+  "/auth/enrollments/open",
+  "/auth/enrollments/pop-challenge",
+  "/auth/enrollments/claim",
+  "/auth/enrollments/status",
+  "/auth/enrollments/passkey",
+  "/auth/device-login",
+  "/auth/passkeys/login",
+];
+
+/**
+ * Calls made before (or outside) a session: sign-in steps, account requests,
+ * registration tickets, new-device enrolment routes (C26, C27, C29). They get
+ * no bearer and no refresh-and-retry on 401 (a 401 there is an answer, not an
+ * expired token). Compared on the path without a query.
+ */
+export function isPreSessionPath(path: string): boolean {
+  const clean = (path.startsWith("/") ? path : `/${path}`).split(/[?#]/)[0];
+  if (PRE_SESSION_EXACT.has(clean) || clean === "/auth/account-requests") return true;
+  return PRE_SESSION_PREFIXES.some((p) => clean === p || clean.startsWith(`${p}/`));
+}
 
 /**
  * HTTP helper for both modes. Base URL and bearer come from
@@ -724,7 +851,7 @@ async function sendHttpRequest<T>(
   }
 
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
-  const isAuthEndpoint = AUTH_ENDPOINTS.has(cleanPath);
+  const isAuthEndpoint = isPreSessionPath(cleanPath);
 
   if (token && !isAuthEndpoint) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -767,7 +894,7 @@ async function sendHttpRequest<T>(
       );
     }
 
-    let errorBody: { error?: string; message?: string } | null = null;
+    let errorBody: ({ error?: string; message?: string } & Record<string, unknown>) | null = null;
     try {
       errorBody = rawBody ? JSON.parse(rawBody) : null;
     } catch {
@@ -792,6 +919,11 @@ async function sendHttpRequest<T>(
         }
         throw new HttpError(403, PASSWORD_CHANGE_REQUIRED, PASSWORD_CHANGE_REQUIRED);
       }
+      // C27: this needs a full session (passkey or phone sign-in). The app
+      // shows one dialog; repeats within 2 s do not stack it.
+      if (response.status === 403 && codeIs(errorBody.error, "FULL_SESSION_REQUIRED")) {
+        reportFullSessionRequired();
+      }
       errorMessage = errorBody.message || errorBody.error || errorMessage;
     }
 
@@ -799,11 +931,18 @@ async function sendHttpRequest<T>(
       errorBody && typeof errorBody === "object" && typeof errorBody.error === "string"
         ? errorBody.error
         : undefined;
+    const details: Record<string, unknown> = {};
+    if (errorBody && typeof errorBody === "object") {
+      for (const [key, value] of Object.entries(errorBody)) {
+        if (key !== "error" && key !== "message") details[key] = value;
+      }
+    }
     throw new HttpError(
       response.status,
       errorMessage,
       code,
-      errorBody && typeof errorBody === "object" ? (errorBody as Record<string, unknown>) : undefined,
+      details,
+      parseRetryAfter(response.headers?.get?.("Retry-After") ?? null),
     );
   }
 
@@ -874,5 +1013,5 @@ export function getServerUrl(): string {
  */
 export function getAccessToken(): string | null {
   if (isTauri()) return nativeAuthInfo?.access_token ?? null;
-  return browserState.accessToken;
+  return browserBearer();
 }

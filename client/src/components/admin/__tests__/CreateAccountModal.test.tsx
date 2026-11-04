@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@solidjs/testing-library";
 
 const mocks = vi.hoisted(() => ({ adminCreateUser: vi.fn() }));
+const adminStore = vi.hoisted(() => ({ isElevated: true, users: undefined as unknown[] | undefined }));
 
 vi.mock("@/lib/tauri", async () => {
   const common = await vi.importActual<typeof import("@/lib/tauri/common")>("@/lib/tauri/common");
@@ -12,7 +13,7 @@ vi.mock("@/lib/tauri", async () => {
   };
 });
 vi.mock("@/stores/admin", () => ({
-  adminState: { isElevated: true },
+  adminState: adminStore,
   createUser: (req: unknown) => mocks.adminCreateUser(req),
 }));
 vi.mock("@/stores/guilds", () => ({
@@ -62,6 +63,26 @@ describe("CreateAccountModal validation", () => {
   });
 });
 
+describe("CreateAccountModal without a password", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    mocks.adminCreateUser.mockReset();
+    mocks.adminCreateUser.mockResolvedValue({ username: "oma", display_name: "Oma" });
+  });
+
+  it("create account sends no password and shows the phone setup hint", async () => {
+    render(() => <CreateAccountModal onClose={() => {}} />);
+    expect(screen.queryByLabelText("Temporary password")).toBeNull();
+    fireEvent.input(screen.getByLabelText(/^Username/), { target: { value: "oma" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    await waitFor(() => expect(mocks.adminCreateUser).toHaveBeenCalledTimes(1));
+    const req = mocks.adminCreateUser.mock.calls[0][0];
+    expect(req).not.toHaveProperty("temporary_password");
+    expect(req.recovery_contact_id).toBeNull();
+    expect(await screen.findByText("Now set up their phone from the Kaiku app on your phone.")).toBeTruthy();
+  });
+});
+
 describe("CreateAccountModal servers", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
@@ -86,5 +107,35 @@ describe("CreateAccountModal servers", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create account" }));
     await waitFor(() => expect(mocks.adminCreateUser).toHaveBeenCalled());
     expect(mocks.adminCreateUser.mock.calls[0][0].guild_ids).toEqual(["g1", "g2"]);
+  });
+});
+
+describe("CreateAccountModal recovery contact (Argon review)", () => {
+  it("lists neither admins, the system account nor the creating admin", () => {
+    const person = (id: string, over: Record<string, unknown> = {}) => ({
+      id,
+      username: id,
+      display_name: id.toUpperCase(),
+      email: null,
+      avatar_url: null,
+      created_at: "",
+      is_banned: false,
+      ...over,
+    });
+    adminStore.users = [
+      person("paul"),
+      person("banned", { is_banned: true }),
+      person("admin2", { is_admin: true }),
+      person("kaiku", { is_system: true }),
+      person("me"),
+    ];
+    try {
+      render(() => <CreateAccountModal onClose={vi.fn()} meId="me" />);
+      const select = screen.getByRole("combobox", { name: "Recovery contact (optional)" });
+      const options = Array.from(select.querySelectorAll("option")).map((o) => o.textContent);
+      expect(options).toEqual(["None", "PAUL"]);
+    } finally {
+      adminStore.users = undefined;
+    }
   });
 });

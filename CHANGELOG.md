@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A setup link opened in a computer's browser adds a passkey instead: the browser shows a 6-digit code that the person who sent the link types in.
 - Your phone can be a key for your account: it confirms sensitive actions with its screen lock, and you can see and remove your key phones in the security settings.
 - Security notices: sign-ins and changes to how you sign in appear in a read-only chat with **Kaiku** and in a security log in your account settings; admins get a copy of important ones. They cannot be deleted from a signed-in session.
+- **Account recovery without e-mail:** 'I lost my phone / forgot my password' and 'Secure my account' start a request that completes after 24 hours unless you, your recovery contact or an admin cancels it.
+- Kaiku now asks you to secure your account (phone, passkey, recovery contact) and shows any open request to change your sign-in, with Cancel.
+- **Security notices:** a read-only chat with 'Kaiku' tells you about new sign-ins, devices and account changes, with 'That wasn't me' where it helps; the security log in settings lists every event.
+- Setup links: a link from your admin opens the Kaiku app on Android, or adds a passkey in a computer's browser.
+- **Set up a phone:** make the Kaiku app on your phone your key from the desktop or web app: scan the code, then type the 6 digits the phone shows.
+- Security settings list your phones, passkeys, sessions and recovery contact; recovery codes replace backup codes.
+- **Sign in with your phone:** the sign-in page shows a QR code; scan it with the Kaiku app on your phone to sign in.
 - Desktop app on Linux: an advanced "Show all ALSA devices" option in the audio settings also lists surround, S/PDIF, raw hardware and plugin devices that the short device list hides. It is off by default, and a device you picked stays listed when you turn it off.
 - **Web client image** `ghcr.io/detair/kaiku-web`: Kaiku in the browser, served on the same domain as the server (your reverse proxy sends `/api/`, `/auth/`, `/ws` and `/health` to the server, everything else to the web container). It runs unprivileged with a read-only root filesystem and sends its own security headers, including a Content-Security-Policy. The compose setup now runs it behind Caddy. See `docs/admin-guide/ops/web-client.md`.
 - Admins can add a new account to servers while creating it.
@@ -88,6 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every sign-in now records how strongly it was confirmed; sessions from before this release are limited to chat and calls until you sign in again with a passkey or your phone. Signed-in requests keep working while Valkey is unavailable, and an ended session stays refused.
 - The admin area needs a session signed in with your key phone (or a passkey); other sessions, and every session from before this release, are not let in, and elevations from before this release end with the upgrade.
 - **Breaking:** the server no longer starts without `PUBLIC_URL`, the public `https://` address users open. Sign-in confirmations are bound to it; read the admin guide before changing your domain.
+- Admins create accounts without a password and set up the person's phone from the Kaiku app; the admin panel shows each user's phones, passkeys, open requests and security log.
+- New accounts choose a passkey, the Kaiku app on a phone or an authenticator app right after registering.
+- Sessions started by a QR code, a password or single sign-on are chat-only. Sign in with a passkey to change sign-in settings or do admin work.
+- Sensitive actions (removing a device, changing your password, linking a sign-in provider, admin mode) are confirmed with a passkey, or in the Kaiku app on your phone. Password and single sign-on re-authentication are gone.
+- Signing in with a password or single sign-on is now confirmed by scanning a code with the Kaiku app on your phone (or an authenticator code if you have no phone set up).
+- The desktop app opens single sign-on in the browser chosen under "Browser for passkey sign-in", and the browser hands the sign-in back to the app the same way as for passkeys.
 - Switches, disabled buttons and placeholders are easier to read in every theme: switches always show their knob, sit left with an outlined track when off and right on the accent colour with a check mark when on; disabled buttons keep a readable label with a dashed outline instead of fading into the background, and say why they are disabled (for example "Enter a channel name to continue."); placeholders are dimmer than typed text and read as examples ("e.g. voice-lounge"). Selected cards and options are marked more clearly, keyboard focus is visible on every button, and the Solarized themes reach the documented text contrast.
 - The banner picker when creating a server is a themed "Choose image" button with the file name instead of the browser's unstyled file control.
 - Desktop auto-updates are signed with a new updater key. Builds from before 1.0.0-rc.1 never shipped the previous key in a release, so no installed app is affected.
@@ -178,6 +191,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Password reset by e-mail. A forgotten password is replaced through an account recovery with a recovery code, or by an admin.
 - The old QR login that signed a phone in without confirmation (`/auth/qr/create`, `/auth/qr/redeem`).
 - `GEOIP_API_URL`.
+- 'Log in on your phone' QR from settings (use 'Set up a phone').
+- Password reset by e-mail. Use a recovery code or ask an admin instead.
 - The 'appear offline' status is no longer available.
 
 ### Fixed

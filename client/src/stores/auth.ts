@@ -7,7 +7,14 @@
 import { loadServerFeatures, resetServerFeatures } from "@/stores/serverFeatures";
 import { createStore } from "solid-js/store";
 import { codeIs } from "@/lib/errorCode";
-import type { User } from "@/lib/types";
+import {
+  decodeAuthSession,
+  type AuthSession,
+  type LoginStep,
+  type RegistrationStarted,
+  type User,
+} from "@/lib/types";
+import { resetMeSecurity } from "./security";
 import * as tauri from "@/lib/tauri";
 import {
   initWebSocket,
@@ -27,7 +34,7 @@ import { resetE2EEState } from "./e2ee";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 import { errorText } from "@/i18n/errors";
-import { LOGIN_ERRORS, REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "@/lib/authErrors";
+import { loginErrorText, REGISTER_ERRORS, REGISTER_STATUS_ERRORS } from "@/lib/authErrors";
 import {
   isTauri,
   PASSWORD_CHANGE_REQUIRED_EVENT,
@@ -42,7 +49,6 @@ interface AuthState {
   isInitialized: boolean;
   error: string | null;
   setupRequired: boolean;
-  mfaRequired: boolean;
   sessionExpired: boolean;
   /** Why the session ended while `sessionExpired` is set (selects the text). */
   sessionEndReason: tauri.SessionEndReason;
@@ -68,7 +74,6 @@ const [authState, setAuthState] = createStore<AuthState>({
   isInitialized: false,
   error: null,
   setupRequired: false,
-  mfaRequired: false,
   sessionExpired: false,
   sessionEndReason: "expired",
   restorePending: false,
@@ -79,12 +84,34 @@ const [authState, setAuthState] = createStore<AuthState>({
 export const isAuthenticated = () => authState.user !== null;
 export const currentUser = () => authState.user;
 
+/** The current session from `GET /auth/me` (C27); null when the server sent none. */
+export const sessionInfo = (): AuthSession | null => decodeAuthSession(authState.user?.session);
+
+/**
+ * Chat-only session (B.4, CC4): everything but a passkey or device-key
+ * sign-in. A missing `session` counts as probation.
+ */
+export const isProbation = (): boolean => sessionInfo()?.assurance !== "full";
+
 /**
  * The temporary password the user just signed in with, kept so the forced
  * change screen does not ask for it again. Memory only: never persisted or
  * logged; cleared on success, logout and session expiry.
  */
 let pendingTemporaryPassword: string | null = null;
+
+/**
+ * The password of the sign-in step in progress (F3: the session starts only
+ * after the phone confirmation or the TOTP step). Memory only; taken by
+ * `completeSignIn` when the account still has to replace it (C4), and
+ * dropped by every other sign-in, logout and session end.
+ */
+let stepPassword: string | null = null;
+
+/** Forget the password of an abandoned sign-in step. */
+export function forgetStepPassword(): void {
+  stepPassword = null;
+}
 
 /** Whether the change screen can reuse the password from this sign-in. */
 export function hasPendingTemporaryPassword(): boolean {
@@ -258,7 +285,11 @@ async function endSession(reason: tauri.SessionEndReason): Promise<void> {
     console.error("[Auth] Cleanup during session end failed:", err);
   }
   pendingTemporaryPassword = null;
+  stepPassword = null;
   passwordChangeSaved = false;
+  // The ended session's overview and prompts go with it (Argon review 6 #4).
+  resetMeSecurity();
+  endSignInChoices();
   setAuthState({
     user: null,
     sessionExpired: true,
@@ -591,60 +622,29 @@ export async function initAuth(): Promise<void> {
 }
 
 /**
- * Login with username and password.
- * If MFA is required, sets mfaRequired=true and throws — caller should
- * show MFA input, then call login() again with the mfaCode.
+ * Username + password (F3). Never signs in by itself: the answer is the next
+ * step (`confirmation_required` → the phone confirms by scan,
+ * `totp_required` → the TOTP step), or the neutral refusal, worded into
+ * `authState.error`. The session starts in `completeSignIn`.
  */
 export async function login(
   serverUrl: string,
   username: string,
   password: string,
-  mfaCode?: string,
-): Promise<User> {
+): Promise<LoginStep> {
   resetServerFeatures(); // a different server may be chosen
   setAuthState({ isLoading: true, error: null });
   invalidatePasskeySignIns();
-
+  stepPassword = null;
   try {
     await initNativeSession();
-    const result = await tauri.login(serverUrl, username, password, mfaCode);
-    warnIfNotRemembered(result);
-    stopRestoreRetry();
-    const passwordChangeRequired = result.password_change_required === true;
-    // Only a temporary password is remembered, and only until it is replaced.
-    pendingTemporaryPassword = passwordChangeRequired ? password : null;
-    setAuthState({
-      restorePending: false,
-      user: result.user,
-      serverUrl,
-      isLoading: false,
-      isInitialized: true,
-      error: null,
-      setupRequired: result.setup_required,
-      mfaRequired: false,
-      sessionExpired: false,
-      passwordChangeRequired,
-    });
-
-    if (!passwordChangeRequired) await startSessionServices();
-
-    return result.user;
+    const step = await tauri.passwordLogin(serverUrl, username, password);
+    stepPassword = password;
+    setAuthState({ isLoading: false, serverUrl });
+    return step;
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);
-
-    // Detect MFA_REQUIRED
-    if (raw === "MFA_REQUIRED") {
-      setAuthState({
-        isLoading: false,
-        error: null,
-        mfaRequired: true,
-        serverUrl,
-      });
-      throw new Error("MFA_REQUIRED", { cause: err });
-    }
-
-    const error = errorText(err, "auth.login.failed", LOGIN_ERRORS);
-    setAuthState({ isLoading: false, error });
+    setAuthState({ isLoading: false, error: loginErrorText(err) });
     throw new Error(raw, { cause: err });
   }
 }
@@ -664,12 +664,56 @@ export async function loginWithPasskey(
     username?: tauri.UsernameHint;
   },
 ): Promise<User> {
+  // A sign-in choice of its own, begun before anything awaits (Flash r3
+  // p2 #2): a phone, password or SSO run is stale at once and cannot install
+  // its session beside this one; a later choice makes this one stale. The
+  // caller captures it with `currentSignInChoice()` right after the call.
+  const choice = beginSignInChoice();
+  const attempt = await runPasskeySignIn(serverUrl, o);
+  if (!attempt.isCurrent() || !choice.isCurrent()) throw new tauri.PasskeyError("ABORTED");
+  const { result } = attempt;
+  // The session is here: an SSO wait or a phone attempt still running is over.
+  endSignInChoices();
+  resetServerFeatures(); // a different server may have been chosen
+  warnIfNotRemembered(result);
+  stopRestoreRetry();
+  pendingTemporaryPassword = null;
+  stepPassword = null;
+  // The security overview belongs to the account that signed in (L2a).
+  resetMeSecurity();
+  setAuthState({
+    restorePending: false,
+    user: result.user,
+    serverUrl: (isTauri() && tauri.getServerUrl()) || serverUrl,
+    isLoading: false,
+    isInitialized: true,
+    error: null,
+    setupRequired: result.setup_required,
+    sessionExpired: false,
+    passwordChangeRequired: result.password_change_required === true,
+  });
+  if (!authState.passwordChangeRequired) await startSessionServices();
+  return result.user;
+}
+
+/**
+ * One passkey sign-in attempt (LP): a later sign-in, logout or another
+ * passkey attempt makes it stale (Codex M1), so it is aborted and never
+ * installs its session. Resolves only for the current attempt; the caller
+ * checks `isCurrent()` once more before it installs anything.
+ */
+async function runPasskeySignIn(
+  serverUrl: string,
+  o: {
+    mediation: "conditional" | "optional";
+    signal: AbortSignal;
+    username?: tauri.UsernameHint;
+  },
+): Promise<{ result: tauri.AuthResult; isCurrent: () => boolean }> {
   if (isTauri()) await initNativeSession();
   // Cancelled already (e.g. while the native auth events were set up): the
   // abort event is gone, so check the state; nothing starts.
   if (o.signal.aborted) throw new tauri.PasskeyError("ABORTED");
-  // A later sign-in, logout or another passkey attempt makes this one stale
-  // (Codex M1): it is aborted and never installs its session.
   const generation = invalidatePasskeySignIns();
   const ctl = new AbortController();
   passkeyAttempt = ctl;
@@ -684,24 +728,8 @@ export async function loginWithPasskey(
       isCurrent,
     });
     if (!isCurrent()) throw new tauri.PasskeyError("ABORTED");
-    resetServerFeatures(); // a different server may have been chosen
-    warnIfNotRemembered(result);
-    stopRestoreRetry();
-    pendingTemporaryPassword = null;
-    setAuthState({
-      restorePending: false,
-      user: result.user,
-      serverUrl: (isTauri() && tauri.getServerUrl()) || serverUrl,
-      isLoading: false,
-      isInitialized: true,
-      error: null,
-      setupRequired: result.setup_required,
-      mfaRequired: false,
-      sessionExpired: false,
-      passwordChangeRequired: result.password_change_required === true,
-    });
-    if (!authState.passwordChangeRequired) await startSessionServices();
-    return result.user;
+    // Checked again by the caller after the hop back (nothing else between).
+    return { result, isCurrent: () => generation === signInGeneration && !o.signal.aborted };
   } finally {
     o.signal.removeEventListener("abort", abort);
     if (passkeyAttempt === ctl) passkeyAttempt = null;
@@ -712,6 +740,50 @@ export async function loginWithPasskey(
 let signInGeneration = 0;
 let passkeyAttempt: AbortController | null = null;
 
+/** One sign-in choice (passkey button, password, phone QR, SSO). */
+export interface SignInChoice {
+  /** Aborted as soon as another choice starts or a session begins. */
+  readonly signal: AbortSignal;
+  readonly isCurrent: () => boolean;
+}
+
+let choiceCtl: AbortController | null = null;
+
+/**
+ * Start a sign-in choice (Codex review M1): every other one becomes stale at
+ * once: a running passkey ceremony is aborted (LP's generation), an SSO wait
+ * is cancelled through its signal, an older password or phone attempt drops
+ * its late answer. Every passkey sign-in, autofill included, is a choice
+ * from its start (`loginWithPasskey`); the sign-in page runs autofill only
+ * while no other choice is in flight.
+ */
+export function beginSignInChoice(): SignInChoice {
+  invalidatePasskeySignIns();
+  choiceCtl?.abort();
+  const ctl = new AbortController();
+  choiceCtl = ctl;
+  return choiceHandle(ctl);
+}
+
+function choiceHandle(ctl: AbortController): SignInChoice {
+  return { signal: ctl.signal, isCurrent: () => !ctl.signal.aborted };
+}
+
+/**
+ * The choice begun last, if one is pending: a caller that started a choice
+ * through a store (`submitPassword`, `startPhoneSignIn`) captures it right
+ * after the call, to act later only while it is still the current one.
+ */
+export function currentSignInChoice(): SignInChoice | null {
+  return choiceCtl ? choiceHandle(choiceCtl) : null;
+}
+
+/** A session began or ended: every pending choice is stale. */
+function endSignInChoices(): void {
+  choiceCtl?.abort();
+  choiceCtl = null;
+}
+
 /** Make every running passkey sign-in stale; returns the new generation. */
 function invalidatePasskeySignIns(): number {
   passkeyAttempt?.abort();
@@ -721,7 +793,44 @@ function invalidatePasskeySignIns(): number {
 }
 
 /**
- * Register a new account.
+ * A sign-in step produced a session (attempt collected, TOTP step, the
+ * passkey sign-in of a chat-only session): take it over and start the
+ * session services.
+ */
+export async function completeSignIn(
+  serverUrl: string,
+  result: tauri.AuthResult,
+): Promise<User> {
+  invalidatePasskeySignIns();
+  endSignInChoices();
+  await initNativeSession();
+  warnIfNotRemembered(result);
+  stopRestoreRetry();
+  const passwordChangeRequired = result.password_change_required === true;
+  // Only a temporary password is remembered, and only until it is replaced.
+  pendingTemporaryPassword = passwordChangeRequired ? stepPassword : null;
+  stepPassword = null;
+  resetMeSecurity();
+  setAuthState({
+    restorePending: false,
+    user: result.user,
+    serverUrl: tauri.getServerUrl() || serverUrl,
+    isLoading: false,
+    isInitialized: true,
+    error: null,
+    setupRequired: result.setup_required,
+    sessionExpired: false,
+    passwordChangeRequired,
+  });
+
+  if (!passwordChangeRequired) await startSessionServices();
+
+  return result.user;
+}
+
+/**
+ * Create an account (F8). No session: the next step is binding a passkey, a
+ * phone or an authenticator app within 30 minutes (`/register/bind`).
  */
 export async function register(
   serverUrl: string,
@@ -729,37 +838,14 @@ export async function register(
   password: string,
   email?: string,
   displayName?: string,
-): Promise<User> {
+): Promise<RegistrationStarted> {
   setAuthState({ isLoading: true, error: null });
 
   try {
     await initNativeSession();
-    const result = await tauri.register(
-      serverUrl,
-      username,
-      password,
-      email,
-      displayName,
-    );
-    warnIfNotRemembered(result);
-    stopRestoreRetry();
-    setAuthState({
-      restorePending: false,
-      user: result.user,
-      serverUrl,
-      isLoading: false,
-      isInitialized: true,
-      error: null,
-      setupRequired: result.setup_required,
-      sessionExpired: false,
-      passwordChangeRequired: result.password_change_required === true,
-    });
-
-    if (!authState.passwordChangeRequired) {
-      await startSessionServices({ showWsError: false });
-    }
-
-    return result.user;
+    const result = await tauri.register(serverUrl, username, password, email, displayName);
+    setAuthState({ isLoading: false, serverUrl });
+    return result;
   } catch (err) {
     const error = errorText(
       err,
@@ -773,82 +859,15 @@ export async function register(
 }
 
 /**
- * Complete a native (Tauri) OIDC login: Rust already holds the tokens and
- * returned the user.
- */
-export async function completeNativeOidcLogin(
-  serverUrl: string,
-  result: tauri.AuthResult,
-): Promise<void> {
-  invalidatePasskeySignIns();
-  await initNativeSession();
-  warnIfNotRemembered(result);
-  stopRestoreRetry();
-  setAuthState({
-    restorePending: false,
-    user: result.user,
-    serverUrl: tauri.getServerUrl() || serverUrl,
-    isLoading: false,
-    isInitialized: true,
-    error: null,
-    setupRequired: result.setup_required,
-    mfaRequired: false,
-    sessionExpired: false,
-    passwordChangeRequired: result.password_change_required === true,
-  });
-  if (!authState.passwordChangeRequired) await startSessionServices();
-}
-
-/**
- * Complete a browser OIDC login after receiving the access token from the
- * callback page. The refresh token is an HttpOnly cookie, so
- * `_refreshToken` is ignored.
- */
-export async function loginWithOidc(
-  serverUrl: string,
-  accessToken: string,
-  _refreshToken: string | undefined,
-  expiresIn: number,
-  setupRequired: boolean = false,
-): Promise<void> {
-  setAuthState({ isLoading: true, error: null });
-  invalidatePasskeySignIns();
-
-  try {
-    await tauri.oidcCompleteLogin(serverUrl, accessToken, expiresIn);
-
-    // Fetch the current user with the new token
-    const result = await tauri.getCurrentUser();
-    if (!result.user) {
-      throw new Error("Failed to fetch user after OIDC login");
-    }
-
-    setAuthState({
-      user: result.user,
-      serverUrl,
-      isLoading: false,
-      isInitialized: true,
-      error: null,
-      setupRequired,
-      sessionExpired: false,
-      passwordChangeRequired: result.password_change_required === true,
-    });
-
-    if (!authState.passwordChangeRequired) await startSessionServices();
-  } catch (err) {
-    const error = errorText(err, "auth.login.ssoFailed");
-    setAuthState({ isLoading: false, error });
-    throw new Error(err instanceof Error ? err.message : String(err), { cause: err });
-  }
-}
-
-/**
  * Logout and clear session.
  */
 export async function logout(): Promise<void> {
   invalidatePasskeySignIns();
+  endSignInChoices();
   resetServerFeatures();
+  resetMeSecurity();
   pendingTemporaryPassword = null;
+  stepPassword = null;
   passwordChangeSaved = false;
   setAuthState({ isLoading: true, error: null, passwordChangeRequired: false });
 
@@ -878,6 +897,59 @@ export async function logout(): Promise<void> {
       isLoading: false,
       error,
     });
+  }
+}
+
+/**
+ * "Sign in with a passkey" from a chat-only session (F1): a new full session
+ * replaces it, then the old one ends. Nothing upgrades a session (CC4).
+ * Browser: the old session is ended with its own bearer and no cookies, so
+ * only that `sid` ends (the new refresh cookie is not sent). Desktop: Rust's
+ * `adopt_tokens` ends the old session itself.
+ */
+export async function replaceSessionWithPasskey(signal?: AbortSignal): Promise<User> {
+  const serverUrl = tauri.getServerUrl();
+  const previousUserId = authState.user?.id ?? null;
+  const oldToken = isTauri() ? null : tauri.getAccessToken();
+  // C29 (amendment): the signed-in account's name, so a passkey of another
+  // account on a shared PC is refused (PASSKEY_USER_MISMATCH) before any
+  // session is made or the current one ends (Argon review 6 #1).
+  const username = authState.user?.username?.trim() || undefined;
+  const attempt = await runPasskeySignIn(serverUrl, {
+    mediation: "optional",
+    signal: signal ?? new AbortController().signal,
+    username,
+  });
+  if (!attempt.isCurrent()) throw new tauri.PasskeyError("ABORTED");
+  const { result } = attempt;
+  // Close the old session's socket first: ending that session makes the
+  // server send SESSION_REVOKED on it, which must not end the new one.
+  await requestStop();
+  if (previousUserId && result.user.id !== previousUserId) {
+    // A passkey of another account: never mix two accounts' state in one run.
+    clearAllDrafts();
+    cleanupDrafts();
+    resetE2EEState();
+    if (oldToken) await endOldBrowserSession(serverUrl, oldToken);
+    window.location.reload();
+    return result.user;
+  }
+  if (oldToken && oldToken !== tauri.getAccessToken()) {
+    await endOldBrowserSession(serverUrl, oldToken);
+  }
+  return completeSignIn(serverUrl, result);
+}
+
+/** End only the old browser session: its bearer, no cookies (best effort). */
+async function endOldBrowserSession(serverUrl: string, oldToken: string): Promise<void> {
+  try {
+    await fetch(`${serverUrl.replace(/\/+$/, "")}/auth/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${oldToken}` },
+      credentials: "omit",
+    });
+  } catch (err) {
+    console.warn("[Auth] Ending the chat-only session failed:", err instanceof Error ? err.message : err);
   }
 }
 

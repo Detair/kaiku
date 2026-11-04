@@ -52,6 +52,8 @@ export interface UserProfile {
   display_name: string;
   avatar_url: string | null;
   status: UserStatus;
+  /** C28: the built-in "Kaiku" system account (no presence, no profile actions). */
+  is_system?: boolean;
 }
 
 export interface User extends UserProfile {
@@ -59,6 +61,12 @@ export interface User extends UserProfile {
   mfa_enabled: boolean;
   created_at: string;
   status_message?: string | null;
+  /** C27 `GET /auth/me`: may this account's phones confirm sign-ins. */
+  may_approve?: boolean;
+  /** C28: the built-in "Kaiku" system account (false for everyone else). */
+  is_system?: boolean;
+  /** C27 `GET /auth/me` `session`; decode with `decodeAuthSession` (absent = probation). */
+  session?: unknown;
 }
 
 // Session Management Types
@@ -72,6 +80,14 @@ export interface SessionInfo {
   created_at: string;
   expires_at: string;
   is_current: boolean;
+  /** C27 additions (absent on older servers; missing assurance = chat only). */
+  assurance?: "full" | "probation";
+  client_class?: string;
+  auth_methods?: string[];
+  /** A key device's own session is shown as "Remove device". */
+  authenticator?: { id: string; type: string; label: string } | null;
+  last_used_at?: string | null;
+  absolute_expires_at?: string | null;
 }
 
 export interface SessionListResponse {
