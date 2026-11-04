@@ -10,3 +10,5 @@ build/
 /captures
 .externalNativeBuild
 .cxx
+# Lint text report (app/build.gradle.kts: textOutput = file("stdout")), never committed
+/app/stdout
