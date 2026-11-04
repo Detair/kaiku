@@ -13,12 +13,19 @@ import java.io.IOException
  */
 object AuthErrorMapper {
 
+    /**
+     * C27 password sign-in and its attempt steps. `INVALID_CREDENTIALS` (and any
+     * other 401) is F3's one neutral answer, the same text for a wrong password,
+     * an unknown user and a closed password path.
+     */
     @StringRes
     fun login(e: Throwable): Int {
         if (e is ApiException) {
             when {
                 e.normalizedCode == "ACCOUNT_BANNED" -> return R.string.auth_login_banned
                 e.normalizedCode == "INVALID_MFA" -> return R.string.auth_login_mfa_invalid
+                e.normalizedCode == "TOTP_UNAVAILABLE" -> return R.string.auth_totp_unavailable
+                e.normalizedCode == "CLIENT_OUTDATED" -> return R.string.auth_login_client_outdated
                 e.normalizedCode == "INVALID_CREDENTIALS" || e.status == HttpStatusCode.Unauthorized ->
                     return R.string.auth_login_invalid_credentials
             }
@@ -33,17 +40,26 @@ object AuthErrorMapper {
                 "USER_EXISTS" -> return R.string.auth_register_username_taken
                 "EMAIL_TAKEN" -> return R.string.auth_register_email_taken
                 "REGISTRATION_DISABLED" -> return R.string.auth_register_closed
+                "REGISTRATION_TICKET_INVALID" -> return R.string.auth_register_ticket_expired
             }
         }
         return common(e) ?: R.string.auth_register_failed
     }
 
+    /** The SSO start and its code exchange; the exchange's 401 is F3's neutral answer too. */
     @StringRes
-    fun oidc(e: Throwable): Int = common(e) ?: R.string.auth_login_sso_failed
-
-    /** QR sign-in: a rejected or expired code has its own copy. */
-    @StringRes
-    fun qrRedeem(e: Throwable): Int = common(e) ?: R.string.qr_redeem_failed
+    fun oidc(e: Throwable): Int {
+        if (e is ApiException) {
+            when {
+                e.normalizedCode == "ACCOUNT_BANNED" -> return R.string.auth_login_banned
+                e.normalizedCode == "CLIENT_OUTDATED" || e.normalizedCode == "OIDC_CLIENT_OUTDATED" ->
+                    return R.string.auth_login_client_outdated
+                e.normalizedCode == "INVALID_CREDENTIALS" || e.status == HttpStatusCode.Unauthorized ->
+                    return R.string.auth_login_invalid_credentials
+            }
+        }
+        return common(e) ?: R.string.auth_login_sso_failed
+    }
 
     /** Failures that read the same in every flow, or null when the flow's own fallback applies. */
     @StringRes

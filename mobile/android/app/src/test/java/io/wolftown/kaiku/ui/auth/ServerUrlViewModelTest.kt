@@ -80,7 +80,6 @@ class ServerUrlViewModelTest {
         verifyOrder {
             authRepository.cancelPasswordChange()
             tokenStorage.clear()
-            tokenStorage.clearOidcPkceState()
             tokenStorage.saveServerUrl("https://kaiku.example.com")
         }
         assertTrue(viewModel.uiState.value.connectSuccess)

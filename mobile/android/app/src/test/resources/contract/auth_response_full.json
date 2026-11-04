@@ -1,0 +1,1 @@
+{"access_token":"eyJ.access.token","refresh_token":"refresh-secret-value","expires_in":900,"token_type":"Bearer","setup_required":false,"session_id":"77777777-7777-4777-8777-777777777777","assurance":"full","absolute_expires_at":"2027-02-01T12:00:00Z","auth_methods":["device_key"]}

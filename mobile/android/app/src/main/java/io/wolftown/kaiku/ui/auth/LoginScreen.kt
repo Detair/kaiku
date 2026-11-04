@@ -7,9 +7,13 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import android.content.Context
+import android.net.Uri
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -17,32 +21,59 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
-import io.wolftown.kaiku.data.api.OidcProvider
 
+/**
+ * The sign-in screen on a phone that is not (yet) a key, in the Task B14
+ * order: passkey (LP), "Sign in with your other phone", username and password,
+ * SSO, "Set up this phone with a setup code", then "I lost my phone / forgot
+ * my password" and "Secure my account" on the server's web pages (Custom Tab,
+ * coordinator call 2). A running attempt shows [PhoneSignInScreen] instead.
+ */
 @Composable
 fun LoginScreen(
     onNavigateToRegister: () -> Unit,
     onLoginSuccess: () -> Unit,
     onPasswordChangeRequired: () -> Unit = {},
     onChangeServer: () -> Unit = {},
-    oidcProviders: List<OidcProvider> = emptyList(),
-    onOidcLogin: (OidcProvider) -> Unit = {},
-    viewModel: LoginViewModel = hiltViewModel()
+    onSetUpPhone: () -> Unit = {},
+    viewModel: LoginViewModel = hiltViewModel(),
+    attemptViewModel: LoginAttemptViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
+    val attempt by attemptViewModel.state.collectAsState()
+    val busy = uiState.isLoading || attempt.busy
+    // Each ViewModel refuses a start while the other's sign-in runs (not only the buttons).
+    SideEffect {
+        viewModel.setOtherSignInRunning(attempt.busy)
+        attemptViewModel.setPasskeyRunning(uiState.isLoading)
+    }
 
-    LaunchedEffect(uiState.loginSuccess) {
-        if (uiState.loginSuccess) {
+    LaunchedEffect(uiState.loginSuccess, attempt.signedIn) {
+        if (uiState.loginSuccess || attempt.signedIn) {
+            viewModel.clearPassword()
             onLoginSuccess()
         }
     }
 
-    LaunchedEffect(uiState.passwordChangeRequired) {
-        if (uiState.passwordChangeRequired) {
-            viewModel.onPasswordChangeNavigated()
+    LaunchedEffect(attempt.passwordChangeRequired) {
+        if (attempt.passwordChangeRequired) {
+            viewModel.clearPassword()
+            attemptViewModel.onPasswordChangeNavigated()
             onPasswordChangeRequired()
         }
+    }
+
+    attempt.screen?.let { screen ->
+        PhoneSignInScreen(
+            screen = screen,
+            busy = attempt.busy,
+            onPhoneNotAtHand = attemptViewModel::phoneNotAtHand,
+            onSubmitTotp = attemptViewModel::submitTotp,
+            onTryAgain = attemptViewModel::tryAgain,
+            onLeave = attemptViewModel::leave,
+        )
+        return
     }
 
     LaunchedEffect(uiState.changeServerRequested) {
@@ -87,7 +118,8 @@ fun LoginScreen(
         Spacer(modifier = Modifier.height(32.dp))
 
         // Passkeys first (F1).
-        PasskeySignInButton(viewModel = viewModel, busy = uiState.passkeyLoading, enabled = !uiState.isLoading)
+        // Off while a password, QR or SSO sign-in runs, and those are off while it runs (`busy`).
+        PasskeySignInButton(viewModel = viewModel, busy = uiState.passkeyLoading, enabled = !uiState.isLoading && !attempt.busy)
         uiState.passkeyErrorRes?.let { res ->
             Spacer(modifier = Modifier.height(8.dp))
             Text(
@@ -99,7 +131,18 @@ fun LoginScreen(
                 color = MaterialTheme.colorScheme.error,
             )
         }
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // F2 on a second phone: the key phone scans this phone's code.
+        OutlinedButton(
+            onClick = attemptViewModel::startQr,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            enabled = !busy
+        ) {
+            Text(stringResource(R.string.auth_login_other_phone), color = MaterialTheme.colorScheme.onBackground)
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
 
         OutlinedTextField(
             value = uiState.username,
@@ -111,7 +154,7 @@ fun LoginScreen(
                 imeAction = ImeAction.Next
             ),
             modifier = Modifier.fillMaxWidth(),
-            enabled = !uiState.isLoading
+            enabled = !busy
         )
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -124,55 +167,36 @@ fun LoginScreen(
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(
                 keyboardType = KeyboardType.Password,
-                imeAction = if (uiState.mfaRequired) ImeAction.Next else ImeAction.Done
+                imeAction = ImeAction.Done
             ),
             keyboardActions = KeyboardActions(
-                onDone = {
-                    if (!uiState.mfaRequired) viewModel.onLoginClicked()
-                }
+                onDone = { if (!busy) attemptViewModel.signInWithPassword(uiState.username, uiState.password) }
             ),
             modifier = Modifier.fillMaxWidth(),
-            enabled = !uiState.isLoading
+            enabled = !busy
         )
 
-        if (uiState.mfaRequired) {
-            Spacer(modifier = Modifier.height(12.dp))
-
-            OutlinedTextField(
-                value = uiState.mfaCode,
-                onValueChange = viewModel::onMfaCodeChanged,
-                label = { Text(stringResource(R.string.auth_login_mfa_code)) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Number,
-                    imeAction = ImeAction.Done
-                ),
-                keyboardActions = KeyboardActions(
-                    onDone = { viewModel.onLoginClicked() }
-                ),
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !uiState.isLoading
-            )
-        }
-
-        uiState.errorRes?.let { errorRes ->
+        val formError = attempt.retryMinutes?.let {
+            pluralStringResource(R.plurals.auth_login_too_many_minutes, it, it)
+        } ?: (attempt.formError ?: uiState.errorRes)?.let { stringResource(it) }
+        formError?.let { text ->
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = stringResource(errorRes),
+                text = text,
                 color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.bodyMedium
             )
         }
 
         Spacer(modifier = Modifier.height(24.dp))
 
         Button(
-            onClick = viewModel::onLoginClicked,
-            modifier = Modifier.fillMaxWidth(),
-            enabled = !uiState.isLoading
+            onClick = { attemptViewModel.signInWithPassword(uiState.username, uiState.password) },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            enabled = !busy && uiState.username.isNotBlank() && uiState.password.isNotEmpty()
         ) {
-            if (uiState.isLoading) {
+            if (busy) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(20.dp),
                     strokeWidth = 2.dp,
@@ -181,6 +205,46 @@ fun LoginScreen(
                 Spacer(modifier = Modifier.width(8.dp))
             }
             Text(stringResource(R.string.auth_sign_in))
+        }
+
+        if (uiState.oidcProviders.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(24.dp))
+
+            HorizontalDivider()
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = stringResource(R.string.auth_or_sign_in_with),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            uiState.oidcProviders.forEach { provider ->
+                OutlinedButton(
+                    onClick = { attemptViewModel.startOidc(context, provider.slug) },
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    enabled = !busy
+                ) {
+                    Text(provider.displayName, color = MaterialTheme.colorScheme.onBackground)
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        TextButton(onClick = onSetUpPhone, enabled = !busy) {
+            Text(stringResource(R.string.auth_login_set_up_phone))
+        }
+        TextButton(onClick = { viewModel.serverPageUrl("/recover")?.let { openPage(context, it) } }) {
+            Text(stringResource(R.string.auth_login_lost_phone))
+        }
+        TextButton(onClick = { viewModel.serverPageUrl("/secure-account")?.let { openPage(context, it) } }) {
+            Text(stringResource(R.string.auth_login_secure_account))
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -199,40 +263,14 @@ fun LoginScreen(
 
         TextButton(
             onClick = viewModel::onChangeServerClicked,
-            enabled = !uiState.isLoading
+            enabled = !busy
         ) {
             Text(stringResource(R.string.auth_change_server))
         }
-
-        if (oidcProviders.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(24.dp))
-
-            HorizontalDivider()
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Text(
-                text = stringResource(R.string.auth_or_sign_in_with),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            oidcProviders.forEach { provider ->
-                OutlinedButton(
-                    onClick = {
-                        viewModel.launchOidcLogin(context, provider.slug)
-                        onOidcLogin(provider)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !uiState.isLoading
-                ) {
-                    Text(provider.displayName)
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-        }
     }
+}
+
+/** Opens a page of the server's web client in a Custom Tab (recovery, "Secure my account"). */
+private fun openPage(context: Context, url: String) {
+    runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) }
 }

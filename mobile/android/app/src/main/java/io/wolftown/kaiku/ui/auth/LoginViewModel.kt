@@ -1,12 +1,12 @@
 package io.wolftown.kaiku.ui.auth
 
 import android.app.Activity
-import android.content.Context
-import android.net.Uri
 import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.wolftown.kaiku.data.api.AuthApi
+import io.wolftown.kaiku.data.api.OidcProvider
 import io.wolftown.kaiku.data.api.ProbeResult
 import io.wolftown.kaiku.data.api.ServerProbe
 import io.wolftown.kaiku.data.auth.PasskeyAuth
@@ -14,12 +14,11 @@ import io.wolftown.kaiku.data.auth.PasskeyFailure
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -27,14 +26,10 @@ import javax.inject.Inject
 data class LoginUiState(
     val username: String = "",
     val password: String = "",
-    val mfaCode: String = "",
     val isLoading: Boolean = false,
     /** `@StringRes` of the current error, or null. Server message text is never shown. */
     @StringRes val errorRes: Int? = null,
-    val mfaRequired: Boolean = false,
     val loginSuccess: Boolean = false,
-    /** C4: the account must choose its own password; the screen navigates to `change_password`. */
-    val passwordChangeRequired: Boolean = false,
     /** Host of the server this sign-in goes to, for display; empty when unknown. */
     val serverHost: String = "",
     /** True only when the server's registration policy is `open`; Register is hidden otherwise. */
@@ -47,21 +42,30 @@ data class LoginUiState(
     @StringRes val passkeyErrorRes: Int? = null,
     /** `PASSKEY_PENDING`: the passkey is usable from this time (never signalled unknown). */
     val passkeyReadyAt: java.time.Instant? = null,
-    /** A passkey sign-in runs (its button's busy label); [isLoading] is true for any sign-in. */
+    /** The server's single sign-on providers (empty when it has none or could not say). */
+    val oidcProviders: List<OidcProvider> = emptyList(),
+    /** A passkey sign-in runs (its button's busy label); [isLoading] is true for any sign-in here. */
     val passkeyLoading: Boolean = false,
 ) {
-    // Never print the password or MFA code (logs, crash reports).
+    // Never print the password (logs, crash reports).
     override fun toString(): String =
         "LoginUiState(username=$username, isLoading=$isLoading, errorRes=$errorRes, " +
-            "mfaRequired=$mfaRequired, loginSuccess=$loginSuccess, " +
-            "passwordChangeRequired=$passwordChangeRequired, serverHost=$serverHost, " +
+            "loginSuccess=$loginSuccess, serverHost=$serverHost, " +
             "registrationOpen=$registrationOpen)"
 }
 
+/**
+ * The login form (Task B14 order): passkey (LP), "Sign in with your other
+ * phone", username and password, SSO, the setup code, then recovery and
+ * "Secure my account" on the server's web pages. The password, phone and SSO
+ * sign-ins themselves run as C27 attempts in [LoginAttemptViewModel], which
+ * holds their verifiers; this ViewModel keeps the form, LP's passkey sign-in,
+ * the server and what it offers.
+ */
 @HiltViewModel
 class LoginViewModel @Inject constructor(
     private val authRepository: AuthRepository,
-    private val oidcHandler: OidcHandler,
+    private val authApi: AuthApi,
     private val tokenStorage: TokenStorage,
     private val serverProbe: ServerProbe,
     private val passkeyAuth: PasskeyAuth,
@@ -72,52 +76,9 @@ class LoginViewModel @Inject constructor(
     private var loginJob: Job? = null
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
 
-    /**
-     * One-shot event flow for OIDC callback URIs received from deep links.
-     * CONFLATED keeps only the latest — redelivery is harmless and trySend never blocks.
-     */
-    private val _oidcCallbackUri = Channel<Uri>(Channel.CONFLATED)
-    val oidcCallbackUri = _oidcCallbackUri.receiveAsFlow()
-
     init {
         probeRegistration()
-        // Collect OIDC callbacks and process them
-        viewModelScope.launch {
-            oidcCallbackUri.collect { uri ->
-                handleOidcCallback(uri)
-            }
-        }
-    }
-
-    /**
-     * Called by MainActivity when an OIDC deep link is received.
-     */
-    fun onOidcDeepLink(uri: Uri) {
-        _oidcCallbackUri.trySend(uri)
-    }
-
-    /**
-     * Handles the OIDC callback by extracting tokens and completing login.
-     */
-    private fun handleOidcCallback(uri: Uri) {
-        _uiState.update { it.copy(isLoading = true, errorRes = null) }
-
-        viewModelScope.launch {
-            val result = oidcHandler.handleCallback(uri, authRepository)
-
-            result.fold(
-                onSuccess = {
-                    _uiState.update {
-                        it.copy(isLoading = false, loginSuccess = true)
-                    }
-                },
-                onFailure = { exception ->
-                    _uiState.update {
-                        it.copy(isLoading = false, errorRes = AuthErrorMapper.oidc(exception))
-                    }
-                }
-            )
-        }
+        loadOidcProviders()
     }
 
     private fun currentServerHost(): String =
@@ -138,6 +99,29 @@ class LoginViewModel @Inject constructor(
             }
         }
     }
+
+    /** The SSO buttons; a server that cannot say shows none (password and phone still work). */
+    private fun loadOidcProviders() {
+        if (tokenStorage.getServerUrl() == null) return
+        viewModelScope.launch {
+            val providers = try {
+                authApi.getOidcProviders()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                emptyList()
+            }
+            _uiState.update { it.copy(oidcProviders = providers) }
+        }
+    }
+
+    /**
+     * A page of this server's web client, opened in a Custom Tab: `/recover`
+     * ("I lost my phone / forgot my password") and `/secure-account`
+     * (coordinator call 2). Null without a configured server.
+     */
+    fun serverPageUrl(path: String): String? =
+        tokenStorage.getServerUrl()?.trimEnd('/')?.plus(path)
 
     /** "Try again" after the registration check failed (e.g. first launch offline). */
     fun onRetryRegistrationCheck() {
@@ -169,42 +153,17 @@ class LoginViewModel @Inject constructor(
         _uiState.update { it.copy(password = password) }
     }
 
-    fun onMfaCodeChanged(code: String) {
-        _uiState.update { it.copy(mfaCode = code) }
+    /** The typed password leaves the form once its sign-in is done (C4 keeps its own copy). */
+    fun clearPassword() {
+        _uiState.update { it.copy(password = "") }
     }
 
-    fun onLoginClicked() {
-        val state = _uiState.value
-        // It replaces any sign-in job, a passkey one included (its label too).
-        _uiState.update { it.copy(isLoading = true, passkeyLoading = false, errorRes = null) }
+    /** A password, QR or SSO sign-in runs ([LoginAttemptViewModel]); the screen reports it. */
+    @Volatile
+    private var otherSignInRunning = false
 
-        loginJob?.cancel()
-        loginJob = viewModelScope.launch {
-            val mfaCode = state.mfaCode.ifBlank { null }
-            val result = authRepository.login(state.username, state.password, mfaCode)
-
-            result.fold(
-                onSuccess = {
-                    _uiState.update {
-                        it.copy(isLoading = false, loginSuccess = true)
-                    }
-                },
-                onFailure = { exception ->
-                    when (exception) {
-                        is MfaRequiredException -> _uiState.update {
-                            it.copy(isLoading = false, mfaRequired = true)
-                        }
-                        is PasswordChangeRequiredException -> _uiState.update {
-                            // The temporary password stays in AuthRepository's memory only.
-                            it.copy(isLoading = false, password = "", passwordChangeRequired = true)
-                        }
-                        else -> _uiState.update {
-                            it.copy(isLoading = false, errorRes = AuthErrorMapper.login(exception))
-                        }
-                    }
-                }
-            )
-        }
+    fun setOtherSignInRunning(running: Boolean) {
+        otherSignInRunning = running
     }
 
     /**
@@ -215,7 +174,8 @@ class LoginViewModel @Inject constructor(
      * never cancels one; the button's `enabled` follows the same state.
      */
     fun onPasskeySignIn(activity: Activity) {
-        if (_uiState.value.isLoading) return
+        // L2b: the password, QR and SSO sign-ins run in LoginAttemptViewModel (setOtherSignInRunning).
+        if (_uiState.value.isLoading || otherSignInRunning) return
         val username = _uiState.value.username.ifBlank { null }
         _uiState.update {
             it.copy(isLoading = true, passkeyLoading = true, errorRes = null, passkeyErrorRes = null, passkeyReadyAt = null)
@@ -240,22 +200,6 @@ class LoginViewModel @Inject constructor(
                 },
             )
         }
-    }
-
-    /**
-     * Launches the OIDC login flow for the given provider via Chrome Custom Tabs.
-     */
-    fun launchOidcLogin(context: Context, providerSlug: String) {
-        try {
-            oidcHandler.launchOidcLogin(context, providerSlug)
-        } catch (e: Exception) {
-            _uiState.update { it.copy(errorRes = AuthErrorMapper.oidc(e)) }
-        }
-    }
-
-    /** Called once the screen has navigated to `change_password`. */
-    fun onPasswordChangeNavigated() {
-        _uiState.update { it.copy(passwordChangeRequired = false) }
     }
 
     fun clearError() {

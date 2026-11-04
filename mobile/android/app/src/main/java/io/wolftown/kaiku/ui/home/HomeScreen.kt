@@ -18,6 +18,7 @@ import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.model.ChannelType
 import io.wolftown.kaiku.ui.shared.ConnectionBanner
 import io.wolftown.kaiku.ui.shared.NotificationPermissionPrompt
+import io.wolftown.kaiku.ui.shared.ProbationBanner
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -27,6 +28,7 @@ fun HomeScreen(
     onNavigateToVoiceChannel: (channelId: String) -> Unit,
     onNavigateToSettings: () -> Unit = {},
     onNavigateToDms: () -> Unit = {},
+    onNavigateToScan: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val guilds by viewModel.guilds.collectAsState()
@@ -80,6 +82,10 @@ fun HomeScreen(
                         }
                     },
                     actions = {
+                        // Labelled, one tap: scan a PC's sign-in code or a setup code (L2-A7).
+                        TextButton(onClick = onNavigateToScan) {
+                            Text(stringResource(R.string.scan_action), color = MaterialTheme.colorScheme.onSurface)
+                        }
                         IconButton(onClick = onNavigateToDms) {
                             Icon(Icons.Default.Email, contentDescription = stringResource(R.string.home_direct_messages))
                         }
@@ -99,6 +105,7 @@ fun HomeScreen(
                     .padding(paddingValues)
             ) {
             ConnectionBanner(status = connectionStatus)
+            ProbationBanner()
             // A failed load is shown inline while there is still something to
             // display; the full-screen error below is only for the empty case.
             val errorRes = error

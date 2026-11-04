@@ -14,3 +14,11 @@ data class StepUpGrant(
     val via: String,
     val expiresAt: String,
 )
+
+/** `POST /api/approvals/{id}/answer` → `{state, grant?, enrollment?}`. */
+@Serializable
+data class AnswerResult(
+    val state: String,
+    val grant: StepUpGrant? = null,
+    val enrollment: Enrollment? = null,
+)

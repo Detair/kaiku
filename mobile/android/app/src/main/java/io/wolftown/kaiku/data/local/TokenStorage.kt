@@ -31,6 +31,12 @@ class TokenStorage internal constructor(
      * the process and a damaged secure store. Null keeps it in memory only.
      */
     private val noticeStore: SharedPreferences?,
+    /**
+     * Runs when a new session is stored or the stored one is removed (a sign-in,
+     * a logout): a move of the old store's session still pending after a failed
+     * write is void from then on (Codex r3), so an old session never comes back.
+     */
+    private val sessionChanged: () -> Unit = {},
 ) {
 
     @Inject
@@ -42,8 +48,14 @@ class TokenStorage internal constructor(
         private const val KEY_EXPIRES_AT = "expires_at"
         private const val KEY_USER_ID = "user_id"
         private const val KEY_SERVER_URL = "server_url"
-        private const val KEY_OIDC_CODE_VERIFIER = "oidc_code_verifier"
-        private const val KEY_OIDC_STATE = "oidc_state"
+
+        /**
+         * Every key this class stores, for the one-time move out of the old store. The old
+         * OIDC PKCE values are not among them: a sign-in verifier lives in memory only (C27).
+         */
+        val STORED_KEYS = listOf(
+            KEY_ACCESS_TOKEN, KEY_REFRESH_TOKEN, KEY_EXPIRES_AT, KEY_USER_ID, KEY_SERVER_URL,
+        )
 
         /** Key in the notice store; also set by the module when the store was recreated at open. */
         const val KEY_RESET_NOTICE = "storage_was_reset"
@@ -123,8 +135,6 @@ class TokenStorage internal constructor(
                 .remove(KEY_REFRESH_TOKEN)
                 .remove(KEY_EXPIRES_AT)
                 .remove(KEY_USER_ID)
-                .remove(KEY_OIDC_CODE_VERIFIER)
-                .remove(KEY_OIDC_STATE)
             // The server address stays so the person lands on sign-in, unless it is itself unreadable.
             if (!isReadable { prefs.getString(KEY_SERVER_URL, null) }) editor.remove(KEY_SERVER_URL)
             editor.commit()
@@ -161,6 +171,7 @@ class TokenStorage internal constructor(
         // Bump before writing, so a reader that sees the new tokens also sees the new generation.
         sessionGeneration++
         writeTokens(accessToken, refreshToken, expiresIn, userId)
+        sessionChanged()
     }
 
     /**
@@ -234,30 +245,6 @@ class TokenStorage internal constructor(
         return System.currentTimeMillis() >= expiresAt
     }
 
-    fun saveOidcPkceState(codeVerifier: String, state: String) {
-        val success = prefs.edit()
-            .putString(KEY_OIDC_CODE_VERIFIER, codeVerifier)
-            .putString(KEY_OIDC_STATE, state)
-            .commit()
-        if (!success) {
-            logger.warning("Failed to persist OIDC PKCE state to storage")
-        }
-    }
-
-    fun getOidcCodeVerifier(): String? = readOr(null) { prefs.getString(KEY_OIDC_CODE_VERIFIER, null) }
-
-    fun getOidcState(): String? = readOr(null) { prefs.getString(KEY_OIDC_STATE, null) }
-
-    fun clearOidcPkceState() {
-        val success = prefs.edit()
-            .remove(KEY_OIDC_CODE_VERIFIER)
-            .remove(KEY_OIDC_STATE)
-            .commit()
-        if (!success) {
-            logger.warning("Failed to clear OIDC PKCE state from storage")
-        }
-    }
-
     /** Removes the session tokens (logout). Starts a new session generation. */
     @Synchronized
     fun clear() {
@@ -296,6 +283,9 @@ class TokenStorage internal constructor(
     }
 
     private fun removeTokens() {
+        // Only ending a stored session voids a pending move; clearing an empty store
+        // (cleanup after a failed sign-in) keeps the move for the next start (Codex r4).
+        if (prefs.contains(KEY_ACCESS_TOKEN) || prefs.contains(KEY_REFRESH_TOKEN)) sessionChanged()
         val success = prefs.edit()
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)

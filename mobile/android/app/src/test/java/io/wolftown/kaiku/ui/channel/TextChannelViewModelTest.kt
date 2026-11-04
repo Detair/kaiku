@@ -718,4 +718,60 @@ class TextChannelViewModelTest {
         viewModel.onHidden()
         assertNull(activeChannelTracker.visibleChannelId.value)
     }
+
+    // ========================================================================
+    // Kaiku DM (C28): read-only, recognised by flags only, latest page on reconnect
+    // ========================================================================
+
+    @Test
+    fun `kaiku dm hides the composer`() = runTest {
+        conversationsFlow.value = listOf(
+            io.wolftown.kaiku.domain.model.DmConversation("ch-1", name = "Kaiku", isSystem = true, readOnly = true),
+        )
+        val vm = createViewModel()
+        advanceUntilIdle()
+        assertTrue(vm.isKaikuDm.value)
+    }
+
+    @Test
+    fun `kaiku dm is recognised by flags only`() = runTest {
+        conversationsFlow.value = listOf(
+            io.wolftown.kaiku.domain.model.DmConversation(
+                "ch-1", name = "Kaiku",
+                participants = listOf(io.wolftown.kaiku.domain.model.DmParticipant("6b61696b-7500-4000-8000-000000000001", "kaiku", "Kaiku")),
+            ),
+        )
+        val vm = createViewModel()
+        advanceUntilIdle()
+        assertFalse(vm.isKaikuDm.value)
+    }
+
+    @Test
+    fun `kaiku dm reloads the latest page on reconnect`() = runTest {
+        conversationsFlow.value = listOf(
+            io.wolftown.kaiku.domain.model.DmConversation("ch-1", isSystem = true, readOnly = true),
+        )
+        val vm = createViewModel()
+        advanceUntilIdle()
+        statusFlow.value = RealtimeStatus.Reconnecting
+        advanceUntilIdle()
+        statusFlow.value = RealtimeStatus.Connected
+        advanceUntilIdle()
+        assertTrue(vm.isKaikuDm.value)
+        io.mockk.coVerify(exactly = 2) { chatRepository.loadMessages("ch-1", null) }
+    }
+
+    @org.junit.Test
+    fun `a security notice card only for the system account in the Kaiku DM`() {
+        val system = io.wolftown.kaiku.domain.model.User("k", "kaiku", "Kaiku", isSystem = true)
+        val person = io.wolftown.kaiku.domain.model.User("u2", "mallory", "Kaiku")
+        val notice = io.mockk.mockk<io.wolftown.kaiku.domain.model.Message>(relaxed = true) {
+            io.mockk.every { messageType } returns "security"
+            io.mockk.every { author } returns system
+        }
+        org.junit.Assert.assertTrue(io.wolftown.kaiku.ui.channel.isSecurityNotice(true, notice))
+        org.junit.Assert.assertFalse(io.wolftown.kaiku.ui.channel.isSecurityNotice(false, notice))
+        io.mockk.every { notice.author } returns person
+        org.junit.Assert.assertFalse(io.wolftown.kaiku.ui.channel.isSecurityNotice(true, notice))
+    }
 }

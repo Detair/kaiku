@@ -192,15 +192,12 @@ class TokenStorageTest {
         val s = TokenStorage(prefs)
         s.saveServerUrl("https://kaiku.example.com")
         s.saveTokens("a", "r", 900, "user-1")
-        s.saveOidcPkceState("verifier", "state")
 
         prefs.failure = ThrowingReadPreferences.decryptFailure()
         prefs.failures = 2 // the failed read and its retry; later reads work
         assertNull(s.getAccessToken())
 
         assertEquals("https://kaiku.example.com", s.getServerUrl())
-        assertNull(s.getOidcCodeVerifier())
-        assertNull(s.getOidcState())
         assertNull(s.getRefreshToken())
     }
 
@@ -217,5 +214,26 @@ class TokenStorageTest {
         val afterRestart = TokenStorage(prefs, notice)
         assertTrue(afterRestart.consumeStorageResetNotice())
         assertFalse(TokenStorage(prefs, notice).consumeStorageResetNotice())
+    }
+
+    @Test
+    fun `concurrent logouts and sign-ins never lose a session generation`() {
+        val s = TokenStorage(InMemorySharedPreferences())
+        val start = s.getSessionGeneration()
+        val threads = 8
+        val rounds = 2_000
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(threads)
+        val go = java.util.concurrent.CountDownLatch(1)
+        val done = (0 until threads).map { t ->
+            pool.submit {
+                go.await()
+                repeat(rounds) { if (t % 2 == 0) s.clear() else s.saveTokens("a$it", "r$it", 900, "u") }
+            }
+        }
+        go.countDown()
+        done.forEach { it.get() }
+        pool.shutdown()
+        // Every clear and every sign-in starts exactly one new generation.
+        assertEquals(start + threads * rounds, s.getSessionGeneration())
     }
 }

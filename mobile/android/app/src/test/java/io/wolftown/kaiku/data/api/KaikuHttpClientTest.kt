@@ -986,4 +986,34 @@ class KaikuHttpClientTest {
             tokenStorage.saveTokensIfRefreshTokenIs(any(), any(), any(), any(), any())
         }
     }
+
+    // ========================================================================
+    // Client class header (C27 common rules: X-Kaiku-Client on every Android request)
+    // ========================================================================
+
+    @Test
+    fun `every request carries X-Kaiku-Client android`() = runTest {
+        stubTokenState("expired-token", expiresAtMillis = 0L)
+        val seen = mutableListOf<Pair<String, String?>>()
+        val mockEngine = MockEngine { request ->
+            seen += request.url.encodedPath to request.headers["X-Kaiku-Client"]
+            respond(
+                content = if (request.url.encodedPath == "/auth/refresh") {
+                    """{"access_token":"new","refresh_token":"r2","expires_in":900,"token_type":"Bearer"}"""
+                } else {
+                    """{"status":"ok"}"""
+                },
+                status = HttpStatusCode.OK,
+                headers = headersOf(HttpHeaders.ContentType, "application/json")
+            )
+        }
+        val client = createClient(mockEngine)
+
+        client.activeClient().get("/api/test")
+        client.activeClient().post("/api/test") { setBody("""{}""") }
+        assertEquals(RefreshResult.SUCCESS, client.forceRefresh())
+
+        assertEquals(listOf("/api/test", "/api/test", "/auth/refresh"), seen.map { it.first })
+        seen.forEach { (path, header) -> assertEquals("header on $path", "android", header) }
+    }
 }

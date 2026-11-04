@@ -31,7 +31,10 @@ class DmApiImpl @Inject constructor(
             throw ApiException(response.status, errorBody?.message ?: "Failed to load direct messages")
         }
 
-        return response.body()
+        // C28: the Kaiku DM is recognised only by the `is_system` flags (item or participant).
+        return response.body<List<DmConversation>>().map { dm ->
+            if (dm.isSystem || dm.participants.none { it.isSystem }) dm else dm.copy(isSystem = true)
+        }
     }
 
     override suspend fun markAsRead(channelId: String, lastReadMessageId: String) {

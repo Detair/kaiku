@@ -5,6 +5,7 @@ import io.ktor.client.call.*
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.wolftown.kaiku.domain.model.AuthResponse
+import io.wolftown.kaiku.domain.model.RegistrationTicket
 import io.wolftown.kaiku.domain.model.User
 import kotlinx.serialization.Serializable
 import java.util.Locale
@@ -20,13 +21,13 @@ data class OidcProvider(
 )
 
 interface AuthApi {
-    suspend fun login(username: String, password: String, mfaCode: String? = null): AuthResponse
+    /** C27/F8: no session, a registration ticket that binds this phone's key ([RegistrationTicket]). */
     suspend fun register(
         username: String,
         password: String,
         email: String? = null,
         displayName: String? = null
-    ): AuthResponse
+    ): RegistrationTicket
     suspend fun refresh(refreshToken: String): AuthResponse
     /**
      * `POST /auth/logout` on [serverUrl] (absolute) for one captured session,
@@ -62,16 +63,7 @@ interface AuthApi {
         newPassword: String
     )
     suspend fun getOidcProviders(): List<OidcProvider>
-    suspend fun exchangeOidcCode(code: String, state: String, redirectUri: String, codeVerifier: String? = null): AuthResponse
-    suspend fun redeemQrToken(serverUrl: String, token: String): AuthResponse
 }
-
-@Serializable
-private data class LoginRequest(
-    val username: String,
-    val password: String,
-    val mfaCode: String? = null
-)
 
 @Serializable
 private data class RegisterRequest(
@@ -79,7 +71,10 @@ private data class RegisterRequest(
     val password: String,
     val email: String? = null,
     val displayName: String? = null
-)
+) {
+    // Never print the password (logs, crash reports).
+    override fun toString(): String = "RegisterRequest(username=$username)"
+}
 
 @Serializable
 private data class RefreshTokenRequest(
@@ -87,14 +82,6 @@ private data class RefreshTokenRequest(
 ) {
     override fun toString(): String = "RefreshTokenRequest"
 }
-
-@Serializable
-private data class OidcCallbackRequest(
-    val code: String,
-    val state: String,
-    val redirectUri: String,
-    val codeVerifier: String? = null
-)
 
 @Serializable
 private data class ChangePasswordRequest(
@@ -105,11 +92,6 @@ private data class ChangePasswordRequest(
     override fun toString(): String = "ChangePasswordRequest(revokeOthers=$revokeOthers)"
 }
 
-@Serializable
-private data class QrRedeemRequest(
-    val token: String
-)
-
 class AuthApiImpl @Inject constructor(
     private val httpClient: HttpClient
 ) : AuthApi {
@@ -117,46 +99,19 @@ class AuthApiImpl @Inject constructor(
         private val logger = Logger.getLogger("AuthApi")
     }
 
-    override suspend fun login(
-        username: String,
-        password: String,
-        mfaCode: String?
-    ): AuthResponse {
-        val response = httpClient.post("/auth/login") {
-            setBody(LoginRequest(username, password, mfaCode))
-        }
-
-        if (response.status == HttpStatusCode.Forbidden) {
-            val errorBody = response.body<ApiErrorResponse>()
-            if (normalizeErrorCode(errorBody.error) == "MFA_REQUIRED") {
-                throw MfaRequiredApiException(errorBody.message ?: "MFA required")
-            }
-            throw ApiException(response.status, errorBody.message ?: "Forbidden", code = errorBody.error)
-        }
-
-        if (!response.status.isSuccess()) {
-            val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(response.status, errorBody?.message ?: "Login failed", code = errorBody?.error)
-        }
-
-        return response.body()
-    }
-
     override suspend fun register(
         username: String,
         password: String,
         email: String?,
         displayName: String?
-    ): AuthResponse {
+    ): RegistrationTicket {
+        // Pre-session: no stored bearer, no refresh on a 401; the error keeps its fields
+        // (`Retry-After`, `PASSWORD_REJECTED {reason}`).
         val response = httpClient.post("/auth/register") {
+            publicRoute()
             setBody(RegisterRequest(username, password, email, displayName))
         }
-
-        if (!response.status.isSuccess()) {
-            val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(response.status, errorBody?.message ?: "Registration failed", code = errorBody?.error)
-        }
-
+        response.ensureSuccess("Registration failed")
         return response.body()
     }
 
@@ -255,67 +210,43 @@ class AuthApiImpl @Inject constructor(
 
         return response.body()
     }
-
-    override suspend fun exchangeOidcCode(
-        code: String,
-        state: String,
-        redirectUri: String,
-        codeVerifier: String?
-    ): AuthResponse {
-        // Fallback: call the server's OIDC callback directly via GET.
-        // The server exchanges the authorization code internally and returns tokens.
-        val response = httpClient.get("/auth/oidc/callback") {
-            url {
-                parameters.append("code", code)
-                parameters.append("state", state)
-                if (codeVerifier != null) {
-                    parameters.append("code_verifier", codeVerifier)
-                }
-            }
-        }
-
-        if (!response.status.isSuccess()) {
-            val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(
-                response.status,
-                errorBody?.message ?: "OIDC code exchange failed",
-                code = errorBody?.error
-            )
-        }
-
-        return response.body()
-    }
-
-    override suspend fun redeemQrToken(serverUrl: String, token: String): AuthResponse {
-        val url = serverUrl.trimEnd('/') + "/auth/qr/redeem"
-        val response = httpClient.post(url) {
-            setBody(QrRedeemRequest(token))
-        }
-
-        if (!response.status.isSuccess()) {
-            val errorBody = runCatching { response.body<ApiErrorResponse>() }.getOrNull()
-            throw ApiException(
-                response.status,
-                errorBody?.message ?: "QR code expired or already used",
-                code = errorBody?.error
-            )
-        }
-
-        return response.body()
-    }
 }
 
 @Serializable
 internal data class ApiErrorResponse(
     val error: String? = null,
-    val message: String? = null
+    val message: String? = null,
+    // C26–C28 fields listed next to some codes.
+    val triesLeft: Int? = null,
+    val readyAt: String? = null,
+    val state: String? = null,
+    val reason: String? = null,
+    val recoveryCodesLeft: Int? = null,
+) {
+    fun fields(): ApiErrorFields = ApiErrorFields(triesLeft, readyAt, state, reason, recoveryCodesLeft)
+}
+
+/**
+ * The extra fields some error codes carry (`ENROLL_CODE_WRONG {tries_left}`,
+ * `KEY_DEVICE_PENDING {ready_at}`, `LOGIN_ATTEMPT_ENDED {state}`, …) and the
+ * `Retry-After` seconds of a 429. Never user text.
+ */
+data class ApiErrorFields(
+    val triesLeft: Int? = null,
+    val readyAt: String? = null,
+    val state: String? = null,
+    val reason: String? = null,
+    val recoveryCodesLeft: Int? = null,
+    val retryAfterSeconds: Long? = null,
 )
 
 open class ApiException(
     val status: HttpStatusCode,
     override val message: String,
     /** Server error code (`error` field), e.g. `VALIDATION_ERROR`; null if absent. */
-    val code: String? = null
+    val code: String? = null,
+    /** Fields listed next to [code] (C26–C28). */
+    val fields: ApiErrorFields = ApiErrorFields(),
 ) : Exception(message) {
     /** [code] upper-cased, for matching: the server may send lowercase codes. */
     val normalizedCode: String? get() = normalizeErrorCode(code)
@@ -323,7 +254,3 @@ open class ApiException(
 
 /** Server error codes are UPPER_SNAKE; older responses may be lowercase. */
 fun normalizeErrorCode(code: String?): String? = code?.uppercase(Locale.ROOT)
-
-class MfaRequiredApiException(
-    message: String
-) : ApiException(HttpStatusCode.Forbidden, message)

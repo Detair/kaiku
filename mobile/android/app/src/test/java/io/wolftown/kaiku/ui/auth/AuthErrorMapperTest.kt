@@ -121,13 +121,22 @@ class AuthErrorMapperTest {
         assertEquals(R.string.auth_login_already_signed_in, AuthErrorMapper.login(e))
         assertEquals(R.string.auth_login_already_signed_in, AuthErrorMapper.register(e))
         assertEquals(R.string.auth_login_already_signed_in, AuthErrorMapper.oidc(e))
-        assertEquals(R.string.auth_login_already_signed_in, AuthErrorMapper.qrRedeem(e))
     }
 
     @Test
-    fun `qr redeem maps network and falls back to the qr copy`() {
-        assertEquals(R.string.errors_network, AuthErrorMapper.qrRedeem(IOException("down")))
-        val e = ApiException(HttpStatusCode.Unauthorized, "server text", "INVALID_TOKEN")
-        assertEquals(R.string.qr_redeem_failed, AuthErrorMapper.qrRedeem(e))
+    fun `C27 sign-in codes map to their own text and SSO's 401 is the neutral answer`() {
+        assertEquals(R.string.auth_login_client_outdated,
+            AuthErrorMapper.login(ApiException(HttpStatusCode.BadRequest, "server text", "CLIENT_OUTDATED")))
+        assertEquals(R.string.auth_totp_unavailable,
+            AuthErrorMapper.login(ApiException(HttpStatusCode.Forbidden, "server text", "TOTP_UNAVAILABLE")))
+        assertEquals(R.string.auth_login_invalid_credentials,
+            AuthErrorMapper.oidc(ApiException(HttpStatusCode.Unauthorized, "server text", "INVALID_CREDENTIALS")))
+        assertEquals(R.string.auth_login_sso_failed, AuthErrorMapper.oidc(IllegalStateException("no server")))
+    }
+
+    @Test
+    fun `an expired registration ticket says to register again`() {
+        assertEquals(R.string.auth_register_ticket_expired,
+            AuthErrorMapper.register(ApiException(HttpStatusCode.NotFound, "server text", "REGISTRATION_TICKET_INVALID")))
     }
 }

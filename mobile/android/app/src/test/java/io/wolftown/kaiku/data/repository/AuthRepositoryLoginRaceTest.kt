@@ -13,23 +13,26 @@ import io.mockk.verify
 import io.wolftown.kaiku.data.api.AuthApi
 import io.wolftown.kaiku.data.api.AuthApiImpl
 import io.wolftown.kaiku.data.api.KaikuHttpClient
+import io.wolftown.kaiku.data.api.LoginAttemptApiImpl
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.domain.model.AuthResponse
 import io.wolftown.kaiku.domain.model.User
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 import io.wolftown.kaiku.push.PushRegistrar
 
-/** A login only persists (or clears) for its own attempt and server. */
+/** A collected sign-in attempt only persists (or clears) for its own sign-in and server. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AuthRepositoryLoginRaceTest {
 
@@ -53,14 +56,13 @@ class AuthRepositoryLoginRaceTest {
 
     @Test
     fun `server change during login stores nothing`() = runTest {
-        coEvery { authApi.login("anna", "pw", null) } coAnswers {
-            serverUrl = "https://b.example.com" // the user switched servers meanwhile
-            response("access-a")
-        }
         coEvery { authApi.authenticatedGetMe(any(), any()) } returns
             User(id = "user-a", username = "anna", displayName = "Anna")
 
-        val result = repository.login("anna", "pw")
+        val result = repository.completeAttempt("https://a.example.com", "pw") {
+            serverUrl = "https://b.example.com" // the user switched servers meanwhile
+            response("access-a")
+        }
 
         assertTrue(result.isFailure)
         verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
@@ -69,17 +71,15 @@ class AuthRepositoryLoginRaceTest {
 
     @Test
     fun `stale login failing after a newer login keeps the newer session`() = runTest {
-        coEvery { authApi.login("new", "pw", null) } returns response("access-new")
         coEvery { authApi.authenticatedGetMe("access-new", any()) } returns
             User(id = "user-new", username = "new", displayName = "New")
-        coEvery { authApi.login("old", "pw", null) } coAnswers {
-            // A newer login completes while the old request is still in flight...
-            assertTrue(repository.login("new", "pw").isSuccess)
+
+        val result = repository.completeAttempt("https://a.example.com", "pw") {
+            // A newer sign-in completes while the old collect is still in flight...
+            assertTrue(repository.completeAttempt("https://a.example.com", "pw") { response("access-new") }.isSuccess)
             // ...then the old one fails.
             throw IOException("timeout")
         }
-
-        val result = repository.login("old", "pw")
 
         assertTrue(result.isFailure)
         verify(exactly = 1) { tokenStorage.saveTokens("access-new", "refresh-access-new", 900, "user-new") }
@@ -90,12 +90,12 @@ class AuthRepositoryLoginRaceTest {
     @Test
     fun `server switch during login sends the token nowhere else and clears nothing`() = runTest {
         every { tokenStorage.getAccessToken() } returns null
-        val requests = mutableListOf<Pair<String, String?>>() // host to Authorization
+        val requests = mutableListOf<Triple<String, String, String?>>() // host, path, Authorization
         val engine = MockEngine { request ->
-            requests += request.url.host to request.headers[HttpHeaders.Authorization]
+            requests += Triple(request.url.host, request.url.encodedPath, request.headers[HttpHeaders.Authorization])
             val json = headersOf(HttpHeaders.ContentType, "application/json")
-            if (request.url.encodedPath == "/auth/login") {
-                serverUrl = "https://b.example.com" // switched while the login is in flight
+            if (request.url.encodedPath == "/auth/login-attempts/a-1/collect") {
+                serverUrl = "https://b.example.com" // switched while the collect is in flight
                 respond(
                     """{"access_token":"access-a","refresh_token":"refresh-a","expires_in":900,
                     "token_type":"Bearer","setup_required":false,"password_change_required":false}""",
@@ -106,19 +106,29 @@ class AuthRepositoryLoginRaceTest {
                 respond("""{"error":"INVALID_TOKEN"}""", HttpStatusCode.Unauthorized, json)
             }
         }
+        val client = KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()
+        val attempts = LoginAttemptApiImpl(client)
         val realRepository = AuthRepository(
-            AuthApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient()),
+            AuthApiImpl(client),
             tokenStorage,
             authState,
             mockk<PushRegistrar>(relaxed = true),
             noTeardown(authState)
         )
 
-        val result = realRepository.login("anna", "pw")
+        // On a real dispatcher: the bounded best-effort logout's timeout must run on the real clock,
+        // as the mock engine answers on real threads (on the test's virtual clock it can lapse at once).
+        val result = withContext(Dispatchers.Default) {
+            realRepository.completeAttempt("https://a.example.com", null) { attempts.collect("a-1", "verifier") }
+        }
 
         assertTrue(result.isFailure)
-        assertEquals(listOf("a.example.com"), requests.map { it.first }) // only the login itself
-        assertTrue(requests.none { it.second == "Bearer access-a" })
+        // The minted session never reaches B: A gets the collect, then the logout that ends it there.
+        assertTrue(requests.all { it.first == "a.example.com" })
+        assertEquals("/auth/login-attempts/a-1/collect", requests.first().second)
+        val logouts = requests.drop(1)
+        assertTrue(logouts.isNotEmpty() && logouts.all { it.second == "/auth/logout" })
+        assertEquals("Bearer access-a", logouts.first().third)
         verify(exactly = 0) { tokenStorage.clear() }
         verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
         assertEquals(AuthSession.LoggedOut, authState.session.value)

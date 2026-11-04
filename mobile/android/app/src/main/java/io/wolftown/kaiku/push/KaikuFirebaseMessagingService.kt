@@ -25,6 +25,11 @@ class KaikuFirebaseMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
+        val security = SecurityWakeParser.fromFcmData(message.data)
+        if (security != null) {
+            wakeScheduler.onSecurityWake(security)
+            return
+        }
         WakeSignalParser.fromFcmData(message.data)?.let(wakeScheduler::onWake)
     }
 }

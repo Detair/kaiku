@@ -13,6 +13,7 @@ import io.ktor.serialization.kotlinx.json.*
 import io.ktor.util.*
 import io.wolftown.kaiku.data.KaikuJson
 import io.wolftown.kaiku.data.auth.RefreshResult
+import io.wolftown.kaiku.data.auth.SessionEndLog
 import io.wolftown.kaiku.data.auth.TokenRefresher
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
@@ -50,7 +51,9 @@ internal data class RefreshRequest(val refreshToken: String)
 class KaikuHttpClient @Inject constructor(
     private val tokenStorage: TokenStorage,
     private val authState: AuthState,
-    private val tls13Spec: ConnectionSpec
+    private val tls13Spec: ConnectionSpec,
+    /** Why a refresh ended the session (C27 `SESSION_REUSED`, `SESSION_EXPIRED`), for "Confirm it's you". */
+    private val sessionEndLog: SessionEndLog = SessionEndLog(),
 ) : TokenRefresher {
 
     internal companion object {
@@ -58,6 +61,10 @@ class KaikuHttpClient @Inject constructor(
 
         /** C4 error code for a session that must change its password first. */
         internal const val PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED"
+
+        /** C27 client-class header and the Android value. */
+        const val CLIENT_HEADER = "X-Kaiku-Client"
+        const val CLIENT_ANDROID = "android"
 
         /**
          * Attribute key to mark requests that skip the auth interceptor: no stored
@@ -94,6 +101,8 @@ class KaikuHttpClient @Inject constructor(
     val httpClient: HttpClient = createConfiguredClient(OkHttp.create {
         config {
             connectionSpecs(listOf(tls13Spec))
+            // Explicit (OkHttp's default): every long-poll `wait` stays below it (LongPoll).
+            readTimeout(LongPoll.READ_TIMEOUT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)
         }
     })
 
@@ -115,6 +124,9 @@ class KaikuHttpClient @Inject constructor(
                     url(serverUrl)
                 }
                 contentType(ContentType.Application.Json)
+                // C27 client class: the server answers native sign-ins with body tokens
+                // and records `android` on the session. Sent on every request, refresh included.
+                header(CLIENT_HEADER, CLIENT_ANDROID)
             }
         }
 
@@ -343,8 +355,17 @@ class KaikuHttpClient @Inject constructor(
             val status = response.status
 
             if (status == HttpStatusCode.Unauthorized || status == HttpStatusCode.Forbidden) {
+                val code = try {
+                    normalizeErrorCode(KaikuJson.decodeFromString<ApiErrorResponse>(response.bodyAsText()).error)
+                } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
                 // Only the session that sent this refresh token may be ended.
-                return endSessionIfStill(refreshToken, Outcome.AUTH_REJECTED)
+                val outcome = endSessionIfStill(refreshToken, Outcome.AUTH_REJECTED)
+                if (outcome == Outcome.AUTH_REJECTED) sessionEndLog.record(code)
+                return outcome
             }
 
             if (!status.isSuccess()) {

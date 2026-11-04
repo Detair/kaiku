@@ -22,7 +22,7 @@ import io.wolftown.kaiku.push.PushRegistrar
 
 /**
  * Integration test verifying the full auth flow:
- * login → token storage → WebSocket connect → guild list availability.
+ * a collected sign-in attempt (C27) → token storage → WebSocket connect.
  *
  * Uses mocked server responses but real AuthState, AuthRepository, and TokenStorage interactions.
  */
@@ -58,7 +58,12 @@ class AuthFlowTest {
         authState = AuthState(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()))
         webSocket = mockk(relaxed = true)
 
+        every { tokenStorage.getServerUrl() } returns SERVER
         authRepository = AuthRepository(authApi, tokenStorage, authState, mockk<PushRegistrar>(relaxed = true), noTeardown(authState))
+    }
+
+    private companion object {
+        const val SERVER = "https://kaiku.example.com"
     }
 
     // ========================================================================
@@ -67,10 +72,9 @@ class AuthFlowTest {
 
     @Test
     fun `login stores tokens and sets auth state to logged in`() = runTest {
-        coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
         coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
 
-        val result = authRepository.login("testuser", "pass")
+        val result = authRepository.completeAttempt(SERVER, "pass") { testAuthResponse }
 
         assertTrue(result.isSuccess)
         assertEquals(testUser, result.getOrNull())
@@ -93,11 +97,7 @@ class AuthFlowTest {
 
     @Test
     fun `login failure does not store tokens or update auth state`() = runTest {
-        coEvery {
-            authApi.login("testuser", "wrong", null)
-        } throws Exception("Invalid credentials")
-
-        val result = authRepository.login("testuser", "wrong")
+        val result = authRepository.completeAttempt(SERVER, "wrong") { throw Exception("Invalid credentials") }
 
         assertTrue(result.isFailure)
         assertEquals("Invalid credentials", result.exceptionOrNull()?.message)
@@ -111,16 +111,15 @@ class AuthFlowTest {
     }
 
     @Test
-    fun `register cleans up tokens when getMe fails`() = runTest {
+    fun `register returns the ticket and installs no session`() = runTest {
         coEvery {
             authApi.register("newuser", "pass", null, null)
-        } returns testAuthResponse
-        coEvery { authApi.authenticatedGetMe(any(), any()) } throws RuntimeException("Network error")
+        } returns io.wolftown.kaiku.domain.model.RegistrationTicket("u", "newuser", "2026-11-03T12:30:00Z", "ticket")
 
         val result = authRepository.register("newuser", "pass", null, null)
 
-        assertTrue(result.isFailure)
-        verify { tokenStorage.clear() }
+        assertEquals("ticket", result.getOrThrow().ticket)
+        verify(exactly = 0) { tokenStorage.saveTokens(any(), any(), any(), any()) }
     }
 
     // ========================================================================
@@ -130,10 +129,9 @@ class AuthFlowTest {
     @Test
     fun `logout clears tokens and sets auth state to logged out`() = runTest {
         // First login
-        coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
         coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
         coEvery { authApi.logoutSession(any(), any(), any()) } just Runs
-        authRepository.login("testuser", "pass")
+        authRepository.completeAttempt(SERVER, "pass") { testAuthResponse }
 
         assertTrue(authState.isLoggedIn.value)
 
@@ -148,10 +146,9 @@ class AuthFlowTest {
     @Test
     fun `logout succeeds even when server-side logout fails`() = runTest {
         // First login
-        coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
         coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
         coEvery { authApi.logoutSession(any(), any(), any()) } throws Exception("Network error")
-        authRepository.login("testuser", "pass")
+        authRepository.completeAttempt(SERVER, "pass") { testAuthResponse }
 
         // Logout should still clear local state
         authRepository.logout()
@@ -209,12 +206,10 @@ class AuthFlowTest {
 
     @Test
     fun `WebSocket can connect after login stores token`() = runTest {
-        coEvery { authApi.login("testuser", "pass", null) } returns testAuthResponse
         coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
         every { tokenStorage.getAccessToken() } returns "access-token-abc"
-        every { tokenStorage.getServerUrl() } returns "https://kaiku.example.com"
 
-        authRepository.login("testuser", "pass")
+        authRepository.completeAttempt(SERVER, "pass") { testAuthResponse }
 
         // After login, the app would call webSocket.connect()
         webSocket.connect("https://kaiku.example.com", "access-token-abc")
@@ -223,18 +218,16 @@ class AuthFlowTest {
     }
 
     // ========================================================================
-    // OIDC login flow
+    // OIDC sign-in: the one-time code's attempt, collected like any other
     // ========================================================================
 
     @Test
     fun `OIDC login stores tokens and sets auth state`() = runTest {
         coEvery { authApi.authenticatedGetMe(any(), any()) } returns testUser
 
-        val result = authRepository.completeOidcLogin(
-            accessToken = "oidc-access-token",
-            refreshToken = "oidc-refresh-token",
-            expiresIn = 3600
-        )
+        val result = authRepository.completeAttempt(SERVER, null) {
+            AuthResponse(accessToken = "oidc-access-token", refreshToken = "oidc-refresh-token", expiresIn = 3600, tokenType = "Bearer")
+        }
 
         assertTrue(result.isSuccess)
         assertEquals(testUser, result.getOrNull())

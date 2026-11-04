@@ -1,15 +1,16 @@
 package io.wolftown.kaiku.data.repository
 
 import io.wolftown.kaiku.data.api.AuthApi
-import io.wolftown.kaiku.data.api.MfaRequiredApiException
+import io.wolftown.kaiku.data.keydevice.KeyDevicePolicy
 import io.wolftown.kaiku.data.local.AuthSession
 import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.session.SessionTeardownRunner
+import io.wolftown.kaiku.domain.KaikuPayloads
 import io.wolftown.kaiku.domain.model.AuthResponse
+import io.wolftown.kaiku.domain.model.RegistrationTicket
 import io.wolftown.kaiku.domain.model.User
 import io.wolftown.kaiku.push.PushRegistrar
-import io.wolftown.kaiku.ui.auth.MfaRequiredException
 import io.wolftown.kaiku.ui.auth.PasswordChangeRequiredException
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -57,7 +58,14 @@ class AuthRepository @Inject constructor(
     }
 
     /**
-     * Set by [login] when the server requires a password change; see
+     * L2 (C26 amendment 3): on a key device a plain sign-out keeps the push
+     * subscription, so a lapsed key device still gets call wakes and notices.
+     */
+    @set:Inject
+    var keyDevicePolicy: KeyDevicePolicy = KeyDevicePolicy.NONE
+
+    /**
+     * Set by [completeAttempt] when the server requires a password change; see
      * [completePasswordChange]. Guarded by [pendingLock], so a cancel and the
      * final persist step can't interleave.
      */
@@ -97,7 +105,7 @@ class AuthRepository @Inject constructor(
 
     /**
      * Every sign-in path refuses to replace a running session (e.g. scanning
-     * another account's QR code from Settings, or a stray OIDC deep link):
+     * another account's sign-in from a stale screen, or a stray OIDC callback):
      * the user signs out first, so the old session is always torn down
      * completely before another one starts, and its token is never sent
      * along with the new sign-in. Checked at the start and again right
@@ -110,8 +118,8 @@ class AuthRepository @Inject constructor(
      * The one place a new session is stored and started, used by every
      * sign-in path: under [pendingLock], refuses while a session runs or if
      * [precondition] fails, otherwise saves the tokens, runs [onInstalled]
-     * and sets LoggedIn. Two sign-ins racing while logged out (a QR redeem
-     * and an OIDC deep link) can therefore never both install. Returns
+     * and sets LoggedIn. Two sign-ins racing while logged out (a passkey
+     * and a collected attempt) can therefore never both install. Returns
      * whether it installed.
      */
     private fun installSession(
@@ -135,32 +143,38 @@ class AuthRepository @Inject constructor(
     }
 
     /**
-     * Logs in. If the server reports `password_change_required`, nothing is
-     * persisted and [getMe][AuthApi.authenticatedGetMe] is skipped: the session
-     * is kept in memory and [PasswordChangeRequiredException] is returned, and
-     * the typed [password] later becomes `current_password` in
-     * [completePasswordChange].
+     * Completes a C27 sign-in attempt (SM1): [collect] is the attempt's `collect`
+     * or `totp` call, which mints the probation session on [serverUrl], the
+     * server the attempt was started on. Every rule of the single install point
+     * applies: refused while a session runs, and only the latest sign-in, still
+     * on [serverUrl], stores anything (a cancel, logout or newer sign-in while
+     * [collect] is in flight wins). If the server reports
+     * `password_change_required`, nothing is persisted: the session is kept in
+     * memory and [PasswordChangeRequiredException] is returned, and the
+     * [typedPassword] of a password attempt later becomes `current_password` in
+     * [completePasswordChange] (C4; without one the session is installed as is).
      */
-    suspend fun login(
-        username: String,
-        password: String,
-        mfaCode: String? = null
+    suspend fun completeAttempt(
+        serverUrl: String,
+        typedPassword: String?,
+        collect: suspend () -> AuthResponse,
     ): Result<User> {
         signedInRefusal()?.let { return it }
         val attempt = invalidateLogin()
-        // The server this login goes to; a pending change is bound to it.
-        val serverUrl = tokenStorage.getServerUrl()
+        if (tokenStorage.getServerUrl() != serverUrl) return supersededResult()
+        // A collected session that is neither installed, kept pending nor already ended.
+        var unsettled: AuthResponse? = null
         return try {
-            val authResponse = authApi.login(username, password, mfaCode)
+            val authResponse = collect()
+            unsettled = authResponse
 
-            if (authResponse.passwordChangeRequired) {
-                if (serverUrl == null) return supersededResult()
+            if (authResponse.passwordChangeRequired && typedPassword != null) {
                 val pending = PendingPasswordChange(
                     serverUrl = serverUrl,
                     accessToken = authResponse.accessToken,
                     refreshToken = authResponse.refreshToken,
                     expiresIn = authResponse.expiresIn,
-                    currentPassword = password
+                    currentPassword = typedPassword
                 )
                 val installed = synchronized(pendingLock) {
                     if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl) {
@@ -170,38 +184,54 @@ class AuthRepository @Inject constructor(
                         false
                     }
                 }
-                if (!installed) return supersededResult()
+                unsettled = null
+                if (!installed) return superseded(serverUrl, authResponse)
                 return Result.failure(PasswordChangeRequiredException())
             }
 
-            // Server switched while the login was in flight: don't send server A's
-            // token anywhere else, and leave the new server's state alone.
-            if (tokenStorage.getServerUrl() != serverUrl) return supersededResult()
+            // Server switched while the attempt was collected: don't send server A's
+            // token anywhere else (the minted session is ended on A), and leave B alone.
+            if (tokenStorage.getServerUrl() != serverUrl) {
+                unsettled = null
+                return superseded(serverUrl, authResponse)
+            }
             val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
 
             // The previous session's teardown finishes before this one starts.
             sessionTeardown.awaitIdle()
 
             // Persist only for the latest attempt and the server it went to: a
-            // server change mid-login must not store server A's tokens under B.
+            // server change mid-attempt must not store server A's tokens under B.
             val persisted = installSession(
                 authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id,
                 precondition = { loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl },
             )
-            if (!persisted) return supersededResult()
+            unsettled = null
+            if (!persisted) return superseded(serverUrl, authResponse)
             Result.success(user)
-        } catch (_: MfaRequiredApiException) {
-            Result.failure(MfaRequiredException())
         } catch (e: CancellationException) {
+            // Cancelled while the profile loaded or the old teardown ran: the minted session is ended.
+            unsettled?.let { endUnused(serverUrl, it) }
             throw e
         } catch (e: Exception) {
-            // Only the latest attempt may clear: a stale login failing late must
-            // not wipe the session a newer login stored meanwhile.
+            unsettled?.let { endUnused(serverUrl, it) }
+            // Only the latest attempt may clear, and never under a running session: a stale
+            // sign-in failing late must not wipe the session a newer one stored meanwhile.
             synchronized(pendingLock) {
-                if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl) tokenStorage.clear()
+                if (loginAttempt == attempt && tokenStorage.getServerUrl() == serverUrl &&
+                    authState.session.value !is AuthSession.LoggedIn
+                ) {
+                    tokenStorage.clear()
+                }
             }
             Result.failure(e)
         }
+    }
+
+    /** A collected session that is not installed is ended on its server, so none is left live. */
+    private suspend fun superseded(serverUrl: String, auth: AuthResponse): Result<User> {
+        endUnused(serverUrl, auth)
+        return supersededResult()
     }
 
     /** False while a session runs: a passkey sign-in then starts nothing. */
@@ -210,7 +240,7 @@ class AuthRepository @Inject constructor(
     /**
      * Installs a session from a sign-in that needed no password (a passkey,
      * C29): `GET /auth/me` with the new token, then the same single install
-     * point as [login], only for the latest attempt and the server it went to.
+     * point as [completeAttempt], only for the latest attempt and the server it went to.
      * A result that is not installed (a session runs, the server changed, or
      * another sign-in came first) ends its session on [serverUrl], so a
      * second result never leaves an unused session live.
@@ -240,8 +270,13 @@ class AuthRepository @Inject constructor(
                 Result.success(user)
             }
         } catch (e: CancellationException) {
+            // Cancelled in GET /auth/me or the old teardown (e.g. the screen cancelled its sign-in job):
+            // the minted session is ended (NonCancellable inside), never left live.
+            endUnused(serverUrl, authResponse)
             throw e
         } catch (e: Exception) {
+            // GET /auth/me failed: nothing was installed, so the minted session is ended too.
+            endUnused(serverUrl, authResponse)
             Result.failure(e)
         }
     }
@@ -249,7 +284,10 @@ class AuthRepository @Inject constructor(
     /**
      * Ends a minted session that was not installed, on the server that
      * minted it, with its own tokens only; best effort, bounded, never
-     * cancelled halfway. L2b has the same helper for device sign-ins.
+     * cancelled halfway. The one helper for every sign-in that mints a
+     * session: a refused or superseded passkey result ([installNativeSignIn]),
+     * a collected attempt ([completeAttempt]) and a device-key sign-in
+     * ([installDeviceSession]).
      */
     private suspend fun endUnused(serverUrl: String, auth: AuthResponse) {
         withContext(NonCancellable) {
@@ -323,30 +361,23 @@ class AuthRepository @Inject constructor(
         invalidateLogin()
     }
 
+    /**
+     * F8: registration makes an account without a session; the answer is a
+     * 30-minute ticket that binds this phone as the account's key (the setup
+     * flow claims with it and then signs in with the key).
+     */
     suspend fun register(
         username: String,
         password: String,
         email: String?,
         displayName: String?
-    ): Result<User> {
-        signedInRefusal()?.let { return it }
-        // Fetch the profile from the server that issued the token.
-        val serverUrl = tokenStorage.getServerUrl()
+    ): Result<RegistrationTicket> {
+        signedInRefusal()?.let { return Result.failure(it.exceptionOrNull()!!) }
         return try {
-            val authResponse = authApi.register(username, password, email, displayName)
-
-            val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
-
-            // The previous session's teardown finishes before this one starts.
-            sessionTeardown.awaitIdle()
-            if (!installSession(authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id)) {
-                return Result.failure(AlreadySignedInException())
-            }
-            Result.success(user)
+            Result.success(authApi.register(username, password, email, displayName))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            tokenStorage.clear()
             Result.failure(e)
         }
     }
@@ -389,7 +420,8 @@ class AuthRepository @Inject constructor(
         val capturedRefresh = tokenStorage.getRefreshToken()
 
         // First step, while the captured session's tokens still authenticate the DELETE.
-        unregisterPush(session?.sessionId)
+        // A key device keeps its subscription (C19 amendment 3).
+        if (!keyDevicePolicy.keepsPushOnSignOut()) unregisterPush(session?.sessionId)
 
         sessionTeardown.tearDown(session?.sessionId).join()
 
@@ -449,92 +481,93 @@ class AuthRepository @Inject constructor(
         }
     }
 
-    /**
-     * Completes the OIDC login by storing the tokens received via deep link redirect.
-     *
-     * In the mobile OIDC flow, the server redirects to `kaiku://auth/callback` with
-     * tokens in query parameters (access_token, refresh_token, expires_in).
-     * This method saves those tokens and fetches the user profile.
-     */
-    suspend fun completeOidcLogin(
-        accessToken: String,
-        refreshToken: String?,
-        expiresIn: Int
-    ): Result<User> {
-        signedInRefusal()?.let { return it }
-        return try {
-            val user = authApi.authenticatedGetMe(accessToken)
+    /** A session runs and its tokens are stored. */
+    fun hasLiveSession(): Boolean =
+        authState.session.value is AuthSession.LoggedIn && tokenStorage.getAccessToken() != null
 
-            // The previous session's teardown finishes before this one starts.
-            sessionTeardown.awaitIdle()
-            if (!installSession(accessToken, refreshToken, expiresIn, user.id)) {
-                return Result.failure(AlreadySignedInException())
-            }
-            Result.success(user)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            tokenStorage.clear()
-            Result.failure(e)
+    /**
+     * Starts a device-key sign-in (C26) for the key bound to [keyOrigin]: records
+     * the sign-in generation, the server and the running session, which
+     * [installDeviceSession] checks again before it installs anything. The key
+     * ties the app to its server (B.1, coordinator call 6): without a running
+     * session the app's server becomes the key's (a reset session store loses the
+     * saved server, the key's metadata survives); with a session on another
+     * server the sign-in is refused (null).
+     */
+    fun beginDeviceSignIn(keyOrigin: String): DeviceSignInStart? = synchronized(pendingLock) {
+        val session = authState.session.value
+        if (tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin) != keyOrigin) {
+            if (session is AuthSession.LoggedIn) return null
+            tokenStorage.saveServerUrl(keyOrigin)
         }
+        val serverUrl = tokenStorage.getServerUrl() ?: return null
+        // A sign-in of its own: an older sign-in still in flight can no longer install or
+        // clear anything, and two overlapping device sign-ins never both install.
+        pendingPasswordChange = null
+        DeviceSignInStart(++loginAttempt, serverUrl, session)
     }
 
     /**
-     * Exchanges an OIDC authorization code for tokens via the server's callback endpoint.
-     *
-     * This is a fallback path if the server does not redirect with tokens directly.
+     * Installs the full session of a device-key sign-in for [expectedUserId];
+     * the profile must be that user's. It installs only if nothing changed since
+     * [start]: no logout or other sign-in, the same server, the same running
+     * session (none, or for the B.4 renewal the same one, which it replaces and
+     * ends on the server with its bearer only). A session it does not install is
+     * ended on the server, so a late answer never leaves a live session behind.
      */
-    suspend fun exchangeOidcCode(code: String, state: String, codeVerifier: String? = null): Result<User> {
-        signedInRefusal()?.let { return it }
-        // Fetch the profile from the server that issued the token.
-        val serverUrl = tokenStorage.getServerUrl()
+    suspend fun installDeviceSession(auth: AuthResponse, expectedUserId: String, start: DeviceSignInStart): Result<User> {
+        val serverUrl = start.serverUrl
+        // True once the session is installed or already ended: until then a failure ends it.
+        var settled = false
         return try {
-            val redirectUri = "kaiku://auth/callback"
-            val authResponse = authApi.exchangeOidcCode(code, state, redirectUri, codeVerifier)
-
-            val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
-
-            // The previous session's teardown finishes before this one starts.
-            sessionTeardown.awaitIdle()
-            if (!installSession(authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id)) {
+            val user = authApi.authenticatedGetMe(auth.accessToken, serverUrl)
+            if (user.id != expectedUserId) {
+                settled = true
+                endUnused(serverUrl, auth)
+                return Result.failure(IllegalStateException("device session for another account"))
+            }
+            val running = start.session as? AuthSession.LoggedIn
+            if (running != null && running.userId != user.id) {
+                settled = true
+                endUnused(serverUrl, auth)
                 return Result.failure(AlreadySignedInException())
+            }
+            // The previous session's teardown finishes before a new one starts.
+            if (running == null) sessionTeardown.awaitIdle()
+            var replacedAccess: String? = null
+            val installed = synchronized(pendingLock) {
+                val unchanged = loginAttempt == start.attempt &&
+                    tokenStorage.getServerUrl() == serverUrl &&
+                    authState.session.value == start.session
+                if (unchanged) {
+                    if (running != null) replacedAccess = tokenStorage.getAccessToken()
+                    tokenStorage.saveTokens(auth.accessToken, auth.refreshToken, auth.expiresIn, user.id)
+                    authState.setLoggedIn(user.id)
+                }
+                unchanged
+            }
+            settled = true
+            if (!installed) {
+                endUnused(serverUrl, auth)
+                return Result.failure(IllegalStateException("Device sign-in was cancelled or superseded"))
+            }
+            // The new session is installed: ending the replaced one runs to the end even if the
+            // caller is cancelled now, and never turns the installed sign-in into a failure.
+            replacedAccess?.let { old ->
+                withContext(NonCancellable) {
+                    try {
+                        withTimeoutOrNull(SERVER_LOGOUT_TIMEOUT_MS) { authApi.logoutSession(serverUrl, old, null) }
+                    } catch (e: Exception) {
+                        logger.warning("Old session not ended (best-effort): ${e.javaClass.simpleName}")
+                    }
+                }
             }
             Result.success(user)
         } catch (e: CancellationException) {
+            if (!settled) endUnused(serverUrl, auth)
             throw e
         } catch (e: Exception) {
-            tokenStorage.clear()
-            Result.failure(e)
-        }
-    }
-
-    /**
-     * Redeems a QR login token scanned from the desktop client.
-     *
-     * Exchanges the token for auth credentials via an absolute URL, then
-     * saves the server URL (needed by KaikuHttpClient for base URL) before
-     * calling getMe. Tokens are only persisted after getMe succeeds.
-     */
-    suspend fun redeemQrToken(serverUrl: String, token: String): Result<User> {
-        signedInRefusal()?.let { return it }
-        return try {
-            val authResponse = authApi.redeemQrToken(serverUrl, token)
-
-            // Save server URL before getMe — KaikuHttpClient needs it for the base URL
-            tokenStorage.saveServerUrl(serverUrl)
-
-            val user = authApi.authenticatedGetMe(authResponse.accessToken, serverUrl)
-
-            // The previous session's teardown finishes before this one starts.
-            sessionTeardown.awaitIdle()
-            if (!installSession(authResponse.accessToken, authResponse.refreshToken, authResponse.expiresIn, user.id)) {
-                return Result.failure(AlreadySignedInException())
-            }
-            Result.success(user)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            tokenStorage.clear()
+            if (!settled) endUnused(serverUrl, auth)
             Result.failure(e)
         }
     }
@@ -542,6 +575,18 @@ class AuthRepository @Inject constructor(
     fun isLoggedIn(): Boolean {
         return authState.isLoggedIn.value
     }
+}
+
+/**
+ * What a device-key sign-in started from ([AuthRepository.beginDeviceSignIn]):
+ * the sign-in generation, the server it talks to and the session that ran.
+ */
+class DeviceSignInStart internal constructor(
+    internal val attempt: Long,
+    val serverUrl: String,
+    internal val session: AuthSession,
+) {
+    override fun toString(): String = "DeviceSignInStart(serverUrl=$serverUrl)"
 }
 
 /** A sign-in was refused because a session is running; sign out first. */

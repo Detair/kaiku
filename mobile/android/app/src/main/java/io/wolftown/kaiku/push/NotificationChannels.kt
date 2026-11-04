@@ -14,6 +14,9 @@ object NotificationChannels {
     const val VOICE = "voice_calls"
     const val SYNC = "background_sync"
 
+    /** C28 security notices (L2-A6): high importance, private on the lock screen, never actions. */
+    const val SECURITY = "security_notices"
+
     /** Creates all channels; idempotent (re-creating an existing channel is a no-op). */
     fun ensureCreated(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -26,6 +29,9 @@ object NotificationChannels {
             build(context, VOICE, NotificationManager.IMPORTANCE_LOW,
                 R.string.voice_notification_channel_name, R.string.voice_notification_channel_description)
                 .apply { setShowBadge(false) },
+            build(context, SECURITY, NotificationManager.IMPORTANCE_HIGH,
+                R.string.notif_channel_security_name, R.string.notif_channel_security_description)
+                .apply { lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE },
             build(context, SYNC, NotificationManager.IMPORTANCE_MIN,
                 R.string.notif_channel_sync_name, R.string.notif_channel_sync_description)
                 .apply { setShowBadge(false) },

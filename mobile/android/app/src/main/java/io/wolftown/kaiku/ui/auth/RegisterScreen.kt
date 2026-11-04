@@ -19,7 +19,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.api.EnrollmentApi
+import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.data.repository.AuthRepository
+import io.wolftown.kaiku.domain.KaikuPayloads
+import io.wolftown.kaiku.ui.auth.setup.SetupEntry
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,12 +40,15 @@ data class RegisterUiState(
     val isLoading: Boolean = false,
     /** `@StringRes` of the current error, or null. Server message text is never shown. */
     @StringRes val errorRes: Int? = null,
-    val registerSuccess: Boolean = false
+    /** F8: the account exists; this phone's own setup (bound by the ticket) comes next. */
+    val setupEntry: SetupEntry? = null,
 )
 
 @HiltViewModel
 class RegisterViewModel @Inject constructor(
-    private val authRepository: AuthRepository
+    private val authRepository: AuthRepository,
+    private val enrollmentApi: EnrollmentApi,
+    private val tokenStorage: TokenStorage,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(RegisterUiState())
@@ -62,54 +70,70 @@ class RegisterViewModel @Inject constructor(
         _uiState.update { it.copy(displayName = displayName) }
     }
 
+    /**
+     * The ticket of an account this screen already created (30 min, C27): a retry after a failed
+     * issuance only issues again, it never registers the same name twice (Argon part6 #2).
+     */
+    private var created: Pair<String, String>? = null
+
     fun onRegisterClicked() {
         val state = _uiState.value
+        if (state.isLoading) return
         _uiState.update { it.copy(isLoading = true, errorRes = null) }
 
         viewModelScope.launch {
             val email = state.email.ifBlank { null }
             val displayName = state.displayName.ifBlank { null }
-            val result = authRepository.register(
+            val kept = created?.takeIf { it.first == state.username }?.second
+            val ticket = kept ?: authRepository.register(
                 state.username,
                 state.password,
                 email,
                 displayName
-            )
-
-            result.fold(
-                onSuccess = {
-                    _uiState.update {
-                        it.copy(isLoading = false, registerSuccess = true)
-                    }
-                },
-                onFailure = { exception ->
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            errorRes = AuthErrorMapper.register(exception)
-                        )
-                    }
-                }
-            )
+            ).getOrElse { exception ->
+                _uiState.update { it.copy(isLoading = false, errorRes = AuthErrorMapper.register(exception)) }
+                return@launch
+            }.ticket
+            created = state.username to ticket
+            // F8: no session; the ticket binds this phone's own key (claim without a code).
+            try {
+                val origin = tokenStorage.getServerUrl()?.let(KaikuPayloads::canonicalOrigin)
+                    ?: throw IllegalStateException("no server")
+                val issued = enrollmentApi.issueWithTicket(ticket)
+                val entry = SetupEntry(origin, issued.setupToken, SetupEntry.Source.TICKET, ticket = ticket)
+                _uiState.update { it.copy(isLoading = false, setupEntry = entry) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // An expired ticket (30 min) is gone with its unconfirmed account: register again.
+                if (e is io.wolftown.kaiku.data.api.ApiException && e.normalizedCode == "REGISTRATION_TICKET_INVALID") created = null
+                _uiState.update { it.copy(isLoading = false, errorRes = AuthErrorMapper.register(e)) }
+            }
         }
     }
 
     fun clearError() {
         _uiState.update { it.copy(errorRes = null) }
     }
+
+    /** Called once the setup took the entry: coming back here never replays it. */
+    fun onSetupStarted() {
+        _uiState.update { it.copy(setupEntry = null) }
+    }
 }
 
 @Composable
 fun RegisterScreen(
     onNavigateToLogin: () -> Unit,
-    onRegisterSuccess: () -> Unit,
+    onRegistered: (SetupEntry) -> Unit,
     viewModel: RegisterViewModel = androidx.hilt.navigation.compose.hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
-    LaunchedEffect(uiState.registerSuccess) {
-        if (uiState.registerSuccess) {
-            onRegisterSuccess()
+    LaunchedEffect(uiState.setupEntry) {
+        uiState.setupEntry?.let {
+            viewModel.onSetupStarted()
+            onRegistered(it)
         }
     }
 

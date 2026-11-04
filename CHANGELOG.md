@@ -82,6 +82,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Long-press context menu support for touch devices on messages, channels, and member lists
 - `touch:` UnoCSS variant for touch-specific styling via `@media (hover: none)`
 - Desktop client now displays remote screen shares via native VP8 decode
+- Android: when your phone is your Kaiku key, it signs you in again with its screen lock ("Confirm it's you"), never a password; "Sign out" keeps the key, "Sign out and remove this phone" removes it.
+- **Android: your phone confirms sign-ins.** Scan the code on the PC, check what is signing in, and confirm with your screen lock. "I didn't start this" stops it and tells you what to do.
+- **Android: set up a phone with a setup code.** Scan the code your admin or your other device shows (or open the setup link); the phone checks its screen lock, shows a 6-digit code to confirm, and becomes your key. New accounts registered in the app bind the phone right away; App Links for `/setup` are enabled per build with `-PkaikuAppLinkHosts`.
+- Android: "Add a phone" on your key phone shows a setup code for a new phone and asks for the 6 digits it shows, on a large keypad that never sends by itself.
+- Android security settings: your phones, passkeys, sessions, recovery codes and recovery contact, each change confirmed with your screen lock; password and authenticator app are shown and changed on the web or desktop.
+- Android shows Kaiku's security notices in the read-only "Kaiku" chat (with "That wasn't me", Cancel, Remove device and "I will help" where they apply) and as private lock-screen notifications, also on a key phone that is signed out, with the security log under Settings > Security and a full-screen prompt for an open request to change how you sign in.
+- **Android: admins set up phones from their own phone.** Create the account (no password), choose "Set up a phone", and type the code the new phone shows; existing accounts wait 24 hours with notices to everyone involved. "Remove device now" for stolen phones. See `docs/admin-guide/ops/phone-setup.md`.
 
 ### Changed
 - **Breaking:** new accounts start by adding a passkey or a key phone (or an authenticator app) within 30 minutes; a password is optional, and registering no longer signs you in. Accounts that add nothing within 30 minutes are removed. The first admin of a new server adds a passkey or a key phone.
@@ -136,6 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Channel sidebar shows dot indicator for unread channels instead of count badge
 - "New Messages" divider shows where you left off when returning to a channel
 - Opening a channel with unreads scrolls to your last read position
+- Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
 ### Security
 - Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.
@@ -185,6 +193,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed legacy `rustls 0.21` / `rustls-webpki 0.101.7` from server dependencies by switching AWS SDK feature to `default-https-client`, fixing RUSTSEC-2026-0098, RUSTSEC-2026-0099, and RUSTSEC-2026-0104 (rustls-webpki name-constraint handling bugs and CRL parsing panic)
 - Frontend: bumped `dompurify` (XSS in HTML sanitization), `uuid` (buffer-bounds check via mermaid), and added transitive overrides for `postcss` (XSS) and `dompurify` (mermaid's nested copy). `bun audit` reduced from 12 → 6 advisories; the 6 remaining are vite dev-server paths via vitest, already accepted as dev-only exceptions per PR #517 and pending the vitest 4.x → 4.x compat work in Phase 6c of the dep-update sweep.
 - Frontend: update `dompurify` 3.4.2 → 3.4.11 (eight HTML-sanitizer XSS advisories — the markdown preview's runtime sanitizer), `vite` 8.0.0 → 8.0.16 (the `server.fs.deny` bypass and `__open-in-editor` NTLM dev-server CVEs), and add transitive overrides for `undici` → 7.28.0 (seven HTTP-client advisories via jsdom) and `@babel/core` → 7.29.6 (via vite-plugin-solid). The remaining flagged instance is the test-only vite 7.3.1 nested under vitest, whose fix is blocked by a JSX-transform incompatibility (documented as a justified, dev-server-only exception); the production bundle is built with the patched vite 8.0.16. This restores the weekly OSV scanner to green.
+- Android: the app keeps its sign-in tokens under a key in the phone's secure hardware; existing sign-ins are moved over once, without signing in again.
+- The Android app no longer accepts sign-in tokens from a link; single sign-on returns only a one-time code.
 
 ### Removed
 - Temporary passwords for admin-created accounts (`POST /api/admin/users` refuses `temporary_password`).
@@ -194,6 +204,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 'Log in on your phone' QR from settings (use 'Set up a phone').
 - Password reset by e-mail. Use a recovery code or ask an admin instead.
 - The 'appear offline' status is no longer available.
+- Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
 - The role editor no longer throws away unsaved name, colour and permission edits when the same role is updated in the background (for example by another admin or a reconnect).

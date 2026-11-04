@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -36,6 +37,7 @@ import io.wolftown.kaiku.ui.shared.resolveServerUrl
 fun DmListScreen(
     onOpenDm: (channelId: String) -> Unit,
     onNavigateBack: () -> Unit,
+    onScan: () -> Unit = {},
     viewModel: DmListViewModel = hiltViewModel()
 ) {
     val conversations by viewModel.conversations.collectAsState()
@@ -53,6 +55,11 @@ fun DmListScreen(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = stringResource(R.string.common_back)
                         )
+                    }
+                },
+                actions = {
+                    TextButton(onClick = onScan) {
+                        Text(stringResource(R.string.scan_action), color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
             )
@@ -120,7 +127,9 @@ private fun DmConversationRow(
     currentUserId: String,
     onClick: () -> Unit
 ) {
-    val title = DmRepository.conversationTitle(dm, currentUserId)
+    // C28: the Kaiku DM, recognised by its flags only, has a built-in icon and a fixed name.
+    val isKaiku = dm.isSystem && dm.readOnly
+    val title = if (isKaiku) stringResource(R.string.security_kaiku_dm_name) else DmRepository.conversationTitle(dm, currentUserId)
     val avatarUrl = resolveServerUrl(DmRepository.conversationAvatarUrl(dm, currentUserId))
     val hasUnread = dm.unreadCount > 0
 
@@ -131,7 +140,14 @@ private fun DmConversationRow(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        AsyncImage(
+        if (isKaiku) {
+            Icon(
+                imageVector = Icons.Filled.Lock,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(44.dp),
+            )
+        } else AsyncImage(
             model = avatarUrl,
             contentDescription = stringResource(R.string.common_avatar_description, title),
             modifier = Modifier
@@ -150,7 +166,7 @@ private fun DmConversationRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            val preview = dm.lastMessage?.let { last ->
+            val preview = if (isKaiku) stringResource(R.string.security_kaiku_dm_subtitle) else dm.lastMessage?.let { last ->
                 last.username?.let { sender ->
                     stringResource(R.string.dm_last_message_preview, sender, last.content)
                 } ?: last.content

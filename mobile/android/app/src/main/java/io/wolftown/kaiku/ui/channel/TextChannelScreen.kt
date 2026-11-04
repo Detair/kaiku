@@ -52,6 +52,8 @@ fun TextChannelScreen(
     val messageInput by viewModel.messageInput.collectAsState()
     val editingMessage by viewModel.editingMessage.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
+    val isKaikuDm by viewModel.isKaikuDm.collectAsState()
+    val noticeActions: io.wolftown.kaiku.ui.security.NoticeActionsViewModel = androidx.hilt.navigation.compose.hiltViewModel()
 
     // Resumed = the user is looking at this chat: suppress and clear its notifications.
     LifecycleResumeEffect(viewModel) {
@@ -137,7 +139,15 @@ fun TextChannelScreen(
             )
         },
         bottomBar = {
-            MessageInput(
+            // C28: only Kaiku writes in the Kaiku DM.
+            if (isKaikuDm) {
+                Text(
+                    text = stringResource(R.string.security_kaiku_dm_read_only),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                )
+            } else MessageInput(
                 input = messageInput,
                 placeholder = placeholder,
                 typingNames = typingLabels,
@@ -193,6 +203,14 @@ fun TextChannelScreen(
                         }
 
                         items(messages, key = { it.id }) { message ->
+                            val notice = message.securityNotice
+                            // C28: notices exist only in the Kaiku DM, from the system account; a
+                            // "security" message anywhere else is shown as an ordinary message.
+                            if (isSecurityNotice(isKaikuDm, message) && notice != null) {
+                                // No long-press menu, no reactions on notices.
+                                io.wolftown.kaiku.ui.security.SecurityNoticeCard(notice, noticeActions, ownUserId = currentUserId)
+                                return@items
+                            }
                             MessageItem(
                                 message = message,
                                 isOwnMessage = message.author.id == currentUserId,
@@ -235,3 +253,7 @@ fun TextChannelScreen(
         )
     }
 }
+
+/** A Kaiku notice card: a `security` message from the system account in the Kaiku DM only. */
+internal fun isSecurityNotice(isKaikuDm: Boolean, message: io.wolftown.kaiku.domain.model.Message): Boolean =
+    isKaikuDm && message.author.isSystem && message.messageType == "security"
