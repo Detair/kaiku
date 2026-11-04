@@ -914,3 +914,50 @@ async fn events_of_a_deleted_pending_passkey_keep_its_label(pool: PgPool) {
         assert_eq!(e["authenticator"]["label"], "Laptop", "{e}");
     }
 }
+
+/// Codex v1 integration check, minor 6: the 30-day cleanup deletes an aged
+/// enrolment that a browser-claim passkey still names (the link is cleared),
+/// and the approval cleanup in the same transaction stays done.
+#[sqlx::test]
+async fn cleanup_deletes_an_aged_browser_claim_enrolment(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    super::helpers::make_new_account(&pool, user).await;
+    let (passkey, enrollment) = browser_passkey(&app, user).await;
+    assert_eq!(passkey_row(&pool, passkey).await.0, "active");
+    sqlx::query("UPDATE enrollments SET ended_at = NOW() - INTERVAL '31 days' WHERE id = $1")
+        .bind(enrollment)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // A finished challenge old enough to go in the same run.
+    sqlx::query(
+        "UPDATE approvals SET state = 'consumed', created_at = NOW() - INTERVAL '31 days',
+                expires_at = NOW() - INTERVAL '31 days' + INTERVAL '2 minutes'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let challenges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM approvals")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(challenges > 0);
+
+    let n = vc_server::db::cleanup_finished_approvals(&pool)
+        .await
+        .expect("the cleanup runs");
+    assert!(n > 0);
+    let (enrolments, approvals, link): (i64, i64, Option<Uuid>) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM enrollments WHERE id = $1),
+                (SELECT COUNT(*) FROM approvals),
+                (SELECT enrollment_id FROM passkeys WHERE id = $2)",
+    )
+    .bind(enrollment)
+    .bind(passkey)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((enrolments, approvals, link), (0, 0, None));
+    assert_eq!(passkey_row(&pool, passkey).await.0, "active");
+}
