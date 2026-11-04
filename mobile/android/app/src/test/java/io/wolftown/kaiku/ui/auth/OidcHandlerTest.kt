@@ -71,7 +71,8 @@ class OidcHandlerTest {
         assertNull(handler.handleCallback(tokens))
         // A code next to tokens is refused as a whole.
         assertNull(handler.handleCallback(callback(mapOf("code" to "c", "access_token" to "stolen-access"))))
-        assertNull(handler.handleCallback(callback(mapOf("error" to "access_denied"))))
+        // An error callback is not a code (it is reported, see below).
+        assertEquals(OidcCallback.Error(null), handler.handleCallback(callback(mapOf("error" to "access_denied"))))
 
         val v = vm(handler)
         v.startOidc(context, "google")
@@ -116,6 +117,35 @@ class OidcHandlerTest {
         advanceUntilIdle()
         assertTrue(api.calls.isEmpty())
         assertEquals(R.string.auth_login_sso_failed, v.state.value.formError)
+    }
+
+    /**
+     * Fable v1 final check, B1: the server hands a failed sign-in back as
+     * `kaiku://auth/callback?error=CODE`; the form says why, through
+     * [AuthErrorMapper.oidc], and nothing is exchanged.
+     */
+    @Test fun `an error callback shows the server's reason`() = runTest {
+        val handler = spyk(OidcHandler())
+        every { handler.openProvider(any(), any()) } returns Unit
+        assertEquals(
+            OidcCallback.Error("INVALID_CREDENTIALS"),
+            handler.handleCallback(callback(mapOf("error" to "INVALID_CREDENTIALS"))),
+        )
+        for ((code, text) in listOf(
+            "INVALID_CREDENTIALS" to R.string.auth_login_invalid_credentials,
+            "OIDC_CLIENT_OUTDATED" to R.string.auth_login_client_outdated,
+            "SERVICE_UNAVAILABLE" to R.string.errors_server,
+            "OIDC_PROVIDER_ERROR" to R.string.auth_login_sso_failed,
+        )) {
+            val v = vm(handler)
+            v.startOidc(context, "google")
+            runCurrent()
+            v.onOidcCallback(callback(mapOf("error" to code)))
+            advanceUntilIdle()
+            assertEquals(code, text, v.state.value.formError)
+            assertFalse(v.state.value.busy)
+        }
+        assertTrue(api.calls.none { it.startsWith("exchangeOidc") })
     }
 
     /**

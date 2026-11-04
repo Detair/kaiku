@@ -11,11 +11,14 @@ import java.util.logging.Level
 import java.util.logging.Logger
 import javax.inject.Inject
 
-/** What an OIDC callback may carry (C27, C29 delivery): only a one-time code. */
+/** What an OIDC callback may carry (C27, C29 delivery): a one-time code, or the server's error. */
 sealed interface OidcCallback {
     data class Code(val code: String) : OidcCallback {
         override fun toString(): String = "OidcCallback.Code"
     }
+
+    /** `?error=CODE`: the server's code (`INVALID_CREDENTIALS`, …), null if it is not one. */
+    data class Error(val code: String?) : OidcCallback
 }
 
 /**
@@ -44,6 +47,8 @@ class OidcHandler @Inject constructor() {
         /** Parameters of the old token redirect; their presence voids the callback. */
         private val TOKEN_PARAMS = setOf("access_token", "refresh_token", "expires_in", "id_token", "token")
         private val logger = Logger.getLogger("OidcHandler")
+        /** A server error code; anything else in `error` is not shown or mapped. */
+        private val ERROR_CODE = Regex("^[A-Z][A-Z0-9_]{0,63}$")
     }
 
     /**
@@ -67,9 +72,9 @@ class OidcHandler @Inject constructor() {
     }
 
     /**
-     * The one-time code of an OIDC callback, or null: not a callback, no code, a
-     * provider error, or any token parameter (the pre-v1.0 token redirect),
-     * which installs nothing.
+     * The one-time code of an OIDC callback, the server's error
+     * (`?error=CODE`, for the form), or null: not a callback, no code, or any
+     * token parameter (the pre-v1.0 token redirect), which installs nothing.
      */
     fun handleCallback(uri: Uri): OidcCallback? {
         if (!isOidcCallback(uri)) return null
@@ -78,7 +83,7 @@ class OidcHandler @Inject constructor() {
             logger.warning("OIDC callback with tokens refused")
             return null
         }
-        if (uri.getQueryParameter("error") != null) return null
+        uri.getQueryParameter("error")?.let { return OidcCallback.Error(it.takeIf(ERROR_CODE::matches)) }
         val code = uri.getQueryParameter("code")?.takeIf { it.isNotBlank() } ?: return null
         return OidcCallback.Code(code)
     }

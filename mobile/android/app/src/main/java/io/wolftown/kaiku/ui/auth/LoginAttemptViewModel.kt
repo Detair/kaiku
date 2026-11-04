@@ -227,6 +227,15 @@ class LoginAttemptViewModel @Inject constructor(
         oidcSecret = null
         val server = tokenStorage.getServerUrl()
         val callback = oidcHandler.handleCallback(uri)
+        if (callback is OidcCallback.Error) {
+            // The server's reason (C27 OIDC hand-back), worded like a refused start.
+            val e = callback.code?.let { code ->
+                val status = if (code == "SERVICE_UNAVAILABLE") HttpStatusCode.ServiceUnavailable else HttpStatusCode.BadRequest
+                ApiException(status, "oidc callback error", code = code)
+            } ?: IllegalStateException("oidc callback error")
+            _state.update { it.copy(formError = AuthErrorMapper.oidc(e), retryMinutes = null, busy = false) }
+            return
+        }
         if (server == null || callback !is OidcCallback.Code) {
             _state.update { it.copy(formError = R.string.auth_login_sso_failed, retryMinutes = null, busy = false) }
             return
