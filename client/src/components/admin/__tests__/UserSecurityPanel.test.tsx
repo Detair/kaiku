@@ -105,16 +105,32 @@ describe("UserSecurityPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Mark the password as unsafe" }));
     await waitFor(() => expect(api.adminSetFactors).toHaveBeenCalledWith("oma", { password: "compromised" }));
     expect(stepUp.mock.calls[0][0]).toMatchObject({ action: "admin.factor.set_state", target: "oma" });
-    expect(await screen.findByRole("button", { name: "Allow the password again" })).toBeTruthy();
+    // An unsafe password leaves only by replacement (B.1): no "Allow again".
+    expect(await screen.findByText("Oma must set a new password before it works again.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Allow the password again" })).toBeNull();
   });
 
-  it("the authenticator app state is changed the same way (C27 factors)", async () => {
+  // Codex v1 integration check, major 4: a throttled factor is reset with
+  // `active` (C27); "Mark as unsafe" stays an option, never the only one.
+  it("a throttled factor is allowed again, not only marked unsafe", async () => {
     api.adminSetFactors.mockResolvedValue(undefined);
-    render(() => <UserSecurityPanel user={detail({ totp_state: "compromised" })} meId="me" />);
+    render(() => <UserSecurityPanel user={detail({ password_state: "throttled", totp_state: "throttled" })} meId="me" />);
+    expect(screen.getByRole("button", { name: "Mark the password as unsafe" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Allow the authenticator app again" }));
     await waitFor(() => expect(api.adminSetFactors).toHaveBeenCalledWith("oma", { totp: "active" }));
     expect(stepUp.mock.calls[0][0]).toMatchObject({ action: "admin.factor.set_state", target: "oma" });
-    expect(await screen.findByRole("button", { name: "Mark the authenticator app as unsafe" })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Allow the authenticator app again" })).toBeNull());
+    expect(screen.getByRole("button", { name: "Mark the authenticator app as unsafe" })).toBeTruthy();
+  });
+
+  // The server refuses `active` for a compromised factor (C27, B.1 exit table).
+  it("a compromised factor is never offered back", () => {
+    render(() => <UserSecurityPanel user={detail({ password_state: "compromised", totp_state: "compromised" })} meId="me" />);
+    expect(screen.queryByRole("button", { name: "Allow the password again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Allow the authenticator app again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Mark the password as unsafe" })).toBeNull();
+    expect(screen.getByText("Oma must set a new password before it works again.")).toBeTruthy();
+    expect(screen.getByText("Oma must set up the authenticator app again before it works again.")).toBeTruthy();
   });
 
   it("an admin names the recovery contact of a non-admin account (C28)", async () => {
