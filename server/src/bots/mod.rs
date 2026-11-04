@@ -7,6 +7,8 @@ pub mod error;
 pub mod handlers;
 pub mod types;
 
+use axum::handler::Handler;
+use axum::middleware::from_fn;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 pub use error::BotError;
@@ -15,6 +17,7 @@ pub use types::{
 };
 
 use crate::api::AppState;
+use crate::auth::guards::require_full_session;
 
 /// Create the bots router, mounted at `/api/applications`.
 ///
@@ -29,8 +32,15 @@ pub fn router() -> Router<AppState> {
             "/{id}",
             get(handlers::get_application).delete(handlers::delete_application),
         )
-        .route("/{id}/bot", post(handlers::create_bot))
-        .route("/{id}/reset-token", post(handlers::reset_bot_token))
+        // C27: long-lived tokens only from a full session.
+        .route(
+            "/{id}/bot",
+            post(handlers::create_bot.layer(from_fn(require_full_session))),
+        )
+        .route(
+            "/{id}/reset-token",
+            post(handlers::reset_bot_token.layer(from_fn(require_full_session))),
+        )
         .route("/{id}/intents", put(handlers::update_gateway_intents))
         .route(
             "/{id}/commands",

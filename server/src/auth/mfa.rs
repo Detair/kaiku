@@ -1,33 +1,22 @@
-//! MFA (TOTP, backup codes) and QR login handlers.
+//! TOTP set-up and removal (C27 `totp.set`, `totp.remove`).
 
-use std::net::SocketAddr;
-
-use axum::extract::rejection::JsonRejection;
-use axum::extract::{ConnectInfo, State};
-use axum::http::HeaderMap;
+use axum::extract::State;
 use axum::Json;
-use axum_extra::extract::CookieJar;
 use fred::prelude::*;
 use totp_rs::{Algorithm, Secret, TOTP};
 use uuid::Uuid;
-use validator::Validate;
 
-use super::backup_codes::{find_matching_backup_code, generate_backup_codes, BACKUP_CODE_COUNT};
+use super::ctx::AuthCtx;
 use super::error::{AuthError, AuthResult};
-use super::helpers::should_return_refresh_token;
+use super::factors::Factor;
 use super::mfa_crypto::encrypt_mfa_secret;
 use super::middleware::AuthUser;
 use super::reauth;
-use super::types::{
-    AuthResponse, BackupCodesRequest, MfaBackupCodeCountResponse, MfaBackupCodesResponse,
-    MfaSetupResponse, MfaVerifyRequest, QrCreateResponse, QrRedeemRequest,
-};
+use super::step_up::{self, StepUpAction, StepUpTarget};
+use super::types::{MfaSetupResponse, MfaVerifyRequest};
 use crate::api::AppState;
-use crate::db::{
-    count_all_mfa_backup_codes, count_unused_mfa_backup_codes, delete_mfa_backup_codes,
-    find_user_by_id, get_unused_mfa_backup_codes, mark_mfa_backup_code_used, set_mfa_secret,
-    store_mfa_backup_codes,
-};
+use crate::approvals::transition::lock_accounts;
+use crate::security_events::{spawn_delivery, EventType};
 
 /// Setup MFA (TOTP).
 ///
@@ -50,6 +39,19 @@ pub async fn mfa_setup(
     State(state): State<AppState>,
     auth_user: AuthUser,
 ) -> AuthResult<Json<MfaSetupResponse>> {
+    // C27: `totp.set` from a full session; the grant is consumed at verify.
+    super::guards::require_full(&auth_user)?;
+    {
+        let mut tx = state.db.begin().await?;
+        step_up::peek_tx(
+            &mut tx,
+            &auth_user,
+            StepUpAction::TotpSet,
+            &StepUpTarget::None,
+        )
+        .await?;
+        tx.commit().await?;
+    }
     // Check if encryption key is configured
     let encryption_key = state
         .config
@@ -113,7 +115,10 @@ pub async fn mfa_setup(
     }))
 }
 
-/// Verify MFA code (TOTP or backup code).
+/// Confirm a new TOTP secret (C27 `totp.set`): the code of the pending
+/// secret from `/auth/mfa/setup`, a full session and the step-up grant,
+/// consumed here. A new TOTP generation starts (state `active`, B.1 renewal)
+/// and the event `authenticator_added {type: totp}` is recorded.
 ///
 /// POST /auth/mfa/verify
 #[utoipa::path(
@@ -122,420 +127,158 @@ pub async fn mfa_setup(
     tag = "auth",
     request_body = MfaVerifyRequest,
     responses(
-        (status = 200, description = "MFA verification successful"),
+        (status = 200, description = "TOTP set up"),
+        (status = 401, description = "INVALID_MFA"),
+        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, headers, request), fields(user_id = %auth_user.id))]
+#[tracing::instrument(skip(state, request), fields(user_id = %auth_user.id))]
 pub async fn mfa_verify(
     State(state): State<AppState>,
     auth_user: AuthUser,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(request): Json<MfaVerifyRequest>,
 ) -> AuthResult<Json<serde_json::Value>> {
-    reauth::ensure_not_locked(&state, auth_user.id).await?;
-
-    // Get user to retrieve encrypted MFA secret (the TOTP check decrypts it)
-    let user = find_user_by_id(&state.db, auth_user.id)
-        .await
-        .map_err(|_| AuthError::Internal("Database error".to_string()))?
-        .ok_or(AuthError::UserNotFound)?;
-
-    // Check if MFA is enabled — either permanently (DB) or pending setup (Redis).
-    let (encrypted_secret, is_pending_setup) = if let Some(secret) = user.mfa_secret {
-        (secret, false)
-    } else {
-        // Check for pending MFA secret in Redis (from mfa_setup)
-        let redis_key = format!("mfa:pending:{}", auth_user.id);
-        let pending: Option<String> =
-            state.redis.get(&redis_key).await.map_err(|e| {
-                AuthError::Internal(format!("Failed to check pending MFA secret: {e}"))
-            })?;
-        match pending {
-            Some(secret) => (secret, true),
-            None => return Err(AuthError::Validation("MFA not enabled".to_string())),
-        }
+    super::guards::require_full(&auth_user)?;
+    let redis_key = format!("mfa:pending:{}", auth_user.id);
+    let pending: Option<String> = state.redis.get(&redis_key).await.map_err(|e| {
+        tracing::error!(error = %e, "Cannot read the pending TOTP secret");
+        AuthError::ServiceUnavailable
+    })?;
+    let Some(encrypted_secret) = pending else {
+        return Err(AuthError::Validation(
+            "Start the authenticator setup first".to_string(),
+        ));
     };
-
-    // Count all backup codes (used + unused) BEFORE verification to detect first-time setup.
-    // This must happen before any backup code is consumed, otherwise exhausting the last
-    // code would be indistinguishable from never having had codes.
-    let total_codes_before = count_all_mfa_backup_codes(&state.db, auth_user.id)
-        .await
-        .map_err(AuthError::Database)?;
-
-    // Try TOTP code first (accepted once per step: replay protection)
-    let totp_valid = reauth::accept_totp(
+    // Flash r5: a missing grant answers before the code is spent.
+    {
+        let mut tx = state.db.begin().await?;
+        step_up::peek_tx(
+            &mut tx,
+            &auth_user,
+            StepUpAction::TotpSet,
+            &StepUpTarget::None,
+        )
+        .await?;
+        tx.commit().await?;
+    }
+    // Accepted once per step (replay store).
+    if !reauth::accept_totp(
         &state,
         auth_user.id,
         &encrypted_secret,
-        &user.username,
+        &auth_user.username,
         &request.code,
     )
+    .await?
+    {
+        return Err(AuthError::InvalidMfaCode);
+    }
+
+    let ctx = AuthCtx::from(&state);
+    let mut tx = state.db.begin().await?;
+    lock_accounts(&mut tx, &[auth_user.id]).await?;
+    let grant = step_up::consume_tx(
+        &mut tx,
+        &auth_user,
+        StepUpAction::TotpSet,
+        &StepUpTarget::None,
+    )
     .await?;
-
-    if !totp_valid {
-        // TOTP failed — try backup code
-        let backup_codes = get_unused_mfa_backup_codes(&state.db, auth_user.id)
-            .await
-            .map_err(AuthError::Database)?;
-
-        let hashes: Vec<String> = backup_codes.iter().map(|c| c.code_hash.clone()).collect();
-        if let Some(matched_idx) = match_backup_code(&request.code, hashes).await? {
-            let used_code_id = backup_codes[matched_idx].id;
-            mark_mfa_backup_code_used(&state.db, used_code_id)
-                .await
-                .map_err(AuthError::Database)?;
-            tracing::info!(
-                user_id = %auth_user.id,
-                code_id = %used_code_id,
-                "MFA backup code used for verification"
-            );
-        } else {
-            let client_ip = reauth::client_ip(&state, &headers, addr);
-            reauth::record_failure(&state, auth_user.id, client_ip).await?;
-            return Err(AuthError::InvalidMfaCode);
-        }
-    }
-
-    // If this was a pending setup, persist the secret to DB and clean up Redis.
-    if is_pending_setup {
-        set_mfa_secret(&state.db, auth_user.id, Some(&encrypted_secret))
-            .await
-            .map_err(|e| AuthError::Internal(format!("Failed to persist MFA secret: {e}")))?;
-
-        let redis_key = format!("mfa:pending:{}", auth_user.id);
-        let _ = state.redis.del::<(), _>(&redis_key).await;
-    }
-
-    // Auto-generate backup codes only on first-time setup completion.
-    // We use total_codes_before (counted before verification) to distinguish
-    // "never had codes" from "used the last code in this request".
-    if total_codes_before == 0 {
-        // First-time verify after setup — auto-generate backup codes
-        let (plaintext_codes, hashes) = new_backup_codes().await?;
-
-        store_mfa_backup_codes(&state.db, auth_user.id, &hashes)
-            .await
-            .map_err(AuthError::Database)?;
-
-        tracing::info!(
-            user_id = %auth_user.id,
-            count = plaintext_codes.len(),
-            "MFA backup codes auto-generated on first verify"
-        );
-
-        return Ok(Json(serde_json::json!({
-            "success": true,
-            "message": "MFA verification successful",
-            "backup_codes": plaintext_codes
-        })));
-    }
-
+    let generation = super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
+    sqlx::query("UPDATE users SET mfa_secret = $2, updated_at = NOW() WHERE id = $1")
+        .bind(auth_user.id)
+        .bind(&encrypted_secret)
+        .execute(&mut *tx)
+        .await?;
+    super::strong::mark_first_activity(&mut tx, auth_user.id).await?;
+    let events = vec![
+        super::profile::record_own_with(
+            &mut tx,
+            &auth_user,
+            &grant,
+            EventType::AuthenticatorAdded,
+            serde_json::json!({ "type": "totp", "generation": generation }),
+        )
+        .await?,
+        step_up::record_action_tx(&mut tx, &auth_user, &grant, StepUpAction::TotpSet, "").await?,
+    ];
+    tx.commit().await?;
+    let _ = state.redis.del::<(), _>(&redis_key).await;
+    spawn_delivery(&state, events);
+    // C26: `authenticators_changed` on a TOTP change (Flash r5).
+    crate::approvals::devices::notify_authenticators_changed(&state, auth_user.id).await;
     Ok(Json(serde_json::json!({
         "success": true,
         "message": "MFA verification successful"
     })))
 }
 
-/// Disable MFA.
+/// Turn TOTP off (C27 `totp.remove`): a full session and the step-up grant.
+/// A code in the body is accepted and ignored (a code is never a step-up,
+/// F7). Event `authenticator_removed {type: totp, by: self}`.
 ///
 /// POST /auth/mfa/disable
 #[utoipa::path(
     post,
     path = "/auth/mfa/disable",
     tag = "auth",
-    request_body = MfaVerifyRequest,
     responses(
-        (status = 200, description = "MFA disabled successfully"),
+        (status = 200, description = "TOTP turned off"),
+        (status = 403, description = "FULL_SESSION_REQUIRED or STEP_UP_REQUIRED"),
     ),
     security(("bearer_auth" = [])),
 )]
-#[tracing::instrument(skip(state, headers, request), fields(user_id = %auth_user.id))]
+#[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
 pub async fn mfa_disable(
     State(state): State<AppState>,
     auth_user: AuthUser,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(request): Json<MfaVerifyRequest>,
 ) -> AuthResult<Json<serde_json::Value>> {
-    // Require MFA verification before disabling (security measure)
-    // First verify the provided code is valid. A lock or a limiter outage
-    // keeps its own answer; every other failure reads as a wrong code.
-    let _verified = mfa_verify(
-        State(state.clone()),
-        auth_user.clone(),
-        ConnectInfo(addr),
-        headers,
-        Json(request),
+    super::guards::require_full(&auth_user)?;
+    let ctx = AuthCtx::from(&state);
+    let mut tx = state.db.begin().await?;
+    lock_accounts(&mut tx, &[auth_user.id]).await?;
+    let grant = step_up::consume_tx(
+        &mut tx,
+        &auth_user,
+        StepUpAction::TotpRemove,
+        &StepUpTarget::None,
     )
-    .await
-    .map_err(|e| match e {
-        AuthError::TooManyAttempts { .. }
-        | AuthError::ServiceUnavailable
-        | AuthError::Internal(_) => e,
-        _ => AuthError::InvalidMfaCode,
-    })?;
-
-    // Clear MFA secret from database
-    set_mfa_secret(&state.db, auth_user.id, None)
-        .await
-        .map_err(|e| AuthError::Internal(format!("Failed to disable MFA: {e}")))?;
-
-    // Delete all backup codes (no longer needed)
-    delete_mfa_backup_codes(&state.db, auth_user.id)
-        .await
-        .map_err(|e| AuthError::Internal(format!("Failed to delete backup codes: {e}")))?;
-
+    .await?;
+    let had: bool = sqlx::query_scalar("SELECT mfa_secret IS NOT NULL FROM users WHERE id = $1")
+        .bind(auth_user.id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if !had {
+        return Err(AuthError::Validation("MFA not enabled".to_string()));
+    }
+    super::factors::replace_tx(&mut tx, &ctx, auth_user.id, Factor::Totp).await?;
+    set_mfa_secret_tx(&mut tx, auth_user.id).await?;
+    let events = vec![
+        super::profile::record_own_with(
+            &mut tx,
+            &auth_user,
+            &grant,
+            EventType::AuthenticatorRemoved,
+            serde_json::json!({ "type": "totp", "by": "self" }),
+        )
+        .await?,
+        step_up::record_action_tx(&mut tx, &auth_user, &grant, StepUpAction::TotpRemove, "")
+            .await?,
+    ];
+    tx.commit().await?;
+    spawn_delivery(&state, events);
+    crate::approvals::devices::notify_authenticators_changed(&state, auth_user.id).await;
     Ok(Json(serde_json::json!({
         "success": true,
         "message": "MFA disabled successfully"
     })))
 }
 
-/// Generate MFA backup codes (one-time display).
-///
-/// Generates 10 random 8-character alphanumeric backup codes, hashes them with
-/// Argon2id, and stores only the hashes. Returns the plaintext codes to the
-/// user exactly once — they must save them now.
-///
-/// Calling this endpoint again regenerates all codes, invalidating any previously
-/// generated codes.
-///
-/// Requires MFA to be enabled on the account and a current TOTP code in the
-/// body (C24); backup codes are not accepted.
-///
-/// POST /auth/mfa/backup-codes
-#[utoipa::path(
-    post,
-    path = "/auth/mfa/backup-codes",
-    tag = "auth",
-    request_body = BackupCodesRequest,
-    responses(
-        (status = 200, description = "Backup codes generated", body = MfaBackupCodesResponse),
-        (status = 400, description = "Missing code, or MFA is not enabled"),
-        (status = 401, description = "Invalid code"),
-        (status = 429, description = "Too many failed attempts"),
-    ),
-    security(("bearer_auth" = [])),
-)]
-#[tracing::instrument(skip(state, headers, body), fields(user_id = %auth_user.id))]
-pub async fn mfa_generate_backup_codes(
-    State(state): State<AppState>,
-    auth_user: AuthUser,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<BackupCodesRequest>, JsonRejection>,
-) -> AuthResult<Json<MfaBackupCodesResponse>> {
-    let Json(body) = body.map_err(|e| AuthError::Validation(e.body_text()))?;
-    body.validate()
-        .map_err(|e| AuthError::Validation(crate::validation::format_validation_errors(&e)))?;
-
-    // Verify MFA is enabled before generating backup codes
-    let user = find_user_by_id(&state.db, auth_user.id)
-        .await
-        .map_err(AuthError::Database)?
-        .ok_or(AuthError::UserNotFound)?;
-
-    if user.mfa_secret.is_none() {
-        return Err(AuthError::Validation(
-            "MFA must be enabled before generating backup codes".to_string(),
-        ));
-    }
-
-    let client_ip = reauth::client_ip(&state, &headers, addr);
-    reauth::verify_reauth(
-        &state,
-        auth_user.id,
-        None,
-        Some(&body.mfa_code),
-        false,
-        client_ip,
-    )
-    .await?;
-
-    // Generate 10 random backup codes and their Argon2id hashes
-    let (plaintext_codes, hashes) = new_backup_codes().await?;
-
-    // Store hashes (replaces any existing codes)
-    store_mfa_backup_codes(&state.db, auth_user.id, &hashes)
-        .await
-        .map_err(AuthError::Database)?;
-
-    tracing::info!(
-        user_id = %auth_user.id,
-        count = plaintext_codes.len(),
-        "MFA backup codes generated"
-    );
-
-    Ok(Json(MfaBackupCodesResponse {
-        codes: plaintext_codes,
-    }))
-}
-
-/// Generate backup codes (Argon2 hashing) off the async runtime.
-async fn new_backup_codes() -> AuthResult<(Vec<String>, Vec<String>)> {
-    tokio::task::spawn_blocking(generate_backup_codes)
-        .await
-        .map_err(|e| AuthError::Internal(format!("Backup code generation failed: {e}")))?
-        .map_err(|e| AuthError::Internal(format!("Failed to generate backup codes: {e}")))
-}
-
-/// Find the stored backup code matching `code` (Argon2 checks) off the async
-/// runtime.
-async fn match_backup_code(code: &str, hashes: Vec<String>) -> AuthResult<Option<usize>> {
-    let code = code.to_owned();
-    tokio::task::spawn_blocking(move || find_matching_backup_code(&code, &hashes))
-        .await
-        .map_err(|e| AuthError::Internal(format!("Backup code check failed: {e}")))
-}
-
-/// Get remaining MFA backup code count.
-///
-/// GET /auth/mfa/backup-codes/count
-#[utoipa::path(
-    get,
-    path = "/auth/mfa/backup-codes/count",
-    tag = "auth",
-    responses(
-        (status = 200, description = "Backup code count", body = MfaBackupCodeCountResponse),
-    ),
-    security(("bearer_auth" = [])),
-)]
-#[tracing::instrument(skip(state), fields(user_id = %auth_user.id))]
-pub async fn mfa_backup_code_count(
-    State(state): State<AppState>,
-    auth_user: AuthUser,
-) -> AuthResult<Json<MfaBackupCodeCountResponse>> {
-    // Verify MFA is enabled
-    let user = find_user_by_id(&state.db, auth_user.id)
-        .await
-        .map_err(AuthError::Database)?
-        .ok_or(AuthError::UserNotFound)?;
-
-    if user.mfa_secret.is_none() {
-        return Err(AuthError::Validation("MFA is not enabled".to_string()));
-    }
-
-    let remaining = count_unused_mfa_backup_codes(&state.db, auth_user.id)
-        .await
-        .map_err(AuthError::Database)?;
-
-    Ok(Json(MfaBackupCodeCountResponse {
-        remaining,
-        total: BACKUP_CODE_COUNT as i64,
-    }))
-}
-
-// ============================================================================
-// QR Login Handlers
-// ============================================================================
-
-/// Create a one-time QR login token for the authenticated user.
-///
-/// POST /auth/qr/create
-///
-/// The token is stored in Valkey with a 120-second TTL and can be redeemed
-/// exactly once by an unauthenticated device (e.g. mobile app scanning a QR code).
-#[tracing::instrument(skip(state))]
-pub async fn qr_create(
-    State(state): State<AppState>,
-    auth: AuthUser,
-) -> AuthResult<Json<QrCreateResponse>> {
-    let token = Uuid::now_v7().to_string();
-    let redis_key = format!("qr_login:{token}");
-
-    state
-        .redis
-        .set::<(), _, _>(
-            &redis_key,
-            auth.id.to_string(),
-            Some(fred::types::Expiration::EX(120)),
-            Some(fred::types::SetOptions::NX),
-            false,
-        )
-        .await
-        .map_err(|e| AuthError::Internal(format!("Failed to store QR token: {e}")))?;
-
-    tracing::info!(user_id = %auth.id, "Created QR login token");
-
-    Ok(Json(QrCreateResponse {
-        token,
-        expires_in: 120,
-    }))
-}
-
-/// Redeem a one-time QR login token for a full auth session.
-///
-/// POST /auth/qr/redeem
-///
-/// The token is consumed atomically via `GETDEL` so it cannot be reused.
-/// Returns an access/refresh token pair identical to the login endpoint.
-#[tracing::instrument(skip(state, jar, headers, body))]
-pub async fn qr_redeem(
-    State(state): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    jar: CookieJar,
-    Json(body): Json<QrRedeemRequest>,
-) -> AuthResult<(CookieJar, Json<AuthResponse>)> {
-    let token_uuid: Uuid = body.token.parse().map_err(|_| {
-        crate::observability::metrics::record_auth_login_attempt(false);
-        AuthError::InvalidCredentials
-    })?;
-    let redis_key = format!("qr_login:{token_uuid}");
-
-    // Atomic get-and-delete (one-use)
-    let user_id_str: Option<String> = state
-        .redis
-        .getdel(&redis_key)
-        .await
-        .map_err(|e| AuthError::Internal(format!("Failed to read QR token: {e}")))?;
-
-    let user_id_str = user_id_str.ok_or_else(|| {
-        crate::observability::metrics::record_auth_login_attempt(false);
-        AuthError::InvalidCredentials
-    })?;
-    let user_id: Uuid = user_id_str
-        .parse()
-        .map_err(|_| AuthError::Internal("Invalid user ID in QR token".to_string()))?;
-
-    // Verify user still exists (may have been deleted/banned during the token window)
-    let user = find_user_by_id(&state.db, user_id).await?.ok_or_else(|| {
-        crate::observability::metrics::record_auth_login_attempt(false);
-        AuthError::InvalidCredentials
-    })?;
-
-    // A banned account cannot start a new session.
-    if super::queries::is_user_globally_banned(&state.db, user_id).await? {
-        return Err(AuthError::AccountBanned);
-    }
-
-    // Create the session (probation, CC4) with the redeeming client.
-    let client = super::session_issue::SessionClient::from_request(&state, &headers, addr);
-    let issued = super::session_issue::issue_session(
-        &super::ctx::AuthCtx::from(&state),
-        &super::session_issue::NewSession {
-            user_id,
-            method: super::session_issue::SignInMethod::LegacyQrRedeem,
-            client: &client,
-            client_class: super::client_class::ClientClass::from_headers(&headers),
-            authenticator: None,
-        },
-    )
-    .await?;
-    crate::security_events::spawn_delivery(&state, issued.event_ids.clone());
-
-    tracing::info!(user_id = %user_id, "QR login token redeemed");
-    crate::observability::metrics::record_auth_login_attempt(true);
-
-    let include_refresh_token = should_return_refresh_token(&headers);
-
-    let jar = jar.add(issued.refresh_cookie(&state.config));
-
-    Ok((
-        jar,
-        Json(issued.into_response(user.must_change_password, include_refresh_token)),
-    ))
+async fn set_mfa_secret_tx(conn: &mut sqlx::PgConnection, user_id: Uuid) -> sqlx::Result<()> {
+    sqlx::query("UPDATE users SET mfa_secret = NULL, updated_at = NOW() WHERE id = $1")
+        .bind(user_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
 }

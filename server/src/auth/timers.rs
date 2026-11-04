@@ -54,10 +54,43 @@ pub async fn run_once(state: &AppState) -> anyhow::Result<()> {
                 tracing::warn!(error = %e, "sweep: enrolment expiry failed");
                 first_err.get_or_insert_with(|| e.into());
             }
+            // 4. Login attempts: dead claims reopen, past due expire (SM1).
+            if let Err(e) = crate::auth::login_attempts::core::expire_due(&mut conn).await {
+                tracing::warn!(error = %e, "sweep: login attempt expiry failed");
+                first_err.get_or_insert_with(|| e.into());
+            }
+            // 5. Accounts whose registration ticket bound nothing (F8).
+            if let Err(e) = crate::auth::registration::delete_unbound_due(&mut conn).await {
+                tracing::warn!(error = %e, "sweep: unbound account clean-up failed");
+                first_err.get_or_insert_with(|| e.into());
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "sweep: no connection for the expiry steps");
             first_err.get_or_insert_with(|| e.into());
+        }
+    }
+
+    // 6. Account requests: ready soon, ready, admin completion, expiry (SM3).
+    match crate::auth::account_requests::core::timers(&crate::auth::ctx::AuthCtx::from(state)).await
+    {
+        Ok(events) => crate::security_events::spawn_delivery(state, events),
+        Err(e) => {
+            tracing::warn!(error = %e, "sweep: account request timers failed");
+            first_err.get_or_insert_with(|| anyhow::anyhow!(e.to_string()));
+        }
+    }
+
+    // 7. `bootstrap_reminder` every 30 days while `bootstrap_open` (C28).
+    match crate::auth::security_overview::bootstrap_reminders(&crate::auth::ctx::AuthCtx::from(
+        state,
+    ))
+    .await
+    {
+        Ok(events) => crate::security_events::spawn_delivery(state, events),
+        Err(e) => {
+            tracing::warn!(error = %e, "sweep: bootstrap reminders failed");
+            first_err.get_or_insert_with(|| anyhow::anyhow!(e.to_string()));
         }
     }
 

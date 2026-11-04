@@ -812,11 +812,12 @@ async fn concurrent_passkey_step_ups_never_deadlock(pool: PgPool) {
             json!({"ceremony_id": start["ceremony_id"], "credential": cred}),
         ));
     }
-    // Another transaction holds a key-share lock on the account (as any
-    // insert that references it does), so both grants reach their account
-    // lock before either commits.
+    // Another transition holds the account lock (L1b: account locks are
+    // `FOR NO KEY UPDATE`, which a key-share lock of an FK insert no longer
+    // blocks), so both grants reach their account lock before either
+    // commits.
     let mut holder = app.pool.begin().await.unwrap();
-    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR KEY SHARE")
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE")
         .bind(user)
         .execute(&mut *holder)
         .await

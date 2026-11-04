@@ -106,6 +106,13 @@ async fn test_unlink_identity_success(pool: PgPool) {
         .await
         .unwrap();
 
+    super::helpers::grant_step_up(
+        &app.pool,
+        super::helpers::test_session_id(user_id),
+        "identity.unlink",
+        &id1.to_string(),
+    )
+    .await;
     assert_eq!(unlink(&app, &token, id1).await, 204);
 
     let (_, json) = get_identities(&app, &token).await;
@@ -185,6 +192,13 @@ async fn test_unlink_one_of_two_allowed_for_passwordless_user(pool: PgPool) {
         .unwrap();
 
     // With two identities, a passwordless user may still drop one.
+    super::helpers::grant_step_up(
+        &app.pool,
+        super::helpers::test_session_id(user_id),
+        "identity.unlink",
+        &id1.to_string(),
+    )
+    .await;
     assert_eq!(unlink(&app, &token, id1).await, 204);
 }
 

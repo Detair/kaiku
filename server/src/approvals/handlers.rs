@@ -30,7 +30,7 @@ const STEPUP_TTL_SECS: i64 = 120;
 /// the caller's own account (its sessions and key devices) are read only
 /// from that account; admin targets name any account, so `step_up` lets
 /// only system admins get here with an `admin.*` action.
-async fn target_label(
+pub(crate) async fn target_label(
     conn: &mut sqlx::PgConnection,
     user_id: uuid::Uuid,
     action: StepUpAction,
@@ -90,6 +90,15 @@ async fn target_label(
         .await?
         .flatten()
         .map(|ua| crate::auth::ua_parser::parse_device_name(&ua)),
+        StepUpAction::IdentityUnlink => {
+            sqlx::query_scalar(
+                "SELECT provider_slug FROM user_identities WHERE id = $1 AND user_id = $2",
+            )
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&mut *conn)
+            .await?
+        }
         _ => None,
     };
     Ok(label.unwrap_or_default())
@@ -178,10 +187,59 @@ async fn lock_challenge(
     if approver_id != auth.id {
         return Err(ApprovalError::NotFound);
     }
-    super::transition::lock_accounts(conn, &[auth.id, subject_id]).await?;
+    // An `enroll` answer may confirm (and start a request or replace a key):
+    // its whole account scope first, in one ascending statement (Codex r3).
+    let enrollment: Option<Uuid> = sqlx::query_scalar(
+        "SELECT requester_id FROM approvals
+          WHERE id = $1 AND kind = 'enroll' AND requester_kind = 'enrollment'",
+    )
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .flatten();
+    match enrollment {
+        Some(e) => {
+            super::enrollments::lock_confirm_scope(conn, e, &[auth.id]).await?;
+        }
+        None => {
+            super::transition::lock_accounts(conn, &[auth.id, subject_id]).await?;
+        }
+    }
     let dev = key_device_session(conn, auth).await?;
     let row = lock_for_answer(conn, id, dev.device.user_id, dev.device.device_id).await?;
     Ok((dev, row))
+}
+
+/// Claim a login attempt with the scanned QR token (C26, SM1): from a key
+/// device's own session with `may_approve` on → 201 `ApprovalChallenge`
+/// (`login`).
+#[utoipa::path(
+    post,
+    path = "/api/approvals/claim",
+    tag = "approvals",
+    request_body = crate::auth::login_attempts::types::ClaimRequest,
+    responses(
+        (status = 201, body = ApprovalChallenge),
+        (status = 403, description = "KEY_DEVICE_REQUIRED or APPROVAL_NOT_ALLOWED"),
+        (status = 404, description = "LOGIN_CODE_STALE"),
+        (status = 409, description = "LOGIN_ATTEMPT_CLAIMED or LOGIN_ATTEMPT_OTHER_ACCOUNT"),
+    ),
+    security(("bearer_auth" = [])),
+)]
+#[tracing::instrument(skip(state, auth, body), fields(user_id = %auth.id))]
+pub async fn claim(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<crate::auth::login_attempts::types::ClaimRequest>,
+) -> Result<(StatusCode, Json<ApprovalChallenge>), ApprovalError> {
+    let token = crate::auth::login_attempts::core::decode_token(&body.token)
+        .ok_or(ApprovalError::LoginCodeStale)?;
+    let ctx = AuthCtx::from(&state);
+    let mut tx = state.db.begin().await?;
+    let challenge =
+        crate::auth::login_attempts::core::claim_tx(&mut tx, &ctx, &auth, &token).await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(challenge)))
 }
 
 /// Answer a challenge with a UV signature (C26 answer results).
@@ -305,13 +363,39 @@ pub async fn answer(
                 Err(e) => Err(e),
             }
         }
-        // `login` arrives with L1b; proofs answered at their own routes.
+        Some(Kind::Login) => {
+            let result = crate::auth::login_attempts::core::answer_tx(
+                &mut tx,
+                &ctx,
+                &dev,
+                &row,
+                decision,
+                &response,
+                &body.signature,
+            )
+            .await;
+            match result {
+                Ok((answer, events)) => {
+                    tx.commit().await?;
+                    crate::security_events::spawn_delivery(&state, events);
+                    crate::security_events::notices::spawn_pending_delivery(&state);
+                    Ok(Json(answer))
+                }
+                // The attempt ended: its challenge is void (keep that mark).
+                Err(ApprovalError::State) => {
+                    tx.commit().await?;
+                    Err(ApprovalError::State)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        // Proofs are answered at their own routes.
         _ => Err(ApprovalError::NotFound),
     }
 }
 
 /// The unsigned "No" (C26): `enroll` cancels the enrolment its issuer
-/// started; `login` arrives with L1b.
+/// started; `login` denies the attempt.
 #[utoipa::path(
     post,
     path = "/api/approvals/{id}/deny",
@@ -359,11 +443,21 @@ pub async fn deny(
             super::enrollments::notify_issuer_after_failure(&state, row.requester_id).await;
             Ok(StatusCode::NO_CONTENT)
         }
+        Some(Kind::Login) => {
+            let _ = dev;
+            match crate::auth::login_attempts::core::deny_tx(&mut tx, &row).await {
+                Ok(()) | Err(ApprovalError::State) => {
+                    tx.commit().await?;
+                    Ok(StatusCode::NO_CONTENT)
+                }
+                Err(e) => Err(e),
+            }
+        }
         _ => Err(ApprovalError::NotFound),
     }
 }
 
-/// Back / dismissed (C26): only `login` claims return to `open` (L1b).
+/// Back / dismissed (C26): only `login` claims return to `open`.
 #[utoipa::path(
     post,
     path = "/api/approvals/{id}/release",
@@ -386,6 +480,15 @@ pub async fn release(
             Err(ApprovalError::Expired)
         }
         Err(e) => Err(e),
+        Ok((_, row)) if row.kind() == Some(Kind::Login) => {
+            match crate::auth::login_attempts::core::release_tx(&mut tx, &row).await {
+                Ok(()) | Err(ApprovalError::State) => {
+                    tx.commit().await?;
+                    Ok(StatusCode::NO_CONTENT)
+                }
+                Err(e) => Err(e),
+            }
+        }
         Ok(_) => Err(ApprovalError::NotFound),
     }
 }

@@ -297,7 +297,7 @@ async fn lock_full_session(conn: &mut PgConnection, auth: &AuthUser) -> AuthResu
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT assurance FROM sessions
           WHERE id = $1 AND user_id = $2 AND ended_at IS NULL
-            AND expires_at > NOW() AND absolute_expires_at > NOW()
+            AND expires_at > clock_timestamp() AND absolute_expires_at > clock_timestamp()
           FOR UPDATE",
     )
     .bind(sid)
@@ -378,12 +378,12 @@ async fn open_grant(
     let sql = if lock {
         "SELECT id, via, authenticator_type, authenticator_id FROM step_up_grants
           WHERE session_id = $1 AND action = $2 AND target_hash = $3
-            AND used_at IS NULL AND voided_at IS NULL AND expires_at > NOW()
+            AND used_at IS NULL AND voided_at IS NULL AND expires_at > clock_timestamp()
           ORDER BY created_at, id LIMIT 1 FOR UPDATE"
     } else {
         "SELECT id, via, authenticator_type, authenticator_id FROM step_up_grants
           WHERE session_id = $1 AND action = $2 AND target_hash = $3
-            AND used_at IS NULL AND voided_at IS NULL AND expires_at > NOW()
+            AND used_at IS NULL AND voided_at IS NULL AND expires_at > clock_timestamp()
           ORDER BY created_at, id LIMIT 1"
     };
     let grant: OpenGrant = sqlx::query_as(sql)
@@ -445,6 +445,43 @@ pub async fn consume_tx(
             id: grant.authenticator_id,
         },
     })
+}
+
+/// Record the `step_up_action {action, target_label}` event of a consumed
+/// grant (C28), with the session and the authenticator that produced it.
+pub async fn record_action_tx(
+    conn: &mut PgConnection,
+    auth: &AuthUser,
+    grant: &ConsumedGrant,
+    action: StepUpAction,
+    target_label: &str,
+) -> sqlx::Result<Uuid> {
+    use crate::security_events::{record, Actor, EventType, NewSecurityEvent};
+    let mut ev = NewSecurityEvent::new(
+        auth.id,
+        EventType::StepUpAction,
+        Actor::User(auth.id),
+        serde_json::json!({ "action": action.as_str(), "target_label": target_label }),
+    );
+    ev.session_id = auth.session_id;
+    ev.authenticator = Some(grant.by);
+    record(conn, ev).await
+}
+
+/// The display label of a target (the `step_up_action` event's
+/// `target_label`; the same text a `device_stepup` signs).
+pub async fn target_label_tx(
+    conn: &mut PgConnection,
+    user_id: Uuid,
+    action: StepUpAction,
+    target: &StepUpTarget,
+) -> AuthResult<String> {
+    crate::approvals::handlers::target_label(conn, user_id, action, target)
+        .await
+        .map_err(|e| match e {
+            crate::approvals::error::ApprovalError::Database(d) => AuthError::Database(d),
+            other => AuthError::Internal(other.to_string()),
+        })
 }
 
 /// Void the open grants of these sessions (B.7 rule 2).

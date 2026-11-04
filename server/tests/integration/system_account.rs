@@ -80,6 +80,8 @@ async fn system_account_exists_with_fixed_id(pool: PgPool) {
 #[sqlx::test]
 async fn system_account_refused_on_every_auth_path(pool: PgPool) {
     let app = TestApp::with_pool(pool.clone()).await;
+    super::helpers::login::forget_password_counters(&app.state.redis, &["kaiku", "nobody_here_x"])
+        .await;
 
     // Password login: identical to an unknown user.
     let (s_sys, b_sys) = send_json(

@@ -13,8 +13,7 @@ use uuid::Uuid;
 
 use super::models::{
     AuthMethodsConfig, Channel, ChannelMember, ChannelType, ChannelUnread, FileAttachment,
-    GuildUnreadSummary, Message, MfaBackupCode, OidcProviderRow, PasswordResetToken, Session,
-    UnreadAggregate, User, UserIdentity,
+    GuildUnreadSummary, Message, OidcProviderRow, Session, UnreadAggregate, User, UserIdentity,
 };
 
 /// Log and return a database error with context.
@@ -117,7 +116,7 @@ pub async fn list_user_identities(pool: &PgPool, user_id: Uuid) -> sqlx::Result<
     .map_err(db_error!("list_user_identities", user_id = %user_id))
 }
 
-/// Result of [`unlink_identity_guarded`].
+/// Result of [`unlink_identity_tx`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum UnlinkOutcome {
     /// The identity was removed.
@@ -128,24 +127,20 @@ pub enum UnlinkOutcome {
     WouldLockOut,
 }
 
-/// Unlink an identity atomically.
+/// Unlink `identity_id` from `user_id` inside the caller's transaction.
 ///
-/// Runs the ownership check, the last-login-method guard, and the delete in a
-/// single transaction that locks the owning user row, so concurrent unlinks for
-/// the same account cannot race past the guard and strand a passwordless user
-/// with zero login methods.
-pub async fn unlink_identity_guarded(
-    pool: &PgPool,
+/// The caller holds the account lock. Refused when it is the account's last
+/// way to sign in: no password, no other identity and no active strong
+/// authenticator (B.1).
+pub async fn unlink_identity_tx(
+    conn: &mut sqlx::PgConnection,
     user_id: Uuid,
     identity_id: Uuid,
 ) -> sqlx::Result<UnlinkOutcome> {
-    let mut tx = pool.begin().await?;
-
-    // Lock the user row to serialize concurrent unlinks for this account.
     let password_hash: Option<Option<String>> =
-        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR UPDATE")
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
             .bind(user_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut *conn)
             .await?;
     let Some(password_hash) = password_hash else {
         return Ok(UnlinkOutcome::NotFound);
@@ -157,20 +152,21 @@ pub async fn unlink_identity_guarded(
     )
     .bind(identity_id)
     .bind(user_id)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
     if !owned {
         return Ok(UnlinkOutcome::NotFound);
     }
 
-    // A passwordless account must keep at least one identity.
+    // A passwordless account must keep a way to sign in.
     if password_hash.is_none() {
         let count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM user_identities WHERE user_id = $1")
                 .bind(user_id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut *conn)
                 .await?;
-        if count <= 1 {
+        let strong = crate::auth::strong::active_strong_count(&mut *conn, user_id).await?;
+        if count <= 1 && strong == 0 {
             return Ok(UnlinkOutcome::WouldLockOut);
         }
     }
@@ -178,9 +174,8 @@ pub async fn unlink_identity_guarded(
     sqlx::query("DELETE FROM user_identities WHERE id = $1 AND user_id = $2")
         .bind(identity_id)
         .bind(user_id)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
-    tx.commit().await?;
     Ok(UnlinkOutcome::Deleted)
 }
 
@@ -516,187 +511,6 @@ pub async fn cleanup_expired_device_transfers(pool: &PgPool) -> sqlx::Result<u64
     let result = sqlx::query("DELETE FROM device_transfers WHERE expires_at < NOW()")
         .execute(pool)
         .await?;
-    Ok(result.rows_affected())
-}
-
-// ============================================================================
-// Password Reset Token Queries
-// ============================================================================
-
-/// Create a password reset token.
-pub async fn create_password_reset_token(
-    pool: &PgPool,
-    user_id: Uuid,
-    token_hash: &str,
-    expires_at: DateTime<Utc>,
-) -> sqlx::Result<PasswordResetToken> {
-    sqlx::query_as::<_, PasswordResetToken>(
-        r"
-        INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
-        VALUES ($1, $2, $3)
-        RETURNING *
-        ",
-    )
-    .bind(user_id)
-    .bind(token_hash)
-    .bind(expires_at)
-    .fetch_one(pool)
-    .await
-    .map_err(db_error!("create_password_reset_token", user_id = %user_id))
-}
-
-/// Find a valid (unused, non-expired) password reset token by its hash.
-pub async fn find_valid_reset_token(
-    pool: &PgPool,
-    token_hash: &str,
-) -> sqlx::Result<Option<PasswordResetToken>> {
-    sqlx::query_as::<_, PasswordResetToken>(
-        "SELECT * FROM password_reset_tokens WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()",
-    )
-    .bind(token_hash)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| {
-        error!(query = "find_valid_reset_token", error = %e, "Database query failed");
-        e
-    })
-}
-
-/// Mark a password reset token as used.
-pub async fn mark_reset_token_used(pool: &PgPool, token_id: Uuid) -> sqlx::Result<()> {
-    sqlx::query("UPDATE password_reset_tokens SET used_at = NOW() WHERE id = $1")
-        .bind(token_id)
-        .execute(pool)
-        .await
-        .map_err(db_error!("mark_reset_token_used", token_id = %token_id))?;
-    Ok(())
-}
-
-/// Invalidate all unused password reset tokens for a user.
-pub async fn invalidate_user_reset_tokens(pool: &PgPool, user_id: Uuid) -> sqlx::Result<u64> {
-    let result = sqlx::query(
-        "UPDATE password_reset_tokens SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL",
-    )
-    .bind(user_id)
-    .execute(pool)
-    .await
-    .map_err(db_error!("invalidate_user_reset_tokens", user_id = %user_id))?;
-    Ok(result.rows_affected())
-}
-
-/// Clean up expired password reset tokens (for background job).
-///
-/// Removes tokens that expired more than 24 hours ago.
-pub async fn cleanup_expired_reset_tokens(pool: &PgPool) -> sqlx::Result<u64> {
-    let result = sqlx::query(
-        "DELETE FROM password_reset_tokens WHERE expires_at < NOW() - INTERVAL '24 hours'",
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| {
-        error!(query = "cleanup_expired_reset_tokens", error = %e, "Database query failed");
-        e
-    })?;
-    Ok(result.rows_affected())
-}
-
-// ============================================================================
-// MFA Backup Code Queries
-// ============================================================================
-
-/// Insert a batch of MFA backup code hashes for a user.
-///
-/// Replaces any existing codes by deleting first, then inserting the new batch.
-/// All 10 codes are inserted in a single transaction.
-pub async fn store_mfa_backup_codes(
-    pool: &PgPool,
-    user_id: Uuid,
-    code_hashes: &[String],
-) -> sqlx::Result<()> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(db_error!("store_mfa_backup_codes", user_id = %user_id))?;
-
-    // Delete existing codes for this user
-    sqlx::query("DELETE FROM mfa_backup_codes WHERE user_id = $1")
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_error!("store_mfa_backup_codes/delete", user_id = %user_id))?;
-
-    // Insert new codes
-    for code_hash in code_hashes {
-        sqlx::query("INSERT INTO mfa_backup_codes (user_id, code_hash) VALUES ($1, $2)")
-            .bind(user_id)
-            .bind(code_hash)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_error!("store_mfa_backup_codes/insert", user_id = %user_id))?;
-    }
-
-    tx.commit()
-        .await
-        .map_err(db_error!("store_mfa_backup_codes/commit", user_id = %user_id))?;
-
-    Ok(())
-}
-
-/// Fetch all unused MFA backup codes for a user.
-pub async fn get_unused_mfa_backup_codes(
-    pool: &PgPool,
-    user_id: Uuid,
-) -> sqlx::Result<Vec<MfaBackupCode>> {
-    sqlx::query_as::<_, MfaBackupCode>(
-        "SELECT * FROM mfa_backup_codes WHERE user_id = $1 AND used_at IS NULL ORDER BY created_at",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await
-    .map_err(db_error!("get_unused_mfa_backup_codes", user_id = %user_id))
-}
-
-/// Mark an MFA backup code as used by its ID.
-pub async fn mark_mfa_backup_code_used(pool: &PgPool, code_id: Uuid) -> sqlx::Result<()> {
-    sqlx::query("UPDATE mfa_backup_codes SET used_at = NOW() WHERE id = $1")
-        .bind(code_id)
-        .execute(pool)
-        .await
-        .map_err(db_error!("mark_mfa_backup_code_used", code_id = %code_id))?;
-    Ok(())
-}
-
-/// Count unused MFA backup codes for a user.
-pub async fn count_unused_mfa_backup_codes(pool: &PgPool, user_id: Uuid) -> sqlx::Result<i64> {
-    let (count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM mfa_backup_codes WHERE user_id = $1 AND used_at IS NULL",
-    )
-    .bind(user_id)
-    .fetch_one(pool)
-    .await
-    .map_err(db_error!("count_unused_mfa_backup_codes", user_id = %user_id))?;
-    Ok(count)
-}
-
-/// Count all MFA backup codes for a user (used and unused).
-/// Used to detect whether backup codes were ever generated (first-time setup detection).
-pub async fn count_all_mfa_backup_codes(pool: &PgPool, user_id: Uuid) -> sqlx::Result<i64> {
-    let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM mfa_backup_codes WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_one(pool)
-            .await
-            .map_err(db_error!("count_all_mfa_backup_codes", user_id = %user_id))?;
-    Ok(count)
-}
-
-/// Delete all MFA backup codes for a user (e.g. when MFA is disabled).
-pub async fn delete_mfa_backup_codes(pool: &PgPool, user_id: Uuid) -> sqlx::Result<u64> {
-    let result = sqlx::query("DELETE FROM mfa_backup_codes WHERE user_id = $1")
-        .bind(user_id)
-        .execute(pool)
-        .await
-        .map_err(db_error!("delete_mfa_backup_codes", user_id = %user_id))?;
     Ok(result.rows_affected())
 }
 

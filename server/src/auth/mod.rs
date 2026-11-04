@@ -2,35 +2,45 @@
 //!
 //! Handles local authentication, SSO/OIDC, MFA, and session management.
 
+pub mod account_requests;
 pub mod assurance;
-mod backup_codes;
 pub mod client_class;
 pub(crate) mod cookies;
 pub mod ctx;
 pub(crate) mod error;
+pub mod factors;
 pub mod guards;
 mod helpers;
 pub(crate) mod identities;
 pub mod jwt;
 pub(crate) mod login;
+pub mod login_attempts;
 pub(crate) mod mfa;
 pub mod mfa_crypto;
 mod middleware;
 pub mod oidc;
+pub mod owner_rule;
 pub mod passkeys;
-mod password;
+pub(crate) mod password;
+pub mod password_policy;
 pub(crate) mod profile;
 pub(crate) mod queries;
 pub(crate) mod reauth;
+pub mod recovery_codes;
+pub mod recovery_contact;
 pub mod refresh;
 pub(crate) mod register;
+pub mod registration;
+pub mod repudiate;
 pub mod revocation;
+pub mod security_overview;
 pub mod session_check;
 pub mod session_issue;
 pub(crate) mod sessions;
 pub mod step_up;
 pub mod strong;
 pub mod timers;
+pub mod totp_guard;
 pub mod types;
 pub mod ua_parser;
 
@@ -46,9 +56,7 @@ pub use middleware::{
 pub use password::{hash_password, verify_password};
 
 use crate::api::AppState;
-use crate::ratelimit::{
-    check_ip_not_blocked, rate_limit_by_ip, rate_limit_by_user, with_category, RateLimitCategory,
-};
+use crate::ratelimit::{check_ip_not_blocked, rate_limit_by_ip, with_category, RateLimitCategory};
 
 /// Create authentication router.
 ///
@@ -56,9 +64,7 @@ use crate::ratelimit::{
 /// - POST /register - Register a new user
 /// - POST /login - Login with username/password
 /// - POST /refresh - Refresh access token
-/// - POST /forgot-password - Request password reset email
-/// - POST /reset-password - Reset password with token
-/// - POST /qr/redeem - Redeem a one-time QR login token
+/// - POST /login-attempts[/{id}/poll|collect|cancel] - Sign in with phone (SM1, C27)
 /// - GET /oidc/providers - List OIDC providers
 /// - GET /oidc/authorize/{provider} - Initiate OIDC flow
 /// - GET /oidc/callback - OIDC callback
@@ -68,7 +74,7 @@ use crate::ratelimit::{
 /// has not been replaced yet (`require_auth_allow_password_change`):
 /// - POST /logout - Invalidate session
 /// - GET /me - Get current user profile
-/// - POST /me/password - Change password (invalidates all sessions; rate limited)
+/// - POST/DELETE /me/password - Set or remove the password (full + step-up, C27)
 ///
 /// Protected routes (auth required, password change completed):
 /// - GET /sessions - List active sessions
@@ -76,14 +82,11 @@ use crate::ratelimit::{
 /// - DELETE /sessions/{id} - Revoke a specific session
 /// - POST /me - Update profile
 /// - POST /me/avatar - Upload avatar
-/// - POST /mfa/setup - Setup MFA
-/// - POST /mfa/verify - Verify MFA (TOTP or backup code; rate limited)
-/// - POST /mfa/disable - Disable MFA (rate limited)
-/// - POST /mfa/backup-codes - Generate MFA backup codes (current TOTP code; rate limited)
-/// - POST /qr/create - Create a one-time QR login token (rate limited)
-/// - GET /reauth/methods - Re-authentication methods of the caller (C24)
-/// - POST /reauth/oidc/authorize/{provider} - Start an OIDC re-authentication that elevates the
-///   session (rate limited)
+/// - POST /mfa/setup, /mfa/verify - Set up TOTP (full + step-up `totp.set`, C27)
+/// - POST /mfa/disable - Turn TOTP off (full + step-up `totp.remove`)
+/// - POST /recovery-codes - New recovery codes (full session + step-up, C27)
+/// - GET /recovery-codes/count - Unused recovery codes (any session)
+/// - GET /reauth/methods - Step-up methods of the caller (C27)
 pub fn router(state: AppState) -> Router<AppState> {
     // Phone setup and device-key sign-in (C26), merged under `/auth`.
     let flow_routes = crate::approvals::flow_router(&state);
@@ -172,80 +175,28 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(oidc_exchange_route)
         .merge(oidc_providers_route);
 
-    // Password reset routes with rate limiting
-    let forgot_password_route = Router::new()
-        .route("/forgot-password", post(login::forgot_password))
-        .layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            rate_limit_by_ip,
-        ))
-        .layer(axum_middleware::from_fn(with_category(
-            RateLimitCategory::AuthPasswordReset,
-        )));
-
-    let reset_password_route = Router::new()
-        .route("/reset-password", post(login::reset_password))
-        .layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            rate_limit_by_ip,
-        ))
-        .layer(axum_middleware::from_fn(with_category(
-            RateLimitCategory::AuthPasswordReset,
-        )));
-
-    // QR login redeem route with rate limiting (public — mobile isn't authenticated yet).
-    // Uses AuthLogin category: like /login, this exchanges a credential for a full session.
-    let qr_redeem_route = Router::new()
-        .route("/qr/redeem", post(mfa::qr_redeem))
-        .layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            rate_limit_by_ip,
-        ))
-        .layer(axum_middleware::from_fn(with_category(
-            RateLimitCategory::AuthLogin,
-        )));
-
     // Merge all public routes
     let public_routes = login_route
         .merge(register_route)
         .merge(refresh_route)
         .merge(oidc_routes)
-        .merge(forgot_password_route)
-        .merge(reset_password_route)
-        .merge(qr_redeem_route);
+        .merge(login_attempts::router(&state))
+        .merge(registration::router(&state))
+        .merge(account_requests::public_router(&state));
 
     // Routes a user with a pending forced password change may still use.
+    // `/me/password` needs a full session and a step-up grant (C27).
     let password_change_routes = Router::new()
         .route("/logout", post(login::logout))
         .route("/me", get(profile::get_profile))
+        .route(
+            "/me/password",
+            post(profile::update_password).delete(profile::remove_password),
+        )
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             require_auth_allow_password_change,
         ));
-
-    // Routes that check a password or an MFA code (C24): per-user rate limit,
-    // and refused while the client IP is blocked after failed attempts. Auth
-    // runs first so the limit is keyed by the user.
-    let password_route = with_reauth_limits(
-        Router::new().route("/me/password", post(profile::update_password)),
-        &state,
-    )
-    .layer(axum_middleware::from_fn_with_state(
-        state.clone(),
-        require_auth_allow_password_change,
-    ));
-    let mfa_reauth_routes = with_reauth_limits(
-        Router::new()
-            .route("/mfa/verify", post(mfa::mfa_verify))
-            .route("/mfa/disable", post(mfa::mfa_disable))
-            .route("/mfa/backup-codes", post(mfa::mfa_generate_backup_codes))
-            .route("/qr/create", post(mfa::qr_create)),
-        &state,
-    )
-    .layer(axum_middleware::from_fn_with_state(
-        state.clone(),
-        require_auth,
-    ));
 
     // Protected routes (auth required)
     let protected_routes = Router::new()
@@ -262,8 +213,11 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/me/identities", get(identities::list_identities))
         .route("/me/identities/{id}", delete(identities::unlink_identity))
         .route("/mfa/setup", post(mfa::mfa_setup))
+        .route("/mfa/verify", post(mfa::mfa_verify))
+        .route("/mfa/disable", post(mfa::mfa_disable))
         .route("/reauth/methods", get(reauth::get_reauth_methods))
-        .route("/mfa/backup-codes/count", get(mfa::mfa_backup_code_count))
+        .route("/recovery-codes", post(recovery_codes::create))
+        .route("/recovery-codes/count", get(recovery_codes::count))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             require_auth,
@@ -291,30 +245,6 @@ pub fn router(state: AppState) -> Router<AppState> {
         .merge(flow_routes)
         .merge(passkey_routes)
         .merge(password_change_routes)
-        .merge(password_route)
-        .merge(mfa_reauth_routes)
         .merge(protected_routes)
         .merge(link_authorize_route)
-}
-
-/// Limits for routes that re-check a password or an MFA code (C24).
-///
-/// Wrap the result in the auth layer: `rate_limit_by_user` needs `AuthUser`.
-/// Outer to inner: IP block check, category, per-user rate limit.
-pub(crate) fn with_reauth_limits<S>(router: Router<S>, state: &AppState) -> Router<S>
-where
-    S: Clone + Send + Sync + 'static,
-{
-    router
-        .layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            rate_limit_by_user,
-        ))
-        .layer(axum_middleware::from_fn(with_category(
-            RateLimitCategory::AuthOther,
-        )))
-        .layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            check_ip_not_blocked,
-        ))
 }

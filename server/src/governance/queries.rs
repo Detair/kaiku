@@ -362,7 +362,7 @@ pub async fn list_owned_guilds(
 /// Schedule an account deletion by setting the deletion timestamps.
 #[tracing::instrument(skip(pool))]
 pub async fn schedule_account_deletion(
-    pool: &PgPool,
+    pool: impl sqlx::PgExecutor<'_>,
     user_id: Uuid,
     requested_at: DateTime<Utc>,
     scheduled_at: DateTime<Utc>,

@@ -1,8 +1,9 @@
 # Creating family accounts
 
 Kaiku lets a server admin create accounts directly, so the server never has to
-open public registration. The admin picks the username and a temporary
-password; the new user sets their own password the first time they sign in.
+open public registration. Accounts created this way have no password: the
+admin then sets up the member's phone as their key (or the member adds a
+passkey), and the member signs in with it.
 
 ## 1. Keep registration closed
 
@@ -11,136 +12,125 @@ setup), so strangers and bots cannot create accounts on their own.
 Admin-created accounts work with every policy; `POST /auth/register` stays
 rejected unless the policy is `open`.
 
-## 2. Create the account in the app (primary way)
+## 2. Create the account in the app
 
-Use the desktop app (or the web client) signed in as a system admin.
+Use the desktop app (or the web client) signed in as a system admin with your
+key phone or a passkey.
 
-1. Open **Admin Panel** (user panel at the bottom left), then **Users**, and
-   click **Create account**.
-2. If your session is not elevated yet, the app first shows **Unlock admin
-   actions**. Confirm it is you:
-   - password, plus the 6-digit **Authenticator code** if MFA is on for your
-     account; or
-   - **Confirm with `<provider>`** if your account signs in through a linked
-     identity provider (opens the provider's login; allow pop-ups).
+1. Open **Admin Panel**, then **Users**, and click **Create account**.
+2. If your session is not elevated yet, confirm **Unlock admin actions** on
+   your phone (or with a passkey). The elevation lasts 15 minutes and only
+   applies to this session.
+3. Fill in username, display name (optional), the **Servers** the account
+   joins, and optionally a **recovery contact** (another member who is not an
+   admin, see [sign-in and recovery](sign-in-and-recovery.md)).
 
-   The dialog only offers the methods your account has. Wrong attempts are
-   rate limited. The elevation lasts 15 minutes and only applies to this
-   session (the header reads "Admin Panel (Elevated)"). The dialog has no
-   reason field; the optional `reason` exists only in the HTTP API.
-3. Fill in the **Create account** dialog:
-   - username (3-32 characters: lowercase letters, digits, `_`);
-   - display name (optional);
-   - temporary password (8-128 characters; **Generate new** makes one);
-   - **Servers**: the new account joins every ticked server immediately as a
-     normal active member. All of your servers are ticked by default, at most
-     10 at once. Untick what the person should not see.
-4. After creating, **Copy all** copies username, temporary password and server
-   address for the handover. The password is then in your clipboard as plain
-   text, and some systems sync the clipboard to the cloud or to other devices:
-   copy something else afterwards.
+The new account has no password, no forced password change, and phone
+confirmations (`may_approve`) are off until you turn them on in the user's
+security panel.
 
-Hand these over in person or through an end-to-end encrypted messenger, not by
-ordinary e-mail, SMS or a group chat. Use the temporary password for this one
-handover only.
+## 3. Set up the member's phone (admin setup)
 
-### First sign-in: forced password change
+Admin setup is started from **your own key phone** (the Android app, user
+list, **Set up a phone**). Every setup code needs its own confirmation on your
+phone.
 
-When the new user signs in with the temporary password (web, desktop or
-Android), the app shows **Choose your own password** and nothing else works
-until they set one. The new password must differ from the temporary one. Then
-the account works normally.
+1. Choose **Set up** (a new phone) or **Recovery** (the member lost their
+   phone; you can name the lost phones, they are removed when the recovery
+   completes).
+2. Say how you know it is the member:
+   - **In person**: the member is with you;
+   - **Called back**: you called the member back on a number you already
+     knew. Write a short note (1 to 500 characters); it is kept with the
+     setup.
+3. The member opens the setup link on their phone (or scans the code). Their
+   phone shows a 6-digit code; type it on **your** phone.
 
-On the wire: the login response (and `/auth/refresh`, `GET /auth/me`) carries
-`password_change_required: true`. Until the change, only
-`POST /auth/me/password`, `POST /auth/refresh`, `POST /auth/logout` and
-`GET /auth/me` work. Everything else answers `403 PASSWORD_CHANGE_REQUIRED`,
-and the realtime connection is refused (WebSocket close code `1008`, or HTTP
-`403` on the handshake). Apps show the password screen instead of retrying.
+- **New account** (never used): the phone is the member's key at once. The
+  other admins get a notice ("admin setup").
+- **Existing account**: the phone waits 24 hours (`ACCOUNT_REQUEST_DELAY_HOURS`)
+  as an account request. The member's devices, their recovery contact and all
+  admins are told and can cancel it. The new phone shows when it will work.
+  The setup is refused when the account already has an open request, or when
+  nobody but you could cancel it (no other admin with a key phone, no
+  confirmed recovery contact, no own key of the member).
 
-## 3. Log in on the phone with a QR code
+**Same-day upgrade with a working old phone:** if the member still has a
+working key phone, they use **Add a phone** on it instead; that is immediate
+and needs no admin.
 
-A QR code is created from a device where the user is already signed in, so it
-cannot replace the first sign-in with the temporary password.
-
-1. On the desktop or web client: **Settings -> Security -> Mobile App ->
-   Link Mobile Device**. The window titled "Link Mobile Device" shows the code.
-2. In the Android app, on the server-address screen, tap **Scan QR code** and
-   point the camera at it (camera permission is needed).
-3. The app signs in as that user. No server address or password is typed.
-
-The code is single use and valid for 120 seconds (the window counts down;
-**Generate new code** makes another). It contains the server address, so the
-phone must be able to reach the server at that address (public URL or VPN).
-An expired or used code shows "That QR code has expired or was already used."
-
-The code is a live one-time login, not just the server address: anyone who
-sees or photographs it can sign in as that person within the 120 seconds.
-Don't show it while screen sharing or to onlookers. The person always creates
-the code on **their own** account. An admin never shows their own code to
-someone else's phone; that phone would then be signed in with the admin's
-account.
+**Remove device now:** in the user's security panel, an admin can remove a
+lost or stolen phone or passkey at once (it gets one last notice). Do this
+before you start a recovery when the old phone may be in the wrong hands. It
+works even on the member's last key; the member then recovers through a
+request. None of the immediate actions (removing devices, phone
+confirmations, marking a password or authenticator as unsafe, the recovery
+contact) work on another admin's account; setup, recovery and Cancel do.
 
 ## 4. HTTP API (scripting)
 
-Hosts and tokens below are placeholders. The API needs a system admin access
-token.
+Hosts and tokens below are placeholders. Every call needs a system admin with
+a **full** session (signed in on a key phone, or with a passkey) and, where
+noted, a confirmation of the action (a step-up grant) just before.
 
-How can this session confirm?
-
-```http
-GET /auth/reauth/methods
-Authorization: Bearer <admin access token>
-```
-
-It answers `{"passkey": bool, "device": bool}`. Elevate:
-
-```http
-POST /api/admin/elevate
-Authorization: Bearer <admin access token>
-Content-Type: application/json
-
-{"reason": "create family accounts"}
-```
-
-Elevation needs a **full** session (signed in on your key phone, or with a
-passkey) and a confirmation of the action `admin.elevate` on your phone (or with
-a passkey) just before; passwords and codes are no longer accepted for it. `200`
-elevates the session of this access token for 15 minutes. Errors:
-`403 FULL_SESSION_REQUIRED` (this session was signed in with a password, QR or
-TOTP; sign in on your phone or with a passkey), `403 STEP_UP_REQUIRED` (confirm
-on your phone first), `400 VALIDATION_ERROR`. The first admin gets a key phone
-with `kaiku-admin enroll <admin>` on the server host (see
-[sign-in and recovery](sign-in-and-recovery.md)).
-
-Create the account:
+Create the account (elevated session):
 
 ```http
 POST /api/admin/users
 Authorization: Bearer <admin access token>
 Content-Type: application/json
 
-{"username": "oma", "display_name": "Oma Erna", "temporary_password": "<temporary password>",
- "guild_ids": ["<family server id>"]}
+{"username": "oma", "display_name": "Oma Erna", "guild_ids": ["<family server id>"],
+ "recovery_contact_id": null}
 ```
 
+- `temporary_password` is no longer accepted (`400 VALIDATION_ERROR`).
 - `display_name`: optional (`null` uses the username), at most 64 characters.
-- `guild_ids`: optional, at most 10, repeated ids are ignored. An unknown id,
-  more than 10 ids, or a server at its member limit answer `400
-  VALIDATION_ERROR` and create nothing. Members are active immediately
-  (screening never holds them back).
-- Response `201` with the user object as listed by `GET /api/admin/users`; a
-  taken username answers `409`. The audit log records `admin.users.create`
-  (never the password).
+- `guild_ids`: optional, at most 10; an unknown id, more than 10 ids, or a
+  server at its member limit answer `400 VALIDATION_ERROR` and create nothing.
+- `recovery_contact_id`: optional; an admin, the system account or an unknown
+  id answer `400 RECOVERY_CONTACT_INVALID`.
+- Response `201` with the user object as listed by `GET /api/admin/users`
+  (which now carries `is_admin` and `may_approve`); a taken username answers
+  `409`. The audit log records `admin.users.create`.
 
-End the elevation early (this session only; other sessions keep theirs):
+Admin setup, from the admin's own key phone, confirmed as
+`admin.enrollment.issue` for the user id (one confirmation per code):
 
 ```http
-DELETE /api/admin/elevate
-Authorization: Bearer <admin access token>
+POST /api/admin/users/<user id>/enrollments
+Content-Type: application/json
+
+{"mode": "setup", "claimant_check": {"method": "in_person", "note": "at the kitchen table"},
+ "lost_device_ids": []}
 ```
+
+`201 {enrollment_id, setup_token, setup_url, expires_at}`. Errors: `403
+KEY_DEVICE_REQUIRED` (not from a key phone), `400 ENROLLMENT_TARGET_SELF`,
+`409 ACCOUNT_REQUEST_OPEN`, `409 NO_INDEPENDENT_CANCELLER`.
+
+The user's security panel uses (each with its confirmation):
+
+| Call | Confirmation |
+|---|---|
+| `PUT /api/admin/users/<id>/may-approve {"may_approve": true}` | `admin.may_approve` / user id |
+| `PUT /api/admin/users/<id>/factors {"password": "compromised", "totp": "active"}` | `admin.factor.set_state` / user id |
+| `POST /api/admin/users/<id>/authenticators/<device or passkey id>/remove` | `admin.authenticator.remove` / authenticator id |
+| `PUT /api/admin/users/<id>/recovery-contact {"user_id": "<contact>"}` | `admin.recovery_contact.set` / user id |
+
+`factors`: `"compromised"` marks a password or authenticator app as unsafe;
+`"active"` allows a throttled one again. A compromised one is replaced by its
+owner, not allowed again (`400 VALIDATION_ERROR`). Another admin's account
+answers `403 ADMIN_TARGET_IS_ADMIN`.
+
+`GET /api/admin/users/<id>/details` shows per user: `is_admin`,
+`may_approve`, `key_devices` and `passkeys` (each `{id, label, state,
+ready_at, created_at, last_used_at}`), `password_state`, `totp_state`,
+`recovery_codes_left`, `bootstrap_open`, `recovery_contact`, `open_request`
+and `open_sessions {full, probation}`.
 
 ## Related
 
+- [Sign-in and recovery](sign-in-and-recovery.md)
 - [Deployment](deployment.md) and [environment variables](../configuration/environment.md)
 - [Rate limiting](../configuration/rate-limiting.md)

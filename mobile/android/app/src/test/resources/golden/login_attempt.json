@@ -1,0 +1,11 @@
+{
+  "attempt_id": "44444444-4444-4444-8444-444444444444",
+  "expires_at": "2026-11-03T12:10:00Z",
+  "kind": "password",
+  "qr": {
+    "expires_at": "2026-11-03T12:01:00Z",
+    "payload": "kaiku://login/v1?o=https%3A%2F%2Fchat.example.com&t=oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr8"
+  },
+  "state": "open",
+  "totp_available": true
+}

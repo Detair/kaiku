@@ -87,6 +87,24 @@ pub struct OidcFlowState {
     /// other flow; a desktop login state without one cannot complete.
     #[serde(default)]
     pub client_challenge: Option<String>,
+    /// v1.0 login (C27, C29 step 8): how the result reaches a native app.
+    /// `None` is the browser popup (or the identity-link flow).
+    #[serde(default)]
+    pub native: Option<NativeLogin>,
+}
+
+/// A native app's OIDC sign-in start (C27 OIDC variant, C29 step 8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "app", rename_all = "snake_case")]
+pub enum NativeLogin {
+    /// The desktop app: the hand-off page posts `flow_id` + `code` to its
+    /// loopback listener.
+    Desktop {
+        flow_id: Uuid,
+        loopback: crate::auth::passkeys::desktop_page::LoopbackTarget,
+    },
+    /// The Android app: its Custom Tab gets only `kaiku://auth/callback?code=…`.
+    Android,
 }
 
 /// What an OIDC flow is for; persisted in the encrypted flow state so the
@@ -105,6 +123,9 @@ pub enum OidcFlowPurpose {
         #[serde(default)]
         session_id: Option<Uuid>,
     },
+    /// A fresh sign-in (`prompt=login`, `max_age=0`) as the factor of an
+    /// account request (C27); the callback hands back a one-time `oidc_code`.
+    RequestFactor,
 }
 
 impl OidcFlowPurpose {
@@ -113,6 +134,7 @@ impl OidcFlowPurpose {
         match self {
             Self::Login => "login",
             Self::Link { .. } => "link",
+            Self::RequestFactor => "request_factor",
         }
     }
 }
@@ -134,6 +156,8 @@ struct OidcFlowStateWire {
     client_redirect_uri: Option<String>,
     #[serde(default)]
     client_challenge: Option<String>,
+    #[serde(default)]
+    native: Option<NativeLogin>,
 }
 
 impl From<OidcFlowStateWire> for OidcFlowState {
@@ -155,6 +179,7 @@ impl From<OidcFlowStateWire> for OidcFlowState {
             purpose,
             client_redirect_uri: wire.client_redirect_uri,
             client_challenge: wire.client_challenge,
+            native: wire.native,
         }
     }
 }

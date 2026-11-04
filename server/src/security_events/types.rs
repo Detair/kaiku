@@ -46,12 +46,21 @@ pub enum EventType {
     RecoveryContactChanged,
     SessionEndedReuse,
     SessionEndedLimit,
+    /// Sessions ended on the host (`kaiku-admin sessions end`; appended to
+    /// C28's list, L1b Task 28).
+    SessionsEnded,
+    /// A compromised password or TOTP made active again (admin or CLI).
+    FactorRestored,
+    /// A throttled password or TOTP made active again (admin or CLI).
+    ThrottleReset,
+    /// `may_approve` turned on or off (admin or CLI).
+    MayApproveChanged,
     BootstrapReminder,
 }
 
 impl EventType {
     /// Every type, in C28 order.
-    pub const ALL: [Self; 35] = [
+    pub const ALL: [Self; 39] = [
         Self::SignIn,
         Self::SignInNotFinished,
         Self::SecondFactorFailed,
@@ -86,6 +95,10 @@ impl EventType {
         Self::RecoveryContactChanged,
         Self::SessionEndedReuse,
         Self::SessionEndedLimit,
+        Self::SessionsEnded,
+        Self::FactorRestored,
+        Self::ThrottleReset,
+        Self::MayApproveChanged,
         Self::BootstrapReminder,
     ];
 
@@ -127,6 +140,10 @@ impl EventType {
             Self::RecoveryContactChanged => "recovery_contact_changed",
             Self::SessionEndedReuse => "session_ended_reuse",
             Self::SessionEndedLimit => "session_ended_limit",
+            Self::SessionsEnded => "sessions_ended",
+            Self::FactorRestored => "factor_restored",
+            Self::ThrottleReset => "throttle_reset",
+            Self::MayApproveChanged => "may_approve_changed",
             Self::BootstrapReminder => "bootstrap_reminder",
         }
     }
@@ -159,7 +176,10 @@ impl EventType {
             | Self::RequestWithdrawn
             | Self::AdminSetup
             | Self::AdminRoleGranted
-            | Self::AdminRoleRemoved => Severity::High,
+            | Self::AdminRoleRemoved
+            | Self::SessionsEnded
+            | Self::FactorRestored
+            | Self::MayApproveChanged => Severity::High,
             Self::SignIn
             | Self::SignInNotFinished
             | Self::SecondFactorFailed
@@ -179,6 +199,7 @@ impl EventType {
             | Self::RecoveryContactChanged
             | Self::SessionEndedReuse
             | Self::SessionEndedLimit
+            | Self::ThrottleReset
             | Self::BootstrapReminder => Severity::Normal,
         }
     }
