@@ -853,3 +853,64 @@ async fn repudiating_a_pending_browser_passkey_revokes_it(pool: PgPool) {
         ("revoked".into(), true, Some("repudiated".into()))
     );
 }
+
+/// Codex v1 integration check, major 3: a pending passkey deleted with its
+/// request keeps a label in the events that name it (C28
+/// `authenticator: {id, type, label}`, label a string), from the snapshot
+/// its `authenticator_added` recorded.
+#[sqlx::test]
+async fn events_of_a_deleted_pending_passkey_keep_its_label(pool: PgPool) {
+    let app = TestApp::with_passkeys(pool.clone()).await;
+    let acct = existing_account(&app, true).await;
+    let (passkey, enrollment) = browser_passkey(&app, acct.user).await;
+    let request: Uuid =
+        sqlx::query_scalar("SELECT id FROM account_requests WHERE enrollment_id = $1")
+            .bind(enrollment)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let canceller = &acct.other_admin;
+    grant_step_up(
+        &pool,
+        canceller.session_id.unwrap(),
+        "request.cancel",
+        &request.to_string(),
+    )
+    .await;
+    let (s, b) = call(
+        &app,
+        Method::POST,
+        &format!("/api/account-requests/{request}/cancel"),
+        &canceller.access_token,
+        json!({"reason": null, "part2": null}),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM passkeys WHERE id = $1")
+        .bind(passkey)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "the pending passkey went with its request");
+
+    let own = acct.own_key.as_ref().unwrap();
+    let (s, page) = call(
+        &app,
+        Method::GET,
+        "/api/me/security-events?limit=100",
+        &own.access_token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(s, 200, "{page}");
+    let named: Vec<&Value> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["authenticator"]["id"] == json!(passkey))
+        .collect();
+    assert!(!named.is_empty(), "{page}");
+    for e in named {
+        assert_eq!(e["authenticator"]["label"], "Laptop", "{e}");
+    }
+}

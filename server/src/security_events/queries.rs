@@ -45,7 +45,8 @@ macro_rules! event_columns {
 impl EventRow {
     /// The C28 wire form. `reveal_network` adds `ip` and `place` (only the
     /// owner's own log and notices, and the admin log, Part C); `label` is
-    /// the authenticator's current display label.
+    /// the authenticator's current display label, `None` when its row is
+    /// gone (then the label the event recorded or a neutral name).
     #[must_use]
     pub fn to_wire(&self, reveal_network: bool, label: Option<String>) -> SecurityEvent {
         let client = match (&self.client_class, &self.client_label) {
@@ -59,7 +60,7 @@ impl EventRow {
             (Some(kind), Some(id)) => Some(EventAuthenticator {
                 id,
                 kind: kind.clone(),
-                label,
+                label: self.authenticator_label(kind, label),
             }),
             _ => None,
         };
@@ -89,6 +90,27 @@ impl EventRow {
             actions: Vec::new(),
             repudiated_at: self.repudiated_at,
         }
+    }
+
+    /// C28 `authenticator.label` is a string: the current label, else the
+    /// snapshot the event recorded (`details.label`: a passkey's
+    /// `authenticator_added`), else a neutral name. A pending passkey is
+    /// deleted with its request or a staged replacement, but its events stay.
+    fn authenticator_label(&self, kind: &str, current: Option<String>) -> String {
+        current
+            .or_else(|| {
+                self.details["label"]
+                    .as_str()
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| {
+                match kind {
+                    "key_device" => "Key device",
+                    _ => "Passkey",
+                }
+                .to_string()
+            })
     }
 }
 
@@ -169,4 +191,63 @@ pub async fn events_of_notices(
     .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().map(|r| (r.notice_id, r.event)).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(kind: &str, details: serde_json::Value) -> EventRow {
+        EventRow {
+            id: Uuid::nil(),
+            subject_id: Uuid::nil(),
+            event_type: "authenticator_added".into(),
+            severity: "high".into(),
+            actor_kind: "admin".into(),
+            actor_user_id: None,
+            actor_username: None,
+            client_class: None,
+            client_label: None,
+            ip: None,
+            place: None,
+            session_id: None,
+            authenticator_type: Some(kind.into()),
+            authenticator_id: Some(Uuid::nil()),
+            request_id: None,
+            details,
+            repudiated_at: None,
+            delivered_at: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn label(ev: &EventRow, current: Option<&str>) -> String {
+        ev.to_wire(false, current.map(str::to_string))
+            .authenticator
+            .expect("authenticator")
+            .label
+    }
+
+    /// C28 `authenticator.label` is never null (Codex v1 integration check,
+    /// major 3): a deleted pending passkey keeps its recorded label.
+    #[test]
+    fn authenticator_label_falls_back_but_is_never_null() {
+        let added = row(
+            "passkey",
+            serde_json::json!({"type": "passkey", "label": "Laptop"}),
+        );
+        assert_eq!(label(&added, Some("Renamed")), "Renamed");
+        assert_eq!(label(&added, None), "Laptop");
+        let bare = row(
+            "passkey",
+            serde_json::json!({"type": "passkey", "label": ""}),
+        );
+        assert_eq!(label(&bare, None), "Passkey");
+        assert_eq!(
+            label(&row("key_device", serde_json::json!({})), None),
+            "Key device"
+        );
+        let json = serde_json::to_value(bare.to_wire(false, None)).unwrap();
+        assert!(json["authenticator"]["label"].is_string(), "{json}");
+    }
 }
