@@ -315,7 +315,8 @@ pub struct SessionAuthenticator {
     /// `passkey` or `key_device`.
     #[serde(rename = "type")]
     pub kind: String,
-    pub label: Option<String>,
+    /// Always a string (C27): the current label, else a neutral name.
+    pub label: String,
 }
 
 /// Response containing the list of active auth sessions.

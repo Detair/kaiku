@@ -104,13 +104,7 @@ impl EventRow {
                     .filter(|l| !l.is_empty())
                     .map(str::to_string)
             })
-            .unwrap_or_else(|| {
-                match kind {
-                    "key_device" => "Key device",
-                    _ => "Passkey",
-                }
-                .to_string()
-            })
+            .unwrap_or_else(|| crate::auth::strong::fallback_label(kind).to_string())
     }
 }
 

@@ -69,7 +69,10 @@ pub async fn list_sessions(
                     (Some(kind), Some(id)) => Some(super::types::SessionAuthenticator {
                         id,
                         kind: kind.clone(),
-                        label: s.authenticator_label.clone(),
+                        label: s
+                            .authenticator_label
+                            .clone()
+                            .unwrap_or_else(|| super::strong::fallback_label(kind).to_string()),
                     }),
                     _ => None,
                 },

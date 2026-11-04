@@ -612,6 +612,43 @@ async fn session_list_names_the_key_device(pool: PgPool) {
     assert_eq!(item["authenticator"]["label"], "Pixel 8");
 }
 
+/// Fable v1 final check, M1: a session's `authenticator.label` is a string
+/// (C27) even when the authenticator's row is gone: a neutral name, never
+/// null, which Android cannot decode.
+#[sqlx::test]
+async fn session_list_label_is_never_null(pool: PgPool) {
+    let app = TestApp::with_pool(pool.clone()).await;
+    let (user, _) = create_test_user(&pool).await;
+    let dev =
+        super::helpers::approvals::KeyDeviceFixture::insert(&pool, &app.config, user, "active")
+            .await;
+    let sid = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, token_hash, expires_at, assurance, auth_methods,
+                               client_class, authenticator_type, authenticator_id,
+                               absolute_expires_at)
+         VALUES ($1, $2, $3, NOW() + INTERVAL '7 days', 'full', '{passkey}', 'web',
+                 'passkey', $4, NOW() + INTERVAL '30 days')",
+    )
+    .bind(sid)
+    .bind(user)
+    .bind(format!("gone-passkey-{sid}"))
+    .bind(Uuid::new_v4())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (status, list) = get(&app, "/auth/sessions", &dev.access_token).await;
+    assert_eq!(status, 200, "{list}");
+    let item = list["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == sid.to_string())
+        .cloned()
+        .unwrap();
+    assert_eq!(item["authenticator"]["label"], "Passkey", "{item}");
+}
+
 /// Review round 3 (Argon coverage, part 4 m3): the access token's `sid` is
 /// the current session; a refresh cookie of another session does not make
 /// that one current too.
