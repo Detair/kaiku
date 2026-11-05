@@ -1,6 +1,6 @@
-//! AppImage start-up: use the system's `libwayland-client`.
+//! `AppImage` start-up: use the system's `libwayland-client`.
 //!
-//! The AppImage is built on an older distribution and bundles that system's
+//! The `AppImage` is built on an older distribution and bundles that system's
 //! `libwayland-client`, but the graphics driver always comes from the host. A
 //! newer host Mesa needs symbols the bundled library lacks, so `WebKitGTK`
 //! aborts with `EGL_BAD_PARAMETER` and the window stays grey. `AppRun` and its
@@ -20,7 +20,7 @@ const LIBRARY_DIRS: [&str; 3] = ["/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/us
 const GUARD: &str = "KAIKU_APPIMAGE_SYSTEM_WAYLAND";
 
 /// Restarts the process with the system library preloaded when it runs from an
-/// AppImage. Returns only if no restart is needed or it failed.
+/// `AppImage`. Returns only if no restart is needed or it failed.
 pub fn prefer_system_wayland() {
     if env::var_os("APPDIR").is_none() || env::var_os(GUARD).is_some() {
         return;
