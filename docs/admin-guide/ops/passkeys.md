@@ -17,7 +17,14 @@ Where passkeys work:
 
 People add passkeys in **Settings → Security** in a browser or the Android app. Adding one needs a
 session that is already full: an account's first passkey comes from a key phone's own session (the
-phone confirms "add a passkey"), later ones from a session signed in with a passkey.
+phone confirms "add a passkey"), or from a setup link opened in a computer's browser (the key phone's
+**Add a phone → Share link**, or an admin setup link; the browser shows a 6-digit code that is typed
+on the issuing phone). Later ones come from a session signed in with a passkey.
+
+The member-facing explanation per OS is in the
+[user guide](../features/login/user-guide.md#passkeys-on-android-windows-macos-and-linux); the
+protocol (profile, desktop hand-off sequence, error codes) in the
+[technical reference](../features/login/technical-reference.md#75-passkey-sign-in-f1--full).
 
 ## The domain binds every passkey
 
@@ -48,8 +55,10 @@ It tells Android which apps may use passkeys for your domain:
 - both Kaiku apps (`io.wolftown.kaiku` and `io.wolftown.kaiku.simple`, the latter is Kaiku Einfach
   from v1.2) by default (`PASSKEY_ANDROID_APP_IDS`);
 - the SHA-256 of the signing certificate of the official release APKs by default
-  (`PASSKEY_ANDROID_CERT_SHA256`). Until the official certificate is built into the server, set
-  it yourself (see "Self-built APKs").
+  (`PASSKEY_ANDROID_CERT_SHA256`). **In v1.0.0-rc.3 no official certificate is built in**
+  (`OFFICIAL_RELEASE_CERT_SHA256` is empty): with both variables unset the file is `[]` and the
+  Android app has no passkeys. Set `PASSKEY_ANDROID_CERT_SHA256` yourself, also for the official
+  APKs (see "Self-built APKs"). Key phones do not need this file.
 
 Requirements:
 

@@ -4,6 +4,11 @@ From v1.0 a family member's Android phone is their Kaiku key: it signs them in w
 screen lock and confirms sign-ins on other devices. Admins set these phones up **from their own key
 phone** (Settings → Admin). The desktop and web admin panels point here.
 
+This page is the click path. The rules behind it (claimant check, new versus existing accounts,
+independent cancellers, what members see) are in the
+[admin guide](../features/login/admin-guide.md#4-setting-up-phones-for-family-members); hand the
+[user guide](../features/login/user-guide.md#setting-up-your-phone) to the family member.
+
 ## Before you start
 
 - **Screen lock.** The phone needs a screen lock (PIN, pattern or password). Choose the PIN together
@@ -42,9 +47,12 @@ Each setup code needs its own confirmation with your screen lock.
   itself then.
 - **Recover**: if the old phone is lost, tick **Recover** and name the lost phones; they stop working
   when the new one is ready.
-- An account needs a confirmed recovery contact (or you use the host CLI) before an admin can set up
-  an existing account's phone; otherwise Kaiku refuses with "Name and confirm a recovery contact first,
-  or use the host CLI".
+- An existing account's setup needs an **independent canceller**: another admin with a key phone or
+  passkey, a recovery contact confirmed at least one waiting period (`ACCOUNT_REQUEST_DELAY_HOURS`)
+  earlier who has one, or a key phone or passkey of the account itself. Otherwise Kaiku refuses with
+  "Name and confirm a recovery contact first, or use the host CLI" (`NO_INDEPENDENT_CANCELLER`). On a
+  server with one admin this is usual on the day of the upgrade; use `kaiku-admin enroll` there (see
+  [Day 1](../features/login/admin-guide.md#2-day-1-upgrading-from-rc2-or-older)).
 
 ## A stolen phone
 
