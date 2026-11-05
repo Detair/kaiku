@@ -106,6 +106,7 @@ test.describe("Admin-created accounts", () => {
 
     // New user: temporary password → change screen → own password → app.
     await page.fill('input[placeholder="Enter your username"]', username);
+    await page.getByTestId("login-show-password").click();
     await page.fill('input[placeholder="Enter your password"]', temporaryPassword);
     await page.click('button[type="submit"]');
     await expect(
@@ -126,6 +127,7 @@ test.describe("Admin-created accounts", () => {
     await page.getByTestId("logout-button").click();
     await expect(page).toHaveURL(/\/login/, { timeout: 10000 });
     await page.fill('input[placeholder="Enter your username"]', username);
+    await page.getByTestId("login-show-password").click();
     await page.fill('input[placeholder="Enter your password"]', temporaryPassword);
     await page.click('button[type="submit"]');
     await expect(page.getByRole("alert").first()).toBeVisible({ timeout: 10000 });

@@ -172,6 +172,7 @@ describe("Login with a passkey", () => {
     await renderLogin();
     await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
     fireEvent.input(screen.getByPlaceholderText("Enter your username"), { target: { value: "fabian" } });
+    fireEvent.click(screen.getByTestId("login-show-password"));
     fireEvent.input(screen.getByPlaceholderText("Enter your password"), { target: { value: "wrong" } });
     fireEvent.click(screen.getByRole("button", { name: "Login" }));
     await waitFor(() => expect(tauri.passwordLogin).toHaveBeenCalled());
@@ -220,6 +221,7 @@ describe("Login with a passkey", () => {
     override.resolve("https://other.example.com");
     await vi.advanceTimersByTimeAsync(100);
     fireEvent.input(screen.getByPlaceholderText("Enter your username"), { target: { value: "fabian" } });
+    fireEvent.click(screen.getByTestId("login-show-password"));
     fireEvent.input(screen.getByPlaceholderText("Enter your password"), { target: { value: "secret-pw" } });
     fireEvent.click(screen.getByRole("button", { name: "Login" }));
     await waitFor(() => expect(tauri.passwordLogin).toHaveBeenCalled());
@@ -263,6 +265,7 @@ describe("Login with a passkey", () => {
     await waitFor(() => expect(passkeySignInMock).toHaveBeenCalledTimes(1));
     const first = passkeySignInMock.mock.calls[0][1] as { signal: AbortSignal };
     fireEvent.input(screen.getByPlaceholderText("Enter your username"), { target: { value: "fabian" } });
+    fireEvent.click(screen.getByTestId("login-show-password"));
     fireEvent.input(screen.getByPlaceholderText("Enter your password"), { target: { value: "secret-pw" } });
     fireEvent.click(screen.getByRole("button", { name: "Login" }));
     await screen.findByText("Open Kaiku on your phone and scan this code.");

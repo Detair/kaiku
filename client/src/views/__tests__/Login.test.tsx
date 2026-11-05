@@ -68,6 +68,7 @@ async function submit(): Promise<void> {
   fireEvent.input(await screen.findByPlaceholderText("Enter your username"), {
     target: { value: "alice" },
   });
+  fireEvent.click(screen.getByTestId("login-show-password"));
   fireEvent.input(screen.getByPlaceholderText("Enter your password"), {
     target: { value: "wrong" },
   });
@@ -80,7 +81,7 @@ describe("Login", () => {
     // form on the settings resource (bundle-budget change).
     settingsMock.mockReturnValue(new Promise(() => {}));
     await renderLogin();
-    expect(screen.getByTestId("login-submit")).toBeTruthy();
+    expect(screen.getByTestId("login-show-password")).toBeTruthy();
   });
 
   it("shows the invalid-credentials sentence for INVALID_CREDENTIALS", async () => {
@@ -120,10 +121,30 @@ describe("Login", () => {
     expect(loginMock).toHaveBeenCalledWith(expect.any(String), "alice", "wrong");
   });
 
+  it("keeps the password folded away until asked for, and focuses it", async () => {
+    await renderLogin();
+    expect(screen.getByPlaceholderText("Enter your username")).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Enter your password")).toBeNull();
+    expect(screen.queryByTestId("login-submit")).toBeNull();
+    fireEvent.click(screen.getByTestId("login-show-password"));
+    expect(document.activeElement).toBe(screen.getByPlaceholderText("Enter your password"));
+    expect(screen.getByTestId("login-submit")).toBeTruthy();
+    expect(screen.queryByTestId("login-show-password")).toBeNull();
+  });
+
+  it("Enter in the user name field opens the password instead of an error", async () => {
+    await renderLogin();
+    const input = screen.getByPlaceholderText("Enter your username");
+    fireEvent.submit(input.closest("form")!);
+    expect(screen.getByPlaceholderText("Enter your password")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(loginMock).not.toHaveBeenCalled();
+  });
+
   it("orders passkey, phone, SSO and password, with the recovery links", async () => {
     await renderLogin();
     const phone = screen.getByRole("button", { name: "Sign in with your phone" });
-    const form = screen.getByTestId("login-submit");
+    const form = screen.getByTestId("login-show-password");
     expect(phone.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(document.querySelector('a[href="/recover"]')?.textContent).toBe("I lost my phone / forgot my password");
     expect(document.querySelector('a[href="/secure-account"]')?.textContent).toBe("Secure my account");
