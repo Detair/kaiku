@@ -939,7 +939,7 @@ Coordinator and maintainer decisions recorded in the implementation notes:
   not sign in another account's passkey by mistake.
 - **Form POST hand-off ships**, no `fetch()` fallback (LP spike B).
 - **`webauthn-rs` pinned at `=0.5.5`** (0.6.2 was too new under the 14-day rule).
-- **`OFFICIAL_RELEASE_CERT_SHA256` is `None`** until the release certificate is supplied.
+- **`OFFICIAL_RELEASE_CERT_SHA256`** is the release certificate `A0:B9:…:C3:5B`; store-signed builds set `PASSKEY_ANDROID_CERT_SHA256`.
 - **Banned accounts and admin requests:** a due admin request of a banned account waits and completes
   at the first tick after the ban ends.
 
