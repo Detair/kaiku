@@ -67,7 +67,7 @@ const ProbationBanner: Component = () => {
         fallback={
           <button
             type="button"
-            class="shrink-0 w-full flex items-center justify-center gap-2 px-4 min-h-11 border-b border-status-warning/60 bg-surface-layer2 text-base text-text-primary"
+            class="shrink-0 w-full flex items-center justify-center gap-2 px-4 min-h-11 bg-[rgb(var(--color-surface-layer2-rgb)/0.96)] backdrop-blur-sm border-b border-white/10 border-l-4 border-l-status-warning text-base text-text-primary hover:bg-white/5"
             onClick={() => setCollapsed(false)}
             aria-expanded="false"
           >
@@ -79,7 +79,7 @@ const ProbationBanner: Component = () => {
         <div
           role="region"
           aria-label={t("auth.probation.chip")}
-          class="w-full shrink-0 flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2 bg-surface-layer2 border-b border-status-warning/60"
+          class="w-full shrink-0 flex flex-wrap items-center gap-x-4 gap-y-2 pl-3 pr-4 py-2.5 bg-[rgb(var(--color-surface-layer2-rgb)/0.96)] backdrop-blur-sm border-b border-white/10 border-l-4 border-l-status-warning shadow-sm"
         >
           <div class="flex items-start gap-3 flex-1 min-w-64">
             <ShieldAlert class="w-5 h-5 mt-0.5 text-status-warning shrink-0" aria-hidden="true" />
@@ -93,7 +93,7 @@ const ProbationBanner: Component = () => {
               when={canSignIn()}
               fallback={
                 <Show when={meSecurity() && !hasPasskey()}>
-                  <p class="text-sm text-text-secondary">{t("auth.probation.addPasskeyHint")}</p>
+                  <p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>
                 </Show>
               }
             >
@@ -109,7 +109,7 @@ const ProbationBanner: Component = () => {
             </Show>
             <button
               type="button"
-              class="min-h-11 px-3 rounded-lg text-base text-text-secondary hover:text-text-primary hover:bg-white/5"
+              class="min-h-11 px-3 rounded-lg text-base text-text-primary hover:bg-white/10"
               onClick={() => setCollapsed(true)}
               aria-expanded="true"
             >

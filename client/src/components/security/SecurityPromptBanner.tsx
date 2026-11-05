@@ -68,10 +68,10 @@ const SecurityPromptBanner: Component = () => {
         <div
           role="region"
           aria-label={t("security.prompt.label")}
-          class="w-full shrink-0 flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2 bg-surface-layer2 border-b border-white/15"
+          class="w-full shrink-0 flex flex-wrap items-center gap-x-4 gap-y-2 pl-3 pr-4 py-2.5 bg-[rgb(var(--color-surface-layer2-rgb)/0.96)] backdrop-blur-sm border-b border-white/10 border-l-4 border-l-accent-primary shadow-sm"
         >
           <div class="flex items-start gap-3 flex-1 min-w-64">
-            <ShieldCheck class="w-5 h-5 mt-0.5 shrink-0 text-text-secondary" aria-hidden="true" />
+            <ShieldCheck class="w-5 h-5 mt-0.5 shrink-0 text-accent-primary" aria-hidden="true" />
             <p class="text-base text-text-primary">{t(TEXT[p()])}</p>
           </div>
           <div class="flex flex-wrap shrink-0 max-w-full items-center justify-end gap-2">
@@ -84,7 +84,7 @@ const SecurityPromptBanner: Component = () => {
               <Match when={p() === "set_up_phone"}>
                 <Show
                   when={!isProbation()}
-                  fallback={<p class="text-sm text-text-secondary mr-auto">{t("security.prompt.askAdminPhone")}</p>}
+                  fallback={<p class="text-sm text-text-primary">{t("security.prompt.askAdminPhone")}</p>}
                 >
                   <button type="button" class={action} onClick={() => setSetupPhone(true)}>
                     {t("security.setupPhone.button")}
@@ -94,7 +94,7 @@ const SecurityPromptBanner: Component = () => {
               <Match when={p() === "add_passkey"}>
                 <Show
                   when={!isProbation()}
-                  fallback={<p class="text-sm text-text-secondary mr-auto">{t("auth.probation.addPasskeyHint")}</p>}
+                  fallback={<p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>}
                 >
                   {/* LP's "Add a passkey" needs the user's click on it (WebAuthn), so the prompt opens the section. */}
                   <button type="button" class={action} onClick={() => requestSettings("security")}>
@@ -117,7 +117,7 @@ const SecurityPromptBanner: Component = () => {
             </Switch>
             <button
               type="button"
-              class="min-h-11 px-3 rounded-lg text-base text-text-secondary hover:text-text-primary hover:bg-white/5"
+              class="min-h-11 px-3 rounded-lg text-base text-text-primary hover:bg-white/10"
               onClick={() => snoozePrompt(p(), currentUser()?.id ?? "")}
             >
               {t("security.prompt.later")}
