@@ -2,7 +2,8 @@
  * ProbationBanner — a chat-only session (B.4) says what it cannot do and how
  * to get a full session: "Sign in with a passkey" when the account has one,
  * otherwise where to add one. It collapses to a labelled chip for this run of
- * the app and is never hidden for good.
+ * the app and is never hidden for good. It takes its own row above the page and
+ * never covers the channel header or the message box.
  */
 
 import { Component, Show, createEffect, createSignal, onCleanup } from "solid-js";
@@ -66,7 +67,7 @@ const ProbationBanner: Component = () => {
         fallback={
           <button
             type="button"
-            class="fixed top-2 left-1/2 -translate-x-1/2 z-[55] flex items-center gap-2 px-4 min-h-11 rounded-full border border-status-warning/60 bg-surface-layer2 text-base text-text-primary shadow"
+            class="shrink-0 w-full flex items-center justify-center gap-2 px-4 min-h-11 border-b border-status-warning/60 bg-surface-layer2 text-sm text-text-primary"
             onClick={() => setCollapsed(false)}
             aria-expanded="false"
           >
@@ -78,25 +79,25 @@ const ProbationBanner: Component = () => {
         <div
           role="region"
           aria-label={t("auth.probation.chip")}
-          class="fixed top-2 left-1/2 -translate-x-1/2 z-[55] w-[min(40rem,calc(100vw-1rem))] rounded-xl border border-status-warning/60 bg-surface-layer2 shadow-lg p-4 space-y-3"
+          class="w-full shrink-0 flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2 bg-surface-layer2 border-b border-status-warning/60"
         >
-          <div class="flex items-start gap-3">
+          <div class="flex items-start gap-3 flex-1 min-w-64">
             <ShieldAlert class="w-5 h-5 mt-0.5 text-status-warning shrink-0" aria-hidden="true" />
-            <p class="text-base text-text-primary">{t("auth.probation.text")}</p>
+            <p class="text-sm text-text-primary">{t("auth.probation.text")}</p>
           </div>
           <Show when={error()}>
-            <p role="alert" class="text-sm text-text-primary">{error()}</p>
+            <p role="alert" class="order-last w-full text-sm text-text-primary">{error()}</p>
           </Show>
-          <div class="flex flex-wrap items-center justify-end gap-2">
+          <div class="flex flex-wrap shrink-0 max-w-full items-center justify-end gap-2">
             <Show
               when={canSignIn()}
               fallback={
                 <Show when={meSecurity() && !hasPasskey()}>
-                  <p class="text-sm text-text-secondary mr-auto">{t("auth.probation.addPasskeyHint")}</p>
+                  <p class="text-sm text-text-secondary">{t("auth.probation.addPasskeyHint")}</p>
                 </Show>
               }
             >
-              <button type="button" class="btn-primary min-h-12 text-base" disabled={busy()} onClick={() => void signIn()}>
+              <button type="button" class="btn-primary min-h-11 text-sm" disabled={busy()} onClick={() => void signIn()}>
                 {t("auth.probation.signIn")}
               </button>
             </Show>
@@ -108,7 +109,7 @@ const ProbationBanner: Component = () => {
             </Show>
             <button
               type="button"
-              class="min-h-12 px-4 rounded-lg text-base text-text-secondary hover:text-text-primary hover:bg-white/5"
+              class="min-h-11 px-3 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-white/5"
               onClick={() => setCollapsed(true)}
               aria-expanded="true"
             >
