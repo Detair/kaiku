@@ -43,10 +43,14 @@ sessions are signed out on their devices within seconds.
 | `kaiku-admin admin demote <username>` | Removes the admin role; the admin's open admin requests are void. |
 | `kaiku-admin request cancel <request-id>` | Cancels an open account request. |
 
-They also work on admin accounts. Every command writes a `cli.*` audit row;
-changes with a security event (contact, sessions ended, devices removed, admin
-role removed, request cancelled) notify the account, its recovery contact and
-every admin.
+They also work on admin accounts. Every command writes a `cli.*` audit row.
+Every change also records a security event (`factor_restored` or
+`throttle_reset`, `may_approve_changed`, `recovery_contact_named` /
+`_changed`, `admin_role_removed`, `request_cancelled`, `sessions_ended`,
+`authenticator_added` / `_removed`) and notifies the account; high-severity
+ones also its recovery contact and every admin. The
+[admin guide](../features/login/admin-guide.md#10-the-kaiku-admin-host-cli)
+lists each command with its event and examples.
 
 ## Give the first admin a key phone
 
@@ -88,6 +92,10 @@ notice. If it was the account's only key, give the person a new one with
 `enroll`.
 
 ## Before the upgrade to v1.0 (checklist)
+
+The full day-1 walkthrough, with the migration's effects and which accounts
+need `kaiku-admin enroll`, is in the
+[admin guide](../features/login/admin-guide.md#2-day-1-upgrading-from-rc2-or-older).
 
 1. Set `PUBLIC_URL` to the address members use; passkeys and setup links are
    bound to it.

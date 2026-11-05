@@ -14,13 +14,16 @@ rejected unless the policy is `open`.
 
 ## 2. Create the account in the app
 
-Use the desktop app (or the web client) signed in as a system admin with your
-key phone or a passkey.
+Use the desktop app (or the web client) signed in as a system admin **with a
+passkey**. A PC signed in by QR code or password is chat-only and gets
+`403 FULL_SESSION_REQUIRED` in the admin area. Admin mode on the Android key
+phone works too (Settings → Admin).
 
 1. Open **Admin Panel**, then **Users**, and click **Create account**.
-2. If your session is not elevated yet, confirm **Unlock admin actions** on
-   your phone (or with a passkey). The elevation lasts 15 minutes and only
-   applies to this session.
+2. If your session is not elevated yet, confirm **Unlock admin actions** with
+   a passkey (on the key phone: with its screen lock). The elevation lasts 15
+   minutes and only applies to this session; a confirmation on your phone
+   cannot elevate a PC session.
 3. Fill in username, display name (optional), the **Servers** the account
    joins, and optionally a **recovery contact** (another member who is not an
    admin, see [sign-in and recovery](sign-in-and-recovery.md)).
@@ -129,8 +132,17 @@ ready_at, created_at, last_used_at}`), `password_state`, `totp_state`,
 `recovery_codes_left`, `bootstrap_open`, `recovery_contact`, `open_request`
 and `open_sessions {full, probation}`.
 
+The admin setup and the security-panel routes in the table need an admin with
+a full session and their own confirmation; the server does not also require
+admin mode for them (creating the account does). See the [admin guide](../features/login/admin-guide.md#5-admin-mode-and-confirmations)
+for the full table.
+
 ## Related
 
+- [The v1.0 login: admin guide](../features/login/admin-guide.md) (upgrade,
+  factor states, delays and cancellers, troubleshooting) and
+  [user guide](../features/login/user-guide.md) for the member
+- [Setting up phones for family members](phone-setup.md)
 - [Sign-in and recovery](sign-in-and-recovery.md)
 - [Deployment](deployment.md) and [environment variables](../configuration/environment.md)
 - [Rate limiting](../configuration/rate-limiting.md)
