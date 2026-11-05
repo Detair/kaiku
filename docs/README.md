@@ -8,7 +8,7 @@ Welcome to the official documentation for Kaiku. This directory is structured to
 docs/
 ├── admin-guide/        # Guides for self-hosting, configuration, and operations
 │   ├── configuration/  # Details on auth methods, feature flags, rate-limiting, and webhooks
-│   ├── features/       # Feature-specific admin documentation
+│   ├── features/       # Feature-specific admin documentation (login/: the v1.0 sign-in guides)
 │   ├── getting-started/ # Quick-start guides for administrators
 │   ├── ops/            # Deployment guides, incident triage, security hardening, and updates
 │   └── self-hosting.md # Overview of self-hosting Kaiku
@@ -29,6 +29,9 @@ docs/
 
 - **I want to run my own Kaiku server!**
   Start with the [Admin Guide - Self Hosting](admin-guide/self-hosting.md) to understand the requirements and deployment process using Docker.
+
+- **I want to know how signing in works (passkeys, the phone as key, recovery)!**
+  Read [The v1.0 login](admin-guide/features/login/README.md): a [user guide](admin-guide/features/login/user-guide.md) for family members, an [admin guide](admin-guide/features/login/admin-guide.md) for operators (including the upgrade to v1.0) and a [technical reference](admin-guide/features/login/technical-reference.md).
 
 - **I want to understand how Kaiku works under the hood!**
   Head over to the [Developer Guide - Architecture Overview](developer-guide/architecture/overview.md) for a comprehensive look at the client, server, and networking layers.

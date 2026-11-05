@@ -18,6 +18,21 @@ Unlike platforms like Discord or TeamSpeak, a self-hosted Kaiku node grants you 
 - Server roles and community metrics
 - Uptime SLA and routing
 
+## <span style="color: #88C0D0;">Admin guide index</span>
+
+- **Sign-in (v1.0):** [The v1.0 login](features/login/README.md), with the
+  [admin guide](features/login/admin-guide.md) (upgrade to v1.0, `kaiku-admin`, limits,
+  troubleshooting), the [user guide](features/login/user-guide.md) to hand to family members and
+  the [technical reference](features/login/technical-reference.md).
+- **Accounts and phones:** [Creating family accounts](ops/creating-accounts.md),
+  [Setting up phones for family members](ops/phone-setup.md), [Passkeys](ops/passkeys.md),
+  [Sign-in and recovery (host CLI)](ops/sign-in-and-recovery.md).
+- **Running the server:** [Deployment](ops/deployment.md), [Web client](ops/web-client.md),
+  [Environment variables](configuration/environment.md), [Rate limiting](configuration/rate-limiting.md),
+  [Android push](android-push.md), [Observability runbook](ops/observability-runbook.md).
+- **Features:** [Channel permissions](features/channel-permissions.md),
+  [Incoming webhooks](features/incoming-webhooks.md).
+
 ## <span style="color: #88C0D0;">Infrastructure Overview</span>
 A standard Kaiku deployment consists of three primary services:
 
