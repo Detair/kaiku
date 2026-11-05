@@ -123,6 +123,9 @@ const Login: Component = () => {
   // a desktop start without a session (Codex review M3).
   createEffect(() => setSignInServer(serverUrl()));
   const [username, setUsername] = createSignal("");
+  /** The password comes last: passkey and phone are the usual ways in. */
+  const [passwordShown, setPasswordShown] = createSignal(false);
+  let passwordRow: HTMLDivElement | undefined;
   const [password, setPassword] = createSignal("");
   const [localError, setLocalError] = createSignal("");
   const [oidcLoading, setOidcLoading] = createSignal<string | null>(null);
@@ -321,11 +324,21 @@ const Login: Component = () => {
     ),
   );
 
+  const showPassword = () => {
+    setPasswordShown(true);
+    passwordRow?.querySelector("input")?.focus();
+  };
+
   const handleLogin = async (e: Event) => {
     e.preventDefault();
     setLocalError("");
     clearError();
 
+    // Enter in the user name field, with the password still folded away.
+    if (!passwordShown()) {
+      showPassword();
+      return;
+    }
     if (!username().trim()) {
       setLocalError(t("auth.login.usernameRequired"));
       return;
@@ -673,7 +686,19 @@ const Login: Component = () => {
                 />
               </div>
 
-              <div>
+              <Show when={!passwordShown()}>
+                <button
+                  type="button"
+                  class="w-full min-h-12 rounded-lg border border-white/10 text-base text-text-primary hover:bg-white/10"
+                  data-testid="login-show-password"
+                  onClick={showPassword}
+                >
+                  {t("auth.login.usePassword")}
+                </button>
+              </Show>
+
+              <Show when={passwordShown()}>
+              <div ref={passwordRow}>
                 <label for="login-password" class="block text-sm font-medium text-text-secondary mb-1">
                   {t("auth.login.password")}
                 </label>
@@ -690,6 +715,7 @@ const Login: Component = () => {
                   required
                 />
               </div>
+              </Show>
 
               <Show when={error()}>
                 <div
@@ -702,6 +728,7 @@ const Login: Component = () => {
                 </div>
               </Show>
 
+              <Show when={passwordShown()}>
               <button
                 type="submit"
                 class="btn-primary w-full min-h-12 flex items-center justify-center gap-2 text-base"
@@ -720,6 +747,7 @@ const Login: Component = () => {
                   {t("common.login")}
                 </Show>
               </button>
+              </Show>
             </form>
           </Show>
 

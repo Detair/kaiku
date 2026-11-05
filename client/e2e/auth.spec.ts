@@ -23,6 +23,7 @@ test.describe("Authentication", () => {
     test("should login with valid credentials", async ({ page }) => {
       await page.goto("/login");
       await page.fill('input[placeholder="Enter your username"]', "alice");
+      await page.getByTestId("login-show-password").click();
       await page.fill('input[placeholder="Enter your password"]', "password123");
       await page.click('button[type="submit"]');
 

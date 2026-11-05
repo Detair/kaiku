@@ -91,6 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Android: admins set up phones from their own phone.** Create the account (no password), choose "Set up a phone", and type the code the new phone shows; existing accounts wait 24 hours with notices to everyone involved. "Remove device now" for stolen phones. See `docs/admin-guide/ops/phone-setup.md`.
 
 ### Changed
+- The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
 - **Breaking:** new accounts start by adding a passkey or a key phone (or an authenticator app) within 30 minutes; a password is optional, and registering no longer signs you in. Accounts that add nothing within 30 minutes are removed. The first admin of a new server adds a passkey or a key phone.
 - **Breaking for older apps:** after your password (or single sign-on), Kaiku asks you to confirm on your phone by scanning a code, or for your authenticator code if you have no key phone. Sessions created this way are limited to chat and calls. A wrong password, an unknown user name and an account without a second step all get the same answer. The desktop app receives single sign-on results through a page that hands a one-time code to the app.
 - Signing in on a PC with your phone now shows the PC what to scan, and your phone asks you to confirm who is signing in before anything happens. Such sign-ins are limited to chat and calls; use a passkey for full access.

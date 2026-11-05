@@ -27,6 +27,7 @@ export const auth = {
   "auth.login.or": "or",
   "auth.login.usernamePlaceholder": "Enter your username",
   "auth.login.password": "Password",
+  "auth.login.usePassword": "Sign in with a password",
   "auth.login.passwordPlaceholder": "Enter your password",
   "auth.login.submitting": "Logging in...",
   "auth.login.noAccount": "Don't have an account?",

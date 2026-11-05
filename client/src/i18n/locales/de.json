@@ -129,6 +129,7 @@
   "auth.login.tooManyAttemptsMinutes.one": "",
   "auth.login.tooManyAttemptsMinutes.other": "",
   "auth.login.totpUnavailable": "",
+  "auth.login.usePassword": "Mit Passwort anmelden",
   "auth.login.usernamePlaceholder": "",
   "auth.login.usernameRequired": "",
   "auth.logout.failed": "",
