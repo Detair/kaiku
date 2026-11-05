@@ -2,6 +2,8 @@
 //!
 //! Tauri backend for the desktop application.
 
+#[cfg(target_os = "linux")]
+mod appimage;
 mod audio;
 mod capture;
 mod commands;
@@ -34,6 +36,9 @@ use webrtc::WebRtcClient;
 
 /// Run the Tauri application.
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    appimage::prefer_system_wayland();
+
     // Initialize Sentry only when DSN is configured
     let _sentry_guard = std::env::var("SENTRY_DSN_CLIENT")
         .ok()

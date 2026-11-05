@@ -208,6 +208,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
+- The Linux AppImage no longer shows only a grey window on systems with a current Mesa.
 - Android: signing in with a single sign-on provider now opens the provider's page; before, the server refused the start and the sign-in never began. A failed SSO sign-in now says why (for example that the app needs an update) instead of only "SSO login failed".
 - Android: the security log and the Kaiku chat load again when they mention a passkey that was removed while waiting for its account request.
 - Admins: a password or authenticator app paused after many wrong tries can be allowed again from the user's security panel (it no longer offers only "Mark as unsafe"); an unsafe one shows that the person must replace it instead of an "Allow again" the server refuses.
