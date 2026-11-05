@@ -67,7 +67,7 @@ const ProbationBanner: Component = () => {
         fallback={
           <button
             type="button"
-            class="shrink-0 w-full flex items-center justify-center gap-2 px-4 min-h-11 border-b border-status-warning/60 bg-surface-layer2 text-sm text-text-primary"
+            class="shrink-0 w-full flex items-center justify-center gap-2 px-4 min-h-11 border-b border-status-warning/60 bg-surface-layer2 text-base text-text-primary"
             onClick={() => setCollapsed(false)}
             aria-expanded="false"
           >
@@ -83,7 +83,7 @@ const ProbationBanner: Component = () => {
         >
           <div class="flex items-start gap-3 flex-1 min-w-64">
             <ShieldAlert class="w-5 h-5 mt-0.5 text-status-warning shrink-0" aria-hidden="true" />
-            <p class="text-sm text-text-primary">{t("auth.probation.text")}</p>
+            <p class="text-base text-text-primary">{t("auth.probation.text")}</p>
           </div>
           <Show when={error()}>
             <p role="alert" class="order-last w-full text-sm text-text-primary">{error()}</p>
@@ -97,7 +97,7 @@ const ProbationBanner: Component = () => {
                 </Show>
               }
             >
-              <button type="button" class="btn-primary min-h-11 text-sm" disabled={busy()} onClick={() => void signIn()}>
+              <button type="button" class="btn-primary min-h-11 text-base" disabled={busy()} onClick={() => void signIn()}>
                 {t("auth.probation.signIn")}
               </button>
             </Show>
@@ -109,7 +109,7 @@ const ProbationBanner: Component = () => {
             </Show>
             <button
               type="button"
-              class="min-h-11 px-3 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-white/5"
+              class="min-h-11 px-3 rounded-lg text-base text-text-secondary hover:text-text-primary hover:bg-white/5"
               onClick={() => setCollapsed(true)}
               aria-expanded="true"
             >

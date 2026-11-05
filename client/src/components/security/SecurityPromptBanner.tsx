@@ -27,7 +27,7 @@ const TEXT: Record<SecurityPrompt, MessageKey> = {
   open_request: "security.request.prompt",
 };
 
-const action = "btn-primary min-h-11 text-sm";
+const action = "btn-primary min-h-11 text-base";
 
 const SecurityPromptBanner: Component = () => {
   const navigate = useNavigate();
@@ -72,7 +72,7 @@ const SecurityPromptBanner: Component = () => {
         >
           <div class="flex items-start gap-3 flex-1 min-w-64">
             <ShieldCheck class="w-5 h-5 mt-0.5 shrink-0 text-text-secondary" aria-hidden="true" />
-            <p class="text-sm text-text-primary">{t(TEXT[p()])}</p>
+            <p class="text-base text-text-primary">{t(TEXT[p()])}</p>
           </div>
           <div class="flex flex-wrap shrink-0 max-w-full items-center justify-end gap-2">
             <Switch>
@@ -117,7 +117,7 @@ const SecurityPromptBanner: Component = () => {
             </Switch>
             <button
               type="button"
-              class="min-h-11 px-3 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-white/5"
+              class="min-h-11 px-3 rounded-lg text-base text-text-secondary hover:text-text-primary hover:bg-white/5"
               onClick={() => snoozePrompt(p(), currentUser()?.id ?? "")}
             >
               {t("security.prompt.later")}
