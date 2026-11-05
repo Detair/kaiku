@@ -7,10 +7,10 @@ pub const DEFAULT_ANDROID_APP_IDS: [&str; 2] = ["io.wolftown.kaiku", "io.wolftow
 
 /// Colon hex SHA-256 of the official release signing certificate.
 ///
-/// Public data; both APKs are signed with it. `None` until the maintainer
-/// supplies it (LP Q1): official APKs then need `PASSKEY_ANDROID_CERT_SHA256`,
-/// and without it the server has no Android passkey origin.
-pub const OFFICIAL_RELEASE_CERT_SHA256: Option<&str> = None;
+/// Public data; both APKs are signed with it. Self-built APKs and builds
+/// re-signed by a store need `PASSKEY_ANDROID_CERT_SHA256` instead.
+pub const OFFICIAL_RELEASE_CERT_SHA256: Option<&str> =
+    Some("A0:B9:0E:57:41:12:1A:2E:AB:DA:7C:97:5B:CC:DB:48:0F:1F:6E:05:25:FA:6A:48:D5:4F:0C:F0:AE:D3:C3:5B");
 
 const IDS_VAR: &str = "PASSKEY_ANDROID_APP_IDS";
 const CERTS_VAR: &str = "PASSKEY_ANDROID_CERT_SHA256";
@@ -227,17 +227,14 @@ mod tests {
     #[test]
     fn android_defaults() {
         let c = PasskeyConfig::new(&public("https://chat.example.com"), None, None).unwrap();
-        let official: Vec<[u8; 32]> = OFFICIAL_RELEASE_CERT_SHA256
-            .iter()
-            .map(|raw| parse_cert_fingerprint(raw).unwrap())
-            .collect();
-        assert_eq!(c.android_cert_sha256, official);
-        if official.is_empty() {
-            // No official certificate compiled in yet (Q1): Android is off.
-            assert!(c.android_app_ids.is_empty());
-        } else {
-            assert_eq!(c.android_app_ids, DEFAULT_ANDROID_APP_IDS.to_vec());
-        }
+        let official = parse_cert_fingerprint(OFFICIAL_RELEASE_CERT_SHA256.unwrap()).unwrap();
+        assert_eq!(c.android_cert_sha256, vec![official]);
+        assert_eq!(c.android_app_ids, DEFAULT_ANDROID_APP_IDS.to_vec());
+        assert_eq!(
+            assetlinks_fingerprint(&official),
+            OFFICIAL_RELEASE_CERT_SHA256.unwrap(),
+            "the constant is in the form Android publishes"
+        );
         // With an operator certificate, the default app ids apply.
         let c = PasskeyConfig::new(
             &public("https://chat.example.com"),
@@ -276,14 +273,10 @@ mod tests {
         );
         let err = PasskeyConfig::new(&p, Some("none"), Some(TEST_CERT)).unwrap_err();
         assert!(err.to_string().contains("PASSKEY_ANDROID_APP_IDS"), "{err}");
-        // Explicit ids without any certificate (none compiled in) → refused.
-        if OFFICIAL_RELEASE_CERT_SHA256.is_none() {
-            let err = PasskeyConfig::new(&p, Some("io.example.app"), None).unwrap_err();
-            assert!(
-                err.to_string().contains("PASSKEY_ANDROID_CERT_SHA256"),
-                "{err}"
-            );
-        }
+        // Explicit ids without certificates use the official certificate.
+        let c = PasskeyConfig::new(&p, Some("io.example.app"), None).unwrap();
+        assert_eq!(c.android_app_ids, vec!["io.example.app"]);
+        assert_eq!(c.android_cert_sha256.len(), 1);
         // Bad package names are refused without echoing the value.
         let err =
             PasskeyConfig::new(&p, Some("io.example.app,bad name"), Some(TEST_CERT)).unwrap_err();
