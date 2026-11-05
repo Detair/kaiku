@@ -920,11 +920,17 @@ Coordinator and maintainer decisions recorded in the implementation notes:
 - **100 failures are decisive** (Codex r4 #1), section 13.
 - **`ACCOUNT_BANNED` after a correct password** with a second step is kept: a banned person is told
   so; wrong guesses still count. A wrong password still gets the neutral answer.
-- **The web refresh-cookie race.** All tabs of a browser share one HttpOnly refresh cookie. The
-  client serialises refreshes with a Web Lock; in a browser without Web Locks, or when a refresh
-  response is lost more than once in 24 h, the second presentation of a spent token is reuse and
-  ends the session (`SESSION_REUSED`). The user signs in again; the alternative (a longer or
-  repeated retry window) would weaken reuse detection.
+- **Two sign-ins racing in one browser (accepted for v1.0, LP review round 2).** If an older
+  passkey sign-in's `/auth/passkeys/login/finish` answer arrives after a newer sign-in in the same
+  browser has completed, its `Set-Cookie` overwrites the newer sign-in's refresh cookie. The client
+  then ends the stale session (`endStaleSession`), so the newer session can no longer refresh and
+  must sign in again when its access token expires, after at most 15 minutes. The stale session
+  never stays live and no other account is adopted. Fable, Codex and Argon accepted this
+  availability limit for v1.0. Preventing it would need sign-ins serialised across all methods.
+- **Refresh across tabs.** All tabs share one HttpOnly refresh cookie, and the client serialises
+  refreshes with a Web Lock. In a browser without Web Locks, or when a refresh response is lost
+  more than once within 24 h, presenting the spent token again counts as reuse and ends the session
+  (`SESSION_REUSED`). The user signs in again. A longer retry window would weaken reuse detection.
 - **`kaiku` rename:** a pre-existing account named `kaiku` is renamed by the migration rather than
   failing the upgrade.
 - **Rate-limit code:** the v1.0 categories (`ApprovalLogin`, `AuthFlow`, `AuthPasskey`) answer 429
