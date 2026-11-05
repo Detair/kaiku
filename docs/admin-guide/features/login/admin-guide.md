@@ -169,7 +169,7 @@ this table explains their role.
 | `PUBLIC_URL` | required | The `https://` origin users open, e.g. `https://chat.example.com`. Device signatures carry this origin, the passkey RP ID is its host, setup links point to it, OIDC returns to `$PUBLIC_URL/auth/oidc/callback`. The server does not start without it. `http://` only for `localhost`; no path, query, user name or IP address. |
 | `PASSKEY_ALLOW_RP_ID_CHANGE` | unset | One-time escape hatch after a domain change (see [Passkeys](../../ops/passkeys.md#the-domain-binds-every-passkey)). |
 | `PASSKEY_ANDROID_APP_IDS` | `io.wolftown.kaiku,io.wolftown.kaiku.simple` | Android package names allowed to use passkeys; `none` turns Android passkeys off. |
-| `PASSKEY_ANDROID_CERT_SHA256` | the built-in official certificate (none yet, see below) | SHA-256 of the APK signing certificates, comma-separated, hex with or without colons. |
+| `PASSKEY_ANDROID_CERT_SHA256` | the built-in official certificate | SHA-256 of the APK signing certificates, comma-separated, hex with or without colons. |
 | `AUTH_HMAC_KEY` | derived from `JWT_PRIVATE_KEY` (HKDF) | 64 hex characters. Keys the hashes of setup links, sign-in tokens, codes and request secrets. Changing it (or the JWT key when it is unset) voids every open sign-in attempt, setup link and account request. |
 | `ACCOUNT_REQUEST_DELAY_HOURS` | `24` | Waiting time of every account request, 24 to 72; anything else refuses startup. |
 | `MAX_SESSIONS_PER_USER` | `50` | Live sessions per account, 1 to 1000; the least recently used session ends beyond it (notice `session_ended_limit`). |
@@ -189,20 +189,20 @@ origin `android:apk-key-hash:<unpadded base64url SHA-256>`; the server accepts e
 configured ones.
 
 The server has a compiled-in constant `OFFICIAL_RELEASE_CERT_SHA256` for the official release
-APKs. **In v1.0.0-rc.3 it is empty (`None`)**, because the release certificate was not available
-when the code was written. What that means:
+APKs: `A0:B9:0E:57:41:12:1A:2E:AB:DA:7C:97:5B:CC:DB:48:0F:1F:6E:05:25:FA:6A:48:D5:4F:0C:F0:AE:D3:C3:5B`.
+What that means:
 
 | `PASSKEY_ANDROID_APP_IDS` | `PASSKEY_ANDROID_CERT_SHA256` | Result |
 |---|---|---|
-| unset | unset | No Android passkey origin; `assetlinks.json` is `[]`. The Android app has no passkeys; the app itself is the key. |
+| unset | unset | Both default app ids with the official certificate. Official APKs have passkeys with no setting. |
 | unset | set | Both default app ids with your certificates. |
 | set | set | Your app ids with your certificates. |
-| set | unset | **Startup refused** (ids without certificates). |
+| set | unset | Your app ids with the official certificate. A self-built APK needs its own certificate here. |
 | `none` | unset or `none` | Android passkeys off. |
 | `none` | set (or the reverse) | **Startup refused.** |
 
-So for passkeys in the Android app, set `PASSKEY_ANDROID_CERT_SHA256` to the SHA-256 of the APK's
-signing certificate (also for the official APKs until the constant is filled in). How to read it
+So set `PASSKEY_ANDROID_CERT_SHA256` only for APKs with another signing certificate: self-built
+ones, or ones re-signed by a store (Play App Signing). How to read it
 and how to check that Google can fetch the file: [Passkeys → Android](../../ops/passkeys.md#android-assetlinksjson).
 Key phones do **not** need `assetlinks.json`; only passkeys inside the app and App Links do.
 
@@ -562,7 +562,7 @@ real client address behind your proxy.
 |---|---|---|
 | `PUBLIC_URL must be set to the public https:// address of this server` | `PUBLIC_URL` missing or empty | Set it. |
 | `PUBLIC_URL host changed from <old> to <new>; N passkeys are bound to <old> …` | The domain changed while passkeys exist | Restore `PUBLIC_URL`, or set `PASSKEY_ALLOW_RP_ID_CHANGE=<new>` for one start ([Passkeys](../../ops/passkeys.md#the-domain-binds-every-passkey)). |
-| `PASSKEY_ANDROID_APP_IDS is set but PASSKEY_ANDROID_CERT_SHA256 is not …` (or the reverse with `none`) | Inconsistent Android passkey settings | Set both, or neither (section 3). |
+| `PASSKEY_ANDROID_APP_IDS is set but PASSKEY_ANDROID_CERT_SHA256=none` (or the reverse) | Inconsistent Android passkey settings | Set both, or neither (section 3). |
 | `PASSKEY_ANDROID_CERT_SHA256 entries must be 32-byte SHA-256 digests in hex` | Malformed digest | Copy it from `apksigner` / `keytool`. |
 | `ACCOUNT_REQUEST_DELAY_HOURS must be an integer from 24 to 72` | Out of range | Fix the value. |
 | `MAX_SESSIONS_PER_USER must be an integer from 1 to 1000` | Out of range | Fix the value. |
@@ -654,8 +654,6 @@ real client address behind your proxy.
 
 ### Maintainer, before the v1.0 tag
 
-- [ ] Fill in `OFFICIAL_RELEASE_CERT_SHA256` (`server/src/auth/passkeys/config.rs`) with the
-      release signing certificate, or document that operators must set `PASSKEY_ANDROID_CERT_SHA256`.
 - [ ] Hand-check the desktop passkey hand-off on Safari (macOS, default settings and with "Warn
       before connecting to a website over HTTP" on) and on Firefox stable (LP spike B rows that were
       researched but not run on a real browser).
