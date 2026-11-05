@@ -73,6 +73,7 @@ export async function login(
 ) {
   await page.goto("/login");
   await page.fill('input[placeholder="Enter your username"]', username);
+  await page.getByTestId("login-show-password").click();
   await page.fill('input[placeholder="Enter your password"]', password);
   await page.click('button[type="submit"]');
   await completeFirstRunSetupIfVisible(page);

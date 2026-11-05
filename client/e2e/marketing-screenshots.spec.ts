@@ -322,6 +322,7 @@ test.describe("Marketing Screenshots", () => {
     await page.goto("https://localhost:5173/login");
     await page.waitForLoadState("networkidle");
     await page.fill('input[placeholder="Enter your username"]', "alex");
+    await page.getByTestId("login-show-password").click();
     await page.fill('input[placeholder="Enter your password"]', "SecurePass123!");
     await waitAndScreenshot(page, "login-filled");
     await page.click('button[type="submit"]');
