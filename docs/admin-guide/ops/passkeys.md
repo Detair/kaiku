@@ -55,10 +55,8 @@ It tells Android which apps may use passkeys for your domain:
 - both Kaiku apps (`io.wolftown.kaiku` and `io.wolftown.kaiku.simple`, the latter is Kaiku Einfach
   from v1.2) by default (`PASSKEY_ANDROID_APP_IDS`);
 - the SHA-256 of the signing certificate of the official release APKs by default
-  (`PASSKEY_ANDROID_CERT_SHA256`). **In v1.0.0-rc.3 no official certificate is built in**
-  (`OFFICIAL_RELEASE_CERT_SHA256` is empty): with both variables unset the file is `[]` and the
-  Android app has no passkeys. Set `PASSKEY_ANDROID_CERT_SHA256` yourself, also for the official
-  APKs (see "Self-built APKs"). Key phones do not need this file.
+  (`PASSKEY_ANDROID_CERT_SHA256`): `A0:B9:0E:57:41:12:1A:2E:AB:DA:7C:97:5B:CC:DB:48:0F:1F:6E:05:25:FA:6A:48:D5:4F:0C:F0:AE:D3:C3:5B`.
+  The official APKs from the GitHub release need no setting. Key phones do not need this file.
 
 Requirements:
 
@@ -89,8 +87,12 @@ keytool -printcert -jarfile kaiku.apk           # "SHA256: AA:BB:…"
 ```
 
 Both forms are accepted, with or without colons, in any case. Set `PASSKEY_ANDROID_APP_IDS` only
-if your build uses other package names. `none` in either variable turns passkeys in the Android
-app off. The server refuses to start when app ids are set without certificates, or the reverse.
+if your build uses other package names; app ids without certificates are paired with the official
+certificate, which a self-built APK does not have. `none` in either variable turns passkeys in the
+Android app off. The server refuses to start when one variable is `none` and the other names values.
+
+An APK re-signed by a store (Play App Signing) has that store's certificate: add it to
+`PASSKEY_ANDROID_CERT_SHA256`, together with the official one if both are in use.
 
 ## Desktop app
 

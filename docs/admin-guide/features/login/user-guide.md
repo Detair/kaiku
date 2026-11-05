@@ -96,7 +96,7 @@ Good to know:
 
 ### With your password, then confirm on your phone (chat only)
 
-1. Type your user name and password and click to sign in.
+1. Type your user name, click **Sign in with a password**, type your password and click to sign in.
 2. If your account has a key phone, the PC shows a code: **Open Kaiku on your phone and scan this
    code.** Scan it as above. The phone also says *This comes after someone entered your password.*
 3. If you have no key phone but use an authenticator app (a 6-digit code app), the PC asks for
