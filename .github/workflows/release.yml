@@ -374,11 +374,12 @@ jobs:
       - name: Smoke test - binary runs and no config is baked in
         run: |
           set -euo pipefail
-          # Without env vars the server must fail on the first required variable.
+          # Without env vars the server must fail on the first required variable
+          # (PUBLIC_URL since v1.0).
           # `docker run` exits non-zero here, so capture the output instead of piping.
           out="$(docker run --rm kaiku-server:smoke 2>&1 || true)"
           echo "$out"
-          echo "$out" | grep -q "DATABASE_URL must be set"
+          echo "$out" | grep -q "PUBLIC_URL must be set"
 
       - name: Smoke test - image contents
         run: |
