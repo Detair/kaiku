@@ -49,7 +49,7 @@
 - [ ] **Step 1: Write failing tests:** golden vectors `pc_setup_approve_vector` and `pc_setup_report_vector` (fixed bytes for the B.2 signed format, kind byte 6, `response` = the 32 token bytes); `Kind::from_byte(6) == Some(PcSetup)`; integration `schema_allows_pc_setup_enrolment_without_a_token`, `one_live_attempt_per_session`.
 - [ ] **Step 2: Run:** `SQLX_OFFLINE=true cargo test -p vc-server pc_setup` → FAIL, not defined.
 - [ ] **Step 3: Implement.** Migration: the table above with a partial unique index on `session_id` for live states; extend `enrollments` CHECKs for `variant` and `issuer_kind`; make `setup_token_hash` nullable with `CHECK (variant = 'pc_setup' OR setup_token_hash IS NOT NULL)`, `CHECK (variant <> 'pc_setup' OR authenticator_type = 'passkey')`. Add `pc_setup_attempt_id` to `approvals`' requester columns following `Requester` in `core.rs`. `SM2 confirm_tx`, the open-count query and `issued_by` get match arms that refuse `pc_setup`; no claim or confirm route can act on such a row.
-- [ ] **Step 4: Run** the same tests and the existing enrolment suite (`--test integration enrollment`) → PASS. Regenerate `.sqlx` per `server/tests/integration/AGENTS.md` conventions.
+- [ ] **Step 4: Run** the same tests and the existing enrolment suite (`--test integration enrollment`) → PASS. Regenerate and commit the `.sqlx` query cache.
 - [ ] **Step 5: Commit** `feat(auth): add the pc setup attempt model and challenge kind`.
 
 ### Task 2: Attempt lifecycle on the PC and the phone
@@ -116,7 +116,7 @@
 
 **Interfaces:**
 - Produces: `startPcSetup()`, `currentPcSetup()`, `pollPcSetup(id, wait)`, `cancelPcSetup(id)`, `enterPcSetupCode(id, code)`, `startPcSetupPasskey(id)`, `finishPcSetupPasskey(id, ceremonyId, credential, label)`.
-- Produces: `<SetUpThisPc onClose />`, a dialog using `DialogShell`, `QrImage` as used by the login view, and `CodeEntry`.
+- Produces: `<SetUpThisPc onClose />`, a dialog using `DialogShell`, `QrCodeImage` and `CodeEntry`.
 
 - [ ] **Step 1: Write failing tests:** button shown only with `can_set_up_this_pc` and probation; with an active passkey "Sign in with a passkey" comes first; hint text "Ask your admin" when not eligible; each PC row of the spec's error table; Start again visible in every state; resumes via `currentPcSetup` on mount; finish offers "Sign in with your passkey", which calls `replaceSessionWithPasskey`; no poll closer than 1 s even if the server answers at once.
 - [ ] **Step 2: Run:** `cd client && bun run test:run SetUpThisPc` → FAIL.
