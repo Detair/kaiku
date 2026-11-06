@@ -5,8 +5,8 @@
 ("the login spec"); terms such as probation, key device, `may_approve`, F1, F2, F5a, SM1, SM2 and B.7
 mean what they mean there.
 
-**Revision 2, 2026-11-06:** design review round 1 (Codex NOT READY, Flash NOT READY, Fable READY WITH
-FIXES) resolved; see the appendix. The setup token is gone, and "I didn't start this" no longer touches
+**Revision 3, 2026-11-06:** design review rounds 1 and 2 resolved; see the appendix. The setup token is
+gone, on the desktop the code is typed in the browser, and "I didn't start this" no longer touches
 credentials.
 
 **Decided 2026-11-06 by the maintainer:** D1 option A (code from phone to PC), D2 as recommended
@@ -25,7 +25,8 @@ The new flow starts where the person is:
 1. The PC's banner offers **Set up this PC**, and the PC shows a QR code.
 2. The person scans it with the Kaiku app. The phone says what is about to happen and asks for the
    screen lock.
-3. The person types the code the phone shows into the PC.
+3. The person types the code the phone shows on the PC: in the page on the web, in the browser the app
+   opens on the desktop.
 4. A browser creates the passkey, and the person signs in with it. The session is now full.
 
 ## Why this needs care
@@ -189,12 +190,16 @@ the person presses **Start again** on the PC, which is always available, and app
 The phone polls the attempt while it shows the code, at most once a second, so it can say "Done",
 "Cancelled" or "Too many wrong codes" without push.
 
-The PC, polling over its session, moves to a keypad. The code is valid for 5 minutes. Three wrong
+The PC, polling over its session, sees `code` and asks for the code (where: step 5). The code is valid
+for 5 minutes. Three wrong
 entries end the attempt, and the phone and the PC both say so. There is no per-account counter, as in
 B.5: a wrong entry can only be made by the session that holds the attempt, and each attempt needs a
 new approval on the phone.
 
 ### Step 5: the passkey
+
+The code is entered where the passkey will be created, so that the browser registering it is proven to
+be with the person holding the phone.
 
 The right code moves the attempt to `enrolled` and creates an enrolment (SM2, new variant `pc_setup`)
 with a new `issuer_kind` recording both the approving key device (its `approval_devices` row id) and the
@@ -204,16 +209,22 @@ requesting session. If that response is lost, the PC's next poll sees `enrolled`
 the claimant must then pass a code back to the issuer. Here the code has already been used, so a bearer
 token could be raced by anyone who saw it. Registration is bound to the requesting session instead:
 
-- **Browser client:** the page calls session-authenticated `passkey/start` and `passkey/finish` routes of
-  the attempt, reusing LP's `register::{begin, complete}`. The registration is in the page and the
-  session is in the page. The `/setup` route is not involved.
-- **Desktop app:** a new purpose of the existing F1 desktop flow (`server/src/auth/passkeys/desktop.rs`),
-  e.g. `FlowPurpose::PcSetup { user_id, session_id, attempt_id }`. The app binds its loopback listener
-  and starts the flow with its session's bearer, the challenge and the port, as `step_up` does. The
-  ceremony runs on the server's page in the system browser and hands a one-time code to the loopback.
-  **Nothing takes effect before `redeem`**, with that code, the verifier and the starting session's
-  bearer. Someone who opens the browser URL first can register a credential, but it is never stored as a
-  passkey, because they cannot redeem. The legitimate person sees a failure and starts again.
+- **Browser client:** the page shows the keypad. It enters the code and then calls session-authenticated
+  `passkey/start` and `passkey/finish` routes of the attempt, reusing LP's `register::{begin, complete}`.
+  The registration and the session are in the same page. The `/setup` route is not involved.
+- **Desktop app:** when its poll sees `code`, the app starts a new purpose of the existing F1 desktop flow
+  (`server/src/auth/passkeys/desktop.rs`), e.g. `FlowPurpose::PcSetup { user_id, session_id, attempt_id }`,
+  with its session's bearer, the challenge and the loopback port, as `step_up` does. It opens the system
+  browser at the flow's URL and says "Type the code in your browser". The server's page there asks for
+  the code **before any ceremony**: `options` refuses until the right code has been entered through that
+  flow, and wrong entries count on the attempt.
+  - The hand-off then works as in F1, and **nothing takes effect before `redeem`**, with the one-time
+    code, the verifier and the starting session's bearer.
+  - The flow URL alone is therefore worthless. Whoever has it but not the phone's code cannot reach a
+    ceremony, so they cannot produce a hand-off for the app to redeem (round 2's relay attack). They can
+    only burn the three tries, which ends the attempt and shows on the PC and the phone.
+  - F1 today supports assertions only. Registration needs a new ceremony kind, pending result and
+    redemption handling, which holds the verified credential until `redeem`.
 
 At `done` the passkey row is created as `active`. A failed or cancelled ceremony can be retried until
 the enrolment expires (10 minutes). Firefox on Linux gets the existing `LinuxPasskeyHint` guidance
@@ -231,9 +242,10 @@ These rules extend B.7. Reviewers should check them against `server/src/approval
    device is active with `may_approve` on. If not, it moves the attempt to `expired` with a reason the PC
    can read. The minute sweep expires what no transition reaches. A stale attempt can therefore never
    advance, even before the sweep.
-3. Code entry locks account → requesting session row → attempt, and then inserts the enrolment. A
-   concurrent session end either comes first, and code entry sees it, or comes after, and its cascade
-   sees the enrolment.
+3. Code entry, finish, redeem and restart all lock account → requesting session row → attempt → enrolment,
+   and hold the session lock through commit. A concurrent session end either comes first, and they see it,
+   or comes after, and its cascade sees the new enrolment and the `done` state. They must not reuse
+   enrolment confirmation's enrolment-then-session order, which would deadlock with logout.
 4. The enrolment rides both existing cascades: ending the session or revoking the device voids it in the
    cause's transaction.
 5. A report's `end_sessions_tx` runs in the answer transaction under the account lock, after the challenge
@@ -272,9 +284,9 @@ Starting an attempt, approving it and refusing it are audit-logged; the rows car
 | `claimed` | approve | that device, with UV | `code` | challenge consumed in the same transaction; code 5 min; the code goes only to the device |
 | `claimed` | No | that device | `refused` | |
 | `claimed` | report | that device, with UV | `reported` | ends the requesting session |
-| `code` | right code | the requesting session | `enrolled` | enrolment `pc_setup` created in the same transaction |
-| `code` | third wrong code | the requesting session | `failed` | `pc_setup_failed` |
-| `enrolled` | enrolment `done` | passkey finish or desktop redeem by the requesting session | `completed` | passkey `active` |
+| `code` | right code | the requesting session (web), or its desktop flow's page | `enrolled` | enrolment `pc_setup` created in the same transaction |
+| `code` | third wrong code | the same | `failed` | `pc_setup_failed` |
+| `enrolled` | enrolment `done` | passkey finish (web) or desktop redeem, by the requesting session | `completed` | passkey `active` |
 | `enrolled` | enrolment cancelled or expired | the requesting session, or server | `cancelled` / `expired` | |
 | `waiting`, `claimed`, `code` | cancel or restart | the requesting session | `cancelled` | the phone says it was cancelled |
 | `waiting`, `claimed`, `code` | timer, or the session or device is no longer valid | server | `expired` | with a reason the PC can read |
@@ -354,8 +366,10 @@ Server:
 - `third_wrong_code_ends_the_attempt`, `expired_code_refused`;
 - `no_route_returns_a_setup_token_for_pc_setup`;
 - `registration_needs_the_requesting_session`: browser routes refuse another session and no session;
-- `desktop_redeem_needs_code_verifier_and_the_starting_session`, and a credential from a stolen browser
-  URL never becomes a passkey row;
+- `desktop_redeem_needs_code_verifier_and_the_starting_session`;
+- `desktop_flow_options_refused_before_the_right_code`;
+- `relayed_handoff_from_a_leaked_flow_url_is_impossible`: without the phone's code there is no ceremony,
+  so no hand-off exists to relay to the legitimate app;
 - `lost_code_entry_response_recovers_by_poll`;
 - `session_ended_or_device_revoked_stops_every_transition`, before the sweep has run;
 - `ending_the_session_or_revoking_the_device_voids_the_enrolment`;
@@ -367,10 +381,10 @@ Server:
 - `restart_cancels_the_previous_enrolment_and_its_ceremonies`; `restart_racing_finish_has_one_winner`;
 - `context_comes_from_the_session_row_not_the_request`;
 - `pc_setup_challenge_signature_golden_vectors`: approve and report;
-- lock-order tests: logout against report, refresh-reuse revocation against code entry, and device removal
-  against finish.
+- lock-order tests: logout against report, logout against finish and redeem (the cascade must not miss a
+  `done` enrolment), refresh-reuse revocation against code entry, and device removal against finish.
 
-Client (web and desktop): button visibility by `can_set_up_this_pc`, each row of the error table, Start
+Client (web and desktop): the desktop app never shows a keypad, button visibility by `can_set_up_this_pc`, each row of the error table, Start
 again at every step. Android: context-screen wording, refusal for a foreign account, the code shown only
 after UV and still shown after locking the phone.
 
@@ -411,3 +425,13 @@ without FCM.
 | Lost code entry response | Flash | Poll sees `enrolled`; no secret to re-send |
 | Code lost on phone lock | Flash | Kept in memory while the app lives |
 | Challenge expiry, eligibility at start, phone polling, readable reasons | Codex, Fable m1–m3, m5 | Specified |
+
+## Appendix: design review round 2 (Codex: NOT READY)
+
+| Finding | Resolution |
+|---|---|
+| Desktop: an attacker with the flow URL registers, relays the hand-off through the victim's browser, and the legitimate app redeems the attacker's credential | Code entered in the browser before any ceremony |
+| Finish and redeem lock order deadlocks or misses logout | Locking 3 now covers them and restart |
+
+Codex confirmed in this round: the web path closes the leaked-link attack, and reverting the credential
+remediation is safe.
