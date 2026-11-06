@@ -163,7 +163,7 @@ pub enum AuthError {
 
     /// Internal server error.
     /// The action needs a full session (B.4).
-    #[error("Sign in with a passkey or your phone to do this")]
+    #[error("On a computer this needs a sign-in with a passkey; on your phone, use the Kaiku app")]
     FullSessionRequired,
 
     /// The action needs a step-up grant for this action and target (F7).
