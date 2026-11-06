@@ -160,9 +160,6 @@ const Main: Component = () => {
 
   return (
     <>
-      {/* Chat-only banner, open-request prompt, migration prompts (B.4, SM3) */}
-      <SecurityHostsSlot />
-
       {/* Command Palette (Global) */}
       <CommandPalette />
 
@@ -209,6 +206,10 @@ const Main: Component = () => {
           ) : undefined
         }
       >
+        {/* Chat-only banner, open-request prompt, migration prompts (B.4, SM3):
+            rows above the page, so they never cover it */}
+        <SecurityHostsSlot />
+
         {/* Discovery View */}
         <Show when={isDiscoveryActive()}>
           <Suspense fallback={<div class="flex-1 bg-surface-layer1" />}>

@@ -27,12 +27,17 @@ const TEXT: Record<SecurityPrompt, MessageKey> = {
   open_request: "security.request.prompt",
 };
 
-const action = "btn-primary min-h-12 text-base";
+const action = "btn-primary min-h-11 text-base";
 
 const SecurityPromptBanner: Component = () => {
   const navigate = useNavigate();
   const [setupPhone, setSetupPhone] = createSignal(false);
-  const prompt = () => currentPrompt(currentUser()?.id ?? "");
+  // In a chat-only session the chat-only banner already says where to add a
+  // passkey: the same words in a second row help nobody.
+  const prompt = () => {
+    const current = currentPrompt(currentUser()?.id ?? "");
+    return current === "add_passkey" && isProbation() ? null : current;
+  };
   // "Sign in with a passkey": busy, worded failures, aborted with the banner
   // (Argon review 2 #5).
   const [signingIn, setSigningIn] = createSignal(false);
@@ -63,13 +68,13 @@ const SecurityPromptBanner: Component = () => {
         <div
           role="region"
           aria-label={t("security.prompt.label")}
-          class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[54] w-[min(40rem,calc(100vw-1rem))] rounded-xl border border-white/15 bg-surface-layer2 shadow-lg p-4 space-y-3"
+          class="w-full shrink-0 flex flex-wrap items-center gap-x-4 gap-y-2 pl-3 pr-4 py-2.5 bg-[rgb(var(--color-surface-layer2-rgb)/0.96)] backdrop-blur-sm border-b border-white/10 border-l-4 border-l-accent-primary shadow-sm"
         >
-          <div class="flex items-start gap-3">
-            <ShieldCheck class="w-5 h-5 mt-0.5 shrink-0 text-text-secondary" aria-hidden="true" />
+          <div class="flex items-start gap-3 flex-1 min-w-64">
+            <ShieldCheck class="w-5 h-5 mt-0.5 shrink-0 text-accent-primary" aria-hidden="true" />
             <p class="text-base text-text-primary">{t(TEXT[p()])}</p>
           </div>
-          <div class="flex flex-wrap items-center justify-end gap-2">
+          <div class="flex flex-wrap shrink-0 max-w-full items-center justify-end gap-2">
             <Switch>
               <Match when={p() === "secure_my_account"}>
                 <button type="button" class={action} onClick={() => navigate("/secure-account")}>
@@ -79,7 +84,7 @@ const SecurityPromptBanner: Component = () => {
               <Match when={p() === "set_up_phone"}>
                 <Show
                   when={!isProbation()}
-                  fallback={<p class="text-sm text-text-secondary mr-auto">{t("security.prompt.askAdminPhone")}</p>}
+                  fallback={<p class="text-sm text-text-primary">{t("security.prompt.askAdminPhone")}</p>}
                 >
                   <button type="button" class={action} onClick={() => setSetupPhone(true)}>
                     {t("security.setupPhone.button")}
@@ -89,7 +94,7 @@ const SecurityPromptBanner: Component = () => {
               <Match when={p() === "add_passkey"}>
                 <Show
                   when={!isProbation()}
-                  fallback={<p class="text-sm text-text-secondary mr-auto">{t("auth.probation.addPasskeyHint")}</p>}
+                  fallback={<p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>}
                 >
                   {/* LP's "Add a passkey" needs the user's click on it (WebAuthn), so the prompt opens the section. */}
                   <button type="button" class={action} onClick={() => requestSettings("security")}>
@@ -112,14 +117,14 @@ const SecurityPromptBanner: Component = () => {
             </Switch>
             <button
               type="button"
-              class="min-h-12 px-4 rounded-lg text-base text-text-secondary hover:text-text-primary hover:bg-white/5"
+              class="min-h-11 px-3 rounded-lg text-base text-text-primary hover:bg-white/10"
               onClick={() => snoozePrompt(p(), currentUser()?.id ?? "")}
             >
               {t("security.prompt.later")}
             </button>
           </div>
           <Show when={signInError()}>
-            <p role="alert" class="text-sm text-text-primary">{signInError()}</p>
+            <p role="alert" class="w-full text-sm text-text-primary">{signInError()}</p>
           </Show>
           <Show when={setupPhone()}>
             <SetupPhoneModal onClose={() => setSetupPhone(false)} />
