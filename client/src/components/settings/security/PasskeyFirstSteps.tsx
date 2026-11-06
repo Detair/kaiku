@@ -15,15 +15,20 @@ import { secondaryButton } from "./SectionCard";
 const PasskeyFirstSteps: Component<{ onSetUpPhone: () => void }> = (props) => {
   const navigate = useNavigate();
   return (
-    <div class="flex flex-wrap gap-2" data-testid="passkey-first-steps">
-      <Show when={!isProbation()}>
-        <button type="button" class={secondaryButton} onClick={() => props.onSetUpPhone()}>
-          {t("security.setupPhone.button")}
-        </button>
+    <div class="space-y-2" data-testid="passkey-first-steps">
+      <Show when={isProbation()}>
+        <p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>
       </Show>
-      <button type="button" class={secondaryButton} onClick={() => navigate("/secure-account")}>
-        {t("auth.login.secureAccount")}
-      </button>
+      <div class="flex flex-wrap gap-2">
+        <Show when={!isProbation()}>
+          <button type="button" class={secondaryButton} onClick={() => props.onSetUpPhone()}>
+            {t("security.setupPhone.button")}
+          </button>
+        </Show>
+        <button type="button" class={secondaryButton} onClick={() => navigate("/secure-account")}>
+          {t("auth.login.secureAccount")}
+        </button>
+      </div>
     </div>
   );
 };

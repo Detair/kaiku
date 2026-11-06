@@ -105,7 +105,7 @@ describe("ProbationBanner", () => {
     getMeSecurity.mockResolvedValue(security(0));
     setAuthState({ user: user(probation) });
     render(() => <ProbationBanner />);
-    await waitFor(() => expect(screen.getByText("Add a passkey from the Kaiku app on your phone.")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Add a phone → Share link/)).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
   });
 

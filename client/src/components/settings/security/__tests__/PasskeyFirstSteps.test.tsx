@@ -56,6 +56,14 @@ describe("PasskeysSection empty state", () => {
     await screen.findByText("No passkeys yet.");
     expect(screen.queryByRole("button", { name: "Set up a phone" })).toBeNull();
     expect(screen.getByRole("button", { name: "Secure my account" })).toBeTruthy();
+    expect(screen.getByText(/Add a phone → Share link/)).toBeTruthy();
+  });
+
+  it("a full session gets no hint about the phone's share link", async () => {
+    signIn("full");
+    renderSection();
+    await screen.findByText("No passkeys yet.");
+    expect(screen.queryByText(/Add a phone → Share link/)).toBeNull();
   });
 
   it("a list with passkeys shows no first steps", async () => {

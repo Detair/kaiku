@@ -147,7 +147,7 @@ export const auth = {
   "auth.setup.signIn": "Sign in",
   "auth.probation.text": "Signed in for chat only. To change sign-in settings or do admin work, sign in with a passkey.",
   "auth.probation.signIn": "Sign in with a passkey",
-  "auth.probation.addPasskeyHint": "Add a passkey from the Kaiku app on your phone.",
+  "auth.probation.addPasskeyHint": "To add a passkey for this computer: in the Kaiku app on your phone, open Settings → Security → Add a phone → Share link, then open that link in this computer's browser. No key phone yet? Ask your admin.",
   "auth.probation.chip": "Chat only",
   "auth.probation.hide": "Hide",
   "auth.probation.signInFailed": "Signing in with a passkey did not work. Please try again.",
