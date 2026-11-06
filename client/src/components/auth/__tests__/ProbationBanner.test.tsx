@@ -84,6 +84,13 @@ describe("ProbationBanner", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Sign in with a passkey" })).toBeTruthy());
   });
 
+  it("is a row above the page, not an overlay on the channel header", () => {
+    getMeSecurity.mockResolvedValue(security(1));
+    setAuthState({ user: user(probation) });
+    render(() => <ProbationBanner />);
+    expect(screen.getByRole("region").className).not.toMatch(/\b(fixed|absolute)\b/);
+  });
+
   it("a client that cannot run a passkey ceremony offers no passkey sign-in", async () => {
     usable.on = false;
     getMeSecurity.mockResolvedValue(security(1));

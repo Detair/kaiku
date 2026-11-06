@@ -1,6 +1,7 @@
 /**
- * The signed-in app's account-security overlays (B.4, SM3, C27 prompts):
- * the chat-only banner, the open-request prompt and the migration prompt.
+ * The signed-in app's account-security surfaces (B.4, SM3, C27 prompts):
+ * the chat-only banner and the migration prompt as rows above the page,
+ * and the open-request prompt as a modal.
  * One lazy chunk, mounted by `Main`: none of it is needed to start the app
  * or to sign in (bundle budget).
  */
