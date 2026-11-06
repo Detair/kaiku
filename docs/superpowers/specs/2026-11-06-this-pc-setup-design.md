@@ -5,6 +5,10 @@
 ("the login spec"); terms such as probation, key device, `may_approve`, F1, F2, F5a, SM1, SM2 and B.7
 mean what they mean there.
 
+**Revision 2, 2026-11-06:** design review round 1 (Codex NOT READY, Flash NOT READY, Fable READY WITH
+FIXES) resolved; see the appendix. The setup token is gone, and "I didn't start this" no longer touches
+credentials.
+
 **Decided 2026-11-06 by the maintainer:** D1 option A (code from phone to PC), D2 as recommended
 (`may_approve` default unchanged). Calls the author made after the builder check are marked
 **(call)**; reviewers should challenge them first.
@@ -68,7 +72,8 @@ available to everyone and widen the residual risk below to the people least like
 ## Goals
 
 - A person with a key device gets a passkey on this PC without finding a phone menu or moving a link.
-- A stolen probation session alone gets nothing, and neither does a QR photo or a lost setup link.
+- A stolen probation session alone gets nothing, and neither does a QR photo. There is no setup link
+  in this flow to lose: no secret that creates a passkey ever leaves the requesting client's session.
 - Every use is visible afterwards and can be undone with "That wasn't me".
 - It works without push notifications. A server without FCM is a supported setup.
 
@@ -80,7 +85,8 @@ available to everyone and widen the residual risk below to the people least like
 - A flow for a PC with no session. The login screen is unchanged: such a PC first signs in by F2.
 - A flow for accounts without an eligible key device. They keep the admin setup link and "Secure my
   account".
-- Registering a passkey inside the desktop app's webview. Registration stays in a browser.
+- Registering a passkey inside the desktop app's webview. Registration stays in a browser, and F1 uses
+  the same system browser, so a passkey stored there works for the sign-in in step 6.
 - Changing F5a. "Add a phone → Share link" stays as it is.
 - The simple app (v1.2).
 
@@ -98,7 +104,7 @@ settings, on the web and in the desktop app, when:
 
 - the session is probation; and
 - the account has at least one active key device with `may_approve` on. The session reads this from
-  a new field in `/auth/me/security`, e.g. `can_set_up_this_pc`.
+  a new field in `/api/me/security`, e.g. `can_set_up_this_pc`.
 
 If the account also has an active passkey, **Sign in with a passkey** stays the first action and this
 button comes second: that passkey may be on a security key that works here, or it may not **(call)**.
@@ -112,7 +118,8 @@ guide still does.
 ### Step 1: the PC starts
 
 The session calls a new endpoint and receives an attempt id and a QR token. It needs a live probation
-session of the account. The route is an exception to the probation rules in B.4 and needs the login
+session of the account, and the server refuses the start unless the account has an eligible key device,
+so an attempt can never wait for a phone that does not exist. The route is an exception to the probation rules in B.4 and needs the login
 spec amended (below): the session asks, and only the phone can grant.
 
 The QR holds the server origin and a 256-bit token, with a payload type distinct from F2 and F5a, so
@@ -120,8 +127,8 @@ that a scanner can never mistake one for the other. It rotates every 60 s like F
 are stored. The attempt is bound to the session's `sid`, and one session has at most one live attempt:
 a new one ends the old.
 
-Collection needs no extra secret: every later PC step needs the bearer session of that `sid`. A QR
-photo therefore yields nothing.
+Collection needs no extra secret: every attempt route needs the bearer session of that `sid`, and
+another session of the same account gets 404. A QR photo therefore yields nothing.
 
 ### Step 2: the phone scans
 
@@ -132,8 +139,10 @@ F2-only **(call)**. An installed app without this feature reports "not a Kaiku c
 acceptable because there are no released v1.0 apps yet **(call)**.
 
 The server finds the attempt by the token and refuses unless **the attempt's account is the phone's
-account**. A foreign account, a rotated token and an unknown token get one identical answer and one
-message, so a scan cannot tell whether a token is live **(call)**.
+account**. A foreign account gets its own answer, "This computer is signed in with a different
+account", with no account name; a person with two accounts would otherwise rescan forever **(call)**.
+Scanning an attempt that is not live gets the same answer as a rotated or unknown token. The scanner is
+an authenticated key device on the same server, so the distinct answer tells it nothing worth hiding.
 
 ### Step 3: the context screen and approval
 
@@ -145,21 +154,26 @@ The screen says what is granted, not just what is signing in:
 > Only continue if you started this on a computer in front of you, and nobody asked you to.
 
 The client description and the age come from what the server stored when the session was created,
-never from the request that starts the attempt, so a session holder cannot choose them **(call)**.
+never from the request that starts the attempt, so a session holder cannot choose them **(call)**. With
+a stolen session this honestly describes the victim's own browser and reads as reassuring. The context
+screen cannot tell these cases apart; the code step and the phone's wording are the control.
 
 The actions are **Yes, continue**, a prominent **No**, and a smaller **I didn't start this**.
 
 - **Yes** needs UV and a signature over a new challenge kind, `pc_setup`, with the scanned token as
   `response`. It follows B.2 unchanged: the phone recomputes the context hash from what it shows.
   Canonical context: attempt id, `sid` hash, client description, session `created_at`, display fields.
-- **No** ends the attempt.
-- **I didn't start this** ends the attempt and the requesting session and records a high-severity
-  event. It also applies F3's report remediation to what created that session: a password or TOTP
-  behind it is marked compromised, because leaving it working lets the thief start again **(call)**. A
-  session from QR sign-in or OIDC has no such Kaiku credential. The session may be an attacker's; this
-  is the one place where a phone's answer ends a session it did not start, and it can only end the
-  session that showed the QR. The screen warns first if the report would remove the account's only
-  password sign-in.
+- **No** ends the attempt. It needs no signature, because it has no effect beyond that.
+- **I didn't start this** first asks "End that computer's session?". It then needs UV and a signature
+  with `decision = report` over the same challenge, with the scanned token as `response`, like every
+  report in B.2. It ends the attempt and the requesting session and records a high-severity event. It
+  can only end the session that showed the QR.
+
+  It does **not** mark any password or TOTP compromised **(call)**. F3's report does, because a correct
+  password was typed at that moment. Here the session may be days old, and a stolen session says nothing
+  about the password. Otherwise a thief could make a careful owner destroy their own password just by
+  getting them to scan and report. The notice says what happened and offers the existing paths: the
+  security log's "That wasn't me" on the sign-in that created that session, and changing the password.
 
 ### Step 4: the code
 
@@ -169,8 +183,11 @@ phone only. The phone shows:
 > **Type this code on the computer in front of you.**
 > **Never tell it to anyone or type it on a site someone sent you.**
 
-The code is never shown again. If the app is closed or the response is lost, the person presses
-**Start again** on the PC, which is always available, and approves anew **(call)**.
+The server never sends the code again. The app keeps it in memory while the attempt is in `code`, so
+locking the phone or switching apps does not lose it. If the app process dies or the response is lost,
+the person presses **Start again** on the PC, which is always available, and approves anew **(call)**.
+The phone polls the attempt while it shows the code, at most once a second, so it can say "Done",
+"Cancelled" or "Too many wrong codes" without push.
 
 The PC, polling over its session, moves to a keypad. The code is valid for 5 minutes. Three wrong
 entries end the attempt, and the phone and the PC both say so. There is no per-account counter, as in
@@ -179,28 +196,52 @@ new approval on the phone.
 
 ### Step 5: the passkey
 
-The right code creates an enrolment (SM2, new variant `pc_setup`) with a new `issuer_kind` that records
-both the approving key device and the requesting session. Both B.7 rule 2 cascades apply: ending that
-session or revoking that device voids the enrolment at once **(call)**. The setup token is returned
-once, to that session only, in the response. If that response is lost, **Start again** is the way back.
+The right code moves the attempt to `enrolled` and creates an enrolment (SM2, new variant `pc_setup`)
+with a new `issuer_kind` recording both the approving key device (its `approval_devices` row id) and the
+requesting session. If that response is lost, the PC's next poll sees `enrolled` and carries on.
 
-- **Browser client:** the same page runs the registration with the token kept in memory, reusing
-  `SetupLink.tsx`'s logic.
-- **Desktop app:** the app opens the system browser at `/setup` with the token in the URL fragment, as
-  a shared setup link does today, and shows "Finish in your browser". It polls the enrolment status
-  over its session.
+**There is no setup token.** The login spec's setup token is a bearer secret, safe in F5a only because
+the claimant must then pass a code back to the issuer. Here the code has already been used, so a bearer
+token could be raced by anyone who saw it. Registration is bound to the requesting session instead:
 
-`/setup` calls the existing `POST /auth/enrollments/passkey/start` and `…/finish`. For this variant
-`finish` goes straight to `done` with no second code. The token cannot claim a key device, only
-register a passkey. It lives 10 minutes, as in SM2.
+- **Browser client:** the page calls session-authenticated `passkey/start` and `passkey/finish` routes of
+  the attempt, reusing LP's `register::{begin, complete}`. The registration is in the page and the
+  session is in the page. The `/setup` route is not involved.
+- **Desktop app:** a new purpose of the existing F1 desktop flow (`server/src/auth/passkeys/desktop.rs`),
+  e.g. `FlowPurpose::PcSetup { user_id, session_id, attempt_id }`. The app binds its loopback listener
+  and starts the flow with its session's bearer, the challenge and the port, as `step_up` does. The
+  ceremony runs on the server's page in the system browser and hands a one-time code to the loopback.
+  **Nothing takes effect before `redeem`**, with that code, the verifier and the starting session's
+  bearer. Someone who opens the browser URL first can register a credential, but it is never stored as a
+  passkey, because they cannot redeem. The legitimate person sees a failure and starts again.
 
-At `done`, in one transaction under the B.7 lock order, the server also rechecks that the requesting
-session is live and the approving key device is still active with `may_approve` on, and otherwise
-moves the enrolment to `expired`. The passkey is `active`.
+At `done` the passkey row is created as `active`. A failed or cancelled ceremony can be retried until
+the enrolment expires (10 minutes). Firefox on Linux gets the existing `LinuxPasskeyHint` guidance
+first, and the PC offers **Start again** at every point.
 
-A failed or cancelled browser ceremony can be retried until the token expires, as today. Firefox on
-Linux gets the existing `LinuxPasskeyHint` guidance before the ceremony, and the PC's screen offers
-"Start again" after expiry.
+### Locking (normative)
+
+These rules extend B.7. Reviewers should check them against `server/src/approvals/cascade.rs`.
+
+1. Attempts stay out of the session-ending cascade. Logout and refresh hold a session row without the
+   account lock, and they must keep touching only sessions, grants and enrolments. A session end or a
+   device revocation therefore leaves the attempt row as it is, and:
+2. Every attempt transition (scan, approve, report, code entry, cancel, restart, finish, redeem) takes
+   the account lock first, then re-checks under it that the requesting session is live and that the
+   device is active with `may_approve` on. If not, it moves the attempt to `expired` with a reason the PC
+   can read. The minute sweep expires what no transition reaches. A stale attempt can therefore never
+   advance, even before the sweep.
+3. Code entry locks account → requesting session row → attempt, and then inserts the enrolment. A
+   concurrent session end either comes first, and code entry sees it, or comes after, and its cascade
+   sees the enrolment.
+4. The enrolment rides both existing cascades: ending the session or revoking the device voids it in the
+   cause's transaction.
+5. A report's `end_sessions_tx` runs in the answer transaction under the account lock, after the challenge
+   and attempt locks. Since session-ending paths without the account lock never touch attempts or
+   challenges, this cannot form a cycle with them.
+6. **Start again** runs under the account lock: it cancels the previous attempt and its `issued` enrolment
+   and voids that enrolment's open ceremonies and desktop flows. Finish and redeem take the same lock.
+   Either the finish wins and the PC reports completion, or the restart wins and the old finish fails.
 
 ### Step 6: signing in
 
@@ -210,8 +251,11 @@ The PC shows **Sign in with your passkey**, which runs F1 and replaces the proba
 ### Notices and audit
 
 The existing "new passkey" high-severity notice goes to all addresses (devices, recovery contact,
-admins) with "That wasn't me", and names both the PC and the approving phone. "That wasn't me" revokes
-the passkey and ends its sessions, as for F5a. Additional events, coalesced under B.5:
+admins), names both the PC and the approving phone, and carries "That wasn't me". For this flow the
+event records `via: pc_setup` and the requesting `sid`. **"That wasn't me" revokes the passkey, ends its
+sessions and also ends the requesting session**, because here the requesting session is the suspect, not
+a trusted issuer as in F5a. It marks no credential, for the reason given under step 3. Additional
+events, coalesced under B.5:
 
 - `pc_setup_reported` (high severity) for "I didn't start this";
 - `pc_setup_failed` for three wrong codes. It goes to the account only.
@@ -222,21 +266,24 @@ Starting an attempt, approving it and refusing it are audit-logged; the rows car
 
 | From | Event | Who may trigger | To | Rules |
 |---|---|---|---|---|
-| – | start | live probation session | `waiting` | one live per session; token rotates every 60 s; attempt ≤10 min |
-| `waiting` | scan | eligible key device of the same account | `claimed` | creates the `pc_setup` challenge, TTL 2 min; backing out returns to `waiting` |
+| – | start | live probation session with an eligible key device | `waiting` | one live per session; a new start is a restart (Locking 6); token rotates every 60 s while `waiting`; ≤10 min |
+| `waiting` | scan | eligible key device of the same account | `claimed` | creates the `pc_setup` challenge, TTL 2 min; rotation pauses; the signed token stays the scanned one |
+| `claimed` | release, or the challenge expires | that device, or server | `waiting` | the challenge is voided; as in SM1 |
 | `claimed` | approve | that device, with UV | `code` | challenge consumed in the same transaction; code 5 min; the code goes only to the device |
 | `claimed` | No | that device | `refused` | |
-| `claimed` | I didn't start this | that device | `reported` | ends the requesting session |
+| `claimed` | report | that device, with UV | `reported` | ends the requesting session |
 | `code` | right code | the requesting session | `enrolled` | enrolment `pc_setup` created in the same transaction |
 | `code` | third wrong code | the requesting session | `failed` | `pc_setup_failed` |
-| `waiting`, `claimed`, `code` | cancel | the requesting session | `cancelled` | the phone says it was cancelled |
-| `waiting`, `claimed`, `code` | timer, or the session or device is no longer valid | server | `expired` | |
+| `enrolled` | enrolment `done` | passkey finish or desktop redeem by the requesting session | `completed` | passkey `active` |
+| `enrolled` | enrolment cancelled or expired | the requesting session, or server | `cancelled` / `expired` | |
+| `waiting`, `claimed`, `code` | cancel or restart | the requesting session | `cancelled` | the phone says it was cancelled |
+| `waiting`, `claimed`, `code` | timer, or the session or device is no longer valid | server | `expired` | with a reason the PC can read |
 
-After `enrolled`, SM2 applies: `issued` → (passkey finish) → `done`, or `cancelled` / `expired`.
+Every state except `waiting`, `claimed`, `code` and `enrolled` is terminal.
 
 **Timers (call):** the 10-minute bound covers `waiting` and `claimed`. The code's 5 minutes run from the
-approval, and the setup token's 10 minutes from the right code, each on its own clock. The longest run
-is therefore about 25 minutes.
+approval, and the enrolment's 10 minutes from the right code, each on its own clock. B.2's 10-minute limit
+binds challenges, and the only challenge here lives 2 minutes. The longest run is about 25 minutes.
 
 ## Changes to the login spec
 
@@ -244,10 +291,17 @@ To be applied with this feature, as revision 6:
 
 - **B.2, kinds table:** add `pc_setup` as an approval (Requester: the attempt; answering device: the
   scanning key device, `may_approve` on; `response`: the QR token; TTL 2 min from the claim).
-- **B.4:** probation may start this attempt and enter its code, and nothing else about it. "Create
-  setup codes" stays forbidden: the setup token here exists only because a key device approved.
-- **SM2:** add variant `pc_setup` (issued by: an approved attempt; code: none at `claimed`, because it
-  was entered in step 4; authenticator: passkey only, `active`).
+- **B.2, remediation table:** add `authenticator_added` via `pc_setup`: revoke the passkey, end its
+  sessions and the requesting session; add `pc_setup` report: end the requesting session. Neither marks a
+  credential.
+- **B.4:** probation may start this attempt, enter its code and register the passkey it unlocks, and
+  nothing else about it. "Create setup codes" stays forbidden: no setup code exists here.
+- **SM2:** add variant `pc_setup` (issued by: an attempt whose code was entered, recording device and
+  session; no setup token and no claim, so the table's only route is SM2's existing "registration on the
+  issuing client itself" row; authenticator: passkey only, `active`). The builder decides how the
+  `setup_token_hash NOT NULL` column accommodates a row with no token.
+- **B.7:** add SM5 and the locking rules above.
+- **C29:** add the desktop flow purpose.
 - **F5:** add **F5e**, pointing to this document.
 - **B.6:** add a residual risk: a person fooled into scanning and passing on the code gives an
   attacker who already has a session on the account a full passkey. Mitigated by the account match,
@@ -264,10 +318,14 @@ entries. The user guide, admin guide and technical reference under
 
 | Situation | PC says | Phone says |
 |---|---|---|
-| Phone belongs to another account, or QR rotated or unknown | keeps waiting, or a new QR | "This code isn't valid or has just changed. Scan the code on your computer again." |
+| Phone belongs to another account | keeps waiting | "This computer is signed in with a different account." |
+| QR rotated, unknown or not live | new QR | "This code isn't valid or has just changed. Scan the code on your computer again." |
+| Scanned and abandoned | new QR after 2 min | nothing |
+| No eligible phone at start | "Your phone can't confirm this yet. Ask your admin." | nothing |
 | `may_approve` turned off meanwhile | "Your phone can no longer confirm this. Ask your admin." | same refusal as F2 |
 | Phone says No | "Your phone declined. Start again?" | returns to the app |
 | Session ended meanwhile | signed-out screen | "That session has ended." |
+| Too many passkeys, or already registered | existing passkey error text | "Done" is not shown; "That didn't work." |
 | Browser never finished | "This took too long. Start again?" | nothing |
 | System browser cannot be opened | shows the existing "open in your browser" guidance | nothing |
 | Passkey on this browser impossible | existing `passkeyFailureText` and Linux hint | nothing |
@@ -277,7 +335,8 @@ entries. The user guide, admin guide and technical reference under
 - Server: `server/src/approvals/` core, no forked approval logic; additive migration; `.sqlx` updated.
 - Android: reuse `ui/scan/` and the login approval screen pattern; the code display follows the
   existing setup screens' size and contrast.
-- Web and desktop: reuse `SetupLink.tsx`, `CodeEntry` and `ProbationBanner`; strings in the i18n files.
+- Web and desktop: reuse `CodeEntry`, `ProbationBanner` and the desktop flow client; strings in the i18n
+  files.
 - No private hostnames or IPs in the public repository.
 - An auth PR. Needs the maintainer's explicit merge OK, and reviews by Codex, Flash and Fable as the
   largest late auth change of v1.0.
@@ -287,28 +346,33 @@ entries. The user guide, admin guide and technical reference under
 Server:
 
 - `pc_setup_needs_a_live_probation_session` and is refused from a full session;
-- `scan_by_other_account_looks_like_an_unknown_token`;
+- `start_refused_without_an_eligible_key_device`;
+- `scan_by_other_account_gets_its_own_answer_without_a_name`;
 - `may_approve_off_refuses_scan_and_approval`;
-- `qr_photo_without_the_session_gets_nothing`: another session of the same account cannot read the
-  state, enter the code or get the token;
+- `other_session_of_the_account_gets_404_on_every_attempt_route`;
 - `code_is_returned_to_the_device_only`: no PC response and no log line contains it;
-- `third_wrong_code_ends_the_attempt`, `expired_code_refused`, `used_token_refused`;
-- `setup_token_appears_once`; `token_cannot_claim_a_key_device`;
-- `finish_without_right_code_impossible`: no token exists before the code;
-- `session_ended_before_finish_expires_the_enrolment`; `device_revoked_before_finish_expires_it`;
-- `i_didnt_start_this_ends_only_the_requesting_session`;
-- `report_marks_the_password_or_totp_behind_the_session_compromised`;
-- `foreign_rotated_and_unknown_tokens_answer_identically`;
+- `third_wrong_code_ends_the_attempt`, `expired_code_refused`;
+- `no_route_returns_a_setup_token_for_pc_setup`;
+- `registration_needs_the_requesting_session`: browser routes refuse another session and no session;
+- `desktop_redeem_needs_code_verifier_and_the_starting_session`, and a credential from a stolen browser
+  URL never becomes a passkey row;
+- `lost_code_entry_response_recovers_by_poll`;
+- `session_ended_or_device_revoked_stops_every_transition`, before the sweep has run;
 - `ending_the_session_or_revoking_the_device_voids_the_enrolment`;
-- `start_again_ends_the_old_attempt_and_needs_a_new_approval`;
+- `report_needs_uv_and_signature`; `no_needs_no_signature_and_only_ends_the_attempt`;
+- `report_ends_only_the_requesting_session_and_marks_no_credential`;
+- `that_wasnt_me_revokes_the_passkey_and_ends_the_requesting_session`;
+- `notice_names_pc_and_phone`;
+- `challenge_expiry_returns_to_waiting`;
+- `restart_cancels_the_previous_enrolment_and_its_ceremonies`; `restart_racing_finish_has_one_winner`;
 - `context_comes_from_the_session_row_not_the_request`;
-- `notice_names_pc_and_phone`, `that_wasnt_me_revokes_the_passkey`;
-- `pc_setup_challenge_signature_golden_vector`;
-- lock-order test with a concurrent key-device removal.
+- `pc_setup_challenge_signature_golden_vectors`: approve and report;
+- lock-order tests: logout against report, refresh-reuse revocation against code entry, and device removal
+  against finish.
 
-Client (web and desktop): button visibility by `can_set_up_this_pc`, each row of the error table, token
-absent from address bar and history after `/setup` starts. Android: context-screen wording, refusal
-for a foreign account, and the code shown only after UV.
+Client (web and desktop): button visibility by `can_set_up_this_pc`, each row of the error table, Start
+again at every step. Android: context-screen wording, refusal for a foreign account, the code shown only
+after UV and still shown after locking the phone.
 
 Device checks, added to the existing list: one full run per platform (Windows, macOS, Linux with
 Chromium, Linux with Firefox and a security key, browser only, desktop app), plus a run on a server
@@ -326,5 +390,24 @@ without FCM.
 ## References
 
 - Login spec: anti-goals, CC2, CC3, B.2, B.4, B.5, B.6, F2, F5a, SM1, SM2, open question 5.
-- `client/src/views/SetupLink.tsx`, `client/src/components/auth/ProbationBanner.tsx`,
-  `server/src/approvals/enrollments/`, `mobile/android/app/src/main/java/io/wolftown/kaiku/ui/scan/`.
+- `client/src/components/auth/ProbationBanner.tsx`, `server/src/auth/passkeys/desktop.rs`,
+  `server/src/approvals/cascade.rs`, `server/src/approvals/enrollments/`, `mobile/android/app/src/main/java/io/wolftown/kaiku/ui/scan/`.
+
+## Appendix: design review round 1
+
+| Finding | From | Resolution |
+|---|---|---|
+| Setup token after the code is an unbound bearer secret | Codex, Flash (Blocker), Fable M4 | Token removed; registration bound to the session or the desktop flow's redeem |
+| "That wasn't me" leaves the requesting session alive | Fable M1 | It now ends that session |
+| Report marks credentials: wrong generation, voids requests, self-lockout | Flash (Blocker), Codex, Fable M3 | The (call) is reverted: no credential is marked |
+| Report needs signature and UV | Codex | Specified |
+| Attempt in the session cascade collides with B.7 | Fable M2 | Attempts stay out; every transition re-checks under the account lock |
+| Attempts missing from the cascades | Flash (Blocker) | Rejected as stated: a stale attempt cannot advance because of the re-check (Locking 2); the enrolment does ride the cascades |
+| Issuance race with refresh-reuse revocation | Codex | Locking 3 |
+| `enrolled` has no exit, restart leaves the child alive | Flash, Codex, Fable m4 | SM5 rows, Locking 6 |
+| Identical answer traps a person with two accounts | Flash | The (call) is changed: own answer, no name |
+| Passkey in the browser unusable from the desktop app | Flash | Rejected: F1 runs in the same system browser |
+| 25-minute chain violates B.2's 10 minutes | Flash | Rejected: B.2 binds challenges; the only challenge here lives 2 minutes |
+| Lost code entry response | Flash | Poll sees `enrolled`; no secret to re-send |
+| Code lost on phone lock | Flash | Kept in memory while the app lives |
+| Challenge expiry, eligibility at start, phone polling, readable reasons | Codex, Fable m1–m3, m5 | Specified |
