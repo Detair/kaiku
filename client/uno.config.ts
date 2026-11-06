@@ -1,6 +1,10 @@
 import { defineConfig, presetUno, presetIcons } from "unocss";
 
 export default defineConfig({
+  // UnoCSS joins rules with identical bodies into one selector list by default.
+  // That puts `.w-4` next to `.x::-moz-range-thumb`, and Chromium and WebKit drop
+  // the whole rule because they do not know that pseudo-element.
+  mergeSelectors: false,
   presets: [
     presetUno(),
     presetIcons({
