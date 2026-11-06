@@ -56,6 +56,19 @@ describe("security prompts", () => {
     );
   });
 
+  it("is a row above the page, not an overlay on the message box", async () => {
+    await load(["add_passkey"]);
+    render(() => <SecurityPromptBanner />);
+    expect(screen.getByRole("region").className).not.toMatch(/\b(fixed|absolute)\b/);
+  });
+
+  it("a chat-only session gets the add-passkey hint from its banner only", async () => {
+    signInAs("probation");
+    await load(["add_passkey"]);
+    render(() => <SecurityPromptBanner />);
+    expect(screen.queryByRole("region")).toBeNull();
+  });
+
   it("snooze hides a prompt for seven days", async () => {
     await load(["add_passkey", "name_recovery_contact"]);
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-03T12:00:00Z"));
