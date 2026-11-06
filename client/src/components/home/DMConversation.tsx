@@ -226,7 +226,7 @@ const DMConversation: Component = () => {
             <Show
               when={dm()?.icon_url}
               fallback={
-                <span class="text-sm font-semibold text-white">
+                <span class="text-sm font-semibold text-on-accent">
                   {isGroupDM()
                     ? displayName().charAt(0).toUpperCase()
                     : otherParticipants()[0]
