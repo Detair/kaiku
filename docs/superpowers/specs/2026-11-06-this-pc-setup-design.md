@@ -5,7 +5,7 @@
 ("the login spec"); terms such as probation, key device, `may_approve`, F1, F2, F5a, SM1, SM2 and B.7
 mean what they mean there.
 
-**Revision 3, 2026-11-06:** design review rounds 1 and 2 resolved; see the appendix. The setup token is
+**Revision 4, 2026-11-06:** design review rounds 1 to 3 resolved; see the appendix. The setup token is
 gone, on the desktop the code is typed in the browser, and "I didn't start this" no longer touches
 credentials.
 
@@ -216,13 +216,17 @@ token could be raced by anyone who saw it. Registration is bound to the requesti
   (`server/src/auth/passkeys/desktop.rs`), e.g. `FlowPurpose::PcSetup { user_id, session_id, attempt_id }`,
   with its session's bearer, the challenge and the loopback port, as `step_up` does. It opens the system
   browser at the flow's URL and says "Type the code in your browser". The server's page there asks for
-  the code **before any ceremony**: `options` refuses until the right code has been entered through that
-  flow, and wrong entries count on the attempt.
+  the code **before any ceremony**, and wrong entries count on the attempt. The right code answers with
+  a **browser secret**: a fresh 256-bit value in an HttpOnly, `Secure`, `SameSite=Strict` cookie scoped to
+  the flow's routes, stored only as a keyed hash, in the manner of the existing `__Secure-kaiku_enroll`
+  claim cookie. `options` and `finish` refuse without it. Code entry works once per flow, so the
+  authorisation belongs to the browser that typed the code, never to the URL.
   - The hand-off then works as in F1, and **nothing takes effect before `redeem`**, with the one-time
     code, the verifier and the starting session's bearer.
-  - The flow URL alone is therefore worthless. Whoever has it but not the phone's code cannot reach a
-    ceremony, so they cannot produce a hand-off for the app to redeem (round 2's relay attack). They can
-    only burn the three tries, which ends the attempt and shows on the PC and the phone.
+  - The flow URL alone is therefore worthless, before and after the legitimate code entry. Whoever has
+    it but neither the code nor the cookie cannot reach a ceremony, so they cannot produce a hand-off for
+    the app to redeem (the relay attack of rounds 2 and 3). Before the code is entered they can only burn
+    the three tries, which ends the attempt and shows on the PC and the phone.
   - F1 today supports assertions only. Registration needs a new ceremony kind, pending result and
     redemption handling, which holds the verified credential until `redeem`.
 
@@ -370,6 +374,8 @@ Server:
 - `desktop_flow_options_refused_before_the_right_code`;
 - `relayed_handoff_from_a_leaked_flow_url_is_impossible`: without the phone's code there is no ceremony,
   so no hand-off exists to relay to the legitimate app;
+- `leaked_flow_url_cannot_race_after_the_right_code`: `options` and `finish` refuse without the browser
+  secret set by that code entry, and a second code entry on the flow is refused;
 - `lost_code_entry_response_recovers_by_poll`;
 - `session_ended_or_device_revoked_stops_every_transition`, before the sweep has run;
 - `ending_the_session_or_revoking_the_device_voids_the_enrolment`;
@@ -435,3 +441,11 @@ without FCM.
 
 Codex confirmed in this round: the web path closes the leaked-link attack, and reverting the credential
 remediation is safe.
+
+## Appendix: design review round 3 (Codex: NOT READY)
+
+| Finding | Resolution |
+|---|---|
+| The right code unlocked the flow, so a URL holder could race the legitimate browser after it | Browser secret set by the code entry, required by `options` and `finish` |
+
+Codex confirmed in this round that the lock order is sound against logout and the cascades.
