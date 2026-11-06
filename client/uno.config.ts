@@ -34,8 +34,13 @@ export default defineConfig({
       // solid colors only (border, error, on-accent) keep the legacy var() form.
       surface: {
         base: "rgb(var(--color-surface-base-rgb) / <alpha-value>)",
-        layer1: "rgb(var(--color-surface-layer1-rgb) / <alpha-value>)",
-        layer2: "rgb(var(--color-surface-layer2-rgb) / <alpha-value>)",
+        // Nested on purpose: UnoCSS reads the trailing digit of `surface-layer2`
+        // as a color scale and looks up surface.layer[2]. Flat `layer1`/`layer2`
+        // keys are never found, so those classes silently produce no CSS.
+        layer: {
+          1: "rgb(var(--color-surface-layer1-rgb) / <alpha-value>)",
+          2: "rgb(var(--color-surface-layer2-rgb) / <alpha-value>)",
+        },
         highlight: "rgb(var(--color-surface-highlight-rgb) / <alpha-value>)",
       },
       text: {
@@ -92,10 +97,8 @@ export default defineConfig({
     "btn-primary": "btn bg-accent-primary hover:bg-accent-primary/80 text-on-accent",
     "btn-danger": "btn bg-accent-danger-fill hover:bg-accent-danger-fill/90 text-on-danger",
 
-    // Input fields — uses arbitrary-value bg to bypass UnoCSS's trailing-digit
-    // parsing issue with `surface-layer2` inside shortcuts (the same class
-    // resolves correctly when written directly on an element).
-    "input-field": "w-full px-3 py-2 bg-[rgb(var(--color-surface-layer2-rgb))] rounded-lg text-text-input placeholder-text-placeholder outline-none focus:ring-2 focus:ring-accent-primary/70 focus:border-accent-primary/50 border border-white/5",
+    // Input fields
+    "input-field": "w-full px-3 py-2 bg-surface-layer2 rounded-lg text-text-input placeholder-text-placeholder outline-none focus:ring-2 focus:ring-accent-primary/70 focus:border-accent-primary/50 border border-white/5",
 
     // Interactive items
     "item-hover": "rounded-lg px-2 py-1 hover:bg-white/5 transition-colors cursor-pointer",
