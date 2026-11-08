@@ -2077,7 +2077,36 @@ async fn ceremony_retry_after_cancel_keeps_browser_secret(pool: PgPool) {
     .await;
     assert!(hidden(&failed.body, "code").is_none(), "{}", failed.body);
     assert!(hidden(&failed.body, "error").is_none(), "{}", failed.body);
-    assert!(failed.body.contains("id=\"start\""), "{}", failed.body);
+    // A 303 to the flow's page, so the page's base path stays the flow's
+    // and a reload never re-posts the spent finish.
+    assert_eq!(failed.status, 303, "{}", failed.body);
+    let location = failed.header("location").unwrap().to_string();
+    assert_eq!(location, format!("{}?failed", flow.path));
+    let again = browser(
+        &p.app.router,
+        Method::GET,
+        &location,
+        None,
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert!(again.body.contains("id=\"start\""), "{}", again.body);
+    assert!(
+        again.body.contains("That didn&#39;t work"),
+        "{}",
+        again.body
+    );
+    assert!(
+        again
+            .body
+            .contains(&format!("action=\"{}/finish\"", flow.path)),
+        "{}",
+        again.body
+    );
+    // Without the cookie the redirect target is no use.
+    assert_eq!(page(&p.app.router, &location, None).await.status, 404);
     // The retry works with the same cookie.
     let (cred, third_id) = registered(&pc_options(&p, &flow, Some(&cookie)).await);
     let h = pc_finish(
@@ -2143,4 +2172,75 @@ async fn phone_code_never_appears_in_the_rendered_pages(pool: PgPool) {
         .unwrap()
         .contains("script-src 'self'"));
     assert!(seen[0].body.contains("lang=\"de\""));
+}
+
+/// The pending result's credential id (b64u) from the stored flow.
+async fn pending_cred_id(p: &Pc, flow: &Flow) -> Vec<u8> {
+    use fred::interfaces::KeysInterface;
+    let raw: String = p
+        .app
+        .state
+        .redis
+        .get(format!("passkey:flow:{}", flow.id))
+        .await
+        .unwrap();
+    let v: Value = serde_json::from_str(&raw).unwrap();
+    let id = v["result"]["outcome"]["PcSetup"]["verified"]["passkey"]["cred"]["cred_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("credential id in {v}"));
+    vc_server::approvals::secrets::b64u_decode(id).unwrap()
+}
+
+#[sqlx::test]
+async fn desktop_redeem_keeps_passkey_errors_readable(pool: PgPool) {
+    // Ruling 16: the passkey limit and a known credential at redeem → 409
+    // with their own code; the attempt stays `enrolled` and readable.
+    let p = desktop_pc(&pool).await;
+    let (id, flow, handoff, _) = handed_off(&p).await;
+    for _ in 0..vc_server::auth::passkeys::MAX_ACTIVE_PASSKEYS {
+        seed_passkey(&p.app, p.user, PasskeyState::Active).await;
+    }
+    let r = pc_redeem(&p, &flow, &handoff, VERIFIER, Some(&p.token)).await;
+    assert_eq!(
+        (r.status, r.json()["error"].as_str()),
+        (409, Some("PASSKEY_LIMIT")),
+        "{}",
+        r.body
+    );
+    assert_eq!(attempt_state(&pool, &id).await, ("enrolled".into(), None));
+    let (s, poll) = crate::pc_setup::call(
+        &p.app,
+        Method::GET,
+        &format!("/auth/pc-setups/{id}?wait=0"),
+        &p.token,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (s, poll["state"].as_str()),
+        (200, Some("enrolled")),
+        "{poll}"
+    );
+
+    // A known credential: another account already holds it.
+    let q = desktop_pc(&pool).await;
+    let (id, flow, handoff, _) = handed_off(&q).await;
+    let cred_id = pending_cred_id(&q, &flow).await;
+    let (other, _) = create_test_user(&pool).await;
+    let (_, row) = seed_passkey(&q.app, other, PasskeyState::Active).await;
+    sqlx::query("UPDATE passkeys SET credential_id = $2 WHERE id = $1")
+        .bind(row.id)
+        .bind(&cred_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let r = pc_redeem(&q, &flow, &handoff, VERIFIER, Some(&q.token)).await;
+    assert_eq!(
+        (r.status, r.json()["error"].as_str()),
+        (409, Some("PASSKEY_ALREADY_REGISTERED")),
+        "{}",
+        r.body
+    );
+    assert_eq!(attempt_state(&pool, &id).await, ("enrolled".into(), None));
+    assert_eq!(passkeys_of(&pool, q.user).await, 0);
 }

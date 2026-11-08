@@ -18,7 +18,7 @@
 //! [`complete_enrolment`] under the locks of Locking 3. A restart (or any
 //! end of the attempt) voids the flow by refusal there (Ruling 10).
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
@@ -95,15 +95,44 @@ fn to_auth(e: ApprovalError) -> AuthError {
     }
 }
 
+/// Whether `e` is a check's refusal (the attempt can no longer register),
+/// which ends the flow, rather than a transient failure (database, Valkey,
+/// internal), after which the flow stays for a retry: the code is spent,
+/// so a new flow could not be unlocked.
+const fn is_refusal(e: &ApprovalError) -> bool {
+    !matches!(
+        e,
+        ApprovalError::Database(_)
+            | ApprovalError::Unavailable
+            | ApprovalError::Auth(
+                AuthError::Database(_) | AuthError::ServiceUnavailable | AuthError::Internal(_)
+            )
+    )
+}
+
 /// The hand-off error code for an attempt that can no longer register.
 const fn refusal_code(e: &ApprovalError) -> &'static str {
     match e {
         ApprovalError::Auth(e) => e.status_and_code().1,
         ApprovalError::Expired => "APPROVAL_EXPIRED",
-        ApprovalError::Database(_) => "INTERNAL_ERROR",
-        ApprovalError::Unavailable => "SERVICE_UNAVAILABLE",
         _ => "APPROVAL_STATE",
     }
+}
+
+/// `303` back to the flow's page after a ceremony that did not finish: the
+/// page (GET) shows the passkey step again for the cookie holder, and a
+/// reload never re-posts the spent finish form. `?failed` only picks the
+/// "That didn't work" text.
+fn retry_redirect(flow_id: Uuid) -> Response {
+    let mut response = (
+        StatusCode::SEE_OTHER,
+        [(header::LOCATION, format!("{}?failed", flow_path(flow_id)))],
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// `(user_id, session_id, attempt_id)` of a `pc_setup` flow.
@@ -192,6 +221,7 @@ async fn registration_open(state: &AppState, flow: &DesktopFlow) -> Result<(), A
 pub async fn page(
     State(state): State<AppState>,
     Path(flow_id): Path<String>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
     let lang = Lang::from_headers(&headers);
@@ -206,7 +236,8 @@ pub async fn page(
     if stored.flow.browser_secret_hash.is_none() {
         pc_setup_page(lang, &PcSetupStep::Code, flow_id)
     } else if has_secret(&state, &headers, &stored.flow) {
-        pc_setup_page(lang, &PcSetupStep::Passkey { failed: false }, flow_id)
+        let failed = query.as_deref() == Some("failed");
+        pc_setup_page(lang, &PcSetupStep::Passkey { failed }, flow_id)
     } else {
         expired_page(lang)
     }
@@ -228,7 +259,7 @@ struct CodeAnswer {
 /// commit: if the commit fails, the attempt stays in `code` and the code
 /// works in a new flow) and sets the cookie. Once a flow has taken the
 /// right code, every further entry is refused (409 `APPROVAL_STATE`).
-#[tracing::instrument(skip_all, fields(flow_id = %flow_id))]
+#[tracing::instrument(skip_all)]
 pub async fn code(
     State(state): State<AppState>,
     Path(flow_id): Path<Uuid>,
@@ -302,8 +333,8 @@ fn no_store(mut response: Response) -> Response {
 /// Fresh creation options for the browser that typed the code. Without
 /// the cookie → 400 `PASSKEY_CEREMONY_INVALID`. An attempt that can no
 /// longer register ends the flow (the page then shows "expired"; the PC
-/// reads the reason from its poll).
-#[tracing::instrument(skip_all, fields(flow_id = %flow_id))]
+/// reads the reason from its poll); a transient failure keeps it.
+#[tracing::instrument(skip_all)]
 pub async fn options(
     State(state): State<AppState>,
     Path(flow_id): Path<Uuid>,
@@ -317,7 +348,9 @@ pub async fn options(
     let (user_id, session_id, attempt_id) =
         ids(&stored.flow).ok_or(AuthError::PasskeyCeremonyInvalid)?;
     if let Err(e) = registration_open(&state, &stored.flow).await {
-        cas(&state, flow_id, &stored.raw, None, None).await?;
+        if is_refusal(&e) {
+            cas(&state, flow_id, &stored.raw, None, None).await?;
+        }
         return Err(e);
     }
     let (ccr, st) = options_for(&state, user_id).await?;
@@ -349,7 +382,7 @@ pub async fn options(
 /// verify keeps the flow and shows the passkey step again: the code is
 /// spent, so the retry must happen in this browser. An attempt that can no
 /// longer register ends the flow with its error for the app.
-#[tracing::instrument(skip_all, fields(flow_id = %flow_id))]
+#[tracing::instrument(skip_all)]
 pub async fn finish(
     State(state): State<AppState>,
     Path(flow_id): Path<Uuid>,
@@ -402,12 +435,20 @@ pub async fn finish(
         Err(e) => {
             let (_, code) = e.status_and_code();
             tracing::info!(code, "pc setup desktop registration did not verify");
-            return pc_setup_page(lang, &PcSetupStep::Passkey { failed: true }, flow_id);
+            return retry_redirect(flow_id);
         }
     };
-    // Ruling 10: an ended or restarted attempt refuses here already.
-    if let Err(e) = registration_open(&state, &stored.flow).await {
-        return fail_with(&state, lang, flow_id, &stored, refusal_code(&e)).await;
+    // Ruling 10: an ended or restarted attempt refuses here already; a
+    // transient failure keeps the flow for a retry.
+    match registration_open(&state, &stored.flow).await {
+        Ok(()) => {}
+        Err(e) if is_refusal(&e) => {
+            return fail_with(&state, lang, flow_id, &stored, refusal_code(&e)).await;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "pc setup desktop registration check failed");
+            return retry_redirect(flow_id);
+        }
     }
     // The label `register` uses when none is given; renamed in settings.
     let label = String::from("Passkey");
@@ -447,7 +488,7 @@ pub async fn finish(
 
 /// "Back to the app": before the right code anyone with the page may end
 /// the flow (as in F1); after it only the browser that typed it.
-#[tracing::instrument(skip_all, fields(flow_id = %flow_id))]
+#[tracing::instrument(skip_all)]
 pub async fn cancel(
     State(state): State<AppState>,
     Path(flow_id): Path<Uuid>,
@@ -506,4 +547,35 @@ pub struct DesktopPcSetupRedeemed {
     pub purpose: &'static str,
     pub user_id: Uuid,
     pub passkey: PasskeyView,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_check_refusals_end_the_flow() {
+        for e in [
+            ApprovalError::State,
+            ApprovalError::Expired,
+            ApprovalError::NotFound,
+            ApprovalError::Auth(AuthError::PasskeyLimit),
+        ] {
+            assert!(is_refusal(&e), "{e:?}");
+        }
+        for e in [
+            ApprovalError::Database(sqlx::Error::PoolTimedOut),
+            ApprovalError::Unavailable,
+            ApprovalError::Auth(AuthError::ServiceUnavailable),
+            ApprovalError::Auth(AuthError::Database(sqlx::Error::PoolTimedOut)),
+            ApprovalError::Auth(AuthError::Internal("x".into())),
+        ] {
+            assert!(!is_refusal(&e), "{e:?}");
+        }
+        assert_eq!(refusal_code(&ApprovalError::Expired), "APPROVAL_EXPIRED");
+        assert_eq!(
+            refusal_code(&ApprovalError::Auth(AuthError::PasskeyLimit)),
+            "PASSKEY_LIMIT"
+        );
+    }
 }
