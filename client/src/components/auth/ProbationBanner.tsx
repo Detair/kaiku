@@ -15,6 +15,7 @@ import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
 import { isTauri } from "@/lib/tauri/common";
 import LinuxPasskeyHint from "./LinuxPasskeyHint";
+import { SetUpThisPcButton, canSetUpThisPc } from "./SetUpThisPc";
 
 // Per chat-only session, not stored: the banner comes back after a restart
 // and for every new chat-only session.
@@ -89,17 +90,21 @@ const ProbationBanner: Component = () => {
             <p role="alert" class="order-last w-full text-sm text-text-primary">{error()}</p>
           </Show>
           <div class="flex flex-wrap shrink-0 max-w-full items-center justify-end gap-2">
+            <Show when={canSignIn()}>
+              <button type="button" class="btn-primary min-h-11 text-base" disabled={busy()} onClick={() => void signIn()}>
+                {t("auth.probation.signIn")}
+              </button>
+            </Show>
             <Show
-              when={canSignIn()}
+              when={canSetUpThisPc()}
               fallback={
                 <Show when={meSecurity() && !hasPasskey()}>
                   <p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>
                 </Show>
               }
             >
-              <button type="button" class="btn-primary min-h-11 text-base" disabled={busy()} onClick={() => void signIn()}>
-                {t("auth.probation.signIn")}
-              </button>
+              {/* With a passkey, signing in with it stays the first action. */}
+              <SetUpThisPcButton primary={!canSignIn()} />
             </Show>
             <Show when={isTauri() && busy()}>
               <div role="status" class="w-full space-y-1 text-sm">

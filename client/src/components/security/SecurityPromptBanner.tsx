@@ -14,6 +14,7 @@ import { currentPrompt, snoozePrompt } from "@/stores/security";
 import { requestSettings } from "@/stores/settingsNav";
 import { canUsePasskeys } from "@/lib/tauri/passkeys";
 import { passkeyFailureText } from "@/lib/authErrors";
+import { SetUpThisPcButton, canSetUpThisPc } from "@/components/auth/SetUpThisPc";
 import SetupPhoneModal from "@/components/settings/security/SetupPhoneModal";
 
 const TEXT: Record<SecurityPrompt, MessageKey> = {
@@ -94,7 +95,14 @@ const SecurityPromptBanner: Component = () => {
               <Match when={p() === "add_passkey"}>
                 <Show
                   when={!isProbation()}
-                  fallback={<p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>}
+                  fallback={
+                    <Show
+                      when={canSetUpThisPc()}
+                      fallback={<p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>}
+                    >
+                      <SetUpThisPcButton primary />
+                    </Show>
+                  }
                 >
                   {/* LP's "Add a passkey" needs the user's click on it (WebAuthn), so the prompt opens the section. */}
                   <button type="button" class={action} onClick={() => requestSettings("security")}>

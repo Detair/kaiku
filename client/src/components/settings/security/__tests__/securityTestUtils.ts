@@ -27,6 +27,7 @@ export function security(over: Partial<MeSecurity> = {}): MeSecurity {
     key_devices: 1,
     passkeys: 1,
     may_approve: true,
+    can_set_up_this_pc: false,
     bootstrap_open: false,
     recovery_contact: null,
     open_request: null,

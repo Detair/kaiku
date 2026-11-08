@@ -10,6 +10,7 @@ import { Component, Show } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { t } from "@/i18n";
 import { isProbation } from "@/stores/auth";
+import { SetUpThisPcButton, canSetUpThisPc } from "@/components/auth/SetUpThisPc";
 import { secondaryButton } from "./SectionCard";
 
 const PasskeyFirstSteps: Component<{ onSetUpPhone: () => void }> = (props) => {
@@ -17,7 +18,12 @@ const PasskeyFirstSteps: Component<{ onSetUpPhone: () => void }> = (props) => {
   return (
     <div class="space-y-2" data-testid="passkey-first-steps">
       <Show when={isProbation()}>
-        <p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>
+        <Show
+          when={canSetUpThisPc()}
+          fallback={<p class="text-sm text-text-primary">{t("auth.probation.addPasskeyHint")}</p>}
+        >
+          <SetUpThisPcButton primary />
+        </Show>
       </Show>
       <div class="flex flex-wrap gap-2">
         <Show when={!isProbation()}>

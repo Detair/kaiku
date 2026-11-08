@@ -52,6 +52,7 @@ function security(passkeys: number) {
     key_devices: 1,
     passkeys,
     may_approve: true,
+    can_set_up_this_pc: false,
     bootstrap_open: false,
     recovery_contact: null,
     open_request: null,
@@ -101,11 +102,11 @@ describe("ProbationBanner", () => {
     expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
   });
 
-  it("without a passkey it says where to add one", async () => {
+  it("without a passkey or an eligible phone it says to ask the admin", async () => {
     getMeSecurity.mockResolvedValue(security(0));
     setAuthState({ user: user(probation) });
     render(() => <ProbationBanner />);
-    await waitFor(() => expect(screen.getByText(/Add a phone → Share link/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Your phone can't confirm this yet. Ask your admin.")).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Sign in with a passkey" })).toBeNull();
   });
 

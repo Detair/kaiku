@@ -1,0 +1,330 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, cleanup } from "@solidjs/testing-library";
+
+const getMeSecurity = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/tauri/security", async (orig) => ({ ...(await orig<object>()), getMeSecurity }));
+
+const pc = vi.hoisted(() => ({
+  startPcSetup: vi.fn(),
+  currentPcSetup: vi.fn(),
+  pollPcSetup: vi.fn(),
+  cancelPcSetup: vi.fn(),
+  enterPcSetupCode: vi.fn(),
+  startPcSetupPasskey: vi.fn(),
+  finishPcSetupPasskey: vi.fn(),
+}));
+vi.mock("@/lib/tauri/pcSetup", async (orig) => ({ ...(await orig<object>()), ...pc }));
+
+const createPasskeyCredential = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/tauri/passkeys", async (orig) => ({
+  ...(await orig<object>()),
+  createPasskeyCredential,
+  canUsePasskeys: () => true,
+}));
+
+const replaceSessionWithPasskey = vi.hoisted(() => vi.fn());
+vi.mock("@/stores/auth", async (orig) => ({ ...(await orig<object>()), replaceSessionWithPasskey }));
+
+import SetUpThisPc from "../SetUpThisPc";
+import ProbationBanner from "../ProbationBanner";
+import PasskeyFirstSteps from "@/components/settings/security/PasskeyFirstSteps";
+import { Route, Router } from "@solidjs/router";
+import { setAuthState } from "@/stores/auth";
+import { refreshMeSecurity, resetMeSecurity } from "@/stores/security";
+import { HttpError } from "@/lib/tauri/common";
+import { PasskeyError } from "@/lib/tauri/passkeys";
+import type { User } from "@/lib/types";
+
+const ID = "00000000-0000-4000-8000-000000000001";
+const status = (state: string, reason: string | null = null, extra: object = {}) => ({
+  attempt_id: ID,
+  state,
+  reason,
+  ...extra,
+});
+const never = () => new Promise<never>(() => undefined);
+
+function http(code: string, statusCode: number) {
+  return new HttpError(statusCode, code, code, {});
+}
+
+const probation = {
+  id: "s1",
+  assurance: "probation",
+  auth_methods: ["qr"],
+  auth_time: "",
+  client_class: "web",
+  absolute_expires_at: "",
+  key_device_id: null,
+};
+function signIn(session: object = probation) {
+  setAuthState({ user: { id: "u1", username: "alice", session } as unknown as User });
+}
+function security(passkeys: number, can: boolean) {
+  return {
+    session: { assurance: "probation", auth_methods: ["qr"] },
+    password: null,
+    totp: null,
+    recovery_codes_left: 0,
+    key_devices: can ? 1 : 0,
+    passkeys,
+    may_approve: can,
+    can_set_up_this_pc: can,
+    bootstrap_open: false,
+    recovery_contact: null,
+    open_request: null,
+    prompts: [],
+  };
+}
+
+/** The server's answers to the polls, one per call; later polls hang. */
+function polls(...answers: object[]) {
+  pc.pollPcSetup.mockReset();
+  for (const a of answers) pc.pollPcSetup.mockResolvedValueOnce(a);
+  pc.pollPcSetup.mockImplementation(never);
+}
+
+beforeEach(() => {
+  for (const f of Object.values(pc)) f.mockReset();
+  createPasskeyCredential.mockReset();
+  replaceSessionWithPasskey.mockReset();
+  getMeSecurity.mockReset();
+  resetMeSecurity();
+  pc.currentPcSetup.mockRejectedValue(http("APPROVAL_NOT_FOUND", 404));
+  pc.startPcSetup.mockResolvedValue({ attempt_id: ID, qr_payload: "kaiku://pcsetup/v1?o=x&t=y", rotates_at: "" });
+  pc.cancelPcSetup.mockResolvedValue(undefined);
+  polls();
+  signIn();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  setAuthState({ user: null });
+});
+
+async function open() {
+  const onClose = vi.fn();
+  render(() => <SetUpThisPc onClose={onClose} />);
+  await screen.findByRole("button", { name: "Start again" });
+  return onClose;
+}
+
+/** Open the dialog with the poll answering `state` (after `waiting`). */
+async function openAt(state: string, reason: string | null = null) {
+  polls(status(state, reason));
+  render(() => <SetUpThisPc onClose={vi.fn()} />);
+  await waitFor(() => expect(pc.pollPcSetup).toHaveBeenCalled());
+}
+
+describe("buttons in the banners", () => {
+  it("shows Set up this PC only with can_set_up_this_pc in a chat-only session", async () => {
+    getMeSecurity.mockResolvedValue(security(0, true));
+    render(() => <ProbationBanner />);
+    expect(await screen.findByRole("button", { name: "Set up this PC" })).toBeTruthy();
+    cleanup();
+    resetMeSecurity();
+    getMeSecurity.mockResolvedValue(security(0, false));
+    render(() => <ProbationBanner />);
+    await screen.findByText("Your phone can't confirm this yet. Ask your admin.");
+    expect(screen.queryByRole("button", { name: "Set up this PC" })).toBeNull();
+  });
+
+  it("with an active passkey, Sign in with a passkey comes first", async () => {
+    getMeSecurity.mockResolvedValue(security(1, true));
+    render(() => <ProbationBanner />);
+    const set = await screen.findByRole("button", { name: "Set up this PC" });
+    const sign = screen.getByRole("button", { name: "Sign in with a passkey" });
+    expect(sign.compareDocumentPosition(set) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("a full session gets no button", async () => {
+    signIn({ ...probation, assurance: "full" });
+    getMeSecurity.mockResolvedValue(security(0, true));
+    await refreshMeSecurity();
+    render(() => <ProbationBanner />);
+    expect(screen.queryByRole("button", { name: "Set up this PC" })).toBeNull();
+  });
+
+  it("the empty passkey list offers it too", async () => {
+    getMeSecurity.mockResolvedValue(security(0, true));
+    await refreshMeSecurity();
+    render(() => (
+      <Router>
+        <Route path="/" component={() => <PasskeyFirstSteps onSetUpPhone={vi.fn()} />} />
+      </Router>
+    ));
+    expect(screen.getByRole("button", { name: "Set up this PC" })).toBeTruthy();
+  });
+
+  it("clicking it opens the dialog and starts an attempt", async () => {
+    getMeSecurity.mockResolvedValue(security(0, true));
+    render(() => <ProbationBanner />);
+    fireEvent.click(await screen.findByRole("button", { name: "Set up this PC" }));
+    await waitFor(() => expect(pc.startPcSetup).toHaveBeenCalledOnce());
+    expect(await screen.findByRole("img", { name: "Code to scan with the Kaiku app on your phone" })).toBeTruthy();
+  });
+});
+
+describe("the dialog", () => {
+  it("starts an attempt and shows its QR code", async () => {
+    await open();
+    expect(await screen.findByRole("img", { name: "Code to scan with the Kaiku app on your phone" })).toBeTruthy();
+  });
+
+  it("resumes the session's attempt on mount", async () => {
+    pc.currentPcSetup.mockResolvedValue(status("claimed"));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    expect(await screen.findByText(/Confirm on your phone to continue/)).toBeTruthy();
+    expect(pc.startPcSetup).not.toHaveBeenCalled();
+    expect(pc.pollPcSetup).toHaveBeenCalledWith(ID, expect.any(Number));
+  });
+
+  it("a start the server refuses says to ask the admin", async () => {
+    pc.currentPcSetup.mockRejectedValue(http("APPROVAL_NOT_FOUND", 404));
+    pc.startPcSetup.mockRejectedValue(http("PC_SETUP_UNAVAILABLE", 403));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    expect(await screen.findByText("Your phone can't confirm this yet. Ask your admin.")).toBeTruthy();
+  });
+
+  it("never polls closer than a second, even when the server answers at once", async () => {
+    vi.useFakeTimers();
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup.mockResolvedValue(status("waiting"));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(900);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(pc.pollPcSetup).toHaveBeenCalledTimes(3);
+  });
+
+  it("closing the dialog cancels a live attempt", async () => {
+    await open();
+    cleanup();
+    expect(pc.cancelPcSetup).toHaveBeenCalledWith(ID);
+  });
+});
+
+describe("the PC error table", () => {
+  const cases: [string, string | null, string][] = [
+    ["refused", "refused", "Your phone declined. Start again?"],
+    ["expired", "may_approve_off", "Your phone can no longer confirm this. Ask your admin."],
+    ["expired", "device_revoked", "Your phone can no longer confirm this. Ask your admin."],
+    ["expired", "timeout", "This took too long. Start again?"],
+    ["expired", "enrollment_expired", "This took too long. Start again?"],
+    ["expired", "code_expired", "This took too long. Start again?"],
+    ["expired", "session_ended", "This session has ended. Sign in again."],
+    ["reported", "reported", "Your phone reported this. Nothing was set up on this computer."],
+    ["failed", "too_many_codes", "Too many wrong codes. Start again?"],
+    ["cancelled", "restarted", "This was cancelled. Start again?"],
+  ];
+  for (const [state, reason, text] of cases) {
+    it(`${state} / ${reason}: ${text}`, async () => {
+      await openAt(state, reason);
+      expect(await screen.findByText(text)).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Start again" })).toBeTruthy();
+    });
+  }
+
+  it("a vanished attempt (404) is ended, with Start again", async () => {
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup.mockRejectedValueOnce(http("APPROVAL_NOT_FOUND", 404));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    expect(await screen.findByText("This setup is no longer active. Start again?")).toBeTruthy();
+  });
+});
+
+describe("Start again", () => {
+  for (const state of ["waiting", "claimed", "code", "enrolled", "completed", "refused", "expired"]) {
+    it(`is there in ${state} and restarts`, async () => {
+      if (state === "waiting") await open();
+      else await openAt(state, state === "expired" ? "timeout" : null);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Start again" }).hasAttribute("disabled")).toBe(false));
+      pc.startPcSetup.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+      await waitFor(() => expect(pc.startPcSetup).toHaveBeenCalledOnce());
+    });
+  }
+});
+
+describe("code and passkey on the web", () => {
+  async function typeCode(digits: string) {
+    fireEvent.input(await screen.findByLabelText("Code from your phone"), { target: { value: digits } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+  }
+
+  it("a wrong code shows the tries left and keeps asking", async () => {
+    await openAt("code");
+    pc.enterPcSetupCode.mockResolvedValue({ state: "code", tries_left: 2 });
+    await typeCode("123456");
+    expect(await screen.findByText("That code is wrong. 2 tries left.")).toBeTruthy();
+    expect(pc.enterPcSetupCode).toHaveBeenCalledWith(ID, "123456");
+    expect(screen.getByLabelText("Code from your phone")).toBeTruthy();
+  });
+
+  it("the third wrong code ends the attempt", async () => {
+    await openAt("code");
+    pc.enterPcSetupCode.mockResolvedValue({ state: "failed", tries_left: 0 });
+    await typeCode("123456");
+    expect(await screen.findByText("Too many wrong codes. Start again?")).toBeTruthy();
+  });
+
+  it("an expired code says it took too long", async () => {
+    await openAt("code");
+    pc.enterPcSetupCode.mockRejectedValue(http("APPROVAL_EXPIRED", 410));
+    await typeCode("123456");
+    expect(await screen.findByText("This took too long. Start again?")).toBeTruthy();
+  });
+
+  it("the right code leads to the passkey, then to sign in with it", async () => {
+    await openAt("code");
+    pc.enterPcSetupCode.mockResolvedValue({ state: "enrolled", enrollment_id: "e1" });
+    pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: { publicKey: { challenge: "x" } } });
+    createPasskeyCredential.mockResolvedValue({ id: "cred" });
+    pc.finishPcSetupPasskey.mockResolvedValue({});
+    replaceSessionWithPasskey.mockResolvedValue({});
+    await typeCode("123456");
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    await waitFor(() =>
+      expect(pc.finishPcSetupPasskey).toHaveBeenCalledWith(ID, "c1", { id: "cred" }, null),
+    );
+    expect(createPasskeyCredential).toHaveBeenCalledWith({ publicKey: { challenge: "x" } }, expect.anything());
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in with your passkey" }));
+    await waitFor(() => expect(replaceSessionWithPasskey).toHaveBeenCalledOnce());
+  });
+
+  it("resumes at the passkey step when the poll says enrolled", async () => {
+    await openAt("enrolled");
+    expect(await screen.findByRole("button", { name: "Create a passkey" })).toBeTruthy();
+  });
+
+  it("a passkey limit is worded and the step can be tried again", async () => {
+    await openAt("enrolled");
+    pc.startPcSetupPasskey.mockRejectedValue(http("PASSKEY_LIMIT", 409));
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    expect(await screen.findByText("You already have 10 passkeys. Remove one first.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create a passkey" })).toBeTruthy();
+  });
+
+  it("an already registered passkey is worded", async () => {
+    await openAt("enrolled");
+    pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: {} });
+    createPasskeyCredential.mockResolvedValue({});
+    pc.finishPcSetupPasskey.mockRejectedValue(http("PASSKEY_ALREADY_REGISTERED", 409));
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    expect(await screen.findByText("This passkey is already added.")).toBeTruthy();
+  });
+
+  it("a browser that cannot make the passkey says so in the existing words", async () => {
+    await openAt("enrolled");
+    pc.startPcSetupPasskey.mockResolvedValue({ ceremony_id: "c1", options: {} });
+    createPasskeyCredential.mockRejectedValue(new PasskeyError("PASSKEY_NOT_SUPPORTED"));
+    fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(pc.finishPcSetupPasskey).not.toHaveBeenCalled();
+  });
+});
