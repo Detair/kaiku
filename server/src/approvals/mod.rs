@@ -38,6 +38,18 @@ pub fn approvals_router(state: &AppState) -> Router<AppState> {
         .layer(from_fn(with_category(RateLimitCategory::ApprovalLogin)))
 }
 
+/// `/api/pc-setups` (bearer, the scanning key device; `ApprovalLogin` per
+/// user): "Set up this PC" on the phone (SM5).
+pub fn pc_setups_router(state: &AppState) -> Router<AppState> {
+    Router::new()
+        .route("/claim", post(pc_setup::handlers::claim))
+        .route("/{id}", get(pc_setup::handlers::phone_poll))
+        .route("/{id}/answer", post(pc_setup::handlers::answer))
+        .route("/{id}/refuse", post(pc_setup::handlers::refuse))
+        .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
+        .layer(from_fn(with_category(RateLimitCategory::ApprovalLogin)))
+}
+
 /// `/api/approval-devices` (bearer).
 pub fn devices_router() -> Router<AppState> {
     Router::new()
@@ -101,6 +113,13 @@ pub fn flow_router(state: &AppState) -> Router<AppState> {
         .route(
             "/enrollments/{id}/challenge",
             post(enrollments::handlers::issuer_challenge),
+        )
+        // "Set up this PC" on the requesting probation session (SM5).
+        .route("/pc-setups", post(pc_setup::handlers::start))
+        .route("/pc-setups/current", get(pc_setup::handlers::current))
+        .route(
+            "/pc-setups/{id}",
+            get(pc_setup::handlers::poll).delete(pc_setup::handlers::cancel),
         )
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::ApprovalLogin)))

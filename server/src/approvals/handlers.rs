@@ -457,7 +457,8 @@ pub async fn deny(
     }
 }
 
-/// Back / dismissed (C26): only `login` claims return to `open`.
+/// Back / dismissed (C26): `login` claims return to `open`, `pc_setup`
+/// claims to `waiting`.
 #[utoipa::path(
     post,
     path = "/api/approvals/{id}/release",
@@ -472,6 +473,15 @@ pub async fn release(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApprovalError> {
+    // A `pc_setup` claim takes its attempt's locks first (spec Locking 2).
+    let kind: Option<String> = sqlx::query_scalar("SELECT kind FROM approvals WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    if kind.as_deref().and_then(Kind::parse) == Some(Kind::PcSetup) {
+        super::pc_setup::handlers::release(&state, &auth, id).await?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let mut tx = state.db.begin().await?;
     match lock_challenge(&mut tx, &auth, id).await {
         // Keep the expiry mark, as answer and deny do.

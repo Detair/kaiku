@@ -242,6 +242,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(crate::auth::account_requests::bearer_router())
         .nest("/api/approvals", crate::approvals::approvals_router(&state))
         .nest("/api/approval-devices", crate::approvals::devices_router())
+        .nest("/api/pc-setups", crate::approvals::pc_setups_router(&state))
         .route(
             "/api/me/pins",
             get(chat::pins::list_pins).post(chat::pins::create_pin),

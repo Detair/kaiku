@@ -3,12 +3,15 @@
 //! approves a `pc_setup` challenge (kind byte 6).
 //!
 //! **SECURITY CRITICAL.** This module holds the vocabulary and limits of the
-//! attempt; the lifecycle (start, scan, approve, code entry) follows in the
-//! attempt modules. Locking (spec "Locking (normative)", added to B.7): every
+//! attempt; [`transition`] holds its lifecycle (start, scan, approve, report,
+//! cancel) and [`handlers`] its routes. Locking (spec "Locking (normative)", added to B.7): every
 //! transition takes the account lock, then the requesting session row, then
 //! the attempt, then the enrolment. Attempts stay out of the session-ending
 //! cascade, so a stale attempt is expired by the next transition or the
 //! sweep, never advanced.
+
+pub mod handlers;
+pub mod transition;
 
 use chrono::Duration;
 

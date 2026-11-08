@@ -57,6 +57,13 @@ pub enum ApprovalError {
     /// A password/OIDC attempt of another account (C26 claim).
     #[error("This sign-in belongs to another account")]
     LoginAttemptOtherAccount,
+    /// "Set up this PC" is not open to this session: not a live probation
+    /// session, or the account has no active key device with `may_approve` on.
+    #[error("Your phone can't confirm this yet")]
+    PcSetupUnavailable,
+    /// The scanned "Set up this PC" code belongs to another account (no name).
+    #[error("This computer is signed in with a different account")]
+    PcSetupOtherAccount,
     /// The signed `response` is not the scanned token (B.2; nothing changes).
     #[error("This answer does not match the scanned code")]
     ResponseMismatch,
@@ -109,6 +116,8 @@ impl IntoResponse for ApprovalError {
             Self::LoginCodeStale => (StatusCode::NOT_FOUND, "LOGIN_CODE_STALE"),
             Self::LoginAttemptClaimed => (StatusCode::CONFLICT, "LOGIN_ATTEMPT_CLAIMED"),
             Self::LoginAttemptOtherAccount => (StatusCode::CONFLICT, "LOGIN_ATTEMPT_OTHER_ACCOUNT"),
+            Self::PcSetupUnavailable => (StatusCode::FORBIDDEN, "PC_SETUP_UNAVAILABLE"),
+            Self::PcSetupOtherAccount => (StatusCode::CONFLICT, "PC_SETUP_OTHER_ACCOUNT"),
             Self::ResponseMismatch => (StatusCode::BAD_REQUEST, "APPROVAL_RESPONSE_MISMATCH"),
             Self::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR"),
             Self::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),

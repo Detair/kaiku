@@ -37,6 +37,9 @@ pub struct SecurityOverview {
     pub key_devices: i64,
     pub passkeys: i64,
     pub may_approve: bool,
+    /// "Set up this PC" is offered: a probation session of an account with an
+    /// active key device and `may_approve` on.
+    pub can_set_up_this_pc: bool,
     pub bootstrap_open: bool,
     pub recovery_contact: Option<super::recovery_contact::RecoveryContact>,
     pub open_request: Option<super::account_requests::types::AccountRequestSummary>,
@@ -124,6 +127,7 @@ pub async fn overview(
         key_devices,
         passkeys,
         may_approve,
+        can_set_up_this_pc: probation && may_approve && key_devices > 0,
         bootstrap_open: st.bootstrap_open,
         recovery_contact,
         open_request,

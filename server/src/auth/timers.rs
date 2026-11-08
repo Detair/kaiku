@@ -71,6 +71,13 @@ pub async fn run_once(state: &AppState) -> anyhow::Result<()> {
         }
     }
 
+    // "Set up this PC" attempts no transition reached (SM5): each under its
+    // own account, session and attempt locks.
+    if let Err(e) = crate::approvals::pc_setup::transition::expire_due(&state.db).await {
+        tracing::warn!(error = %e, "sweep: pc setup attempt expiry failed");
+        first_err.get_or_insert_with(|| anyhow::anyhow!(e.to_string()));
+    }
+
     // 6. Account requests: ready soon, ready, admin completion, expiry (SM3).
     match crate::auth::account_requests::core::timers(&crate::auth::ctx::AuthCtx::from(state)).await
     {
