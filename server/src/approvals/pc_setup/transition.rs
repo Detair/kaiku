@@ -348,7 +348,8 @@ async fn reopen_tx(conn: &mut PgConnection, a: &mut AttemptRow) -> sqlx::Result<
 
 /// End a live attempt in `to` with `cause`.
 ///
-/// Its token is dropped, its open challenge void and its `issued` enrolment
+/// Its token and code are dropped (every end spends the code), its open
+/// challenge void and its `issued` enrolment
 /// `cancelled` (a cancel or restart) or `expired` (anything else), after the
 /// attempt (Locking 3). A ceremony or desktop flow of that enrolment then
 /// finishes nothing: each finish re-checks the enrolment under the same
@@ -363,7 +364,8 @@ pub(super) async fn end_tx(
     void_challenge(conn, a).await?;
     *a = sqlx::query_as(
         "UPDATE pc_setup_attempts
-            SET state = $2, reason = $3, qr_token_hash = NULL, qr_rotates_at = NULL
+            SET state = $2, reason = $3, qr_token_hash = NULL, qr_rotates_at = NULL,
+                code_hash = NULL
           WHERE id = $1
           RETURNING *",
     )

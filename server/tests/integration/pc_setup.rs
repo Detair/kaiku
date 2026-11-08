@@ -1579,6 +1579,10 @@ async fn expired_code_refused(pool: PgPool) {
         (410, Some("APPROVAL_EXPIRED")),
         "{body}"
     );
+    assert!(
+        !code_hash_set(&pool, &id).await,
+        "an expiry spends the code"
+    );
     assert_eq!(
         attempt_state(&pool, &id).await,
         ("expired".into(), Some("code_expired".into()))
@@ -1894,6 +1898,40 @@ async fn restart_cancels_the_previous_enrolment_and_its_ceremonies(pool: PgPool)
     .await;
     assert_eq!(s, 204);
     assert_eq!(enrollment_state(&pool, &eid).await, "cancelled");
+
+    // Every end spends the code: a restart and a cancel in `code` drop it.
+    let p = pc(&pool).await;
+    let (restarted, _) = with_code(&p).await;
+    assert!(code_hash_set(&pool, &restarted).await);
+    started(&p).await;
+    assert_eq!(attempt_state(&pool, &restarted).await.0, "cancelled");
+    assert!(
+        !code_hash_set(&pool, &restarted).await,
+        "a restart spends the code"
+    );
+    let p = pc(&pool).await;
+    let (cancelled, _) = with_code(&p).await;
+    let (s, _) = call(
+        &p.app,
+        Method::DELETE,
+        &format!("/auth/pc-setups/{cancelled}"),
+        &p.token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 204);
+    assert!(
+        !code_hash_set(&pool, &cancelled).await,
+        "a cancel spends the code"
+    );
+}
+
+async fn code_hash_set(pool: &PgPool, id: &str) -> bool {
+    sqlx::query_scalar("SELECT code_hash IS NOT NULL FROM pc_setup_attempts WHERE id = $1::uuid")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
 }
 
 /// Locking 6: a restart racing the finish has one winner.
@@ -2181,6 +2219,52 @@ async fn that_wasnt_me_marks_no_credential(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(marked, 0);
+}
+
+/// B.2 policy under part 2 (a fresh password, TOTP or recovery code, no
+/// grant): nothing is revoked, so the passkey stays, but the requesting
+/// session still ends. The route offers part 2 only to an account without an
+/// active strong authenticator, which this flow's account never is (the phone
+/// and the new passkey are both active), so the core is called directly
+/// under the account lock, as the route calls it.
+#[sqlx::test]
+async fn that_wasnt_me_through_part2_ends_the_session_but_keeps_the_passkey(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (_, pk) = completed(&p).await;
+    let (pk_sid, _) =
+        super::helpers::passkeys::passkey_session(&pool, &p.app.config, p.user, pk).await;
+    let (event, _, _) = added_event(&pool, pk).await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&p.app.state);
+    let mut tx = pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut tx, &[p.user])
+        .await
+        .unwrap();
+    let (out, _) = vc_server::auth::repudiate::repudiate_tx(
+        &mut tx,
+        &ctx,
+        event,
+        &vc_server::auth::owner_rule::OwnerAuthority::Part2 { factor: "totp" },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(out.revoked_authenticator_ids.is_empty(), "{out:?}");
+    assert!(out.compromised.is_empty(), "{out:?}");
+    assert_eq!(out.ended_session_ids, vec![p.sid]);
+    let state: String = sqlx::query_scalar("SELECT state FROM passkeys WHERE id = $1")
+        .bind(pk)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "active", "part 2 never revokes");
+    assert!(
+        session_live(&pool, pk_sid).await,
+        "the passkey's sessions stay"
+    );
+    assert!(
+        !session_live(&pool, p.sid).await,
+        "the requesting session ends"
+    );
 }
 
 // ----------------------------------------------------------------------------
