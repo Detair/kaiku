@@ -121,6 +121,15 @@ pub fn flow_router(state: &AppState) -> Router<AppState> {
             "/pc-setups/{id}",
             get(pc_setup::handlers::poll).delete(pc_setup::handlers::cancel),
         )
+        .route("/pc-setups/{id}/code", post(pc_setup::handlers::code))
+        .route(
+            "/pc-setups/{id}/passkey/start",
+            post(pc_setup::handlers::passkey_start),
+        )
+        .route(
+            "/pc-setups/{id}/passkey/finish",
+            post(pc_setup::handlers::passkey_finish),
+        )
         .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
         .layer(from_fn(with_category(RateLimitCategory::ApprovalLogin)))
         .layer(from_fn_with_state(state.clone(), crate::auth::require_auth));

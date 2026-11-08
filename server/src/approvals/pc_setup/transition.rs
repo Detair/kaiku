@@ -1,4 +1,5 @@
-//! SM5 transitions of a "Set up this PC" attempt, up to `code`.
+//! SM5 transitions of a "Set up this PC" attempt, up to `code` (code entry
+//! and the passkey are in [`super::enrolment`]).
 //!
 //! **SECURITY CRITICAL.** Lock order (spec "Locking (normative)", added to
 //! B.7): every transition starts at [`lock_attempt`], which takes the
@@ -69,6 +70,10 @@ pub enum EndCause {
     Refused,
     /// The phone said "I didn't start this".
     Reported,
+    /// The third wrong code.
+    TooManyCodes,
+    /// The enrolment's 10 minutes ran out before the passkey was made.
+    EnrollmentExpired,
 }
 
 impl EndCause {
@@ -86,6 +91,8 @@ impl EndCause {
             Self::Cancelled => "cancelled",
             Self::Refused => "refused",
             Self::Reported => "reported",
+            Self::TooManyCodes => "too_many_codes",
+            Self::EnrollmentExpired => "enrollment_expired",
         }
     }
 }
@@ -272,6 +279,16 @@ async fn stale_cause(conn: &mut PgConnection, l: &LockedAttempt) -> sqlx::Result
         AttemptState::Code if a.code_expires_at.is_none_or(|t| t <= now) => {
             Some(EndCause::CodeExpired)
         }
+        AttemptState::Enrolled => {
+            let live: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM enrollments
+                                 WHERE id = $1 AND state = 'issued' AND expires_at > NOW())",
+            )
+            .bind(a.enrollment_id)
+            .fetch_one(&mut *conn)
+            .await?;
+            (!live).then_some(EndCause::EnrollmentExpired)
+        }
         _ => None,
     })
 }
@@ -329,9 +346,14 @@ async fn reopen_tx(conn: &mut PgConnection, a: &mut AttemptRow) -> sqlx::Result<
     Ok(())
 }
 
-/// End a live attempt in `to` with `cause`: its token is dropped and its open
-/// challenge void. The attempt must be locked ([`lock_attempt`]).
-async fn end_tx(
+/// End a live attempt in `to` with `cause`.
+///
+/// Its token is dropped, its open challenge void and its `issued` enrolment
+/// `cancelled` (a cancel or restart) or `expired` (anything else), after the
+/// attempt (Locking 3). A ceremony or desktop flow of that enrolment then
+/// finishes nothing: each finish re-checks the enrolment under the same
+/// locks. The attempt must be locked ([`lock_attempt`]).
+pub(super) async fn end_tx(
     conn: &mut PgConnection,
     a: &mut AttemptRow,
     to: AttemptState,
@@ -350,15 +372,30 @@ async fn end_tx(
     .bind(cause.as_str())
     .fetch_one(&mut *conn)
     .await?;
+    if let Some(enrollment) = a.enrollment_id {
+        let ended = if to == AttemptState::Cancelled {
+            "cancelled"
+        } else {
+            "expired"
+        };
+        sqlx::query(
+            "UPDATE enrollments SET state = $2, ended_at = NOW() WHERE id = $1 AND state = 'issued'",
+        )
+        .bind(enrollment)
+        .bind(ended)
+        .execute(&mut *conn)
+        .await?;
+    }
     Ok(())
 }
 
-/// Cancel a live attempt (the PC's cancel, or a restart, Locking 6): the one
-/// place that ends an attempt the requesting session gave up. Terminal
-/// attempts stay as they are; returns whether it ended one.
+/// Cancel a live attempt (the PC's cancel, or a restart, Locking 6).
 ///
-/// Task 3 extends this to the attempt's `issued` enrolment, its open
-/// ceremonies and desktop flows.
+/// The one place that ends an attempt the requesting session gave up. Its
+/// `issued` enrolment is cancelled with it ([`end_tx`]), which voids that
+/// enrolment's open ceremonies and desktop flows: their finish and redeem
+/// take the same locks and refuse a cancelled attempt. Terminal attempts
+/// stay as they are; returns whether it ended one.
 pub async fn cancel_attempt_tx(
     conn: &mut PgConnection,
     locked: &mut LockedAttempt,
@@ -407,6 +444,9 @@ macro_rules! needs_lock {
         "a.state IN ('waiting', 'claimed', 'code', 'enrolled') AND (
        (a.state IN ('waiting', 'claimed') AND a.expires_at <= NOW())
     OR (a.state = 'code' AND (a.code_expires_at IS NULL OR a.code_expires_at <= NOW()))
+    OR (a.state = 'enrolled' AND NOT EXISTS (
+            SELECT 1 FROM enrollments e
+             WHERE e.id = a.enrollment_id AND e.state = 'issued' AND e.expires_at > NOW()))
     OR (a.state = 'claimed' AND NOT EXISTS (
             SELECT 1 FROM approvals c
              WHERE c.id = a.challenge_id AND c.state = 'issued' AND c.expires_at > NOW()))
@@ -569,7 +609,7 @@ pub async fn start_tx(
 }
 
 /// An audit row of the attempt (never a token or code).
-async fn audit(
+pub(super) async fn audit(
     conn: &mut PgConnection,
     actor: Uuid,
     action: &str,
@@ -681,7 +721,7 @@ pub async fn poll_step(
 
 /// The description and place of the requesting session, as stored when it
 /// was created (never from a request of the attempt).
-fn describe(s: &RequestingSession) -> (String, String) {
+pub(super) fn describe(s: &RequestingSession) -> (String, String) {
     let class = ClientClass::parse(&s.client_class).unwrap_or(ClientClass::Web);
     let description =
         crate::auth::login_attempts::core::client_label(class, s.user_agent.as_deref());

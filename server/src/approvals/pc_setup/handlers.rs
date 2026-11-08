@@ -1,9 +1,11 @@
-//! "Set up this PC" routes (SM5 up to `code`).
+//! "Set up this PC" routes (SM5).
 //!
 //! PC, every route bound to the requesting session's `sid` (another session
 //! of the account gets 404): `POST /auth/pc-setups`, `GET
 //! /auth/pc-setups/current`, `GET /auth/pc-setups/{id}?wait=`, `DELETE
-//! /auth/pc-setups/{id}`. Phone, from a key device's own session: `POST
+//! /auth/pc-setups/{id}`, `POST /auth/pc-setups/{id}/code` and the web
+//! registration `POST /auth/pc-setups/{id}/passkey/start` and `/finish`.
+//! Phone, from a key device's own session: `POST
 //! /api/pc-setups/claim`, `POST /api/pc-setups/{challenge_id}/answer` and
 //! `/refuse`, `GET /api/pc-setups/{attempt_id}?wait=` (the scanning device
 //! only); `POST /api/approvals/{id}/release` releases a claim as for `login`.
@@ -21,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
+use super::enrolment::{self, CodeOutcome, Credential};
 use super::transition::{self, Answered, AttemptRow};
 use crate::api::AppState;
 use crate::approvals::error::ApprovalError;
@@ -117,6 +120,40 @@ pub struct PcSetupReported {
     pub attempt_id: Uuid,
 }
 
+/// `POST /auth/pc-setups/{id}/code` body. `Debug` hides the code.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct PcSetupCodeEntry {
+    pub code: String,
+}
+
+impl std::fmt::Debug for PcSetupCodeEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PcSetupCodeEntry").finish_non_exhaustive()
+    }
+}
+
+/// What a typed code did: `enrolled` (with the enrolment), `code` (wrong,
+/// with the tries left) or `failed` (the third wrong code).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PcSetupCodeResult {
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tries_left: Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enrollment_id: Option<Uuid>,
+}
+
+/// `POST /auth/pc-setups/{id}/passkey/finish` body.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct PcSetupPasskeyFinish {
+    pub ceremony_id: Uuid,
+    #[schema(value_type = Object)]
+    pub credential: serde_json::Value,
+    /// 1..=64 characters; `null` → "Passkey".
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
 /// `?wait=` of the poll routes (seconds, 0..=25).
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct WaitQuery {
@@ -158,6 +195,16 @@ const fn keeps_marks(e: &ApprovalError) -> bool {
             | ApprovalError::Validation(_)
             | ApprovalError::Auth(crate::auth::AuthError::InvalidToken)
     )
+}
+
+/// Lock attempt `id` of `auth`'s session (another session's → 404).
+async fn lock_own(
+    conn: &mut sqlx::PgConnection,
+    auth: &AuthUser,
+    id: Uuid,
+) -> Result<transition::LockedAttempt, ApprovalError> {
+    transition::of_session(conn, auth, id).await?;
+    transition::lock_attempt(conn, id).await
 }
 
 /// Commit on success and after a check's refusal ([`keeps_marks`]); roll
@@ -314,6 +361,194 @@ pub async fn cancel(
     let result = transition::cancel_tx(&mut tx, &auth, id).await;
     settle(tx, result).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Type the phone's code (SM5 `code → enrolled`; the third wrong code →
+/// `failed`). A wrong code answers 200 with the tries left.
+#[utoipa::path(
+    post,
+    path = "/auth/pc-setups/{id}/code",
+    tag = "approvals",
+    params(("id" = Uuid, Path, description = "Attempt id")),
+    request_body = PcSetupCodeEntry,
+    responses(
+        (status = 200, body = PcSetupCodeResult),
+        (status = 400, description = "VALIDATION_ERROR: not 6 digits (no try spent)"),
+        (status = 404, description = "APPROVAL_NOT_FOUND"),
+        (status = 409, description = "APPROVAL_STATE: no code to type (ended, or already typed)"),
+        (status = 410, description = "APPROVAL_EXPIRED: the code's 5 minutes ran out"),
+    ),
+    security(("bearer_auth" = [])),
+)]
+#[tracing::instrument(skip_all, fields(user_id = %auth.id, attempt_id = %id))]
+pub async fn code(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PcSetupCodeEntry>,
+) -> Result<Json<PcSetupCodeResult>, ApprovalError> {
+    let ctx = AuthCtx::from(&state);
+    let mut tx = state.db.begin().await?;
+    let result = async {
+        let locked = lock_own(&mut tx, &auth, id).await?;
+        enrolment::enter_code(&mut tx, &ctx, &locked, &body.code).await
+    }
+    .await;
+    let out = match settle(tx, result).await? {
+        CodeOutcome::Enrolled { enrollment_id } => PcSetupCodeResult {
+            state: "enrolled".into(),
+            tries_left: None,
+            enrollment_id: Some(enrollment_id),
+        },
+        CodeOutcome::Wrong { tries_left } => PcSetupCodeResult {
+            state: "code".into(),
+            tries_left: Some(tries_left),
+            enrollment_id: None,
+        },
+        CodeOutcome::Failed => {
+            crate::security_events::notices::spawn_pending_delivery(&state);
+            PcSetupCodeResult {
+                state: "failed".into(),
+                tries_left: Some(0),
+                enrollment_id: None,
+            }
+        }
+    };
+    Ok(Json(out))
+}
+
+/// Start the web registration of the attempt's passkey (`enrolled` only).
+#[utoipa::path(
+    post,
+    path = "/auth/pc-setups/{id}/passkey/start",
+    tag = "approvals",
+    params(("id" = Uuid, Path, description = "Attempt id")),
+    responses(
+        (status = 200, body = crate::auth::passkeys::types::CeremonyStart),
+        (status = 404, description = "APPROVAL_NOT_FOUND"),
+        (status = 409, description = "APPROVAL_STATE (no right code yet, or ended) or PASSKEY_LIMIT"),
+    ),
+    security(("bearer_auth" = [])),
+)]
+#[tracing::instrument(skip_all, fields(user_id = %auth.id, attempt_id = %id))]
+pub async fn passkey_start(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<crate::auth::passkeys::types::CeremonyStart>, ApprovalError> {
+    use crate::auth::passkeys::register::{begin, RegistrationBinding};
+    crate::auth::passkeys::rp_of(&state)?;
+    let mut tx = state.db.begin().await?;
+    let result = async {
+        let locked = lock_own(&mut tx, &auth, id).await?;
+        let enrollment_id = enrolment::registration_open(&mut tx, &locked).await?;
+        Ok((locked.attempt.session_id, enrollment_id))
+    }
+    .await;
+    let (session_id, enrollment_id) = settle(tx, result).await?;
+    // The ceremony is bound to this attempt, its enrolment and its session;
+    // the finish re-checks all three under the locks.
+    let (ceremony_id, ccr) = begin(
+        &state,
+        auth.id,
+        RegistrationBinding::PcSetup {
+            session_id,
+            attempt_id: id,
+            enrollment_id,
+        },
+        "Passkey".into(),
+    )
+    .await?;
+    Ok(Json(crate::auth::passkeys::types::CeremonyStart {
+        ceremony_id,
+        options: serde_json::to_value(&ccr)
+            .map_err(|e| crate::auth::AuthError::Internal(e.to_string()))?,
+    }))
+}
+
+/// Finish the web registration → 201 `Passkey` (`active`); the attempt is
+/// `completed`.
+#[utoipa::path(
+    post,
+    path = "/auth/pc-setups/{id}/passkey/finish",
+    tag = "approvals",
+    params(("id" = Uuid, Path, description = "Attempt id")),
+    request_body = PcSetupPasskeyFinish,
+    responses(
+        (status = 201, body = crate::auth::passkeys::types::PasskeyView),
+        (status = 400, description = "PASSKEY_CEREMONY_INVALID, PASSKEY_INVALID, PASSKEY_NOT_DISCOVERABLE or VALIDATION_ERROR (label)"),
+        (status = 404, description = "APPROVAL_NOT_FOUND"),
+        (status = 409, description = "APPROVAL_STATE (ended, restarted), PASSKEY_LIMIT or PASSKEY_ALREADY_REGISTERED: the attempt stays readable"),
+    ),
+    security(("bearer_auth" = [])),
+)]
+#[tracing::instrument(skip_all, fields(user_id = %auth.id, attempt_id = %id))]
+pub async fn passkey_finish(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PcSetupPasskeyFinish>,
+) -> Result<(StatusCode, Json<crate::auth::passkeys::types::PasskeyView>), ApprovalError> {
+    use crate::auth::passkeys::ceremony::{self, CeremonyKind, CeremonyState};
+    use crate::auth::passkeys::register::{clean_label, RegistrationBinding};
+    use crate::auth::AuthError;
+    let rp = crate::auth::passkeys::rp_of(&state)?;
+    // Another session's attempt is unknown before its ceremony is touched.
+    {
+        let mut conn = state.db.acquire().await?;
+        transition::of_session(&mut conn, &auth, id).await?;
+    }
+    let label = clean_label(body.label.as_deref())?;
+    let rec = ceremony::take(&state.redis, body.ceremony_id)
+        .await?
+        .ok_or(AuthError::PasskeyCeremonyInvalid)?;
+    let (
+        CeremonyKind::Register {
+            user_id,
+            binding:
+                RegistrationBinding::PcSetup {
+                    session_id,
+                    attempt_id,
+                    enrollment_id,
+                },
+            ..
+        },
+        CeremonyState::Register(st),
+    ) = (rec.kind, rec.state)
+    else {
+        return Err(AuthError::PasskeyCeremonyInvalid.into());
+    };
+    if user_id != auth.id || Some(session_id) != auth.session_id || attempt_id != id {
+        return Err(AuthError::PasskeyCeremonyInvalid.into());
+    }
+    let reg = serde_json::from_value(body.credential).map_err(|_| AuthError::PasskeyInvalid)?;
+    let verified = rp
+        .finish_registration(&reg, &st)
+        .map_err(crate::auth::passkeys::failure)?;
+    let ctx = AuthCtx::from(&state);
+    let mut tx = state.db.begin().await?;
+    let result = async {
+        let locked = lock_own(&mut tx, &auth, id).await?;
+        // The ceremony belongs to this attempt's enrolment.
+        if locked.attempt.enrollment_id != Some(enrollment_id) {
+            return Err(ApprovalError::State);
+        }
+        enrolment::complete_enrolment(
+            &mut tx,
+            &ctx,
+            &locked,
+            Credential {
+                verified: &verified,
+                label: &label,
+            },
+        )
+        .await
+    }
+    .await;
+    let row = settle(tx, result).await?;
+    crate::security_events::notices::spawn_pending_delivery(&state);
+    tracing::info!(passkey_id = %row.id, "pc setup passkey added");
+    Ok((StatusCode::CREATED, Json((&row).into())))
 }
 
 // ============================================================================

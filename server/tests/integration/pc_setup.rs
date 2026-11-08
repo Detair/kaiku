@@ -306,7 +306,7 @@ struct Pc {
 }
 
 async fn pc(pool: &PgPool) -> Pc {
-    let app = TestApp::with_pool(pool.clone()).await;
+    let app = TestApp::with_passkeys(pool.clone()).await;
     let (user, _) = create_test_user(pool).await;
     let dev = KeyDeviceFixture::insert(pool, &app.config, user, "active").await;
     let (sid, token) = create_probation_session_with_token(pool, &app.config, user).await;
@@ -1362,5 +1362,1064 @@ async fn can_set_up_this_pc_matches_what_start_accepts(pool: PgPool) {
             vc_server::approvals::error::ApprovalError::PcSetupUnavailable
         ),
         "{e:?}"
+    );
+}
+
+// ============================================================================
+// Code entry, the `pc_setup` enrolment and the web registration (Task 3)
+// ============================================================================
+
+use super::helpers::login::TEST_ORIGIN;
+use super::helpers::passkeys::SoftAuthenticator;
+use vc_server::approvals::pc_setup::enrolment::{enter_code, CodeOutcome};
+
+/// A 6-digit code that is not `code`.
+fn wrong(code: &str) -> String {
+    let first = (code.as_bytes()[0] - b'0' + 1) % 10;
+    format!("{first}{}", &code[1..])
+}
+
+/// Start, scan, approve: `(attempt id, code)`.
+async fn with_code(p: &Pc) -> (String, String) {
+    let (id, c, bytes) = claimed(p).await;
+    let (s, ok) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
+    assert_eq!(s, 200, "{ok}");
+    (id, ok["code"].as_str().unwrap().to_string())
+}
+
+/// Type `code` on the PC for attempt `id` with `bearer`.
+async fn enter(p: &Pc, bearer: &str, id: &str, code: &str) -> (u16, Value) {
+    call(
+        &p.app,
+        Method::POST,
+        &format!("/auth/pc-setups/{id}/code"),
+        bearer,
+        Some(json!({ "code": code })),
+    )
+    .await
+}
+
+/// The attempt in `enrolled`: `(attempt id, enrolment id)`.
+async fn enrolled(p: &Pc) -> (String, String) {
+    let (id, code) = with_code(p).await;
+    let (s, body) = enter(p, &p.token, &id, &code).await;
+    assert_eq!(
+        (s, body["state"].as_str()),
+        (200, Some("enrolled")),
+        "{body}"
+    );
+    (id, body["enrollment_id"].as_str().unwrap().to_string())
+}
+
+async fn passkey_start(p: &Pc, bearer: &str, id: &str) -> (u16, Value) {
+    call(
+        &p.app,
+        Method::POST,
+        &format!("/auth/pc-setups/{id}/passkey/start"),
+        bearer,
+        Some(json!({})),
+    )
+    .await
+}
+
+async fn passkey_finish(p: &Pc, bearer: &str, id: &str, body: Value) -> (u16, Value) {
+    call(
+        &p.app,
+        Method::POST,
+        &format!("/auth/pc-setups/{id}/passkey/finish"),
+        bearer,
+        Some(body),
+    )
+    .await
+}
+
+/// Start the ceremony and answer it with a soft passkey: the finish body.
+async fn ceremony(p: &Pc, id: &str) -> Value {
+    let (s, start) = passkey_start(p, &p.token, id).await;
+    assert_eq!(s, 200, "{start}");
+    let credential = SoftAuthenticator::new().register(TEST_ORIGIN, &start["options"]);
+    json!({"ceremony_id": start["ceremony_id"], "credential": credential, "label": "Work PC"})
+}
+
+/// Run the whole flow to a passkey: `(attempt id, passkey id)`.
+async fn completed(p: &Pc) -> (String, Uuid) {
+    let (id, _) = enrolled(p).await;
+    let body = ceremony(p, &id).await;
+    let (s, pk) = passkey_finish(p, &p.token, &id, body).await;
+    assert_eq!(s, 201, "{pk}");
+    (id, pk["id"].as_str().unwrap().parse().unwrap())
+}
+
+async fn enrollment_state(pool: &PgPool, id: &str) -> String {
+    sqlx::query_scalar("SELECT state FROM enrollments WHERE id = $1::uuid")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn passkeys_of(pool: &PgPool, user: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM passkeys WHERE user_id = $1 AND state = 'active'")
+        .bind(user)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn phone_state(p: &Pc, id: &str) -> Value {
+    let (s, st) = call(
+        &p.app,
+        Method::GET,
+        &format!("/api/pc-setups/{id}?wait=0"),
+        &p.dev.access_token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{st}");
+    st
+}
+
+async fn logout(p: &Pc) -> u16 {
+    call(
+        &p.app,
+        Method::POST,
+        "/auth/logout",
+        &p.token,
+        Some(json!({})),
+    )
+    .await
+    .0
+}
+
+#[sqlx::test]
+async fn third_wrong_code_ends_the_attempt(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let bad = wrong(&code);
+    let (s, body) = enter(&p, &p.token, &id, &bad).await;
+    assert_eq!(
+        (s, body["state"].as_str(), body["tries_left"].as_i64()),
+        (200, Some("code"), Some(2)),
+        "{body}"
+    );
+    let (s, body) = enter(&p, &p.token, &id, &bad).await;
+    assert_eq!((s, body["tries_left"].as_i64()), (200, Some(1)), "{body}");
+    let (s, body) = enter(&p, &p.token, &id, &bad).await;
+    assert_eq!((s, body["state"].as_str()), (200, Some("failed")), "{body}");
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("failed".into(), Some("too_many_codes".into()))
+    );
+    // The right code no longer helps.
+    let (s, body) = enter(&p, &p.token, &id, &code).await;
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{body}"
+    );
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM enrollments WHERE subject_id = $1")
+        .bind(p.user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+    // One `pc_setup_failed`, normal severity: the account's notice only.
+    let (n, severity, details): (i64, String, Value) = sqlx::query_as(
+        "SELECT COUNT(*) OVER (), severity, details FROM security_events
+          WHERE subject_id = $1 AND event_type = 'pc_setup_failed'",
+    )
+    .bind(p.user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((n, severity.as_str()), (1, "normal"));
+    assert_eq!(details["attempt_id"].as_str(), Some(id.as_str()));
+    // Both sides say so.
+    let st = phone_state(&p, &id).await;
+    assert_eq!(
+        (st["state"].as_str(), st["reason"].as_str()),
+        (Some("failed"), Some("too_many_codes"))
+    );
+    let (_, st) = pc_poll(&p, &id).await;
+    assert_eq!(st["state"], "failed");
+}
+
+#[sqlx::test]
+async fn malformed_code_spends_no_try(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, _) = with_code(&p).await;
+    for bad in ["12345", "1234567", "12345a", ""] {
+        let (s, body) = enter(&p, &p.token, &id, bad).await;
+        assert_eq!(
+            (s, body["error"].as_str()),
+            (400, Some("VALIDATION_ERROR")),
+            "{body}"
+        );
+    }
+    let tries: i16 = sqlx::query_scalar("SELECT tries FROM pc_setup_attempts WHERE id = $1::uuid")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tries, 0);
+}
+
+#[sqlx::test]
+async fn expired_code_refused(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    sqlx::query("UPDATE pc_setup_attempts SET code_expires_at = NOW() - INTERVAL '1 second' WHERE id = $1::uuid")
+        .bind(&id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, body) = enter(&p, &p.token, &id, &code).await;
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (410, Some("APPROVAL_EXPIRED")),
+        "{body}"
+    );
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("expired".into(), Some("code_expired".into()))
+    );
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM enrollments WHERE subject_id = $1")
+        .bind(p.user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[sqlx::test]
+async fn right_code_creates_the_pc_setup_enrolment(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    let (variant, kind, sid, dev, token, state, ttl): (
+        String,
+        String,
+        Uuid,
+        Uuid,
+        Option<Vec<u8>>,
+        String,
+        f64,
+    ) = sqlx::query_as(
+        "SELECT variant, issuer_kind, issuer_session_id, issuer_device_id, setup_token_hash,
+                    state, EXTRACT(EPOCH FROM expires_at - NOW())::float8
+               FROM enrollments WHERE id = $1::uuid",
+    )
+    .bind(&eid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (variant.as_str(), kind.as_str(), state.as_str()),
+        ("pc_setup", "pc_setup", "issued")
+    );
+    assert_eq!((sid, dev), (p.sid, p.dev.row_id));
+    assert!(token.is_none());
+    assert!(ttl > 590.0 && ttl <= 600.0, "{ttl}");
+    let (state, linked): (String, Option<Uuid>) =
+        sqlx::query_as("SELECT state, enrollment_id FROM pc_setup_attempts WHERE id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (state.as_str(), linked.map(|u| u.to_string())),
+        ("enrolled", Some(eid))
+    );
+}
+
+#[sqlx::test]
+async fn registration_needs_the_requesting_session(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (_, other) = create_probation_session_with_token(&pool, &p.app.config, p.user).await;
+    let (id, code) = with_code(&p).await;
+    // Another session of the account cannot type the code.
+    let (s, _) = enter(&p, &other, &id, &code).await;
+    assert_eq!(s, 404);
+    let (s, _) = enter(&p, &p.token, &id, &code).await;
+    assert_eq!(s, 200);
+    // … nor start or finish the registration; no session at all gets 401.
+    let (s, _) = passkey_start(&p, &other, &id).await;
+    assert_eq!(s, 404);
+    let body = ceremony(&p, &id).await;
+    let (s, _) = passkey_finish(&p, &other, &id, body.clone()).await;
+    assert_eq!(s, 404);
+    let req = TestApp::request(Method::POST, &format!("/auth/pc-setups/{id}/passkey/start"))
+        .header("Content-Type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    assert_eq!(p.app.oneshot(req).await.status().as_u16(), 401);
+    let req = TestApp::request(
+        Method::POST,
+        &format!("/auth/pc-setups/{id}/passkey/finish"),
+    )
+    .header("Content-Type", "application/json")
+    .body(Body::from(body.to_string()))
+    .unwrap();
+    assert_eq!(p.app.oneshot(req).await.status().as_u16(), 401);
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+    // A ceremony of another attempt does not finish this one.
+    let (s, _) = passkey_finish(&p, &p.token, &Uuid::new_v4().to_string(), body).await;
+    assert_eq!(s, 404);
+}
+
+#[sqlx::test]
+async fn start_refused_before_the_right_code(pool: PgPool) {
+    let p = pc(&pool).await;
+    let a = started(&p).await;
+    let id = id_of(&a);
+    let (s, body) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{body}"
+    );
+    let (s, _) = enter(&p, &p.token, &id, "123456").await;
+    assert_eq!(s, 409, "no code before the approval");
+    let (token, bytes) = qr_token(&a["qr_payload"]);
+    let (_, c) = claim(&p.app, &p.dev, &token).await;
+    let (s, _) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!(s, 409);
+    let (_, ok) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
+    let code = ok["code"].as_str().unwrap();
+    let (s, _) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!(s, 409);
+    let (s, _) = enter(&p, &p.token, &id, &wrong(code)).await;
+    assert_eq!(s, 200);
+    let (s, _) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!(s, 409);
+    let (s, _) = enter(&p, &p.token, &id, code).await;
+    assert_eq!(s, 200);
+    let (s, body) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!(s, 200, "{body}");
+    assert!(
+        body["options"]["publicKey"]["challenge"].is_string(),
+        "{body}"
+    );
+}
+
+#[sqlx::test]
+async fn lost_code_entry_response_recovers_by_poll(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    // The response is lost: the PC's next poll carries on.
+    let _ = enter(&p, &p.token, &id, &code).await;
+    let (s, st) = pc_poll(&p, &id).await;
+    assert_eq!((s, st["state"].as_str()), (200, Some("enrolled")), "{st}");
+    let eid = st["enrollment_id"].as_str().unwrap().to_string();
+    // Typing the code again is refused and changes nothing.
+    let (s, _) = enter(&p, &p.token, &id, &code).await;
+    assert_eq!(s, 409);
+    assert_eq!(enrollment_state(&pool, &eid).await, "issued");
+    let body = ceremony(&p, &id).await;
+    let (s, pk) = passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(s, 201, "{pk}");
+    assert_eq!(pk["label"], "Work PC");
+    assert_eq!(pk["state"], "active");
+    assert_eq!(attempt_state(&pool, &id).await.0, "completed");
+    assert_eq!(enrollment_state(&pool, &eid).await, "done");
+    let linked: Option<Uuid> =
+        sqlx::query_scalar("SELECT enrollment_id FROM passkeys WHERE id = $1::uuid")
+            .bind(pk["id"].as_str().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(linked.map(|u| u.to_string()), Some(eid));
+    // The phone can say "Done".
+    assert_eq!(phone_state(&p, &id).await["state"], "completed");
+}
+
+#[sqlx::test]
+async fn current_attempt_resumes_after_reload(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    // A reload in `code`: the attempt is found and the code can be typed.
+    let (s, cur) = call(
+        &p.app,
+        Method::GET,
+        "/auth/pc-setups/current",
+        &p.token,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (s, cur["attempt_id"].as_str(), cur["state"].as_str()),
+        (200, Some(id.as_str()), Some("code")),
+        "{cur}"
+    );
+    assert!(cur.get("qr_payload").is_none());
+    let (s, _) = enter(&p, &p.token, &id, &code).await;
+    assert_eq!(s, 200);
+    // A reload in `enrolled`: it carries the enrolment and the passkey follows.
+    let (s, cur) = call(
+        &p.app,
+        Method::GET,
+        "/auth/pc-setups/current",
+        &p.token,
+        None,
+    )
+    .await;
+    assert_eq!((s, cur["state"].as_str()), (200, Some("enrolled")), "{cur}");
+    assert!(cur["enrollment_id"].is_string(), "{cur}");
+    let body = ceremony(&p, &id).await;
+    let (s, _) = passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(s, 201);
+    // Done: nothing live is left to resume.
+    let (s, _) = call(
+        &p.app,
+        Method::GET,
+        "/auth/pc-setups/current",
+        &p.token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 404);
+}
+
+#[sqlx::test]
+async fn ending_the_session_or_revoking_the_device_voids_the_enrolment(pool: PgPool) {
+    // Logout voids the enrolment in its own transaction.
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    assert_eq!(logout(&p).await, 200);
+    assert_eq!(enrollment_state(&pool, &eid).await, "expired");
+    // The attempt is expired by the next locked look (here the sweep).
+    vc_server::approvals::pc_setup::transition::expire_due(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("expired".into(), Some("session_ended".into()))
+    );
+
+    // Revoking the approving phone voids it too, and the finish is refused.
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    let body = ceremony(&p, &id).await;
+    revoke_device(&p).await;
+    assert_eq!(enrollment_state(&pool, &eid).await, "expired");
+    let (s, b) = passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("expired".into(), Some("device_revoked".into()))
+    );
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+}
+
+/// Revoke the fixture's phone as "Remove device" does: account lock first.
+async fn revoke_device(p: &Pc) {
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&p.app.state);
+    let mut tx = p.app.pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut tx, &[p.user])
+        .await
+        .unwrap();
+    revoke_in(&mut tx, &ctx, p).await;
+    tx.commit().await.unwrap();
+}
+
+async fn revoke_in(tx: &mut sqlx::PgConnection, ctx: &vc_server::auth::ctx::AuthCtx<'_>, p: &Pc) {
+    vc_server::approvals::devices::revoke_tx(
+        tx,
+        ctx,
+        p.dev.row_id,
+        vc_server::approvals::devices::RevokeReason::Owner,
+        vc_server::security_events::Actor::User(p.user),
+    )
+    .await
+    .unwrap();
+}
+
+#[sqlx::test]
+async fn enrolment_expiry_ends_the_attempt(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    sqlx::query(
+        "UPDATE enrollments SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1::uuid",
+    )
+    .bind(&eid)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (s, b) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("expired".into(), Some("enrollment_expired".into()))
+    );
+    assert_eq!(enrollment_state(&pool, &eid).await, "expired");
+}
+
+#[sqlx::test]
+async fn restart_cancels_the_previous_enrolment_and_its_ceremonies(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    let body = ceremony(&p, &id).await;
+    let fresh = started(&p).await;
+    assert_ne!(id_of(&fresh), id);
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("cancelled".into(), Some("restarted".into()))
+    );
+    assert_eq!(enrollment_state(&pool, &eid).await, "cancelled");
+    // The old ceremony finishes nothing.
+    let (s, b) = passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+    // The PC's cancel does the same.
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    let (s, _) = call(
+        &p.app,
+        Method::DELETE,
+        &format!("/auth/pc-setups/{id}"),
+        &p.token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 204);
+    assert_eq!(enrollment_state(&pool, &eid).await, "cancelled");
+}
+
+/// Locking 6: a restart racing the finish has one winner.
+#[sqlx::test]
+async fn restart_racing_finish_has_one_winner(pool: PgPool) {
+    for _ in 0..4 {
+        let p = pc(&pool).await;
+        let (id, eid) = enrolled(&p).await;
+        let body = ceremony(&p, &id).await;
+        let ((fs, fb), (rs, rb)) = tokio::join!(
+            passkey_finish(&p, &p.token, &id, body),
+            start(&p.app, &p.token)
+        );
+        assert_eq!(rs, 201, "{rb}");
+        let (state, reason) = attempt_state(&pool, &id).await;
+        if fs == 201 {
+            assert_eq!(state, "completed", "{fb}");
+            assert_eq!(enrollment_state(&pool, &eid).await, "done");
+            assert_eq!(passkeys_of(&pool, p.user).await, 1);
+        } else {
+            assert_eq!(
+                (fs, fb["error"].as_str()),
+                (409, Some("APPROVAL_STATE")),
+                "{fb}"
+            );
+            assert_eq!(
+                (state.as_str(), reason.as_deref()),
+                ("cancelled", Some("restarted"))
+            );
+            assert_eq!(enrollment_state(&pool, &eid).await, "cancelled");
+            assert_eq!(passkeys_of(&pool, p.user).await, 0);
+        }
+    }
+    // The restart committed first: the finish fails.
+    let p = pc(&pool).await;
+    let (id, _) = enrolled(&p).await;
+    let body = ceremony(&p, &id).await;
+    let mut holder = pool.begin().await.unwrap();
+    let mut locked =
+        vc_server::approvals::pc_setup::transition::lock_attempt(&mut holder, id.parse().unwrap())
+            .await
+            .unwrap();
+    let finish = passkey_finish(&p, &p.token, &id, body);
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        vc_server::approvals::pc_setup::transition::cancel_attempt_tx(
+            &mut holder,
+            &mut locked,
+            vc_server::approvals::pc_setup::transition::EndCause::Restarted,
+        )
+        .await
+        .unwrap();
+        holder.commit().await.unwrap();
+    };
+    let ((s, b), ()) = tokio::join!(finish, release);
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+}
+
+#[sqlx::test]
+async fn passkey_limit_at_finish_leaves_a_readable_state(pool: PgPool) {
+    use vc_server::auth::passkeys::queries::PasskeyState;
+    let p = pc(&pool).await;
+    for _ in 0..9 {
+        super::helpers::passkeys::seed_passkey(&p.app, p.user, PasskeyState::Active).await;
+    }
+    let (id, eid) = enrolled(&p).await;
+    let body = ceremony(&p, &id).await;
+    // The account fills up between start and finish.
+    super::helpers::passkeys::seed_passkey(&p.app, p.user, PasskeyState::Active).await;
+    let (s, b) = passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("PASSKEY_LIMIT")),
+        "{b}"
+    );
+    assert_eq!(passkeys_of(&pool, p.user).await, 10);
+    // The PC reads a live attempt it can leave; the phone never says "Done".
+    let (s, st) = pc_poll(&p, &id).await;
+    assert_eq!((s, st["state"].as_str()), (200, Some("enrolled")), "{st}");
+    assert_eq!(enrollment_state(&pool, &eid).await, "issued");
+    assert_eq!(phone_state(&p, &id).await["state"], "enrolled");
+    let (s, b) = passkey_start(&p, &p.token, &id).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("PASSKEY_LIMIT")),
+        "{b}"
+    );
+    let (s, _) = call(
+        &p.app,
+        Method::DELETE,
+        &format!("/auth/pc-setups/{id}"),
+        &p.token,
+        None,
+    )
+    .await;
+    assert_eq!(s, 204);
+    assert_eq!(phone_state(&p, &id).await["state"], "cancelled");
+}
+
+#[sqlx::test]
+async fn already_registered_passkey_leaves_a_readable_state(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    let body = ceremony(&p, &id).await;
+    // The same credential is registered meanwhile (another path).
+    let cred_id = b64u_decode(body["credential"]["rawId"].as_str().unwrap()).unwrap();
+    sqlx::query(
+        "INSERT INTO passkeys (id, user_id, credential_id, credential, label, state,
+                               backup_eligible, backup_state)
+         VALUES ($1, $2, $3, '{}'::jsonb, 'Elsewhere', 'active', false, false)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(p.user)
+    .bind(cred_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (s, b) = passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("PASSKEY_ALREADY_REGISTERED")),
+        "{b}"
+    );
+    assert_eq!(passkeys_of(&pool, p.user).await, 1);
+    let (s, st) = pc_poll(&p, &id).await;
+    assert_eq!((s, st["state"].as_str()), (200, Some("enrolled")), "{st}");
+    assert_eq!(enrollment_state(&pool, &eid).await, "issued");
+    assert_eq!(phone_state(&p, &id).await["state"], "enrolled");
+}
+
+/// The `authenticator_added` event of the flow's passkey.
+async fn added_event(pool: &PgPool, passkey: Uuid) -> (Uuid, String, Value) {
+    sqlx::query_as(
+        "SELECT id, severity, details FROM security_events
+          WHERE event_type = 'authenticator_added' AND authenticator_id = $1",
+    )
+    .bind(passkey)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test]
+async fn notice_names_pc_and_phone(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (id, c, bytes) = claimed(&p).await;
+    let desc = c["context"]["client_description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, ok) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
+    let (s, _) = enter(&p, &p.token, &id, ok["code"].as_str().unwrap()).await;
+    assert_eq!(s, 200);
+    let body = ceremony(&p, &id).await;
+    let (s, pk) = passkey_finish(&p, &p.token, &id, body).await;
+    assert_eq!(s, 201, "{pk}");
+    let (_, severity, details) =
+        added_event(&pool, pk["id"].as_str().unwrap().parse().unwrap()).await;
+    assert_eq!(severity, "high", "the notice goes to every address");
+    assert_eq!(details["type"], "passkey");
+    assert_eq!(details["via"], "pc_setup");
+    assert_eq!(
+        details["requesting_sid"].as_str(),
+        Some(p.sid.to_string().as_str())
+    );
+    assert_eq!(details["attempt_id"].as_str(), Some(id.as_str()));
+    assert_eq!(
+        details["client_description"].as_str(),
+        Some(desc.as_str()),
+        "the PC"
+    );
+    assert_eq!(details["approving_device_label"], "Pixel 8", "the phone");
+    assert_eq!(
+        details["approving_device_id"].as_str(),
+        Some(p.dev.row_id.to_string().as_str())
+    );
+    // The owner sees it with "That wasn't me".
+    let (_, log) = call(
+        &p.app,
+        Method::GET,
+        "/api/me/security-events",
+        &p.dev.access_token,
+        None,
+    )
+    .await;
+    let ev = log["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["event_type"] == "authenticator_added")
+        .unwrap_or_else(|| panic!("{log}"))
+        .clone();
+    assert_eq!(ev["details"]["approving_device_label"], "Pixel 8");
+    assert!(
+        ev["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["action"] == "repudiate"),
+        "{ev}"
+    );
+}
+
+/// "That wasn't me" from the phone (part 1: the phone is older).
+async fn repudiate(p: &Pc, event: Uuid) -> (u16, Value) {
+    super::helpers::grant_step_up(
+        &p.app.pool,
+        p.dev.session_id.unwrap(),
+        "event.repudiate",
+        &event.to_string(),
+    )
+    .await;
+    call(
+        &p.app,
+        Method::POST,
+        &format!("/api/me/security-events/{event}/repudiate"),
+        &p.dev.access_token,
+        Some(json!({})),
+    )
+    .await
+}
+
+#[sqlx::test]
+async fn that_wasnt_me_revokes_the_passkey_and_ends_the_requesting_session(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (_, pk) = completed(&p).await;
+    // A sign-in with the new passkey.
+    let (pk_sid, _) =
+        super::helpers::passkeys::passkey_session(&pool, &p.app.config, p.user, pk).await;
+    let (other_sid, _) = create_probation_session_with_token(&pool, &p.app.config, p.user).await;
+    let (event, _, _) = added_event(&pool, pk).await;
+    let (s, out) = repudiate(&p, event).await;
+    assert_eq!(s, 200, "{out}");
+    let state: String = sqlx::query_scalar("SELECT state FROM passkeys WHERE id = $1")
+        .bind(pk)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "revoked");
+    assert!(
+        !session_live(&pool, pk_sid).await,
+        "the passkey's sessions end"
+    );
+    assert!(
+        !session_live(&pool, p.sid).await,
+        "the requesting session ends"
+    );
+    assert!(session_live(&pool, other_sid).await);
+    assert!(session_live(&pool, p.dev.session_id.unwrap()).await);
+    let ended: Vec<String> = out["ended_session_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert!(ended.contains(&p.sid.to_string()), "{out}");
+}
+
+#[sqlx::test]
+async fn that_wasnt_me_marks_no_credential(pool: PgPool) {
+    let p = pc(&pool).await;
+    let (_, pk) = completed(&p).await;
+    let (event, _, _) = added_event(&pool, pk).await;
+    let (s, out) = repudiate(&p, event).await;
+    assert_eq!(s, 200, "{out}");
+    assert_eq!(out["compromised"], json!([]));
+    let (password, totp): (String, String) =
+        sqlx::query_as("SELECT password_state, totp_state FROM users WHERE id = $1")
+            .bind(p.user)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((password.as_str(), totp.as_str()), ("active", "active"));
+    let marked: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_events
+          WHERE subject_id = $1 AND event_type IN ('password_compromised', 'totp_compromised')",
+    )
+    .bind(p.user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(marked, 0);
+}
+
+// ----------------------------------------------------------------------------
+// Lock order (spec Locking 3–6): each pair runs concurrently a few times
+// (no deadlock, no 500, one consistent outcome) and once with the
+// session-ending side committing first (the other side sees it).
+// ----------------------------------------------------------------------------
+
+/// Hold the PC session's row as logout and refresh do (no account lock);
+/// `end` then ends it in that transaction with `reason`.
+async fn hold_session(pool: &PgPool, sid: Uuid) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM sessions WHERE id = $1 FOR UPDATE")
+        .bind(sid)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx
+}
+
+async fn end_held(
+    mut tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    p: &Pc,
+    reason: vc_server::auth::revocation::EndReason,
+) {
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&p.app.state);
+    vc_server::auth::revocation::end_sessions_tx(&mut tx, &ctx, p.user, &[p.sid], reason)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test]
+async fn logout_against_report(pool: PgPool) {
+    for _ in 0..4 {
+        let p = pc(&pool).await;
+        let (id, c, bytes) = claimed(&p).await;
+        let ((s, b), ls) = tokio::join!(
+            answer(&p.app, &p.dev, &c, &bytes, Decision::Report),
+            logout(&p)
+        );
+        assert!(s == 200 || s == 409, "{s} {b}");
+        assert!(ls == 200 || ls == 401, "{ls}");
+        assert!(!session_live(&pool, p.sid).await);
+        let (state, _) = attempt_state(&pool, &id).await;
+        assert_eq!(state, if s == 200 { "reported" } else { "expired" });
+    }
+    // Logout commits first: the report sees the ended session and does nothing.
+    let p = pc(&pool).await;
+    let (id, c, bytes) = claimed(&p).await;
+    let held = hold_session(&pool, p.sid).await;
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        end_held(held, &p, vc_server::auth::revocation::EndReason::Logout).await;
+    };
+    let ((s, b), ()) = tokio::join!(
+        answer(&p.app, &p.dev, &c, &bytes, Decision::Report),
+        release
+    );
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("expired".into(), Some("session_ended".into()))
+    );
+    let reported: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_events WHERE subject_id = $1 AND event_type = 'pc_setup_reported'",
+    )
+    .bind(p.user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(reported, 0);
+}
+
+#[sqlx::test]
+async fn logout_against_finish(pool: PgPool) {
+    for _ in 0..4 {
+        let p = pc(&pool).await;
+        let (id, eid) = enrolled(&p).await;
+        let body = ceremony(&p, &id).await;
+        let ((s, b), ls) = tokio::join!(passkey_finish(&p, &p.token, &id, body), logout(&p));
+        assert!(ls == 200 || ls == 401, "{ls}");
+        assert!(!session_live(&pool, p.sid).await);
+        if s == 201 {
+            // Finish first: the logout's cascade saw `done` and left it.
+            assert_eq!(enrollment_state(&pool, &eid).await, "done");
+            assert_eq!(passkeys_of(&pool, p.user).await, 1);
+        } else {
+            assert!(s == 401 || s == 409, "{s} {b}");
+            assert_eq!(enrollment_state(&pool, &eid).await, "expired");
+            assert_eq!(passkeys_of(&pool, p.user).await, 0);
+        }
+    }
+    // Logout commits first: no passkey survives it.
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    let body = ceremony(&p, &id).await;
+    let held = hold_session(&pool, p.sid).await;
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        end_held(held, &p, vc_server::auth::revocation::EndReason::Logout).await;
+    };
+    let ((s, b), ()) = tokio::join!(passkey_finish(&p, &p.token, &id, body), release);
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+    assert_eq!(enrollment_state(&pool, &eid).await, "expired");
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("expired".into(), Some("session_ended".into()))
+    );
+}
+
+#[sqlx::test]
+async fn refresh_reuse_against_code_entry(pool: PgPool) {
+    use vc_server::auth::revocation::EndReason;
+    for _ in 0..4 {
+        let p = pc(&pool).await;
+        let (id, code) = with_code(&p).await;
+        let ((s, b), ()) = tokio::join!(enter(&p, &p.token, &id, &code), async {
+            let held = hold_session(&pool, p.sid).await;
+            end_held(held, &p, EndReason::RefreshReuse).await;
+        });
+        assert!(s == 200 || s == 401 || s == 409, "{s} {b}");
+        let (state, _) = attempt_state(&pool, &id).await;
+        if s == 200 {
+            // The code entry came first; the end's cascade voided its enrolment.
+            assert_eq!(state, "enrolled");
+            let eid = b["enrollment_id"].as_str().unwrap();
+            assert_eq!(enrollment_state(&pool, eid).await, "expired");
+        }
+    }
+    // The reuse commits first: the code entry creates nothing.
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let held = hold_session(&pool, p.sid).await;
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        end_held(held, &p, EndReason::RefreshReuse).await;
+    };
+    let ((s, b), ()) = tokio::join!(enter(&p, &p.token, &id, &code), release);
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("expired".into(), Some("session_ended".into()))
+    );
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM enrollments WHERE subject_id = $1")
+        .bind(p.user)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+
+    // The code entry commits first: the end waits for the session row and its
+    // cascade sees the new enrolment.
+    let p = pc(&pool).await;
+    let (id, code) = with_code(&p).await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&p.app.state);
+    let mut holder = pool.begin().await.unwrap();
+    let locked =
+        vc_server::approvals::pc_setup::transition::lock_attempt(&mut holder, id.parse().unwrap())
+            .await
+            .unwrap();
+    let CodeOutcome::Enrolled { enrollment_id } =
+        enter_code(&mut holder, &ctx, &locked, &code).await.unwrap()
+    else {
+        panic!("the right code enrols");
+    };
+    let end = async {
+        let held = hold_session(&pool, p.sid).await;
+        end_held(held, &p, EndReason::RefreshReuse).await;
+    };
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        holder.commit().await.unwrap();
+    };
+    tokio::join!(end, release);
+    assert_eq!(
+        enrollment_state(&pool, &enrollment_id.to_string()).await,
+        "expired"
+    );
+    assert!(!session_live(&pool, p.sid).await);
+}
+
+#[sqlx::test]
+async fn device_removal_against_finish(pool: PgPool) {
+    for _ in 0..4 {
+        let p = pc(&pool).await;
+        let (id, eid) = enrolled(&p).await;
+        let body = ceremony(&p, &id).await;
+        let ((s, b), ()) = tokio::join!(passkey_finish(&p, &p.token, &id, body), revoke_device(&p));
+        if s == 201 {
+            assert_eq!(enrollment_state(&pool, &eid).await, "done");
+            assert_eq!(passkeys_of(&pool, p.user).await, 1);
+        } else {
+            assert_eq!(
+                (s, b["error"].as_str()),
+                (409, Some("APPROVAL_STATE")),
+                "{b}"
+            );
+            assert_eq!(enrollment_state(&pool, &eid).await, "expired");
+            assert_eq!(passkeys_of(&pool, p.user).await, 0);
+        }
+    }
+    // The removal commits first: the finish sees the revoked phone.
+    let p = pc(&pool).await;
+    let (id, eid) = enrolled(&p).await;
+    let body = ceremony(&p, &id).await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&p.app.state);
+    let mut holder = pool.begin().await.unwrap();
+    vc_server::approvals::transition::lock_accounts(&mut holder, &[p.user])
+        .await
+        .unwrap();
+    let release = async {
+        super::helpers::wait_for_lock_waiters(&pool, 1).await;
+        revoke_in(&mut holder, &ctx, &p).await;
+        holder.commit().await.unwrap();
+    };
+    let ((s, b), ()) = tokio::join!(passkey_finish(&p, &p.token, &id, body), release);
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{b}"
+    );
+    assert_eq!(passkeys_of(&pool, p.user).await, 0);
+    assert_eq!(enrollment_state(&pool, &eid).await, "expired");
+    assert_eq!(
+        attempt_state(&pool, &id).await,
+        ("expired".into(), Some("device_revoked".into()))
     );
 }

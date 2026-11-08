@@ -134,11 +134,21 @@ pub async fn effects(
         // that only authorised it is never revoked (B.2 rev 4).
         "step_up_action" => out.session = ev.session_id,
         // The generation the event made, never the current one (B.7 rule 2).
-        "authenticator_added" => match ev.details["type"].as_str() {
-            Some("totp") => out.compromise.extend(made(ev, Factor::Totp)),
-            _ if may_revoke => out.revoke = authenticator_of(ev),
-            _ => {}
-        },
+        "authenticator_added" => {
+            match ev.details["type"].as_str() {
+                Some("totp") => out.compromise.extend(made(ev, Factor::Totp)),
+                _ if may_revoke => out.revoke = authenticator_of(ev),
+                _ => {}
+            }
+            // "Set up this PC": the requesting session is the suspect, not a
+            // trusted issuer; it ends too. Nothing is marked compromised
+            // (spec "Notices and audit").
+            if ev.details["via"].as_str() == Some("pc_setup") {
+                out.session = ev.details["requesting_sid"]
+                    .as_str()
+                    .and_then(|s| s.parse().ok());
+            }
+        }
         "password_set" | "password_changed" => out.compromise.extend(made(ev, Factor::Password)),
         _ => return Err(AuthError::RepudiateNotAllowed),
     }
