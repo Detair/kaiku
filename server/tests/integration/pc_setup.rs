@@ -297,12 +297,12 @@ use super::helpers::{body_to_json_lenient, create_probation_session_with_token, 
 const QR_PREFIX: &str = "kaiku://pcsetup/v1?o=https%3A%2F%2Fchat.example.com&t=";
 
 /// A user with an active key phone and a probation session on a PC.
-struct Pc {
-    app: TestApp,
-    user: Uuid,
-    sid: Uuid,
-    token: String,
-    dev: KeyDeviceFixture,
+pub struct Pc {
+    pub app: TestApp,
+    pub user: Uuid,
+    pub sid: Uuid,
+    pub token: String,
+    pub dev: KeyDeviceFixture,
 }
 
 async fn pc(pool: &PgPool) -> Pc {
@@ -320,7 +320,7 @@ async fn pc(pool: &PgPool) -> Pc {
 }
 
 /// One bearer request; `(status, body)`.
-async fn call(
+pub async fn call(
     app: &TestApp,
     method: Method,
     uri: &str,
@@ -354,14 +354,14 @@ async fn start(app: &TestApp, bearer: &str) -> (u16, Value) {
 }
 
 /// Start and expect 201.
-async fn started(p: &Pc) -> Value {
+pub async fn started(p: &Pc) -> Value {
     let (s, body) = start(&p.app, &p.token).await;
     assert_eq!(s, 201, "{body}");
     body
 }
 
 /// The b64u token and its bytes from a QR payload.
-fn qr_token(payload: &Value) -> (String, Vec<u8>) {
+pub fn qr_token(payload: &Value) -> (String, Vec<u8>) {
     let p = payload.as_str().expect("qr payload");
     let t = p
         .strip_prefix(QR_PREFIX)
@@ -371,11 +371,11 @@ fn qr_token(payload: &Value) -> (String, Vec<u8>) {
     (t, bytes)
 }
 
-fn id_of(v: &Value) -> String {
+pub fn id_of(v: &Value) -> String {
     v["attempt_id"].as_str().unwrap().to_string()
 }
 
-async fn claim(app: &TestApp, dev: &KeyDeviceFixture, token: &str) -> (u16, Value) {
+pub async fn claim(app: &TestApp, dev: &KeyDeviceFixture, token: &str) -> (u16, Value) {
     call(
         app,
         Method::POST,
@@ -387,7 +387,7 @@ async fn claim(app: &TestApp, dev: &KeyDeviceFixture, token: &str) -> (u16, Valu
 }
 
 /// Sign and answer a `pc_setup` challenge.
-async fn answer(
+pub async fn answer(
     app: &TestApp,
     dev: &KeyDeviceFixture,
     challenge: &Value,
@@ -399,7 +399,7 @@ async fn answer(
     answer_raw(app, dev, challenge, response, decision, &sig).await
 }
 
-async fn answer_raw(
+pub async fn answer_raw(
     app: &TestApp,
     dev: &KeyDeviceFixture,
     challenge: &Value,
@@ -423,7 +423,7 @@ async fn answer_raw(
 }
 
 /// Start, scan: `(attempt id, challenge, token bytes)`.
-async fn claimed(p: &Pc) -> (String, Value, Vec<u8>) {
+pub async fn claimed(p: &Pc) -> (String, Value, Vec<u8>) {
     let a = started(p).await;
     let (token, bytes) = qr_token(&a["qr_payload"]);
     let (s, c) = claim(&p.app, &p.dev, &token).await;
@@ -431,7 +431,7 @@ async fn claimed(p: &Pc) -> (String, Value, Vec<u8>) {
     (id_of(&a), c, bytes)
 }
 
-async fn attempt_state(pool: &PgPool, id: &str) -> (String, Option<String>) {
+pub async fn attempt_state(pool: &PgPool, id: &str) -> (String, Option<String>) {
     sqlx::query_as("SELECT state, reason FROM pc_setup_attempts WHERE id = $1::uuid")
         .bind(id)
         .fetch_one(pool)
@@ -778,7 +778,7 @@ async fn challenge_expiry_returns_to_waiting(pool: PgPool) {
 
 /// Every occurrence of `code` stands inside a longer run of digits or after
 /// a decimal point (timestamps), never on its own.
-fn contains_code(text: &str, code: &str) -> bool {
+pub fn contains_code(text: &str, code: &str) -> bool {
     text.match_indices(code).any(|(i, _)| {
         let before = text[..i].chars().next_back();
         let after = text[i + code.len()..].chars().next();
@@ -1374,13 +1374,13 @@ use super::helpers::passkeys::SoftAuthenticator;
 use vc_server::approvals::pc_setup::enrolment::{enter_code, CodeOutcome};
 
 /// A 6-digit code that is not `code`.
-fn wrong(code: &str) -> String {
+pub fn wrong(code: &str) -> String {
     let first = (code.as_bytes()[0] - b'0' + 1) % 10;
     format!("{first}{}", &code[1..])
 }
 
 /// Start, scan, approve: `(attempt id, code)`.
-async fn with_code(p: &Pc) -> (String, String) {
+pub async fn with_code(p: &Pc) -> (String, String) {
     let (id, c, bytes) = claimed(p).await;
     let (s, ok) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
     assert_eq!(s, 200, "{ok}");
@@ -1388,7 +1388,7 @@ async fn with_code(p: &Pc) -> (String, String) {
 }
 
 /// Type `code` on the PC for attempt `id` with `bearer`.
-async fn enter(p: &Pc, bearer: &str, id: &str, code: &str) -> (u16, Value) {
+pub async fn enter(p: &Pc, bearer: &str, id: &str, code: &str) -> (u16, Value) {
     call(
         &p.app,
         Method::POST,
@@ -1450,7 +1450,7 @@ async fn completed(p: &Pc) -> (String, Uuid) {
     (id, pk["id"].as_str().unwrap().parse().unwrap())
 }
 
-async fn enrollment_state(pool: &PgPool, id: &str) -> String {
+pub async fn enrollment_state(pool: &PgPool, id: &str) -> String {
     sqlx::query_scalar("SELECT state FROM enrollments WHERE id = $1::uuid")
         .bind(id)
         .fetch_one(pool)
@@ -1458,7 +1458,7 @@ async fn enrollment_state(pool: &PgPool, id: &str) -> String {
         .unwrap()
 }
 
-async fn passkeys_of(pool: &PgPool, user: Uuid) -> i64 {
+pub async fn passkeys_of(pool: &PgPool, user: Uuid) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM passkeys WHERE user_id = $1 AND state = 'active'")
         .bind(user)
         .fetch_one(pool)

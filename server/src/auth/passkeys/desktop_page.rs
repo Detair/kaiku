@@ -318,6 +318,17 @@ struct Texts {
     working: &'static str,
     expired: &'static str,
     unavailable: &'static str,
+    pc_title: &'static str,
+    pc_code_prompt: &'static str,
+    pc_code_label: &'static str,
+    pc_code_submit: &'static str,
+    pc_code_invalid: &'static str,
+    /// `{n}`: the tries left.
+    pc_code_wrong: &'static str,
+    pc_code_failed: &'static str,
+    pc_passkey_prompt: &'static str,
+    pc_create: &'static str,
+    pc_failed: &'static str,
 }
 
 const EN: Texts = Texts {
@@ -335,6 +346,17 @@ const EN: Texts = Texts {
     working: "Waiting for your passkey\u{2026}",
     expired: "This link has expired or was already used. Start again in the Kaiku app.",
     unavailable: "Kaiku is not reachable right now. Go back to the app and try again.",
+    pc_title: "Set up a passkey for the Kaiku desktop app on this computer",
+    pc_code_prompt: "Type the code your phone shows. Only type it here if you started this \
+                     in the Kaiku app on this computer.",
+    pc_code_label: "Code from your phone",
+    pc_code_submit: "Continue",
+    pc_code_invalid: "Type the 6 digits your phone shows.",
+    pc_code_wrong: "That code is wrong. Tries left: {n}.",
+    pc_code_failed: "Too many wrong codes. Start again in the Kaiku app.",
+    pc_passkey_prompt: "Create the passkey for this computer.",
+    pc_create: "Create passkey",
+    pc_failed: "That didn't work. Try again.",
 };
 
 const DE: Texts = Texts {
@@ -354,6 +376,17 @@ const DE: Texts = Texts {
     working: "Warte auf deinen Passkey\u{2026}",
     expired: "Dieser Link ist abgelaufen oder wurde schon benutzt. Starte in der Kaiku-App neu.",
     unavailable: "Kaiku ist gerade nicht erreichbar. Geh zur\u{fc}ck zur App und versuche es noch einmal.",
+    pc_title: "Einen Passkey f\u{fc}r die Kaiku-Desktop-App auf diesem Computer einrichten",
+    pc_code_prompt: "Gib den Code ein, den dein Handy zeigt. Gib ihn nur hier ein, wenn du das \
+                     in der Kaiku-App auf diesem Computer gestartet hast.",
+    pc_code_label: "Code von deinem Handy",
+    pc_code_submit: "Weiter",
+    pc_code_invalid: "Gib die 6 Ziffern ein, die dein Handy zeigt.",
+    pc_code_wrong: "Der Code ist falsch. Verbleibende Versuche: {n}.",
+    pc_code_failed: "Zu viele falsche Codes. Starte in der Kaiku-App neu.",
+    pc_passkey_prompt: "Erstelle den Passkey f\u{fc}r diesen Computer.",
+    pc_create: "Passkey erstellen",
+    pc_failed: "Das hat nicht geklappt. Versuch es noch einmal.",
 };
 
 const fn texts(lang: Lang) -> &'static Texts {
@@ -461,6 +494,85 @@ pub fn ceremony_page(lang: Lang, heading: &PageHeading, flow_id: Uuid) -> Respon
         start = esc(t.start),
         back = esc(t.back),
         base = format_args!("/auth/passkeys/desktop/{flow_id}"),
+    );
+    page(lang, StatusCode::OK, &body)
+}
+
+/// The `pc_setup` flow's page (spec Step 5): the code first, then the
+/// passkey.
+pub enum PcSetupStep {
+    /// The keypad: no ceremony before the right code.
+    Code,
+    /// The browser that typed the right code (it holds the cookie);
+    /// `failed` after a ceremony that did not finish.
+    Passkey { failed: bool },
+}
+
+/// The page of a `pc_setup` flow at `/auth/passkeys/desktop/flows/{id}`.
+///
+/// The keypad posts the code with `fetch` to `…/code`; the passkey step runs
+/// `ceremony.js` in `create` mode (options → `navigator.credentials.create`
+/// → a form POST to `…/finish`). Both send the browser-secret cookie; the
+/// phone's code is never in the page.
+pub fn pc_setup_page(lang: Lang, step: &PcSetupStep, flow_id: Uuid) -> Response {
+    let t = texts(lang);
+    let base = format!("/auth/passkeys/desktop/flows/{flow_id}");
+    let main = match step {
+        PcSetupStep::Code => format!(
+            "<p>{prompt}</p>\
+             <form id=\"code-form\" data-invalid=\"{invalid}\" data-wrong=\"{wrong}\" \
+                data-failed=\"{failed}\" data-expired=\"{expired}\" \
+                data-unavailable=\"{unavailable}\">\
+             <label for=\"code\">{label}</label>\
+             <input id=\"code\" name=\"code\" type=\"text\" inputmode=\"numeric\" \
+                pattern=\"[0-9]{{6}}\" maxlength=\"6\" autocomplete=\"one-time-code\" \
+                required>\
+             <button type=\"submit\">{submit}</button></form>",
+            prompt = esc(t.pc_code_prompt),
+            invalid = esc(t.pc_code_invalid),
+            wrong = esc(t.pc_code_wrong),
+            failed = esc(t.pc_code_failed),
+            expired = esc(t.expired),
+            unavailable = esc(t.unavailable),
+            label = esc(t.pc_code_label),
+            submit = esc(t.pc_code_submit),
+        ),
+        PcSetupStep::Passkey { failed } => format!(
+            "<p>{prompt}</p>\
+             <button id=\"start\" type=\"button\" data-ceremony=\"create\" \
+                data-retry=\"{retry}\">{start}</button>\
+             <form id=\"finish\" method=\"post\" action=\"{base}/finish\" hidden>\
+             <input type=\"hidden\" name=\"credential\" value=\"\">\
+             <input type=\"hidden\" name=\"ceremony_id\" value=\"\"></form>",
+            prompt = esc(if *failed {
+                t.pc_failed
+            } else {
+                t.pc_passkey_prompt
+            }),
+            retry = esc(t.retry),
+            start = esc(if *failed { t.retry } else { t.pc_create }),
+        ),
+    };
+    let body = format!(
+        "<h1>{title}</h1>\
+         <p class=\"warning\">{forwarded}</p>\
+         <p id=\"status\" role=\"status\" aria-live=\"polite\" data-working=\"{working}\" \
+            data-cancelled=\"{cancelled}\"></p>\
+         <p id=\"unsupported\" hidden>{unsupported}</p>\
+         <p id=\"linux-firefox\" class=\"hint\" hidden>{linux_firefox}</p>\
+         <p id=\"linux-other\" class=\"hint\" hidden>{linux_other}</p>\
+         {main}\
+         <form id=\"cancel\" method=\"post\" action=\"{base}/cancel\">\
+         <button type=\"submit\" class=\"secondary\">{back}</button></form>\
+         <script src=\"/auth/passkeys/assets/ceremony.js\"></script>",
+        title = esc(t.pc_title),
+        forwarded = esc(t.forwarded),
+        working = esc(t.working),
+        cancelled = esc(t.cancelled),
+        unsupported = esc(t.unsupported),
+        linux_firefox = esc(t.linux_firefox),
+        linux_other = esc(t.linux_other),
+        back = esc(t.back),
     );
     page(lang, StatusCode::OK, &body)
 }

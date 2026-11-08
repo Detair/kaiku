@@ -23,6 +23,7 @@ pub mod ceremony;
 pub mod config;
 pub(crate) mod desktop;
 pub mod desktop_page;
+pub(crate) mod desktop_pc_setup;
 pub(crate) mod login;
 pub(crate) mod manage;
 pub mod queries;
@@ -114,7 +115,25 @@ pub fn router(state: &AppState) -> Router<AppState> {
             post(desktop::options),
         )
         .route("/passkeys/desktop/{flow_id}/finish", post(desktop::finish))
-        .route("/passkeys/desktop/{flow_id}/cancel", post(desktop::cancel));
+        .route("/passkeys/desktop/{flow_id}/cancel", post(desktop::cancel))
+        // "Set up this PC" (spec Step 5): the flow's routes share the
+        // browser-secret cookie's path.
+        .route(
+            "/passkeys/desktop/flows/{flow_id}/code",
+            post(desktop_pc_setup::code),
+        )
+        .route(
+            "/passkeys/desktop/flows/{flow_id}/options",
+            post(desktop_pc_setup::options),
+        )
+        .route(
+            "/passkeys/desktop/flows/{flow_id}/finish",
+            post(desktop_pc_setup::finish),
+        )
+        .route(
+            "/passkeys/desktop/flows/{flow_id}/cancel",
+            post(desktop_pc_setup::cancel),
+        );
     // Public for `sign_in`, bearer-bound for `step_up` (C29 steps 2 and 6).
     let desktop_api = Router::new()
         .route("/passkeys/desktop/flows", post(desktop::start))
@@ -127,6 +146,10 @@ pub fn router(state: &AppState) -> Router<AppState> {
     // bucket, so page loads never push a hand-off into 429 (Fable m5).
     let assets = Router::new()
         .route("/passkeys/desktop/{flow_id}", get(desktop::page))
+        .route(
+            "/passkeys/desktop/flows/{flow_id}",
+            get(desktop_pc_setup::page),
+        )
         .route(
             "/passkeys/assets/ceremony.js",
             get(desktop_page::ceremony_js),

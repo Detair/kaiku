@@ -36,6 +36,16 @@ pub enum CeremonyKind {
         #[serde(default)]
         flow_id: Option<Uuid>,
     },
+    /// A "Set up this PC" registration in a desktop flow: bound to the
+    /// account, the requesting session, the attempt and the flow (the
+    /// state is `Register`). It finishes only on that flow's page, never on
+    /// a web registration route.
+    PcSetup {
+        user_id: Uuid,
+        session_id: Uuid,
+        attempt_id: Uuid,
+        flow_id: Uuid,
+    },
     /// Bound to the account and a session (L1b: request, ticket, enrolment).
     Register {
         user_id: Uuid,

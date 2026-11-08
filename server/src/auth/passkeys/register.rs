@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use uuid::Uuid;
-use webauthn_rs::prelude::CreationChallengeResponse;
+use webauthn_rs::prelude::{CreationChallengeResponse, PasskeyRegistration};
 
 use super::ceremony::{self, CeremonyKind, CeremonyRecord, CeremonyState};
 use super::queries::{self, InsertError, NewPasskey, PasskeyRow, PasskeyState};
@@ -113,21 +113,7 @@ pub async fn begin(
     binding: RegistrationBinding,
     label: String,
 ) -> AuthResult<(Uuid, CreationChallengeResponse)> {
-    let rp = rp_of(state)?;
-    let handle = queries::user_handle(&state.db, user_id).await?;
-    let (username, display_name): (String, String) =
-        sqlx::query_as("SELECT username, display_name FROM users WHERE id = $1")
-            .bind(user_id)
-            .fetch_one(&state.db)
-            .await?;
-    let exclude = queries::list_live(&state.db, user_id)
-        .await?
-        .into_iter()
-        .map(|r| r.credential_id.into())
-        .collect();
-    let (ccr, st) = rp
-        .start_registration(handle, &username, &display_name, exclude)
-        .map_err(failure)?;
+    let (ccr, st) = options_for(state, user_id).await?;
     let ceremony_id = ceremony::new_ceremony_id();
     ceremony::put_new(
         &state.redis,
@@ -144,6 +130,28 @@ pub async fn begin(
     )
     .await?;
     Ok((ceremony_id, ccr))
+}
+
+/// Creation options and their state for `user_id`, not yet stored: the
+/// caller binds them in its own ceremony record.
+pub(crate) async fn options_for(
+    state: &AppState,
+    user_id: Uuid,
+) -> AuthResult<(CreationChallengeResponse, PasskeyRegistration)> {
+    let rp = rp_of(state)?;
+    let handle = queries::user_handle(&state.db, user_id).await?;
+    let (username, display_name): (String, String) =
+        sqlx::query_as("SELECT username, display_name FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&state.db)
+            .await?;
+    let exclude = queries::list_live(&state.db, user_id)
+        .await?
+        .into_iter()
+        .map(|r| r.credential_id.into())
+        .collect();
+    rp.start_registration(handle, &username, &display_name, exclude)
+        .map_err(failure)
 }
 
 /// Store a verified registration inside the caller's transaction.

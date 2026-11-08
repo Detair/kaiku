@@ -578,6 +578,7 @@ use utoipa::{Modify, OpenApi};
         crate::auth::passkeys::desktop::DesktopFlowStarted,
         crate::auth::passkeys::desktop::DesktopRedeemRequest,
         crate::auth::passkeys::desktop::DesktopStepUpRedeemed,
+        crate::auth::passkeys::desktop_pc_setup::DesktopPcSetupRedeemed,
         crate::auth::passkeys::queries::PasskeyState,
         crate::approvals::types::ApprovalChallenge,
         crate::approvals::pc_setup::handlers::PcSetupStarted,

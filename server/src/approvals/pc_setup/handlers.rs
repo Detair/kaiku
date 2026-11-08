@@ -209,7 +209,7 @@ async fn lock_own(
 
 /// Commit on success and after a check's refusal ([`keeps_marks`]); roll
 /// back after anything else.
-async fn settle<T>(
+pub(crate) async fn settle<T>(
     tx: Transaction<'_, Postgres>,
     result: Result<T, ApprovalError>,
 ) -> Result<T, ApprovalError> {
