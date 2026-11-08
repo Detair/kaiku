@@ -71,6 +71,12 @@ pub enum SecretPurpose {
     RegistrationTicket,
     /// The desktop passkey hand-off code (LP, C29 step 4).
     PasskeyHandoffCode,
+    /// The QR token of a "Set up this PC" attempt (not the F2 login token).
+    PcSetupToken,
+    /// The 6-digit code the phone shows for a "Set up this PC" attempt.
+    PcSetupCode,
+    /// The browser secret set when the code is typed in the desktop flow.
+    PcSetupBrowser,
 }
 
 impl SecretPurpose {
@@ -86,6 +92,9 @@ impl SecretPurpose {
             Self::RequestSecret => "request_secret",
             Self::RegistrationTicket => "registration_ticket",
             Self::PasskeyHandoffCode => "passkey_handoff_code",
+            Self::PcSetupToken => "pc_setup_token",
+            Self::PcSetupCode => "pc_setup_code",
+            Self::PcSetupBrowser => "pc_setup_browser",
         }
     }
 }
@@ -153,6 +162,27 @@ mod tests {
         assert_ne!(a, keyed_hash(&k1, SecretPurpose::SetupToken, b"secret"));
         assert_ne!(a, keyed_hash(&k2, SecretPurpose::LoginToken, b"secret"));
         assert_ne!(a, keyed_hash(&k1, SecretPurpose::LoginToken, b"secreT"));
+    }
+
+    #[test]
+    fn pc_setup_purposes_have_their_own_domains() {
+        let k = [3u8; 32];
+        let all = [
+            SecretPurpose::LoginToken,
+            SecretPurpose::SetupToken,
+            SecretPurpose::EnrollCode,
+            SecretPurpose::PcSetupToken,
+            SecretPurpose::PcSetupCode,
+            SecretPurpose::PcSetupBrowser,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for p in all {
+            assert!(
+                seen.insert(keyed_hash(&k, p, b"same value")),
+                "{}",
+                p.label()
+            );
+        }
     }
 
     #[test]

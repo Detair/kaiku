@@ -68,6 +68,7 @@ mod passkeys_profile;
 mod passkeys_register;
 mod passkeys_schema;
 mod passkeys_step_up;
+mod pc_setup;
 mod performance_budgets;
 mod push_http;
 mod push_triggers;

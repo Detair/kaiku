@@ -29,6 +29,7 @@ pub enum Requester {
     Enrollment(Uuid),
     Device(Uuid),
     Session(Uuid),
+    PcSetupAttempt(Uuid),
 }
 
 impl Requester {
@@ -38,6 +39,7 @@ impl Requester {
             Self::Enrollment(id) => ("enrollment", id),
             Self::Device(id) => ("device", id),
             Self::Session(id) => ("session", id),
+            Self::PcSetupAttempt(id) => ("pc_setup_attempt", id),
         }
     }
 }

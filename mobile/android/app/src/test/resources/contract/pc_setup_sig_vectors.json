@@ -1,0 +1,55 @@
+{
+  "description": "PC-setup (kind 6) signed-message vectors for the Set up this PC feature. Same B.2 format and test key as golden/kaiku_sig_v1.json (d = SHA-256(\"kaiku-sig-v1 golden key\"); never use outside tests). response = the 32 raw QR token bytes. Inputs are fixed; c_hex, context_hash_hex, signing_prefix_b64u, message_hex and signature are computed (KAIKU_UPDATE_GOLDEN=1 rewrites them).",
+  "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaGyjIg4bpThSbH_2lxjxOCbet8d6OXzr6dvBwmYvZkX9zHpvoOqY5gJuY5LHJQSE3ny7KokI1Ds-0iPwEDhAZQ",
+  "vectors": [
+    {
+      "c_hex": "777777777777477787777777777777770e7c083cf5df8d06b73e0128d1e918b6b974e72c58c5ce3adea5cedcc25d861a0000001046697265666f78206f6e204c696e7578000000006ae5d8b80000000b48616d627572672c204445",
+      "challenge_id": "33333333-3333-4333-8333-333333333316",
+      "context": {
+        "attempt_id": "77777777-7777-4777-8777-777777777777",
+        "client_description": "Firefox on Linux",
+        "place": "Hamburg, DE",
+        "session_created_at": 1793448120,
+        "sid_hash": "DnwIPPXfjQa3PgEo0ekYtrl05yxYxc463qXO3MJdhho"
+      },
+      "context_hash_hex": "c29c6937fa3cca93a1b6217bb5b3c24d72517d3cb41fbc978607c216f5ab063b",
+      "decision": "approve",
+      "device_id": "22222222-2222-4222-8222-222222222222",
+      "expires_at": 1793707320,
+      "kind": "pc_setup",
+      "message_hex": "6b61696b752d7369672d76310633333333333343338333333333333316000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000006ae9cd380000001868747470733a2f2f636861742e6578616d706c652e636f6d1111111111114111811111111111111122222222222242228222222222222222c29c6937fa3cca93a1b6217bb5b3c24d72517d3cb41fbc978607c216f5ab063b0100000020202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "name": "P01",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "origin": "https://chat.example.com",
+      "response_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "signature": "MEUCIQDtYknbFl1oyGkMtyi897DB6pepsYNAlBbqxNPs-_t43AIgIoui7E_pWTxqjiSpzqkRW1ws9tNz9bUEFG8vKerhrVU",
+      "signing_prefix_b64u": "a2Fpa3Utc2lnLXYxBjMzMzMzM0MzgzMzMzMzMxYAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHwAAAABq6c04AAAAGGh0dHBzOi8vY2hhdC5leGFtcGxlLmNvbREREREREUERgREREREREREiIiIiIiJCIoIiIiIiIiIiwpxpN_o8ypOhtiF7tbPCTXJRfTy0H7yXhgfCFvWrBjs",
+      "user_id": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "c_hex": "777777777777477787777777777777770e7c083cf5df8d06b73e0128d1e918b6b974e72c58c5ce3adea5cedcc25d861a0000001046697265666f78206f6e204c696e7578000000006ae5d8b80000000b48616d627572672c204445",
+      "challenge_id": "33333333-3333-4333-8333-333333333317",
+      "context": {
+        "attempt_id": "77777777-7777-4777-8777-777777777777",
+        "client_description": "Firefox on Linux",
+        "place": "Hamburg, DE",
+        "session_created_at": 1793448120,
+        "sid_hash": "DnwIPPXfjQa3PgEo0ekYtrl05yxYxc463qXO3MJdhho"
+      },
+      "context_hash_hex": "c29c6937fa3cca93a1b6217bb5b3c24d72517d3cb41fbc978607c216f5ab063b",
+      "decision": "report",
+      "device_id": "22222222-2222-4222-8222-222222222222",
+      "expires_at": 1793707320,
+      "kind": "pc_setup",
+      "message_hex": "6b61696b752d7369672d76310633333333333343338333333333333317000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000006ae9cd380000001868747470733a2f2f636861742e6578616d706c652e636f6d1111111111114111811111111111111122222222222242228222222222222222c29c6937fa3cca93a1b6217bb5b3c24d72517d3cb41fbc978607c216f5ab063b0300000020202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "name": "P02",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "origin": "https://chat.example.com",
+      "response_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "signature": "MEUCIQCp-DsjbGLnoA_3wSjZ4WV338xw-iVOx316ZHyG1BR3MAIgNHFEkqs7U-0c6X5xLZWOUfxGb8thCch1Cv0CcYGVapU",
+      "signing_prefix_b64u": "a2Fpa3Utc2lnLXYxBjMzMzMzM0MzgzMzMzMzMxcAAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHwAAAABq6c04AAAAGGh0dHBzOi8vY2hhdC5leGFtcGxlLmNvbREREREREUERgREREREREREiIiIiIiJCIoIiIiIiIiIiwpxpN_o8ypOhtiF7tbPCTXJRfTy0H7yXhgfCFvWrBjs",
+      "user_id": "11111111-1111-4111-8111-111111111111"
+    }
+  ],
+  "version": 1
+}

@@ -49,6 +49,8 @@ impl Variant {
 pub enum EnrollVariant {
     Own = 1,
     Admin = 2,
+    /// "Set up this PC": the passkey is registered by the requesting session.
+    PcSetup = 3,
 }
 
 impl EnrollVariant {
@@ -57,6 +59,7 @@ impl EnrollVariant {
         match self {
             Self::Own => "own",
             Self::Admin => "admin",
+            Self::PcSetup => "pc_setup",
         }
     }
 
@@ -65,6 +68,7 @@ impl EnrollVariant {
         match s {
             "own" => Some(Self::Own),
             "admin" => Some(Self::Admin),
+            "pc_setup" => Some(Self::PcSetup),
             _ => None,
         }
     }
@@ -177,6 +181,28 @@ pub struct EnrollPopContext {
     pub subject_username: String,
 }
 
+/// `pc_setup`: the attempt, the requesting session and what the phone shows.
+///
+/// Encoded as `attempt_id ‖ sid_hash ‖ lp(client_description) ‖
+/// i64(session_created_at) ‖ lp(place)`. The client description, the age and
+/// the place come from the stored session row, never from the request that
+/// started the attempt; `sid_hash` is [`sid_hash`] of the requesting session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PcSetupContext {
+    pub attempt_id: Uuid,
+    pub sid_hash: [u8; 32],
+    pub client_description: String,
+    pub session_created_at: i64,
+    pub place: String,
+}
+
+/// `SHA-256(sid)` over the 16 raw bytes: the phone sees this hash, never the
+/// session id (which authorises the PC's attempt routes).
+#[must_use]
+pub fn sid_hash(sid: Uuid) -> [u8; 32] {
+    Sha256::digest(sid.as_bytes()).into()
+}
+
 /// One canonical context per kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CanonicalContext {
@@ -185,6 +211,7 @@ pub enum CanonicalContext {
     DeviceLogin { client_class: ClientClass },
     DeviceStepup(DeviceStepupContext),
     EnrollPop(EnrollPopContext),
+    PcSetup(PcSetupContext),
 }
 
 /// A JSON context that does not have the shape of its kind.
@@ -210,6 +237,7 @@ impl CanonicalContext {
             Self::DeviceLogin { .. } => Kind::DeviceLogin,
             Self::DeviceStepup(_) => Kind::DeviceStepup,
             Self::EnrollPop(_) => Kind::EnrollPop,
+            Self::PcSetup(_) => Kind::PcSetup,
         }
     }
 
@@ -251,6 +279,13 @@ impl CanonicalContext {
                 out.extend_from_slice(&c.new_key_hash);
                 out.extend_from_slice(&c.attestation_challenge);
                 lp(&mut out, c.subject_username.as_bytes());
+            }
+            Self::PcSetup(c) => {
+                out.extend_from_slice(c.attempt_id.as_bytes());
+                out.extend_from_slice(&c.sid_hash);
+                lp(&mut out, c.client_description.as_bytes());
+                out.extend_from_slice(&c.session_created_at.to_be_bytes());
+                lp(&mut out, c.place.as_bytes());
             }
         }
         out
@@ -301,6 +336,13 @@ impl CanonicalContext {
                 "attestation_challenge": b64u_encode(&c.attestation_challenge),
                 "subject_username": c.subject_username,
             }),
+            Self::PcSetup(c) => json!({
+                "attempt_id": c.attempt_id,
+                "sid_hash": b64u_encode(&c.sid_hash),
+                "client_description": c.client_description,
+                "session_created_at": c.session_created_at,
+                "place": c.place,
+            }),
         }
     }
 
@@ -350,6 +392,16 @@ impl CanonicalContext {
                 new_key_hash: hash_field(m, "new_key_hash")?,
                 attestation_challenge: hash_field(m, "attestation_challenge")?,
                 subject_username: str_field(m, "subject_username")?.to_owned(),
+            }),
+            Kind::PcSetup => Self::PcSetup(PcSetupContext {
+                attempt_id: uuid_field(m, "attempt_id")?,
+                sid_hash: hash_field(m, "sid_hash")?,
+                client_description: str_field(m, "client_description")?.to_owned(),
+                session_created_at: m
+                    .get("session_created_at")
+                    .and_then(Value::as_i64)
+                    .ok_or(ContextError("session_created_at"))?,
+                place: str_field(m, "place")?.to_owned(),
             }),
         })
     }

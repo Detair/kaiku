@@ -10,6 +10,7 @@ pub mod devices;
 pub mod enrollments;
 pub mod error;
 pub mod handlers;
+pub mod pc_setup;
 pub mod secrets;
 pub mod signing;
 pub mod transition;
