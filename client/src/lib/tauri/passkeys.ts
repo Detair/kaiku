@@ -92,8 +92,8 @@ function attemptId(): string {
 async function invokeCancellable<T>(
   run: (attemptId: string) => Promise<T>,
   signal: AbortSignal,
+  id: string = attemptId(),
 ): Promise<T> {
-  const id = attemptId();
   const onAbort = () => {
     void invoke("passkey_cancel", { attemptId: id }).catch(() => undefined);
   };
@@ -328,6 +328,22 @@ export async function stepUpWithPasskey(
   } catch (err) {
     throw serverError(err, cred, start.options.publicKey.rpId as string | undefined);
   }
+}
+
+/**
+ * "Set up this PC" on the desktop: Rust starts the `pc_setup` flow for the
+ * server's attempt, opens the system browser (the code is typed and the
+ * passkey created there) and redeems the result, which carries no session.
+ * The server's attempt id doubles as the cancel handle. Desktop only.
+ */
+export async function setUpThisPcInBrowser(pcSetupAttemptId: string, signal: AbortSignal): Promise<void> {
+  if (!isTauri()) throw new PasskeyError("PASSKEY_NOT_SUPPORTED");
+  const { baseUrl } = await getAuthContext();
+  return invokeCancellable(
+    (id) => invoke<void>("passkey_pc_setup", { serverUrl: baseUrl, attemptId: id }),
+    signal,
+    pcSetupAttemptId,
+  );
 }
 
 /** Whether this client can run a passkey ceremony (desktop: the system browser). */

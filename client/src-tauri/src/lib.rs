@@ -155,6 +155,7 @@ pub fn run() {
             commands::pre_session::pre_session_request,
             commands::passkey::passkey_sign_in,
             commands::passkey::passkey_step_up,
+            commands::passkey::passkey_pc_setup,
             commands::passkey::passkey_cancel,
             // Voice commands
             commands::voice::join_voice,

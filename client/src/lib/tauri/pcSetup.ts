@@ -66,10 +66,13 @@ export function currentPcSetup(): Promise<PcSetupStatus> {
   return httpRequest<PcSetupStatus>("GET", "/auth/pc-setups/current");
 }
 
-/** Long-poll (`wait` 0..25 s); a `qr_payload` means the code rotated. */
-export function pollPcSetup(id: string, wait: number): Promise<PcSetupStatus> {
+/**
+ * Long-poll (`wait` 0..25 s); a `qr_payload` means the code rotated. `signal`
+ * closes the request: a long-poll holds a server slot until it ends.
+ */
+export function pollPcSetup(id: string, wait: number, signal?: AbortSignal): Promise<PcSetupStatus> {
   const w = Math.max(0, Math.min(25, Math.round(wait)));
-  return httpRequest<PcSetupStatus>("GET", `${base(id)}?wait=${w}`);
+  return httpRequest<PcSetupStatus>("GET", `${base(id)}?wait=${w}`, undefined, signal);
 }
 
 export async function cancelPcSetup(id: string): Promise<void> {
@@ -81,7 +84,7 @@ export function enterPcSetupCode(id: string, code: string): Promise<PcSetupCodeR
   return httpRequest<PcSetupCodeResult>("POST", `${base(id)}/code`, { code });
 }
 
-/** Browser only: start the registration of the attempt's passkey (`enrolled`). */
+/** Browser only (the desktop app runs `passkey_pc_setup`): start the registration of the attempt's passkey (`enrolled`). */
 export function startPcSetupPasskey(id: string): Promise<PcSetupPasskeyStart> {
   return httpRequest<PcSetupPasskeyStart>("POST", `${base(id)}/passkey/start`, {});
 }

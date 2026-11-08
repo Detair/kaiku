@@ -18,7 +18,7 @@ import { plural, t, type MessageKey } from "@/i18n";
 import { errorText } from "@/i18n/errors";
 import { codeIs } from "@/lib/errorCode";
 import { PASSKEY_ERRORS, passkeyFailureText } from "@/lib/authErrors";
-import { HttpError } from "@/lib/tauri/common";
+import { HttpError, isTauri } from "@/lib/tauri/common";
 import { createPasskeyCredential } from "@/lib/tauri/passkeys";
 import {
   LIVE_PC_SETUP_STATES,
@@ -37,6 +37,7 @@ import DialogShell from "./DialogShell";
 import QrCodeImage from "./QrCodeImage";
 import CodeEntry from "./CodeEntry";
 import LinuxPasskeyHint from "./LinuxPasskeyHint";
+import { DESKTOP_PLATFORM } from "./SetUpThisPcDesktop";
 
 /** Never poll closer than this, however fast the server answers. */
 export const MIN_POLL_GAP_MS = 1_000;
@@ -209,7 +210,7 @@ export interface SetUpThisPcProps {
 }
 
 const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
-  const platform = () => props.platform ?? WEB_PLATFORM;
+  const platform = () => props.platform ?? (isTauri() ? DESKTOP_PLATFORM : WEB_PLATFORM);
   const [status, setStatus] = createSignal<PcSetupStatus | null>(null);
   const [qr, setQr] = createSignal("");
   const [starting, setStarting] = createSignal(true);
@@ -220,6 +221,8 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   /** Bumped by every start, restart and the unmount: older loops and answers stop. */
   let generation = 0;
   let signIn: AbortController | null = null;
+  /** The open long-poll: ended by a restart and by the unmount (it holds a server slot). */
+  let polling: AbortController | null = null;
 
   const apply = (res: PcSetupStatus) => {
     // A late answer must not take back a code the person just entered.
@@ -240,8 +243,10 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
       if (!current || !isLive(current)) return;
       const began = Date.now();
       let pause = 0;
+      const ctl = new AbortController();
+      polling = ctl;
       try {
-        const res = await pollPcSetup(current.attempt_id, POLL_WAIT_S);
+        const res = await pollPcSetup(current.attempt_id, POLL_WAIT_S, ctl.signal);
         if (mine !== generation) return;
         setOffline(false);
         apply(res);
@@ -253,6 +258,8 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
         }
         setOffline(true);
         pause = POLL_RETRY_MS;
+      } finally {
+        if (polling === ctl) polling = null;
       }
       pause = Math.max(pause, MIN_POLL_GAP_MS - (Date.now() - began));
       if (pause > 0) await sleep(pause);
@@ -261,6 +268,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
 
   const begin = async () => {
     const mine = ++generation;
+    polling?.abort();
     setStatus(null);
     setQr("");
     setStartError(null);
@@ -285,6 +293,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
   /** Pick up the session's live attempt (a reload), else start a new one. */
   const resumeOrBegin = async () => {
     const mine = ++generation;
+    polling?.abort();
     try {
       const res = await currentPcSetup();
       if (mine !== generation) return;
@@ -305,6 +314,7 @@ const SetUpThisPc: Component<SetUpThisPcProps> = (props) => {
 
   onCleanup(() => {
     generation++;
+    polling?.abort();
     signIn?.abort();
     // Closing the dialog gives a live attempt up.
     const s = status();

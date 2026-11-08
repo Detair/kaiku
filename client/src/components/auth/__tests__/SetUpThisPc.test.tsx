@@ -15,10 +15,15 @@ const pc = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/tauri/pcSetup", async (orig) => ({ ...(await orig<object>()), ...pc }));
 
+const tauri = vi.hoisted(() => ({ on: false }));
+vi.mock("@/lib/tauri/common", async (orig) => ({ ...(await orig<object>()), isTauri: () => tauri.on }));
+
 const createPasskeyCredential = vi.hoisted(() => vi.fn());
+const setUpThisPcInBrowser = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/tauri/passkeys", async (orig) => ({
   ...(await orig<object>()),
   createPasskeyCredential,
+  setUpThisPcInBrowser,
   canUsePasskeys: () => true,
 }));
 
@@ -87,6 +92,8 @@ function polls(...answers: object[]) {
 beforeEach(() => {
   for (const f of Object.values(pc)) f.mockReset();
   createPasskeyCredential.mockReset();
+  setUpThisPcInBrowser.mockReset();
+  tauri.on = false;
   replaceSessionWithPasskey.mockReset();
   getMeSecurity.mockReset();
   resetMeSecurity();
@@ -177,7 +184,7 @@ describe("the dialog", () => {
     render(() => <SetUpThisPc onClose={vi.fn()} />);
     expect(await screen.findByText(/Confirm on your phone to continue/)).toBeTruthy();
     expect(pc.startPcSetup).not.toHaveBeenCalled();
-    expect(pc.pollPcSetup).toHaveBeenCalledWith(ID, expect.any(Number));
+    expect(pc.pollPcSetup).toHaveBeenCalledWith(ID, expect.any(Number), expect.any(AbortSignal));
   });
 
   it("a start the server refuses says to ask the admin", async () => {
@@ -326,5 +333,116 @@ describe("code and passkey on the web", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Create a passkey" }));
     expect(await screen.findByRole("alert")).toBeTruthy();
     expect(pc.finishPcSetupPasskey).not.toHaveBeenCalled();
+  });
+});
+
+describe("the long-poll is closed", () => {
+  /** Polls that stay open until their signal aborts, like the real request. */
+  function openPolls() {
+    const open = new Set<AbortSignal>();
+    pc.pollPcSetup.mockReset();
+    pc.pollPcSetup.mockImplementation(
+      (_id: string, _wait: number, signal?: AbortSignal) =>
+        new Promise((_, reject) => {
+          if (!signal) return;
+          open.add(signal);
+          signal.addEventListener("abort", () => {
+            open.delete(signal);
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }),
+    );
+    return open;
+  }
+
+  it("no poll request stays open after unmount", async () => {
+    const open = openPolls();
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await waitFor(() => expect(open.size).toBe(1));
+    cleanup();
+    expect(open.size).toBe(0);
+  });
+
+  it("no poll request stays open after Start again", async () => {
+    const open = openPolls();
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    await waitFor(() => expect(open.size).toBe(1));
+    const first = [...open][0];
+    pc.startPcSetup.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    await waitFor(() => expect(first.aborted).toBe(true));
+    await waitFor(() => expect(pc.startPcSetup).toHaveBeenCalledOnce());
+    // Only the new attempt's poll is open.
+    await waitFor(() => expect(open.size).toBe(1));
+    expect(open.has(first)).toBe(false);
+  });
+});
+
+describe("on the desktop", () => {
+  beforeEach(() => {
+    tauri.on = true;
+  });
+
+  it("shows no keypad, says to type the code in the browser, and waits for the click", async () => {
+    await openAt("code");
+    expect(await screen.findByText("Type the code in your browser")).toBeTruthy();
+    expect(screen.queryByLabelText("Code from your phone")).toBeNull();
+    expect(setUpThisPcInBrowser).not.toHaveBeenCalled();
+  });
+
+  it("opening the browser drives the pc_setup flow and ends on the sign-in step", async () => {
+    await openAt("code");
+    let finish: () => void = () => undefined;
+    setUpThisPcInBrowser.mockImplementation(() => new Promise<void>((r) => (finish = r)));
+    fireEvent.click(await screen.findByRole("button", { name: "Open the browser" }));
+    expect(setUpThisPcInBrowser).toHaveBeenCalledWith(ID, expect.any(AbortSignal));
+    await screen.findByText(/Waiting for your browser/);
+    finish();
+    expect(await screen.findByRole("button", { name: "Sign in with your passkey" })).toBeTruthy();
+  });
+
+  it("the flow survives the switch from code to enrolled and ends with the dialog", async () => {
+    polls(status("code"), status("enrolled"));
+    let signal: AbortSignal | undefined;
+    setUpThisPcInBrowser.mockImplementation((_id: string, s: AbortSignal) => {
+      signal = s;
+      return never();
+    });
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open the browser" }));
+    await screen.findByText("The code was right. Now create a passkey on this computer.");
+    expect(signal?.aborted).toBe(false);
+    cleanup();
+    await Promise.resolve();
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("a flow that failed in state code can be opened again", async () => {
+    await openAt("code");
+    setUpThisPcInBrowser.mockRejectedValueOnce(new PasskeyError("PASSKEY_CANCELLED"));
+    fireEvent.click(await screen.findByRole("button", { name: "Open the browser" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    setUpThisPcInBrowser.mockImplementation(never);
+    fireEvent.click(screen.getByRole("button", { name: "Open the browser" }));
+    await waitFor(() => expect(setUpThisPcInBrowser).toHaveBeenCalledTimes(2));
+  });
+
+  it("after a restart, an enrolled attempt starts no flow and offers Start again", async () => {
+    pc.currentPcSetup.mockResolvedValue(status("enrolled", null, { enrollment_id: "e1" }));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    expect(await screen.findByText("The browser step was interrupted. Use Start again.")).toBeTruthy();
+    expect(setUpThisPcInBrowser).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Create a passkey" })).toBeNull();
+    pc.startPcSetup.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
+    await waitFor(() => expect(pc.startPcSetup).toHaveBeenCalledOnce());
+  });
+
+  it("after a restart, a code attempt starts no flow until the person opens the browser", async () => {
+    pc.currentPcSetup.mockResolvedValue(status("code"));
+    render(() => <SetUpThisPc onClose={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: "Open the browser" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Start again" })).toBeTruthy();
+    expect(setUpThisPcInBrowser).not.toHaveBeenCalled();
   });
 });
