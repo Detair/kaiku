@@ -369,7 +369,10 @@ impl CanonicalContext {
                 enrollment_id: uuid_field(m, "enrollment_id")?,
                 subject_id: uuid_field(m, "subject_id")?,
                 subject_username: str_field(m, "subject_username")?.to_owned(),
+                // `pc_setup` is a variant of enrolment rows, never of an
+                // `enroll` challenge.
                 variant: EnrollVariant::parse(str_field(m, "variant")?)
+                    .filter(|v| *v != EnrollVariant::PcSetup)
                     .ok_or(ContextError("variant"))?,
                 authenticator_type: AuthenticatorType::parse(str_field(m, "authenticator_type")?)
                     .ok_or(ContextError("authenticator_type"))?,

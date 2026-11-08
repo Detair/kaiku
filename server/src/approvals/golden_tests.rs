@@ -578,3 +578,12 @@ fn pc_setup_context_json_round_trips() {
     bad.as_object_mut().unwrap().remove("place");
     assert!(CanonicalContext::from_json(Kind::PcSetup, &bad).is_err());
 }
+
+#[test]
+fn enroll_challenge_refuses_the_pc_setup_variant() {
+    let g = load();
+    let mut ctx = vector(&g, "V02")["context"].clone();
+    assert!(CanonicalContext::from_json(Kind::Enroll, &ctx).is_ok());
+    ctx["variant"] = Value::String("pc_setup".into());
+    assert!(CanonicalContext::from_json(Kind::Enroll, &ctx).is_err());
+}

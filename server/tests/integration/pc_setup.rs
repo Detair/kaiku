@@ -259,22 +259,21 @@ async fn one_live_attempt_per_session(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn attempt_states_follow_sm5(_pool: PgPool) {
-    let live: Vec<_> = AttemptState::ALL
-        .into_iter()
-        .filter(|s| !s.is_terminal())
-        .collect();
-    assert_eq!(
-        live,
-        [
-            AttemptState::Waiting,
-            AttemptState::Claimed,
-            AttemptState::Code,
-            AttemptState::Enrolled
-        ]
-    );
-    for s in AttemptState::ALL {
-        assert_eq!(AttemptState::parse(s.as_str()), Some(s));
-    }
-    assert_eq!(AttemptState::parse("approved"), None);
+async fn deleting_the_session_row_leaves_the_attempt_alone(pool: PgPool) {
+    let (user, _) = create_test_user(&pool).await;
+    let sid = probation_session(&pool, user).await;
+    let id = insert_attempt(&pool, user, sid, "waiting").await.unwrap();
+    // Logout and refresh delete the session row without the account lock.
+    sqlx::query("DELETE FROM sessions WHERE id = $1")
+        .bind(sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (state, session): (String, Uuid) =
+        sqlx::query_as("SELECT state, session_id FROM pc_setup_attempts WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .expect("attempt row survives");
+    assert_eq!((state.as_str(), session), ("waiting", sid));
 }

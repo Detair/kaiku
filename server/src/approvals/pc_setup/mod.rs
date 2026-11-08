@@ -90,3 +90,29 @@ impl AttemptState {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attempt_states_follow_sm5() {
+        let live: Vec<_> = AttemptState::ALL
+            .into_iter()
+            .filter(|s| !s.is_terminal())
+            .collect();
+        assert_eq!(
+            live,
+            [
+                AttemptState::Waiting,
+                AttemptState::Claimed,
+                AttemptState::Code,
+                AttemptState::Enrolled
+            ]
+        );
+        for s in AttemptState::ALL {
+            assert_eq!(AttemptState::parse(s.as_str()), Some(s));
+        }
+        assert_eq!(AttemptState::parse("approved"), None);
+    }
+}

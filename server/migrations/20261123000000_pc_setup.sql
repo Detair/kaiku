@@ -12,7 +12,10 @@ CREATE TABLE pc_setup_attempts (
     id UUID PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     -- The requesting probation session; every attempt route is bound to it.
-    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    -- No foreign key, like `enrollments.issuer_session_id`: logout and refresh
+    -- delete session rows without the account lock and must not touch an
+    -- attempt (Locking 1). Liveness is re-checked under the lock (Locking 2).
+    session_id UUID NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('waiting', 'claimed', 'code', 'enrolled', 'completed',
                                          'refused', 'reported', 'failed', 'cancelled', 'expired')),
     -- Why the attempt ended, readable by the PC (for example `session_ended`).
@@ -22,7 +25,9 @@ CREATE TABLE pc_setup_attempts (
     qr_rotates_at TIMESTAMPTZ,
     -- The `pc_setup` challenge of the scan (TTL 2 min).
     challenge_id UUID REFERENCES approvals(id) ON DELETE SET NULL,
-    -- `approval_devices.id` of the scanning key device.
+    -- `approval_devices.id` of the scanning key device. Device rows are only
+    -- soft-revoked, never deleted (apart from the account's own cascade), so
+    -- this key never fires in a path without the account lock.
     device_id UUID REFERENCES approval_devices(id) ON DELETE SET NULL,
     -- Keyed hash of the 6-digit code, 5 minutes from the approval, 3 tries.
     code_hash BYTEA CHECK (code_hash IS NULL OR octet_length(code_hash) = 32),
