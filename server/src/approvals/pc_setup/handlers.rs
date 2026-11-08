@@ -135,19 +135,48 @@ fn status(origin: &str, a: &AttemptRow, minted: Option<&Secret256>) -> PcSetupSt
     }
 }
 
-/// Commit after a result: the effect on success; after a refusal the lazy
-/// marks the locks left (an expired attempt, a void challenge), as the sweep
-/// would. A database error rolls back.
+/// The refusals a transition gives from its checks, before its first
+/// effect: after them the transaction holds only the lazy marks of
+/// `lock_attempt` (an expired attempt, a void challenge), which are kept as
+/// the sweep would keep them. Every other error (a database or internal
+/// error, possibly after an effect) rolls back.
+const fn keeps_marks(e: &ApprovalError) -> bool {
+    matches!(
+        e,
+        ApprovalError::NotFound
+            | ApprovalError::State
+            | ApprovalError::Expired
+            | ApprovalError::SignatureInvalid
+            | ApprovalError::NotAllowed
+            | ApprovalError::KeyDeviceRequired
+            | ApprovalError::AccountBanned
+            | ApprovalError::LoginCodeStale
+            | ApprovalError::LoginAttemptClaimed
+            | ApprovalError::PcSetupOtherAccount
+            | ApprovalError::PcSetupUnavailable
+            | ApprovalError::ResponseMismatch
+            | ApprovalError::Validation(_)
+            | ApprovalError::Auth(crate::auth::AuthError::InvalidToken)
+    )
+}
+
+/// Commit on success and after a check's refusal ([`keeps_marks`]); roll
+/// back after anything else.
 async fn settle<T>(
     tx: Transaction<'_, Postgres>,
     result: Result<T, ApprovalError>,
 ) -> Result<T, ApprovalError> {
     match result {
-        Err(e @ ApprovalError::Database(_)) => Err(e),
-        other => {
+        Ok(v) => {
             tx.commit().await?;
-            other
+            Ok(v)
         }
+        Err(e) if keeps_marks(&e) => {
+            tx.commit().await?;
+            Err(e)
+        }
+        // Dropping the transaction rolls it back.
+        Err(e) => Err(e),
     }
 }
 
@@ -440,4 +469,37 @@ pub async fn phone_poll(
         state: row.state,
         reason: row.reason,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::AuthError;
+
+    #[test]
+    fn only_check_refusals_keep_the_lazy_marks() {
+        for e in [
+            ApprovalError::NotFound,
+            ApprovalError::State,
+            ApprovalError::Expired,
+            ApprovalError::SignatureInvalid,
+            ApprovalError::NotAllowed,
+            ApprovalError::LoginCodeStale,
+            ApprovalError::PcSetupOtherAccount,
+            ApprovalError::ResponseMismatch,
+            ApprovalError::Auth(AuthError::InvalidToken),
+        ] {
+            assert!(keeps_marks(&e), "{e:?}");
+        }
+        // Errors that can follow an effect (a report's session end, its
+        // event) roll the whole transition back.
+        for e in [
+            ApprovalError::Database(sqlx::Error::RowNotFound),
+            ApprovalError::Auth(AuthError::Internal("notify".into())),
+            ApprovalError::Auth(AuthError::Database(sqlx::Error::PoolTimedOut)),
+            ApprovalError::Unavailable,
+        ] {
+            assert!(!keeps_marks(&e), "{e:?}");
+        }
+    }
 }

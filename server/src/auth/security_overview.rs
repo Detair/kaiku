@@ -92,6 +92,7 @@ pub async fn overview(
         },
     );
     let probation = session.assurance != "full";
+    let can_set_up_this_pc = crate::approvals::pc_setup::transition::can_start(conn, auth).await?;
     let totp_state = st.has_totp.then_some(st.totp.state);
     let mut prompts = Vec::new();
     let mut push = |p: &str, on: bool| {
@@ -127,7 +128,7 @@ pub async fn overview(
         key_devices,
         passkeys,
         may_approve,
-        can_set_up_this_pc: probation && may_approve && key_devices > 0,
+        can_set_up_this_pc,
         bootstrap_open: st.bootstrap_open,
         recovery_contact,
         open_request,

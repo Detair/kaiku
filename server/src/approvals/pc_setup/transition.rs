@@ -445,6 +445,61 @@ async fn needs_lock(conn: &mut PgConnection, id: Uuid, rotation: bool) -> sqlx::
 // PC side
 // ============================================================================
 
+/// What [`start_tx`] (under the locks) and the security overview's
+/// `can_set_up_this_pc` (without them) decide on: one predicate, so the
+/// button shows exactly when a start would be accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct Eligibility {
+    pub probation_session: bool,
+    pub banned: bool,
+    pub may_approve: bool,
+    pub active_key_device: bool,
+}
+
+impl Eligibility {
+    #[must_use]
+    pub const fn allows_start(self) -> bool {
+        self.probation_session && !self.banned && self.may_approve && self.active_key_device
+    }
+}
+
+/// The request's session if it is a real session with a probation snapshot
+/// (a legacy request without one never starts an attempt).
+#[must_use]
+pub fn probation_sid(auth: &AuthUser) -> Option<Uuid> {
+    match (auth.session_id, auth.session.as_ref()) {
+        (Some(sid), Some(s)) if s.assurance == Assurance::Probation => Some(sid),
+        _ => None,
+    }
+}
+
+/// `can_set_up_this_pc`: whether [`start_tx`] would accept `auth` now (read
+/// without locks; the start re-checks under them).
+pub async fn can_start(conn: &mut PgConnection, auth: &AuthUser) -> sqlx::Result<bool> {
+    if probation_sid(auth).is_none() {
+        return Ok(false);
+    }
+    let (banned, may_approve): (bool, bool) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM global_bans gb
+                         WHERE gb.user_id = u.id
+                           AND (gb.expires_at IS NULL OR gb.expires_at > NOW())),
+                u.may_approve
+           FROM users u WHERE u.id = $1",
+    )
+    .bind(auth.id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or((true, false));
+    Ok(Eligibility {
+        probation_session: true,
+        banned,
+        may_approve,
+        active_key_device: has_active_device(conn, auth.id).await?,
+    }
+    .allows_start())
+}
+
 /// A new attempt and its first QR token.
 #[derive(Debug)]
 pub struct Started {
@@ -464,10 +519,7 @@ pub async fn start_tx(
     ctx: &AuthCtx<'_>,
     auth: &AuthUser,
 ) -> Result<Started, ApprovalError> {
-    let sid = auth.session_id.ok_or(ApprovalError::PcSetupUnavailable)?;
-    if auth.assurance() != Assurance::Probation {
-        return Err(ApprovalError::PcSetupUnavailable);
-    }
+    let sid = probation_sid(auth).ok_or(ApprovalError::PcSetupUnavailable)?;
     let account = lock_accounts(conn, &[auth.id])
         .await?
         .remove(&auth.id)
@@ -476,11 +528,13 @@ pub async fn start_tx(
     let Some(session) = session.filter(|s| s.live) else {
         return Err(crate::auth::AuthError::InvalidToken.into());
     };
-    if Assurance::parse(&session.assurance) != Assurance::Probation
-        || account.banned
-        || !account.may_approve
-        || !has_active_device(conn, auth.id).await?
-    {
+    let eligible = Eligibility {
+        probation_session: Assurance::parse(&session.assurance) == Assurance::Probation,
+        banned: account.banned,
+        may_approve: account.may_approve,
+        active_key_device: has_active_device(conn, auth.id).await?,
+    };
+    if !eligible.allows_start() {
         return Err(ApprovalError::PcSetupUnavailable);
     }
     let previous: Option<Uuid> = sqlx::query_scalar(
@@ -807,8 +861,7 @@ pub async fn lock_for_phone(
     })
 }
 
-/// The result of a signed answer.
-#[derive(Debug)]
+/// The result of a signed answer. `Debug` never shows the code.
 pub enum Answered {
     /// `claimed → code`: the code goes to the phone only.
     Approved {
@@ -818,6 +871,27 @@ pub enum Answered {
     },
     /// `claimed → reported`: the requesting session ended; deliver `events`.
     Reported { attempt_id: Uuid, events: Vec<Uuid> },
+}
+
+impl std::fmt::Debug for Answered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Approved {
+                attempt_id,
+                code_expires_at,
+                ..
+            } => f
+                .debug_struct("Approved")
+                .field("attempt_id", attempt_id)
+                .field("code_expires_at", code_expires_at)
+                .finish_non_exhaustive(),
+            Self::Reported { attempt_id, events } => f
+                .debug_struct("Reported")
+                .field("attempt_id", attempt_id)
+                .field("events", events)
+                .finish(),
+        }
+    }
 }
 
 /// Answer a `pc_setup` challenge with a UV signature (B.2: the response is
@@ -918,8 +992,10 @@ pub async fn answer_tx(
                 user,
                 EventType::PcSetupReported,
                 Actor::User(user),
+                // The requesting session: its sign-in carries "That wasn't me".
                 serde_json::json!({
                     "attempt_id": attempt_id,
+                    "requesting_sid": sid,
                     "client_description": description,
                 }),
             );
@@ -1023,19 +1099,27 @@ pub async fn expire_due(db: &PgPool) -> Result<u64, ApprovalError> {
     .await?;
     let mut ended = 0;
     for id in ids {
-        let mut tx = db.begin().await?;
-        let locked = match lock_attempt(&mut tx, id).await {
-            Ok(locked) => locked,
-            // Its account was deleted in between.
-            Err(ApprovalError::NotFound) => continue,
-            Err(e) => return Err(e),
-        };
-        tx.commit().await?;
-        if locked.ended_now.is_some() {
-            ended += 1;
+        match sweep_one(db, id).await {
+            Ok(true) => ended += 1,
+            Ok(false) => {}
+            // One row's failure never stops the others; the next minute retries.
+            Err(e) => tracing::warn!(attempt_id = %id, error = %e, "pc setup sweep step failed"),
         }
     }
     Ok(ended)
+}
+
+/// One attempt of the sweep in its own transaction; whether it ended now.
+async fn sweep_one(db: &PgPool, id: Uuid) -> Result<bool, ApprovalError> {
+    let mut tx = db.begin().await?;
+    let locked = match lock_attempt(&mut tx, id).await {
+        Ok(locked) => locked,
+        // Its account was deleted in between.
+        Err(ApprovalError::NotFound) => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    tx.commit().await?;
+    Ok(locked.ended_now.is_some())
 }
 
 /// The rotation deadline of a freshly minted token, for the wire.
@@ -1043,4 +1127,49 @@ pub async fn expire_due(db: &PgPool) -> Result<u64, ApprovalError> {
 pub fn rotates_at(a: &AttemptRow) -> DateTime<Utc> {
     a.qr_rotates_at
         .unwrap_or_else(|| Utc::now() + Duration::seconds(QR_ROTATE_SECS))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn answered_debug_never_shows_the_code() {
+        let a = Answered::Approved {
+            attempt_id: Uuid::nil(),
+            code: "493817".into(),
+            code_expires_at: Utc::now(),
+        };
+        let shown = format!("{a:?}");
+        assert!(!shown.contains("493817"), "{shown}");
+        assert!(shown.contains("Approved"), "{shown}");
+    }
+
+    #[test]
+    fn eligibility_needs_every_condition() {
+        let ok = Eligibility {
+            probation_session: true,
+            banned: false,
+            may_approve: true,
+            active_key_device: true,
+        };
+        assert!(ok.allows_start());
+        for e in [
+            Eligibility {
+                probation_session: false,
+                ..ok
+            },
+            Eligibility { banned: true, ..ok },
+            Eligibility {
+                may_approve: false,
+                ..ok
+            },
+            Eligibility {
+                active_key_device: false,
+                ..ok
+            },
+        ] {
+            assert!(!e.allows_start(), "{e:?}");
+        }
+    }
 }

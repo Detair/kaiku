@@ -743,8 +743,12 @@ async fn challenge_expiry_returns_to_waiting(pool: PgPool) {
     let (_, st) = pc_poll(&p, &id).await;
     assert_eq!(st["state"], "waiting", "{st}");
     let (token, _) = qr_token(&st["qr_payload"]);
-    let (s, _) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
-    assert!(s == 409 || s == 410, "{s}");
+    let (s, body) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (410, Some("APPROVAL_EXPIRED")),
+        "{body}"
+    );
     // A new scan works, and the phone's own release returns to waiting too.
     let (s, c2) = claim(&p.app, &p.dev, &token).await;
     assert_eq!(s, 201, "{c2}");
@@ -965,6 +969,19 @@ async fn report_ends_only_the_requesting_session_and_marks_no_credential(pool: P
     .await
     .unwrap();
     assert_eq!(reported, 1);
+    let details: Value = sqlx::query_scalar(
+        "SELECT details FROM security_events WHERE subject_id = $1 AND event_type = 'pc_setup_reported'",
+    )
+    .bind(p.user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        details["requesting_sid"].as_str(),
+        Some(p.sid.to_string().as_str()),
+        "{details}"
+    );
+    assert_eq!(details["attempt_id"].as_str(), Some(id.as_str()));
     let challenge: String = sqlx::query_scalar("SELECT state FROM approvals WHERE id = $1::uuid")
         .bind(c["challenge_id"].as_str().unwrap())
         .fetch_one(&pool)
@@ -1023,7 +1040,11 @@ async fn session_ended_or_device_revoked_stops_every_transition(pool: PgPool) {
     let (id, c, bytes) = claimed(&p).await;
     end_session(&pool, p.sid).await;
     let (s, body) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
-    assert!(s == 409 || s == 410, "{s} {body}");
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{body}"
+    );
     assert!(body.get("code").is_none());
     assert_eq!(
         attempt_state(&pool, &id).await,
@@ -1056,7 +1077,11 @@ async fn session_ended_or_device_revoked_stops_every_transition(pool: PgPool) {
     .await
     .unwrap();
     let (s, body) = answer(&p.app, &p.dev, &c, &bytes, Decision::Report).await;
-    assert!(s >= 400, "{s} {body}");
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (409, Some("APPROVAL_STATE")),
+        "{body}"
+    );
     assert_eq!(
         attempt_state(&pool, &id).await,
         ("expired".into(), Some("device_revoked".into()))
@@ -1197,7 +1222,11 @@ async fn fresh_start_restarts_the_live_attempt(pool: PgPool) {
     assert_eq!(st, "expired");
     // The old approval goes nowhere.
     let (s, body) = answer(&p.app, &p.dev, &c, &bytes, Decision::Approve).await;
-    assert!(s == 409 || s == 410, "{s} {body}");
+    assert_eq!(
+        (s, body["error"].as_str()),
+        (410, Some("APPROVAL_EXPIRED")),
+        "{body}"
+    );
     // The PC's cancel ends the new one.
     let (s, _) = call(
         &p.app,
@@ -1275,5 +1304,63 @@ async fn answer_waits_for_the_account_lock_and_sees_the_session_end(pool: PgPool
     assert_eq!(
         attempt_state(&pool, &id).await,
         ("expired".into(), Some("session_ended".into()))
+    );
+}
+
+/// `can_set_up_this_pc` is true exactly when a start would be accepted: never
+/// for a request without a real session snapshot (a legacy token), never for
+/// a banned account.
+#[sqlx::test]
+async fn can_set_up_this_pc_matches_what_start_accepts(pool: PgPool) {
+    let p = pc(&pool).await;
+    let ctx = vc_server::auth::ctx::AuthCtx::from(&p.app.state);
+    let mut conn = pool.acquire().await.unwrap();
+    let auth = super::helpers::login::auth_user(&p.app, p.sid).await;
+    let overview = vc_server::auth::security_overview::overview(&mut conn, &ctx, &auth)
+        .await
+        .unwrap();
+    assert!(overview.can_set_up_this_pc);
+
+    // A legacy request: no session id and no snapshot.
+    let mut legacy = auth.clone();
+    legacy.session_id = None;
+    legacy.session = None;
+    let overview = vc_server::auth::security_overview::overview(&mut conn, &ctx, &legacy)
+        .await
+        .unwrap();
+    assert!(!overview.can_set_up_this_pc);
+    let mut tx = pool.begin().await.unwrap();
+    let e = vc_server::approvals::pc_setup::transition::start_tx(&mut tx, &ctx, &legacy)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            e,
+            vc_server::approvals::error::ApprovalError::PcSetupUnavailable
+        ),
+        "{e:?}"
+    );
+    drop(tx);
+
+    // A banned account: neither the button nor the start.
+    sqlx::query("INSERT INTO global_bans (user_id, banned_by, reason) VALUES ($1, $1, 'test')")
+        .bind(p.user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let overview = vc_server::auth::security_overview::overview(&mut conn, &ctx, &auth)
+        .await
+        .unwrap();
+    assert!(!overview.can_set_up_this_pc);
+    let mut tx = pool.begin().await.unwrap();
+    let e = vc_server::approvals::pc_setup::transition::start_tx(&mut tx, &ctx, &auth)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            e,
+            vc_server::approvals::error::ApprovalError::PcSetupUnavailable
+        ),
+        "{e:?}"
     );
 }
