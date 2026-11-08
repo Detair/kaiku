@@ -351,6 +351,7 @@
     <string name="scan_old_kaiku_code">This code comes from an older Kaiku on the PC. Update Kaiku there.</string>
     <string name="scan_not_kaiku">This is not a Kaiku code.</string>
     <string name="scan_action">Scan</string>
+    <string name="scan_pc_setup_code_in_setup">This code is for setting up a computer. To set up this phone you need a setup code.</string>
 
     <!-- Confirming a PC sign-in on the key phone (F2, F3) -->
     <string name="approval_checking">Checking the code…</string>
@@ -380,6 +381,35 @@
     <string name="approval_other_account">This code belongs to another account.</string>
     <string name="approval_expired">That took too long. Scan the code again.</string>
     <string name="approval_mismatch">Something about this sign-in doesn\'t match. Nothing was confirmed.</string>
+
+    <!-- Set up this PC: the key phone confirms and shows the code -->
+    <string name="pc_setup_question">Give this computer full access to your account?</string>
+    <string name="pc_setup_field_signed_in">Signed in</string>
+    <string name="pc_setup_effect">It could change your sign-in methods and sign you out elsewhere.</string>
+    <string name="pc_setup_only_if">Only continue if you started this on a computer in front of you, and nobody asked you to.</string>
+    <string name="pc_setup_yes">Yes, continue</string>
+    <string name="pc_setup_end_session_title">End that computer\'s session?</string>
+    <string name="pc_setup_end_session_body">The computer that showed this code is signed out. Nothing else changes.</string>
+    <string name="pc_setup_end_session_yes">Yes, end it</string>
+    <string name="pc_setup_end_session_no">No, go back</string>
+    <string name="pc_setup_uv_approve">Give this computer access</string>
+    <string name="pc_setup_uv_report">End that computer\'s session</string>
+    <string name="pc_setup_code_title">Type this code on the computer in front of you.</string>
+    <string name="pc_setup_code_warning">Never tell it to anyone or type it on a site someone sent you.</string>
+    <string name="pc_setup_code_description">Code %1$s</string>
+    <string name="pc_setup_entered">Code accepted. Finish on the computer.</string>
+    <string name="pc_setup_done">Done. The computer has a passkey now.</string>
+    <string name="pc_setup_denied">Not confirmed. Nothing was changed.</string>
+    <string name="pc_setup_reported">Stopped. That computer\'s session was ended. Check the security log, and change your password if you are unsure.</string>
+    <string name="pc_setup_other_account">This computer is signed in with a different account.</string>
+    <string name="pc_setup_code_changed">This code isn\'t valid or has just changed. Scan the code on your computer again.</string>
+    <string name="pc_setup_already_claimed">Another phone is already confirming this.</string>
+    <string name="pc_setup_session_ended">That session has ended.</string>
+    <string name="pc_setup_too_many_codes">Too many wrong codes. Start again on the computer.</string>
+    <string name="pc_setup_code_expired">The code ran out of time. Start again on the computer.</string>
+    <string name="pc_setup_cancelled">Cancelled. Start again on the computer if you want to continue.</string>
+    <string name="pc_setup_answer_lost">The answer may not have arrived. Press Start again on the computer.</string>
+    <string name="pc_setup_failed">That didn\'t work. Start again on the computer.</string>
 
     <!-- Setting up this phone as a key (F5a, F5c, SM2) -->
     <string name="setup_title">Set up this phone</string>

@@ -29,6 +29,7 @@ import io.wolftown.kaiku.domain.ScanMode
 import io.wolftown.kaiku.navigation.ScanHandoff
 import io.wolftown.kaiku.ui.scan.ScanScreen
 import io.wolftown.kaiku.ui.approval.LoginApprovalScreen
+import io.wolftown.kaiku.ui.approval.PcSetupApprovalScreen
 import io.wolftown.kaiku.ui.approval.AddPhoneScreen
 import io.wolftown.kaiku.ui.approval.IssuerMode
 import io.wolftown.kaiku.ui.settings.security.SecuritySettingsScreen
@@ -345,6 +346,10 @@ fun KaikuNavGraph(
                                 launchSingleTop = true
                             }
                         },
+                        onPcSetup = { payload ->
+                            ScanHandoff.putPcSetup(payload)
+                            navController.navigate(APPROVE_PC_SETUP_ROUTE) { popUpTo(SCAN_ROUTE) { inclusive = true } }
+                        },
                         onBack = { navController.popBackStack() },
                     )
                 }
@@ -354,6 +359,16 @@ fun KaikuNavGraph(
                         takePayload = ScanHandoff::takeLogin,
                         onRescan = {
                             navController.navigate(SCAN_ROUTE) { popUpTo(APPROVE_LOGIN_ROUTE) { inclusive = true } }
+                        },
+                        onDone = { navController.popBackStack() },
+                    )
+                }
+
+                composable(APPROVE_PC_SETUP_ROUTE) {
+                    PcSetupApprovalScreen(
+                        takePayload = ScanHandoff::takePcSetup,
+                        onRescan = {
+                            navController.navigate(SCAN_ROUTE) { popUpTo(APPROVE_PC_SETUP_ROUTE) { inclusive = true } }
                         },
                         onDone = { navController.popBackStack() },
                     )
@@ -469,6 +484,9 @@ const val SCAN_SETUP_ROUTE = "scan_setup"
 /** Confirming a PC sign-in after a scan (Task B8). */
 const val APPROVE_LOGIN_ROUTE = "approve_login"
 
+/** Confirming "Set up this PC" after a scan. */
+const val APPROVE_PC_SETUP_ROUTE = "approve_pc_setup"
+
 /** Setting up this phone from a setup code or link (L2-A1). */
 const val SETUP_FLOW_ROUTE = "setup_flow"
 
@@ -489,7 +507,7 @@ const val OPEN_REQUEST_ROUTE = "open_request"
 
 /** Running ceremonies the open-request prompt never interrupts (it follows once they end). */
 val CEREMONY_ROUTES = setOf(
-    SCAN_ROUTE, APPROVE_LOGIN_ROUTE, ADD_PHONE_ROUTE, CONFIRM_RENEW_ROUTE, "admin/user/{userId}/setup",
+    SCAN_ROUTE, APPROVE_LOGIN_ROUTE, APPROVE_PC_SETUP_ROUTE, ADD_PHONE_ROUTE, CONFIRM_RENEW_ROUTE, "admin/user/{userId}/setup",
 )
 
 /** The small admin area on the admin's own key phone (F5c, coordinator call 1). */

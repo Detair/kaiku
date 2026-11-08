@@ -22,3 +22,20 @@ data class AnswerResult(
     val grant: StepUpGrant? = null,
     val enrollment: Enrollment? = null,
 )
+
+/**
+ * `POST /api/pc-setups/{id}/answer` → `{attempt_id, code?, code_expires_at?}`. An approval carries the
+ * six digits the person types on the PC; [toString] hides them.
+ */
+@Serializable
+data class PcSetupAnswer(
+    val attemptId: String,
+    val code: String? = null,
+    val codeExpiresAt: String? = null,
+) {
+    override fun toString() = "PcSetupAnswer(attemptId=$attemptId)"
+}
+
+/** `GET /api/pc-setups/{attempt_id}` → the SM5 `state` and why it ended. */
+@Serializable
+data class PcSetupPhoneStatus(val state: String, val reason: String? = null)

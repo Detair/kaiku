@@ -23,6 +23,7 @@ sealed interface ScanUi {
     data class Refused(@StringRes val msg: Int) : ScanUi
     data class OpenLogin(val payload: ScanPayload.Login) : ScanUi
     data class OpenSetup(val payload: ScanPayload.Setup) : ScanUi
+    data class OpenPcSetup(val payload: ScanPayload.PcSetup) : ScanUi
 }
 
 /**
@@ -68,6 +69,12 @@ class ScanViewModel internal constructor(
             !isKeyDevice() -> ScanUi.Refused(R.string.scan_not_a_key)
             mayApprove() == false -> ScanUi.Refused(R.string.scan_may_approve_off)
             else -> ScanUi.OpenLogin(p)
+        }
+        is ScanPayload.PcSetup -> when {
+            mode == ScanMode.SETUP_ONLY -> ScanUi.Refused(R.string.scan_pc_setup_code_in_setup)
+            !isKeyDevice() -> ScanUi.Refused(R.string.scan_not_a_key)
+            mayApprove() == false -> ScanUi.Refused(R.string.scan_may_approve_off)
+            else -> ScanUi.OpenPcSetup(p)
         }
         is ScanPayload.OtherServer -> ScanUi.Refused(R.string.scan_other_server)
         ScanPayload.NeedsUpdate -> ScanUi.Refused(R.string.scan_needs_update)
