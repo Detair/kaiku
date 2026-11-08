@@ -283,6 +283,9 @@ class PcSetupApprovalViewModel @Inject constructor(
         "cancelled", "expired" -> when (s.reason) {
             "session_ended" -> R.string.pc_setup_session_ended
             "code_expired" -> R.string.pc_setup_code_expired
+            // The passkey on the PC failed (too many, already registered) or never finished: never "Done".
+            "enrollment_expired", "too_many_codes", "device_revoked", "no_key_device", "account_banned" ->
+                R.string.pc_setup_failed
             "may_approve_off" -> R.string.scan_may_approve_off
             else -> R.string.pc_setup_cancelled
         }
@@ -314,6 +317,9 @@ class PcSetupApprovalViewModel @Inject constructor(
             val msg = status?.let(::endText)
             if (msg != null) return PcSetupUi.Finished(msg, ok = false)
         }
+        // The server refused the answer: free the claim so a re-scan is not "already confirming".
+        // A lost response (IOException) is not released: the answer may have been taken.
+        if (e is ApiException && e.status.value in 400..499) releaseQuietly(challenge?.challengeId ?: return errorFor(e))
         return errorFor(e)
     }
 

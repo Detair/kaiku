@@ -266,4 +266,54 @@ class PcSetupApprovalViewModelTest {
             "This code isn\\'t valid or has just changed. Scan the code on your computer again.",
         ).forEach { assertTrue(it, xml.contains(it)) }
     }
+
+    @Test fun `a failed passkey on the pc says it didn't work and never done`() = runTest {
+        listOf(PcSetupPhoneStatus("expired", "enrollment_expired"), PcSetupPhoneStatus("failed", "too_many_codes")).forEach { st ->
+            val (v, _) = vm()
+            api.pcStatuses.clear()
+            v.start(payload)
+            v.approve(activity)
+            api.pcStatuses.add(PcSetupPhoneStatus("enrolled"))
+            advanceTimeBy(1_100)
+            api.pcStatuses.add(st)
+            advanceTimeBy(1_000)
+            val ui = v.ui.value as PcSetupUi.Finished
+            assertFalse(ui.ok)
+            assertTrue(ui.msg != R.string.pc_setup_done)
+            if (st.reason == "enrollment_expired") assertEquals(R.string.pc_setup_failed, ui.msg)
+        }
+    }
+
+    @Test fun `enrolled keeps polling until a later end`() = runTest {
+        val (v, _) = vm()
+        v.start(payload)
+        v.approve(activity)
+        api.pcStatuses.add(PcSetupPhoneStatus("enrolled"))
+        advanceTimeBy(1_100)
+        assertEquals(PcSetupUi.Entered, v.ui.value)
+        val calls = api.pcStatusCalls
+        advanceTimeBy(3_000)
+        assertEquals(calls + 3, api.pcStatusCalls)
+        assertEquals(PcSetupUi.Entered, v.ui.value)
+        api.pcStatuses.add(PcSetupPhoneStatus("completed"))
+        advanceTimeBy(1_000)
+        assertEquals(PcSetupUi.Finished(R.string.pc_setup_done, ok = true), v.ui.value)
+    }
+
+    @Test fun `a refused answer releases the claim before offering scan again`() = runTest {
+        val (v, _) = vm()
+        api.pcAnswerFailure = apiError(400, "SIGNATURE_INVALID")
+        v.start(payload)
+        v.approve(activity)
+        assertEquals(PcSetupUi.Error(R.string.approval_mismatch, rescan = true), v.ui.value)
+        assertEquals("release:${SigFixtures.challengeId(16)}", api.calls.last())
+    }
+
+    @Test fun `a lost answer is not released`() = runTest {
+        val (v, _) = vm()
+        api.pcAnswerFailure = IOException("reset")
+        v.start(payload)
+        v.approve(activity)
+        assertTrue(api.calls.none { it.startsWith("release") })
+    }
 }
