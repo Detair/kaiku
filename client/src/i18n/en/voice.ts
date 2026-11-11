@@ -146,6 +146,7 @@ export const voice = {
   "voice.call.blocked": "You can't call this person.",
   "voice.call.startFailed": "Couldn't start the call. Please try again.",
   "voice.call.ended.default": "Call ended",
+  "voice.call.missed": "Missed call from {{name}}",
 
   "voice.toast.degraded": "Connection severely degraded",
   "voice.toast.unstable": "Your connection is unstable",

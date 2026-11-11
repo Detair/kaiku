@@ -1,8 +1,25 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/sound/ring", () => ({
   startRinging: vi.fn(),
   stopRinging: vi.fn(),
+}));
+
+vi.mock("@/components/ui/Toast", () => ({
+  showToast: vi.fn(),
+  dismissToast: vi.fn(),
+}));
+
+vi.mock("@/lib/tauri/common", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri/common")>()),
+  isTauri: vi.fn(() => false),
+}));
+
+vi.mock("@/lib/tauri", () => ({
+  leaveVoice: vi.fn().mockResolvedValue(undefined),
+  leaveVoiceSilently: vi.fn().mockResolvedValue(undefined),
+  joinVoice: vi.fn().mockResolvedValue(undefined),
+  leaveDMCall: vi.fn().mockResolvedValue(undefined),
 }));
 
 import {
@@ -21,7 +38,11 @@ import {
   abortOutgoingCall,
   connectOnFirstJoin,
   answeredElsewhere,
+  resyncCallAfterReconnect,
+  RING_CAP_MS,
 } from "../call";
+import { showToast } from "@/components/ui/Toast";
+import type { CallStateResponse } from "@/lib/types";
 import { stopRinging } from "@/lib/sound/ring";
 
 function reset() {
@@ -301,5 +322,203 @@ describe("answered on another device (C2)", () => {
     setCallState("currentCall", { status: "connecting", channelId: "dm-x" });
     answeredElsewhere("dm-x", "call-1");
     expect(callState.currentCall.status).toBe("connecting");
+  });
+});
+
+describe("local ring cap (C33)", () => {
+  beforeEach(() => {
+    reset();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("an incoming ring ends after 100 s and is shown as missed", () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    vi.advanceTimersByTime(RING_CAP_MS - 1);
+    expect(callState.currentCall.status).toBe("incoming_ringing");
+    vi.advanceTimersByTime(1);
+    expect(callState.currentCall.status).toBe("idle");
+    expect(stopRinging).toHaveBeenCalled();
+    expect(callState.activeCallsByChannel["dm-x"]).toBeUndefined();
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Missed call from Bob" }),
+    );
+    // Late events of that call are ignored now.
+    expect(isStaleCallEvent("dm-x", "call-1")).toBe(true);
+  });
+
+  it("an outgoing ring ends as no answer after 100 s", async () => {
+    const tauri = await import("@/lib/tauri");
+    startCall("dm-x");
+    vi.advanceTimersByTime(RING_CAP_MS);
+    expect(callState.currentCall).toMatchObject({ status: "ended", reason: "no_answer" });
+    await vi.runOnlyPendingTimersAsync();
+    expect(tauri.leaveDMCall).toHaveBeenCalledWith("dm-x");
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it("an answered ring is not capped", () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    setCallState("currentCall", { status: "connecting", channelId: "dm-x" });
+    vi.advanceTimersByTime(RING_CAP_MS);
+    expect(callState.currentCall.status).toBe("connecting");
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it("a new ring restarts the cap", () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    vi.advanceTimersByTime(60_000);
+    declineCall("dm-x");
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-2");
+    vi.advanceTimersByTime(60_000);
+    expect(callState.currentCall.status).toBe("incoming_ringing");
+    vi.advanceTimersByTime(40_000);
+    expect(callState.currentCall.status).toBe("idle");
+  });
+});
+
+describe("call resync after reconnect (C33)", () => {
+  beforeEach(() => {
+    reset();
+    vi.clearAllMocks();
+  });
+
+  const active = (participants: string[], callId = "call-1"): CallStateResponse => ({
+    channel_id: "dm-x",
+    call_id: callId,
+    status: "active",
+    participants,
+  });
+
+  it("a vanished incoming ring is cleared and shown as missed", async () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    await resyncCallAfterReconnect("me", async () => null);
+    expect(callState.currentCall.status).toBe("idle");
+    expect(stopRinging).toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Missed call from Bob" }),
+    );
+  });
+
+  it("a vanished outgoing ring clears silently", async () => {
+    startCall("dm-x");
+    await resyncCallAfterReconnect("me", async () => null);
+    expect(callState.currentCall.status).toBe("idle");
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it("an ended call clears a connected call and its voice", async () => {
+    const tauri = await import("@/lib/tauri");
+    setCallState("currentCall", { status: "connected", channelId: "dm-x", participants: ["u2"], startedAt: 1 });
+    await resyncCallAfterReconnect("me", async () => ({
+      channel_id: "dm-x",
+      call_id: "call-1",
+      status: "ended",
+    }));
+    expect(callState.currentCall.status).toBe("idle");
+    await vi.waitFor(() => expect(tauri.leaveVoiceSilently).toHaveBeenCalled());
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it("an incoming ring answered elsewhere in the gap stops ringing, not missed", async () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    await resyncCallAfterReconnect("me", async () => active(["u2", "me"]));
+    expect(callState.currentCall.status).toBe("idle");
+    expect(showToast).not.toHaveBeenCalled();
+  });
+
+  it("a still-ringing incoming call keeps ringing", async () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    await resyncCallAfterReconnect("me", async () => ({
+      channel_id: "dm-x",
+      call_id: "call-1",
+      status: "ringing",
+    }));
+    expect(callState.currentCall.status).toBe("incoming_ringing");
+  });
+
+  it("an outgoing ring that was answered becomes connected", async () => {
+    startCall("dm-x");
+    await resyncCallAfterReconnect("me", async () => active(["me", "u2"]));
+    expect(callState.currentCall).toMatchObject({ status: "connected", participants: ["u2"] });
+  });
+
+  it("a connected call without this user as participant ends locally", async () => {
+    setCallState("currentCall", { status: "connected", channelId: "dm-x", participants: ["u2"], startedAt: 1 });
+    await resyncCallAfterReconnect("me", async () => active(["u2"]));
+    expect(callState.currentCall.status).toBe("idle");
+  });
+
+  it("a different call id in the DM counts as gone", async () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    await resyncCallAfterReconnect("me", async () => active(["u2"], "call-2"));
+    expect(callState.currentCall.status).toBe("idle");
+    expect(showToast).toHaveBeenCalled();
+  });
+
+  it("does nothing without a ringing or connected call", async () => {
+    const fetchState = vi.fn();
+    await resyncCallAfterReconnect("me", fetchState);
+    expect(fetchState).not.toHaveBeenCalled();
+  });
+
+  it("keeps the local state when the request fails", async () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    await resyncCallAfterReconnect("me", async () => {
+      throw new Error("offline");
+    });
+    expect(callState.currentCall.status).toBe("incoming_ringing");
+  });
+});
+
+describe("DM call voice rejoin after reconnect (C32, native)", () => {
+  beforeEach(async () => {
+    reset();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    const common = await import("@/lib/tauri/common");
+    vi.mocked(common.isTauri).mockReturnValue(true);
+  });
+  afterEach(async () => {
+    const common = await import("@/lib/tauri/common");
+    vi.mocked(common.isTauri).mockReturnValue(false);
+    vi.useRealTimers();
+  });
+
+  it("rejoins the call voice silently while the server lists this user", async () => {
+    const tauri = await import("@/lib/tauri");
+    setCallState("currentCall", { status: "connected", channelId: "dm-x", participants: ["u2"], startedAt: 1 });
+    const done = resyncCallAfterReconnect("me", async () => ({
+      channel_id: "dm-x",
+      call_id: "call-1",
+      status: "active",
+      participants: ["u2", "me"],
+    }));
+    await vi.advanceTimersByTimeAsync(1000);
+    await done;
+    expect(tauri.leaveVoiceSilently).toHaveBeenCalledTimes(1);
+    expect(tauri.joinVoice).toHaveBeenCalledWith("dm-x");
+    expect(tauri.leaveVoice).not.toHaveBeenCalled();
+    expect(callState.currentCall.status).toBe("connected");
+  });
+
+  it("ends the call after three failed tries", async () => {
+    const tauri = await import("@/lib/tauri");
+    vi.mocked(tauri.joinVoice).mockRejectedValue(new Error("no"));
+    setCallState("currentCall", { status: "connected", channelId: "dm-x", participants: ["u2"], startedAt: 1 });
+    const done = resyncCallAfterReconnect("me", async () => ({
+      channel_id: "dm-x",
+      call_id: "call-1",
+      status: "active",
+      participants: ["u2", "me"],
+    }));
+    await vi.advanceTimersByTimeAsync(13_000);
+    await done;
+    expect(tauri.joinVoice).toHaveBeenCalledTimes(3);
+    expect(callState.currentCall.status).toBe("ended");
+    vi.mocked(tauri.joinVoice).mockResolvedValue(undefined);
   });
 });

@@ -1140,6 +1140,12 @@ async function handleReconnect(): Promise<void> {
   void import("@/stores/voice")
     .then(({ rejoinVoiceAfterReconnect }) => rejoinVoiceAfterReconnect())
     .catch((err) => console.error("[WS] Voice rejoin after reconnect failed:", err));
+  // C33: a DM call may have ended (or been answered elsewhere) in the gap.
+  void import("@/stores/call")
+    .then(({ resyncCallAfterReconnect }) =>
+      resyncCallAfterReconnect(currentUser()?.id),
+    )
+    .catch((err) => console.error("[WS] Call resync after reconnect failed:", err));
 }
 
 /** Browser transport for the reconnect supervisor. */

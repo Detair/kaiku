@@ -6,9 +6,19 @@
 
 import { createStore, produce } from "solid-js/store";
 import { startRinging, stopRinging } from "@/lib/sound/ring";
+import { showToast } from "@/components/ui/Toast";
+import { t } from "@/i18n";
+import type { CallStateResponse } from "@/lib/types";
 
 // Constants
 const CALL_ENDED_DISPLAY_MS = 3000;
+/**
+ * C33: a ring ends locally this long after it started, whatever the server
+ * said (the server's own ring timeout is 90 s). An incoming one is missed.
+ */
+export const RING_CAP_MS = 100_000;
+/** Native DM-call voice rejoin after a reconnect: waits before each try (C32). */
+const CALL_REJOIN_DELAYS_MS = [1000, 3000, 9000] as const;
 
 // Module-level timeout tracking for cleanup
 let callEndedTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -153,6 +163,196 @@ export function abortOutgoingCall(
   }
 }
 
+// Ring cap and missed calls (C33)
+
+let ringCapTimer: ReturnType<typeof setTimeout> | null = null;
+let ringToken = 0;
+
+/** (Re)start the local ring cap for the ring that just began. */
+function armRingCap(channelId: string): void {
+  if (ringCapTimer) clearTimeout(ringCapTimer);
+  const token = ++ringToken;
+  ringCapTimer = setTimeout(() => {
+    ringCapTimer = null;
+    if (token === ringToken) ringCapReached(channelId);
+  }, RING_CAP_MS);
+}
+
+function ringCapReached(channelId: string): void {
+  const current = callState.currentCall;
+  if (!("channelId" in current) || current.channelId !== channelId) return;
+  if (current.status === "incoming_ringing") {
+    console.info("[Call] Ring cap reached, call missed:", channelId);
+    endRingAsMissed(channelId, current.initiatorName);
+  } else if (current.status === "outgoing_ringing") {
+    console.info("[Call] Ring cap reached, nobody answered:", channelId);
+    endCall(channelId, "no_answer");
+    void dropCallVoice(channelId, { leaveCall: true });
+  }
+}
+
+/** An incoming ring that ends without an answer here: shown as missed. */
+function endRingAsMissed(channelId: string, initiatorName: string): void {
+  stopRinging();
+  rememberEnded(channelId);
+  setCallState("currentCall", { status: "idle" });
+  setCallState(
+    produce((state) => {
+      delete state.activeCallsByChannel[channelId];
+    }),
+  );
+  showToast({
+    type: "info",
+    title: t("voice.call.missed", { name: initiatorName }),
+    duration: 0,
+    id: `missed-call-${channelId}`,
+  });
+}
+
+/**
+ * Best effort: leave the DM call's native voice (and the call itself).
+ * Browser DM calls carry no voice, so only the call leave applies there.
+ */
+async function dropCallVoice(
+  channelId: string,
+  opts: { leaveCall: boolean; silent?: boolean },
+): Promise<void> {
+  try {
+    const tauri = await import("@/lib/tauri");
+    await (opts.silent ? tauri.leaveVoiceSilently() : tauri.leaveVoice()).catch(
+      (err: unknown) => console.warn("[Call] Leaving call voice failed:", err),
+    );
+    if (opts.leaveCall) {
+      await tauri.leaveDMCall(channelId).catch(() => {
+        // Already gone on the server (it ends unanswered rings at 90 s).
+      });
+    }
+  } catch (err) {
+    console.warn("[Call] Dropping call voice failed:", err);
+  }
+}
+
+/** The local call for `channelId` is still this status. */
+function stillCall(channelId: string, status: CallState["status"]): boolean {
+  const cur = callState.currentCall;
+  return cur.status === status && "channelId" in cur && cur.channelId === channelId;
+}
+
+/**
+ * C33: after every WebSocket re-establishment, ask the server about the DM
+ * call this client is ringing for or in, and apply the answer. "No call"
+ * clears the local state silently; a vanished incoming ring is missed.
+ * Connected calls rejoin their voice only while the server lists this user
+ * as a participant (C32).
+ */
+export async function resyncCallAfterReconnect(
+  myUserId: string | undefined,
+  fetchState?: (channelId: string) => Promise<CallStateResponse | null>,
+): Promise<void> {
+  const before = callState.currentCall;
+  if (
+    before.status !== "incoming_ringing" &&
+    before.status !== "outgoing_ringing" &&
+    before.status !== "connected"
+  ) {
+    return;
+  }
+  const { channelId, status } = before;
+
+  let server: CallStateResponse | null;
+  try {
+    const fetcher =
+      fetchState ?? (await import("@/lib/tauri/dms")).getCallState;
+    server = await fetcher(channelId);
+  } catch (err) {
+    console.warn("[Call] Call resync failed:", err);
+    return;
+  }
+  // The call moved on while the request ran: the newer state wins.
+  if (!stillCall(channelId, status)) return;
+
+  const serverCallId = knownCallId(server?.call_id);
+  const gone =
+    !server ||
+    server.status === "ended" ||
+    (!!serverCallId && isEndedCallId(channelId, serverCallId)) ||
+    (!!serverCallId &&
+      !!callState.callIds[channelId] &&
+      callState.callIds[channelId] !== serverCallId);
+
+  if (gone) {
+    if (status === "incoming_ringing") {
+      const name = (callState.currentCall as { initiatorName: string }).initiatorName;
+      endRingAsMissed(channelId, name);
+      return;
+    }
+    stopRinging();
+    rememberEnded(channelId);
+    setCallState("currentCall", { status: "idle" });
+    setCallState(
+      produce((state) => {
+        delete state.activeCallsByChannel[channelId];
+      }),
+    );
+    void dropCallVoice(channelId, { leaveCall: false, silent: true });
+    return;
+  }
+
+  setChannelCallId(channelId, serverCallId);
+  const participants = server!.participants ?? [];
+  const meIn = !!myUserId && participants.includes(myUserId);
+
+  if (status === "incoming_ringing") {
+    if (meIn) answeredElsewhere(channelId);
+    return;
+  }
+  if (status === "outgoing_ringing") {
+    if (server!.status === "active") {
+      callConnected(
+        channelId,
+        participants.filter((id) => id !== myUserId),
+      );
+    }
+    return;
+  }
+  // Connected.
+  if (server!.status !== "active" || !meIn) {
+    rememberEnded(channelId);
+    setCallState("currentCall", { status: "idle" });
+    void dropCallVoice(channelId, { leaveCall: false, silent: true });
+    return;
+  }
+  await rejoinCallVoice(channelId);
+}
+
+/**
+ * Native DM-call voice: fresh peer connections after a reconnect (C32),
+ * up to three tries after 1 s, 3 s and 9 s while the call stays connected.
+ * Browser DM calls carry no voice.
+ */
+async function rejoinCallVoice(channelId: string): Promise<void> {
+  const tauri = await import("@/lib/tauri");
+  const { isTauri } = await import("@/lib/tauri/common");
+  if (!isTauri()) return;
+  for (const delay of CALL_REJOIN_DELAYS_MS) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (!stillCall(channelId, "connected")) return;
+    try {
+      await tauri.leaveVoiceSilently();
+      await tauri.joinVoice(channelId);
+      console.info("[Call] Rejoined call voice:", channelId);
+      return;
+    } catch (err) {
+      console.warn("[Call] Call voice rejoin attempt failed:", err);
+    }
+  }
+  console.warn("[Call] Call voice rejoin gave up:", channelId);
+  if (stillCall(channelId, "connected")) {
+    endCall(channelId, "last_left");
+    void dropCallVoice(channelId, { leaveCall: true, silent: true });
+  }
+}
+
 // Actions
 
 /**
@@ -169,7 +369,7 @@ export function startCall(channelId: string): void {
     status: "outgoing_ringing",
     channelId,
     startedAt: Date.now(),
-  });
+  });  armRingCap(channelId);
 }
 
 /**
@@ -204,6 +404,7 @@ export function receiveIncomingCall(
     });
     // Start ringing for incoming call
     startRinging();
+    armRingCap(channelId);
   }
   // Always track in activeCallsByChannel for sidebar indicator
   if (callId && !(cur.status === "idle" || glare)) {

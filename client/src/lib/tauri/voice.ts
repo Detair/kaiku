@@ -19,6 +19,17 @@ export async function leaveVoice(): Promise<void> {
   }
 }
 
+/**
+ * Drop the native call without `voice_leave` (C31/C32): the server already
+ * removed this peer, and a leave from here could remove another device's.
+ */
+export async function leaveVoiceSilently(): Promise<void> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke("leave_voice", { silent: true });
+  }
+}
+
 export async function setMute(muted: boolean): Promise<void> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
