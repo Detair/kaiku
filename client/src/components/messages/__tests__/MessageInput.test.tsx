@@ -22,7 +22,8 @@ vi.mock("@/lib/tauri", () => ({
   getUploadLimitText: () => "10 MB",
   isUploadAborted: (e: unknown) => (e as { name?: string })?.name === "AbortError",
 }));
-vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
+const showToastMock = vi.fn();
+vi.mock("@/components/ui/Toast", () => ({ showToast: (...a: unknown[]) => showToastMock(...a) }));
 vi.mock("@/stores/drafts", () => ({
   getDraft: (id: string) => drafts[id] ?? "",
   saveDraft: (id: string, text: string) => {
@@ -236,7 +237,7 @@ describe("MessageInput", () => {
     const ta = screen.getByPlaceholderText("Message general") as HTMLTextAreaElement;
     const ev = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(ev, "clipboardData", {
-      value: { files: [new File(["x"], "image.png", { type: "image/png" })], getData: () => "" },
+      value: { files: [new File(["x"], "image.png", { type: "image/png" })], types: ["Files"], getData: () => "" },
     });
     ta.dispatchEvent(ev);
     expect(ev.defaultPrevented).toBe(true);
@@ -346,6 +347,7 @@ describe("MessageInput", () => {
       Object.defineProperty(ev, "clipboardData", {
         value: {
           files: [new File(["x"], "image.png", { type: "image/png" })],
+          types: ["Files", "text/plain", "text/html"],
           getData: (type: string) => (type === "text/plain" ? "A1\tB1" : ""),
         },
       });
@@ -364,6 +366,97 @@ describe("MessageInput", () => {
       fireEvent.submit(form);
       const alert = await screen.findByRole("alert");
       expect(alert.textContent).toBe("a.png was not sent. Please try again.");
+    });
+  });
+
+  describe("fix round 2", () => {
+    const deferred = <T,>() => {
+      let resolve!: (v: T) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise<T>((r, j) => {
+        resolve = r;
+        reject = j;
+      });
+      return { promise, resolve, reject };
+    };
+    const paste = (data: { types: string[]; plain?: string; html?: string }) => {
+      const ev = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, "clipboardData", {
+        value: {
+          files: [new File(["x"], "a.png", { type: "image/png" })],
+          types: data.types,
+          getData: (type: string) =>
+            type === "text/plain" ? data.plain ?? "" : type === "text/html" ? data.html ?? "" : "",
+        },
+      });
+      (screen.getByRole("textbox") as HTMLTextAreaElement).dispatchEvent(ev);
+      return ev;
+    };
+
+    it("paste: a file from the file manager (path as plain text) is attached", () => {
+      render(() => <MessageInput channelId="c1" channelName="x" guildId="g1" />);
+      const ev = paste({ types: ["Files", "text/plain"], plain: "/home/oma/Bilder/a.png" });
+      expect(ev.defaultPrevented).toBe(true);
+      expect(screen.getAllByTestId("pending-file")).toHaveLength(1);
+    });
+
+    it("paste: a browser's copied image (HTML without text) is attached", () => {
+      render(() => <MessageInput channelId="c1" channelName="x" guildId="g1" />);
+      const ev = paste({ types: ["Files", "text/html"], html: '<img src="x">' });
+      expect(ev.defaultPrevented).toBe(true);
+      expect(screen.getAllByTestId("pending-file")).toHaveLength(1);
+    });
+
+    it("paste: spreadsheet cells (formatted text plus picture) paste as text", () => {
+      render(() => <MessageInput channelId="c1" channelName="x" guildId="g1" />);
+      const ev = paste({ types: ["Files", "text/plain", "text/rtf"], plain: "A1" });
+      expect(ev.defaultPrevented).toBe(false);
+      expect(screen.queryAllByTestId("pending-file")).toHaveLength(0);
+    });
+
+    it("N4: Cancel and errors belong to the channel that is sending", async () => {
+      const upload = deferred<unknown>();
+      uploadMessageWithFile.mockImplementationOnce(
+        (_c: string, _f: File, _t: string, opts: { signal: AbortSignal }) => {
+          opts.signal.addEventListener("abort", () => upload.reject(new DOMException("x", "AbortError")));
+          return upload.promise;
+        },
+      );
+      const [channel, setChannel] = createSignal("c1");
+      const { container } = render(() => <MessageInput channelId={channel()} channelName={channel() === "c1" ? "A" : "B"} guildId="g1" />);
+      const form = container.querySelector("form")!;
+      dropFiles(form, [new File(["a"], "a.heic")]);
+      fireEvent.submit(form);
+      await waitFor(() => expect(uploadMessageWithFile).toHaveBeenCalledTimes(1));
+
+      setChannel("c2");
+      dropFiles(form, [new File(["b"], "b.png")]);
+      // B is not sending: no Cancel for A's upload here.
+      expect(await screen.findByText("1 file ready to send")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+
+      upload.reject(new HttpError(415, "Invalid file type", "INVALID_MIME_TYPE"));
+      await waitFor(() => expect(showToastMock).toHaveBeenCalled());
+      expect(showToastMock).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Not sent in A" }));
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      setChannel("c1");
+      expect((await screen.findByRole("alert")).textContent).toContain("a.heic was not sent.");
+    });
+
+    it("N4: sending in another channel does not block this one", async () => {
+      const first = deferred<unknown>();
+      sendMessage.mockReturnValueOnce(first.promise).mockResolvedValueOnce({ id: "m2" });
+      drafts.c2 = "Hallo B";
+      const [channel, setChannel] = createSignal("c1");
+      render(() => <MessageInput channelId={channel()} channelName="x" guildId="g1" />);
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+      setChannel("c2");
+      await waitFor(() => expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Hallo B"));
+      fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+      await waitFor(() => expect(sendMessage).toHaveBeenLastCalledWith("c2", "Hallo B"));
+      first.resolve({ id: "m1" });
     });
   });
 });

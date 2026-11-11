@@ -43,6 +43,7 @@ export const chat = {
   "chat.composer.sendFiles.other": "Send {{count}} files",
 
   "chat.send.failed.title": "Send Failed",
+  "chat.send.failedIn": "Not sent in {{channel}}",
   "chat.send.failed.message": "Your message was not sent. It is still in the box, so you can try again.",
   "chat.send.fileFailed": "Please try again.",
   "chat.send.forbidden": "You can't send messages here.",

@@ -457,6 +457,7 @@
   "chat.send.contentFiltered": "",
   "chat.send.failed.message": "",
   "chat.send.failed.title": "",
+  "chat.send.failedIn": "",
   "chat.send.fileEmpty": "",
   "chat.send.fileFailed": "",
   "chat.send.fileNameInvalid": "",

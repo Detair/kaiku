@@ -44,6 +44,19 @@ interface PendingFile {
 let nextPendingFileId = 1;
 
 /**
+ * Spreadsheets and office apps copy formatted text (HTML or RTF) plus a
+ * picture of it: the person wants the text. A file manager adds the path as
+ * plain text and a browser's "copy image" adds an <img> as HTML, but neither
+ * has formatted text with plain text: those are files to attach.
+ */
+export function isFormattedTextWithPicture(data: DataTransfer | null | undefined): boolean {
+  if (!data) return false;
+  const types = Array.from(data.types ?? []);
+  const formatted = types.includes("text/html") || types.includes("text/rtf");
+  return formatted && !!data.getData("text/plain");
+}
+
+/**
  * What should stay in the box (or draft) after `sent` went out. `sent` is the
  * box's text when the send began. Text typed afterwards is kept, the sent part
  * goes. `null` when the sent text is no longer at the start (the person edited
@@ -57,13 +70,27 @@ export function remainingAfterSend(current: string, sent: string): string | null
 
 const MessageInput: Component<MessageInputProps> = (props) => {
   const [content, setContent] = createSignal("");
-  const [isSending, setIsSending] = createSignal(false);
+  /** Channels with a send on its way (each has its own uploads and Cancel). */
+  const [sendingChannels, setSendingChannels] = createSignal<ReadonlySet<string>>(new Set());
+  const isSending = () => sendingChannels().has(props.channelId);
+  const setSendingIn = (channelId: string, sending: boolean) =>
+    setSendingChannels((prev) => {
+      const next = new Set(prev);
+      if (sending) next.add(channelId);
+      else next.delete(channelId);
+      return next;
+    });
   const [isDragging, setIsDragging] = createSignal(false);
-  const [uploadError, setUploadError] = createSignal<string | null>(null);
+  /** File problems per channel: they stay with the channel they belong to. */
+  const [uploadErrors, setUploadErrors] = createSignal<Record<string, string | null>>({});
+  const uploadError = () => uploadErrors()[props.channelId] ?? null;
+  const setUploadErrorIn = (channelId: string, message: string | null) =>
+    setUploadErrors((prev) => ({ ...prev, [channelId]: message }));
+  const setUploadError = (message: string | null) => setUploadErrorIn(props.channelId, message);
   const [allPendingFiles, setPendingFiles] = createSignal<PendingFile[]>([]);
   /** Files waiting in the tray of the channel on screen. */
   const pendingFiles = () => allPendingFiles().filter((pf) => pf.channelId === props.channelId);
-  let uploadController: AbortController | null = null;
+  const uploadControllers = new Map<string, AbortController>();
   const sendLabel = () =>
     pendingFiles().length > 0
       ? plural(pendingFiles().length, { one: "chat.composer.sendFiles.one", other: "chat.composer.sendFiles.other" })
@@ -112,8 +139,6 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     const channelId = props.channelId;
     const draft = getDraft(channelId);
     setContent(draft);
-    // Messages about another channel's files do not belong here.
-    setUploadError(null);
     setShowEmojiPicker(false);
     // Resize after setting content, then focus for immediate typing
     setTimeout(() => {
@@ -187,7 +212,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     if (resizeFrame) {
       cancelAnimationFrame(resizeFrame);
     }
-    uploadController?.abort();
+    uploadControllers.forEach((c) => c.abort());
     // Revoke object URLs to prevent memory leaks
     allPendingFiles().forEach((pf) => {
       if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl);
@@ -233,15 +258,14 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     });
   };
 
-  const cancelUpload = () => uploadController?.abort();
+  /** Cancel only the uploads of the channel on screen. */
+  const cancelUpload = () => uploadControllers.get(props.channelId)?.abort();
 
   // Paste: images (screenshots) and files from the clipboard become attachments.
   const handlePaste = (e: ClipboardEvent) => {
     const files = Array.from(e.clipboardData?.files ?? []);
     if (files.length === 0) return;
-    // Spreadsheets and office apps put text and a picture of it on the
-    // clipboard: then the text is what the person wants.
-    if (e.clipboardData?.getData("text/plain")) return;
+    if (isFormattedTextWithPicture(e.clipboardData)) return;
     e.preventDefault();
     files.forEach(addPendingFile);
   };
@@ -428,18 +452,19 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     }
     stopTyping(props.channelId);
 
-    setIsSending(true);
     const channelId = props.channelId;
+    const channelName = props.channelName;
+    setSendingIn(channelId, true);
     const sentRaw = content();
     try {
       const textSent = files.length > 0
-        ? await sendFiles(channelId, files, text)
+        ? await sendFiles(channelId, channelName, files, text)
         : (await sendMessage(channelId, text)) !== null;
       // A failed send keeps the text and the draft (sendMessage reports why).
       if (textSent && text) afterTextSent(channelId, sentRaw);
     } finally {
-      setIsSending(false);
-      textareaRef?.focus();
+      setSendingIn(channelId, false);
+      if (props.channelId === channelId) textareaRef?.focus();
     }
   };
 
@@ -471,9 +496,14 @@ const MessageInput: Component<MessageInputProps> = (props) => {
    * twice. A rejected file stays with its reason; the others still go out.
    * Returns whether the text was sent.
    */
-  const sendFiles = async (channelId: string, files: PendingFile[], text: string): Promise<boolean> => {
+  const sendFiles = async (
+    channelId: string,
+    channelName: string,
+    files: PendingFile[],
+    text: string,
+  ): Promise<boolean> => {
     const controller = new AbortController();
-    uploadController = controller;
+    uploadControllers.set(channelId, controller);
     let textSent = !text;
     const failures: string[] = [];
     try {
@@ -515,14 +545,18 @@ const MessageInput: Component<MessageInputProps> = (props) => {
         }
       }
     } finally {
-      if (uploadController === controller) uploadController = null;
+      if (uploadControllers.get(channelId) === controller) uploadControllers.delete(channelId);
     }
 
     if (failures.length > 0) {
-      setUploadError(failures.join(" "));
+      // Shown in the channel the files belong to, also after switching away.
+      setUploadErrorIn(channelId, failures.join(" "));
       showToast({
         type: "error",
-        title: t("chat.send.failed.title"),
+        title:
+          props.channelId === channelId
+            ? t("chat.send.failed.title")
+            : t("chat.send.failedIn", { channel: channelName }),
         message: failures[0],
         duration: 8000,
       });
