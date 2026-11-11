@@ -378,6 +378,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop voice audio is now clear at session start (fixed RTP sequence number regression on reconnect)
 - Desktop screen share now actually reaches other participants (fixed VP8 payload type)
 - UI contrast: selected nav items, active state pills, and warning banners now render with their intended alpha tint instead of silently rendering as solid color. UnoCSS alpha-modifier classes (`bg-accent-primary/20` etc.) had been dropping their alpha because the underlying CSS variables held hex values; switched the affected tokens in `uno.config.ts` to consume new `-rgb` channel variants via the `rgb(var(...) / <alpha-value>)` pattern.
+- Android: a message or photo sent right before leaving the chat is no longer lost. It shows as "Sending…" until it arrives; if it fails it stays in the chat with Retry and Delete. Unsent text stays in the field when you leave the chat.
+- Android: the message field stays above the keyboard and the navigation bar, and the chat title no longer slides away while typing.
+- Android: photos open full screen with zoom, Save and Share; videos and files open with an app on the phone. Links in messages can be tapped, and the message menu has Copy text.
+- Android: TalkBack offers React, Copy, Edit and Delete as actions on a message and announces new messages politely. Deleting a message asks first; replies show who and what they answer.
+- Android: the chat shows day separators, a button back to the newest message with the number of new ones, and loads older messages when you reach the top.
+- Android: settings scroll, so Log out stays reachable with large text; a profile that fails to load says so and offers Retry.
+- Android: when notifications are off, chats and settings show a lasting hint to turn them on.
+- Android: error text, badges, the reconnect banner, the snackbar Retry and red buttons have enough contrast.
 
 ### Security
 - E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting

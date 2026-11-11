@@ -100,7 +100,8 @@ fun MessageItem(
             .pointerInput(Unit) {
                 detectTapGestures(onLongPress = { showContextMenu = true })
             }
-            .semantics {
+            // One TalkBack stop per message (author, time, text), with its actions.
+            .semantics(mergeDescendants = true) {
                 onLongClick(label = menuLabel) { showContextMenu = true; true }
                 customActions = actions.map { action ->
                     CustomAccessibilityAction(actionLabels.getValue(action)) { run(action); true }
