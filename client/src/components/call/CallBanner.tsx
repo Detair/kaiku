@@ -13,7 +13,14 @@ import {
   onCleanup,
 } from "solid-js";
 import { Users } from "lucide-solid";
-import { callState, setChannelCallId, joinCall, declineCall, endCall } from "@/stores/call";
+import {
+  callState,
+  setChannelCallId,
+  joinCall,
+  declineCall,
+  endCall,
+  stopCallVoiceRecovery,
+} from "@/stores/call";
 import {
   joinDMCall,
   declineDMCall,
@@ -86,6 +93,8 @@ const CallBanner: Component<CallBannerProps> = (props) => {
   };
 
   const handleLeave = async () => {
+    // Recovery stops first, then the voice, then the server is told.
+    stopCallVoiceRecovery();
     setIsLoading(true);
     try {
       // Stop voice connection first
@@ -104,6 +113,7 @@ const CallBanner: Component<CallBannerProps> = (props) => {
   };
 
   const handleCancel = async () => {
+    stopCallVoiceRecovery();
     setIsLoading(true);
     try {
       // Stop voice connection first (initiator may have started voice)

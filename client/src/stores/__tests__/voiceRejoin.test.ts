@@ -94,7 +94,7 @@ import {
   voiceRejoinAttemptsUsed,
   REJOIN_ATTEMPT_TIMEOUT_MS,
 } from "../voice";
-import { isVoiceEpochStale } from "@/lib/webrtc/voiceSession";
+import { bumpVoiceEpoch, isVoiceEpochStale } from "@/lib/webrtc/voiceSession";
 import { RECOVERY_OFFLINE_CAP_MS } from "../voiceRecovery";
 
 /** Make the next adapter.join hang until released; returns its epoch and release. */
@@ -496,6 +496,108 @@ describe("voice rejoin (C32)", () => {
     await flush();
     expect(mockAdapter.setDeafen).toHaveBeenCalledWith(true);
     expect(voiceState.state).toBe("reconnecting");
+    await leaveVoice();
+  });
+
+  it("Leave while the socket is down always ends the session; the next socket does not rejoin (W1-N1)", async () => {
+    await inCall();
+    noteSignallingLost();
+    mockAdapter.leave.mockRejectedValueOnce(new Error("WebSocket not connected"));
+    await leaveVoice();
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.channelId).toBeNull();
+    expect(isVoiceRejoinRunning()).toBe(false);
+
+    await rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mockAdapter.join).toHaveBeenCalledTimes(1);
+  });
+
+  it("a manual Join that fails during a socket loss leaves no hidden recovery (W1-N2)", async () => {
+    const hang = joinHangs();
+    const joining = joinVoice("ch-1").catch(() => undefined);
+    await flush();
+    noteSignallingLost();
+    expect(isVoiceRejoinRunning()).toBe(true);
+    hang.release(false); // the join fails (WS timeout)
+    await joining;
+    expect(voiceState.state).toBe("disconnected");
+    expect(isVoiceRejoinRunning()).toBe(false);
+
+    await rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockAdapter.join).toHaveBeenCalledTimes(1);
+  });
+
+  it("an attempt of a flow whose channel was left does nothing (W1-N2)", async () => {
+    await inCall();
+    const flow = rejoinVoiceAfterReconnect();
+    // The session ends without going through leaveVoice (defensive check).
+    setVoiceState({ state: "disconnected", channelId: null });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await flow;
+    expect(mockAdapter.join).toHaveBeenCalledTimes(1);
+  });
+
+  it("a socket drop while the rejoin restores mute keeps recovery and its 60 s deadline (Codex W1b-3)", async () => {
+    await inCall();
+    setVoiceState({ deafened: true, muted: true });
+    let finishRestore!: () => void;
+    mockAdapter.setDeafen
+      .mockResolvedValueOnce({ ok: true }) // right after join (W1-M10)
+      .mockImplementationOnce(
+        () => new Promise((r) => (finishRestore = () => r({ ok: true }))),
+      );
+    joinConnects();
+    void rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(finishRestore).toBeTypeOf("function");
+
+    // The socket drops while mute/deafen are being restored, then the
+    // restore completes anyway: that must not declare the call connected.
+    noteSignallingLost();
+    finishRestore();
+    await flush();
+    expect(voiceState.state).toBe("reconnecting");
+    expect(isVoiceRejoinRunning()).toBe(true);
+    expect(voiceRejoinAttemptsUsed()).toBe(0);
+
+    // Without a socket the deadline still runs out.
+    await vi.advanceTimersByTimeAsync(RECOVERY_OFFLINE_CAP_MS);
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.lostChannelId).toBe("ch-1");
+  });
+
+  it("after a drop during finalisation the next socket resumes and connects", async () => {
+    await inCall();
+    mockAdapter.setDeafen.mockImplementationOnce(() => new Promise(() => {}));
+    joinConnects();
+    const flow = rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    noteSignallingLost();
+    await flush();
+    expect(voiceState.state).toBe("reconnecting");
+
+    joinConnects();
+    void rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flow;
+    expect(voiceState.state).toBe("connected");
+    expect(mockAdapter.join).toHaveBeenCalledTimes(3);
+  });
+
+  it("an attempt whose epoch was ended from outside is not charged (W1-N5)", async () => {
+    await inCall();
+    mockAdapter.join.mockImplementationOnce(async () => {
+      bumpVoiceEpoch(); // e.g. a DM-call hang-up in the same window
+      return { ok: false, error: { type: "cancelled", message: "x" } };
+    });
+    void rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(voiceRejoinAttemptsUsed()).toBe(0);
     await leaveVoice();
   });
 });

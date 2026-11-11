@@ -602,6 +602,10 @@ export async function joinVoice(channelId: string): Promise<void> {
       // Cancelled by a leave / another join / voice_removed: they own the
       // state now, and a cancellation is not an error.
       if (isJoinCancelled(result.error) || stale()) return;
+      // A recovery started meanwhile (socket loss) belongs to this failed
+      // join: it must not join behind the user's back (W1-N2).
+      channelRecovery.cancel();
+      bumpVoiceEpoch();
       setVoiceState({
         state: "disconnected",
         channelId: null,
@@ -654,29 +658,35 @@ export async function leaveVoice(): Promise<void> {
   setVoiceState({ lostChannelId: null });
   if (voiceState.state === "disconnected") return;
 
-  // Stop metrics collection first
-  stopMetricsLoop();
+  try {
+    // Stop metrics collection first
+    stopMetricsLoop();
 
-  // Deactivate PTT/PTM
-  await deactivatePtt();
+    // Reset notification state and dismiss any active connection toasts
+    currentIncidentStart = null;
+    goodQualityStartTime = null;
+    dismissToast("connection-critical");
+    dismissToast("connection-warning");
 
-  // Reset notification state and dismiss any active connection toasts
-  currentIncidentStart = null;
-  goodQualityStartTime = null;
-  dismissToast("connection-critical");
-  dismissToast("connection-warning");
+    // Deactivate PTT/PTM
+    await deactivatePtt();
 
-  const adapter = await createVoiceAdapter();
-  const result = await adapter.leave();
-  // After the streams stopped, so an error raised while leaving is cleared too.
-  dismissToast(AUDIO_CAPTURE_TOAST_ID);
-  dismissToast(AUDIO_PLAYBACK_TOAST_ID);
-
-  if (!result.ok) {
-    console.error("Failed to leave voice:", result.error);
+    const adapter = await createVoiceAdapter();
+    const result = await adapter.leave();
+    if (!result.ok) {
+      console.error("Failed to leave voice:", result.error);
+    }
+  } catch (err) {
+    console.error("Failed to leave voice:", err);
+  } finally {
+    // Leaving always ends the local session (W1-N1): nothing is left to
+    // recover or time out, even when the server could not be told.
+    removeRemoteAudioElements();
+    // After the streams stopped, so an error raised while leaving is cleared too.
+    dismissToast(AUDIO_CAPTURE_TOAST_ID);
+    dismissToast(AUDIO_PLAYBACK_TOAST_ID);
+    resetVoiceSession();
   }
-
-  resetVoiceSession();
 }
 
 /** Clear everything about the current call (state stays `disconnected`). */
@@ -875,15 +885,21 @@ function channelSession(channelId: string): RecoverySession {
   return {
     label: `channel ${channelId}`,
     attempt: async (epoch) => {
+      // The session this flow recovers must still be the store's (W1-N2).
+      const ours = () =>
+        voiceState.channelId === channelId &&
+        voiceState.state !== "disconnected" &&
+        !isVoiceEpochStale(epoch);
+      if (!ours()) return false;
       const adapter = await createVoiceAdapter();
-      if (isVoiceEpochStale(epoch)) return false;
+      if (!ours()) return false;
       // Drop the old peer connections without `voice_leave` (C32: the
       // server already removed the old peer; a leave from here could hit
       // another device).
       await adapter.teardown();
       removeRemoteAudioElements();
       import("@/stores/webcamViewer").then(({ clearAll }) => clearAll());
-      if (isVoiceEpochStale(epoch)) return false;
+      if (!ours()) return false;
       setVoiceState({ screenSharing: false, webcamActive: false });
 
       const connected = waitForConnected(RECOVERY_ATTEMPT_TIMEOUT_MS);
@@ -908,25 +924,27 @@ function channelSession(channelId: string): RecoverySession {
       if (adapter) await adapter.teardown();
       removeRemoteAudioElements();
     },
-    succeeded: async (epoch) => {
+    restore: async (epoch) => {
       const adapter = getVoiceAdapter();
       if (!adapter) return;
       // The latest choice wins: mute/deafen may have changed while
       // reconnecting (R2).
-      const muted = voiceState.muted;
       const deafened = voiceState.deafened;
       await adapter.setDeafen(deafened);
-      await adapter.setMute(muted || deafened);
+      if (isVoiceEpochStale(epoch)) return;
+      await adapter.setMute(voiceState.muted || deafened);
       if (isVoiceEpochStale(epoch)) return;
       if (isTauri()) {
         // Native keeps no device choice across the silent leave.
         await applyStoredAudioDevices(adapter);
-        if (isVoiceEpochStale(epoch)) return;
       }
+    },
+    commit: () => {
+      const adapter = getVoiceAdapter();
+      if (voiceState.channelId !== channelId || !adapter) return;
       setVoiceState({
         state: "connected",
-        muted: muted || deafened,
-        deafened,
+        muted: voiceState.muted || voiceState.deafened,
         error: null,
         sessionId: crypto.randomUUID(),
         connectedAt: Date.now(),

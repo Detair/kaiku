@@ -335,27 +335,33 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
   async leave(): Promise<VoiceResult<void>> {
     console.log("[BrowserVoiceAdapter] Leaving voice");
 
-    // Clean up all screen shares and webcam first
-    if (this.screenShares.size > 0) {
-      await this.stopAllScreenShares();
-    }
-    if (this.webcamStream) {
-      this.cleanupWebcamState();
-    }
+    try {
+      // Clean up all screen shares and webcam first
+      if (this.screenShares.size > 0) {
+        await this.stopAllScreenShares();
+      }
+      if (this.webcamStream) {
+        this.cleanupWebcamState();
+      }
 
-    // Send voice_leave message to server
-    if (this.channelId) {
-      const { wsSend } = await import("@/lib/tauri");
-      await wsSend({
-        type: "voice_leave",
-        channel_id: this.channelId,
-      });
+      // Tell the server (best effort: with the socket down the server
+      // already dropped the peer with the old socket).
+      if (this.channelId) {
+        const { wsSend } = await import("@/lib/tauri");
+        await wsSend({
+          type: "voice_leave",
+          channel_id: this.channelId,
+        });
+      }
+    } catch (err) {
+      console.warn("[BrowserVoiceAdapter] voice_leave not sent:", err);
+    } finally {
+      // Leaving always ends the local session: mic released, PCs closed.
+      this.cleanup();
+      this.setState("disconnected");
+      this.channelId = null;
+      this.prevStats = null;
     }
-
-    this.cleanup();
-    this.setState("disconnected");
-    this.channelId = null;
-    this.prevStats = null;
 
     return { ok: true, value: undefined };
   }

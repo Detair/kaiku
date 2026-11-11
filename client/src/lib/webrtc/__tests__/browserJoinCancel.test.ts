@@ -199,3 +199,39 @@ describe("BrowserVoiceAdapter join cancellation (epoch)", () => {
     expect(voiceJoins()).toHaveLength(1);
   });
 });
+
+describe("BrowserVoiceAdapter leave with the socket down (W1-N1)", () => {
+  beforeEach(() => {
+    pcs.length = 0;
+    wsSend.mockReset().mockResolvedValue(undefined);
+    wsStatus.mockReset().mockResolvedValue({ type: "connected" });
+    vi.stubGlobal("RTCPeerConnection", FakePc);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ice_servers: [] }) }),
+    );
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("releases the mic and closes the PCs even when voice_leave cannot be sent", async () => {
+    const { stream, track } = fakeStream();
+    vi.stubGlobal("navigator", { mediaDevices: { getUserMedia: vi.fn().mockResolvedValue(stream) } });
+    const adapter = new BrowserVoiceAdapter();
+    expect((await adapter.join("ch")).ok).toBe(true);
+
+    wsSend.mockRejectedValue(new Error("WebSocket not connected"));
+    const result = await adapter.leave();
+
+    expect(result.ok).toBe(true);
+    expect(track.stop).toHaveBeenCalled();
+    expect(pcs.every((pc) => pc.closed)).toBe(true);
+    expect(adapter.getChannelId()).toBeNull();
+    expect(adapter.getState()).toBe("disconnected");
+  });
+});

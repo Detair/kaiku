@@ -10,7 +10,11 @@ import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 import type { CallStateResponse } from "@/lib/types";
 import { isTauri } from "@/lib/tauri/common";
-import { bumpVoiceEpoch, isVoiceEpochStale } from "@/lib/webrtc/voiceSession";
+import {
+  bumpVoiceEpoch,
+  captureCallJoinEpoch,
+  isVoiceEpochStale,
+} from "@/lib/webrtc/voiceSession";
 import {
   VoiceRecovery,
   RECOVERY_ATTEMPT_TIMEOUT_MS,
@@ -440,7 +444,8 @@ function callSession(channelId: string): RecoverySession {
       const tauri = await import("@/lib/tauri");
       await tauri.leaveVoiceSilently().catch(() => {});
     },
-    succeeded: () => {
+    restore: async () => {},
+    commit: () => {
       console.info("[Call] Rejoined call voice:", channelId);
     },
     giveUp: async () => {
@@ -492,11 +497,28 @@ export function noteCallSignallingUp(): void {
 }
 
 /** Stop the DM-call recovery and any join it has pending (hang-up, end). */
-function cancelCallRecovery(): void {
-  if (!callRecovery.running) return;
+function cancelCallRecovery(): boolean {
+  if (!callRecovery.running) return false;
   callRecovery.cancel();
   bumpVoiceEpoch();
   settleNativeConnected(false);
+  // An attempt may already have joined natively: drop it without a leave
+  // message (the hang-up or the server's end owns the signalling).
+  void import("@/lib/tauri")
+    .then((tauri) => tauri.leaveVoiceSilently())
+    .catch((err: unknown) => console.warn("[Call] Dropping recovery voice failed:", err));
+  return true;
+}
+
+/**
+ * Hang-up / cancel, step 1 (W1-N3): stop the DM-call recovery and start a
+ * new voice epoch BEFORE the native voice is torn down and the server is
+ * told, so a recovery attempt cannot rejoin behind the hang-up. Call it
+ * synchronously, before any await.
+ */
+export function stopCallVoiceRecovery(): void {
+  cancelCallRecovery();
+  bumpVoiceEpoch();
 }
 
 /**
@@ -530,6 +552,9 @@ export async function handleCallVoiceRemoved(
  * Start an outgoing call.
  */
 export function startCall(channelId: string): void {
+  // The voice session of this call starts now: a leave before the native
+  // join makes it stale (the join after the HTTP start does nothing).
+  captureCallJoinEpoch(channelId);
   stopRinging();
   setCallState(
     produce((state) => {
@@ -593,6 +618,7 @@ export function receiveIncomingCall(
  * Transition to connecting state when joining a call.
  */
 export function joinCall(channelId: string): void {
+  captureCallJoinEpoch(channelId);
   // Stop ringing when answering the call
   stopRinging();
   setCallState("currentCall", {

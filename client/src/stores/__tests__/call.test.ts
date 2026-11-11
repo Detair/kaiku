@@ -48,6 +48,7 @@ import {
   noteCallSignallingLost,
   onNativeCallVoiceState,
   isCallRecoveryRunning,
+  stopCallVoiceRecovery,
   RING_CAP_MS,
 } from "../call";
 import { isVoiceEpochStale } from "@/lib/webrtc/voiceSession";
@@ -634,6 +635,45 @@ describe("DM call voice rejoin after reconnect (C32, native)", () => {
     await resyncCallAfterReconnect("me", activeWithMe);
     await vi.advanceTimersByTimeAsync(30_000);
     expect(tauri.joinVoice).toHaveBeenCalledTimes(1);
+  });
+
+  it("hang-up during the recovery pause: no rejoin, even with a slow server leave (W1-N3)", async () => {
+    const tauri = await import("@/lib/tauri");
+    connectedCall();
+    void resyncCallAfterReconnect("me", activeWithMe);
+    await vi.advanceTimersByTimeAsync(500); // recovery sleeps (1 s)
+    expect(isCallRecoveryRunning()).toBe(true);
+
+    // CallBanner.handleLeave: recovery stops first, then voice, then the server.
+    stopCallVoiceRecovery();
+    expect(isCallRecoveryRunning()).toBe(false);
+    let serverLeft!: () => void;
+    vi.mocked(tauri.leaveDMCall).mockImplementationOnce(
+      () =>
+        new Promise((r) => (serverLeft = () => r(undefined as never))) as ReturnType<
+          typeof tauri.leaveDMCall
+        >,
+    );
+    await tauri.leaveVoice();
+    const leaving = tauri.leaveDMCall("dm-x");
+    await vi.advanceTimersByTimeAsync(30_000); // the slow server leave
+    expect(tauri.joinVoice).not.toHaveBeenCalled();
+    serverLeft();
+    await leaving;
+    endCall("dm-x", "last_left");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(tauri.joinVoice).not.toHaveBeenCalled();
+  });
+
+  it("cancelling a running recovery drops native voice silently", async () => {
+    const tauri = await import("@/lib/tauri");
+    connectedCall();
+    void resyncCallAfterReconnect("me", activeWithMe);
+    await vi.advanceTimersByTimeAsync(500);
+    vi.mocked(tauri.leaveVoiceSilently).mockClear();
+    stopCallVoiceRecovery();
+    await vi.waitFor(() => expect(tauri.leaveVoiceSilently).toHaveBeenCalled());
+    expect(tauri.leaveVoice).not.toHaveBeenCalled();
   });
 
   it("voice_removed for another channel is not for the call", async () => {

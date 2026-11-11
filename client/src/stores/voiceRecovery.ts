@@ -40,8 +40,14 @@ export interface RecoverySession {
   attempt(epoch: number): Promise<boolean>;
   /** Drop what an interrupted attempt (timeout, socket loss) set up. */
   abandon(): Promise<void>;
-  /** The attempt under `epoch` connected: restore the session. */
-  succeeded(epoch: number): Promise<void> | void;
+  /**
+   * The attempt under `epoch` connected: restore mute/deafen/devices. It
+   * may be interrupted (socket loss, cancel) and must not change visible
+   * state; `commit` does that once the flow has re-checked everything.
+   */
+  restore(epoch: number): Promise<void>;
+  /** Declare the session recovered (synchronous, after `restore`). */
+  commit(epoch: number): void;
   /** Third failure or offline cap: clear the session, offer a rejoin. */
   giveUp(): Promise<void>;
 }
@@ -223,25 +229,53 @@ export class VoiceRecovery {
       interrupted.release();
       if (!this.current(generation)) return;
 
+      let result: "connected" | "failed" | Interrupt | "socket_ready" | "elapsed" = outcome;
       if (outcome === "connected" && !isVoiceEpochStale(epoch)) {
-        await session.succeeded(epoch);
-        return;
+        // Finalisation is part of the attempt: a socket loss or cancel
+        // during it interrupts it, and success is only declared after the
+        // socket, the epoch and the flow have been checked again.
+        const finishing = this.wait(RECOVERY_ATTEMPT_TIMEOUT_MS, ["socket_lost", "cancelled"]);
+        const restored = await Promise.race([
+          session.restore(epoch).then(
+            () => "restored" as const,
+            (err: unknown) => {
+              console.warn(`[VoiceRecovery] ${session.label}: restore failed:`, err);
+              return "restored" as const;
+            },
+          ),
+          finishing.done,
+        ]);
+        finishing.release();
+        if (!this.current(generation)) return;
+        if (restored === "restored" && !this.socketDown && !isVoiceEpochStale(epoch)) {
+          session.commit(epoch);
+          return;
+        }
+        result = restored === "restored" ? "socket_lost" : restored;
       }
 
-      // Anything else ends this attempt's session: a still pending join
-      // stops at its next check, and what it set up is dropped silently.
-      if (outcome !== "failed") {
+      // An attempt whose epoch someone else ended (not this flow) is
+      // interrupted, not failed (W1-N5).
+      const foreign = result === "failed" && isVoiceEpochStale(epoch);
+      // Anything but a plain failure ends this attempt's session: a still
+      // pending join stops at its next check, and what it set up is
+      // dropped silently.
+      if (result !== "failed" || foreign) {
         bumpVoiceEpoch();
         await session.abandon();
         if (!this.current(generation)) return;
       }
-      if (outcome === "socket_lost" || this.socketDown) {
+      if (foreign) {
+        console.info(`[VoiceRecovery] ${session.label}: attempt interrupted, not counted`);
+        continue;
+      }
+      if (result === "socket_lost" || this.socketDown) {
         console.info(`[VoiceRecovery] ${session.label}: socket lost during attempt, not counted`);
         continue;
       }
       this.used += 1;
       console.warn(
-        `[VoiceRecovery] ${session.label}: attempt ${this.used} failed (${outcome === "elapsed" ? "timeout" : outcome})`,
+        `[VoiceRecovery] ${session.label}: attempt ${this.used} failed (${result === "elapsed" ? "timeout" : result})`,
       );
     }
 
