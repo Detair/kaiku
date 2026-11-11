@@ -8,6 +8,9 @@ use anyhow::Result;
 use tracing::info;
 use vc_server::{api, chat, config, db, email, voice};
 
+/// Upper bound for draining the telemetry ingestion workers on shutdown.
+const INGESTION_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize rustls crypto provider (required for WebRTC)
@@ -457,19 +460,13 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&config.bind_address).await?;
     info!(address = %config.bind_address, "Server listening");
 
-    // Graceful shutdown handler with proper cleanup
-    let shutdown_signal = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to install CTRL+C signal handler");
-        info!("Received shutdown signal, initiating graceful shutdown...");
-    };
-
+    // Graceful shutdown on Ctrl-C or SIGTERM (container stop), with cleanup
+    // of the background tasks below.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal)
+    .with_graceful_shutdown(vc_server::shutdown::shutdown_signal())
     .await?;
 
     // =========================================================================
@@ -510,12 +507,30 @@ async fn main() -> Result<()> {
     drop(meter_provider);
     info!("OTel providers shut down, draining ingestion channels...");
 
-    // 3. Wait for ingestion workers to drain (no abort — they exit when their channel senders are
-    //    dropped above).
-    let _ = ingestion_handles.log_handle.await;
-    let _ = ingestion_handles.span_handle.await;
-    let _ = ingestion_handles.metric_handle.await;
-    info!("Ingestion workers drained");
+    // 3. Wait for ingestion workers to drain. They exit when their channel senders are dropped, but
+    //    the global tracing subscriber keeps the log sender alive, so the wait is bounded and
+    //    whatever is still running is aborted (the process must stop within the container's grace
+    //    period).
+    let mut log_handle = ingestion_handles.log_handle;
+    let mut span_handle = ingestion_handles.span_handle;
+    let mut metric_handle = ingestion_handles.metric_handle;
+    let drained = tokio::time::timeout(INGESTION_DRAIN_TIMEOUT, async {
+        let _ = (&mut log_handle).await;
+        let _ = (&mut span_handle).await;
+        let _ = (&mut metric_handle).await;
+    })
+    .await;
+    if drained.is_ok() {
+        info!("Ingestion workers drained");
+    } else {
+        log_handle.abort();
+        span_handle.abort();
+        metric_handle.abort();
+        tracing::warn!(
+            timeout = ?INGESTION_DRAIN_TIMEOUT,
+            "Ingestion workers did not drain in time; stopped"
+        );
+    }
 
     // 4. Close database pool gracefully
     db_pool.close().await;

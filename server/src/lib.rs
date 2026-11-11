@@ -34,6 +34,7 @@ pub mod search;
 pub mod security_events;
 pub mod settings;
 pub mod setup;
+pub mod shutdown;
 pub mod social;
 pub mod system_account;
 pub mod util;

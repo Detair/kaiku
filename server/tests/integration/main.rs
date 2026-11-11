@@ -97,6 +97,7 @@ mod setup;
 mod setup_concurrent_http;
 mod setup_http;
 mod setup_integration;
+mod shutdown;
 mod step_up_grants;
 mod system_account;
 mod tenancy_isolation;
