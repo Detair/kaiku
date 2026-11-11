@@ -46,7 +46,7 @@ class WebRtcManagerTest {
     /**
      * Construct a [WebRtcManager] with mocks suitable for tests that exercise
      * signaling/state behavior without needing a real EGL or native PeerConnection.
-     * The provider's `create()` is never invoked unless the test reads `.eglBase`.
+     * The provider's `get()` is never invoked unless the test reads `.eglBase`.
      *
      * [voiceScope] defaults to an `UnconfinedTestDispatcher`-backed [TestScope],
      * which runs continuations synchronously on the calling thread. Tests that

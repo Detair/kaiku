@@ -108,10 +108,10 @@ class WebRtcManager @Inject constructor(
      * Lazy so tests that never touch video rendering never trigger EGL init,
      * and so production startup defers the native cost until first use.
      *
-     * Exposed via the `eglBase` accessor below. One per process, like the factory:
-     * dispose() does not release it.
+     * Exposed via the `eglBase` accessor below. The same process-wide instance the
+     * video decoder of the factory uses ([EglBaseProvider]); dispose() does not release it.
      */
-    private val _eglBase: Lazy<EglBase> = lazy { eglBaseProvider.create() }
+    private val _eglBase: Lazy<EglBase> = lazy { eglBaseProvider.get() }
 
     /** Shared EGL context for video rendering (SurfaceViewRenderer). */
     val eglBase: EglBase get() = _eglBase.value
