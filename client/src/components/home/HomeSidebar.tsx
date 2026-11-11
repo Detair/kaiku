@@ -14,6 +14,8 @@ import NewMessageModal from "./NewMessageModal";
 import UserPanel from "@/components/layout/UserPanel";
 import VoicePanel from "@/components/voice/VoicePanel";
 import { getIncomingRequestCount } from "@/stores/friends";
+import { voiceState } from "@/stores/voice";
+import { getGuildIdForChannel } from "@/stores/guilds";
 import AddFriend from "@/components/social/AddFriend";
 import SearchPanel from "@/components/search/SearchPanel";
 import { createVirtualizer } from "@/lib/virtualizer";
@@ -28,6 +30,16 @@ const HomeSidebar: Component = () => {
   onMount(() => {
     loadDMs();
   });
+
+  // Voice bar on Home only for a server voice channel (NAV-6). A direct
+  // call has its own banner, and the bar's hang-up would end it only half
+  // (W1: it leaves voice but not the call).
+  const inServerVoice = () => {
+    const id = voiceState.channelId;
+    if (!id) return false;
+    if (dmsState.dms.some((d) => d.id === id)) return false;
+    return getGuildIdForChannel(id) !== undefined;
+  };
 
   // Sort DMs by last_message timestamp (descending)
   const sortedDMs = createMemo(() => {
@@ -55,7 +67,7 @@ const HomeSidebar: Component = () => {
       <div class="px-3 py-2 mt-2">
         <button
           onClick={() => setShowDMSearch(true)}
-          class="w-full px-3 py-2 rounded-xl text-sm text-text-muted text-left outline-none border border-white/5"
+          class="w-full px-3 py-2 rounded-xl text-sm text-text-muted text-left outline-none border border-white/5 truncate whitespace-nowrap"
           style={{"background-color":"var(--color-surface-base)"}}
         >
           {t("home.sidebar.findConversation")}
@@ -208,7 +220,9 @@ const HomeSidebar: Component = () => {
       </div>
 
       {/* Voice Panel: a running voice session stays controllable on Home (NAV-6) */}
-      <VoicePanel />
+      <Show when={inServerVoice()}>
+        <VoicePanel />
+      </Show>
 
       {/* User Panel (Bottom) */}
       <UserPanel />

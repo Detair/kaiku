@@ -3,10 +3,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@solidjs/testing-library";
 
-const state = vi.hoisted(() => ({ incoming: 0 }));
+const state = vi.hoisted(() => ({
+  incoming: 0,
+  voice: { channelId: null as string | null },
+  dms: [] as { id: string }[],
+}));
 
+vi.mock("@/stores/voice", () => ({ voiceState: state.voice }));
+vi.mock("@/stores/guilds", () => ({
+  getGuildIdForChannel: (id: string) => (id === "server-voice" ? "g1" : undefined),
+}));
 vi.mock("@/stores/dms", () => ({
-  dmsState: { dms: [], isLoading: false, isShowingFriends: true },
+  dmsState: {
+    get dms() {
+      return state.dms;
+    },
+    isLoading: false,
+    isShowingFriends: true,
+  },
   loadDMs: vi.fn(),
   selectFriendsTab: vi.fn(),
 }));
@@ -25,11 +39,26 @@ describe("HomeSidebar", () => {
   beforeEach(() => {
     cleanup();
     state.incoming = 0;
+    state.voice.channelId = null;
+    state.dms = [];
   });
 
-  it("keeps the voice panel on Home so a running call stays controllable", () => {
+  it("keeps the voice panel on Home while in a server voice channel", () => {
+    state.voice.channelId = "server-voice";
     render(() => <HomeSidebar />);
     expect(screen.getByTestId("voice-panel-slot")).toBeTruthy();
+  });
+
+  it("leaves a direct call to its banner: no voice panel for a DM (W1)", () => {
+    state.voice.channelId = "dm-call";
+    state.dms = [{ id: "dm-call" }];
+    render(() => <HomeSidebar />);
+    expect(screen.queryByTestId("voice-panel-slot")).toBeNull();
+  });
+
+  it("shows no voice panel when not in a call", () => {
+    render(() => <HomeSidebar />);
+    expect(screen.queryByTestId("voice-panel-slot")).toBeNull();
   });
 
   it("always shows a labelled New Message button", () => {
