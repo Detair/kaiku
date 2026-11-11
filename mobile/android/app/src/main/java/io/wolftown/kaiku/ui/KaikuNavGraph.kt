@@ -57,6 +57,8 @@ import io.wolftown.kaiku.ui.dm.DmListScreen
 import io.wolftown.kaiku.ui.home.HomeScreen
 import io.wolftown.kaiku.ui.settings.SettingsScreen
 import io.wolftown.kaiku.ui.voice.VoiceChannelScreen
+import io.wolftown.kaiku.data.voice.VoiceLinkState
+import io.wolftown.kaiku.ui.voice.VoiceEndNoticeBar
 import io.wolftown.kaiku.ui.voice.VoiceOverlay
 import io.wolftown.kaiku.ui.voice.VoiceOverlayViewModel
 import io.wolftown.kaiku.ui.voice.VOICE_ROUTE
@@ -185,6 +187,8 @@ fun KaikuNavGraph(
     val voiceChannelId by voiceOverlayViewModel.currentChannelId.collectAsState()
     val voiceChannelName by voiceOverlayViewModel.channelName.collectAsState()
     val voiceIsMuted by voiceOverlayViewModel.isMuted.collectAsState()
+    val voiceLinkState by voiceOverlayViewModel.linkState.collectAsState()
+    val voiceEndNotice by voiceOverlayViewModel.endNotice.collectAsState()
     val showOverlay = shouldShowVoiceOverlay(voiceChannelId, currentRoute)
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -437,11 +441,21 @@ fun KaikuNavGraph(
             }
         }
 
+        // Why a call ended on its own (rejoin failed, removed): every screen, with Rejoin where it applies.
+        voiceEndNotice?.let { notice ->
+            VoiceEndNoticeBar(
+                notice = notice,
+                onRejoin = { voiceOverlayViewModel.onRejoin() },
+                onDismiss = { voiceOverlayViewModel.onDismissNotice() }
+            )
+        }
+
         // Voice overlay bar — visible on non-voice screens when in a voice channel
         if (showOverlay) {
             VoiceOverlay(
                 channelName = voiceChannelName,
                 isMuted = voiceIsMuted,
+                reconnecting = voiceLinkState != VoiceLinkState.Stable,
                 onMuteToggle = { voiceOverlayViewModel.onToggleMute() },
                 onTap = {
                     voiceChannelId?.let { channelId ->

@@ -174,6 +174,13 @@ class WebRtcManager @Inject constructor(
     /** Called when an SDP or ICE error occurs that prevents voice connection. */
     @Volatile var onError: ((String) -> Unit)? = null
 
+    /**
+     * Called when either peer connection reports ICE `DISCONNECTED` (may
+     * recover by itself) or `FAILED` (will not). The caller decides what to do;
+     * nothing is torn down here.
+     */
+    @Volatile var onIceTrouble: ((IceTrouble) -> Unit)? = null
+
     // -- Lifecycle ------------------------------------------------------------
 
     /**
@@ -574,10 +581,14 @@ class WebRtcManager @Inject constructor(
             logger.info("Subscriber ICE connection state: $state")
             subscriberIceState.value = state
             when (state) {
-                PeerConnection.IceConnectionState.FAILED ->
-                    onError?.invoke("Voice subscriber connection failed (ICE)")
-                PeerConnection.IceConnectionState.DISCONNECTED ->
+                PeerConnection.IceConnectionState.FAILED -> {
+                    logger.warning("Subscriber ICE failed")
+                    onIceTrouble?.invoke(IceTrouble.Failed)
+                }
+                PeerConnection.IceConnectionState.DISCONNECTED -> {
                     logger.warning("Subscriber ICE disconnected, may recover")
+                    onIceTrouble?.invoke(IceTrouble.Disconnected)
+                }
                 else -> {}
             }
         }
@@ -634,10 +645,14 @@ class WebRtcManager @Inject constructor(
             logger.info("Publisher ICE connection state: $state")
             publisherIceState.value = state
             when (state) {
-                PeerConnection.IceConnectionState.FAILED ->
-                    onError?.invoke("Voice publisher connection failed (ICE)")
-                PeerConnection.IceConnectionState.DISCONNECTED ->
+                PeerConnection.IceConnectionState.FAILED -> {
+                    logger.warning("Publisher ICE failed")
+                    onIceTrouble?.invoke(IceTrouble.Failed)
+                }
+                PeerConnection.IceConnectionState.DISCONNECTED -> {
                     logger.warning("Publisher ICE disconnected, may recover")
+                    onIceTrouble?.invoke(IceTrouble.Disconnected)
+                }
                 else -> {}
             }
         }
@@ -671,6 +686,9 @@ class WebRtcManager @Inject constructor(
         return builder.createIceServer()
     }
 }
+
+/** A degraded ICE state of a peer connection, see [WebRtcManager.onIceTrouble]. */
+enum class IceTrouble { Disconnected, Failed }
 
 /**
  * Base [SdpObserver] adapter that logs failures and propagates them via [onError].

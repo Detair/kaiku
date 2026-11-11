@@ -12,12 +12,16 @@ import io.mockk.unmockkObject
 import io.mockk.verify
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.voice.AudioRouteManager
+import io.wolftown.kaiku.data.voice.IceTrouble
 import io.wolftown.kaiku.data.voice.MicPermissionChecker
 import io.wolftown.kaiku.data.voice.MissingMicPermissionException
+import io.wolftown.kaiku.data.voice.VoiceEndNotice
+import io.wolftown.kaiku.data.voice.VoiceLinkState
 import io.wolftown.kaiku.data.voice.VoiceServiceEvent
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ClientEvent
+import io.wolftown.kaiku.data.ws.ConnectionState
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.service.VoiceCallService
@@ -30,7 +34,9 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -84,6 +90,9 @@ class VoiceRepositoryTest {
     private val onSubscriberAnswerSlot = slot<(String) -> Unit>()
     private val onSubscriberIceSlot = slot<(String) -> Unit>()
 
+    private val connectionState = MutableStateFlow(ConnectionState.Connected)
+    private var iceTrouble: ((IceTrouble) -> Unit)? = null
+
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
@@ -104,6 +113,9 @@ class VoiceRepositoryTest {
         every { VoiceCallService.stop(any()) } answers {}
 
         every { webSocket.events } returns wsEvents
+        every { webSocket.connectionState } returns connectionState
+        every { webSocket.send(any()) } returns true
+        every { webRtcManager.onIceTrouble = any() } answers { iceTrouble = firstArg() }
         every { webRtcManager.voiceIceConnected } returns voiceIceConnected
         every { voiceServiceEvents.events } returns MutableSharedFlow()
 
@@ -288,5 +300,194 @@ class VoiceRepositoryTest {
         repository.leaveChannel()
 
         assertEquals(null, channelAtSend)
+    }
+
+    // -- Rejoin after a lost connection (C32) ---------------------------------
+
+    private suspend fun kotlinx.coroutines.test.TestScope.reconnect() {
+        connectionState.value = ConnectionState.Disconnected
+        runCurrent()
+        connectionState.value = ConnectionState.Connected
+        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        runCurrent()
+    }
+
+    private fun verifyJoins(count: Int) =
+        verify(exactly = count) { webSocket.send(ClientEvent.VoiceJoin("ch-1")) }
+
+    @Test
+    fun `socket loss shows reconnecting without tearing anything down`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+
+        connectionState.value = ConnectionState.Disconnected
+        runCurrent()
+
+        assertEquals(VoiceLinkState.Interrupted, repository.linkState.value)
+        assertEquals("ch-1", repository.currentChannelId.value)
+        verify(exactly = 0) { VoiceCallService.stop(any()) }
+        verify(exactly = 0) { webRtcManager.closePeerConnections() }
+    }
+
+    @Test
+    fun `Ready after a lost socket rejoins after 1 s with fresh peer connections`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        verifyJoins(1)
+
+        reconnect()
+        assertEquals(VoiceLinkState.Rejoining(1), repository.linkState.value)
+        advanceTimeBy(999); runCurrent()
+        verifyJoins(1)
+        advanceTimeBy(1); runCurrent()
+
+        verifyJoins(2)
+        verify(exactly = 1) { webRtcManager.closePeerConnections() }
+        coVerify(exactly = 2) { webRtcManager.createSubscriberPeerConnection() }
+        coVerify(exactly = 2) { webRtcManager.createPublisherOffer() }
+
+        // Both peer connections connect: back to stable, service untouched.
+        voiceIceConnected.value = true
+        runCurrent()
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        assertEquals("ch-1", repository.currentChannelId.value)
+        verify(exactly = 0) { VoiceCallService.stop(any()) }
+        verify(exactly = 1) { VoiceCallService.start(any(), any(), any()) }
+    }
+
+    @Test
+    fun `mute state is restored after a rejoin`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        repository.toggleMute()
+        verify(exactly = 1) { webSocket.send(ClientEvent.VoiceMute("ch-1")) }
+
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+
+        verify(exactly = 2) { webSocket.send(ClientEvent.VoiceMute("ch-1")) }
+        assertTrue(repository.isMuted.value)
+    }
+
+    @Test
+    fun `not muted means no mute event after a rejoin`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+
+        verify(exactly = 0) { webSocket.send(ClientEvent.VoiceMute("ch-1")) }
+    }
+
+    @Test
+    fun `own leave cancels a pending rejoin`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(500); runCurrent()
+
+        repository.leaveChannel()
+        advanceTimeBy(60_000); runCurrent()
+
+        verifyJoins(1)
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        assertEquals(null, repository.endNotice.value)
+    }
+
+    @Test
+    fun `a Ready without a voice session does nothing`() = runTest {
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(60_000); runCurrent()
+
+        verify(exactly = 0) { webSocket.send(ofType<ClientEvent.VoiceJoin>()) }
+    }
+
+    @Test
+    fun `three failed attempts clear the voice state stop the service and offer rejoin`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+
+        // 1 s + 10 s timeout, 3 s + 10 s, 9 s + 10 s
+        advanceTimeBy(43_000); runCurrent()
+
+        verifyJoins(4)
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(VoiceEndNotice.RejoinFailed("ch-1"), repository.endNotice.value)
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        verify(atLeast = 1) { VoiceCallService.stop(any()) }
+        verify { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+
+        // Nothing re-arms by itself.
+        advanceTimeBy(60_000); runCurrent()
+        verifyJoins(4)
+    }
+
+    @Test
+    fun `rejoin action after giving up joins the channel again`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(43_000); runCurrent()
+
+        repository.rejoin()
+        advanceUntilIdle()
+
+        assertEquals("ch-1", repository.currentChannelId.value)
+        assertEquals(null, repository.endNotice.value)
+    }
+
+    @Test
+    fun `server still holding the old peer gets one leave and join`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        verifyJoins(2)
+
+        wsEvents.emit(ServerEvent.VoiceError(code = "VOICE_ERROR", message = "Already in voice channel"))
+        runCurrent()
+
+        verify(exactly = 1) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+        verifyJoins(3)
+        // The error belongs to the attempt, not to the user.
+        assertEquals(null, repository.error.value)
+
+        // A second "already joined" in the same attempt fails it (no loop).
+        wsEvents.emit(ServerEvent.VoiceError(code = "VOICE_ERROR", message = "Already in voice channel"))
+        runCurrent()
+        verifyJoins(3)
+        verify(exactly = 1) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+    }
+
+    @Test
+    fun `ice disconnected only shows reconnecting`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+
+        iceTrouble!!.invoke(IceTrouble.Disconnected)
+        assertEquals(VoiceLinkState.Interrupted, repository.linkState.value)
+        advanceTimeBy(60_000); runCurrent()
+
+        verifyJoins(1)
+        verify(exactly = 0) { webRtcManager.closePeerConnections() }
+
+        voiceIceConnected.value = true
+        runCurrent()
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+    }
+
+    @Test
+    fun `ice failed on a live socket rejoins like a lost socket`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+
+        iceTrouble!!.invoke(IceTrouble.Failed)
+        advanceTimeBy(1_000); runCurrent()
+
+        verifyJoins(2)
+        verify(exactly = 1) { webRtcManager.closePeerConnections() }
     }
 }

@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.voice.VoiceLinkState
 import io.wolftown.kaiku.data.voice.AudioRoute
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.VoiceParticipant
@@ -67,6 +68,7 @@ fun VoiceChannelScreen(
     val participants by viewModel.participants.collectAsState()
     val isMuted by viewModel.isMuted.collectAsState()
     val isConnected by viewModel.isConnected.collectAsState()
+    val linkState by viewModel.linkState.collectAsState()
     val isInChannel by viewModel.isInChannel.collectAsState()
     val screenShares by viewModel.screenShares.collectAsState()
     val remoteVideoTracks by viewModel.remoteVideoTracks.collectAsState()
@@ -217,6 +219,17 @@ fun VoiceChannelScreen(
             if (isInChannel && !isConnected) {
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (isInChannel && linkState != VoiceLinkState.Stable) {
+                Text(
+                    text = stringResource(R.string.voice_reconnecting),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    textAlign = TextAlign.Center
                 )
             }
 

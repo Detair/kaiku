@@ -14,6 +14,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import io.wolftown.kaiku.R
+import io.wolftown.kaiku.data.voice.VoiceEndNotice
 
 /**
  * Compact bar shown at the bottom of other screens while a voice call runs
@@ -27,6 +28,7 @@ import io.wolftown.kaiku.R
 fun VoiceOverlay(
     channelName: String?,
     isMuted: Boolean,
+    reconnecting: Boolean = false,
     onMuteToggle: () -> Unit,
     onTap: () -> Unit,
     onDisconnect: () -> Unit
@@ -50,7 +52,9 @@ fun VoiceOverlay(
                 modifier = Modifier.weight(1f)
             ) {
                 Text(
-                    text = if (channelName != null) {
+                    text = if (reconnecting) {
+                        stringResource(R.string.voice_reconnecting)
+                    } else if (channelName != null) {
                         stringResource(R.string.voice_overlay_connected, channelName)
                     } else {
                         stringResource(R.string.voice_overlay_connected_unknown)
@@ -85,6 +89,41 @@ fun VoiceOverlay(
                     tint = MaterialTheme.colorScheme.error
                 )
             }
+        }
+    }
+}
+
+/**
+ * One line saying why the call ended without the user leaving, with a
+ * "Rejoin" action when the notice allows it. Shown on every screen.
+ */
+@Composable
+fun VoiceEndNoticeBar(
+    notice: VoiceEndNotice,
+    onRejoin: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.errorContainer,
+        tonalElevation = 4.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = stringResource(notice.message),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                modifier = Modifier.weight(1f)
+            )
+            if (notice.canRejoin) {
+                TextButton(onClick = onRejoin) { Text(stringResource(R.string.voice_rejoin)) }
+            }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.voice_notice_dismiss)) }
         }
     }
 }

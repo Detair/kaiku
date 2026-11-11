@@ -232,6 +232,10 @@
     <string name="voice_join_failed">Couldn\'t join the voice channel.</string>
     <string name="voice_start_failed">Couldn\'t start the voice call. Check that Kaiku may use the microphone and run in the background.</string>
     <string name="voice_connection_error">Voice connection problem.</string>
+    <string name="voice_reconnecting">Reconnecting…</string>
+    <string name="voice_rejoin">Rejoin</string>
+    <string name="voice_rejoin_failed">Couldn\'t reconnect to the voice channel.</string>
+    <string name="voice_notice_dismiss">Dismiss</string>
     <string name="notif_channel_dm_name">Direct messages</string>
     <string name="notif_channel_dm_description">New direct messages</string>
     <string name="notif_channel_mentions_name">Mentions</string>

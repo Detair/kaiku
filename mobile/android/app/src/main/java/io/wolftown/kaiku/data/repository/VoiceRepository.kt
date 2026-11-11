@@ -6,12 +6,17 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.voice.AudioRouteManager
+import io.wolftown.kaiku.data.voice.IceTrouble
 import io.wolftown.kaiku.data.voice.MicPermissionChecker
 import io.wolftown.kaiku.data.voice.MissingMicPermissionException
+import io.wolftown.kaiku.data.voice.VoiceEndNotice
+import io.wolftown.kaiku.data.voice.VoiceLinkState
+import io.wolftown.kaiku.data.voice.VoiceRecovery
 import io.wolftown.kaiku.data.voice.VoiceServiceEvent
 import io.wolftown.kaiku.data.voice.VoiceServiceEvents
 import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ClientEvent
+import io.wolftown.kaiku.data.ws.ConnectionState
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.ServerEvent
@@ -19,6 +24,7 @@ import io.wolftown.kaiku.data.ws.VoiceParticipant
 import io.wolftown.kaiku.di.VoiceCoroutineScope
 import io.wolftown.kaiku.service.VoiceCallService
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -69,6 +75,43 @@ class VoiceRepository @Inject constructor(
         voiceScope.coroutineContext + SupervisorJob(voiceScope.coroutineContext[Job])
     )
     private val leaveMutex = Mutex()
+
+    /** Result of one rejoin attempt, completed by ICE and `voice_error` events. */
+    private enum class AttemptResult { Connected, Failed, AlreadyJoined }
+
+    /** The running rejoin attempt, if any (C32). */
+    @Volatile
+    private var attempt: CompletableDeferred<AttemptResult>? = null
+
+    private val recovery = VoiceRecovery(
+        scope = scope,
+        rejoin = ::rejoinOnce,
+        onGaveUp = ::onRejoinGaveUp,
+    )
+
+    /**
+     * Whether the call is connected, interrupted (ICE trouble or WebSocket down,
+     * waiting) or being rejoined. Drives the "reconnecting" indication in the
+     * voice screen, the overlay and the ongoing-call notification.
+     */
+    val linkState: StateFlow<VoiceLinkState> = recovery.state
+
+    private val _endNotice = MutableStateFlow<VoiceEndNotice?>(null)
+    /**
+     * Why the last call ended without the user leaving (rejoin gave up), with
+     * the "Rejoin" action. Cleared by [dismissEndNotice], [rejoin] and any new join.
+     */
+    val endNotice: StateFlow<VoiceEndNotice?> = _endNotice.asStateFlow()
+
+    init {
+        // Channel-independent: outlives single calls. A new socket's `Ready`
+        // is handled with the other voice events ([handleServerEvent]).
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            webSocket.connectionState.collect { state ->
+                if (state != ConnectionState.Connected) recovery.onSocketLost()
+            }
+        }
+    }
 
     /** The running [startJoin] job; guarded by [joinLock]. */
     private val joinLock = Any()
@@ -143,6 +186,8 @@ class VoiceRepository @Inject constructor(
 
         try {
             _currentChannelId.value = channelId
+            _endNotice.value = null
+            recovery.begin(channelId, socketUp = webSocket.connectionState.value == ConnectionState.Connected)
 
             // 1. Initialize WebRTC
             webRtcManager.initialize()
@@ -151,26 +196,7 @@ class VoiceRepository @Inject constructor(
             webRtcManager.createSubscriberPeerConnection()
 
             // 3. Wire up signaling callbacks (both PCs)
-            webRtcManager.onPublisherOffer = { sdp ->
-                webSocket.send(ClientEvent.VoicePublisherOffer(channelId, sdp))
-            }
-            webRtcManager.onPublisherIceCandidate = { candidateJson ->
-                webSocket.send(
-                    ClientEvent.VoiceIceCandidate(channelId, candidateJson, pcType = "publisher")
-                )
-            }
-            webRtcManager.onSubscriberAnswer = { sdp ->
-                webSocket.send(ClientEvent.VoiceSubscriberAnswer(channelId, sdp))
-            }
-            webRtcManager.onSubscriberIceCandidate = { candidateJson ->
-                webSocket.send(
-                    ClientEvent.VoiceIceCandidate(channelId, candidateJson, pcType = "subscriber")
-                )
-            }
-            webRtcManager.onError = { errorMsg ->
-                _error.value = R.string.voice_connection_error
-                logger.warning("WebRTC error: $errorMsg")
-            }
+            wirePeerCallbacks(channelId)
 
             // Start collecting WebSocket events
             startCollectingEvents(channelId)
@@ -179,6 +205,10 @@ class VoiceRepository @Inject constructor(
             iceConnectedJob = scope.launch {
                 webRtcManager.voiceIceConnected.collect { bothConnected ->
                     _isConnected.value = bothConnected
+                    if (bothConnected) {
+                        recovery.onIceConnected()
+                        attempt?.complete(AttemptResult.Connected)
+                    }
                 }
             }
 
@@ -284,6 +314,8 @@ class VoiceRepository @Inject constructor(
      */
     suspend fun leaveChannel() {
         val joiningOrJoined = _currentChannelId.value
+        // An own leave cancels any pending rejoin before anything else.
+        recovery.end()
         cancelJoin()
         leaveMutex.withLock {
             val channelId = _currentChannelId.value ?: joiningOrJoined ?: return@withLock
@@ -384,6 +416,121 @@ class VoiceRepository @Inject constructor(
         }
     }
 
+    // -- Rejoin (C32) ---------------------------------------------------------
+
+    /** Signaling callbacks of both peer connections for [channelId]. */
+    private fun wirePeerCallbacks(channelId: String) {
+        webRtcManager.onPublisherOffer = { sdp ->
+            webSocket.send(ClientEvent.VoicePublisherOffer(channelId, sdp))
+        }
+        webRtcManager.onPublisherIceCandidate = { candidateJson ->
+            webSocket.send(
+                ClientEvent.VoiceIceCandidate(channelId, candidateJson, pcType = "publisher")
+            )
+        }
+        webRtcManager.onSubscriberAnswer = { sdp ->
+            webSocket.send(ClientEvent.VoiceSubscriberAnswer(channelId, sdp))
+        }
+        webRtcManager.onSubscriberIceCandidate = { candidateJson ->
+            webSocket.send(
+                ClientEvent.VoiceIceCandidate(channelId, candidateJson, pcType = "subscriber")
+            )
+        }
+        webRtcManager.onError = { errorMsg ->
+            _error.value = R.string.voice_connection_error
+            logger.warning("WebRTC error: $errorMsg")
+        }
+        webRtcManager.onIceTrouble = { trouble ->
+            when (trouble) {
+                // Indication only; ICE may recover by itself.
+                IceTrouble.Disconnected -> recovery.onIceDisconnected()
+                IceTrouble.Failed -> {
+                    attempt?.complete(AttemptResult.Failed)
+                    recovery.onIceFailed()
+                }
+            }
+        }
+    }
+
+    /**
+     * One rejoin attempt for [VoiceRecovery]: discards the old peer connections,
+     * sends `voice_join` again, restores the mute state and waits until both
+     * peer connections are connected. The foreground service, audio focus and
+     * the voice state stay as they are. If the server still holds the old peer
+     * ("Already in voice channel"), sends `voice_leave` and joins once more.
+     */
+    private suspend fun rejoinOnce(channelId: String): Boolean {
+        var leftOnce = false
+        while (true) {
+            when (runAttempt(channelId)) {
+                AttemptResult.Connected -> return true
+                AttemptResult.Failed -> return false
+                AttemptResult.AlreadyJoined -> {
+                    if (leftOnce) return false
+                    leftOnce = true
+                    webSocket.send(ClientEvent.VoiceLeave(channelId))
+                }
+            }
+        }
+    }
+
+    private suspend fun runAttempt(channelId: String): AttemptResult {
+        if (_currentChannelId.value != channelId) return AttemptResult.Failed
+        val result = CompletableDeferred<AttemptResult>()
+        attempt = result
+        try {
+            logger.info("Rejoining voice channel: $channelId")
+            webRtcManager.closePeerConnections()
+            webRtcManager.createSubscriberPeerConnection()
+            if (!webSocket.send(ClientEvent.VoiceJoin(channelId))) return AttemptResult.Failed
+            if (_isMuted.value) {
+                // The new server-side peer starts unmuted; the local track stays disabled.
+                webSocket.send(ClientEvent.VoiceMute(channelId))
+            }
+            webRtcManager.createPublisherOffer()
+            return result.await()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.log(Level.WARNING, "Voice rejoin attempt failed: ${e::class.simpleName}")
+            return AttemptResult.Failed
+        } finally {
+            if (attempt === result) attempt = null
+        }
+    }
+
+    /**
+     * All attempts failed: ends the call locally (clears state, stops the
+     * foreground service) and offers "Rejoin" through [endNotice].
+     */
+    private fun onRejoinGaveUp(channelId: String) {
+        scope.launch {
+            leaveMutex.withLock {
+                if (_currentChannelId.value != channelId) return@withLock
+                _currentChannelId.value = null
+                try {
+                    webSocket.send(ClientEvent.VoiceLeave(channelId))
+                } catch (e: Exception) {
+                    logger.log(Level.WARNING, "Failed to send VoiceLeave", e)
+                }
+                cleanUp()
+                _endNotice.value = VoiceEndNotice.RejoinFailed(channelId)
+                logger.warning("Voice rejoin gave up: $channelId")
+            }
+        }
+    }
+
+    /** The "Rejoin" action of [endNotice]: joins the same channel again. */
+    fun rejoin() {
+        val notice = _endNotice.value as? VoiceEndNotice.RejoinFailed ?: return
+        _endNotice.value = null
+        startJoin(notice.channelId)
+    }
+
+    fun dismissEndNotice() {
+        _endNotice.value = null
+    }
+
     // -- Internal -------------------------------------------------------------
 
     private fun cleanUp() {
@@ -404,6 +551,9 @@ class VoiceRepository @Inject constructor(
         webRtcManager.onSubscriberAnswer = null
         webRtcManager.onSubscriberIceCandidate = null
         webRtcManager.onError = null
+        webRtcManager.onIceTrouble = null
+        attempt?.complete(AttemptResult.Failed)
+        recovery.end()
 
         // Abandon audio focus
         audioRouteManager.abandonAudioFocus()
@@ -435,6 +585,12 @@ class VoiceRepository @Inject constructor(
 
     private fun handleServerEvent(channelId: String, event: ServerEvent) {
         when (event) {
+            // A new socket is authenticated; the server dropped our old peer when
+            // the old socket closed. Text re-subscription runs on the same event
+            // ([io.wolftown.kaiku.data.sync.ResyncCoordinator]) and the first
+            // attempt follows 1 s later.
+            is ServerEvent.Ready -> recovery.onSocketReady()
+
             is ServerEvent.VoiceRoomState -> {
                 if (event.channelId == channelId) {
                     _participants.value = event.participants
@@ -552,8 +708,16 @@ class VoiceRepository @Inject constructor(
             }
 
             is ServerEvent.VoiceError -> {
-                _error.value = R.string.voice_connection_error
                 logger.warning("Voice error from server: code=${event.code} message=${event.message}")
+                val running = attempt
+                if (running != null) {
+                    // During a rejoin the error belongs to the attempt, not to the user.
+                    running.complete(
+                        if (isAlreadyJoined(event)) AttemptResult.AlreadyJoined else AttemptResult.Failed
+                    )
+                } else {
+                    _error.value = R.string.voice_connection_error
+                }
             }
 
             is ServerEvent.Error -> {
@@ -564,3 +728,12 @@ class VoiceRepository @Inject constructor(
         }
     }
 }
+
+/**
+ * The server still holds this user's old peer. Today it sends the code
+ * `VOICE_ERROR` with the text "Already in voice channel"; a dedicated
+ * `ALREADY_JOINED` code is accepted too.
+ */
+private fun isAlreadyJoined(event: ServerEvent.VoiceError): Boolean =
+    event.code.equals("ALREADY_JOINED", ignoreCase = true) ||
+        event.message.contains("already in voice channel", ignoreCase = true)
