@@ -9,7 +9,6 @@ import { ArrowLeft, Edit, Trash2, Clock, History } from "lucide-solid";
 import type { Page } from "@/lib/types";
 import MarkdownPreview from "./MarkdownPreview";
 import { createConfirm } from "@/components/admin/confirmHost";
-import { actionErrorText } from "@/components/admin/actionErrors";
 import { t } from "@/i18n";
 
 interface PageViewProps {
@@ -56,8 +55,9 @@ export default function PageView(props: PageViewProps) {
     try {
       await props.onDelete?.();
     } catch (err) {
+      // The dialog stays open and says why (K2).
       console.error("Failed to delete page:", err);
-      setDeleteError(`${t("guildSettings.pages.deleteFailed")} ${actionErrorText(err)}`);
+      throw err;
     } finally {
       setIsDeleting(false);
     }

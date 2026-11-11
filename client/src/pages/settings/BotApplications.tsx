@@ -108,13 +108,8 @@ const BotApplications: Component = () => {
       setShowTokenModal(true);
       loadApplications();
     } catch (error) {
-      showToast({
-        type: "error",
-        title: "Failed to create bot user",
-        message:
-          actionErrorText(error),
-        duration: 8000,
-      });
+      // The dialog stays open and says why (K2).
+      throw error;
     }
   }
 
@@ -141,13 +136,8 @@ const BotApplications: Component = () => {
         duration: 3000,
       });
     } catch (error) {
-      showToast({
-        type: "error",
-        title: "Failed to reset token",
-        message:
-          actionErrorText(error),
-        duration: 8000,
-      });
+      // The dialog stays open and says why (K2).
+      throw error;
     }
   }
 
@@ -173,13 +163,8 @@ const BotApplications: Component = () => {
       });
       loadApplications();
     } catch (error) {
-      showToast({
-        type: "error",
-        title: "Failed to delete application",
-        message:
-          actionErrorText(error),
-        duration: 8000,
-      });
+      // The dialog stays open and says why (K2).
+      throw error;
     }
   }
 

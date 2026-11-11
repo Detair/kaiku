@@ -22,6 +22,7 @@ vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 vi.mock("@/components/pages/MarkdownPreview", () => ({ default: () => null }));
 
 import AdminSettings from "../AdminSettings";
+import { HttpError } from "@/lib/tauri/common";
 import PageView from "@/components/pages/PageView";
 
 beforeEach(() => {
@@ -43,6 +44,36 @@ describe("AdminSettings registration (ADMIN-17)", () => {
     await waitFor(() =>
       expect(api.adminUpdateAuthSettings).toHaveBeenCalledWith(expect.objectContaining({ registration_policy: "open" })),
     );
+  });
+});
+
+describe("confirmations stay open on failure (K2)", () => {
+  it("opening registration: a refusal keeps the dialog open with a sentence, no raw text", async () => {
+    api.adminUpdateAuthSettings.mockRejectedValue(new HttpError(403, "raw server text", "FORBIDDEN"));
+    render(() => <AdminSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Open/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, open for everyone" }));
+    const alert = await screen.findByRole("alert");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(alert.textContent).not.toContain("raw server text");
+    expect(document.body.textContent).not.toContain("raw server text");
+  });
+
+  it("deleting a page: a failure keeps the dialog open", async () => {
+    const onDelete = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    render(() => (
+      <PageView
+        page={{ id: "p1", title: "Hausregeln", slug: "h", content: "", requires_acceptance: false, updated_at: "2026-01-01T00:00:00Z", created_at: "2026-01-01T00:00:00Z" } as never}
+        canEdit
+        onDelete={onDelete}
+      />
+    ));
+    fireEvent.click(screen.getByRole("button", { name: /Delete/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete page" }));
+    await waitFor(() => expect(onDelete).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.querySelector("[role=alert]")?.textContent).toContain("Can't reach the server");
   });
 });
 

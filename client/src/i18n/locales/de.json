@@ -98,6 +98,7 @@
   "admin.settings.openBody": "",
   "admin.settings.openConfirm": "",
   "admin.settings.openTitle": "",
+  "admin.settings.saved": "",
   "admin.userSecurity.allowPasswordAgain": "",
   "admin.userSecurity.allowTotpAgain": "",
   "admin.userSecurity.authenticators": "",

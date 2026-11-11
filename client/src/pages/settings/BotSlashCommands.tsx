@@ -203,13 +203,8 @@ const BotSlashCommands: Component = () => {
       });
       loadCommands();
     } catch (error) {
-      showToast({
-        type: "error",
-        title: "Failed to delete command",
-        message:
-          actionErrorText(error),
-        duration: 8000,
-      });
+      // The dialog stays open and says why (K2).
+      throw error;
     }
   }
 
@@ -235,13 +230,8 @@ const BotSlashCommands: Component = () => {
       });
       loadCommands();
     } catch (error) {
-      showToast({
-        type: "error",
-        title: "Failed to delete commands",
-        message:
-          actionErrorText(error),
-        duration: 8000,
-      });
+      // The dialog stays open and says why (K2).
+      throw error;
     }
   }
 

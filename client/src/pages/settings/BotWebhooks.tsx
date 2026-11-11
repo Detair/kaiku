@@ -156,12 +156,8 @@ const BotWebhooks: Component = () => {
       await loadData();
       showToast({ type: "success", title: "Webhook deleted", duration: 3000 });
     } catch (error) {
-      showToast({
-        type: "error",
-        title: "Failed to delete webhook",
-        message: actionErrorText(error),
-        duration: 8000,
-      });
+      // The dialog stays open and says why (K2).
+      throw error;
     }
   }
 

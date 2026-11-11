@@ -181,4 +181,5 @@ export const admin = {
   "admin.servers.selected.one": "{{count}} server selected",
   "admin.servers.selected.other": "{{count}} servers selected",
   "admin.servers.bulkSuspend": "Suspend selected",
+  "admin.settings.saved": "Settings saved",
 } as const satisfies Record<`admin.${string}`, string>;

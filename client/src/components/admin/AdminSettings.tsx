@@ -114,6 +114,8 @@ const AdminSettings: Component = () => {
   const saveAuthSettings = async (
     methods?: AuthMethodsConfig,
     policy?: string,
+    /** From a confirmation: let it fail so the dialog stays open with the reason (K2). */
+    rethrow = false,
   ) => {
     setState({ isSaving: true, error: null, success: null });
     try {
@@ -125,14 +127,15 @@ const AdminSettings: Component = () => {
         authMethods: result.auth_methods,
         registrationPolicy: result.registration_policy,
         isSaving: false,
-        success: "Settings saved",
+        success: t("admin.settings.saved"),
       });
       setTimeout(() => setState({ success: null }), 3000);
     } catch (err) {
       setState({
         isSaving: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: rethrow ? null : actionErrorText(err, "admin.action.failed"),
       });
+      if (rethrow) throw err;
     }
   };
 
@@ -167,7 +170,7 @@ const AdminSettings: Component = () => {
         message: t("admin.settings.openBody"),
         confirmLabel: t("admin.settings.openConfirm"),
         danger: true,
-        run: () => saveAuthSettings(undefined, policy),
+        run: () => saveAuthSettings(undefined, policy, true),
       });
       return;
     }
@@ -237,7 +240,7 @@ const AdminSettings: Component = () => {
     } catch (err) {
       setState({
         isSaving: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: actionErrorText(err, "admin.action.failed"),
       });
     }
   };
@@ -252,7 +255,7 @@ const AdminSettings: Component = () => {
       setTimeout(() => setState({ success: null }), 3000);
     } catch (err) {
       setState({
-        error: err instanceof Error ? err.message : String(err),
+        error: actionErrorText(err, "admin.action.failed"),
       });
     }
   };
@@ -273,7 +276,7 @@ const AdminSettings: Component = () => {
       await loadSettings();
     } catch (err) {
       setState({
-        error: err instanceof Error ? err.message : String(err),
+        error: actionErrorText(err, "admin.action.failed"),
       });
     }
   };
