@@ -27,6 +27,7 @@
 //!   dispatch, and the `handle_pubsub` forwarder.
 //! - [`bot_events`] / [`bot_gateway`] — Separate WebSocket gateway for bots.
 
+pub mod access;
 pub mod bot_events;
 pub mod bot_gateway;
 pub mod connection_limit;

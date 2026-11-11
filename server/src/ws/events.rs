@@ -105,6 +105,9 @@ pub struct ClientMessageState {
     /// Session of the socket's token (`sid`); admin event subscription needs
     /// this session to be elevated.
     pub session_id: Option<Uuid>,
+    /// Access notices processed by this socket's forwarder (see
+    /// [`super::access::AccessEpoch`]).
+    pub access_epoch: std::sync::Arc<super::access::AccessEpoch>,
 }
 
 /// Default `pc_type` for backward compatibility with old clients.

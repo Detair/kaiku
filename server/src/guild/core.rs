@@ -291,6 +291,11 @@ pub async fn delete_guild(
     crate::presence::connections::finish_guild_revocation(&state.redis, revocation, guild_id, None)
         .await;
     deleted?;
+    crate::ws::access::access_changed(
+        &state,
+        crate::ws::access::AccessChange::GuildDeleted { guild_id },
+    )
+    .await;
 
     Ok(StatusCode::NO_CONTENT)
 }

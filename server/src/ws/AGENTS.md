@@ -142,6 +142,12 @@ let subscribed_channels: Arc<RwLock<HashSet<Uuid>>> = Arc::new(RwLock::new(HashS
 
 **Auto-subscribe on `DmCreated`**: `POST /api/dm` publishes `DmCreated` on `user:{id}` of every participant (creator included) when the DM is newly created (an existing 1:1 DM sends nothing; group DMs are always new). In the `user:{id}` branch of `forward_pubsub_messages`, the socket inserts `channel["id"]` into `subscribed_channels` *before* forwarding the event. Redis keeps publish order on the subscriber connection, so the DM's first `channel:{id}` events (e.g. `MessageNew`) reach the socket without a client `Subscribe`.
 
+**Access revalidation** (`ws::access`): a subscription is checked at `subscribe` and again whenever access may have shrunk.
+- After the commit, kick, leave, ban, role add/remove on a member, role permission edit or delete, channel override set/delete, channel delete and server delete call `access::access_changed`, which publishes the internal `AccessNotice` (`{"type":"access_changed"}`, optional `channel_id`; bounded retry) on `user:{id}` (member changes, ban), `guild:{id}` (role edits, server delete) or `channel:{id}` (override changes, channel delete; only sockets subscribed to it see it, in order with its messages).
+- The forwarder consumes the notice (never forwarded) and re-checks the subscriptions with `require_channel_access` **inline**, before handling the next message, so nothing published after the notice reaches a socket that lost access. Failures are dropped silently (no event to the client); a database error or a re-check over 5 s ends the socket with **1011** (`PubsubExit::AccessCheckFailed`).
+- `subscribe` reads `ClientMessageState.access_epoch` before its check; if a notice was processed meanwhile it checks once more after adding the channel.
+- Backstop: on every session re-check tick (≤ 60 s) the socket re-checks all subscriptions and the admin event flag (`admin_events_allowed`), so a lost notice heals within a minute.
+
 **Unsubscribe**:
 1. Client sends `Unsubscribe { channel_id }` (when navigating away)
 2. Remove from `subscribed_channels`

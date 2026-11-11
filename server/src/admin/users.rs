@@ -438,6 +438,11 @@ pub async fn ban_user(
     .await?;
     end_all_sessions_tx(&state, &mut tx, user_id).await?;
     tx.commit().await?;
+    crate::ws::access::access_changed(
+        &state,
+        crate::ws::access::AccessChange::UserBanned { user_id },
+    )
+    .await;
 
     // Log the action
     let ip_address = addr.ip().to_string();
@@ -603,6 +608,11 @@ pub async fn bulk_ban_users(
             });
             continue;
         }
+        crate::ws::access::access_changed(
+            &state,
+            crate::ws::access::AccessChange::UserBanned { user_id: *user_id },
+        )
+        .await;
         banned_count += 1;
     }
 

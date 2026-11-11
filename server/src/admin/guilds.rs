@@ -451,6 +451,11 @@ pub async fn delete_guild(
     if deleted == 0 {
         return Err(AdminError::NotFound("Guild".to_string()));
     }
+    crate::ws::access::access_changed(
+        &state,
+        crate::ws::access::AccessChange::GuildDeleted { guild_id },
+    )
+    .await;
 
     // Log the action
     let ip_address = addr.ip().to_string();

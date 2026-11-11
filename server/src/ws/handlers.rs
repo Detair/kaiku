@@ -20,6 +20,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use super::access::AccessEpoch;
 use super::connection_limit::{ConnectionPermit, TOO_MANY_CONNECTIONS};
 use super::events::{
     broadcast_to_channel, channels, ClientEvent, ClientMessageState, OutboundMsg, ServerEvent,
@@ -648,6 +649,7 @@ async fn handle_socket(
     // so cleanup can `QUIT` it: fred keeps the connection (and its
     // subscriptions) alive after the last handle is dropped.
     let subscriber = new_subscriber_client(&state.redis);
+    let access_epoch = Arc::new(AccessEpoch::default());
     let (ready_tx, ready_rx) = oneshot::channel();
     let (start_tx, start_rx) = oneshot::channel();
     let mut pubsub_handle: tokio::task::JoinHandle<PubsubExit> = tokio::spawn(handle_pubsub(
@@ -664,6 +666,8 @@ async fn handle_socket(
             presence: presence.clone(),
             audience_tx,
             audience_pending: audience_pending.clone(),
+            db: state.db.clone(),
+            access_epoch: access_epoch.clone(),
         },
         ready_tx,
         start_rx,
@@ -790,6 +794,7 @@ async fn handle_socket(
         // Per-connection mutable state for rate limiting and deduplication
         let mut msg_state = ClientMessageState {
             session_id,
+            access_epoch: access_epoch.clone(),
             ..ClientMessageState::default()
         };
 
@@ -884,7 +889,22 @@ async fn handle_socket(
                 _ = session_recheck.tick() => {
                     let sid = session_id.map(|sid| sid.to_string());
                     match check_session(&state, sid.as_deref(), user_id).await {
-                        SessionCheck::Active => {}
+                        SessionCheck::Active => {
+                            // Backstop for a lost access notice: re-check every
+                            // subscription and the admin event subscription.
+                            if let Err(reason) = recheck_access(
+                                &state,
+                                user_id,
+                                session_id,
+                                &subscribed_channels,
+                                &admin_subscribed,
+                            )
+                            .await
+                            {
+                                exit = Some(reason);
+                                break;
+                            }
+                        }
                         SessionCheck::Revoked => {
                             exit = Some(match send_outbound(&tx, session_revoked_event()).await {
                                 Ok(()) => PubsubExit::SessionRevoked,
@@ -1116,6 +1136,48 @@ async fn backstop_now(trigger: Option<&Arc<tokio::sync::Notify>>) {
     }
 }
 
+/// Whether this socket may receive admin events: a live full session of an
+/// elevated system admin. The cached elevation counts only for a live full
+/// session (the HTTP admin guard's committed-row check, B.4 rev 5): a
+/// probation session never subscribes, even with an old elevation cached.
+async fn admin_events_allowed(state: &AppState, user_id: Uuid, session_id: Option<Uuid>) -> bool {
+    let Some(session_id) = session_id else {
+        return false;
+    };
+    let full = matches!(
+        crate::auth::session_check::load_live(&state.db, session_id).await,
+        Ok(Some(ref s)) if s.user.id == user_id
+            && crate::auth::SessionMeta::from(s).assurance
+                == crate::auth::assurance::Assurance::Full
+    );
+    let admin = matches!(
+        crate::permissions::queries::get_system_admin(&state.db, user_id).await,
+        Ok(Some(_))
+    );
+    full && admin
+        && crate::admin::is_elevated_admin(&state.redis, &state.db, user_id, session_id).await
+}
+
+/// Periodic backstop for access changes whose notice was lost: re-check every
+/// channel subscription and the admin event subscription. A database error
+/// ends the socket (1011) so the client reconnects with fresh checks.
+async fn recheck_access(
+    state: &AppState,
+    user_id: Uuid,
+    session_id: Option<Uuid>,
+    subscribed_channels: &tokio::sync::RwLock<HashSet<Uuid>>,
+    admin_subscribed: &tokio::sync::RwLock<bool>,
+) -> Result<(), PubsubExit> {
+    super::access::revalidate_subscriptions(&state.db, user_id, subscribed_channels, None)
+        .await
+        .map_err(|_| PubsubExit::AccessCheckFailed)?;
+    if *admin_subscribed.read().await && !admin_events_allowed(state, user_id, session_id).await {
+        *admin_subscribed.write().await = false;
+        debug!("Admin {} lost admin events (no longer elevated)", user_id);
+    }
+    Ok(())
+}
+
 /// Handle a client message.
 ///
 /// **Internal:** Exposed for integration tests only.
@@ -1152,6 +1214,7 @@ pub async fn handle_client_message(
         }
 
         ClientEvent::Subscribe { channel_id } => {
+            let epoch = msg_state.access_epoch.current();
             // Verify channel exists
             if db::find_channel_by_id(&state.db, channel_id)
                 .await?
@@ -1184,8 +1247,25 @@ pub async fn handle_client_message(
                 return Ok(());
             }
 
-            // Add to subscribed channels
+            // Add to subscribed channels. An access notice processed while
+            // the check above ran may have missed this channel: check again.
             subscribed_channels.write().await.insert(channel_id);
+            if msg_state.access_epoch.current() != epoch
+                && crate::permissions::require_channel_access(&state.db, user_id, channel_id)
+                    .await
+                    .is_err()
+            {
+                subscribed_channels.write().await.remove(&channel_id);
+                send_outbound(
+                    tx,
+                    OutboundMsg::Event(ServerEvent::Error {
+                        code: "FORBIDDEN".to_string(),
+                        message: "You don't have permission to view this channel".to_string(),
+                    }),
+                )
+                .await?;
+                return Ok(());
+            }
 
             send_outbound(
                 tx,
@@ -1453,29 +1533,7 @@ pub async fn handle_client_message(
             // The cached elevation counts only for a live full session (the
             // HTTP admin guard's committed-row check, B.4 rev 5): a probation
             // session never subscribes, even with an old elevation cached.
-            let is_elevated = match msg_state.session_id {
-                Some(session_id) => {
-                    let full = matches!(
-                        crate::auth::session_check::load_live(&state.db, session_id).await,
-                        Ok(Some(ref s)) if s.user.id == user_id
-                            && crate::auth::SessionMeta::from(s).assurance
-                                == crate::auth::assurance::Assurance::Full
-                    );
-                    let admin = matches!(
-                        crate::permissions::queries::get_system_admin(&state.db, user_id).await,
-                        Ok(Some(_))
-                    );
-                    full && admin
-                        && crate::admin::is_elevated_admin(
-                            &state.redis,
-                            &state.db,
-                            user_id,
-                            session_id,
-                        )
-                        .await
-                }
-                None => false,
-            };
+            let is_elevated = admin_events_allowed(state, user_id, msg_state.session_id).await;
             if !is_elevated {
                 send_outbound(
                     tx,
@@ -1661,6 +1719,10 @@ pub(crate) struct HandlePubsubParams {
     audience_tx: mpsc::Sender<()>,
     /// What the woken socket loop has to recompute.
     audience_pending: Arc<std::sync::Mutex<AudiencePending>>,
+    /// Database for re-checking channel access on an access notice.
+    db: sqlx::PgPool,
+    /// Bumped for every access notice (see [`AccessEpoch`]).
+    access_epoch: Arc<AccessEpoch>,
 }
 
 /// Why a connection's pub/sub pipeline stopped.
@@ -1691,6 +1753,10 @@ pub(crate) enum PubsubExit {
     /// The account was found banned during socket setup; the client was told
     /// with an `error` event `ACCOUNT_BANNED`.
     AccountBanned,
+    /// Channel access could not be re-checked after an access change
+    /// (database error or timeout); the client reconnects and subscribes
+    /// again with fresh checks.
+    AccessCheckFailed,
 }
 
 impl PubsubExit {
@@ -1704,9 +1770,11 @@ impl PubsubExit {
             Self::SessionRevoked | Self::AccountBanned => Some(CLOSE_POLICY_VIOLATION),
             Self::SlowClient | Self::SessionCheckUnavailable => Some(CLOSE_TRY_AGAIN_LATER),
             Self::ClientGone => None,
-            Self::ConnectFailed | Self::SubscribeFailed | Self::StreamEnded | Self::Lagged => {
-                Some(CLOSE_INTERNAL_ERROR)
-            }
+            Self::ConnectFailed
+            | Self::SubscribeFailed
+            | Self::StreamEnded
+            | Self::Lagged
+            | Self::AccessCheckFailed => Some(CLOSE_INTERNAL_ERROR),
         }
     }
 
@@ -1890,6 +1958,24 @@ async fn forward_until_reconnect(
     }
 }
 
+/// Handle an [`super::access::AccessNotice`]: re-check the subscriptions
+/// (`only` that channel, else all) before the next message is forwarded.
+async fn on_access_notice(
+    params: &HandlePubsubParams,
+    only: Option<Uuid>,
+) -> Result<(), PubsubExit> {
+    params.access_epoch.bump();
+    super::access::revalidate_subscriptions(
+        &params.db,
+        params.user_id,
+        &params.subscribed_channels,
+        only,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|_| PubsubExit::AccessCheckFailed)
+}
+
 /// Forward pub/sub messages to the socket's outbound queue until the pipeline
 /// stops, and report why it stopped.
 ///
@@ -1946,6 +2032,17 @@ pub(crate) async fn forward_pubsub_messages(
                 {
                     // Parse and forward the event (with block filtering)
                     if let Some(payload) = message.value.as_str() {
+                        if let Ok(super::access::AccessNotice::AccessChanged {
+                            channel_id: named,
+                        }) = serde_json::from_str(&payload)
+                        {
+                            if let Err(exit) =
+                                on_access_notice(params, Some(named.unwrap_or(channel_id))).await
+                            {
+                                return exit;
+                            }
+                            continue;
+                        }
                         if let Ok(event) = serde_json::from_str::<ServerEvent>(&payload) {
                             // Filter events from blocked users
                             let blocked = params.blocked_users.read().await;
@@ -1979,6 +2076,15 @@ pub(crate) async fn forward_pubsub_messages(
         // Handle user events (user:{uuid}) - for preferences sync across devices
         else if channel_name == user_channel {
             if let Some(payload) = message.value.as_str() {
+                // Internal access notices are consumed here, never forwarded.
+                if let Ok(super::access::AccessNotice::AccessChanged { channel_id }) =
+                    serde_json::from_str(&payload)
+                {
+                    if let Err(exit) = on_access_notice(params, channel_id).await {
+                        return exit;
+                    }
+                    continue;
+                }
                 // Internal session notices are consumed here, never forwarded.
                 if let Ok(notice) =
                     serde_json::from_str::<crate::auth::revocation::SessionNotice>(&payload)
@@ -2123,6 +2229,14 @@ pub(crate) async fn forward_pubsub_messages(
         else if channel_name.starts_with("guild:") {
             // Forward guild/member patch events to all guild members
             if let Some(payload) = message.value.as_str() {
+                if let Ok(super::access::AccessNotice::AccessChanged { channel_id }) =
+                    serde_json::from_str(&payload)
+                {
+                    if let Err(exit) = on_access_notice(params, channel_id).await {
+                        return exit;
+                    }
+                    continue;
+                }
                 if let Ok(crate::presence::connections::PresenceNotice::PresenceAudienceChanged {
                     user_id,
                     revoking,
@@ -2542,6 +2656,9 @@ mod pubsub_tests {
             presence: PresenceState::new(Audience::default(), &[]),
             audience_tx: mpsc::channel(1).0,
             audience_pending: Arc::default(),
+            // Never connected: these tests send no access notices.
+            db: sqlx::PgPool::connect_lazy("postgres://localhost/unused").expect("lazy pool"),
+            access_epoch: Arc::default(),
         };
         (params, rx)
     }

@@ -341,6 +341,14 @@ pub async fn update_role(
     )
     .await?;
 
+    if body.permissions.is_some() {
+        crate::ws::access::access_changed(
+            &state,
+            crate::ws::access::AccessChange::GuildRolesChanged { guild_id },
+        )
+        .await;
+    }
+
     Ok(Json(RoleResponse {
         id: role.0,
         guild_id: role.1,
@@ -401,6 +409,11 @@ pub async fn delete_role(
     can_manage_role(ctx.computed_permissions, actor_position, role.0, None)?;
 
     queries::delete_role(&state.db, role_id).await?;
+    crate::ws::access::access_changed(
+        &state,
+        crate::ws::access::AccessChange::GuildRolesChanged { guild_id },
+    )
+    .await;
 
     Ok(Json(
         serde_json::json!({"deleted": true, "role_id": role_id}),
@@ -464,6 +477,12 @@ pub async fn assign_role(
 
     // Assign role (ignore if already assigned)
     queries::assign_role_to_member(&state.db, guild_id, user_id, role_id, auth.id).await?;
+    // A role can also take access away (channel overrides that deny).
+    crate::ws::access::access_changed(
+        &state,
+        crate::ws::access::AccessChange::MemberRolesChanged { guild_id, user_id },
+    )
+    .await;
 
     // Broadcast the member's new role set so clients update live.
     let role_ids = queries::member_role_ids(&state.db, guild_id, user_id).await?;
@@ -534,6 +553,11 @@ pub async fn remove_role(
     if rows_affected == 0 {
         return Err(RoleError::NotFound);
     }
+    crate::ws::access::access_changed(
+        &state,
+        crate::ws::access::AccessChange::MemberRolesChanged { guild_id, user_id },
+    )
+    .await;
 
     // Broadcast the member's new role set so clients update live.
     let role_ids = queries::member_role_ids(&state.db, guild_id, user_id).await?;

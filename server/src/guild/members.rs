@@ -62,6 +62,14 @@ pub async fn leave_guild(
     )
     .await;
     removed?;
+    crate::ws::access::access_changed(
+        &state,
+        crate::ws::access::AccessChange::MemberLeft {
+            guild_id,
+            user_id: auth.id,
+        },
+    )
+    .await;
 
     // Dispatch MemberLeft to bot ecosystem (non-blocking)
     {
@@ -190,6 +198,11 @@ pub async fn kick_member(
     if rows_affected == 0 {
         return Err(GuildError::NotFound);
     }
+    crate::ws::access::access_changed(
+        &state,
+        crate::ws::access::AccessChange::MemberKicked { guild_id, user_id },
+    )
+    .await;
 
     // Dispatch MemberLeft to bot ecosystem (non-blocking)
     {

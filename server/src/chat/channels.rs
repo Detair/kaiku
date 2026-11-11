@@ -264,6 +264,11 @@ pub async fn delete(
     let deleted = db::delete_channel(&state.db, id).await?;
 
     if deleted {
+        crate::ws::access::access_changed(
+            &state,
+            crate::ws::access::AccessChange::ChannelDeleted { channel_id: id },
+        )
+        .await;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ChatError::ChannelNotFound)
