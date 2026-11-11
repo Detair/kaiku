@@ -40,6 +40,15 @@ const initialState = (): DMsStoreState => ({
 
 const [dmsState, setDmsState] = createStore<DMsStoreState>(initialState());
 
+/** True while the window is visible and focused: someone can read it. */
+export function isWindowActive(): boolean {
+  return (
+    typeof document !== "undefined" &&
+    document.visibilityState === "visible" &&
+    document.hasFocus()
+  );
+}
+
 // Account the store's data belongs to (W3).
 let accountId: string | null = null;
 
@@ -53,6 +62,7 @@ export function bindDMsToAccount(userId: string | null): boolean {
   if (accountId === userId) return false;
   accountId = userId;
   setDmsState(initialState());
+  readNotSaved.clear();
   return true;
 }
 
@@ -172,7 +182,11 @@ export function updateDMLastMessage(channelId: string, message: Message): void {
   // Read only while it is on screen: Home is open and shows this very
   // conversation. In a server the last opened DM stays "selected" but hidden
   // (W2), so its messages must count as unread.
+  // And the window must be in front (R1): in a background tab nobody reads,
+  // so title and Home count must show it. On return, DMConversation marks
+  // it read.
   const isSelectedDM =
+    isWindowActive() &&
     guildsState.activeGuildId === null &&
     dmsState.selectedDMId === channelId &&
     !dmsState.isShowingFriends;
@@ -211,13 +225,26 @@ export async function markDMAsRead(channelId: string, lastMessageId: string): Pr
     setDmsState("dms", dmIndex, "unread_count", 0);
     setDmsState("dms", dmIndex, "last_read_message_id", lastMessageId);
 
+    // Shown as read at once; the server copy is tracked apart, so a failed
+    // save is tried again at the next chance (open, focus, next message).
+    readSaving.set(channelId, lastMessageId);
     try {
       await tauri.markDMAsRead(channelId, lastMessageId);
+      readNotSaved.delete(channelId);
     } catch (err) {
       console.error("[DMs] Failed to mark DM as read:", err);
+      readNotSaved.add(channelId);
+    } finally {
+      if (readSaving.get(channelId) === lastMessageId) readSaving.delete(channelId);
     }
   }
 }
+
+// Conversations shown as read here whose read cursor the server has not
+// stored (the request failed), and the cursor of a request on the way. Not
+// reactive: a failure must not re-run effects (no retry storm).
+const readNotSaved = new Set<string>();
+const readSaving = new Map<string, string>();
 
 /**
  * The conversation is on screen and the window is active: move the read
@@ -230,7 +257,11 @@ export function readVisibleDM(channelId: string, newestMessageId: string | null)
   if (!dm) return;
   const target = newestMessageId ?? dm.last_message_id ?? null;
   if (!target) return;
-  if (dm.last_read_message_id === target && dm.unread_count === 0) return;
+  // The same cursor is already on its way; a newer one goes out (the server
+  // only moves forward).
+  if (readSaving.get(channelId) === target) return;
+  const shownRead = dm.last_read_message_id === target && dm.unread_count === 0;
+  if (shownRead && !readNotSaved.has(channelId)) return;
   void markDMAsRead(channelId, target);
 }
 

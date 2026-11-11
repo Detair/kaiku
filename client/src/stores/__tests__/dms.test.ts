@@ -38,6 +38,7 @@ import {
   handleDmCreated,
   openDirectMessage,
   bindDMsToAccount,
+  readVisibleDM,
 } from "../dms";
 import { setGuildsState } from "../guilds";
 
@@ -212,6 +213,7 @@ describe("dms store", () => {
     });
 
     it("does not count a message in the DM that is open on Home", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(true);
       setDmsState({
         dms: [createDM({ id: "dm-1", unread_count: 0 })],
         selectedDMId: "dm-1",
@@ -219,6 +221,20 @@ describe("dms store", () => {
       });
       updateDMLastMessage("dm-1", createMessage({ channel_id: "dm-1" }));
       expect(dmsState.dms[0].unread_count).toBe(0);
+      vi.restoreAllMocks();
+    });
+
+    it("counts a message in the open DM while the window is in the background (R1)", () => {
+      vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      setDmsState({
+        dms: [createDM({ id: "dm-1", unread_count: 0 })],
+        selectedDMId: "dm-1",
+        isShowingFriends: false,
+      });
+      updateDMLastMessage("dm-1", createMessage({ channel_id: "dm-1" }));
+      vi.restoreAllMocks();
+      expect(dmsState.dms[0].unread_count).toBe(1);
+      expect(getTotalUnreadCount()).toBe(1);
     });
 
     it("ignores unknown channel", () => {
@@ -494,5 +510,41 @@ describe("navigationCount (K2)", () => {
     const before = dmsState.navigationCount;
     selectDM("dm-1");
     expect(dmsState.navigationCount).toBe(before + 1);
+  });
+});
+
+describe("readVisibleDM retries a failed save", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    bindDMsToAccount("retry-test");
+  });
+
+  it("tries again at the next chance after the server refused, without a storm", async () => {
+    setDmsState({
+      dms: [createDM({ id: "dm-1", unread_count: 2, last_message_id: "m2", last_read_message_id: "m0" })],
+    });
+    let fail: (e: Error) => void = () => {};
+    vi.mocked(tauri.markDMAsRead).mockImplementationOnce(
+      () => new Promise((_, reject) => (fail = reject)),
+    );
+
+    readVisibleDM("dm-1", "m2");
+    // Shown as read at once; a second call while saving sends nothing.
+    expect(dmsState.dms[0].unread_count).toBe(0);
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(1);
+
+    fail(new Error("offline"));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Next chance (focus, opening): the save is tried again.
+    vi.mocked(tauri.markDMAsRead).mockResolvedValueOnce(undefined);
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(2);
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Saved: no further requests.
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(2);
   });
 });

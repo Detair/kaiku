@@ -18,7 +18,7 @@ import { loadInitialMessages, messagesState } from "@/stores/messages";
 import { t, plural } from "@/i18n";
 import { isCallGlareError } from "@/lib/callEnd";
 import { errorText, CALL_START_ERRORS } from "@/i18n/errors";
-import { getSelectedDM, readVisibleDM, updateDMIconUrl } from "@/stores/dms";
+import { getSelectedDM, isWindowActive, readVisibleDM, updateDMIconUrl } from "@/stores/dms";
 import { currentUser } from "@/stores/auth";
 import MessageList from "@/components/messages/MessageList";
 import MessageInput from "@/components/messages/MessageInput";
@@ -62,8 +62,7 @@ const KaikuDMView: Component<{ channelId: string }> = (props) => {
 
 /** True while the window is in front and focused (the user can see it). */
 function createWindowActive(): () => boolean {
-  const isActive = () =>
-    document.visibilityState === "visible" && document.hasFocus();
+  const isActive = isWindowActive;
   const [active, setActive] = createSignal(isActive());
   const update = () => setActive(isActive());
   window.addEventListener("focus", update);
