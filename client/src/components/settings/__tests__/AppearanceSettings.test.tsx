@@ -63,4 +63,34 @@ describe("AppearanceSettings", () => {
     fireEvent.click(radio(/^Normal$/));
     expect(document.documentElement.getAttribute("data-font-size")).toBeNull();
   });
+
+  it("keeps one Tab stop per group and moves the choice with the arrow keys", async () => {
+    render(() => <AppearanceSettings />);
+    const themeRadios = () => screen.getAllByRole("radio").filter((r) => r.closest('[aria-label="Theme"]'));
+    let themes = themeRadios();
+    expect(themes.filter((r) => r.tabIndex === 0)).toEqual([radio(/^Focused Hybrid/)]);
+
+    radio(/^Focused Hybrid/).focus();
+    fireEvent.keyDown(radio(/^Focused Hybrid/), { key: "ArrowDown" });
+    const next = themes[themes.indexOf(radio(/^Focused Hybrid/)) + 1];
+    expect(next.getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(next);
+    expect(next.tabIndex).toBe(0);
+    expect(radio(/^Focused Hybrid/).tabIndex).toBe(-1);
+
+    fireEvent.keyDown(document.activeElement!, { key: "Home" });
+    expect(radio(/Same as my device/).getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+    // The last theme is a pixel theme: switching family fades for 150 ms.
+    await new Promise((r) => setTimeout(r, 200));
+    themes = themeRadios();
+    expect(themes[themes.length - 1].getAttribute("aria-checked")).toBe("true");
+
+    fireEvent.keyDown(radio(/^Normal$/), { key: "ArrowRight" });
+    expect(radio(/^Large$/).getAttribute("aria-checked")).toBe("true");
+    expect(radio(/^Large$/).tabIndex).toBe(0);
+    expect(radio(/^Normal$/).tabIndex).toBe(-1);
+    fireEvent.keyDown(radio(/^Large$/), { key: "ArrowLeft" });
+    expect(radio(/^Normal$/).getAttribute("aria-checked")).toBe("true");
+  });
 });

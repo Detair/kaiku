@@ -5,7 +5,7 @@
  * Theme data is synced across devices through the preferences system.
  */
 
-import { createEffect, createSignal } from "solid-js";
+import { batch, createEffect, createSignal } from "solid-js";
 import { preferences, updatePreference } from "./preferences";
 import type { FontSize, ThemeName } from "@/lib/types";
 
@@ -207,23 +207,28 @@ createEffect(() => {
  * When switching between theme families, applies a brief fade transition.
  */
 export function setTheme(newTheme: ThemeName): void {
-  // Picking a theme by hand ends "Same as system".
-  if (followSystemTheme()) updatePreference("theme_follow_system", false);
   const currentDef = getCurrentTheme();
   const newDef = availableThemes.find((t) => t.id === newTheme);
+  // Picking a theme by hand ends "Same as system". Both values change in the
+  // same step: ending it first would show the stored theme for a moment.
+  const apply = () =>
+    batch(() => {
+      if (followSystemTheme()) updatePreference("theme_follow_system", false);
+      updatePreference("theme", newTheme);
+    });
 
   // Cross-family switch: fade out, swap theme, fade in
   if (currentDef && newDef && currentDef.family !== newDef.family) {
     document.documentElement.classList.add("theme-family-transition");
     setTimeout(() => {
-      updatePreference("theme", newTheme);
+      apply();
       requestAnimationFrame(() => {
         document.documentElement.classList.remove("theme-family-transition");
       });
     }, 150);
   } else {
     // Same family: instant switch
-    updatePreference("theme", newTheme);
+    apply();
   }
 }
 

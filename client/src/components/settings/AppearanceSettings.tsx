@@ -32,8 +32,43 @@ const FONT_SIZES: { id: FontSize; label: () => string }[] = [
   { id: "xlarge", label: () => t("settings.appearance.fontSize.xlarge") },
 ];
 
+/**
+ * Arrow keys for a radio group (WAI-ARIA radio pattern): one Tab stop, the
+ * arrows move to the next or previous option and choose it.
+ */
+const onRadioGroupKeyDown = (e: KeyboardEvent & { currentTarget: HTMLElement }) => {
+  const radios = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]'));
+  const index = radios.indexOf(e.target as HTMLElement);
+  if (index < 0) return;
+  let next: number;
+  switch (e.key) {
+    case "ArrowDown":
+    case "ArrowRight":
+      next = (index + 1) % radios.length;
+      break;
+    case "ArrowUp":
+    case "ArrowLeft":
+      next = (index - 1 + radios.length) % radios.length;
+      break;
+    case "Home":
+      next = 0;
+      break;
+    case "End":
+      next = radios.length - 1;
+      break;
+    default:
+      return;
+  }
+  e.preventDefault();
+  radios[next].focus();
+  radios[next].click();
+};
+
 const AppearanceSettings: Component = () => {
   const shownName = () => availableThemes.find((th) => th.id === shownTheme())?.name ?? "";
+  // The group keeps one Tab stop: the chosen option, or the first one when a
+  // theme outside the list is stored.
+  const themeListed = () => pickerThemes().some((th) => th.id === storedTheme());
 
   return (
     <div>
@@ -42,12 +77,18 @@ const AppearanceSettings: Component = () => {
         {t("settings.appearance.themeHint")}
       </p>
 
-      <div class="space-y-3" role="radiogroup" aria-label={t("settings.appearance.theme")}>
+      <div
+        class="space-y-3"
+        role="radiogroup"
+        aria-label={t("settings.appearance.theme")}
+        onKeyDown={onRadioGroupKeyDown}
+      >
         {/* Same as system */}
         <button
           type="button"
           role="radio"
           aria-checked={followSystemTheme()}
+          tabIndex={followSystemTheme() || !themeListed() ? 0 : -1}
           onClick={() => setFollowSystemTheme(true)}
           class="w-full text-left p-4 rounded-xl border-2 transition-all duration-200"
           classList={{
@@ -82,6 +123,7 @@ const AppearanceSettings: Component = () => {
                 type="button"
                 role="radio"
                 aria-checked={selected()}
+                tabIndex={selected() ? 0 : -1}
                 onClick={() => setTheme(theme.id)}
                 class="w-full text-left p-4 rounded-xl border-2 transition-all duration-200"
                 classList={{
@@ -138,6 +180,7 @@ const AppearanceSettings: Component = () => {
           class="flex flex-wrap gap-2"
           role="radiogroup"
           aria-label={t("settings.appearance.fontSize")}
+          onKeyDown={onRadioGroupKeyDown}
         >
           <For each={FONT_SIZES}>
             {(size) => (
@@ -145,6 +188,7 @@ const AppearanceSettings: Component = () => {
                 type="button"
                 role="radio"
                 aria-checked={fontSize() === size.id}
+                tabIndex={fontSize() === size.id ? 0 : -1}
                 onClick={() => setFontSize(size.id)}
                 class="px-4 py-2 rounded-lg border-2 text-sm font-medium transition-colors"
                 classList={{

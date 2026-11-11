@@ -98,6 +98,25 @@ describe("store behaviour", () => {
     expect(updatePreference).toHaveBeenCalledWith("theme", "solarized-light");
   });
 
+  it("leaving 'same as device' for another theme family does not flash the stored theme", () => {
+    vi.useFakeTimers();
+    try {
+      // jsdom has no matchMedia, so the system counts as dark: the light
+      // stored theme is shown as the dark fallback.
+      prefs.current = { theme: "solarized-light", theme_follow_system: true };
+      expect(theme()).toBe("focused-hybrid");
+      setTheme("pixel-cozy");
+      // During the fade nothing changes yet, in particular not to the stored light theme.
+      expect(theme()).toBe("focused-hybrid");
+      expect(followSystemTheme()).toBe(true);
+      vi.advanceTimersByTime(150);
+      expect(theme()).toBe("pixel-cozy");
+      expect(followSystemTheme()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("stores the text size and ignores unknown values", () => {
     setFontSize("large");
     expect(fontSize()).toBe("large");
