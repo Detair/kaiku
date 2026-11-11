@@ -3,6 +3,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 
+import { createSignal } from "solid-js";
+const [tabWish, setTabWish] = createSignal(false);
+
 const mocks = vi.hoisted(() => ({
   openDirectMessage: vi.fn(),
   removeFriend: vi.fn(),
@@ -26,6 +29,8 @@ vi.mock("@/stores/friends", () => ({
   loadBlocked: vi.fn(),
   getOnlineFriends: () => mocks.state.friends.filter((f) => f.is_online),
   getIncomingRequestCount: () => mocks.state.pendingRequests.length,
+  requestsTabWanted: () => tabWish(),
+  takeRequestsTabWish: () => setTabWish(false),
   acceptFriendRequest: vi.fn(),
   rejectFriendRequest: vi.fn(),
   cancelFriendRequest: vi.fn(),
@@ -75,5 +80,12 @@ describe("FriendsList", () => {
   it("lets the header wrap on narrow windows", () => {
     render(() => <FriendsList />);
     expect(screen.getByTestId("friends-header").className).toContain("flex-wrap");
+  });
+
+  it("opens the Requests tab when a request notice asks for it (K3)", () => {
+    setTabWish(true);
+    render(() => <FriendsList />);
+    expect(screen.getByTestId("friends-tab-pending").getAttribute("aria-pressed")).toBe("true");
+    expect(tabWish()).toBe(false);
   });
 });

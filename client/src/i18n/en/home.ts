@@ -118,6 +118,8 @@ export const home = {
   "home.rail.loadFailed": "Could not load your servers. Click to try again.",
   "home.rail.unread.one": "{{count}} unread",
   "home.rail.unread.other": "{{count}} unread",
+  "home.rail.unreadMessages.one": "{{count}} unread message",
+  "home.rail.unreadMessages.other": "{{count}} unread messages",
   "home.rail.explore": "Explore Servers",
   "home.rail.create": "Create Server",
   "home.rail.join": "Join Server",
@@ -128,7 +130,7 @@ export const home = {
   "home.userPanel.settings": "User Settings",
   "home.userPanel.logout": "Sign out",
   "home.logout.title": "Sign out of Kaiku?",
-  "home.logout.body": "To sign in again you need your phone or passkey. Messages you started but did not send are deleted on this device.",
+  "home.logout.body": "To sign in again you need your phone, or the fingerprint, face or PIN sign-in you set up. Messages you started but did not send are deleted on this device.",
   "home.logout.confirm": "Sign out",
 
   "home.palette.placeholder": "Search channels in this server, or type > for commands",

@@ -28,12 +28,14 @@ import {
 } from "@/stores/guilds";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import { isGuildDiscoveryOff } from "@/stores/serverFeatures";
-import { dmsState, loadDMs, getTotalUnreadCount } from "@/stores/dms";
+import { bindDMsToAccount, loadDMs, getTotalUnreadCount } from "@/stores/dms";
 import {
+  bindFriendsToAccount,
   forgetSeenRequests,
   getIncomingRequestCount,
   loadPendingRequests,
 } from "@/stores/friends";
+import { currentUser } from "@/stores/auth";
 
 const CreateGuildModal = lazy(
   () => import("@/components/guilds/CreateGuildModal"),
@@ -97,11 +99,29 @@ const ServerRail: Component<ServerRailProps> = (props) => {
       ? `${name}, ${plural(count, { one: "home.rail.unread.one", other: "home.rail.unread.other" })}`
       : name;
 
+  /** Home says what its number is made of: messages and requests (K8). */
+  const homeLabel = () => {
+    const parts = [t("home.rail.home")];
+    const messages = getTotalUnreadCount();
+    const requests = getIncomingRequestCount();
+    if (messages > 0) {
+      parts.push(plural(messages, { one: "home.rail.unreadMessages.one", other: "home.rail.unreadMessages.other" }));
+    }
+    if (requests > 0) {
+      parts.push(plural(requests, { one: "home.sidebar.requestCount.one", other: "home.sidebar.requestCount.other" }));
+    }
+    return parts.join(", ");
+  };
+
   onMount(() => {
-    // Counts for the Home badge must exist before Home is ever opened.
-    forgetSeenRequests();
+    // The rail mounts once per signed-in session. Drop data of a previous
+    // account in this tab (W3), then load the counts for the Home badge
+    // before Home is ever opened, always, not only when the store is empty.
+    const userId = currentUser()?.id ?? null;
+    bindDMsToAccount(userId);
+    if (!bindFriendsToAccount(userId)) forgetSeenRequests();
     void loadPendingRequests();
-    if (dmsState.dms.length === 0 && !dmsState.isLoading) void loadDMs();
+    void loadDMs();
   });
 
   /** Icon button size classes based on compact prop */
@@ -141,7 +161,7 @@ const ServerRail: Component<ServerRailProps> = (props) => {
           onMouseLeave={() => setHoveredServerId(null)}
           onClick={() => selectHome()}
           title={t("home.rail.home")}
-          aria-label={labelWithCount(t("home.rail.home"), homeCount())}
+          aria-label={homeLabel()}
         >
           <Home class="w-6 h-6 text-accent-primary" aria-hidden="true" />
         </button>

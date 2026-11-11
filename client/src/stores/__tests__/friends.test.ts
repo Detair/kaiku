@@ -36,6 +36,7 @@ import {
   getOnlineFriends,
   getIncomingRequestCount,
   forgetSeenRequests,
+  bindFriendsToAccount,
 } from "../friends";
 
 function createFriend(overrides: Partial<Friend> = {}): Friend {
@@ -360,6 +361,22 @@ describe("friends store", () => {
       const online = getOnlineFriends();
       expect(online).toHaveLength(2);
       expect(online.map((f) => f.user_id)).toEqual(["u1", "u3"]);
+    });
+  });
+
+  describe("bindFriendsToAccount (W3)", () => {
+    it("drops the previous account's friends and requests", () => {
+      bindFriendsToAccount("fabian");
+      setFriendsState({
+        friends: [createFriend()],
+        pendingRequests: [createFriend({ friendship_id: "fs-9", direction: "incoming" })],
+      });
+      expect(bindFriendsToAccount("fabian")).toBe(false);
+      expect(getIncomingRequestCount()).toBe(1);
+
+      expect(bindFriendsToAccount("matthias")).toBe(true);
+      expect(friendsState.friends).toEqual([]);
+      expect(getIncomingRequestCount()).toBe(0);
     });
   });
 });

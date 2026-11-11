@@ -8,16 +8,24 @@ const state = vi.hoisted(() => ({
   guildUnread: {} as Record<string, number>,
 }));
 
-vi.mock("@/stores/dms", () => ({
-  dmsState: { dms: [{ id: "dm-1" }], isLoading: false },
+const loaders = vi.hoisted(() => ({
   loadDMs: vi.fn(),
+  loadPendingRequests: vi.fn(),
+  bindDMsToAccount: vi.fn(),
+  bindFriendsToAccount: vi.fn(() => false),
+}));
+vi.mock("@/stores/dms", () => ({
+  bindDMsToAccount: loaders.bindDMsToAccount,
+  loadDMs: loaders.loadDMs,
   getTotalUnreadCount: () => state.dmUnread,
 }));
 vi.mock("@/stores/friends", () => ({
+  bindFriendsToAccount: loaders.bindFriendsToAccount,
   forgetSeenRequests: vi.fn(),
-  loadPendingRequests: vi.fn(),
+  loadPendingRequests: loaders.loadPendingRequests,
   getIncomingRequestCount: () => state.incoming,
 }));
+vi.mock("@/stores/auth", () => ({ currentUser: () => ({ id: "matthias" }) }));
 vi.mock("@/stores/serverFeatures", () => ({ isGuildDiscoveryOff: () => true }));
 
 const guilds = vi.hoisted(() => ({
@@ -47,6 +55,16 @@ describe("ServerRail", () => {
     state.incoming = 0;
     state.guildUnread = {};
     guilds.guildsState.error = null;
+    vi.clearAllMocks();
+  });
+
+  it("binds the stores to the signed-in account and always loads the counts (W3, K13)", () => {
+    render(() => <ServerRail />);
+    expect(loaders.bindDMsToAccount).toHaveBeenCalledWith("matthias");
+    expect(loaders.bindFriendsToAccount).toHaveBeenCalledWith("matthias");
+    // The DM store may still hold a previous account's list: load anyway.
+    expect(loaders.loadDMs).toHaveBeenCalledTimes(1);
+    expect(loaders.loadPendingRequests).toHaveBeenCalledTimes(1);
   });
 
   it("shows unread direct messages and friend requests on Home", () => {
@@ -54,7 +72,9 @@ describe("ServerRail", () => {
     state.incoming = 1;
     render(() => <ServerRail />);
     expect(screen.getByTestId("home-unread-badge").textContent).toBe("3");
-    expect(screen.getByTestId("home-button").getAttribute("aria-label")).toBe("Home, 3 unread");
+    expect(screen.getByTestId("home-button").getAttribute("aria-label")).toBe(
+      "Home, 2 unread messages, 1 friend request waiting",
+    );
   });
 
   it("shows no badge and no dot on Home when nothing is new", () => {

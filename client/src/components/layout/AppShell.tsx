@@ -62,18 +62,21 @@ const AppShell: Component<AppShellProps> = (props) => {
   // NAV-12: the Home sidebar comes in as finished JSX, so it cannot get an
   // onNavigate callback. Opening a conversation or the friends page from the
   // drawer is a navigation, so the drawer closes on it.
+  // navigationCount also moves when the open conversation is tapped again (K2).
   createEffect(
     on(
-      [() => dmsState.selectedDMId, () => dmsState.isShowingFriends],
+      () => dmsState.navigationCount,
       () => closeDrawer(),
       { defer: true },
     ),
   );
 
   // NAV-16: a background tab says how much is unread ("(3) Kaiku").
+  // Only servers of the signed-in account count; counts of a previous
+  // account in this tab may still sit in the map (W3).
   const unreadTotal = () =>
     getTotalUnreadCount() +
-    Object.values(guildsState.guildUnreadCounts).reduce((sum, n) => sum + (n ?? 0), 0);
+    guildsState.guilds.reduce((sum, g) => sum + (guildsState.guildUnreadCounts[g.id] ?? 0), 0);
   createEffect(() => {
     const n = unreadTotal();
     document.title = n > 0 ? `(${n > 99 ? "99+" : n}) ${APP_NAME}` : APP_NAME;

@@ -4,7 +4,7 @@
  * Displays friends with tabs for Online, All, Pending, and Blocked.
  */
 
-import { Component, createSignal, For, onMount, Show } from "solid-js";
+import { Component, createEffect, createSignal, For, onMount, Show } from "solid-js";
 import { Users, Search, UserPlus, MessageSquare } from "lucide-solid";
 import { t, plural } from "@/i18n";
 import type { MessageKey } from "@/i18n";
@@ -17,6 +17,8 @@ import {
   loadBlocked,
   getOnlineFriends,
   getIncomingRequestCount,
+  requestsTabWanted,
+  takeRequestsTabWish,
   acceptFriendRequest,
   rejectFriendRequest,
   cancelFriendRequest,
@@ -62,6 +64,14 @@ const FriendsList: Component = () => {
 
   onMount(async () => {
     await Promise.all([loadFriends(), loadPendingRequests(), loadBlocked()]);
+  });
+
+  // "Show" on a new-request notice lands on the Requests tab (K3).
+  createEffect(() => {
+    if (requestsTabWanted()) {
+      setTab("pending");
+      takeRequestsTabWish();
+    }
   });
 
   const filteredFriends = () => {

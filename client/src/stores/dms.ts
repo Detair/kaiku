@@ -11,6 +11,7 @@ import { subscribeChannel, waitForConnection } from "@/stores/websocket";
 import { showToast } from "@/components/ui/Toast";
 import { currentUser } from "@/stores/auth";
 import { t } from "@/i18n";
+import { guildsState } from "@/stores/guilds";
 import { errorText } from "@/i18n/errors";
 
 interface DMsStoreState {
@@ -20,16 +21,40 @@ interface DMsStoreState {
   typingUsers: Record<string, string[]>;
   isLoading: boolean;
   error: string | null;
+  /**
+   * Counts every pick of a conversation or the friends page, also of the one
+   * already open, so the phone drawer can close on it (NAV-12, K2).
+   */
+  navigationCount: number;
 }
 
-const [dmsState, setDmsState] = createStore<DMsStoreState>({
+const initialState = (): DMsStoreState => ({
   dms: [],
   selectedDMId: null,
   isShowingFriends: true,
   typingUsers: {},
   isLoading: false,
   error: null,
+  navigationCount: 0,
 });
+
+const [dmsState, setDmsState] = createStore<DMsStoreState>(initialState());
+
+// Account the store's data belongs to (W3).
+let accountId: string | null = null;
+
+/**
+ * Drop everything from another account. Call before loading, with the
+ * signed-in user's id: after sign-out and sign-in in the same tab the store
+ * would otherwise still hold the previous account's conversations and counts.
+ * Returns true when it reset.
+ */
+export function bindDMsToAccount(userId: string | null): boolean {
+  if (accountId === userId) return false;
+  accountId = userId;
+  setDmsState(initialState());
+  return true;
+}
 
 /**
  * Load all DMs for the current user and subscribe to their channels
@@ -76,6 +101,7 @@ export function selectDM(channelId: string): void {
   setDmsState({
     selectedDMId: channelId,
     isShowingFriends: false,
+    navigationCount: dmsState.navigationCount + 1,
   });
 }
 
@@ -113,6 +139,7 @@ export function selectFriendsTab(): void {
   setDmsState({
     selectedDMId: null,
     isShowingFriends: true,
+    navigationCount: dmsState.navigationCount + 1,
   });
 }
 
@@ -142,7 +169,13 @@ export function updateDMLastMessage(channelId: string, message: Message): void {
   if (dmIndex === -1) return;
 
   const isOwnMessage = message.author.id === currentUser()?.id;
-  const isSelectedDM = dmsState.selectedDMId === channelId && !dmsState.isShowingFriends;
+  // Read only while it is on screen: Home is open and shows this very
+  // conversation. In a server the last opened DM stays "selected" but hidden
+  // (W2), so its messages must count as unread.
+  const isSelectedDM =
+    guildsState.activeGuildId === null &&
+    dmsState.selectedDMId === channelId &&
+    !dmsState.isShowingFriends;
   const shouldIncrementUnread = !isOwnMessage && !isSelectedDM;
 
   setDmsState("dms", dmIndex, {

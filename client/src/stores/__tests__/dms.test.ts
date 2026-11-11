@@ -37,7 +37,9 @@ import {
   getDMLastReadMessageId,
   handleDmCreated,
   openDirectMessage,
+  bindDMsToAccount,
 } from "../dms";
+import { setGuildsState } from "../guilds";
 
 function createDM(overrides: Partial<DMListItem> = {}): DMListItem {
   return {
@@ -191,6 +193,32 @@ describe("dms store", () => {
       });
       expect(dmsState.dms[0].last_message_id).toBe(msg.id);
       expect(dmsState.dms[0].unread_count).toBe(1);
+    });
+
+    it("counts a message in the last opened DM while a server is shown (W2)", () => {
+      setDmsState({
+        dms: [createDM({ id: "dm-1", unread_count: 0 })],
+        selectedDMId: "dm-1",
+        isShowingFriends: false,
+      });
+      setGuildsState({ activeGuildId: "g1" });
+      try {
+        updateDMLastMessage("dm-1", createMessage({ channel_id: "dm-1" }));
+      } finally {
+        setGuildsState({ activeGuildId: null });
+      }
+      expect(dmsState.dms[0].unread_count).toBe(1);
+      expect(getTotalUnreadCount()).toBe(1);
+    });
+
+    it("does not count a message in the DM that is open on Home", () => {
+      setDmsState({
+        dms: [createDM({ id: "dm-1", unread_count: 0 })],
+        selectedDMId: "dm-1",
+        isShowingFriends: false,
+      });
+      updateDMLastMessage("dm-1", createMessage({ channel_id: "dm-1" }));
+      expect(dmsState.dms[0].unread_count).toBe(0);
     });
 
     it("ignores unknown channel", () => {
@@ -439,5 +467,32 @@ describe("openDirectMessage", () => {
     await openDirectMessage(["user-9"]);
     expect(tauri.createDM).toHaveBeenCalledWith(["user-9"]);
     expect(dmsState.selectedDMId).toBe("dm-new");
+  });
+});
+
+describe("bindDMsToAccount (W3)", () => {
+  it("drops the previous account's conversations and selection", () => {
+    bindDMsToAccount("fabian");
+    setDmsState({
+      dms: [createDM({ id: "dm-f", unread_count: 4 })],
+      selectedDMId: "dm-f",
+      isShowingFriends: false,
+    });
+    expect(bindDMsToAccount("fabian")).toBe(false);
+    expect(getTotalUnreadCount()).toBe(4);
+
+    expect(bindDMsToAccount("matthias")).toBe(true);
+    expect(dmsState.dms).toEqual([]);
+    expect(dmsState.selectedDMId).toBeNull();
+    expect(getTotalUnreadCount()).toBe(0);
+  });
+});
+
+describe("navigationCount (K2)", () => {
+  it("moves also when the open conversation is picked again", () => {
+    selectDM("dm-1");
+    const before = dmsState.navigationCount;
+    selectDM("dm-1");
+    expect(dmsState.navigationCount).toBe(before + 1);
   });
 });

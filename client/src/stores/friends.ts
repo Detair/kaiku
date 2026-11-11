@@ -4,6 +4,7 @@
  * Manages friend relationships and friend requests.
  */
 
+import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import type { Friend } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
@@ -28,8 +29,7 @@ interface FriendsStoreState {
   error: string | null;
 }
 
-// Create the store
-const [friendsState, setFriendsState] = createStore<FriendsStoreState>({
+const initialState = (): FriendsStoreState => ({
   friends: [],
   pendingRequests: [],
   blocked: [],
@@ -38,6 +38,43 @@ const [friendsState, setFriendsState] = createStore<FriendsStoreState>({
   isBlockedLoading: false,
   error: null,
 });
+
+// Create the store
+const [friendsState, setFriendsState] = createStore<FriendsStoreState>(initialState());
+
+// Account the store's data belongs to (W3).
+let accountId: string | null = null;
+
+/**
+ * Drop everything from another account (friends, requests, blocks and the
+ * "already announced" requests). Call before loading with the signed-in
+ * user's id. Returns true when it reset.
+ */
+export function bindFriendsToAccount(userId: string | null): boolean {
+  if (accountId === userId) return false;
+  accountId = userId;
+  setFriendsState(initialState());
+  knownIncomingIds = null;
+  return true;
+}
+
+// A request from outside the friends page to open its "Requests" tab (K3).
+// The friends page consumes it with takeRequestsTabWish().
+const [requestsTabWanted, setRequestsTabWanted] = createSignal(false);
+export { requestsTabWanted };
+
+/** Clear the wish once the friends page has switched tabs. */
+export function takeRequestsTabWish(): void {
+  setRequestsTabWanted(false);
+}
+
+/** Open Home on the friends page with the "Requests" tab. */
+export async function showFriendRequests(): Promise<void> {
+  const [guilds, dms] = await Promise.all([import("./guilds"), import("./dms")]);
+  if (guilds.guildsState.activeGuildId !== null) void guilds.selectHome();
+  dms.selectFriendsTab();
+  setRequestsTabWanted(true);
+}
 
 /**
  * Load all friends (accepted)
@@ -83,12 +120,7 @@ function announceNewIncoming(pending: Friend[]): void {
       action: {
         label: t("home.friends.toast.requestShow"),
         onClick: () => {
-          void Promise.all([import("./guilds"), import("./dms")]).then(
-            ([guilds, dms]) => {
-              if (guilds.guildsState.activeGuildId !== null) void guilds.selectHome();
-              dms.selectFriendsTab();
-            },
-          );
+          void showFriendRequests();
         },
       },
     });
