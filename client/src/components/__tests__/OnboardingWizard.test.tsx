@@ -101,11 +101,25 @@ describe("OnboardingWizard", () => {
       fireEvent.click(screen.getByTestId("onboarding-next"));
       fireEvent.click(screen.getByTestId("onboarding-next"));
       fireEvent.click(screen.getByTestId("onboarding-next"));
-      expect(await screen.findByText(t("onboarding.join.discoveryDisabled"))).toBeTruthy();
+      // C41: it opens on the invite code, not on an empty Discover tab.
+      expect(await screen.findByPlaceholderText(t("onboarding.join.invitePlaceholder"))).toBeTruthy();
+      expect(
+        screen.getByRole("tab", { name: t("onboarding.join.tabInvite") }).getAttribute("aria-selected"),
+      ).toBe("true");
+      expect(screen.queryByText(t("onboarding.join.discoveryDisabled"))).toBeNull();
       expect(mocks.discoverGuilds).not.toHaveBeenCalled();
     } finally {
       mocks.isGuildDiscoveryOff.mockReturnValue(false);
     }
+  });
+
+  it("switches to the invite tab when the server says discovery is disabled", async () => {
+    mocks.discoverGuilds.mockRejectedValue(new Error("DISCOVERY_DISABLED: Server discovery is not enabled"));
+    open();
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    expect(await screen.findByPlaceholderText(t("onboarding.join.invitePlaceholder"))).toBeTruthy();
   });
 
   const setPrefs = (
