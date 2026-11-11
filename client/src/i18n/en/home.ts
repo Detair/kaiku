@@ -131,6 +131,17 @@ export const home = {
   "home.logout.body": "To sign in again you need your phone or passkey. Messages you started but did not send are deleted on this device.",
   "home.logout.confirm": "Sign out",
 
+  "home.palette.placeholder": "Search channels in this server, or type > for commands",
+  "home.palette.searchEverywhere": "Search all messages",
+  "home.palette.mute": "Mute microphone",
+  "home.palette.unmute": "Unmute microphone",
+  "home.palette.deafen": "Turn off sound",
+  "home.palette.undeafen": "Turn on sound",
+  "home.palette.noResults": "Nothing found",
+  "home.palette.command": "Command",
+  "home.palette.hintNavigate": "Move",
+  "home.palette.hintSelect": "Open",
+
   "home.mobile.openNavigation": "Open navigation",
 
   "home.favorites.title": "Favorites",
