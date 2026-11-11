@@ -8,6 +8,8 @@
  */
 
 import { Component, createSignal, For, Show, onMount } from "solid-js";
+import { t } from "@/i18n";
+import ConfirmActionDialog from "@/components/admin/ConfirmActionDialog";
 import { Pencil, Trash2, Plus, Check, X, ChevronRight, Hash, Volume2, Layers } from "lucide-solid";
 import {
   categoriesState,
@@ -27,7 +29,7 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
   const [newCategoryName, setNewCategoryName] = createSignal("");
   const [editingId, setEditingId] = createSignal<string | null>(null);
   const [editingName, setEditingName] = createSignal("");
-  const [deletingId, setDeletingId] = createSignal<string | null>(null);
+  const [deleting, setDeleting] = createSignal<{ id: string; name: string } | null>(null);
   const [addingSubcategoryFor, setAddingSubcategoryFor] = createSignal<string | null>(null);
   const [subCategoryName, setSubCategoryName] = createSignal("");
   const [isCreating, setIsCreating] = createSignal(false);
@@ -95,13 +97,12 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
   };
 
   const handleDelete = async (id: string) => {
-    const success = await deleteCategory(props.guildId, id);
-    if (success) setDeletingId(null);
+    // The store already shows a toast; the dialog stays open and says it too.
+    if (!(await deleteCategory(props.guildId, id))) throw new Error("CATEGORY_DELETE_FAILED");
   };
 
   const renderCategoryRow = (categoryId: string, name: string, isSubcat: boolean, catType: string = "mixed") => {
     const isEditing = () => editingId() === categoryId;
-    const isDeleting = () => deletingId() === categoryId;
 
     return (
       <div
@@ -130,14 +131,16 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
               <button
                 onClick={handleRename}
                 class="p-1 text-accent-success hover:bg-white/10 rounded"
-                title="Save"
+                title={t("common.save")}
+                aria-label={t("common.save")}
               >
                 <Check class="w-4 h-4" />
               </button>
               <button
                 onClick={cancelEditing}
                 class="p-1 text-text-secondary hover:bg-white/10 rounded"
-                title="Cancel"
+                title={t("common.cancel")}
+                aria-label={t("common.cancel")}
               >
                 <X class="w-4 h-4" />
               </button>
@@ -150,16 +153,16 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
               {typeIcon(catType)} {typeLabel(catType)}
             </span>
           </Show>
-          <Show when={!isDeleting()}>
-            <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100 transition-opacity">
               <Show when={!isSubcat}>
                 <button
                   onClick={() => {
                     setAddingSubcategoryFor(addingSubcategoryFor() === categoryId ? null : categoryId);
                     setSubCategoryName("");
                   }}
-                  class="p-1 text-text-secondary hover:text-accent-primary hover:bg-white/10 rounded transition-colors"
-                  title="Add Subcategory"
+                  class="p-1 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded transition-colors"
+                  title={t("guildSettings.categories.addSubNamed", { name })}
+                  aria-label={t("guildSettings.categories.addSubNamed", { name })}
                 >
                   <Plus class="w-3.5 h-3.5" />
                 </button>
@@ -167,39 +170,22 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
               <button
                 onClick={() => startEditing(categoryId, name)}
                 class="p-1 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded transition-colors"
-                title="Rename"
+                title={t("guildSettings.categories.renameNamed", { name })}
+                aria-label={t("guildSettings.categories.renameNamed", { name })}
               >
                 <Pencil class="w-3.5 h-3.5" />
               </button>
               <button
-                onClick={() => setDeletingId(categoryId)}
-                class="p-1 text-text-secondary hover:text-accent-danger hover:bg-white/10 rounded transition-colors"
-                title="Delete"
+                onClick={() => setDeleting({ id: categoryId, name })}
+                class="p-1 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded transition-colors"
+                title={t("guildSettings.categories.deleteNamed", { name })}
+                aria-label={t("guildSettings.categories.deleteNamed", { name })}
               >
                 <Trash2 class="w-3.5 h-3.5" />
               </button>
             </div>
-          </Show>
         </Show>
 
-        {/* Delete confirmation inline */}
-        <Show when={isDeleting()}>
-          <div class="flex items-center gap-2">
-            <span class="text-xs text-accent-danger">Delete?</span>
-            <button
-              onClick={() => handleDelete(categoryId)}
-              class="px-2 py-0.5 text-xs bg-accent-danger text-white rounded hover:opacity-80"
-            >
-              Yes
-            </button>
-            <button
-              onClick={() => setDeletingId(null)}
-              class="px-2 py-0.5 text-xs bg-white/10 text-text-primary rounded hover:bg-white/20"
-            >
-              No
-            </button>
-          </div>
-        </Show>
       </div>
     );
   };
@@ -313,6 +299,19 @@ const CategoriesTab: Component<CategoriesTabProps> = (props) => {
             </For>
           </div>
         </Show>
+      </Show>
+      <Show when={deleting()}>
+        {(cat) => (
+          <ConfirmActionDialog
+            title={t("guildSettings.categories.deleteTitle", { name: cat().name })}
+            message={t("guildSettings.categories.deleteBody", { name: cat().name })}
+            confirmLabel={t("guildSettings.categories.delete")}
+            danger
+            onConfirm={() => handleDelete(cat().id)}
+            onDone={() => setDeleting(null)}
+            onCancel={() => setDeleting(null)}
+          />
+        )}
       </Show>
     </div>
   );

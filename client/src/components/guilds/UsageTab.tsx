@@ -49,7 +49,7 @@ const UsageTab: Component<UsageTabProps> = (props) => {
         <p class="text-sm text-text-secondary">Loading usage stats...</p>
       </Show>
 
-      <Show when={error()}>{(msg) => <p class="text-sm text-red-400">{msg()}</p>}</Show>
+      <Show when={error()}>{(msg) => <p class="text-sm text-text-primary">{msg()}</p>}</Show>
 
       <Show when={!loading() && usage()}>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3">

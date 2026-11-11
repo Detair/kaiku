@@ -94,6 +94,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Chat: progress and a Cancel button while files upload; paste a screenshot with Ctrl+V to attach it; the attachment tray says which kinds of files can be sent.
 - Chat: day separators (Today, Yesterday, date), a "Jump to newest" button whenever you have scrolled up, and names in the typing line ("Oma is typing...").
 - Screen readers hear new messages from others and who is typing; reactions say who reacted and whether yours is set.
+- Server and channel settings: rename and delete a channel, rename or delete your server (owner), leave a server (everyone else). Each asks first and names what it removes.
 
 ### Changed
 - The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
@@ -150,6 +151,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "New Messages" divider shows where you left off when returning to a channel
 - Opening a channel with unreads scrolls to your last read position
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
+- Admin area and server settings tell the truth: ban, lift ban, suspend and delete report success only after the server did it and otherwise say why (for example that admin mode ended); invites, roles, kick, filters, bots, webhooks and emojis show a failed change instead of doing nothing.
+- Admin mode has one name, says it lasts 15 minutes before you turn it on, turns on from the header badge in one step, can be turned off there, and announces when it runs out. The bulk ban names everyone, never includes people on other pages and lists who could not be banned.
+- Removing something in the admin area or server settings asks in one dialog that names it; opening registration to everyone asks first; closing server settings with unsaved changes asks first; expert tabs moved under "Advanced". Rules and info pages and the admin area follow the chosen theme's colors.
 
 ### Security
 - The end-to-end encryption library was updated to a release that clears key material from memory more thoroughly.

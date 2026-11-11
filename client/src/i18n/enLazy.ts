@@ -5,6 +5,7 @@
  * catalog for the `MessageKey` type, the i18n check and the tests.
  */
 import { admin } from "./en/admin";
+import { guildSettings } from "./en/guildSettings";
 import { notifications } from "./en/notifications";
 import { onboarding } from "./en/onboarding";
 import { security } from "./en/security";
@@ -13,6 +14,7 @@ import { voice } from "./en/voice";
 
 export const enLazy = {
   ...admin,
+  ...guildSettings,
   ...settings,
   ...onboarding,
   ...voice,

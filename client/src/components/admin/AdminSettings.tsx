@@ -25,9 +25,11 @@ import {
   adminDeleteOidcProvider,
 } from "@/lib/tauri";
 import type { AuthMethodsConfig, AdminOidcProvider } from "@/lib/types";
-import { adminState, checkAdminStatus } from "@/stores/admin";
+import { adminState, checkAdminStatus, ADMIN_MODE_MINUTES } from "@/stores/admin";
 import ElevateDialog from "./ElevateDialog";
 import { t } from "@/i18n";
+import { createConfirm } from "./confirmHost";
+import { actionErrorText } from "./actionErrors";
 import Toggle from "@/components/ui/Toggle";
 
 function providerIcon(hint: string | null) {
@@ -97,7 +99,7 @@ const AdminSettings: Component = () => {
     } catch (err) {
       setState({
         isLoading: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: actionErrorText(err, "admin.action.failed"),
       });
     }
   };
@@ -112,6 +114,8 @@ const AdminSettings: Component = () => {
   const saveAuthSettings = async (
     methods?: AuthMethodsConfig,
     policy?: string,
+    /** From a confirmation: let it fail so the dialog stays open with the reason (K2). */
+    rethrow = false,
   ) => {
     setState({ isSaving: true, error: null, success: null });
     try {
@@ -123,14 +127,15 @@ const AdminSettings: Component = () => {
         authMethods: result.auth_methods,
         registrationPolicy: result.registration_policy,
         isSaving: false,
-        success: "Settings saved",
+        success: t("admin.settings.saved"),
       });
       setTimeout(() => setState({ success: null }), 3000);
     } catch (err) {
       setState({
         isSaving: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: rethrow ? null : actionErrorText(err, "admin.action.failed"),
       });
+      if (rethrow) throw err;
     }
   };
 
@@ -156,7 +161,20 @@ const AdminSettings: Component = () => {
     saveAuthSettings(newMethods);
   };
 
+  const confirmDialog = createConfirm();
+  // "Open" lets anyone who finds the address make an account: ask first (ADMIN-17).
   const handlePolicyChange = (policy: string) => {
+    if (policy === "open" && state.registrationPolicy !== "open") {
+      confirmDialog.ask({
+        title: t("admin.settings.openTitle"),
+        message: t("admin.settings.openBody"),
+        confirmLabel: t("admin.settings.openConfirm"),
+        danger: true,
+        failureFallback: "admin.action.failed",
+        run: () => saveAuthSettings(undefined, policy, true),
+      });
+      return;
+    }
     saveAuthSettings(undefined, policy);
   };
 
@@ -223,7 +241,7 @@ const AdminSettings: Component = () => {
     } catch (err) {
       setState({
         isSaving: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: actionErrorText(err, "admin.action.failed"),
       });
     }
   };
@@ -238,7 +256,7 @@ const AdminSettings: Component = () => {
       setTimeout(() => setState({ success: null }), 3000);
     } catch (err) {
       setState({
-        error: err instanceof Error ? err.message : String(err),
+        error: actionErrorText(err, "admin.action.failed"),
       });
     }
   };
@@ -259,7 +277,7 @@ const AdminSettings: Component = () => {
       await loadSettings();
     } catch (err) {
       setState({
-        error: err instanceof Error ? err.message : String(err),
+        error: actionErrorText(err, "admin.action.failed"),
       });
     }
   };
@@ -282,8 +300,7 @@ const AdminSettings: Component = () => {
             <div class="flex items-center gap-3">
               <AlertTriangle class="w-5 h-5 text-accent-warning" />
               <p class="text-sm text-text-primary">
-                Settings require an elevated session. Elevate your session to
-                make changes.
+                {t("admin.settings.needsMode", { minutes: ADMIN_MODE_MINUTES })}
               </p>
               <button
                 type="button"
@@ -704,6 +721,7 @@ const AdminSettings: Component = () => {
       <Show when={showElevate()}>
         <ElevateDialog onClose={() => setShowElevate(false)} />
       </Show>
+      <confirmDialog.Host />
     </div>
   );
 };

@@ -45,15 +45,15 @@ export default function PlatformPagesCard(props: PlatformPagesCardProps) {
       }
     >
       <div class="mx-2 mb-2">
-        <div class="bg-zinc-800/50 rounded-lg overflow-hidden">
+        <div class="bg-surface-layer1/50 rounded-lg overflow-hidden">
           {/* Header */}
-          <div class="flex items-center gap-2 px-3 py-2 border-b border-zinc-700/50">
-            <FileText class="w-4 h-4 text-zinc-400" />
-            <span class="text-xs font-semibold text-zinc-400 uppercase tracking-wide flex-1">
+          <div class="flex items-center gap-2 px-3 py-2 border-b border-white/10">
+            <FileText class="w-4 h-4 text-text-secondary" />
+            <span class="text-xs font-semibold text-text-secondary uppercase tracking-wide flex-1">
               Platform Info
             </span>
             <Show when={hasPendingPages()}>
-              <span class="flex items-center gap-1 px-1.5 py-0.5 bg-amber-900/40 text-amber-400 rounded text-xs font-medium">
+              <span class="flex items-center gap-1 px-1.5 py-0.5 bg-status-warning/20 text-text-primary rounded text-xs font-medium">
                 <AlertCircle class="w-3 h-3" />
                 {pendingCount()}
               </span>
@@ -69,7 +69,7 @@ export default function PlatformPagesCard(props: PlatformPagesCardProps) {
             }
           >
             <div class="px-3 py-4 text-center">
-              <span class="text-red-400 text-sm">Failed to load pages</span>
+              <span class="text-text-primary text-sm">Failed to load pages</span>
             </div>
           </Show>
 
@@ -78,7 +78,7 @@ export default function PlatformPagesCard(props: PlatformPagesCardProps) {
             when={!pagesState.isPlatformLoading}
             fallback={
               <div class="px-3 py-4 text-center">
-                <span class="text-zinc-500 text-sm">Loading...</span>
+                <span class="text-text-secondary text-sm">Loading...</span>
               </div>
             }
           >
@@ -96,18 +96,18 @@ export default function PlatformPagesCard(props: PlatformPagesCardProps) {
                       <span
                         class="flex-1 text-sm truncate"
                         classList={{
-                          "text-zinc-300": !isPending(),
-                          "text-amber-300 font-medium": isPending(),
+                          "text-text-primary": !isPending(),
+                          "text-text-primary font-medium": isPending(),
                         }}
                       >
                         {page.title}
                       </span>
                       <Show when={isPending()}>
-                        <span class="px-1.5 py-0.5 bg-amber-900/30 text-amber-400 rounded text-xs">
+                        <span class="px-1.5 py-0.5 bg-status-warning/20 text-text-primary rounded text-xs">
                           Action Required
                         </span>
                       </Show>
-                      <ChevronRight class="w-4 h-4 text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                      <ChevronRight class="w-4 h-4 text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity" />
                     </button>
                   );
                 }}

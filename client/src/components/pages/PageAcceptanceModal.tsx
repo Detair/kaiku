@@ -99,12 +99,12 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
       />
 
       {/* Modal */}
-      <div class="relative w-full max-w-2xl max-h-[90vh] bg-zinc-800 rounded-lg shadow-xl flex flex-col">
+      <div class="relative w-full max-w-2xl max-h-[90vh] bg-surface-layer1 rounded-lg shadow-xl flex flex-col">
         {/* Header */}
-        <div class="flex items-center justify-between px-6 py-4 border-b border-zinc-700">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-white/10">
           <div>
-            <h2 class="text-xl font-semibold text-white">{props.page.title}</h2>
-            <p class="text-sm text-zinc-400 mt-1">
+            <h2 class="text-xl font-semibold text-text-primary">{props.page.title}</h2>
+            <p class="text-sm text-text-secondary mt-1">
               {props.isBlocking
                 ? "You must accept this to continue using the platform"
                 : "Please review and accept this page"}
@@ -114,7 +114,7 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
             <button
               type="button"
               onClick={props.onClose}
-              class="p-2 text-zinc-400 hover:text-white hover:bg-zinc-700 rounded transition-colors"
+              class="p-2 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded transition-colors"
             >
               <X class="w-5 h-5" />
             </button>
@@ -133,7 +133,7 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
 
         {/* Scroll indicator */}
         <Show when={!hasScrolledToBottom()}>
-          <div class="flex items-center justify-center py-2 bg-zinc-700/50 text-zinc-400 text-sm">
+          <div class="flex items-center justify-center py-2 bg-surface-layer2/50 text-text-secondary text-sm">
             <ChevronDown class="w-4 h-4 mr-1 animate-bounce" />
             Scroll to bottom to enable acceptance
           </div>
@@ -141,19 +141,19 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
 
         {/* Error */}
         <Show when={error()}>
-          <div class="mx-6 mb-2 px-3 py-2 bg-red-900/30 border border-red-700 rounded text-sm text-red-300">
+          <div class="mx-6 mb-2 px-3 py-2 bg-status-error/15 border border-status-error/50 rounded text-sm text-text-primary">
             {error()}
           </div>
         </Show>
 
         {/* Footer */}
-        <div class="flex items-center justify-end gap-3 px-6 py-4 border-t border-zinc-700">
+        <div class="flex items-center justify-end gap-3 px-6 py-4 border-t border-white/10">
           <Show when={!props.isBlocking && props.onDefer}>
             <button
               type="button"
               onClick={handleDefer}
               data-testid="page-acceptance-remind-later"
-              class="px-4 py-2 text-sm font-medium text-zinc-300 hover:text-white hover:bg-zinc-700 rounded-md transition-colors"
+              class="px-4 py-2 text-sm font-medium text-text-primary hover:text-text-primary hover:bg-white/10 rounded-md transition-colors"
             >
               Remind Me Later
             </button>
@@ -165,8 +165,8 @@ export default function PageAcceptanceModal(props: PageAcceptanceModalProps) {
             disabled={!canAccept()}
             class={`px-6 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-colors ${
               canAccept()
-                ? "bg-emerald-600 hover:bg-emerald-500 text-white"
-                : "bg-zinc-600 text-zinc-400 cursor-not-allowed"
+                ? "bg-accent-primary hover:bg-accent-primary/90 text-on-accent"
+                : "bg-surface-highlight text-text-secondary cursor-not-allowed"
             } state-disabled`}
           >
             <Check class="w-4 h-4" />
