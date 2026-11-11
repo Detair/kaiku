@@ -5,19 +5,22 @@
 //! and the `ClientEvent` dispatch logic (`handle_client_message`).
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
-use axum::extract::{State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::response::Response;
+use axum::Extension;
 use fred::prelude::*;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+use super::connection_limit::{ConnectionPermit, TOO_MANY_CONNECTIONS};
 use super::events::{
     broadcast_to_channel, channels, ClientEvent, ClientMessageState, OutboundMsg, ServerEvent,
 };
@@ -132,12 +135,23 @@ fn error_response(status: u16, body: &'static str) -> Response {
 /// 2. **Post-connect** (new): Client connects without a token header. After upgrade the server
 ///    waits up to 5 seconds for an `Authenticate` frame carrying the JWT.  On success the normal
 ///    socket loop starts.
-#[tracing::instrument(skip(ws, state, headers))]
+#[tracing::instrument(skip(ws, state, headers, connect_info))]
 pub async fn handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
 ) -> Response {
+    // Concurrent connections per client IP are capped before anything else
+    // (no upgrade, no socket task, no Valkey subscriber).
+    let ip_key = state
+        .ws_connections
+        .client_ip_key(&headers, connect_info.as_ref().map(|Extension(ci)| ci));
+    let Some(ip_permit) = state.ws_connections.try_acquire_ip(ip_key) else {
+        debug!("WebSocket refused: too many connections from this client address");
+        return error_response(429, TOO_MANY_CONNECTIONS);
+    };
+
     // Try header-based auth first (backwards compatible)
     if let Some(token) = extract_token_from_protocol(&headers) {
         let claims = match jwt::validate_access_token(&token, &state.config.jwt_public_key) {
@@ -192,23 +206,36 @@ pub async fn handler(
         }
         let session_id = claims.sid.as_deref().and_then(|sid| sid.parse().ok());
 
+        let Some(user_permit) = state.ws_connections.try_acquire_user(user_id) else {
+            debug!(
+                "WebSocket refused: too many connections of user {}",
+                user_id
+            );
+            return error_response(429, TOO_MANY_CONNECTIONS);
+        };
+        let permits = [ip_permit, user_permit];
+
         // Respond with the protocol to confirm (required for WebSocket handshake)
         return ws
             .protocols(["access_token"])
             .max_message_size(256 * 1024)
             .max_frame_size(64 * 1024)
-            .on_upgrade(move |socket| handle_socket(socket, state, user_id, session_id));
+            .on_upgrade(move |socket| async move {
+                handle_socket(socket, state, user_id, session_id).await;
+                // The slots are held for the socket's whole life.
+                drop(permits);
+            });
     }
 
     // No header token — accept upgrade, authenticate via first frame
     ws.max_message_size(256 * 1024)
         .max_frame_size(64 * 1024)
-        .on_upgrade(move |socket| handle_post_connect_auth(socket, state))
+        .on_upgrade(move |socket| handle_post_connect_auth(socket, state, ip_permit))
 }
 
 /// Handle post-connect authentication: wait for an `Authenticate` frame,
 /// then hand off to the normal socket loop on success.
-async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
+async fn handle_post_connect_auth(socket: WebSocket, state: AppState, ip_permit: ConnectionPermit) {
     let (ws_sender, mut ws_receiver) = socket.split();
 
     // The 5 s budget covers receiving the Authenticate frame only; validating
@@ -252,11 +279,24 @@ async fn handle_post_connect_auth(socket: WebSocket, state: AppState) {
         }
     };
 
+    // The user's connection cap: refused before the socket task and its
+    // Valkey subscriber are set up.
+    let Some(user_permit) = state.ws_connections.try_acquire_user(user_id) else {
+        debug!(
+            "WebSocket refused: too many connections of user {}",
+            user_id
+        );
+        close_pre_auth(ws_sender, CLOSE_TRY_AGAIN_LATER, TOO_MANY_CONNECTIONS).await;
+        return;
+    };
+
     // Reassemble the socket and continue with normal handler
     let socket = ws_sender
         .reunite(ws_receiver)
         .expect("reunite should never fail for same socket");
     handle_socket(socket, state, user_id, session_id).await;
+    // The slots are held for the socket's whole life.
+    drop((ip_permit, user_permit));
 }
 
 /// Run a database lookup under `budget`. Running out of time is reported as

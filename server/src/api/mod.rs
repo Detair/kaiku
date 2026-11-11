@@ -64,6 +64,8 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// Configured push transports (FCM only with a service account)
     pub push: Arc<crate::push::PushService>,
+    /// Open WebSocket connections per user and per client IP (caps).
+    pub ws_connections: Arc<crate::ws::connection_limit::WsConnectionTracker>,
 }
 
 impl FromRef<AppState> for PgPool {
@@ -92,7 +94,22 @@ impl AppState {
     pub fn new(cfg: AppStateConfig) -> Self {
         let push = Arc::new(crate::push::PushService::from_config(&cfg.config));
         crate::features::set_screening_enforced(cfg.config.optional_features.screening);
+        // Client IPs for the connection caps come from the same trusted
+        // proxies as rate limiting (`RATE_LIMIT_TRUSTED_PROXIES`), also when
+        // rate limiting itself is off.
+        let trusted = cfg.rate_limiter.as_ref().map_or_else(
+            || crate::ratelimit::RateLimitConfig::from_env().trusted_proxies,
+            |limiter| limiter.config().trusted_proxies.clone(),
+        );
+        let ws_connections = Arc::new(crate::ws::connection_limit::WsConnectionTracker::new(
+            crate::ws::connection_limit::ConnectionLimits {
+                per_user: cfg.config.ws_max_connections_per_user,
+                per_ip: cfg.config.ws_max_connections_per_ip,
+            },
+            trusted,
+        ));
         Self {
+            ws_connections,
             push: push.clone(),
             db: cfg.db,
             redis: cfg.redis.clone(),
@@ -373,8 +390,14 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/files/{*key}", get(chat::files::serve))
         // Public message routes (download handles its own auth via query param)
         .nest("/api/messages", chat::messages_public_router())
-        // WebSocket
-        .route("/ws", get(ws::handler))
+        // WebSocket (connection attempts rate limited per IP; concurrent
+        // connections are capped in the handler)
+        .route(
+            "/ws",
+            get(ws::handler)
+                .layer(from_fn_with_state(state.clone(), rate_limit_by_ip))
+                .layer(from_fn(with_category(RateLimitCategory::WsConnect))),
+        )
         // Bot Gateway WebSocket (uses bot token auth)
         .route(
             "/api/gateway/bot",

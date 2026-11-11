@@ -147,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
 ### Security
+- An account can hold at most 10 open WebSocket connections and a client address at most 30 (IPv6 per /64); further connections are refused. Both caps are configurable with `WS_MAX_CONNECTIONS_PER_USER` and `WS_MAX_CONNECTIONS_PER_IP`. Behind a reverse proxy, set `RATE_LIMIT_TRUSTED_PROXIES` so clients are counted by their own address. New WebSocket connection attempts are also rate limited per address.
 - Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.
 - A session ends automatically when its refresh token is used twice, browser sessions end after 30 days and app sessions after 90 days, and an account can have at most 50 open sessions.
 - Sign-in IP addresses are no longer sent to an external GeoIP service.

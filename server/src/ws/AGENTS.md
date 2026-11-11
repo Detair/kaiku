@@ -367,15 +367,12 @@ send_outbound(tx, OutboundMsg::Event(ServerEvent::Error {
 
 ### Rate Limiting
 
-**WebSocket Connection Limit**: 1 connection per 60 seconds per user (prevents reconnection spam).
+**Connection attempts**: `/ws` is rate limited per client IP with `RateLimitCategory::WsConnect` (`rate_limit_by_ip`, default 20 per 60 s).
 
-**Applied in API router**:
-```rust
-Router::new()
-    .route("/ws", get(ws::handler))
-    .layer(from_fn_with_state(state.clone(), rate_limit_by_user))
-    .layer(from_fn(with_category(RateLimitCategory::WebSocket)))
-```
+**Concurrent connections** (`connection_limit::WsConnectionTracker`, `AppState.ws_connections`, in-process because the server is a single node):
+- At most `WS_MAX_CONNECTIONS_PER_USER` (10) sockets per user and `WS_MAX_CONNECTIONS_PER_IP` (30) per client IP. The IP is derived exactly like the rate limiter's (`extract_client_ip` with the trusted proxies, `normalize_ip`: IPv6 per /64).
+- The IP slot is taken before the upgrade (HTTP 429 `TOO_MANY_CONNECTIONS`). The user slot is taken before the upgrade with header auth (429), or right after the `authenticate` frame (close **1013** `TOO_MANY_CONNECTIONS`), in both cases before `handle_socket` creates the Valkey subscriber.
+- Each slot is a `ConnectionPermit` that gives it back on `Drop`, held until `handle_socket` returns.
 
 **Future**: Per-event rate limits (e.g., max 10 `Typing` events per minute).
 

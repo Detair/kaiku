@@ -29,6 +29,7 @@
 
 pub mod bot_events;
 pub mod bot_gateway;
+pub mod connection_limit;
 pub mod events;
 pub mod handlers;
 pub(crate) mod presence_audience;
