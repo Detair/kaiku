@@ -258,8 +258,9 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
         return true;
     }
     return false;
-  };  createEffect(() => props.onDirtyChange?.(hasConfigChanges()));
+  };
 
+  createEffect(() => props.onDirtyChange?.(hasConfigChanges()));
 
   return (
     <div class="p-6 space-y-6">
