@@ -25,6 +25,7 @@ import { isGuildDiscoveryOff } from "@/stores/serverFeatures";
 import { t } from "@/i18n";
 import Button from "@/components/ui/Button";
 import Toggle from "@/components/ui/Toggle";
+import ServerNameSection from "./ServerNameSection";
 
 interface GeneralTabProps {
   guildId: string;
@@ -245,6 +246,8 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
 
   return (
     <div class="p-6 space-y-6">
+      <ServerNameSection guildId={props.guildId} />
+
       {/* Discovery Setup Banner */}
       <Show when={showDiscoveryBanner()}>
         <div class="relative p-4 rounded-xl border border-accent-primary/20 bg-accent-primary/5">
