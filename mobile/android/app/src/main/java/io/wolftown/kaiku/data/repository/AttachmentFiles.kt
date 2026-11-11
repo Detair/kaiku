@@ -14,6 +14,7 @@ import io.wolftown.kaiku.data.api.ServerUrls
 import io.wolftown.kaiku.data.local.TokenStorage
 import io.wolftown.kaiku.domain.model.Attachment
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -33,17 +34,32 @@ import javax.inject.Singleton
  * before that (the screen asks for the target, [copyTo] writes it).
  */
 @Singleton
-class AttachmentFiles @Inject constructor(
-    @ApplicationContext private val context: Context,
+class AttachmentFiles internal constructor(
+    private val context: Context,
     okHttpClient: OkHttpClient,
     private val tokenStorage: TokenStorage,
+    /** Tests: answers requests after the auth interceptor, instead of the network. */
+    transport: okhttp3.Interceptor?,
 ) {
+
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+        okHttpClient: OkHttpClient,
+        tokenStorage: TokenStorage,
+    ) : this(context, okHttpClient, tokenStorage, null)
 
     private val client: OkHttpClient = okHttpClient.newBuilder()
         // The shared client has no read timeout (WebSocket); downloads must not hang forever.
         .readTimeout(DOWNLOAD_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .addInterceptor(AuthHeaderInterceptor(tokenStorage))
+        .apply { if (transport != null) addInterceptor(transport) }
         .build()
+
+    /** Deletes every downloaded attachment (session teardown, via [ChatRepository.clearSession]). */
+    fun clearCache() {
+        baseDir.deleteRecursively()
+    }
 
     private val baseDir: File get() = File(context.cacheDir, CACHE_DIR)
 
@@ -55,17 +71,21 @@ class AttachmentFiles @Inject constructor(
             ?: throw IOException("attachment has no usable url")
         target.parentFile?.mkdirs()
         val partial = File(target.parentFile, target.name + ".part")
-        client.newCall(Request.Builder().url(url).build()).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("download failed: ${response.code}")
-            val body = response.body ?: throw IOException("empty download")
-            val limit = AttachmentPaths.downloadLimit(attachment.size)
-            body.byteStream().use { input ->
-                partial.outputStream().use { output -> copyLimited(input, output, limit) }
+        var promoted = false
+        try {
+            client.newCall(Request.Builder().url(url).build()).execute().use { response ->
+                if (!response.isSuccessful) throw IOException("download failed: ${response.code}")
+                val body = response.body ?: throw IOException("empty download")
+                val limit = AttachmentPaths.downloadLimit(attachment.size)
+                body.byteStream().use { input ->
+                    partial.outputStream().use { output -> copyLimited(input, output, limit) { !isActive } }
+                }
             }
-        }
-        if (!partial.renameTo(target)) {
-            partial.delete()
-            throw IOException("cannot store download")
+            if (!partial.renameTo(target)) throw IOException("cannot store download")
+            promoted = true
+        } finally {
+            // Failure, size limit or cancellation: no half file stays behind.
+            if (!promoted) partial.delete()
         }
         target
     }
@@ -120,10 +140,12 @@ class AttachmentFiles @Inject constructor(
         }
     }
 
-    private fun copyLimited(input: InputStream, output: OutputStream, limit: Long) {
+    private fun copyLimited(input: InputStream, output: OutputStream, limit: Long, cancelled: () -> Boolean) {
         val buffer = ByteArray(BUFFER_SIZE)
         var total = 0L
         while (true) {
+            // Leaving the screen stops the download between chunks.
+            if (cancelled()) throw kotlinx.coroutines.CancellationException("download cancelled")
             val n = input.read(buffer)
             if (n < 0) break
             total += n

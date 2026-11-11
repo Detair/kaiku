@@ -273,4 +273,25 @@ class ChatRepositoryAttachmentTest {
 
         coVerify { api.uploadMessageWithFile("c1", any(), any(), any(), any(), any(), 7L) }
     }
+
+    @Test
+    fun `upload uses the session it was sent in, not the current one`() = runTest {
+        streamingApi()
+        val repo = repository(FakeReader(), session = AuthSession.LoggedIn("bert", sessionId = 8L))
+
+        repo.sendAttachment("c1", uri, null, sessionId = 7L)
+
+        coVerify { api.uploadMessageWithFile("c1", any(), any(), any(), any(), any(), 7L) }
+    }
+
+    @Test
+    fun `clearing the session runs the clear listeners`() = runTest {
+        val repo = repository(FakeReader())
+        var runs = 0
+        repo.addSessionClearListener { runs++ }
+
+        repo.clearSession()
+
+        assertEquals(1, runs)
+    }
 }

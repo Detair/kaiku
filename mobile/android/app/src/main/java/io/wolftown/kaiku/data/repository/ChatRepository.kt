@@ -69,6 +69,14 @@ class ChatRepository internal constructor(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
 
+    /** Run after every [clearSession] (outgoing messages, downloaded attachments). */
+    private val sessionClearListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+    /** [listener] runs after every [clearSession], outside its lock. Must be quick and idempotent. */
+    fun addSessionClearListener(listener: () -> Unit) {
+        sessionClearListeners += listener
+    }
+
     @Inject
     constructor(
         messageApi: MessageApi,
@@ -78,13 +86,17 @@ class ChatRepository internal constructor(
         authState: AuthState,
         @ChatCoroutineScope scope: CoroutineScope,
         attachments: AttachmentReader,
+        attachmentFiles: AttachmentFiles,
     ) : this(
         messageApi, webSocket, json, guildRepository, authState, scope,
         // Monotonic: typing expiry only compares differences.
         WallClock { System.nanoTime() / 1_000_000L },
         attachments,
         Dispatchers.IO,
-    )
+    ) {
+        // Downloads of the ended session must not stay on a shared phone.
+        addSessionClearListener(attachmentFiles::clearCache)
+    }
 
     companion object {
         private val logger = Logger.getLogger("ChatRepository")
@@ -185,7 +197,18 @@ class ChatRepository internal constructor(
      * WebSocket event collector keeps running for the next session. Loads
      * still in flight publish nothing (session epoch).
      */
-    fun clearSession() = synchronized(epochLock) {
+    fun clearSession() {
+        clearSessionState()
+        sessionClearListeners.forEach { listener ->
+            try {
+                listener()
+            } catch (e: Exception) {
+                logger.warning("session clear listener failed (${e::class.simpleName})")
+            }
+        }
+    }
+
+    private fun clearSessionState() = synchronized(epochLock) {
         epoch++
         // An upload of the ended session must not go out later (with whatever
         // token is stored then): cancel every one in flight.
@@ -375,9 +398,10 @@ class ChatRepository internal constructor(
     /** Whether [channelId] is tracked as a background DM subscription. */
     fun isDmChannelTracked(channelId: String): Boolean = channelId in dmChannels
 
-    suspend fun sendMessage(channelId: String, content: String) {
+    /** Sends [content]; with [sessionId] it is never sent in another session. */
+    suspend fun sendMessage(channelId: String, content: String, sessionId: Long? = null) {
         val startEpoch = epoch
-        val sentMessage = messageApi.sendMessage(channelId, content)
+        val sentMessage = messageApi.sendMessage(channelId, content, sessionId)
 
         // Optimistic update: add the message immediately. A WebSocket echo
         // with the same id is deduplicated by MessageOrdering.merge.
@@ -454,11 +478,17 @@ class ChatRepository internal constructor(
      * [kotlinx.coroutines.CancellationException], and nothing is sent or
      * published in another session.
      */
-    suspend fun sendAttachment(channelId: String, uri: Uri, caption: String?): Result<Message> {
+    suspend fun sendAttachment(
+        channelId: String,
+        uri: Uri,
+        caption: String?,
+        /** Session the user sent it in; defaults to the current one. */
+        sessionId: Long? = null,
+    ): Result<Message> {
         val reader = attachments ?: return Result.failure(AttachmentException.Failed())
         val startEpoch = epoch
-        // Bound to the session it starts in: never sent in another one.
-        val sessionId = (authState.session.value as? AuthSession.LoggedIn)?.sessionId
+        // Bound to the session it was sent in: never sent in another one.
+        val sessionId = sessionId ?: (authState.session.value as? AuthSession.LoggedIn)?.sessionId
         val uploadJob = currentCoroutineContext()[Job]
         if (uploadJob != null) {
             val registered = publishIfCurrent(startEpoch) { uploadJobs += uploadJob }

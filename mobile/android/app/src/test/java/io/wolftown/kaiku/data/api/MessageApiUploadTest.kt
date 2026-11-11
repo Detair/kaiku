@@ -167,4 +167,23 @@ class MessageApiUploadTest {
         api.uploadMessageWithFile("c1", "a.png", "image/png", 1L, { byteArrayOf(1).inputStream() }, null, sessionId = 2L)
         assertEquals(1, requests)
     }
+
+    @Test
+    fun `text message bound to an ended session is not sent with the new token`() = runTest {
+        every { authState.session } returns MutableStateFlow(AuthSession.LoggedIn("bert", sessionId = 2L))
+        every { tokenStorage.getAccessToken() } returns "token-of-session-2"
+        var requests = 0
+        val engine = MockEngine {
+            requests++
+            respond(messageJson, HttpStatusCode.Created, json)
+        }
+        val api = MessageApiImpl(KaikuHttpClient.forTesting(tokenStorage, authState, engine).activeClient())
+
+        val failure = runCatching { api.sendMessage("c1", "from anna", sessionId = 1L) }.exceptionOrNull()
+
+        assertTrue(failure is SessionChangedException)
+        assertEquals(0, requests)
+        api.sendMessage("c1", "from bert", sessionId = 2L)
+        assertEquals(1, requests)
+    }
 }
