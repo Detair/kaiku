@@ -32,7 +32,7 @@ import kotlinx.coroutines.flow.filterNotNull
  * - "Load earlier messages" at the top while the server reports more history
  * - MessageInput at the bottom with typing indicators
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun TextChannelScreen(
     currentUserId: String,
@@ -82,6 +82,19 @@ fun TextChannelScreen(
     }
 
     val listState = rememberLazyListState()
+
+    // AND-B-2: the keyboard must shrink the chat, not push the window (and the title bar) up.
+    KeyboardResizesWindow()
+
+    // When the keyboard opens while the newest message is in view, keep it in view.
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(imeVisible) {
+        if (!imeVisible) return@LaunchedEffect
+        val info = listState.layoutInfo
+        val last = info.totalItemsCount - 1
+        val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: return@LaunchedEffect
+        if (last >= 0 && lastVisible >= last - 1) listState.scrollToItem(last)
+    }
 
     // When set, the emoji picker is shown for this message id.
     var reactionTargetId by remember { mutableStateOf<String?>(null) }
@@ -155,7 +168,7 @@ fun TextChannelScreen(
                     text = stringResource(R.string.security_kaiku_dm_read_only),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(16.dp),
                 )
             } else MessageInput(
                 input = messageInput,
@@ -276,3 +289,27 @@ fun TextChannelScreen(
 /** A Kaiku notice card: a `security` message from the system account in the Kaiku DM only. */
 internal fun isSecurityNotice(isKaikuDm: Boolean, message: io.wolftown.kaiku.domain.model.Message): Boolean =
     isKaikuDm && message.author.isSystem && message.messageType == "security"
+
+/**
+ * While shown, the window resizes for the keyboard (`adjustResize`) instead of
+ * panning, so the IME insets reach [imePadding] on every Android version and the
+ * title bar stays put. The previous mode is restored on leave, so screens that
+ * rely on panning are unchanged.
+ */
+@Composable
+private fun KeyboardResizesWindow() {
+    val view = androidx.compose.ui.platform.LocalView.current
+    DisposableEffect(view) {
+        val window = (view.context.findActivity())?.window
+        val previous = window?.attributes?.softInputMode
+        @Suppress("DEPRECATION")
+        window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        onDispose { if (previous != null) window.setSoftInputMode(previous) }
+    }
+}
+
+private tailrec fun android.content.Context.findActivity(): android.app.Activity? = when (this) {
+    is android.app.Activity -> this
+    is android.content.ContextWrapper -> baseContext.findActivity()
+    else -> null
+}

@@ -72,8 +72,12 @@ fun MessageInput(
             tonalElevation = 2.dp,
             modifier = Modifier.fillMaxWidth()
         ) {
+            // AND-B-2 (edge-to-edge, targetSdk 35): stay above the navigation bar and,
+            // while it is open, above the keyboard. The surface still fills the area below.
             Row(
                 modifier = Modifier
+                    .navigationBarsPadding()
+                    .imePadding()
                     .padding(horizontal = 8.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
