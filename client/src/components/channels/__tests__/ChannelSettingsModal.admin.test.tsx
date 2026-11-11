@@ -14,6 +14,8 @@ vi.mock("@/stores/channels", () => ({
   channelsState: { channels: [{ id: "c1", name: "allgemein", channel_type: "text" }], selectedChannelId: "c1" },
   clearSelection: vi.fn(),
   refreshChannelsForGuild: m.refresh,
+  patchChannel: vi.fn(),
+  setChannelsState: vi.fn(),
 }));
 vi.mock("@/stores/guilds", () => ({
   isGuildOwner: () => true,
@@ -47,6 +49,8 @@ describe("ChannelSettingsModal", () => {
 
   it("deletes the channel only after a question that names it", async () => {
     m.deleteChannel.mockResolvedValue(undefined);
+    // The list refresh afterwards fails: the delete still counts (K7).
+    m.refresh.mockRejectedValue(new TypeError("Failed to fetch"));
     const onClose = vi.fn();
     render(() => <ChannelSettingsModal channelId="c1" guildId="g1" onClose={onClose} />);
     fireEvent.click(screen.getByRole("button", { name: "Delete channel" }));
@@ -56,5 +60,6 @@ describe("ChannelSettingsModal", () => {
     fireEvent.click(Array.from(dialog.querySelectorAll("button")).find((b) => b.textContent === "Delete channel")!);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(m.deleteChannel).toHaveBeenCalledWith("c1");
+    expect(m.toast).toHaveBeenCalledWith(expect.objectContaining({ type: "success", title: "Channel allgemein deleted" }));
   });
 });

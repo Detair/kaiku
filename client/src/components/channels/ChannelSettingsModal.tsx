@@ -74,7 +74,11 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
     }
   };
 
-  const removeChannel = () => deleteChannel(props.guildId, props.channelId);
+  let deletedName = "";
+  const removeChannel = async () => {
+    deletedName = channel()?.name ?? "";
+    await deleteChannel(props.guildId, props.channelId);
+  };
 
   const handleBackdropClick = (e: MouseEvent) => {
     if (e.target === e.currentTarget) {
@@ -266,6 +270,7 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
           onConfirm={removeChannel}
           onDone={() => {
             setConfirmDelete(false);
+            reportSuccess(t("guildSettings.channel.deleted", { name: deletedName }));
             props.onClose();
           }}
           onCancel={() => setConfirmDelete(false)}

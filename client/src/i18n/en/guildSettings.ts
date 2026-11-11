@@ -211,4 +211,5 @@ export const guildSettings = {
   "guildSettings.pages.restore": "Restore version",
   "guildSettings.pages.deleteCategoryTitle": "Delete the category “{{name}}”?",
   "guildSettings.pages.deleteCategoryBody": "Pages in “{{name}}” stay, without a category.",
+  "guildSettings.channel.deleted": "Channel {{name}} deleted",
 } as const satisfies Record<`guildSettings.${string}`, string>;
