@@ -15,6 +15,8 @@ import io.wolftown.kaiku.data.voice.AudioRouteManager
 import io.wolftown.kaiku.data.voice.IceTrouble
 import io.wolftown.kaiku.data.voice.MicPermissionChecker
 import io.wolftown.kaiku.data.voice.MissingMicPermissionException
+import io.wolftown.kaiku.data.voice.PublisherLink
+import io.wolftown.kaiku.data.voice.SessionGuard
 import io.wolftown.kaiku.data.voice.VoiceEndNotice
 import io.wolftown.kaiku.data.voice.VoiceLinkState
 import io.wolftown.kaiku.data.voice.VoiceServiceEvent
@@ -24,6 +26,7 @@ import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.ConnectionState
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.VoiceRemovedReason
+import io.wolftown.kaiku.data.ws.SendReceipt
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.service.VoiceCallService
 import kotlinx.coroutines.CoroutineScope
@@ -84,7 +87,18 @@ class VoiceRepositoryTest {
     // / subscriber-side ICE-connected StateFlow. Tests drive these to simulate
     // server events and dual-PC state transitions.
     private val wsEvents = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 8)
-    private val publisherConnected = MutableStateFlow(false)
+    private val publisherLink = MutableStateFlow(PublisherLink(generation = 0L, connected = false))
+
+    /** Generation of the fake WebRtcManager's connections; closePeerConnections bumps it. */
+    private var rtcGen = 0L
+
+    /** Number of the authenticated socket; each [reconnect] makes a new one. */
+    private var authSeq = 1L
+
+    /** The publisher of the current connections reports (dis)connected. */
+    private fun setPublisher(connected: Boolean) {
+        publisherLink.value = PublisherLink(rtcGen, connected)
+    }
 
     // Callback slots that capture what VoiceRepository wires into WebRtcManager.
     private val onPublisherOfferSlot = slot<(String) -> Unit>()
@@ -93,7 +107,7 @@ class VoiceRepositoryTest {
     private val onSubscriberIceSlot = slot<(String) -> Unit>()
 
     private val connectionState = MutableStateFlow(ConnectionState.Connected)
-    private var iceTrouble: ((IceTrouble) -> Unit)? = null
+    private var iceTrouble: ((IceTrouble, Long) -> Unit)? = null
 
     @Before
     fun setUp() {
@@ -118,10 +132,24 @@ class VoiceRepositoryTest {
         every { webSocket.connectionState } returns connectionState
         every { webSocket.send(any()) } returns true
         every { webRtcManager.onIceTrouble = any() } answers { iceTrouble = firstArg() }
-        every { webRtcManager.publisherConnected } returns publisherConnected
+        every { webRtcManager.publisherLink } returns publisherLink
+        every { webRtcManager.currentGeneration } answers { rtcGen }
+        every { webRtcManager.closePeerConnections() } answers {
+            rtcGen++
+            publisherLink.value = PublisherLink(rtcGen, false)
+            rtcGen
+        }
         // Peer connections are installed unless the session ended (the guard says no).
-        coEvery { webRtcManager.createSubscriberPeerConnection(any()) } answers { firstArg<() -> Boolean>().invoke() }
-        coEvery { webRtcManager.createPublisherOffer(any()) } answers { firstArg<() -> Boolean>().invoke() }
+        coEvery { webRtcManager.createSubscriberPeerConnection(any()) } answers { firstArg<SessionGuard>().runIfCurrent {} }
+        coEvery { webRtcManager.createPublisherOffer(any()) } answers { firstArg<SessionGuard>().runIfCurrent {} }
+        // voice_join goes through sendTracked: same mock send, plus the socket it went out on.
+        every { webSocket.authenticatedSocket } answers {
+            if (connectionState.value == ConnectionState.Connected) authSeq else null
+        }
+        every { webSocket.sendTracked(any()) } answers {
+            val sent = webSocket.send(firstArg())
+            SendReceipt(sent, if (sent) webSocket.authenticatedSocket else null)
+        }
         every { voiceServiceEvents.events } returns MutableSharedFlow()
 
         // Capture the callbacks so tests can invoke them directly.
@@ -242,7 +270,7 @@ class VoiceRepositoryTest {
     }
 
     @Test
-    fun `_isConnected follows WebRtcManager publisherConnected StateFlow`() = runTest {
+    fun `_isConnected follows WebRtcManager publisherLink StateFlow`() = runTest {
         repository.joinChannel("ch-1")
         advanceUntilIdle()
 
@@ -250,11 +278,11 @@ class VoiceRepositoryTest {
             // Initial: the publisher PC is not yet connected.
             assertFalse(awaitItem())
 
-            publisherConnected.value = true
+            setPublisher(true)
             advanceUntilIdle()
             assertTrue(awaitItem())
 
-            publisherConnected.value = false
+            setPublisher(false)
             advanceUntilIdle()
             assertFalse(awaitItem())
 
@@ -313,6 +341,7 @@ class VoiceRepositoryTest {
         connectionState.value = ConnectionState.Disconnected
         runCurrent()
         connectionState.value = ConnectionState.Connected
+        authSeq++
         wsEvents.emit(ServerEvent.Ready(userId = "me"))
         runCurrent()
     }
@@ -352,7 +381,7 @@ class VoiceRepositoryTest {
         coVerify(exactly = 2) { webRtcManager.createPublisherOffer(any()) }
 
         // Both peer connections connect: back to stable, service untouched.
-        publisherConnected.value = true
+        setPublisher(true)
         runCurrent()
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
         assertEquals("ch-1", repository.currentChannelId.value)
@@ -468,14 +497,14 @@ class VoiceRepositoryTest {
         repository.joinChannel("ch-1")
         advanceUntilIdle()
 
-        iceTrouble!!.invoke(IceTrouble.Disconnected)
+        iceTrouble!!.invoke(IceTrouble.Disconnected, rtcGen)
         assertEquals(VoiceLinkState.Interrupted, repository.linkState.value)
         advanceTimeBy(60_000); runCurrent()
 
         verifyJoins(1)
         verify(exactly = 0) { webRtcManager.closePeerConnections() }
 
-        publisherConnected.value = true
+        setPublisher(true)
         runCurrent()
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
     }
@@ -485,7 +514,7 @@ class VoiceRepositoryTest {
         repository.joinChannel("ch-1")
         advanceUntilIdle()
 
-        iceTrouble!!.invoke(IceTrouble.Failed)
+        iceTrouble!!.invoke(IceTrouble.Failed, rtcGen)
         advanceTimeBy(1_000); runCurrent()
 
         verifyJoins(2)
@@ -524,7 +553,7 @@ class VoiceRepositoryTest {
         connectionState.value = ConnectionState.Disconnected
         runCurrent()
         connectionState.value = ConnectionState.Connected
-        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        authSeq++; wsEvents.emit(ServerEvent.Ready(userId = "me"))
         advanceTimeBy(60_000); runCurrent()
 
         verifyJoins(1)
@@ -614,7 +643,7 @@ class VoiceRepositoryTest {
     // A step hook runs a leave or a removal *inside* a rejoin step, the way a
     // second thread would interleave with the attempt in production.
 
-    private val log = mutableListOf<String>()
+    private val log: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf())
     private val stepHooks = mutableMapOf<String, () -> Unit>()
     private val stepCounts = mutableMapOf<String, Int>()
 
@@ -625,19 +654,25 @@ class VoiceRepositoryTest {
     }
 
     private fun recordWebRtcAndSocket() {
-        every { webRtcManager.closePeerConnections() } answers { step("close"); log += "close" }
+        every { webRtcManager.closePeerConnections() } answers {
+            step("close")
+            log += "close"
+            rtcGen++
+            publisherLink.value = PublisherLink(rtcGen, false)
+            rtcGen
+        }
         // Like WebRtcManager: the native create runs (a leave or removal may
         // happen meanwhile), then the guard decides whether the PC is installed
         // or closed again.
         coEvery { webRtcManager.createSubscriberPeerConnection(any()) } coAnswers {
             step("createSub")
-            val installed = firstArg<() -> Boolean>().invoke()
+            val installed = firstArg<SessionGuard>().runIfCurrent {}
             log += if (installed) "createSub" else "createSub-discarded"
             installed
         }
         coEvery { webRtcManager.createPublisherOffer(any()) } coAnswers {
             step("createPub")
-            val installed = firstArg<() -> Boolean>().invoke()
+            val installed = firstArg<SessionGuard>().runIfCurrent {}
             log += if (installed) "createPub" else "createPub-discarded"
             installed
         }
@@ -784,7 +819,7 @@ class VoiceRepositoryTest {
         verify(exactly = 0) { VoiceCallService.stop(any()) }
 
         connectionState.value = ConnectionState.Connected
-        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        authSeq++; wsEvents.emit(ServerEvent.Ready(userId = "me"))
         advanceTimeBy(9_000); runCurrent()
         verifyJoins(5)
         connectPublisher()
@@ -814,7 +849,7 @@ class VoiceRepositoryTest {
 
         // A socket that comes back later does not pull the user back in.
         connectionState.value = ConnectionState.Connected
-        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        authSeq++; wsEvents.emit(ServerEvent.Ready(userId = "me"))
         advanceTimeBy(60_000); runCurrent()
         verifyJoins(1)
     }
@@ -846,7 +881,7 @@ class VoiceRepositoryTest {
 
     /** The publisher PC reports connected; the subscriber stays new (empty room). */
     private fun connectPublisher() {
-        publisherConnected.value = true
+        setPublisher(true)
     }
 
     private fun trackRtcMute() {
@@ -954,7 +989,171 @@ class VoiceRepositoryTest {
 
         gate.complete(Unit)
         runCurrent()
+        advanceTimeBy(1_000); runCurrent()
         val pubAt = log.indexOf("createPub")
         assertTrue("attempt closed the join's connections: $log", pubAt in 0 until log.indexOf("close"))
+    }
+
+    // -- Fix round 2 -----------------------------------------------------------
+
+    @Test
+    fun `a success of an older publisher does not complete the current attempt`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        verifyJoins(2)
+        val ownGeneration = rtcGen
+
+        // A callback of the retired connection publishes CONNECTED late.
+        publisherLink.value = PublisherLink(ownGeneration - 1, connected = true)
+        runCurrent()
+        assertEquals(VoiceLinkState.Rejoining(1), repository.linkState.value)
+
+        // Only the attempt's own publisher completes it.
+        publisherLink.value = PublisherLink(ownGeneration, connected = true)
+        runCurrent()
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        verifyJoins(2)
+    }
+
+    @Test
+    fun `an ICE failure of an older connection does not fail the current attempt`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        verifyJoins(2)
+
+        iceTrouble!!.invoke(IceTrouble.Failed, rtcGen - 1)
+        advanceTimeBy(3_000); runCurrent()
+
+        // Still attempt 1 (no early failure, so no attempt 2 after 3 s).
+        verifyJoins(2)
+        setPublisher(true)
+        runCurrent()
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+    }
+
+    @Test
+    fun `a late Ready of the socket the join went out on starts no rejoin`() = runTest {
+        recordWebRtcAndSocket()
+        repository.joinChannel("ch-1") // on authenticated socket 1
+        advanceUntilIdle()
+
+        // Socket 1's own Ready reaches the voice collector only now; no socket loss.
+        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        advanceTimeBy(60_000); runCurrent()
+
+        verifyJoins(1)
+        assertFalse("close" in log)
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        assertEquals("ch-1", repository.currentChannelId.value)
+    }
+
+    @Test
+    fun `a join queued before authentication is sent again after Ready`() = runTest {
+        // The socket is open but not authenticated: the server drops this voice_join.
+        connectionState.value = ConnectionState.Connecting
+        repository.joinChannel("ch-1")
+        runCurrent() // not advanceUntilIdle: the 60 s offline cap runs
+        verifyJoins(1)
+
+        connectionState.value = ConnectionState.Connected // first authentication, socket 1
+        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        advanceTimeBy(1_000); runCurrent()
+
+        verifyJoins(2)
+        setPublisher(true)
+        runCurrent()
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+    }
+
+    @Test
+    fun `a Ready handled before the join sent voice_join on that socket starts no rejoin`() = runTest {
+        // Socket 1's Ready is handled (collector thread) right before the
+        // join (IO thread) sends its voice_join on that same socket.
+        var first = true
+        every { webSocket.sendTracked(ClientEvent.VoiceJoin("ch-1")) } answers {
+            if (first) {
+                first = false
+                repository.handleServerEventNow("ch-1", ServerEvent.Ready(userId = "me"))
+            }
+            val sent = webSocket.send(firstArg())
+            SendReceipt(sent, webSocket.authenticatedSocket)
+        }
+        repository.startJoin("ch-1")
+        advanceTimeBy(60_000); runCurrent()
+
+        // The join's voice_join went out on socket 1: nothing to rejoin.
+        verifyJoins(1)
+        assertEquals("ch-1", repository.currentChannelId.value)
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+    }
+
+    @Test
+    fun `a give-up does not cancel the user's join to another channel`() = runTest {
+        // Socket down from the start: the 60 s offline cap ends channel 1.
+        connectionState.value = ConnectionState.Connecting
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var firstInit = true
+        coEvery { webRtcManager.initialize() } coAnswers {
+            if (firstInit) {
+                firstInit = false
+                // A native step that does not stop for cancellation.
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { gate.await() }
+            }
+        }
+        repository.startJoin("ch-1")
+        runCurrent()
+        advanceTimeBy(30_000); runCurrent()
+
+        // The user taps channel 2; that join waits for join 1 to finish.
+        repository.startJoin("ch-2")
+        runCurrent()
+        advanceTimeBy(30_000); runCurrent() // give-up of channel 1 at 60 s
+        verify { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+
+        gate.complete(Unit)
+        advanceTimeBy(1_000); runCurrent()
+
+        // Channel 1 is torn down and the tap on channel 2 was not lost.
+        assertEquals("ch-2", repository.currentChannelId.value)
+        verify { webSocket.send(ClientEvent.VoiceJoin("ch-2")) }
+    }
+
+    @Test
+    fun `a session end cannot slip between the guard check and the install`() = runTest {
+        recordWebRtcAndSocket()
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        var removalBlocked = false
+        coEvery { webRtcManager.createSubscriberPeerConnection(any()) } coAnswers {
+            firstArg<SessionGuard>().runIfCurrent {
+                // voice_removed arrives on another thread while the PC is installed.
+                val removal = Thread {
+                    repository.handleServerEventNow(
+                        "ch-1", ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "kicked")
+                    )
+                    log += "REMOVED"
+                }
+                removal.start()
+                removal.join(300)
+                removalBlocked = removal.isAlive
+                log += "createSub"
+            }
+        }
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        // Wait for the blocked removal to go through, then for its teardown.
+        val deadline = System.currentTimeMillis() + 5_000
+        while ("REMOVED" !in log && System.currentTimeMillis() < deadline) Thread.sleep(5)
+        Thread.sleep(50)
+        advanceUntilIdle()
+
+        // The removal waited for the install, so the teardown closed that PC,
+        // and no voice_join went out after it.
+        assertTrue(removalBlocked)
+        assertSessionEndWon("REMOVED")
     }
 }

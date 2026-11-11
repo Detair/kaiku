@@ -142,12 +142,25 @@ class VoiceRecovery(
         }
     }
 
-    /** The WebSocket is re-established and authenticated. */
-    fun onSocketReady() {
+    /**
+     * A socket is authenticated. [startRejoin] false: it is the socket the
+     * session's `voice_join` already went out on (its Ready was just late), so
+     * the server holds our peer and nothing must be rejoined. A loop that is
+     * already running (it waits for this socket) continues either way.
+     */
+    fun onSocketReady(startRejoin: Boolean = true) {
         synchronized(lock) {
             socketUp.value = true
             offlineTimer?.cancel()
             offlineTimer = null
+            if (startRejoin) startLoopLocked() else refreshIdleStateLocked()
+        }
+    }
+
+    /** Starts the rejoin loop now (a deferred [onSocketReady] decision). */
+    fun requestRejoin() {
+        synchronized(lock) {
+            if (!socketUp.value) return
             startLoopLocked()
         }
     }

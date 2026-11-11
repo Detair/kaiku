@@ -190,6 +190,42 @@ class KaikuWebSocketTest {
     }
 
     @Test
+    fun `sendTracked says whether a frame went out before or after authentication`() = runTest {
+        val authenticated = CountDownLatch(1)
+        mockServer.enqueue(
+            MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    // Answer Ready only when the test says so.
+                    if (text.contains("authenticate")) {
+                        Thread {
+                            authenticated.await(5, TimeUnit.SECONDS)
+                            webSocket.send("""{"type":"ready","user_id":"usr-001"}""")
+                        }.start()
+                    }
+                }
+            })
+        )
+
+        ws.events.test(timeout = 10.seconds) {
+            ws.connect(serverUrl(), TOKEN)
+            // Still authenticating: the frame is queued, but the server would drop it.
+            val early = ws.sendTracked(ClientEvent.VoiceJoin("ch-1"))
+            assertTrue(early.sent)
+            assertEquals(null, early.authenticatedSocket)
+            assertEquals(null, ws.authenticatedSocket)
+
+            authenticated.countDown()
+            awaitItem() // Ready
+            val late = ws.sendTracked(ClientEvent.VoiceJoin("ch-1"))
+            assertTrue(late.sent)
+            assertEquals(1L, late.authenticatedSocket)
+            assertEquals(1L, ws.authenticatedSocket)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
     fun `disconnect transitions to Disconnected`() = runTest {
         mockServer.enqueue(
             MockResponse().withWebSocketUpgrade(object : WebSocketListener() {

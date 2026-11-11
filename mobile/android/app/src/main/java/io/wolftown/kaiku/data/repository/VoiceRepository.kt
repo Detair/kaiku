@@ -9,6 +9,7 @@ import io.wolftown.kaiku.data.voice.AudioRouteManager
 import io.wolftown.kaiku.data.voice.IceTrouble
 import io.wolftown.kaiku.data.voice.MicPermissionChecker
 import io.wolftown.kaiku.data.voice.MissingMicPermissionException
+import io.wolftown.kaiku.data.voice.SessionGuard
 import io.wolftown.kaiku.data.voice.VoiceEndNotice
 import io.wolftown.kaiku.data.voice.VoiceLinkState
 import io.wolftown.kaiku.data.voice.VoiceRecovery
@@ -36,7 +37,9 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.Closeable
@@ -89,8 +92,9 @@ class VoiceRepository @Inject constructor(
     //  - Every `voice_join` (and the mute that follows it) goes through
     //    [sendIfLive], which checks and sends under [sessionLock], so it can
     //    never slip in after the end.
-    //  - Every peer-connection creation gets [isLive] as its guard; WebRtcManager
-    //    checks it right before installing the new connection and closes it
+    //  - Every peer-connection creation gets [guardFor] as its guard:
+    //    WebRtcManager installs the new connection inside [sessionLock] only
+    //    while the session is live (one step with the check), and closes it
     //    otherwise.
     //  - The teardown waits for the join job and the rejoin loop to finish
     //    ([cancelJoin], [VoiceRecovery.endAndJoin]) before it closes the
@@ -99,10 +103,20 @@ class VoiceRepository @Inject constructor(
     private val sessionLock = Any()
     private var liveChannel: String? = null // guarded by [sessionLock]
 
+    /**
+     * The authenticated socket the session's last `voice_join` went out on, or
+     * null if it went out before authentication (the server dropped it) or
+     * not at all. Guarded by [sessionLock].
+     */
+    private var joinedOnSocket: Long? = null
+
     /** Thrown inside a join when its session ended meanwhile. */
     private class SessionEnded : CancellationException("voice session ended")
 
-    private fun openSession(channelId: String) = synchronized(sessionLock) { liveChannel = channelId }
+    private fun openSession(channelId: String) = synchronized(sessionLock) {
+        liveChannel = channelId
+        joinedOnSocket = null
+    }
 
     /** Ends the live session ([channelId] only, or any when null); returns whether it was live. */
     private fun closeSession(channelId: String? = null): Boolean = synchronized(sessionLock) {
@@ -115,15 +129,58 @@ class VoiceRepository @Inject constructor(
     private fun isLive(channelId: String, job: Job?): Boolean =
         job?.isActive != false && synchronized(sessionLock) { liveChannel == channelId }
 
+    /** Installs a new peer connection only while [channelId] is live for [job], atomically. */
+    private fun guardFor(channelId: String, job: Job?) = SessionGuard { install ->
+        synchronized(sessionLock) {
+            if (liveChannel != channelId || job?.isActive == false) {
+                false
+            } else {
+                install()
+                true
+            }
+        }
+    }
+
     /** Sends [event] only while [channelId] is live for [job]; null if it is not. */
     private fun sendIfLive(channelId: String, job: Job?, event: ClientEvent): Boolean? =
         synchronized(sessionLock) {
             if (liveChannel != channelId || job?.isActive == false) null else webSocket.send(event)
         }
 
-    /** The running rejoin attempt, if any (C32). */
+    /**
+     * Sends `voice_join` only while [channelId] is live for [job] and records
+     * whether it went out on an authenticated socket (and which one); null if
+     * the session is not live.
+     */
+    private fun sendJoinIfLive(channelId: String, job: Job?): Boolean? =
+        synchronized(sessionLock) {
+            if (liveChannel != channelId || job?.isActive == false) return null
+            val receipt = webSocket.sendTracked(ClientEvent.VoiceJoin(channelId))
+            joinedOnSocket = receipt.authenticatedSocket
+            receipt.sent
+        }
+
+    /**
+     * Whether the session's `voice_join` went out on the socket that is
+     * authenticated now. Then the server holds our peer on it, and its Ready
+     * (delivered late) is no reason to rejoin.
+     */
+    private fun joinedOnCurrentSocket(): Boolean = synchronized(sessionLock) {
+        val joined = joinedOnSocket
+        liveChannel != null && joined != null && joined == webSocket.authenticatedSocket
+    }
+
+    /**
+     * One rejoin attempt (C32). A success only counts for the publisher of
+     * [generation], the attempt's own connections.
+     */
+    private class Attempt(val generation: Long) {
+        val result = CompletableDeferred<AttemptResult>()
+    }
+
+    /** The running rejoin attempt, if any. */
     @Volatile
-    private var attempt: CompletableDeferred<AttemptResult>? = null
+    private var attempt: Attempt? = null
 
     private val recovery = VoiceRecovery(
         scope = scope,
@@ -227,7 +284,7 @@ class VoiceRepository @Inject constructor(
         }
 
         val job = currentCoroutineContext()[Job]
-        val live = { isLive(channelId, job) }
+        val guard = guardFor(channelId, job)
         try {
             openSession(channelId)
             _currentChannelId.value = channelId
@@ -241,7 +298,7 @@ class VoiceRepository @Inject constructor(
             webRtcManager.initialize()
 
             // 2. Create subscriber PeerConnection (will receive the server's offer)
-            if (!webRtcManager.createSubscriberPeerConnection(live)) throw SessionEnded()
+            if (!webRtcManager.createSubscriberPeerConnection(guard)) throw SessionEnded()
 
             // 3. Wire up signaling callbacks (both PCs)
             wirePeerCallbacks(channelId)
@@ -253,23 +310,25 @@ class VoiceRepository @Inject constructor(
             // is not required (an empty channel never gets a subscriber offer).
             // Same criterion for the first join and for a rejoin attempt.
             iceConnectedJob = scope.launch {
-                webRtcManager.publisherConnected.collect { connected ->
-                    _isConnected.value = connected
-                    if (connected) {
+                webRtcManager.publisherLink.collect { link ->
+                    _isConnected.value = link.connected
+                    if (link.connected) {
                         recovery.onIceConnected()
-                        attempt?.complete(AttemptResult.Connected)
+                        // Only the attempt's own publisher counts (identity check).
+                        attempt?.takeIf { it.generation == link.generation }
+                            ?.result?.complete(AttemptResult.Connected)
                     }
                 }
             }
 
             // 4. Send VoiceJoin
-            sendIfLive(channelId, job, ClientEvent.VoiceJoin(channelId)) ?: throw SessionEnded()
+            sendJoinIfLive(channelId, job) ?: throw SessionEnded()
             if (muted) sendIfLive(channelId, job, ClientEvent.VoiceMute(channelId))
 
             // 5. Create the publisher offer (Android-initiated).
             // This adds the mic track, creates an SDP offer, and fires
             // onPublisherOffer when ready — which sends VoicePublisherOffer.
-            if (!webRtcManager.createPublisherOffer(live)) throw SessionEnded()
+            if (!webRtcManager.createPublisherOffer(guard)) throw SessionEnded()
 
             // 6. Request audio focus
             audioRouteManager.requestAudioFocus()
@@ -345,11 +404,13 @@ class VoiceRepository @Inject constructor(
      * a leave never interleaves with a half-done join. A join that leaves a
      * previous channel itself (inside its own job) does not cancel itself.
      */
-    private suspend fun cancelJoin() {
+    private suspend fun cancelJoin(onlyChannel: String? = null) {
         val self = currentCoroutineContext()[Job]
         val job = synchronized(joinLock) {
             val running = joinJob
-            if (running == null || running === self) {
+            if (running == null || running === self ||
+                (onlyChannel != null && joiningChannelId != onlyChannel)
+            ) {
                 null
             } else {
                 joinJob = null
@@ -501,13 +562,14 @@ class VoiceRepository @Inject constructor(
             logger.warning("WebRTC error: $errorMsg")
             reportVoiceError()
         }
-        webRtcManager.onIceTrouble = { trouble ->
-            when (trouble) {
+        webRtcManager.onIceTrouble = { trouble, generation ->
+            // Troubles of retired connections are dropped (identity check).
+            if (generation == webRtcManager.currentGeneration) when (trouble) {
                 // Indication only; ICE may recover by itself.
                 IceTrouble.Disconnected -> recovery.onIceDisconnected()
                 IceTrouble.Recovered -> recovery.onIceConnected()
                 IceTrouble.Failed -> {
-                    attempt?.complete(AttemptResult.Failed)
+                    attempt?.takeIf { it.generation == generation }?.result?.complete(AttemptResult.Failed)
                     recovery.onIceFailed()
                 }
             }
@@ -525,26 +587,31 @@ class VoiceRepository @Inject constructor(
      */
     private suspend fun rejoinOnce(channelId: String): Boolean {
         val job = currentCoroutineContext()[Job]
-        val live = { isLive(channelId, job) }
+        val guard = guardFor(channelId, job)
         // A Ready during the first join: let the join finish its setup first,
         // so the attempt never closes connections the join is still creating.
         val join = synchronized(joinLock) { joinJob }
         if (join != null && join !== job) join.join()
-        val result = CompletableDeferred<AttemptResult>()
-        attempt = result
+        if (!isLive(channelId, job)) return false
+        logger.info("Rejoining voice channel: $channelId")
+        val own = Attempt(webRtcManager.closePeerConnections())
+        attempt = own
         var connected = false
         try {
-            if (!live()) return false
-            logger.info("Rejoining voice channel: $channelId")
-            webRtcManager.closePeerConnections()
-            if (!webRtcManager.createSubscriberPeerConnection(live)) return false
-            if (sendIfLive(channelId, job, ClientEvent.VoiceJoin(channelId)) != true) return false
+            if (!webRtcManager.createSubscriberPeerConnection(guard)) return false
+            if (sendJoinIfLive(channelId, job) != true) return false
             if (_isMuted.value) {
                 // The new server-side peer starts unmuted; the local track stays disabled.
                 sendIfLive(channelId, job, ClientEvent.VoiceMute(channelId))
             }
-            if (!webRtcManager.createPublisherOffer(live)) return false
-            connected = result.await() == AttemptResult.Connected
+            if (!webRtcManager.createPublisherOffer(guard)) return false
+            // Already connected before we started waiting?
+            webRtcManager.publisherLink.value.let { link ->
+                if (link.connected && link.generation == own.generation) {
+                    own.result.complete(AttemptResult.Connected)
+                }
+            }
+            connected = own.result.await() == AttemptResult.Connected
             return connected
         } catch (e: CancellationException) {
             throw e
@@ -552,7 +619,7 @@ class VoiceRepository @Inject constructor(
             logger.log(Level.WARNING, "Voice rejoin attempt failed: ${e::class.simpleName}")
             return false
         } finally {
-            if (attempt === result) attempt = null
+            if (attempt === own) attempt = null
             if (!connected) webRtcManager.closePeerConnections()
         }
     }
@@ -565,19 +632,25 @@ class VoiceRepository @Inject constructor(
      */
     private suspend fun onRejoinGaveUp(channelId: String) {
         if (!closeSession(channelId)) return
-        val wasMuted = _isMuted.value
-        cancelJoin()
-        leaveMutex.withLock {
-            if (_currentChannelId.value != channelId) return@withLock
-            _currentChannelId.value = null
-            try {
-                webSocket.send(ClientEvent.VoiceLeave(channelId))
-            } catch (e: Exception) {
-                logger.log(Level.WARNING, "Failed to send VoiceLeave", e)
+        // The session is ended now: finish its teardown even if a channel
+        // switch or a leave cancels us, or channel A stays half torn down.
+        withContext(NonCancellable) {
+            val wasMuted = _isMuted.value
+            // Only a join of this channel; a join to another channel is the
+            // user's new choice and goes ahead after this teardown.
+            cancelJoin(onlyChannel = channelId)
+            leaveMutex.withLock {
+                if (_currentChannelId.value != channelId) return@withLock
+                _currentChannelId.value = null
+                try {
+                    webSocket.send(ClientEvent.VoiceLeave(channelId))
+                } catch (e: Exception) {
+                    logger.log(Level.WARNING, "Failed to send VoiceLeave", e)
+                }
+                cleanUp()
+                _endNotice.value = VoiceEndNotice.RejoinFailed(channelId, wasMuted)
+                logger.warning("Voice rejoin gave up: $channelId")
             }
-            cleanUp()
-            _endNotice.value = VoiceEndNotice.RejoinFailed(channelId, wasMuted)
-            logger.warning("Voice rejoin gave up: $channelId")
         }
     }
 
@@ -637,7 +710,7 @@ class VoiceRepository @Inject constructor(
         webRtcManager.onSubscriberIceCandidate = null
         webRtcManager.onError = null
         webRtcManager.onIceTrouble = null
-        attempt?.complete(AttemptResult.Failed)
+        attempt?.result?.complete(AttemptResult.Failed)
 
         // Abandon audio focus
         audioRouteManager.abandonAudioFocus()
@@ -671,13 +744,33 @@ class VoiceRepository @Inject constructor(
     }
 
     /**
+     * A socket is authenticated. It needs a rejoin unless the session's
+     * `voice_join` already went out on this very socket (decided by that fact,
+     * not by timing): a join queued before authentication was dropped by the
+     * server, so then the rejoin is the only effective join. If the first join
+     * has not sent its `voice_join` yet, decide once it has.
+     */
+    private fun onSocketReady() {
+        val join = synchronized(joinLock) { joinJob?.takeIf { it.isActive } }
+        if (join == null) {
+            recovery.onSocketReady(startRejoin = !joinedOnCurrentSocket())
+            return
+        }
+        recovery.onSocketReady(startRejoin = false)
+        scope.launch {
+            join.join()
+            if (!joinedOnCurrentSocket()) recovery.requestRejoin()
+        }
+    }
+
+    /**
      * A WebRTC or `voice_error` failure. During a rejoin it belongs to the
      * running attempt (which fails at once) and never shows the generic error.
      */
     private fun reportVoiceError() {
         val running = attempt
         when {
-            running != null -> running.complete(AttemptResult.Failed)
+            running != null -> running.result.complete(AttemptResult.Failed)
             recovery.state.value is VoiceLinkState.Rejoining -> { /* the loop is between attempts */ }
             else -> _error.value = R.string.voice_connection_error
         }
@@ -697,7 +790,7 @@ class VoiceRepository @Inject constructor(
             // the old socket closed. Text re-subscription runs on the same event
             // ([io.wolftown.kaiku.data.sync.ResyncCoordinator]) and the first
             // attempt follows 1 s later.
-            is ServerEvent.Ready -> recovery.onSocketReady()
+            is ServerEvent.Ready -> onSocketReady()
 
             is ServerEvent.VoiceRoomState -> {
                 if (event.channelId == channelId) {

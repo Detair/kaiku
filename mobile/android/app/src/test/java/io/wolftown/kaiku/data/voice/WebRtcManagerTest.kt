@@ -393,7 +393,7 @@ class WebRtcManagerTest {
     }
 
     // ========================================================================
-    // publisherConnected combined StateFlow
+    // publisherLink StateFlow
     // ========================================================================
     // The combined flow is backed by an Eagerly-started stateIn scope that
     // observes both publisherIceState and subscriberIceState. Test-only
@@ -401,33 +401,33 @@ class WebRtcManagerTest {
     // without requiring a live PeerConnection.
 
     @Test
-    fun `publisherConnected starts false before any PC connects`() {
+    fun `publisherLink starts false before any PC connects`() {
         val webRtcManager = newWebRtcManager()
 
-        assertFalse(webRtcManager.publisherConnected.value)
+        assertFalse(webRtcManager.publisherLink.value.connected)
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun `publisherConnected follows the publisher PC only`() = runTest {
+    fun `publisherLink follows the publisher PC only`() = runTest {
         val webRtcManager = newWebRtcManager(voiceScope = backgroundScope)
 
         webRtcManager.setPublisherIceStateForTest(PeerConnection.IceConnectionState.CONNECTED)
         runCurrent()
-        assertTrue(webRtcManager.publisherConnected.value)
+        assertTrue(webRtcManager.publisherLink.value.connected)
 
         // The subscriber does not matter (it may never be offered).
         webRtcManager.setSubscriberIceStateForTest(PeerConnection.IceConnectionState.DISCONNECTED)
         runCurrent()
-        assertTrue(webRtcManager.publisherConnected.value)
+        assertTrue(webRtcManager.publisherLink.value.connected)
 
         webRtcManager.setPublisherIceStateForTest(PeerConnection.IceConnectionState.COMPLETED)
         runCurrent()
-        assertTrue(webRtcManager.publisherConnected.value)
+        assertTrue(webRtcManager.publisherLink.value.connected)
 
         webRtcManager.setPublisherIceStateForTest(PeerConnection.IceConnectionState.DISCONNECTED)
         runCurrent()
-        assertFalse(webRtcManager.publisherConnected.value)
+        assertFalse(webRtcManager.publisherLink.value.connected)
     }
 
     // ========================================================================
@@ -451,7 +451,7 @@ class WebRtcManagerTest {
         webRtcManager.setPublisherIceStateForTest(PeerConnection.IceConnectionState.CONNECTED)
         runCurrent()
 
-        assertTrue(webRtcManager.publisherConnected.value)
+        assertTrue(webRtcManager.publisherLink.value.connected)
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -470,7 +470,7 @@ class WebRtcManagerTest {
             factoryProvider = DefaultPeerConnectionFactoryProvider(create = { factory }),
         )
         val trouble = mutableListOf<IceTrouble>()
-        manager.onIceTrouble = { trouble += it }
+        manager.onIceTrouble = { t, _ -> trouble += t }
         manager.initialize()
 
         // Attempt 1 (timed out) and its connections are closed; attempt 2 starts.
@@ -487,13 +487,13 @@ class WebRtcManagerTest {
         oldPub.onIceConnectionChange(PeerConnection.IceConnectionState.FAILED)
         runCurrent()
 
-        assertFalse(manager.publisherConnected.value)
+        assertFalse(manager.publisherLink.value.connected)
         assertEquals(emptyList<IceTrouble>(), trouble)
 
         // The current publisher still counts.
         observers[3].onIceConnectionChange(PeerConnection.IceConnectionState.CONNECTED)
         runCurrent()
-        assertTrue(manager.publisherConnected.value)
+        assertTrue(manager.publisherLink.value.connected)
     }
 
     @Test
@@ -517,9 +517,9 @@ class WebRtcManagerTest {
             factory.createPeerConnection(any<PeerConnection.RTCConfiguration>(), any<PeerConnection.Observer>())
         } answers { live = false; mockk<PeerConnection>(relaxed = true).also { created += it } }
 
-        assertFalse(manager.createSubscriberPeerConnection { live })
+        assertFalse(manager.createSubscriberPeerConnection(guardOf { live }))
         live = true
-        assertFalse(manager.createPublisherOffer { live })
+        assertFalse(manager.createPublisherOffer(guardOf { live }))
 
         assertEquals(2, created.size)
         created.forEach { pc ->
@@ -529,5 +529,127 @@ class WebRtcManagerTest {
         // Nothing installed: no mic track, no offer.
         assertNull(manager.localAudioTrack)
         verify(exactly = 0) { created[1].createOffer(any(), any()) }
+    }
+
+    private fun guardOf(live: () -> Boolean) = SessionGuard { install ->
+        if (live()) {
+            install()
+            true
+        } else {
+            false
+        }
+    }
+
+    /** A manager whose factory hands out relaxed PCs and records their observers. */
+    private fun managerWithObservers(
+        scope: CoroutineScope,
+        observers: MutableList<PeerConnection.Observer>,
+    ): WebRtcManager {
+        val factory = mockk<PeerConnectionFactory>(relaxed = true)
+        io.mockk.every {
+            factory.createPeerConnection(any<PeerConnection.RTCConfiguration>(), capture(observers))
+        } answers { mockk(relaxed = true) }
+        val voiceApi = mockk<VoiceApi>()
+        coEvery { voiceApi.getIceServers() } returns IceServerConfig(iceServers = emptyList())
+        return newWebRtcManager(
+            voiceScope = scope,
+            voiceApi = voiceApi,
+            factoryProvider = DefaultPeerConnectionFactoryProvider(create = { factory }),
+        )
+    }
+
+    // ========================================================================
+    // Fix round 2
+    // ========================================================================
+
+    @Test
+    fun `a callback validated before a retirement cannot publish CONNECTED after it`() = runTest {
+        val observers = mutableListOf<PeerConnection.Observer>()
+        val manager = managerWithObservers(backgroundScope, observers)
+        manager.initialize()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        val oldPub = observers[1]
+
+        // The old publisher's callback passes its identity check; right then a
+        // timeout clean-up on another thread retires the connections.
+        var retiredWhileCallbackRan = false
+        val cleanup = Thread { manager.closePeerConnections() }
+        manager.afterIdentityCheckForTest = {
+            manager.afterIdentityCheckForTest = null
+            cleanup.start()
+            cleanup.join(300)
+            retiredWhileCallbackRan = !cleanup.isAlive
+        }
+        oldPub.onIceConnectionChange(PeerConnection.IceConnectionState.CONNECTED)
+        // The clean-up completes once the callback released the monitor.
+        cleanup.join(5_000)
+
+        // The retirement waited for the callback, and the link it left says
+        // "not connected" for the new generation: no stale success survives.
+        assertFalse(retiredWhileCallbackRan)
+        assertEquals(PublisherLink(manager.currentGeneration, false), manager.publisherLink.value)
+    }
+
+    @Test
+    fun `the publisher link carries the generation of its connection`() = runTest {
+        val observers = mutableListOf<PeerConnection.Observer>()
+        val manager = managerWithObservers(backgroundScope, observers)
+        manager.initialize()
+        val gen = manager.closePeerConnections()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+
+        observers[1].onIceConnectionChange(PeerConnection.IceConnectionState.CONNECTED)
+
+        assertEquals(PublisherLink(gen, true), manager.publisherLink.value)
+    }
+
+    @Test
+    fun `the reconnecting indication follows the publisher only`() = runTest {
+        val observers = mutableListOf<PeerConnection.Observer>()
+        val manager = managerWithObservers(backgroundScope, observers)
+        val trouble = mutableListOf<IceTrouble>()
+        manager.onIceTrouble = { t, _ -> trouble += t }
+        manager.initialize()
+        manager.createSubscriberPeerConnection()
+        manager.createPublisherOffer()
+        val (sub, pub) = observers[0] to observers[1]
+
+        pub.onIceConnectionChange(PeerConnection.IceConnectionState.DISCONNECTED)
+        sub.onIceConnectionChange(PeerConnection.IceConnectionState.DISCONNECTED)
+        // Only the subscriber comes back: the mic upload is still down.
+        sub.onIceConnectionChange(PeerConnection.IceConnectionState.CONNECTED)
+        assertEquals(listOf(IceTrouble.Disconnected), trouble)
+
+        pub.onIceConnectionChange(PeerConnection.IceConnectionState.CONNECTED)
+        assertEquals(listOf(IceTrouble.Disconnected, IceTrouble.Recovered), trouble)
+
+        // A failed subscriber still asks for a rejoin.
+        sub.onIceConnectionChange(PeerConnection.IceConnectionState.FAILED)
+        assertEquals(IceTrouble.Failed, trouble.last())
+    }
+
+    @Test
+    fun `a new connection is installed inside the session guard, in one step with its check`() = runTest {
+        val observers = mutableListOf<PeerConnection.Observer>()
+        val manager = managerWithObservers(backgroundScope, observers)
+        manager.initialize()
+        val installedInsideGuard = mutableListOf<Boolean>()
+        val guard = SessionGuard { install ->
+            val before = manager.hasSubscriberPcForTest() || manager.hasPublisherPcForTest()
+            install()
+            installedInsideGuard += !before &&
+                (manager.hasSubscriberPcForTest() || manager.hasPublisherPcForTest())
+            true
+        }
+
+        assertTrue(manager.createSubscriberPeerConnection(guard))
+        manager.closePeerConnections()
+        assertTrue(manager.createPublisherOffer(guard))
+
+        // Checks without install (before the native create) report false; the
+        // install steps each installed their connection inside the guard.
+        assertEquals(2, installedInsideGuard.count { it })
     }
 }

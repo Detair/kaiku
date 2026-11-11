@@ -60,6 +60,18 @@ class KaikuWebSocket @Inject constructor(
     /** Whether [webSocket] completed the upgrade (onOpen); guarded by [lock]. */
     private var socketOpen = false
 
+    /** Counts authenticated sockets: bumped with each socket's Ready. Guarded by [lock]. */
+    private var authenticatedSockets = 0L
+
+    /**
+     * The number of the socket that is authenticated now (it changes with every
+     * new authenticated socket), or null while no socket is authenticated.
+     */
+    val authenticatedSocket: Long?
+        get() = synchronized(lock) {
+            if (_connectionState.value == ConnectionState.Connected) authenticatedSockets else null
+        }
+
     /**
      * Opens a WebSocket connection to [serverUrl] and authenticates with
      * [accessToken] in the first frame. Does nothing while a socket is
@@ -111,6 +123,23 @@ class KaikuWebSocket @Inject constructor(
             logger.warning("send failed (not connected): ${event::class.simpleName}")
         }
         return sent
+    }
+
+    /**
+     * Like [send], but also says on which authenticated socket the frame went
+     * out ([SendReceipt.authenticatedSocket]); null when it was queued before
+     * the socket's Ready. The server drops every frame that arrives before
+     * authentication, so such a frame never takes effect.
+     */
+    fun sendTracked(event: ClientEvent): SendReceipt {
+        val (socket, authenticated) = synchronized(lock) {
+            webSocket to (if (_connectionState.value == ConnectionState.Connected) authenticatedSockets else null)
+        }
+        val sent = socket?.send(json.encodeToString<ClientEvent>(event)) ?: false
+        if (!sent) {
+            logger.warning("send failed (not connected): ${event::class.simpleName}")
+        }
+        return SendReceipt(sent, if (sent) authenticated else null)
     }
 
     // -- Internal -------------------------------------------------------------
@@ -165,6 +194,7 @@ class KaikuWebSocket @Inject constructor(
                 if (this@KaikuWebSocket.webSocket !== webSocket) return
                 if (event is ServerEvent.Ready && _connectionState.value == ConnectionState.Connecting) {
                     logger.info("ready received, state=Connected")
+                    authenticatedSockets++
                     _connectionState.value = ConnectionState.Connected
                 }
                 if (!_events.tryEmit(event)) {
@@ -194,3 +224,6 @@ class KaikuWebSocket @Inject constructor(
         }
     }
 }
+
+/** Result of [KaikuWebSocket.sendTracked]. */
+data class SendReceipt(val sent: Boolean, val authenticatedSocket: Long?)
