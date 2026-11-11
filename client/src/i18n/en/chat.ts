@@ -16,7 +16,7 @@ export const chat = {
 
   "chat.composer.placeholder": "Message #{{channel}}",
   "chat.composer.placeholderDm": "Message {{name}}",
-  "chat.composer.allowedTypes": "You can send photos, videos, voice recordings, PDF and text files.",
+  "chat.composer.allowedTypes": "Files that usually work: photos (JPG, PNG, GIF, WebP), videos (MP4, WebM), audio (MP3, OGG, WAV), PDF and text files.",
   "chat.composer.fileTooLarge": "{{file}} is too big. Files can be up to {{limit}}.",
   "chat.composer.fileNotSent": "{{file}} was not sent. {{reason}}",
   "chat.composer.filesSending.one": "Sending {{count}} file…",
@@ -55,7 +55,7 @@ export const chat = {
   "chat.send.fileNameInvalid": "This file name can't be used. Rename the file and try again.",
   "chat.send.uploadsUnavailable": "Sending files is not set up on this server.",
   "chat.send.channelGone": "This channel no longer exists.",
-  "chat.send.readOnly": "Only some members can write in this channel.",
+  "chat.send.readOnly": "Nobody can write in this conversation.",
 
   "chat.message.react": "React with {{emoji}}",
   "chat.message.moreReactions": "More reactions",

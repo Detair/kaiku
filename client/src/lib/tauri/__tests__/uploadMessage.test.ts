@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const validateFileSize = vi.fn((): string | null => null);
+const refreshAccessToken = vi.fn(async () => false);
+const auth = { token: "tok" };
 vi.mock("../common", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../common")>()),
-  getUploadAuth: async () => ({ token: "tok", baseUrl: "https://chat.example" }),
+  getUploadAuth: async () => ({ token: auth.token, baseUrl: "https://chat.example" }),
   validateFileSize: () => validateFileSize(),
+  refreshAccessToken: () => refreshAccessToken(),
 }));
 
 import { uploadMessageWithFile, isUploadAborted } from "../messages";
@@ -52,6 +55,9 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
   validateFileSize.mockReturnValue(null);
+  refreshAccessToken.mockReset();
+  refreshAccessToken.mockResolvedValue(false);
+  auth.token = "tok";
   vi.stubGlobal("XMLHttpRequest", FakeXHR);
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -123,5 +129,33 @@ describe("uploadMessageWithFile", () => {
     FakeXHR.last.onerror?.();
     const err = await p.catch((e) => e);
     expect(err).toBeInstanceOf(TypeError);
+  });
+
+  it("K2: renews an expired session once and sends again", async () => {
+    refreshAccessToken.mockImplementationOnce(async () => {
+      auth.token = "fresh";
+      return true;
+    });
+    const p = uploadMessageWithFile("c1", file(), "hi");
+    await flush();
+    const first = FakeXHR.last;
+    first.respond(401, JSON.stringify({ error: "INVALID_TOKEN", message: "expired" }));
+    await flush();
+    await flush();
+    const second = FakeXHR.last;
+    expect(second).not.toBe(first);
+    expect(second.headers.Authorization).toBe("Bearer fresh");
+    second.respond(201, JSON.stringify({ id: "m1" }));
+    await expect(p).resolves.toEqual({ id: "m1" });
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("K2: a session that cannot be renewed fails without looping", async () => {
+    const p = uploadMessageWithFile("c1", file());
+    await flush();
+    FakeXHR.last.respond(401, JSON.stringify({ error: "INVALID_TOKEN" }));
+    const err = await p.catch((e) => e);
+    expect((err as HttpError).status).toBe(401);
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
   });
 });

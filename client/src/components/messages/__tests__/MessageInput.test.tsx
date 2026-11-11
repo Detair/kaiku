@@ -219,7 +219,7 @@ describe("MessageInput", () => {
   it("names the allowed file types next to the files", async () => {
     const { container } = render(() => <MessageInput channelId="c1" channelName="general" />);
     dropFiles(container.querySelector("form")!, [new File(["a"], "a.txt")]);
-    expect(await screen.findByText(/You can send photos, videos/)).toBeTruthy();
+    expect(await screen.findByText(/Files that usually work: photos \(JPG/)).toBeTruthy();
   });
 
   it("an oversized file is refused with a translated sentence", async () => {

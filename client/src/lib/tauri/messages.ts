@@ -15,6 +15,7 @@ import {
   fetchApi,
   getUploadAuth,
   HttpError,
+  refreshAccessToken,
   httpRequest,
   httpRequestWithStatus,
   validateFileSize,
@@ -277,18 +278,61 @@ export async function uploadMessageWithFile(
   }
   if (options.signal?.aborted) throw abortError();
 
-  const { token, baseUrl } = await getUploadAuth();
-  if (options.signal?.aborted) throw abortError();
-
   const formData = new FormData();
   formData.append("file", file);
   if (content) {
     formData.append("content", content);
   }
 
+  let response = await sendUpload(channelId, file, formData, options);
+  // An expired session (laptop woke up): renew once and send again, as the
+  // shared HTTP helper does.
+  if (response.status === 401 && (await refreshAccessToken())) {
+    response = await sendUpload(channelId, file, formData, options);
+  }
+
+  if (response.status >= 200 && response.status < 300) {
+    try {
+      return JSON.parse(response.responseText) as Message;
+    } catch (parseError) {
+      console.error("[uploadMessageWithFile] Failed to parse success response:", parseError);
+      throw new Error("Server returned invalid response", { cause: parseError });
+    }
+  }
+  const httpError = uploadHttpError(response.status, response.statusText, response.responseText);
+  console.error("[uploadMessageWithFile] Upload failed:", {
+    status: response.status,
+    code: httpError.code,
+    channelId,
+    fileSize: file.size,
+  });
+  throw httpError;
+}
+
+interface UploadResponse {
+  status: number;
+  statusText: string;
+  responseText: string;
+}
+
+/**
+ * One upload request with the current token. Resolves with any HTTP answer;
+ * rejects with a `TypeError` when the connection fails and an `AbortError`
+ * when cancelled.
+ */
+async function sendUpload(
+  channelId: string,
+  file: File,
+  formData: FormData,
+  options: UploadOptions,
+): Promise<UploadResponse> {
+  if (options.signal?.aborted) throw abortError();
+  const { token, baseUrl } = await getUploadAuth();
+  if (options.signal?.aborted) throw abortError();
+
   const url = `${baseUrl}/api/messages/channel/${channelId}/upload`;
 
-  return new Promise<Message>((resolve, reject) => {
+  return new Promise<UploadResponse>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const onAbort = () => xhr.abort();
     const done = () => options.signal?.removeEventListener("abort", onAbort);
@@ -305,23 +349,7 @@ export async function uploadMessageWithFile(
 
     xhr.onload = () => {
       done();
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          resolve(JSON.parse(xhr.responseText) as Message);
-        } catch (parseError) {
-          console.error("[uploadMessageWithFile] Failed to parse success response:", parseError);
-          reject(new Error("Server returned invalid response", { cause: parseError }));
-        }
-        return;
-      }
-      const httpError = uploadHttpError(xhr.status, xhr.statusText, xhr.responseText);
-      console.error("[uploadMessageWithFile] Upload failed:", {
-        status: xhr.status,
-        code: httpError.code,
-        channelId,
-        fileSize: file.size,
-      });
-      reject(httpError);
+      resolve({ status: xhr.status, statusText: xhr.statusText, responseText: xhr.responseText });
     };
     // Same shape as a failed fetch, so errorText says "check your connection".
     xhr.onerror = () => {
