@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release note structure source: `docs/project/RELEASE_NOTES_TEMPLATE.md`
 
 ### Added
+- **Light theme and "Same as my device":** Settings > Appearance now offers Solarized Light, and an option that switches between light and dark the way your phone or computer does. Nobody's theme changes unless they pick one.
+- **Text size:** three steps (Normal, Large, Very large) in Settings > Appearance make all text bigger.
 - "I lost my phone / forgot my password" on the sign-in page: a recovery code plus your password, authenticator code or a fresh single sign-on starts a recovery that completes after the waiting period unless someone cancels it; it can name all your key phones as lost. At most three starts per waiting period.
 - "That wasn't me" on a security notice ends the sign-in or removes the device it names and blocks the password or code that was used. Without a key phone or passkey, it needs a session from before the event and an authenticator or recovery code.
 - Delayed account changes: securing an account ("Secure my account") or a recovery waits 24 hours (configurable up to 72), tells the account's phones, its recovery contact and the admins, and can be cancelled by any of them. The device that started it can only withdraw it.
@@ -208,6 +210,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
+- Helper text, red error text and the outline of text fields are easier to read in every theme (at least 4.5:1 and 3:1 contrast).
+- Pop-up messages (toasts) use the theme colours with readable labels, and wait while you point at them or tab into them.
+- Pulsing and bouncing animations stop when your device is set to reduce motion; loading spinners keep turning.
+- Pixel theme: buttons and navigation text are larger.
+- Avatar initials are readable on every colour.
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.
 - Client: in the desktop app and in browsers other than Firefox, avatars are now round, icons have their intended size, selected options and primary buttons show their accent background, QR codes have a white background, and clickable items show a hand cursor. These styles were dropped from the app's CSS; Firefox already showed them.
 - The message for actions that need a full session now says that a computer needs a passkey sign-in and that a phone can do it in the Kaiku app.

@@ -314,3 +314,16 @@ Before submitting a community theme:
 - [ ] Preview colors match actual theme appearance
 - [ ] Theme description is concise and accurate
 - [ ] If pixel family: verified inheritance works correctly
+
+## Light themes, "Same as my device" and text size
+
+- A theme is "light" when its `ThemeDefinition` has `isDark: false` and its CSS block sets `color-scheme: light`.
+  "Same as my device" (`theme_follow_system`) shows `SYSTEM_LIGHT_THEME` (solarized-light) by day and the stored
+  dark theme at night. `resolveTheme()` in `stores/theme.ts` holds the rule; `public/theme-preload.js` repeats it
+  before first paint and `stores/__tests__/themeSystem.test.ts` checks both agree. Change one, change the other.
+- Components still draw faint borders and hover fills with white overlays (`border-white/10`, `bg-white/5`). On a
+  light theme `global.css` redraws those classes with the text colour. A new light theme needs the same block
+  (selector `:root[data-theme="your-theme"]`), plus its own block in `highlight-theme.css`.
+- Text size is `data-font-size="large|xlarge"` on `<html>` (115 % / 130 % root font size). Size things in `rem`,
+  not `px`, or they will not follow.
+- Contrast for a selectable light theme is enforced by the "solarized-light as a selectable theme" tests.
