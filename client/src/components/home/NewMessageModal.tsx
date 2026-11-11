@@ -1,30 +1,68 @@
 /**
  * NewMessageModal Component
  *
- * Modal for creating a new DM conversation.
+ * Modal for creating a new DM conversation. Offers friends and everyone who
+ * shares a server with me (NAV-1, decision D1: no friendship needed), friends
+ * first.
  */
 
-import { Component, createSignal, For, Show, createMemo, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, For, Show, createMemo, onMount } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X, Search, Check } from "lucide-solid";
 import { t, plural } from "@/i18n";
 import { errorText } from "@/i18n/errors";
 import { friendsState, loadFriends } from "@/stores/friends";
-import { loadDMs, selectDM } from "@/stores/dms";
-import * as tauri from "@/lib/tauri";
-import type { Friend } from "@/lib/types";
+import { openDirectMessage } from "@/stores/dms";
+import { guildsState, loadAllGuildMembers } from "@/stores/guilds";
+import { currentUser } from "@/stores/auth";
+import { createDialog } from "@/lib/a11y/dialog";
 
 interface NewMessageModalProps {
   onClose: () => void;
 }
 
+/** A person I can write to. */
+export interface MessageCandidate {
+  user_id: string;
+  username: string;
+  display_name: string;
+  isFriend: boolean;
+}
+
+const byName = (a: MessageCandidate, b: MessageCandidate) =>
+  a.display_name.localeCompare(b.display_name);
+
+/** Friends first, then members of my servers; never me, never twice. */
+export function messageCandidates(): MessageCandidate[] {
+  const me = currentUser()?.id;
+  const seen = new Set<string>(me ? [me] : []);
+  const friends: MessageCandidate[] = [];
+  for (const f of friendsState.friends) {
+    if (seen.has(f.user_id)) continue;
+    seen.add(f.user_id);
+    friends.push({ user_id: f.user_id, username: f.username, display_name: f.display_name, isFriend: true });
+  }
+  const others: MessageCandidate[] = [];
+  for (const g of guildsState.guilds) {
+    for (const m of guildsState.members[g.id] ?? []) {
+      if (seen.has(m.user_id)) continue;
+      seen.add(m.user_id);
+      others.push({
+        user_id: m.user_id,
+        username: m.username,
+        display_name: m.nickname || m.display_name,
+        isFriend: false,
+      });
+    }
+  }
+  return [...friends.sort(byName), ...others.sort(byName)];
+}
+
 const NewMessageModal: Component<NewMessageModalProps> = (props) => {
-  onMount(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
+  let searchInput: HTMLInputElement | undefined;
+  const dialog = createDialog({
+    onClose: () => props.onClose(),
+    initialFocus: () => searchInput,
   });
 
   const [search, setSearch] = createSignal("");
@@ -32,23 +70,24 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
   const [isCreating, setIsCreating] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
-  // Load friends if not already loaded
-  if (friendsState.friends.length === 0) {
-    loadFriends();
-  }
+  onMount(() => {
+    if (friendsState.friends.length === 0) void loadFriends();
+    void loadAllGuildMembers();
+  });
 
-  const filteredFriends = createMemo(() => {
-    const searchLower = search().toLowerCase();
-    if (!searchLower) return friendsState.friends;
-    return friendsState.friends.filter(
-      (f) =>
-        f.username.toLowerCase().includes(searchLower) ||
-        f.display_name.toLowerCase().includes(searchLower),
+  const filteredPeople = createMemo(() => {
+    const searchLower = search().trim().toLowerCase();
+    const all = messageCandidates();
+    if (!searchLower) return all;
+    return all.filter(
+      (p) =>
+        p.username.toLowerCase().includes(searchLower) ||
+        p.display_name.toLowerCase().includes(searchLower),
     );
   });
 
   const emptyListText = () =>
-    search() ? t("dm.new.noFriendsFound") : t("dm.new.noFriends");
+    search() ? t("dm.new.noPeopleFound") : t("dm.new.noPeople");
 
   const submitLabel = () => {
     if (isCreating()) return t("dm.new.creating");
@@ -56,7 +95,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
     return t("dm.new.create");
   };
 
-  const toggleFriend = (userId: string) => {
+  const togglePerson = (userId: string) => {
     setSelectedIds((prev) =>
       prev.includes(userId)
         ? prev.filter((id) => id !== userId)
@@ -71,14 +110,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
     setError(null);
 
     try {
-      const dm = await tauri.createDM(selectedIds());
-      const channelId = dm.channel?.id ?? (dm as { id?: string }).id;
-      if (!channelId) {
-        throw new Error("DM creation response missing channel id");
-      }
-
-      await loadDMs();
-      selectDM(channelId);
+      await openDirectMessage(selectedIds());
       props.onClose();
     } catch (err) {
       setError(errorText(err, "dm.new.createFailed"));
@@ -94,18 +126,21 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
         onClick={props.onClose}
       >
         <div
-          class="border border-white/10 rounded-2xl w-full max-w-md flex flex-col max-h-[80vh]"
+          ref={dialog.ref}
+          {...dialog.dialogProps}
+          class="border border-white/10 rounded-2xl w-full max-w-md mx-4 flex flex-col max-h-[80vh] outline-none"
           style={{"background-color":"var(--color-surface-base)"}}
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}
           <div class="flex items-center justify-between p-4 border-b border-white/10">
-            <h2 class="text-lg font-bold text-text-primary">{t("dm.new.title")}</h2>
+            <h2 id={dialog.titleId} class="text-lg font-bold text-text-primary">{t("dm.new.title")}</h2>
             <button
               onClick={props.onClose}
               class="p-1 rounded hover:bg-white/10 transition-colors"
+              aria-label={t("common.close")}
             >
-              <X class="w-5 h-5 text-text-secondary" />
+              <X class="w-5 h-5 text-text-secondary" aria-hidden="true" />
             </button>
           </div>
 
@@ -114,7 +149,9 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
             <div class="relative">
               <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
               <input
+                ref={searchInput}
                 data-testid="new-dm-input"
+                aria-label={t("dm.new.searchPlaceholder")}
                 type="text"
                 value={search()}
                 onInput={(e) => setSearch(e.currentTarget.value)}
@@ -136,25 +173,29 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
             </Show>
           </div>
 
-          {/* Friends List */}
+          {/* People */}
           <div class="flex-1 overflow-y-auto p-2">
             <Show
-              when={filteredFriends().length > 0}
+              when={filteredPeople().length > 0}
               fallback={
                 <div class="text-center py-8 text-text-secondary">
                   {emptyListText()}
                 </div>
               }
             >
-              <For each={filteredFriends()}>
-                {(friend) => (
-                  <FriendSelectItem
-                    friend={friend}
-                    selected={selectedIds().includes(friend.user_id)}
-                    onToggle={() => toggleFriend(friend.user_id)}
-                  />
-                )}
-              </For>
+              <ul class="space-y-0.5" aria-label={t("dm.new.peopleLabel")}>
+                <For each={filteredPeople()}>
+                  {(person) => (
+                    <li>
+                      <PersonSelectItem
+                        person={person}
+                        selected={selectedIds().includes(person.user_id)}
+                        onToggle={() => togglePerson(person.user_id)}
+                      />
+                    </li>
+                  )}
+                </For>
+              </ul>
             </Show>
           </div>
 
@@ -185,20 +226,25 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
   );
 };
 
-interface FriendSelectItemProps {
-  friend: Friend;
+interface PersonSelectItemProps {
+  person: MessageCandidate;
   selected: boolean;
   onToggle: () => void;
 }
 
-const FriendSelectItem: Component<FriendSelectItemProps> = (props) => {
+const PersonSelectItem: Component<PersonSelectItemProps> = (props) => {
   return (
     <button
+      type="button"
+      data-testid="new-dm-person"
+      role="checkbox"
+      aria-checked={props.selected}
       onClick={props.onToggle}
       class="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 transition-colors"
     >
       {/* Checkbox */}
       <div
+        aria-hidden="true"
         class="w-5 h-5 rounded border-2 flex items-center justify-center transition-colors"
         classList={{
           "border-accent-primary bg-accent-primary": props.selected,
@@ -211,19 +257,23 @@ const FriendSelectItem: Component<FriendSelectItemProps> = (props) => {
       </div>
 
       {/* Avatar */}
-      <div class="w-8 h-8 rounded-full bg-accent-primary flex items-center justify-center">
+      <div aria-hidden="true" class="w-8 h-8 rounded-full bg-accent-primary flex items-center justify-center">
         <span class="text-xs font-semibold text-on-accent">
-          {props.friend.display_name.charAt(0).toUpperCase()}
+          {props.person.display_name.charAt(0).toUpperCase()}
         </span>
       </div>
 
       {/* Name */}
-      <div class="flex-1 text-left">
-        <div class="font-medium text-text-primary">
-          {props.friend.display_name}
+      <div class="flex-1 text-left min-w-0">
+        <div class="font-medium text-text-primary truncate">
+          {props.person.display_name}
         </div>
-        <div class="text-sm text-text-secondary">@{props.friend.username}</div>
+        <div class="text-sm text-text-secondary truncate">@{props.person.username}</div>
       </div>
+
+      <Show when={props.person.isFriend}>
+        <span class="text-xs text-text-secondary flex-shrink-0">{t("dm.new.friendTag")}</span>
+      </Show>
     </button>
   );
 };

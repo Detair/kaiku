@@ -103,6 +103,26 @@ export async function loadGuildMembers(guildId: string): Promise<void> {
 }
 
 /**
+ * Load the members of every server I am in that are not loaded yet, so
+ * "New Message" can offer everyone I share a server with (NAV-1, D1).
+ * Failures per server are logged and skipped.
+ */
+export async function loadAllGuildMembers(): Promise<void> {
+  await Promise.all(
+    guildsState.guilds
+      .filter((g) => !guildsState.members[g.id])
+      .map(async (g) => {
+        try {
+          const members = await tauri.getGuildMembers(g.id);
+          setGuildsState("members", g.id, members);
+        } catch (err) {
+          console.error(`Failed to load members of server ${g.id}:`, err);
+        }
+      }),
+  );
+}
+
+/**
  * Load guild channels
  */
 export async function loadGuildChannels(guildId: string): Promise<void> {

@@ -48,6 +48,7 @@ import {
   setGuildsState,
   loadGuilds,
   loadGuildMembers,
+  loadAllGuildMembers,
   getActiveGuild,
   createGuild,
   updateGuild,
@@ -187,6 +188,25 @@ describe("guilds store", () => {
 
       expect(guildsState.members["guild-1"]).toEqual(members);
       expect(guildsState.isMembersLoading).toBe(false);
+    });
+  });
+
+  describe("loadAllGuildMembers", () => {
+    it("loads members of every server not loaded yet and skips failures", async () => {
+      setGuildsState({
+        guilds: [{ id: "a" }, { id: "b" }, { id: "c" }] as never,
+        members: { a: [createMember()] },
+      });
+      vi.mocked(tauri.getGuildMembers).mockImplementation(async (id: string) => {
+        if (id === "c") throw new Error("down");
+        return [createMember({ user_id: `in-${id}` })];
+      });
+
+      await loadAllGuildMembers();
+
+      expect(tauri.getGuildMembers).toHaveBeenCalledTimes(2);
+      expect(guildsState.members["b"]?.[0].user_id).toBe("in-b");
+      expect(guildsState.members["c"]).toBeUndefined();
     });
   });
 
