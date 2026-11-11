@@ -192,7 +192,7 @@ describe("guilds store", () => {
   });
 
   describe("loadAllGuildMembers", () => {
-    it("loads members of every server not loaded yet and skips failures", async () => {
+    it("refreshes every server's members, keeps old lists on failure", async () => {
       setGuildsState({
         guilds: [{ id: "a" }, { id: "b" }, { id: "c" }] as never,
         members: { a: [createMember()] },
@@ -202,10 +202,13 @@ describe("guilds store", () => {
         return [createMember({ user_id: `in-${id}` })];
       });
 
-      await loadAllGuildMembers();
+      const failed = await loadAllGuildMembers();
 
-      expect(tauri.getGuildMembers).toHaveBeenCalledTimes(2);
+      // "a" was cached and is fetched again: someone may have joined.
+      expect(tauri.getGuildMembers).toHaveBeenCalledTimes(3);
+      expect(guildsState.members["a"]?.[0].user_id).toBe("in-a");
       expect(guildsState.members["b"]?.[0].user_id).toBe("in-b");
+      expect(failed).toBe(1);
       expect(guildsState.members["c"]).toBeUndefined();
     });
   });

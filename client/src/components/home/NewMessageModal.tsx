@@ -11,7 +11,7 @@ import { Portal } from "solid-js/web";
 import { X, Search, Check } from "lucide-solid";
 import { t, plural } from "@/i18n";
 import { errorText } from "@/i18n/errors";
-import { friendsState, loadFriends } from "@/stores/friends";
+import { friendsState, loadFriends, loadBlocked } from "@/stores/friends";
 import { openDirectMessage } from "@/stores/dms";
 import { guildsState, loadAllGuildMembers } from "@/stores/guilds";
 import { currentUser } from "@/stores/auth";
@@ -26,16 +26,23 @@ export interface MessageCandidate {
   user_id: string;
   username: string;
   display_name: string;
+  /** Account name when a server nickname is shown instead (K6). */
+  real_name?: string;
   isFriend: boolean;
 }
 
 const byName = (a: MessageCandidate, b: MessageCandidate) =>
   a.display_name.localeCompare(b.display_name);
 
-/** Friends first, then members of my servers; never me, never twice. */
+/**
+ * Friends first, then members of my servers; never me, never twice, never
+ * someone I blocked (W4). The client only knows my own blocks; blocks the
+ * other way are refused by the server.
+ */
 export function messageCandidates(): MessageCandidate[] {
   const me = currentUser()?.id;
   const seen = new Set<string>(me ? [me] : []);
+  for (const b of friendsState.blocked) seen.add(b.user_id);
   const friends: MessageCandidate[] = [];
   for (const f of friendsState.friends) {
     if (seen.has(f.user_id)) continue;
@@ -51,6 +58,7 @@ export function messageCandidates(): MessageCandidate[] {
         user_id: m.user_id,
         username: m.username,
         display_name: m.nickname || m.display_name,
+        real_name: m.nickname ? m.display_name : undefined,
         isFriend: false,
       });
     }
@@ -70,9 +78,17 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
   const [isCreating, setIsCreating] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
+  // Member lists load fresh on every open (people join and leave); show
+  // that it is loading and when a server could not be read (K4, K5).
+  const [isLoadingPeople, setIsLoadingPeople] = createSignal(true);
+  const [someFailed, setSomeFailed] = createSignal(false);
+
   onMount(() => {
     if (friendsState.friends.length === 0) void loadFriends();
-    void loadAllGuildMembers();
+    // Blocks must be known before anyone is offered (W4).
+    void Promise.all([loadAllGuildMembers(), loadBlocked()])
+      .then(([failed]) => setSomeFailed(failed > 0))
+      .finally(() => setIsLoadingPeople(false));
   });
 
   const filteredPeople = createMemo(() => {
@@ -82,12 +98,15 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
     return all.filter(
       (p) =>
         p.username.toLowerCase().includes(searchLower) ||
-        p.display_name.toLowerCase().includes(searchLower),
+        p.display_name.toLowerCase().includes(searchLower) ||
+        (p.real_name?.toLowerCase().includes(searchLower) ?? false),
     );
   });
 
-  const emptyListText = () =>
-    search() ? t("dm.new.noPeopleFound") : t("dm.new.noPeople");
+  const emptyListText = () => {
+    if (isLoadingPeople()) return t("dm.new.loadingPeople");
+    return search() ? t("dm.new.noPeopleFound") : t("dm.new.noPeople");
+  };
 
   const submitLabel = () => {
     if (isCreating()) return t("dm.new.creating");
@@ -173,12 +192,18 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
             </Show>
           </div>
 
+          <Show when={someFailed()}>
+            <p data-testid="new-dm-partial" role="status" class="mx-4 mt-2 text-sm text-text-secondary">
+              {t("dm.new.someNotLoaded")}
+            </p>
+          </Show>
+
           {/* People */}
           <div class="flex-1 overflow-y-auto p-2">
             <Show
               when={filteredPeople().length > 0}
               fallback={
-                <div class="text-center py-8 text-text-secondary">
+                <div data-testid="new-dm-empty" role="status" class="text-center py-8 text-text-secondary">
                   {emptyListText()}
                 </div>
               }
@@ -268,7 +293,12 @@ const PersonSelectItem: Component<PersonSelectItemProps> = (props) => {
         <div class="font-medium text-text-primary truncate">
           {props.person.display_name}
         </div>
-        <div class="text-sm text-text-secondary truncate">@{props.person.username}</div>
+        <div class="text-sm text-text-secondary truncate">
+          @{props.person.username}
+          <Show when={props.person.real_name}>
+            <span> · {props.person.real_name}</span>
+          </Show>
+        </div>
       </div>
 
       <Show when={props.person.isFriend}>
