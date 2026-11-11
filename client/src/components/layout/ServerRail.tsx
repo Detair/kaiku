@@ -34,7 +34,10 @@ import {
   getIncomingRequestCount,
   loadPendingRequests,
 } from "@/stores/friends";
-import { currentUser } from "@/stores/auth";
+import { authState } from "@/stores/auth";
+
+// The signed-in user object the rail last loaded for (R2).
+let lastSignIn: unknown = null;
 
 const CreateGuildModal = lazy(
   () => import("@/components/guilds/CreateGuildModal"),
@@ -114,13 +117,20 @@ const ServerRail: Component<ServerRailProps> = (props) => {
 
   onMount(() => {
     // Desktop and phone layouts each mount their own rail, so this runs
-    // again when the window crosses the phone width. Load once per signed-in
-    // account (W3): a different account resets the stores and loads afresh;
-    // the same account keeps its data and the "already announced" requests.
-    const userId = currentUser()?.id ?? null;
-    if (bindDMsToAccount(userId)) void loadDMs();
-    if (bindFriendsToAccount(userId)) void loadPendingRequests();
+    // again when the window crosses the phone width. Load once per sign-in:
+    // a different account resets the stores (W3); a new sign-in of the same
+    // account reloads (R2: requests and messages may have come in while
+    // signed out). A sign-in sets a fresh user object, a resize does not.
+    const user = authState.user;
+    const newSignIn = user !== lastSignIn;
+    lastSignIn = user;
+    const userId = user?.id ?? null;
+    const newDMAccount = bindDMsToAccount(userId);
+    const newFriendsAccount = bindFriendsToAccount(userId);
+    if (newDMAccount || newSignIn) void loadDMs();
+    if (newFriendsAccount || newSignIn) void loadPendingRequests();
   });
+
 
 
   /** Icon button size classes based on compact prop */

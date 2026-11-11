@@ -24,7 +24,8 @@ vi.mock("@/stores/friends", () => ({
   loadPendingRequests: loaders.loadPendingRequests,
   getIncomingRequestCount: () => state.incoming,
 }));
-vi.mock("@/stores/auth", () => ({ currentUser: () => ({ id: "matthias" }) }));
+const auth = vi.hoisted(() => ({ authState: { user: { id: "matthias" } as { id: string } | null } }));
+vi.mock("@/stores/auth", () => auth);
 vi.mock("@/stores/serverFeatures", () => ({ isGuildDiscoveryOff: () => true }));
 
 const guilds = vi.hoisted(() => ({
@@ -65,7 +66,11 @@ describe("ServerRail", () => {
     expect(loaders.loadPendingRequests).toHaveBeenCalledTimes(1);
   });
 
-  it("does not reload when the rail is mounted again for the same account", () => {
+  it("does not reload when the rail is mounted again in the same sign-in", () => {
+    auth.authState.user = { id: "matthias" };
+    render(() => <ServerRail />);
+    cleanup();
+    vi.clearAllMocks();
     // Crossing the phone width mounts the other layout's rail.
     loaders.bindDMsToAccount.mockReturnValue(false);
     loaders.bindFriendsToAccount.mockReturnValue(false);
@@ -73,6 +78,25 @@ describe("ServerRail", () => {
       render(() => <ServerRail />);
       expect(loaders.loadDMs).not.toHaveBeenCalled();
       expect(loaders.loadPendingRequests).not.toHaveBeenCalled();
+    } finally {
+      loaders.bindDMsToAccount.mockReturnValue(true);
+      loaders.bindFriendsToAccount.mockReturnValue(true);
+    }
+  });
+
+  it("reloads after signing out and in again with the same account (R2)", () => {
+    auth.authState.user = { id: "matthias" };
+    render(() => <ServerRail />);
+    cleanup();
+    vi.clearAllMocks();
+    loaders.bindDMsToAccount.mockReturnValue(false);
+    loaders.bindFriendsToAccount.mockReturnValue(false);
+    try {
+      // A new sign-in sets a new user object for the same account.
+      auth.authState.user = { id: "matthias" };
+      render(() => <ServerRail />);
+      expect(loaders.loadDMs).toHaveBeenCalledTimes(1);
+      expect(loaders.loadPendingRequests).toHaveBeenCalledTimes(1);
     } finally {
       loaders.bindDMsToAccount.mockReturnValue(true);
       loaders.bindFriendsToAccount.mockReturnValue(true);
