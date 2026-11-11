@@ -33,6 +33,7 @@ import {
   THEME_IDS,
 } from "../theme";
 import { updatePreference } from "../preferences";
+import { THEME_NAMES } from "@/lib/types/common";
 
 beforeEach(() => {
   prefs.current = { theme: "focused-hybrid" };
@@ -139,7 +140,7 @@ describe("store behaviour", () => {
 describe("public/theme-preload.js matches resolveTheme (no flash)", () => {
   const src = readFileSync(join(__dirname, "..", "..", "..", "public", "theme-preload.js"), "utf8");
 
-  function runPreload(data: Record<string, unknown> | null, systemDark: boolean) {
+  function runPreload(data: Record<string, unknown> | null, systemDark: boolean, legacyTheme?: string) {
     const attrs: Record<string, string> = {};
     const doc = {
       documentElement: { setAttribute: (k: string, v: string) => (attrs[k] = v) },
@@ -148,7 +149,11 @@ describe("public/theme-preload.js matches resolveTheme (no flash)", () => {
     };
     const ls = {
       getItem: (k: string) =>
-        k === "vc:preferences" && data ? JSON.stringify({ data, updated_at: "x" }) : null,
+        k === "vc:preferences" && data
+          ? JSON.stringify({ data, updated_at: "x" })
+          : k === "theme"
+            ? (legacyTheme ?? null)
+            : null,
     };
     const win = { matchMedia: () => ({ matches: systemDark }) };
     new Function("localStorage", "document", "window", src)(ls, doc, win);
@@ -174,6 +179,18 @@ describe("public/theme-preload.js matches resolveTheme (no flash)", () => {
 
   it("uses the default theme when nothing is stored", () => {
     expect(runPreload(null, false)["data-theme"]).toBe("focused-hybrid");
+  });
+
+  it("accepts the old 'theme' key only for known themes, like the store", () => {
+    expect(runPreload(null, true, "solarized-light")["data-theme"]).toBe("solarized-light");
+    expect(runPreload(null, true, "no-such-theme")["data-theme"]).toBe("focused-hybrid");
+    expect(runPreload(null, true, "toString")["data-theme"]).toBe("focused-hybrid");
+  });
+
+  it("knows the same theme names as THEME_NAMES", () => {
+    const known = /var KNOWN = \{([^}]*)\}/.exec(src)?.[1] ?? "";
+    const names = [...known.matchAll(/"([\w-]+)"/g)].map((m) => m[1]);
+    expect(names.sort()).toEqual([...THEME_NAMES].sort());
   });
 
   it("never throws on broken stored data", () => {

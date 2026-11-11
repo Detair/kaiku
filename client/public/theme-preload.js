@@ -8,11 +8,18 @@
 // Theme and text size are set here, synchronously, before the first paint, so
 // a light theme, "Same as system" or a larger text size never flashes the
 // default dark look first. The rules mirror resolveTheme() in
-// src/stores/theme.ts; src/stores/__tests__/themePreload.test.ts runs this file
+// src/stores/theme.ts; src/stores/__tests__/themeSystem.test.ts runs this file
 // against it for every theme, so the two cannot drift apart.
 (function () {
   try {
     var LIGHT = { "solarized-light": true };
+    // Same list as THEME_NAMES in src/lib/types/common.ts (checked by the test).
+    var KNOWN = {
+      "focused-hybrid": true,
+      "solarized-dark": true,
+      "solarized-light": true,
+      "pixel-cozy": true,
+    };
     var theme = "focused-hybrid";
     var follow = false;
     var fontSize = "default";
@@ -27,8 +34,9 @@
         }
       }
     } else {
+      // Old key from before vc:preferences; the store only accepts known names.
       var legacy = localStorage.getItem("theme");
-      if (legacy) theme = legacy;
+      if (legacy && KNOWN.hasOwnProperty(legacy)) theme = legacy;
     }
     if (follow) {
       var dark = true;
