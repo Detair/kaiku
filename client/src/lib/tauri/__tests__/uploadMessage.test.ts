@@ -158,4 +158,19 @@ describe("uploadMessageWithFile", () => {
     expect((err as HttpError).status).toBe(401);
     expect(refreshAccessToken).toHaveBeenCalledTimes(1);
   });
+
+  it("cancelling while the session is renewed reads as a cancel, even if renewal fails", async () => {
+    const controller = new AbortController();
+    let finishRefresh!: (ok: boolean) => void;
+    refreshAccessToken.mockImplementationOnce(() => new Promise<boolean>((r) => (finishRefresh = r)));
+    const p = uploadMessageWithFile("c1", file(), undefined, { signal: controller.signal });
+    await flush();
+    FakeXHR.last.respond(401, JSON.stringify({ error: "INVALID_TOKEN" }));
+    await flush();
+    controller.abort();
+    finishRefresh(false);
+    const err = await p.catch((e) => e);
+    expect(isUploadAborted(err)).toBe(true);
+  });
 });
+

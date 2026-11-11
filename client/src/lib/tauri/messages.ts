@@ -287,8 +287,12 @@ export async function uploadMessageWithFile(
   let response = await sendUpload(channelId, file, formData, options);
   // An expired session (laptop woke up): renew once and send again, as the
   // shared HTTP helper does.
-  if (response.status === 401 && (await refreshAccessToken())) {
-    response = await sendUpload(channelId, file, formData, options);
+  if (response.status === 401) {
+    const renewed = await refreshAccessToken();
+    // Cancelled while the session was renewed: that is a cancel, whatever
+    // the renewal said.
+    if (options.signal?.aborted) throw abortError();
+    if (renewed) response = await sendUpload(channelId, file, formData, options);
   }
 
   if (response.status >= 200 && response.status < 300) {
