@@ -1016,11 +1016,10 @@ describe("fix round 4: live edits of messages that are still loading", () => {
     expect(bufferLiveEdit("ch-1", "m-11", "x", "2026-01-02T00:00:00Z")).toBe(false);
   });
 
-  // Tripwire: the WebSocket handler (`stores/websocket/messageEvents.ts`,
-  // `applyMessageEdit`) drops edits for messages that are not loaded and does
-  // not call `bufferLiveEdit` yet. That file belongs to another package. Once
-  // it calls `bufferLiveEdit`, this test fails: then turn `it.fails` into `it`.
-  it.fails("KNOWN GAP: the WebSocket edit handler reaches the buffer", async () => {
+  // The real path: the WebSocket handler (`stores/websocket/messageEvents.ts`,
+  // `applyMessageEdit`) hands edits for messages that are not loaded yet to
+  // `bufferLiveEdit`.
+  it("the WebSocket edit handler reaches the buffer", async () => {
     const { applyMessageEdit } = await import("@/stores/websocket/messageEvents");
     setMessagesState("byChannel", "ch-1", [at("m-10", 10)]);
     setMessagesState("newerAfter", "ch-1", "m-10");
