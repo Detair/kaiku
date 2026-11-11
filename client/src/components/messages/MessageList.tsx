@@ -266,7 +266,7 @@ const MessageList: Component<MessageListProps> = (props) => {
       const lastMsg = lastMarkableMessage();
       // An older window (after a far jump) must never move the read marker
       // back: the server stores whatever id it gets.
-      if (lastMsg && isAtBottom() && !hasNewerMessages(props.channelId)) {
+      if (lastMsg && isAtBottom() && checkIfAtBottom() && !hasNewerMessages(props.channelId)) {
         markChannelAsRead(props.channelId, lastMsg.id);
       }
       markAsReadTimer = null;
@@ -315,6 +315,11 @@ const MessageList: Component<MessageListProps> = (props) => {
     } finally {
       isLoadingNewer = false;
     }
+    // The page went in below the view without a scroll event: the person
+    // has not seen it yet, so the list is no longer "at the bottom".
+    const atBottom = checkIfAtBottom();
+    setIsAtBottom(atBottom);
+    if (!atBottom) cancelMarkAsRead();
   };
 
   /** Go to the newest message, reloading when the list shows an older window. */

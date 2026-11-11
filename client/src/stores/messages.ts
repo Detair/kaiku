@@ -315,6 +315,8 @@ export async function loadMessagesForJump(
     const current = messagesState.byChannel[channelId] ?? [];
     if (newer) {
       setMessagesState("byChannel", channelId, mergeAscending(current, [...window.items, ...newer]));
+      // Bridged to the newest message: an older window from before is gone.
+      setMessagesState("newerAfter", channelId, undefined);
     } else {
       // Too far back to bridge: show the window and remember that newer
       // messages follow it (`loadNewerMessages`). Messages that arrived or
@@ -846,6 +848,13 @@ export async function loadNewerMessages(channelId: string): Promise<void> {
     setMessagesState("newerAfter", channelId, page.has_more && next ? next : undefined);
   } catch (err) {
     console.error("Failed to load newer messages:", err);
+    if (isAnchorRejected(err) && messagesState.newerAfter[channelId] === cursor) {
+      // The window's last message was deleted, so the server refuses it as
+      // an anchor. Retrying would fail on every scroll: load the present.
+      setMessagesState("newerAfter", channelId, undefined);
+      loadingNewer[channelId] = false;
+      await loadInitialMessages(channelId);
+    }
   } finally {
     loadingNewer[channelId] = false;
   }

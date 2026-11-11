@@ -847,6 +847,35 @@ describe("editingMessageId", () => {
       expect(hasNewerMessages("ch-1")).toBe(false);
     });
 
+    it("N2: a later bridged jump ends the older window", async () => {
+      setMessagesState("byChannel", "ch-1", [at("m-10", 10)]);
+      setMessagesState("newerAfter", "ch-1", "m-10");
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce({
+        items: [at("m-20", 20)], has_more: true, next_cursor: null,
+      } as PaginatedMessages);
+      vi.mocked(tauri.getMessagesAfter).mockResolvedValueOnce({
+        items: [at("m-21", 21)], has_more: false, next_cursor: null,
+      } as PaginatedMessages);
+      await expect(loadMessagesForJump("ch-1", "m-20")).resolves.toBe(true);
+      expect(hasNewerMessages("ch-1")).toBe(false);
+    });
+
+    it("N3: a deleted anchor reloads the present once instead of failing on every scroll", async () => {
+      setMessagesState("byChannel", "ch-1", [at("m-10", 10)]);
+      setMessagesState("newerAfter", "ch-1", "m-10");
+      vi.mocked(tauri.getMessagesAfter).mockRejectedValueOnce(new HttpError(400, "unknown anchor", "VALIDATION_ERROR"));
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce({
+        items: [at("m-90", 90)], has_more: true, next_cursor: null,
+      } as PaginatedMessages);
+      await loadNewerMessages("ch-1");
+      expect(hasNewerMessages("ch-1")).toBe(false);
+      expect(tauri.getMessages).toHaveBeenCalledTimes(1);
+      expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual(["m-90"]);
+      // Nothing left to retry.
+      await loadNewerMessages("ch-1");
+      expect(tauri.getMessagesAfter).toHaveBeenCalledTimes(1);
+    });
+
     it("a fresh load leaves the older window", async () => {
       setMessagesState("newerAfter", "ch-1", "m-10");
       vi.mocked(tauri.getMessages).mockResolvedValueOnce({ items: [], has_more: false, next_cursor: null } as PaginatedMessages);

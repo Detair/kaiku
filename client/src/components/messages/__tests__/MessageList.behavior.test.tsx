@@ -276,4 +276,35 @@ describe("MessageList", () => {
       vi.useRealTimers();
     }
   });
+
+  it("N1: a newer page loaded below the view is not marked read", async () => {
+    vi.useFakeTimers();
+    try {
+      newer.channels.add("gap");
+      store.set("byChannel", "gap", [msg("g10", "2025-01-01T10:00:00Z", "a", "x", "gap")]);
+      render(() => <MessageList channelId="gap" />);
+      await vi.advanceTimersByTimeAsync(10);
+      const list = screen.getByRole("list");
+      const size = { scrollHeight: 1000, clientHeight: 600, scrollTop: 400 };
+      for (const key of Object.keys(size) as (keyof typeof size)[]) {
+        Object.defineProperty(list, key, { configurable: true, get: () => size[key] });
+      }
+      // The next page is the newest one: it goes in below the view.
+      loadNewerMessages.mockImplementationOnce(async () => {
+        newer.channels.delete("gap");
+        size.scrollHeight = 5000;
+        store.set("byChannel", "gap", [
+          ...store.state.byChannel.gap,
+          msg("g11", "2026-01-01T10:00:00Z", "a", "y", "gap"),
+        ]);
+      });
+      fireEvent.scroll(list);
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(loadNewerMessages).toHaveBeenCalledWith("gap");
+      expect(markChannelAsRead).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+
