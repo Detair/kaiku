@@ -29,6 +29,8 @@ import ServerNameSection from "./ServerNameSection";
 
 interface GeneralTabProps {
   guildId: string;
+  /** A typed, unsaved server name (K1). */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 const TAG_REGEX = /^[a-zA-Z0-9-]+$/;
@@ -246,7 +248,7 @@ const GeneralTab: Component<GeneralTabProps> = (props) => {
 
   return (
     <div class="p-6 space-y-6">
-      <ServerNameSection guildId={props.guildId} />
+      <ServerNameSection guildId={props.guildId} onDirtyChange={props.onDirtyChange} />
 
       {/* Discovery Setup Banner */}
       <Show when={showDiscoveryBanner()}>

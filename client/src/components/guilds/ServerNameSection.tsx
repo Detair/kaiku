@@ -3,14 +3,17 @@
  * may (`PATCH /api/guilds/{id}` checks it). The server symbol needs an
  * upload endpoint the server does not have yet, so it is not offered.
  */
-import { Component, Show, createSignal } from "solid-js";
+import { Component, Show, createEffect, createSignal } from "solid-js";
 import { guildsState, isGuildOwner } from "@/stores/guilds";
 import { authState } from "@/stores/auth";
 import { renameServer } from "@/stores/guildAdmin";
 import { t } from "@/i18n";
 import { reportFailure, reportSuccess } from "./settingsAction";
 
-const ServerNameSection: Component<{ guildId: string }> = (props) => {
+const ServerNameSection: Component<{
+  guildId: string;
+  onDirtyChange?: (dirty: boolean) => void;
+}> = (props) => {
   const guild = () => guildsState.guilds.find((g) => g.id === props.guildId);
   const isOwner = () => isGuildOwner(props.guildId, authState.user?.id || "");
   const [draft, setDraft] = createSignal<string | null>(null);
@@ -22,6 +25,8 @@ const ServerNameSection: Component<{ guildId: string }> = (props) => {
     return n.length >= 2 && n.length <= 100;
   };
   const changed = () => draft() !== null && name().trim() !== guild()?.name && valid();
+
+  createEffect(() => props.onDirtyChange?.(draft() !== null && name().trim() !== guild()?.name));
 
   const save = async (e: Event) => {
     e.preventDefault();

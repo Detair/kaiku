@@ -88,25 +88,35 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
   // Unsaved edits in the role editor or the filter settings (ADMIN-17).
   const [roleDirty, setRoleDirty] = createSignal(false);
   const [safetyDirty, setSafetyDirty] = createSignal(false);
-  const [confirmClose, setConfirmClose] = createSignal(false);
+  const [nameDirty, setNameDirty] = createSignal(false);
+  // What to do after "Discard changes": close the window or open another tab.
+  const [discardThen, setDiscardThen] = createSignal<(() => void) | null>(null);
+  const confirmClose = () => discardThen() !== null;
   const [confirmExit, setConfirmExit] = createSignal(false);
   const [deleteName, setDeleteName] = createSignal("");
-  const dirty = () => roleDirty() || safetyDirty();
+  const dirty = () => roleDirty() || safetyDirty() || nameDirty();
 
   const requestClose = () => {
-    if (dirty()) setConfirmClose(true);
+    if (dirty()) setDiscardThen(() => props.onClose);
     else props.onClose();
   };
 
-  const switchTab = (tab: TabId) => {
-    if (tab === activeTab()) return;
-    // Leaving a tab drops its edits; reset so the close guard stays honest.
+  const openTab = (tab: TabId) => {
     setRoleDirty(false);
     setSafetyDirty(false);
+    setNameDirty(false);
     setEditingRole(null);
     setIsCreatingRole(false);
     setActiveTab(tab);
   };
+
+  // Another tab drops the open edits: ask first (W3), switch only after "Discard".
+  const switchTab = (tab: TabId) => {
+    if (tab === activeTab()) return;
+    if (dirty()) setDiscardThen(() => () => openTab(tab));
+    else openTab(tab);
+  };
+
 
   const exitServer = async () => {
     const name = guild()?.name ?? "";
@@ -313,7 +323,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
             {/* Content */}
             <div class="flex-1 overflow-y-auto min-h-0">
             <Show when={activeTab() === "general" && canManageGuild()}>
-              <GeneralTab guildId={props.guildId} />
+              <GeneralTab guildId={props.guildId} onDirtyChange={setNameDirty} />
             </Show>
             <Show when={activeTab() === "invites" && isOwner()}>
               <InvitesTab guildId={props.guildId} />
@@ -375,20 +385,23 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
         </div>
       </div>
 
-      <Show when={confirmClose()}>
-        <ConfirmActionDialog
-          title={t("guildSettings.unsaved.title")}
-          message={t("guildSettings.unsaved.body")}
-          confirmLabel={t("guildSettings.unsaved.discard")}
-          danger
-          onConfirm={() => Promise.resolve()}
-          onDone={() => {
-            setConfirmClose(false);
-            props.onClose();
-          }}
-          onCancel={() => setConfirmClose(false)}
-          testId="guild-settings-unsaved"
-        />
+      <Show when={discardThen()}>
+        {(then) => (
+          <ConfirmActionDialog
+            title={t("guildSettings.unsaved.title")}
+            message={t("guildSettings.unsaved.body")}
+            confirmLabel={t("guildSettings.unsaved.discard")}
+            danger
+            onConfirm={() => Promise.resolve()}
+            onDone={() => {
+              const next = then();
+              setDiscardThen(null);
+              next();
+            }}
+            onCancel={() => setDiscardThen(null)}
+            testId="guild-settings-unsaved"
+          />
+        )}
       </Show>
 
       <Show when={confirmExit()}>
