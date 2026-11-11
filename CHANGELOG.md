@@ -378,6 +378,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop voice audio is now clear at session start (fixed RTP sequence number regression on reconnect)
 - Desktop screen share now actually reaches other participants (fixed VP8 payload type)
 - UI contrast: selected nav items, active state pills, and warning banners now render with their intended alpha tint instead of silently rendering as solid color. UnoCSS alpha-modifier classes (`bg-accent-primary/20` etc.) had been dropping their alpha because the underlying CSS variables held hex values; switched the affected tokens in `uno.config.ts` to consume new `-rgb` channel variants via the `rgb(var(...) / <alpha-value>)` pattern.
+- New Message lists everyone you share a server with, friends first, so family members can write to each other without a friend request.
+- Joining through an invite link opens the server instead of stopping at "Redirecting…".
+- Opening Home, another server or Explore Servers keeps you in the voice call, and the call controls stay visible on Home.
+- Friends can be written to from the friends list; new friend requests show a notice and a count on Home, and unread direct messages show on the Home icon.
+- "New Message" is always visible, signing out asks first, and the phone menu closes after picking a conversation or voice channel.
+- Channel lists work by keyboard, touch and screen reader: category headers are buttons, hidden buttons appear on focus and touch, unread dots are announced. The browser tab shows the number of unread messages.
 
 ### Security
 - E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting

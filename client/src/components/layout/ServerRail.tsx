@@ -209,7 +209,7 @@ const ServerRail: Component<ServerRailProps> = (props) => {
                   {guild.icon_url ? (
                     <img
                       src={guild.icon_url}
-                      alt=""
+                      alt={""}
                       class="w-full h-full object-cover"
                     />
                   ) : (
