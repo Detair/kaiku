@@ -9,6 +9,13 @@ import { startRinging, stopRinging } from "@/lib/sound/ring";
 import { showToast } from "@/components/ui/Toast";
 import { t } from "@/i18n";
 import type { CallStateResponse } from "@/lib/types";
+import { isTauri } from "@/lib/tauri/common";
+import { bumpVoiceEpoch, isVoiceEpochStale } from "@/lib/webrtc/voiceSession";
+import {
+  VoiceRecovery,
+  RECOVERY_ATTEMPT_TIMEOUT_MS,
+  type RecoverySession,
+} from "./voiceRecovery";
 
 // Constants
 const CALL_ENDED_DISPLAY_MS = 3000;
@@ -17,8 +24,6 @@ const CALL_ENDED_DISPLAY_MS = 3000;
  * said (the server's own ring timeout is 90 s). An incoming one is missed.
  */
 export const RING_CAP_MS = 100_000;
-/** Native DM-call voice rejoin after a reconnect: waits before each try (C32). */
-const CALL_REJOIN_DELAYS_MS = [1000, 3000, 9000] as const;
 
 // Module-level timeout tracking for cleanup
 let callEndedTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -249,6 +254,20 @@ export async function resyncCallAfterReconnect(
   myUserId: string | undefined,
   fetchState?: (channelId: string) => Promise<CallStateResponse | null>,
 ): Promise<void> {
+  try {
+    await resyncCall(myUserId, fetchState);
+  } finally {
+    // The socket is back. A recovery the resync did not resume (call gone,
+    // request failed) keeps waiting and ends at its 60 s cap; without one
+    // a later ICE failure must not wait for a socket that is already up.
+    if (!callRecovery.running) callRecovery.socketReady();
+  }
+}
+
+async function resyncCall(
+  myUserId: string | undefined,
+  fetchState?: (channelId: string) => Promise<CallStateResponse | null>,
+): Promise<void> {
   const before = callState.currentCall;
   if (
     before.status !== "incoming_ringing" &&
@@ -286,6 +305,7 @@ export async function resyncCallAfterReconnect(
       endRingAsMissed(channelId, name);
       return;
     }
+    cancelCallRecovery();
     stopRinging();
     rememberEnded(channelId);
     setCallState("currentCall", { status: "idle" });
@@ -304,53 +324,203 @@ export async function resyncCallAfterReconnect(
 
   if (status === "incoming_ringing") {
     if (meIn) answeredElsewhere(channelId);
-    return;
-  }
-  if (status === "outgoing_ringing") {
-    if (server!.status === "active") {
-      callConnected(
-        channelId,
-        participants.filter((id) => id !== myUserId),
-      );
+    // Declined on another of my devices (R4): handled, not missed.
+    else if (!!myUserId && (server!.declined_by ?? []).includes(myUserId)) {
+      declinedElsewhere(channelId);
     }
     return;
   }
-  // Connected.
-  if (server!.status !== "active" || !meIn) {
+  if (server!.status !== "active") return; // still ringing
+  if (!meIn) {
+    // An active call that does not list me is no call for me (R4).
+    cancelCallRecovery();
+    stopRinging();
     rememberEnded(channelId);
     setCallState("currentCall", { status: "idle" });
     void dropCallVoice(channelId, { leaveCall: false, silent: true });
     return;
   }
+  if (status === "outgoing_ringing") {
+    // Answered during the gap: connected, and the voice that went with the
+    // old socket comes back through the recovery (R4, Codex 9).
+    callConnected(
+      channelId,
+      participants.filter((id) => id !== myUserId),
+    );
+  }
   await rejoinCallVoice(channelId);
 }
 
+// DM-call voice recovery (C32, R3): the same flow as channel voice.
+
+/** The recovery flow of native DM-call voice. */
+const callRecovery = new VoiceRecovery();
+
+let nativeWatch: Promise<void> | null = null;
+let nativeConnectedWaiters: Array<(ok: boolean) => void> = [];
+
+function settleNativeConnected(ok: boolean): void {
+  const waiters = nativeConnectedWaiters;
+  nativeConnectedWaiters = [];
+  for (const settle of waiters) settle(ok);
+}
+
+/** Resolves true on the next native publisher "Connected", false after `ms`. */
+function waitNativeConnected(ms: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const settle = (ok: boolean) => {
+      clearTimeout(timer);
+      nativeConnectedWaiters = nativeConnectedWaiters.filter((w) => w !== settle);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => settle(false), ms);
+    nativeConnectedWaiters.push(settle);
+  });
+}
+
 /**
- * Native DM-call voice: fresh peer connections after a reconnect (C32),
- * up to three tries after 1 s, 3 s and 9 s while the call stays connected.
- * Browser DM calls carry no voice.
+ * Native publisher state of DM-call voice (`voice:state_change`, Rust
+ * `ConnectionState`): "Connected" ends a recovery attempt successfully,
+ * "Failed" (ICE failure) starts the recovery. Exported for tests.
  */
-async function rejoinCallVoice(channelId: string): Promise<void> {
-  const tauri = await import("@/lib/tauri");
-  const { isTauri } = await import("@/lib/tauri/common");
-  if (!isTauri()) return;
-  for (const delay of CALL_REJOIN_DELAYS_MS) {
-    await new Promise((resolve) => setTimeout(resolve, delay));
-    if (!stillCall(channelId, "connected")) return;
-    try {
+export function onNativeCallVoiceState(payload: string): void {
+  if (payload === "Connected") settleNativeConnected(true);
+  if (payload === "Failed") {
+    const cur = callState.currentCall;
+    if (cur.status === "connected") void startCallRecovery(cur.channelId);
+  }
+}
+
+/** Listen to the native voice state once (DM calls bypass the voice store). */
+function watchNativeCallVoice(): Promise<void> {
+  if (!isTauri()) return Promise.resolve();
+  nativeWatch ??= import("@tauri-apps/api/event")
+    .then(({ listen }) =>
+      listen<string>("voice:state_change", (event) =>
+        onNativeCallVoiceState(event.payload),
+      ),
+    )
+    .then(() => undefined)
+    .catch((err: unknown) => {
+      nativeWatch = null;
+      console.warn("[Call] Watching native call voice failed:", err);
+    });
+  return nativeWatch;
+}
+
+/** Whether the DM-call recovery runs (tests). */
+export function isCallRecoveryRunning(): boolean {
+  return callRecovery.running;
+}
+
+/** Native DM-call voice as a recovery session (browser DM calls carry none). */
+function callSession(channelId: string): RecoverySession {
+  return {
+    label: `call ${channelId}`,
+    attempt: async (epoch) => {
+      const tauri = await import("@/lib/tauri");
+      await watchNativeCallVoice();
+      if (isVoiceEpochStale(epoch) || !stillCall(channelId, "connected")) return false;
+      // Fresh peer connections without `voice_leave` (C32).
       await tauri.leaveVoiceSilently();
-      await tauri.joinVoice(channelId);
+      if (isVoiceEpochStale(epoch)) return false;
+      const connected = waitNativeConnected(RECOVERY_ATTEMPT_TIMEOUT_MS);
+      try {
+        await tauri.joinVoice(channelId, epoch);
+      } catch (err) {
+        console.warn("[Call] Call voice rejoin attempt failed:", err);
+        settleNativeConnected(false);
+        return false;
+      }
+      return (await connected) && !isVoiceEpochStale(epoch);
+    },
+    abandon: async () => {
+      settleNativeConnected(false);
+      const tauri = await import("@/lib/tauri");
+      await tauri.leaveVoiceSilently().catch(() => {});
+    },
+    succeeded: () => {
       console.info("[Call] Rejoined call voice:", channelId);
-      return;
-    } catch (err) {
-      console.warn("[Call] Call voice rejoin attempt failed:", err);
-    }
+    },
+    giveUp: async () => {
+      settleNativeConnected(false);
+      console.warn("[Call] Call voice rejoin gave up:", channelId);
+      if (stillCall(channelId, "connected")) {
+        endCall(channelId, "last_left");
+        await dropCallVoice(channelId, { leaveCall: true, silent: true });
+      } else {
+        await dropCallVoice(channelId, { leaveCall: false, silent: true });
+      }
+    },
+  };
+}
+
+/** Start (or keep) the recovery of the connected DM call's native voice. */
+function startCallRecovery(channelId: string): Promise<void> {
+  if (!isTauri() || !stillCall(channelId, "connected")) return Promise.resolve();
+  return callRecovery.start(callSession(channelId), {
+    socketDown: callRecovery.signallingDown,
+  });
+}
+
+/**
+ * Native DM-call voice after a reconnect the server confirmed (C32/C33):
+ * resumes the recovery on the new socket. Browser DM calls carry no voice.
+ */
+function rejoinCallVoice(channelId: string): Promise<void> {
+  callRecovery.socketReady();
+  return startCallRecovery(channelId);
+}
+
+/**
+ * The signalling socket dropped: the native call voice went with it. The
+ * recovery waits for the C33 resync on the next socket (at most 60 s).
+ */
+export function noteCallSignallingLost(): void {
+  callRecovery.socketLost();
+  const cur = callState.currentCall;
+  if (cur.status === "connected" && isTauri()) {
+    void watchNativeCallVoice();
+    void callRecovery.start(callSession(cur.channelId), { socketDown: true });
   }
-  console.warn("[Call] Call voice rejoin gave up:", channelId);
-  if (stillCall(channelId, "connected")) {
-    endCall(channelId, "last_left");
-    void dropCallVoice(channelId, { leaveCall: true, silent: true });
+}
+
+/** The socket is open again (before re-subscription), see `socketOpen`. */
+export function noteCallSignallingUp(): void {
+  callRecovery.socketOpen();
+}
+
+/** Stop the DM-call recovery and any join it has pending (hang-up, end). */
+function cancelCallRecovery(): void {
+  if (!callRecovery.running) return;
+  callRecovery.cancel();
+  bumpVoiceEpoch();
+  settleNativeConnected(false);
+}
+
+/**
+ * C31 `voice_removed` for the DM call's voice (R3, W1-I4): drop the native
+ * voice without `voice_leave`, cancel any recovery, and leave the call here
+ * without ending it on the server (with `session_replaced` it goes on on
+ * the other device). The call goes idle, so the resync never rejoins it.
+ * Returns whether the event was for the current DM call.
+ */
+export async function handleCallVoiceRemoved(
+  channelId: string,
+  text: string,
+): Promise<boolean> {
+  const cur = callState.currentCall;
+  if (cur.status === "idle" || !("channelId" in cur) || cur.channelId !== channelId) {
+    return false;
   }
+  callRecovery.cancel();
+  bumpVoiceEpoch();
+  settleNativeConnected(false);
+  stopRinging();
+  setCallState("currentCall", { status: "idle" });
+  await dropCallVoice(channelId, { leaveCall: false, silent: true });
+  showToast({ type: "warning", title: text, duration: 8000, id: "voice-removed" });
+  return true;
 }
 
 // Actions
@@ -369,7 +539,8 @@ export function startCall(channelId: string): void {
     status: "outgoing_ringing",
     channelId,
     startedAt: Date.now(),
-  });  armRingCap(channelId);
+  });
+  armRingCap(channelId);
 }
 
 /**
@@ -433,6 +604,7 @@ export function joinCall(channelId: string): void {
  * Call is now connected.
  */
 export function callConnected(channelId: string, participants: string[]): void {
+  void watchNativeCallVoice();
   setCallState("currentCall", {
     status: "connected",
     channelId,
@@ -468,6 +640,21 @@ export function answeredElsewhere(channelId: string, callId?: string): void {
     return;
   }
   stopRinging();
+  setCallState("currentCall", { status: "idle" });
+}
+
+/**
+ * R4: our own user declined this ring on another device. The ring stops
+ * here and it is not a missed call.
+ */
+export function declinedElsewhere(channelId: string, callId?: string): void {
+  if (isStaleCallEvent(channelId, callId)) return;
+  const current = callState.currentCall;
+  if (current.status !== "incoming_ringing" || current.channelId !== channelId) {
+    return;
+  }
+  stopRinging();
+  rememberEnded(channelId);
   setCallState("currentCall", { status: "idle" });
 }
 
@@ -582,6 +769,7 @@ export function endCall(
   reason: EndReason,
   duration?: number,
 ): void {
+  cancelCallRecovery();
   // Clear any existing timeout to prevent race conditions
   if (callEndedTimeoutId) {
     clearTimeout(callEndedTimeoutId);

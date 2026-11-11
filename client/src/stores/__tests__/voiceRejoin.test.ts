@@ -87,11 +87,30 @@ import {
   handleVoiceRemoved,
   rejoinVoiceAfterReconnect,
   noteSignallingLost,
-  noteSignallingUp,
   isVoiceRejoinRunning,
   dismissVoiceRejoin,
+  toggleMute,
+  noteSignallingUp,
+  voiceRejoinAttemptsUsed,
   REJOIN_ATTEMPT_TIMEOUT_MS,
 } from "../voice";
+import { isVoiceEpochStale } from "@/lib/webrtc/voiceSession";
+import { RECOVERY_OFFLINE_CAP_MS } from "../voiceRecovery";
+
+/** Make the next adapter.join hang until released; returns its epoch and release. */
+function joinHangs(): { epoch: () => number | undefined; release: (ok?: boolean) => void } {
+  let epoch: number | undefined;
+  let release!: (ok?: boolean) => void;
+  mockAdapter.join.mockImplementationOnce(
+    (_ch: string, opts?: { epoch?: number }) =>
+      new Promise((resolve) => {
+        epoch = opts?.epoch;
+        release = (ok = true) =>
+          resolve(ok ? { ok: true } : { ok: false, error: { type: "unknown", message: "x" } });
+      }),
+  );
+  return { epoch: () => epoch, release: (ok) => release(ok) };
+}
 
 /** Let pending promise callbacks run without advancing time. */
 async function flush(): Promise<void> {
@@ -122,7 +141,7 @@ describe("voice rejoin (C32)", () => {
       handlers?.onStateChange("disconnected");
       return { ok: true };
     });
-    noteSignallingUp();
+    await rejoinVoiceAfterReconnect(); // socket known up
     await leaveVoice();
     setVoiceState({
       state: "disconnected",
@@ -158,7 +177,7 @@ describe("voice rejoin (C32)", () => {
     expect(mockAdapter.teardown).toHaveBeenCalledTimes(1);
     expect(mockAdapter.leave).not.toHaveBeenCalled();
     expect(mockAdapter.join).toHaveBeenCalledTimes(2);
-    expect(mockAdapter.join).toHaveBeenLastCalledWith("ch-1");
+    expect(mockAdapter.join).toHaveBeenLastCalledWith("ch-1", { epoch: expect.any(Number) });
     expect(mockAdapter.setMute).toHaveBeenCalledWith(true);
     expect(voiceState.state).toBe("connected");
     expect(voiceState.channelId).toBe("ch-1");
@@ -280,5 +299,189 @@ describe("voice rejoin (C32)", () => {
     expect(mockAdapter.join).toHaveBeenCalledTimes(1);
     expect(voiceState.channelId).toBeNull();
     expect(voiceState.lostChannelId).toBeNull();
+  });
+
+  it("attempt timeout is 15 s (amendment)", () => {
+    expect(REJOIN_ATTEMPT_TIMEOUT_MS).toBe(15_000);
+  });
+
+  it("leave while an attempt's join is pending: it stays left, nothing comes back", async () => {
+    await inCall();
+    const hang = joinHangs();
+    const flow = rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mockAdapter.join).toHaveBeenCalledTimes(2);
+
+    await leaveVoice();
+    expect(isVoiceEpochStale(hang.epoch())).toBe(true);
+    // The adapter's join resumes afterwards and even reports connected.
+    hang.release();
+    handlers!.onStateChange("connected");
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flow;
+
+    expect(mockAdapter.join).toHaveBeenCalledTimes(2);
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.channelId).toBeNull();
+    expect(voiceState.lostChannelId).toBeNull();
+    expect(isVoiceRejoinRunning()).toBe(false);
+  });
+
+  it("voice_removed while an attempt's join is pending wins", async () => {
+    await inCall();
+    const hang = joinHangs();
+    const flow = rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    await handleVoiceRemoved("ch-1", "kicked");
+    expect(isVoiceEpochStale(hang.epoch())).toBe(true);
+    hang.release();
+    handlers!.onStateChange("connected");
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flow;
+
+    expect(mockAdapter.join).toHaveBeenCalledTimes(2);
+    expect(voiceState.channelId).toBeNull();
+    expect(voiceState.state).toBe("disconnected");
+    expect(mockAdapter.teardown).toHaveBeenCalled();
+  });
+
+  it("leave while a manual join is pending: the late join changes nothing", async () => {
+    const hang = joinHangs();
+    const joining = joinVoice("ch-1");
+    await flush();
+    expect(voiceState.state).toBe("connecting");
+
+    await leaveVoice();
+    expect(isVoiceEpochStale(hang.epoch())).toBe(true);
+    hang.release();
+    await joining;
+
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.channelId).toBeNull();
+    expect(voiceState.sessionId).toBeNull();
+  });
+
+  it("no Join for the same channel while reconnecting (R2)", async () => {
+    await inCall();
+    noteSignallingLost();
+    await joinVoice("ch-1");
+    expect(mockAdapter.join).toHaveBeenCalledTimes(1);
+    expect(mockAdapter.leave).not.toHaveBeenCalled();
+    expect(voiceState.state).toBe("reconnecting");
+  });
+
+  it("Join for another channel while an attempt is pending: leave, then join there", async () => {
+    await inCall();
+    const hang = joinHangs();
+    void rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    mockAdapter.join.mockResolvedValueOnce({ ok: true });
+    await joinVoice("ch-2");
+    expect(isVoiceEpochStale(hang.epoch())).toBe(true);
+    expect(mockAdapter.leave).toHaveBeenCalledTimes(1);
+    expect(mockAdapter.join).toHaveBeenLastCalledWith("ch-2", { epoch: expect.any(Number) });
+    hang.release();
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(voiceState.channelId).toBe("ch-2");
+    expect(isVoiceRejoinRunning()).toBe(false);
+    expect(mockAdapter.join).toHaveBeenCalledTimes(3);
+  });
+
+  it("a join that never resolves is timed out at 15 s and its session cancelled", async () => {
+    await inCall();
+    const hang = joinHangs();
+    const flow = rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000 + REJOIN_ATTEMPT_TIMEOUT_MS - 1);
+    expect(isVoiceEpochStale(hang.epoch())).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(isVoiceEpochStale(hang.epoch())).toBe(true);
+    expect(voiceRejoinAttemptsUsed()).toBe(1);
+
+    joinConnects();
+    await vi.advanceTimersByTimeAsync(3000);
+    await flow;
+    expect(voiceState.state).toBe("connected");
+  });
+
+  it("socket loss during attempt 3 keeps the budget and resumes on the next socket", async () => {
+    await inCall();
+    mockAdapter.join
+      .mockResolvedValueOnce({ ok: false, error: { type: "unknown", message: "x" } })
+      .mockResolvedValueOnce({ ok: false, error: { type: "unknown", message: "x" } });
+    const flow = rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000 + 3000);
+    expect(voiceRejoinAttemptsUsed()).toBe(2);
+
+    const hang = joinHangs();
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(mockAdapter.join).toHaveBeenCalledTimes(4);
+
+    noteSignallingLost();
+    await flush();
+    expect(isVoiceEpochStale(hang.epoch())).toBe(true);
+    expect(voiceRejoinAttemptsUsed()).toBe(2);
+    expect(voiceState.state).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mockAdapter.join).toHaveBeenCalledTimes(4); // waits for the socket
+
+    joinConnects();
+    void rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(9000);
+    await flow;
+    expect(mockAdapter.join).toHaveBeenCalledTimes(5);
+    expect(voiceState.state).toBe("connected");
+    expect(voiceState.lostChannelId).toBeNull();
+  });
+
+  it("gives up after 60 s without a socket and releases the microphone", async () => {
+    await inCall();
+    noteSignallingLost();
+    await vi.advanceTimersByTimeAsync(RECOVERY_OFFLINE_CAP_MS - 1);
+    expect(voiceState.state).toBe("reconnecting");
+    mockAdapter.teardown.mockClear();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(mockAdapter.teardown).toHaveBeenCalled();
+    expect(voiceState.state).toBe("disconnected");
+    expect(voiceState.channelId).toBeNull();
+    expect(voiceState.lostChannelId).toBe("ch-1");
+    expect(isVoiceRejoinRunning()).toBe(false);
+
+    // A socket that comes back later does not rejoin.
+    await rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(mockAdapter.join).toHaveBeenCalledTimes(1);
+  });
+
+  it("mute stays usable while reconnecting and the latest choice is applied", async () => {
+    await inCall();
+    noteSignallingLost();
+    mockAdapter.setMute.mockRejectedValueOnce(new Error("socket down"));
+    await toggleMute();
+    expect(voiceState.muted).toBe(true);
+
+    joinConnects();
+    const flow = rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flow;
+    expect(mockAdapter.setMute).toHaveBeenLastCalledWith(true);
+    expect(voiceState.muted).toBe(true);
+    expect(voiceState.state).toBe("connected");
+  });
+
+  it("a socket that opened without voice counts as up for a later ICE failure", async () => {
+    noteSignallingLost();
+    noteSignallingUp();
+    await inCall();
+    joinConnects();
+    handlers!.onConnectionLost!();
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(mockAdapter.join).toHaveBeenCalledTimes(2);
+    expect(voiceState.state).toBe("connected");
   });
 });

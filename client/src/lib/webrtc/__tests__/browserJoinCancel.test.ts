@@ -165,7 +165,7 @@ describe("BrowserVoiceAdapter join cancellation (epoch)", () => {
     expect(track.stop).toHaveBeenCalled();
     expect(voiceJoins()).toHaveLength(1);
     // The leave went out after the join on the same socket.
-    expect(wsSend.mock.calls.at(-1)?.[0]).toMatchObject({ type: "voice_leave" });
+    expect(wsSend.mock.calls[wsSend.mock.calls.length - 1]?.[0]).toMatchObject({ type: "voice_leave" });
   });
 
   it("a newer join does not lose its mic to an older cancelled one", async () => {

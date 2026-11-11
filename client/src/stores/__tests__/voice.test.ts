@@ -377,7 +377,7 @@ describe("voice store", () => {
       await joinVoice("ch-1");
 
       expect(mockAdapter.setEventHandlers).toHaveBeenCalled();
-      expect(mockAdapter.join).toHaveBeenCalledWith("ch-1");
+      expect(mockAdapter.join).toHaveBeenCalledWith("ch-1", { epoch: expect.any(Number) });
       expect(voiceState.sessionId).not.toBeNull();
       expect(voiceState.connectedAt).not.toBeNull();
     });

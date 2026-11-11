@@ -34,6 +34,7 @@ import {
   participantJoined,
   participantLeft,
   answeredElsewhere,
+  declinedElsewhere,
   type EndReason,
 } from "../call";
 import {
@@ -576,8 +577,13 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       break;
 
     case "voice_removed": {
-      const { handleVoiceRemoved } = await import("@/stores/voice");
-      await handleVoiceRemoved(event.channel_id, event.reason);
+      // Routed to whichever voice session is active: channel voice or the
+      // native voice of a DM call (R3).
+      const { handleVoiceRemoved, voiceRemovedText } = await import("@/stores/voice");
+      if (!(await handleVoiceRemoved(event.channel_id, event.reason))) {
+        const { handleCallVoiceRemoved } = await import("@/stores/call");
+        await handleCallVoiceRemoved(event.channel_id, voiceRemovedText(event.reason));
+      }
       break;
     }
 
@@ -634,11 +640,16 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       participantLeft(event.channel_id, event.user_id, event.call_id);
       break;
 
-    case "call_declined":
+    case "call_declined": {
       console.log("[WebSocket] Call declined by:", event.user_id);
-      // The call store will handle this through the API response
-      // This event is informational for other participants
+      // Declined on another of my devices (R4): stop ringing here, not missed.
+      // For anyone else the event is informational.
+      const me = currentUser();
+      if (me && event.user_id === me.id) {
+        declinedElsewhere(event.channel_id, event.call_id);
+      }
       break;
+    }
 
     case "voice_user_stats":
       await handleVoiceUserStatsEvent(event);
@@ -1272,14 +1283,21 @@ function getSupervisor(): ConnectionSupervisor {
       // A new connection must deliver its own `ready` before catch-up.
       if (status !== "connected") {
         readyReceived = false;
-        // The voice peer goes with the socket: show "reconnecting" (C32).
-        void import("@/stores/voice").then(({ noteSignallingLost }) =>
-          noteSignallingLost(),
-        );
+        // The voice peer goes with the socket: show "reconnecting" and hold
+        // the recovery until the next authenticated socket (C32).
+        void import("@/stores/voice")
+          .then(({ noteSignallingLost }) => noteSignallingLost())
+          .catch((err) => console.warn("[WS] Voice signalling-lost hook failed:", err));
+        void import("@/stores/call")
+          .then(({ noteCallSignallingLost }) => noteCallSignallingLost())
+          .catch((err) => console.warn("[WS] Call signalling-lost hook failed:", err));
       } else {
-        void import("@/stores/voice").then(({ noteSignallingUp }) =>
-          noteSignallingUp(),
-        );
+        void import("@/stores/voice")
+          .then(({ noteSignallingUp }) => noteSignallingUp())
+          .catch((err) => console.warn("[WS] Voice signalling-up hook failed:", err));
+        void import("@/stores/call")
+          .then(({ noteCallSignallingUp }) => noteCallSignallingUp())
+          .catch((err) => console.warn("[WS] Call signalling-up hook failed:", err));
       }
       setWsState({
         status,

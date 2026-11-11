@@ -88,7 +88,19 @@ vi.mock("@/stores/preferences", () => ({
   handlePreferencesUpdated: vi.fn(),
 }));
 
+vi.mock("@/stores/voice", () => ({
+  handleVoiceRemoved: vi.fn().mockResolvedValue(false),
+  voiceRemovedText: vi.fn(() => "Removed"),
+  noteSignallingLost: vi.fn(),
+  noteSignallingUp: vi.fn(),
+  rejoinVoiceAfterReconnect: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/stores/call", () => ({
+  noteCallSignallingLost: vi.fn(),
+  noteCallSignallingUp: vi.fn(),
+  declinedElsewhere: vi.fn(),
+  handleCallVoiceRemoved: vi.fn().mockResolvedValue(false),
   receiveIncomingCall: vi.fn(),
   callConnected: vi.fn(),
   callEndedExternally: vi.fn(),
@@ -759,6 +771,37 @@ describe("websocket store", () => {
         username: "bob",
       });
       expect(call.answeredElsewhere).not.toHaveBeenCalled();
+    });
+
+    it("call_declined by the own user stops the ring here (R4)", async () => {
+      const call = await import("@/stores/call");
+      await fire("ws:server_event", {
+        type: "call_declined",
+        channel_id: "dm-y",
+        call_id: "c1",
+        user_id: "me",
+      });
+      expect(call.declinedElsewhere).toHaveBeenCalledWith("dm-y", "c1");
+      vi.mocked(call.declinedElsewhere).mockClear();
+      await fire("ws:server_event", {
+        type: "call_declined",
+        channel_id: "dm-y",
+        call_id: "c1",
+        user_id: "u2",
+      });
+      expect(call.declinedElsewhere).not.toHaveBeenCalled();
+    });
+
+    it("voice_removed not for channel voice goes to the DM call (R3)", async () => {
+      const call = await import("@/stores/call");
+      await fire("ws:server_event", {
+        type: "voice_removed",
+        channel_id: "dm-y",
+        reason: "session_replaced",
+      });
+      await vi.waitFor(() =>
+        expect(call.handleCallVoiceRemoved).toHaveBeenCalledWith("dm-y", "Removed"),
+      );
     });
 
     it("call_ended passes the call_id to the store", async () => {
