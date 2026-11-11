@@ -148,15 +148,17 @@ export async function loadPendingRequests(): Promise<void> {
 /**
  * Load blocked users
  */
-export async function loadBlocked(): Promise<void> {
+export async function loadBlocked(): Promise<boolean> {
   setFriendsState({ isBlockedLoading: true });
 
   try {
     const blocked = await tauri.getBlockedFriends();
     setFriendsState({ blocked, isBlockedLoading: false });
+    return true;
   } catch (err) {
     console.error("Failed to load blocked users:", err);
     setFriendsState({ isBlockedLoading: false });
+    return false;
   }
 }
 

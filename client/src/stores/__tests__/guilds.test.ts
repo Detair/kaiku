@@ -213,6 +213,28 @@ describe("guilds store", () => {
     });
   });
 
+  describe("loadAllGuildMembers dedupe (N4)", () => {
+    it("joins a refresh that is still running instead of starting another", async () => {
+      setGuildsState({ guilds: [{ id: "a" }, { id: "b" }] as never });
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => (release = r));
+      vi.mocked(tauri.getGuildMembers).mockImplementation(async () => {
+        await gate;
+        return [createMember()];
+      });
+
+      const first = loadAllGuildMembers();
+      const second = loadAllGuildMembers();
+      expect(tauri.getGuildMembers).toHaveBeenCalledTimes(2);
+      release();
+      await Promise.all([first, second]);
+
+      // Finished: the next open fetches again.
+      await loadAllGuildMembers();
+      expect(tauri.getGuildMembers).toHaveBeenCalledTimes(4);
+    });
+  });
+
   describe("getActiveGuild", () => {
     it("returns null when no guild active", () => {
       expect(getActiveGuild()).toBeNull();

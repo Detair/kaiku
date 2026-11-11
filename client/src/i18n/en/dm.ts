@@ -21,6 +21,7 @@ export const dm = {
   "dm.new.title": "New Message",
   "dm.new.searchPlaceholder": "Search by name...",
   "dm.new.loadingPeople": "Loading people...",
+  "dm.new.blocksFailed": "Could not check who you blocked, so no one is shown yet.",
   "dm.new.someNotLoaded": "Some people could not be loaded. Close and open this window to try again.",
   "dm.new.peopleLabel": "People you can write to",
   "dm.new.friendTag": "Friend",

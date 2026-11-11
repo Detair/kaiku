@@ -107,9 +107,20 @@ export async function loadGuildMembers(guildId: string): Promise<void> {
  * everyone I share a server with (NAV-1, D1). Fetches fresh lists each time
  * (people join and leave); a cached list is replaced only on success.
  * Failures per server are logged and skipped. Returns how many servers
- * could not be loaded.
+ * could not be loaded. A refresh still running is joined, not repeated (N4).
  */
-export async function loadAllGuildMembers(): Promise<number> {
+let membersRefresh: Promise<number> | null = null;
+
+export function loadAllGuildMembers(): Promise<number> {
+  if (!membersRefresh) {
+    membersRefresh = refreshAllGuildMembers().finally(() => {
+      membersRefresh = null;
+    });
+  }
+  return membersRefresh;
+}
+
+async function refreshAllGuildMembers(): Promise<number> {
   const results = await Promise.all(
     guildsState.guilds.map(async (g) => {
       try {

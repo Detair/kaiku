@@ -453,6 +453,7 @@
   "dm.item.noMessages": "",
   "dm.list.loadFailed": "",
   "dm.list.markAllReadFailed": "",
+  "dm.new.blocksFailed": "",
   "dm.new.create": "",
   "dm.new.createFailed": "",
   "dm.new.createGroup": "",

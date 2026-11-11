@@ -6,7 +6,7 @@
  * first.
  */
 
-import { Component, createSignal, For, Show, createMemo, onMount } from "solid-js";
+import { Component, createEffect, createSignal, For, Show, createMemo, onMount, untrack } from "solid-js";
 import { Portal } from "solid-js/web";
 import { X, Search, Check } from "lucide-solid";
 import { t, plural } from "@/i18n";
@@ -83,15 +83,31 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
   const [isLoadingPeople, setIsLoadingPeople] = createSignal(true);
   const [someFailed, setSomeFailed] = createSignal(false);
 
+  // Nobody is offered until the block list is loaded: until then a blocked
+  // person could be picked (W4, N3).
+  const [blocks, setBlocks] = createSignal<"loading" | "ready" | "failed">("loading");
+  const loadBlocks = () => {
+    setBlocks("loading");
+    void loadBlocked().then((ok) => setBlocks(ok ? "ready" : "failed"));
+  };
+
+  // A person who turns out to be blocked leaves the selection (N3).
+  createEffect(() => {
+    const blocked = new Set(friendsState.blocked.map((b) => b.user_id));
+    const kept = untrack(selectedIds).filter((id) => !blocked.has(id));
+    if (kept.length !== untrack(selectedIds).length) setSelectedIds(kept);
+  });
+
   onMount(() => {
     if (friendsState.friends.length === 0) void loadFriends();
-    // Blocks must be known before anyone is offered (W4).
-    void Promise.all([loadAllGuildMembers(), loadBlocked()])
-      .then(([failed]) => setSomeFailed(failed > 0))
+    loadBlocks();
+    void loadAllGuildMembers()
+      .then((failed) => setSomeFailed(failed > 0))
       .finally(() => setIsLoadingPeople(false));
   });
 
   const filteredPeople = createMemo(() => {
+    if (blocks() !== "ready") return [];
     const searchLower = search().trim().toLowerCase();
     const all = messageCandidates();
     if (!searchLower) return all;
@@ -104,7 +120,8 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
   });
 
   const emptyListText = () => {
-    if (isLoadingPeople()) return t("dm.new.loadingPeople");
+    if (blocks() === "failed") return "";
+    if (isLoadingPeople() || blocks() === "loading") return t("dm.new.loadingPeople");
     return search() ? t("dm.new.noPeopleFound") : t("dm.new.noPeople");
   };
 
@@ -123,7 +140,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
   };
 
   const handleCreate = async () => {
-    if (selectedIds().length === 0) return;
+    if (selectedIds().length === 0 || blocks() !== "ready") return;
 
     setIsCreating(true);
     setError(null);
@@ -192,6 +209,19 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
             </Show>
           </div>
 
+          <Show when={blocks() === "failed"}>
+            <div data-testid="new-dm-blocks-failed" role="alert" class="mx-4 mt-2 flex items-center gap-3 text-sm text-text-primary">
+              <span class="flex-1">{t("dm.new.blocksFailed")}</span>
+              <button
+                type="button"
+                class="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
+                onClick={loadBlocks}
+              >
+                {t("common.retry")}
+              </button>
+            </div>
+          </Show>
+
           <Show when={someFailed()}>
             <p data-testid="new-dm-partial" role="status" class="mx-4 mt-2 text-sm text-text-secondary">
               {t("dm.new.someNotLoaded")}
@@ -239,7 +269,7 @@ const NewMessageModal: Component<NewMessageModalProps> = (props) => {
             <button
               data-testid="new-dm-submit"
               onClick={handleCreate}
-              disabled={selectedIds().length === 0 || isCreating()}
+              disabled={selectedIds().length === 0 || isCreating() || blocks() !== "ready"}
               class="w-full py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 transition-opacity state-disabled"
             >
               {submitLabel()}
