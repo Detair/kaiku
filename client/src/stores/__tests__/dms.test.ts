@@ -547,4 +547,49 @@ describe("readVisibleDM retries a failed save", () => {
     readVisibleDM("dm-1", "m2");
     expect(tauri.markDMAsRead).toHaveBeenCalledTimes(2);
   });
+
+  it("an older save that succeeds does not settle a newer one that failed", async () => {
+    setDmsState({
+      dms: [createDM({ id: "dm-1", unread_count: 1, last_message_id: "m1", last_read_message_id: "m0" })],
+    });
+    let saveOlder: () => void = () => {};
+    let failNewer: (e: Error) => void = () => {};
+    vi.mocked(tauri.markDMAsRead)
+      .mockImplementationOnce(() => new Promise<void>((resolve) => (saveOlder = resolve)))
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => (failNewer = reject)));
+
+    readVisibleDM("dm-1", "m1");
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(2);
+
+    failNewer(new Error("offline"));
+    await new Promise((r) => setTimeout(r, 0));
+    saveOlder();
+    await new Promise((r) => setTimeout(r, 0));
+
+    // m2 is shown as read but the server only has m1: the next chance saves m2.
+    vi.mocked(tauri.markDMAsRead).mockResolvedValueOnce(undefined);
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(3);
+    expect(tauri.markDMAsRead).toHaveBeenLastCalledWith("dm-1", "m2");
+  });
+
+  it("an older save that fails after a newer one worked asks for nothing more", async () => {
+    setDmsState({
+      dms: [createDM({ id: "dm-1", unread_count: 1, last_message_id: "m1", last_read_message_id: "m0" })],
+    });
+    let failOlder: (e: Error) => void = () => {};
+    vi.mocked(tauri.markDMAsRead)
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => (failOlder = reject)))
+      .mockResolvedValueOnce(undefined);
+
+    readVisibleDM("dm-1", "m1");
+    readVisibleDM("dm-1", "m2");
+    await new Promise((r) => setTimeout(r, 0));
+    failOlder(new Error("offline"));
+    await new Promise((r) => setTimeout(r, 0));
+
+    readVisibleDM("dm-1", "m2");
+    expect(tauri.markDMAsRead).toHaveBeenCalledTimes(2);
+  });
 });

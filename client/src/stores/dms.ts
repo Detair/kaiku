@@ -230,10 +230,15 @@ export async function markDMAsRead(channelId: string, lastMessageId: string): Pr
     readSaving.set(channelId, lastMessageId);
     try {
       await tauri.markDMAsRead(channelId, lastMessageId);
-      readNotSaved.delete(channelId);
+      // Only the cursor that was saved is settled: a newer one that failed
+      // in the meantime still has to go out.
+      if (readNotSaved.get(channelId) === lastMessageId) readNotSaved.delete(channelId);
     } catch (err) {
       console.error("[DMs] Failed to mark DM as read:", err);
-      readNotSaved.add(channelId);
+      // Only the cursor on screen matters: an older request failing after a
+      // newer one went out changes nothing (the newer one decides).
+      const shown = dmsState.dms.find((d) => d.id === channelId)?.last_read_message_id;
+      if (shown === lastMessageId) readNotSaved.set(channelId, lastMessageId);
     } finally {
       if (readSaving.get(channelId) === lastMessageId) readSaving.delete(channelId);
     }
@@ -241,9 +246,9 @@ export async function markDMAsRead(channelId: string, lastMessageId: string): Pr
 }
 
 // Conversations shown as read here whose read cursor the server has not
-// stored (the request failed), and the cursor of a request on the way. Not
-// reactive: a failure must not re-run effects (no retry storm).
-const readNotSaved = new Set<string>();
+// stored (the request failed), with that cursor, and the cursor of a request
+// on the way. Not reactive: a failure must not re-run effects (no retry storm).
+const readNotSaved = new Map<string, string>();
 const readSaving = new Map<string, string>();
 
 /**
