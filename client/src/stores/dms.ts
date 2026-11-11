@@ -220,6 +220,21 @@ export async function markDMAsRead(channelId: string, lastMessageId: string): Pr
 }
 
 /**
+ * The conversation is on screen and the window is active: move the read
+ * cursor to its newest message (N1). Uses the DM route (`POST /api/dm/{id}/read`);
+ * the channel route refuses conversations without a server. Does nothing when
+ * the cursor is already there, so callers may run it on every change.
+ */
+export function readVisibleDM(channelId: string, newestMessageId: string | null): void {
+  const dm = dmsState.dms.find((d) => d.id === channelId);
+  if (!dm) return;
+  const target = newestMessageId ?? dm.last_message_id ?? null;
+  if (!target) return;
+  if (dm.last_read_message_id === target && dm.unread_count === 0) return;
+  void markDMAsRead(channelId, target);
+}
+
+/**
  * Mark all DMs as read (optimistic update + API call).
  */
 export async function markAllDMsAsRead(): Promise<void> {
