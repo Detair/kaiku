@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor } from "@solidjs/testing-library";
 import { HttpError } from "@/lib/tauri/common";
+import { createSignal } from "solid-js";
 
 const sendMessage = vi.fn();
 const uploadMessageWithFile = vi.fn();
 const validateFileSize = vi.fn((): string | null => null);
 const clearDraft = vi.fn();
+const drafts: Record<string, string> = {};
 const addMessage = vi.fn();
 
 vi.mock("@/stores/messages", () => ({
@@ -22,9 +24,15 @@ vi.mock("@/lib/tauri", () => ({
 }));
 vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
 vi.mock("@/stores/drafts", () => ({
-  getDraft: () => "hello draft",
-  saveDraft: vi.fn(),
-  clearDraft: (...a: unknown[]) => clearDraft(...a),
+  getDraft: (id: string) => drafts[id] ?? "",
+  saveDraft: (id: string, text: string) => {
+    if (text.trim()) drafts[id] = text;
+    else delete drafts[id];
+  },
+  clearDraft: (id: string) => {
+    delete drafts[id];
+    clearDraft(id);
+  },
 }));
 vi.mock("@/stores/guilds", () => ({ guildsState: { members: {}, guilds: [] } }));
 vi.mock("@/stores/channels", () => ({ channelsState: { channels: [] } }));
@@ -46,6 +54,8 @@ const dropFiles = (form: Element, files: File[]) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  for (const k of Object.keys(drafts)) delete drafts[k];
+  drafts.c1 = "hello draft";
   validateFileSize.mockReturnValue(null);
   URL.createObjectURL = vi.fn(() => "blob:x");
   URL.revokeObjectURL = vi.fn();
@@ -226,7 +236,7 @@ describe("MessageInput", () => {
     const ta = screen.getByPlaceholderText("Message general") as HTMLTextAreaElement;
     const ev = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(ev, "clipboardData", {
-      value: { files: [new File(["x"], "image.png", { type: "image/png" })] },
+      value: { files: [new File(["x"], "image.png", { type: "image/png" })], getData: () => "" },
     });
     ta.dispatchEvent(ev);
     expect(ev.defaultPrevented).toBe(true);
@@ -254,5 +264,106 @@ describe("MessageInput", () => {
     ta.setSelectionRange(ta.value.length, ta.value.length);
     fireEvent.input(ta);
     expect((await screen.findByTestId("autocomplete")).textContent).toBe("user:Jö");
+  });
+
+  describe("fix round 1", () => {
+    const deferred = <T,>() => {
+      let resolve!: (v: T) => void;
+      const promise = new Promise<T>((r) => (resolve = r));
+      return { promise, resolve };
+    };
+    const box = () => screen.getByRole("textbox") as HTMLTextAreaElement;
+    const type = (text: string) => {
+      const ta = box();
+      ta.value = text;
+      ta.setSelectionRange(text.length, text.length);
+      fireEvent.input(ta);
+    };
+
+    it("W1: switching channel mid-send clears the sent channel's draft, not the visible box", async () => {
+      drafts.c1 = "Hallo";
+      drafts.c2 = "Text in B";
+      const sending = deferred<unknown>();
+      sendMessage.mockReturnValueOnce(sending.promise);
+      const [channel, setChannel] = createSignal("c1");
+      render(() => <MessageInput channelId={channel()} channelName="x" guildId="g1" />);
+      fireEvent.keyDown(box(), { key: "Enter" });
+      await waitFor(() => expect(sendMessage).toHaveBeenCalledWith("c1", "Hallo"));
+      setChannel("c2");
+      await waitFor(() => expect(box().value).toBe("Text in B"));
+      sending.resolve({ id: "m1" });
+      await waitFor(() => expect(drafts.c1).toBeUndefined());
+      expect(box().value).toBe("Text in B");
+      expect(drafts.c2).toBe("Text in B");
+      setChannel("c1");
+      await waitFor(() => expect(box().value).toBe(""));
+    });
+
+    it("W2: text typed during the send stays, the sent part goes", async () => {
+      drafts.c1 = "Hallo";
+      const sending = deferred<unknown>();
+      sendMessage.mockReturnValueOnce(sending.promise);
+      render(() => <MessageInput channelId="c1" channelName="x" guildId="g1" />);
+      await waitFor(() => expect(box().value).toBe("Hallo"));
+      fireEvent.keyDown(box(), { key: "Enter" });
+      await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+      type("Hallo wie geht's");
+      sending.resolve({ id: "m1" });
+      await waitFor(() => expect(box().value).toBe("wie geht's"));
+      expect(drafts.c1).toBe("wie geht's");
+    });
+
+    it("W3: a file removed from the tray during the send is not uploaded", async () => {
+      const first = deferred<unknown>();
+      uploadMessageWithFile.mockReturnValueOnce(first.promise);
+      const { container } = render(() => <MessageInput channelId="c1" channelName="x" guildId="g1" />);
+      const form = container.querySelector("form")!;
+      dropFiles(form, [new File(["a"], "a.png", { type: "image/png" }), new File(["b"], "wrong.png", { type: "image/png" })]);
+      fireEvent.submit(form);
+      await waitFor(() => expect(uploadMessageWithFile).toHaveBeenCalledTimes(1));
+      const tiles = screen.getAllByTestId("pending-file");
+      fireEvent.click(tiles[1].querySelector("button")!);
+      expect(screen.getAllByTestId("pending-file")).toHaveLength(1);
+      first.resolve({ id: "m1" });
+      await waitFor(() => expect(screen.queryAllByTestId("pending-file")).toHaveLength(0));
+      expect(uploadMessageWithFile).toHaveBeenCalledTimes(1);
+    });
+
+    it("K5: files stay with the channel they were added in", async () => {
+      const [channel, setChannel] = createSignal("c1");
+      const { container } = render(() => <MessageInput channelId={channel()} channelName="x" guildId="g1" />);
+      dropFiles(container.querySelector("form")!, [new File(["a"], "a.heic")]);
+      expect(screen.getAllByTestId("pending-file")).toHaveLength(1);
+      setChannel("c2");
+      await waitFor(() => expect(screen.queryAllByTestId("pending-file")).toHaveLength(0));
+      setChannel("c1");
+      await waitFor(() => expect(screen.getAllByTestId("pending-file")).toHaveLength(1));
+    });
+
+    it("K4: pasting text with a picture of it (spreadsheets) pastes the text", () => {
+      render(() => <MessageInput channelId="c1" channelName="x" guildId="g1" />);
+      const ev = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, "clipboardData", {
+        value: {
+          files: [new File(["x"], "image.png", { type: "image/png" })],
+          getData: (type: string) => (type === "text/plain" ? "A1\tB1" : ""),
+        },
+      });
+      box().dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+      expect(screen.queryAllByTestId("pending-file")).toHaveLength(0);
+    });
+
+    it("K3: a parser message from the upload route is not shown", async () => {
+      uploadMessageWithFile.mockRejectedValueOnce(
+        new HttpError(400, "Error parsing `multipart/form-data` request", "VALIDATION_ERROR"),
+      );
+      const { container } = render(() => <MessageInput channelId="c1" channelName="x" guildId="g1" />);
+      const form = container.querySelector("form")!;
+      dropFiles(form, [new File(["a"], "a.png", { type: "image/png" })]);
+      fireEvent.submit(form);
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toBe("a.png was not sent. Please try again.");
+    });
   });
 });

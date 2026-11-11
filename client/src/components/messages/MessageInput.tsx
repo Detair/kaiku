@@ -16,7 +16,7 @@ import { channelsState } from "@/stores/channels";
 import { listGuildCommands, type GuildCommand } from "@/lib/api/bots";
 import PositionedEmojiPicker from "@/components/emoji/PositionedEmojiPicker";
 import { plural, t } from "@/i18n";
-import { CHAT_SEND_ERRORS, errorText } from "@/i18n/errors";
+import { UPLOAD_ERRORS, errorText } from "@/i18n/errors";
 
 interface MessageInputProps {
   channelId: string;
@@ -31,6 +31,8 @@ interface MessageInputProps {
 
 interface PendingFile {
   id: number;
+  /** Channel the file was added in; the tray only shows the current channel's. */
+  channelId: string;
   file: File;
   previewUrl: string | null;
   /** Upload progress 0–100 while this file is being sent. */
@@ -41,9 +43,16 @@ interface PendingFile {
 
 let nextPendingFileId = 1;
 
-/** Text in the composer that a send may clear: unchanged since the send began. */
-function sameText(current: string, sent: string): boolean {
-  return current.trim() === sent;
+/**
+ * What should stay in the box (or draft) after `sent` went out. `sent` is the
+ * box's text when the send began. Text typed afterwards is kept, the sent part
+ * goes. `null` when the sent text is no longer at the start (the person edited
+ * it): then nothing is touched.
+ */
+export function remainingAfterSend(current: string, sent: string): string | null {
+  if (current.startsWith(sent)) return current.slice(sent.length).replace(/^\s+/, "");
+  if (current.trim() === sent.trim()) return "";
+  return null;
 }
 
 const MessageInput: Component<MessageInputProps> = (props) => {
@@ -51,7 +60,9 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   const [isSending, setIsSending] = createSignal(false);
   const [isDragging, setIsDragging] = createSignal(false);
   const [uploadError, setUploadError] = createSignal<string | null>(null);
-  const [pendingFiles, setPendingFiles] = createSignal<PendingFile[]>([]);
+  const [allPendingFiles, setPendingFiles] = createSignal<PendingFile[]>([]);
+  /** Files waiting in the tray of the channel on screen. */
+  const pendingFiles = () => allPendingFiles().filter((pf) => pf.channelId === props.channelId);
   let uploadController: AbortController | null = null;
   const sendLabel = () =>
     pendingFiles().length > 0
@@ -101,6 +112,8 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     const channelId = props.channelId;
     const draft = getDraft(channelId);
     setContent(draft);
+    // Messages about another channel's files do not belong here.
+    setUploadError(null);
     setShowEmojiPicker(false);
     // Resize after setting content, then focus for immediate typing
     setTimeout(() => {
@@ -176,7 +189,7 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     }
     uploadController?.abort();
     // Revoke object URLs to prevent memory leaks
-    pendingFiles().forEach((pf) => {
+    allPendingFiles().forEach((pf) => {
       if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl);
     });
   });
@@ -196,7 +209,14 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     const previewUrl = isImage ? URL.createObjectURL(file) : null;
     setPendingFiles((prev) => [
       ...prev,
-      { id: nextPendingFileId++, file, previewUrl, progress: null, error: null },
+      {
+        id: nextPendingFileId++,
+        channelId: props.channelId,
+        file,
+        previewUrl,
+        progress: null,
+        error: null,
+      },
     ]);
   };
 
@@ -219,17 +239,23 @@ const MessageInput: Component<MessageInputProps> = (props) => {
   const handlePaste = (e: ClipboardEvent) => {
     const files = Array.from(e.clipboardData?.files ?? []);
     if (files.length === 0) return;
+    // Spreadsheets and office apps put text and a picture of it on the
+    // clipboard: then the text is what the person wants.
+    if (e.clipboardData?.getData("text/plain")) return;
     e.preventDefault();
     files.forEach(addPendingFile);
   };
 
-  // Clear all pending files
+  // Clear the pending files of the channel on screen
   const clearPendingFiles = () => {
+    const visible = new Set(pendingFiles().map((pf) => pf.id));
     pendingFiles().forEach((pf) => {
       if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl);
     });
-    setPendingFiles([]);
+    setPendingFiles((prev) => prev.filter((pf) => !visible.has(pf.id)));
   };
+
+  const isStillPending = (id: number) => allPendingFiles().some((pf) => pf.id === id);
 
   const trackCursor = () => {
     if (textareaRef) setLastCursorPos(textareaRef.selectionStart);
@@ -404,22 +430,39 @@ const MessageInput: Component<MessageInputProps> = (props) => {
 
     setIsSending(true);
     const channelId = props.channelId;
+    const sentRaw = content();
     try {
       const textSent = files.length > 0
         ? await sendFiles(channelId, files, text)
         : (await sendMessage(channelId, text)) !== null;
       // A failed send keeps the text and the draft (sendMessage reports why).
-      if (textSent && text && sameText(content(), text)) {
-        setContent("");
-        clearDraft(channelId);
-        if (textareaRef) {
-          textareaRef.style.height = 'auto';
-        }
-      }
+      if (textSent && text) afterTextSent(channelId, sentRaw);
     } finally {
       setIsSending(false);
       textareaRef?.focus();
     }
+  };
+
+  /**
+   * Remove the sent text from where it still is: the box when it still shows
+   * that channel, otherwise only that channel's draft. Text typed after
+   * sending stays.
+   */
+  const afterTextSent = (channelId: string, sentRaw: string) => {
+    const isE2EE = props.isE2EE ?? false;
+    if (props.channelId === channelId) {
+      const rest = remainingAfterSend(content(), sentRaw);
+      if (rest === null) return;
+      setContent(rest);
+      if (rest) saveDraft(channelId, rest, isE2EE);
+      else clearDraft(channelId);
+      resizeTextarea();
+      return;
+    }
+    const rest = remainingAfterSend(getDraft(channelId), sentRaw);
+    if (rest === null) return;
+    if (rest) saveDraft(channelId, rest, isE2EE);
+    else clearDraft(channelId);
   };
 
   /**
@@ -436,6 +479,8 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     try {
       for (const pf of files) {
         if (controller.signal.aborted) break;
+        // Removed from the tray while earlier files were uploading.
+        if (!isStillPending(pf.id)) continue;
         updatePendingFile(pf.id, { progress: 0, error: null });
         try {
           const message = await uploadMessageWithFile(
@@ -462,8 +507,8 @@ const MessageInput: Component<MessageInputProps> = (props) => {
           const reason = errorText(
             err,
             "chat.send.fileFailed",
-            CHAT_SEND_ERRORS.byCode,
-            CHAT_SEND_ERRORS.byStatus,
+            UPLOAD_ERRORS.byCode,
+            UPLOAD_ERRORS.byStatus,
           );
           updatePendingFile(pf.id, { progress: null, error: reason });
           failures.push(t("chat.composer.fileNotSent", { file: pf.file.name, reason }));
