@@ -22,6 +22,28 @@ let inFlight: { generation: number; promise: Promise<void>; rerun: boolean } | n
 export const meSecurity = security;
 
 /**
+ * C38: the "add a passkey for this computer" hint. Accounts that may not
+ * confirm sign-ins (`may_approve` false) have no "Add a phone" in the phone
+ * app, so they are told to ask the admin for a setup link instead.
+ */
+export function addPasskeyHintKey():
+  | "auth.probation.addPasskeyHint"
+  | "auth.probation.addPasskeyHintAskAdmin" {
+  return security()?.may_approve === false
+    ? "auth.probation.addPasskeyHintAskAdmin"
+    : "auth.probation.addPasskeyHint";
+}
+
+/** C38: the same choice for the browser's empty passkey list. */
+export function firstPasskeyHintKey():
+  | "passkeys.settings.firstFromPhone"
+  | "passkeys.settings.firstFromAdmin" {
+  return security()?.may_approve === false
+    ? "passkeys.settings.firstFromAdmin"
+    : "passkeys.settings.firstFromPhone";
+}
+
+/**
  * Reload the overview (single flight per session). Failures keep the last
  * value. A reload asked for while one runs (a WS hint during the initial
  * load) runs once more afterwards, so a change the running request may have

@@ -214,6 +214,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A call you answered on another device stops ringing on this one right away.
 - Calls no longer ring forever when the end of a call got lost: a ring stops after 100 seconds at the latest, and after a reconnect the app checks the call with the server. An incoming call that ended this way shows "Missed call from ...". In the desktop app, a direct call you are still in reconnects its voice by itself.
 - Browser: an incoming call now rings audibly even when the page has not played any sound before; the ring is prepared on your first click or key press.
+- Client: for accounts that cannot confirm sign-ins on a phone, the chat-only hint and the empty passkey list now say to ask the admin for a setup link for this computer, instead of pointing to "Add a phone", which these accounts do not have.
 - When you are removed from a voice channel (kicked, banned, access lost, channel deleted, or joined from another device) the call ends cleanly with one line saying why, and it does not rejoin by itself.
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.
 - Client: in the desktop app and in browsers other than Firefox, avatars are now round, icons have their intended size, selected options and primary buttons show their accent background, QR codes have a white background, and clickable items show a hand cursor. These styles were dropped from the app's CSS; Firefox already showed them.
