@@ -610,13 +610,7 @@ pub async fn get_attachment(
     auth_user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AttachmentResponse>, ChatError> {
-    let has_access = db::check_attachment_access(&state.db, id, auth_user.id)
-        .await
-        .map_err(ChatError::Database)?;
-
-    if !has_access {
-        return Err(ChatError::Forbidden);
-    }
+    authorize_attachment_read(&state, auth_user.id, id).await?;
 
     let attachment = db::find_file_attachment_by_id(&state.db, id)
         .await?
@@ -690,14 +684,7 @@ pub async fn download(
     // PASSWORD_CHANGE_REQUIRED even without storage).
     let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
-    // Check permissions
-    let has_access = db::check_attachment_access(&state.db, id, user_id)
-        .await
-        .map_err(ChatError::Database)?;
-
-    if !has_access {
-        return Err(ChatError::Forbidden);
-    }
+    authorize_attachment_read(&state, user_id, id).await?;
 
     // Get attachment metadata
     let attachment = db::find_file_attachment_by_id(&state.db, id)
@@ -818,14 +805,7 @@ pub async fn get_signed_url(
 ) -> Result<Json<SignedUrlResponse>, ChatError> {
     let s3 = state.s3.as_ref().ok_or(ChatError::StorageNotConfigured)?;
 
-    // Check permissions
-    let has_access = db::check_attachment_access(&state.db, id, auth_user.id)
-        .await
-        .map_err(ChatError::Database)?;
-
-    if !has_access {
-        return Err(ChatError::Forbidden);
-    }
+    authorize_attachment_read(&state, auth_user.id, id).await?;
 
     // Get attachment metadata
     let attachment = db::find_file_attachment_by_id(&state.db, id)
@@ -869,6 +849,32 @@ pub async fn get_signed_url(
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Check that `user_id` may read attachment `attachment_id`.
+///
+/// The attachment's message must not be deleted, and the user needs the same
+/// access as for reading that message's channel (`VIEW_CHANNEL` with
+/// overrides in a guild, participation in a DM or group DM). An unknown
+/// attachment answers like a refused one (403), so ids cannot be probed.
+async fn authorize_attachment_read(
+    state: &AppState,
+    user_id: Uuid,
+    attachment_id: Uuid,
+) -> Result<(), ChatError> {
+    let channel_id = db::find_attachment_channel(&state.db, attachment_id)
+        .await?
+        .ok_or(ChatError::Forbidden)?;
+    crate::permissions::require_channel_access(&state.db, user_id, channel_id)
+        .await
+        .map_err(|e| match e {
+            crate::permissions::PermissionError::DatabaseError(msg) => {
+                tracing::error!(error = %msg, "Attachment access check failed");
+                ChatError::Database(sqlx::Error::Protocol(msg))
+            }
+            _ => ChatError::Forbidden,
+        })?;
+    Ok(())
+}
 
 /// Output of image processing + variant S3 upload pipeline.
 struct MediaProcessingOutput {

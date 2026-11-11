@@ -43,10 +43,21 @@ use vc_server::permissions::GuildPermissions;
 use vc_server::voice::screen_share::ScreenShareLimiter;
 use vc_server::voice::sfu::SfuServer;
 
+/// Object storage endpoint for S3 tests: `TEST_S3_ENDPOINT` (e.g.
+/// `http://127.0.0.1:55445`), default the dev compose `RustFS` on port 9000.
+pub fn test_s3_endpoint() -> String {
+    std::env::var("TEST_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".to_string())
+}
+
 pub async fn rustfs_available() -> bool {
+    let endpoint = test_s3_endpoint();
+    let addr = endpoint
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .replace("localhost", "127.0.0.1");
     tokio::time::timeout(
         std::time::Duration::from_millis(300),
-        tokio::net::TcpStream::connect("127.0.0.1:9000"),
+        tokio::net::TcpStream::connect(addr),
     )
     .await
     .is_ok_and(|result| result.is_ok())
@@ -327,7 +338,7 @@ pub async fn fresh_test_app_with_s3_and_config(
     mut config: Config,
 ) -> (TestApp, String) {
     let bucket = format!("test-{}", Uuid::now_v7());
-    config.s3_endpoint = Some("http://localhost:9000".to_string());
+    config.s3_endpoint = Some(test_s3_endpoint());
     config.s3_bucket = bucket.clone();
     config.s3_access_key = Some("rustfsdev".to_string());
     config.s3_secret_key = Some("rustfsdev_secret".to_string());
