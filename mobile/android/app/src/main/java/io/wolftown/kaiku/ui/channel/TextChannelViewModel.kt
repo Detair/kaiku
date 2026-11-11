@@ -10,6 +10,8 @@ import io.wolftown.kaiku.data.local.AuthState
 import io.wolftown.kaiku.data.repository.ChatRepository
 import io.wolftown.kaiku.data.repository.DmRepository
 import io.wolftown.kaiku.data.repository.GuildRepository
+import io.wolftown.kaiku.data.repository.OutgoingMessages
+import io.wolftown.kaiku.data.repository.PendingMessage
 import io.wolftown.kaiku.data.ws.RealtimeConnectionManager
 import io.wolftown.kaiku.data.ws.RealtimeStatus
 import io.wolftown.kaiku.domain.ChannelTitle
@@ -41,11 +43,13 @@ class TextChannelViewModel @Inject constructor(
     private val activeChannelTracker: ActiveChannelTracker,
     private val notificationSink: NotificationSink,
     private val notificationLedger: NotificationLedger,
-    savedStateHandle: SavedStateHandle
+    private val outgoing: OutgoingMessages,
+    private val savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
     companion object {
         private val logger = Logger.getLogger("TextChannelViewModel")
+        private const val KEY_DRAFT = "draft"
     }
 
     private val channelId: String = savedStateHandle["channelId"]!!
@@ -81,17 +85,27 @@ class TextChannelViewModel @Inject constructor(
     private val _canLoadMore = MutableStateFlow(false)
     val canLoadMore: StateFlow<Boolean> = _canLoadMore.asStateFlow()
 
-    private val _messageInput = MutableStateFlow("")
+    // AND-B-19: the draft survives leaving the chat (process memory) and process death (saved state).
+    private val _messageInput = MutableStateFlow(
+        savedStateHandle.get<String>(KEY_DRAFT)?.takeIf { it.isNotEmpty() } ?: outgoing.draft(channelId)
+    )
     val messageInput: StateFlow<String> = _messageInput.asStateFlow()
+
+    /**
+     * AND-B-3: messages sent from this chat that the server has not confirmed yet,
+     * and failed ones (they stay until retried or discarded, also after leaving the chat).
+     */
+    val pendingMessages: StateFlow<List<PendingMessage>> = outgoing.pending(channelId)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, outgoing.pendingNow(channelId))
 
     /** `@StringRes` of the latest failed action, or null. Cleared by [clearError]. */
     private val _error = MutableStateFlow<Int?>(null)
     val error: StateFlow<Int?> = _error.asStateFlow()
 
-    private val _isUploading = MutableStateFlow(false)
-
-    /** True while a picked photo or video is being uploaded. */
-    val isUploading: StateFlow<Boolean> = _isUploading.asStateFlow()
+    /** True while a picked photo or video of this chat is being uploaded. */
+    val isUploading: StateFlow<Boolean> = pendingMessages
+        .map { list -> list.any { it.attachment != null && it.state == PendingMessage.State.SENDING } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     /** The message being edited; non-null while the edit dialog is shown. */
     private val _editingMessage = MutableStateFlow<Message?>(null)
@@ -117,6 +131,12 @@ class TextChannelViewModel @Inject constructor(
         // While visible, every message the user can see counts as seen for notifications.
         viewModelScope.launch {
             messages.collect { list -> if (visible) markNewestSeen(list) }
+        }
+        // A send that fails while this chat is open is also reported in a snackbar.
+        viewModelScope.launch {
+            outgoing.failures.collect { failed ->
+                if (failed.channelId == channelId) _error.value = pendingFailureRes(failed.failure)
+            }
         }
         // C28: coalescing edits older notices, so the Kaiku DM reloads its latest page on every reconnect.
         viewModelScope.launch {
@@ -150,57 +170,53 @@ class TextChannelViewModel @Inject constructor(
     }
 
     fun onMessageInputChanged(text: String) {
-        _messageInput.value = text
+        setInput(text)
         if (text.isNotEmpty()) {
             chatRepository.sendTypingIndicator(channelId)
         }
     }
 
-    fun onSendMessage() {
-        val content = _messageInput.value.trim()
-        if (content.isEmpty()) return
-
-        _messageInput.value = ""
-        viewModelScope.launch {
-            try {
-                chatRepository.sendMessage(channelId, content)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // Restore input on failure so the user can retry, unless a newer draft was typed
-                if (_messageInput.value.isEmpty()) _messageInput.value = content
-                _error.value = R.string.chat_send_failed
-                logger.log(Level.WARNING, "Failed to send message", e)
-            }
-        }
+    private fun setInput(text: String) {
+        _messageInput.value = text
+        savedStateHandle[KEY_DRAFT] = text
+        outgoing.setDraft(channelId, text)
     }
 
     /**
-     * Uploads the picked photo/video; the current draft becomes its caption
-     * and is cleared while the upload runs (restored on failure). Picks while
-     * an upload is running are ignored.
+     * Hands the text to [OutgoingMessages], which sends it in the app's scope:
+     * leaving the chat right away does not cancel it (AND-B-3). The text shows
+     * as "Sending…" until the server confirms it; a failure keeps it in the chat
+     * as "Not sent" with Retry and Delete.
+     */
+    fun onSendMessage() {
+        val content = _messageInput.value.trim()
+        if (content.isEmpty()) return
+        setInput("")
+        outgoing.send(channelId, content)
+    }
+
+    /**
+     * Uploads the picked photo/video in the app's scope; the current draft
+     * becomes its caption. Picks while an upload of this chat runs are ignored.
      */
     fun onAttachmentPicked(uri: Uri) {
-        if (_isUploading.value) return
+        // The snapshot, not [isUploading]: that flow lags behind a double tap.
+        val uploading = outgoing.pendingNow(channelId)
+            .any { it.attachment != null && it.state == PendingMessage.State.SENDING }
+        if (uploading) return
         val caption = _messageInput.value.trim()
-        _isUploading.value = true
-        _messageInput.value = ""
-        viewModelScope.launch {
-            try {
-                chatRepository.sendAttachment(channelId, uri, caption.ifEmpty { null })
-                    .onFailure { e ->
-                        if (_messageInput.value.isEmpty()) _messageInput.value = caption
-                        _error.value = when (e) {
-                            is ChatRepository.AttachmentException.TooLarge -> R.string.chat_upload_too_large
-                            is ChatRepository.AttachmentException.UnsupportedType -> R.string.chat_upload_unsupported_type
-                            else -> R.string.chat_upload_failed
-                        }
-                    }
-            } finally {
-                _isUploading.value = false
-            }
-        }
+        setInput("")
+        outgoing.sendAttachment(channelId, uri, caption.ifEmpty { null })
     }
+
+    /** "Retry" on a message that was not sent. */
+    fun onRetryPending(localId: String) = outgoing.retry(localId)
+
+    /** "Retry" in the snackbar: every message of this chat that was not sent. */
+    fun onRetryFailed() = outgoing.retryAll(channelId)
+
+    /** "Delete" on a message that was not sent. */
+    fun onDiscardPending(localId: String) = outgoing.discard(localId)
 
     fun onEditMessage(messageId: String, content: String) {
         viewModelScope.launch {

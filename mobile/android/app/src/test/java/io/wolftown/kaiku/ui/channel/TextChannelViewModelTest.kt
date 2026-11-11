@@ -99,10 +99,20 @@ class TextChannelViewModelTest {
         Dispatchers.resetMain()
     }
 
+    /** App-scoped sender; outlives every view model of a test (AND-B-3). */
+    private lateinit var outgoing: io.wolftown.kaiku.data.repository.OutgoingMessages
+    private var nextLocalId = 0
+
     private fun createViewModel(): TextChannelViewModel {
+        if (!::outgoing.isInitialized) {
+            outgoing = io.wolftown.kaiku.data.repository.OutgoingMessages(
+                chatRepository, authState,
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + testDispatcher),
+            ) { "local-${nextLocalId++}" }
+        }
         return TextChannelViewModel(
             chatRepository, guildRepository, dmRepository, authState, realtimeManager,
-            activeChannelTracker, notificationSink, notificationLedger, savedStateHandle
+            activeChannelTracker, notificationSink, notificationLedger, outgoing, savedStateHandle
         )
     }
 
@@ -470,7 +480,7 @@ class TextChannelViewModelTest {
     }
 
     @Test
-    fun `send failure exposes error and restores input`() = runTest {
+    fun `send failure exposes error and keeps the message as not sent`() = runTest {
         viewModel = loadedViewModel()
         advanceUntilIdle()
         coEvery { chatRepository.sendMessage("ch-1", "hi") } throws RuntimeException("boom")
@@ -480,14 +490,17 @@ class TextChannelViewModelTest {
         advanceUntilIdle()
 
         assertEquals(R.string.chat_send_failed, viewModel.error.value)
-        assertEquals("hi", viewModel.messageInput.value)
+        assertEquals("", viewModel.messageInput.value)
+        val failed = viewModel.pendingMessages.value.single()
+        assertEquals("hi", failed.text)
+        assertEquals(io.wolftown.kaiku.data.repository.PendingMessage.State.FAILED, failed.state)
 
         viewModel.clearError()
         assertNull(viewModel.error.value)
     }
 
     @Test
-    fun `send failure keeps a newer draft`() = runTest {
+    fun `send survives leaving the chat and a failure shows when coming back`() = runTest {
         viewModel = loadedViewModel()
         advanceUntilIdle()
         val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -499,12 +512,100 @@ class TextChannelViewModelTest {
         viewModel.onMessageInputChanged("hi")
         viewModel.onSendMessage()
         advanceUntilIdle() // send is now suspended on the gate
-        viewModel.onMessageInputChanged("newer")
+        viewModel.onCleared() // the user went back
         gate.complete(Unit)
         advanceUntilIdle()
 
-        assertEquals(R.string.chat_send_failed, viewModel.error.value)
-        assertEquals("newer", viewModel.messageInput.value)
+        coVerify(exactly = 1) { chatRepository.sendMessage("ch-1", "hi") }
+        val again = loadedViewModel()
+        advanceUntilIdle()
+        assertEquals("hi", again.pendingMessages.value.single().text)
+        assertEquals(
+            io.wolftown.kaiku.data.repository.PendingMessage.State.FAILED,
+            again.pendingMessages.value.single().state,
+        )
+    }
+
+    @Test
+    fun `send that completes after leaving the chat is not cancelled`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { chatRepository.sendMessage("ch-1", "hi") } coAnswers { gate.await() }
+
+        viewModel.onMessageInputChanged("hi")
+        viewModel.onSendMessage()
+        advanceUntilIdle()
+        assertEquals(1, viewModel.pendingMessages.value.size)
+        viewModel.onCleared()
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        val again = loadedViewModel()
+        advanceUntilIdle()
+        assertTrue(again.pendingMessages.value.isEmpty())
+        assertNull(again.error.value)
+    }
+
+    @Test
+    fun `retry sends a failed message once even when tapped twice`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        coEvery { chatRepository.sendMessage("ch-1", "hi") } throws RuntimeException("boom")
+        viewModel.onMessageInputChanged("hi")
+        viewModel.onSendMessage()
+        advanceUntilIdle()
+        val id = viewModel.pendingMessages.value.single().localId
+
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { chatRepository.sendMessage("ch-1", "hi") } coAnswers { gate.await() }
+        viewModel.onRetryPending(id)
+        viewModel.onRetryPending(id)
+        viewModel.onRetryFailed()
+        advanceUntilIdle()
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        coVerify(exactly = 2) { chatRepository.sendMessage("ch-1", "hi") } // first try + one retry
+        assertTrue(viewModel.pendingMessages.value.isEmpty())
+    }
+
+    @Test
+    fun `discarding a failed message removes it`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        coEvery { chatRepository.sendMessage("ch-1", "hi") } throws RuntimeException("boom")
+        viewModel.onMessageInputChanged("hi")
+        viewModel.onSendMessage()
+        advanceUntilIdle()
+
+        viewModel.onDiscardPending(viewModel.pendingMessages.value.single().localId)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.pendingMessages.value.isEmpty())
+    }
+
+    @Test
+    fun `draft survives leaving the chat`() = runTest {
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+        viewModel.onMessageInputChanged("half a thought")
+        viewModel.onCleared()
+
+        savedStateHandle = SavedStateHandle(mapOf("channelId" to "ch-1"))
+        val again = loadedViewModel()
+        advanceUntilIdle()
+
+        assertEquals("half a thought", again.messageInput.value)
+    }
+
+    @Test
+    fun `draft is restored from saved state after process death`() = runTest {
+        savedStateHandle = SavedStateHandle(mapOf("channelId" to "ch-1", "draft" to "kept"))
+        viewModel = loadedViewModel()
+        advanceUntilIdle()
+
+        assertEquals("kept", viewModel.messageInput.value)
     }
 
     @Test
@@ -646,7 +747,7 @@ class TextChannelViewModelTest {
     }
 
     @Test
-    fun `caption is cleared during upload and restored on failure`() = runTest {
+    fun `caption is cleared during upload and kept with the failed upload`() = runTest {
         val uri = mockk<Uri>()
         val gate = kotlinx.coroutines.CompletableDeferred<Result<Message>>()
         coEvery { chatRepository.sendAttachment("ch-1", uri, "look") } coAnswers { gate.await() }
@@ -659,10 +760,15 @@ class TextChannelViewModelTest {
         assertEquals("", viewModel.messageInput.value)
         assertTrue(viewModel.isUploading.value)
 
+        viewModel.onCleared() // leaving the chat does not cancel the upload
         gate.complete(Result.failure(ChatRepository.AttachmentException.Failed()))
         advanceUntilIdle()
-        assertEquals("look", viewModel.messageInput.value)
-        assertFalse(viewModel.isUploading.value)
+        val again = createViewModel()
+        advanceUntilIdle()
+        val failed = again.pendingMessages.value.single()
+        assertEquals("look", failed.text)
+        assertEquals(uri, failed.attachment)
+        assertFalse(again.isUploading.value)
     }
 
     @Test

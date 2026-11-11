@@ -54,6 +54,7 @@ fun TextChannelScreen(
     val editingMessage by viewModel.editingMessage.collectAsState()
     val connectionStatus by viewModel.connectionStatus.collectAsState()
     val isKaikuDm by viewModel.isKaikuDm.collectAsState()
+    val pendingMessages by viewModel.pendingMessages.collectAsState()
     val noticeActions: io.wolftown.kaiku.ui.security.NoticeActionsViewModel = androidx.hilt.navigation.compose.hiltViewModel()
 
     // Resumed = the user is looking at this chat: suppress and clear its notifications.
@@ -70,13 +71,13 @@ fun TextChannelScreen(
     LaunchedEffect(Unit) {
         viewModel.error.filterNotNull().collectLatest { res ->
             viewModel.clearError()
-            val retry = res == R.string.chat_send_failed
+            val retry = res == R.string.chat_send_failed || res == R.string.chat_upload_failed
             val result = snackbarHostState.showSnackbar(
                 message = context.getString(res),
                 actionLabel = if (retry) context.getString(R.string.common_retry) else null,
                 withDismissAction = true
             )
-            if (retry && result == SnackbarResult.ActionPerformed) viewModel.onSendMessage()
+            if (retry && result == SnackbarResult.ActionPerformed) viewModel.onRetryFailed()
         }
     }
 
@@ -109,6 +110,14 @@ fun TextChannelScreen(
                 listState.animateScrollToItem(lastIndex)
             }
         }
+    }
+
+    // A message the user just sent appears at the bottom as "Sending…": show it.
+    var lastPendingCount by remember { mutableIntStateOf(pendingMessages.size) }
+    LaunchedEffect(pendingMessages.size) {
+        val grew = pendingMessages.size > lastPendingCount
+        lastPendingCount = pendingMessages.size
+        if (grew) listState.animateScrollToItem(messages.size + pendingMessages.size)
     }
 
     val titleText = when (val t = title) {
@@ -174,7 +183,7 @@ fun TextChannelScreen(
                     )
                 }
 
-                messages.isEmpty() && !isLoading -> {
+                messages.isEmpty() && pendingMessages.isEmpty() && !isLoading -> {
                     Text(
                         text = stringResource(R.string.chat_empty),
                         style = MaterialTheme.typography.bodyLarge,
@@ -228,6 +237,14 @@ fun TextChannelScreen(
                                 onReact = { msgId ->
                                     reactionTargetId = msgId
                                 }
+                            )
+                        }
+                        // AND-B-3: own messages the server has not confirmed yet, or that failed.
+                        items(pendingMessages, key = { "pending-" + it.localId }) { pending ->
+                            PendingMessageItem(
+                                item = pending,
+                                onRetry = viewModel::onRetryPending,
+                                onDiscard = viewModel::onDiscardPending,
                             )
                         }
                     }
