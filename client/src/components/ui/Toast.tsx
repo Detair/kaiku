@@ -25,6 +25,11 @@
  * If no `duration` is specified, toasts auto-dismiss after 5000ms.
  * Use `duration: 0` for persistent toasts that require manual dismissal.
  * Prefer explicit durations matching the convention table above.
+ *
+ * ## Reading time
+ *
+ * The countdown pauses while the pointer is over a toast or focus is inside
+ * it (`pauseToast`/`resumeToast`), and carries on with the time that was left.
  */
 
 import { Component, For, createSignal, onCleanup } from "solid-js";
@@ -63,8 +68,56 @@ export { toasts };
 // Active timeouts for auto-dismiss
 const dismissTimeouts = new Map<string, number>();
 
+// Remaining time of toasts whose timer is paused (pointer over, focus inside).
+const pausedRemaining = new Map<string, number>();
+// When each running timer started and how long it was set for.
+const timerInfo = new Map<string, { startedAt: number; remaining: number }>();
+
+function clearTimer(id: string): void {
+  const timeout = dismissTimeouts.get(id);
+  if (timeout) clearTimeout(timeout);
+  dismissTimeouts.delete(id);
+  timerInfo.delete(id);
+}
+
+function startTimer(id: string, ms: number): void {
+  clearTimer(id);
+  timerInfo.set(id, { startedAt: Date.now(), remaining: ms });
+  dismissTimeouts.set(
+    id,
+    window.setTimeout(() => dismissToast(id), ms),
+  );
+}
+
+/**
+ * Stop the auto-dismiss timer of a toast while someone is reading it.
+ * Safe to call repeatedly; the time left is kept for `resumeToast`.
+ */
+export function pauseToast(id: string): void {
+  const info = timerInfo.get(id);
+  if (!info) return;
+  const left = Math.max(info.remaining - (Date.now() - info.startedAt), 0);
+  clearTimer(id);
+  pausedRemaining.set(id, left);
+}
+
+/**
+ * Continue the auto-dismiss timer after `pauseToast`. A toast that has no
+ * paused timer (persistent, or never paused) is left alone.
+ */
+export function resumeToast(id: string): void {
+  const left = pausedRemaining.get(id);
+  if (left === undefined) return;
+  pausedRemaining.delete(id);
+  // Give a toast that was nearly done a moment to be read again.
+  startTimer(id, Math.max(left, MIN_RESUME_MS));
+}
+
 // Maximum number of visible toasts
 const MAX_TOASTS = 5;
+
+// After the pointer or focus leaves, a toast stays at least this long.
+const MIN_RESUME_MS = 1500;
 
 /**
  * Show a toast notification.
@@ -74,11 +127,8 @@ export function showToast(options: ToastOptions): string {
   const id = options.id ?? crypto.randomUUID();
 
   // Clear existing timeout if replacing
-  const existingTimeout = dismissTimeouts.get(id);
-  if (existingTimeout) {
-    clearTimeout(existingTimeout);
-    dismissTimeouts.delete(id);
-  }
+  clearTimer(id);
+  pausedRemaining.delete(id);
 
   const toast: ToastInstance = {
     ...options,
@@ -96,11 +146,8 @@ export function showToast(options: ToastOptions): string {
       const toRemove = updated.slice(0, updated.length - MAX_TOASTS);
       // Auto-dismiss oldest toasts
       toRemove.forEach((t) => {
-        const timeout = dismissTimeouts.get(t.id);
-        if (timeout) {
-          clearTimeout(timeout);
-          dismissTimeouts.delete(t.id);
-        }
+        clearTimer(t.id);
+        pausedRemaining.delete(t.id);
       });
       return updated.slice(-MAX_TOASTS);
     }
@@ -111,10 +158,7 @@ export function showToast(options: ToastOptions): string {
   // Set auto-dismiss if duration > 0
   const duration = options.duration ?? 5000;
   if (duration > 0) {
-    const timeout = window.setTimeout(() => {
-      dismissToast(id);
-    }, duration);
-    dismissTimeouts.set(id, timeout);
+    startTimer(id, duration);
   }
 
   return id;
@@ -124,11 +168,8 @@ export function showToast(options: ToastOptions): string {
  * Dismiss a toast by ID.
  */
 export function dismissToast(id: string): void {
-  const timeout = dismissTimeouts.get(id);
-  if (timeout) {
-    clearTimeout(timeout);
-    dismissTimeouts.delete(id);
-  }
+  clearTimer(id);
+  pausedRemaining.delete(id);
 
   setToasts((prev) => prev.filter((t) => t.id !== id));
 }
@@ -141,15 +182,19 @@ export function dismissAllToasts(): void {
     clearTimeout(timeout);
   }
   dismissTimeouts.clear();
+  timerInfo.clear();
+  pausedRemaining.clear();
   setToasts([]);
 }
 
 // Style mappings
+// Theme tokens only: each fill has its own label colour that is tested for
+// >= 4.5:1 in every theme (styles/__tests__/contrast.test.ts).
 const typeStyles: Record<ToastType, string> = {
-  info: "bg-blue-600 border-blue-500",
-  success: "bg-green-600 border-green-500",
-  warning: "bg-yellow-600 border-yellow-500",
-  error: "bg-red-600 border-red-500",
+  info: "bg-accent-primary border-accent-primary text-on-accent",
+  success: "bg-accent-success border-accent-success text-on-success",
+  warning: "bg-accent-warning border-accent-warning text-on-warning",
+  error: "bg-accent-danger-fill border-accent-danger-fill text-on-danger",
 };
 
 const typeIcons: Record<ToastType, string> = {
@@ -168,14 +213,41 @@ const ToastItem: Component<{ toast: ToastInstance }> = (props) => {
     dismissToast(props.toast.id);
   };
 
+  // Pause the countdown while the pointer is over the toast or focus is
+  // inside it, so a message can be read and its button reached.
+  let hovered = false;
+  let focused = false;
+  const sync = () => {
+    if (hovered || focused) pauseToast(props.toast.id);
+    else resumeToast(props.toast.id);
+  };
+
   return (
     <div
       class={`
         flex items-start gap-3 px-4 py-3 rounded-lg border shadow-lg
-        text-white max-w-sm animate-slide-in
+        max-w-sm animate-slide-in
         ${typeStyles[props.toast.type]}
       `}
       role="alert"
+      onMouseEnter={() => {
+        hovered = true;
+        sync();
+      }}
+      onMouseLeave={() => {
+        hovered = false;
+        sync();
+      }}
+      onFocusIn={() => {
+        focused = true;
+        sync();
+      }}
+      onFocusOut={(e) => {
+        // Moving between two controls inside the toast is not leaving it.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        focused = false;
+        sync();
+      }}
     >
       <span
         class={`${typeIcons[props.toast.type]} w-5 h-5 flex-shrink-0 mt-0.5`}
@@ -183,12 +255,12 @@ const ToastItem: Component<{ toast: ToastInstance }> = (props) => {
       <div class="flex-1 min-w-0">
         <p class="font-medium text-sm">{props.toast.title}</p>
         {props.toast.message && (
-          <p class="text-sm opacity-90 mt-0.5">{props.toast.message}</p>
+          <p class="text-sm mt-0.5">{props.toast.message}</p>
         )}
         {props.toast.action && (
           <button
             type="button"
-            class="mt-2 px-3 py-1 text-xs font-medium bg-white/20 rounded hover:bg-white/30 transition-colors"
+            class="mt-2 px-3 py-1 text-xs font-medium rounded border border-current hover:ring-1 hover:ring-current transition-shadow"
             onClick={handleAction}
           >
             {props.toast.action.label}
@@ -197,7 +269,7 @@ const ToastItem: Component<{ toast: ToastInstance }> = (props) => {
       </div>
       <button
         type="button"
-        class="flex-shrink-0 p-1 rounded hover:bg-white/20 transition-colors"
+        class="flex-shrink-0 p-1 rounded hover:ring-1 hover:ring-current transition-shadow"
         onClick={() => dismissToast(props.toast.id)}
         aria-label={t("common.dismiss")}
       >
@@ -219,6 +291,8 @@ export const ToastContainer: Component = () => {
       clearTimeout(timeout);
     }
     dismissTimeouts.clear();
+    timerInfo.clear();
+    pausedRemaining.clear();
   });
 
   return (

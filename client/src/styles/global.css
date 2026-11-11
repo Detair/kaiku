@@ -401,3 +401,49 @@ pre code {
     background-color: transparent;
   }
 }
+
+/*
+ * Reduced motion (A11Y-9): people who ask their system for less motion get no
+ * pulsing or bouncing. These classes carry the incoming-call ring, the
+ * speaking indicator, "connecting…" text and the typing dots, and all of them
+ * also show their state without moving. Loading spinners (.animate-spin) are
+ * left alone on purpose: a still circle looks like a frozen app.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse,
+  .animate-bounce,
+  .animate-ping {
+    animation: none !important;
+  }
+}
+
+/*
+ * Text size (A11Y-5). The whole interface is sized in rem, so changing the
+ * root font size scales it. Percentages keep the browser's own text-size
+ * setting as the starting point. Set by stores/theme.ts and by
+ * public/theme-preload.js (before first paint).
+ */
+:root[data-font-size="large"] {
+  font-size: 115%;
+}
+
+:root[data-font-size="xlarge"] {
+  font-size: 130%;
+}
+
+/*
+ * White overlays (border-white/10, bg-white/5, ...) take their colour from
+ * --color-overlay-rgb (rule in uno.config.ts). The light theme sets it to the
+ * text colour, because white on a cream surface is invisible. Surfaces that
+ * stay dark or coloured in every theme (image viewer, screen share, filled
+ * accent buttons) put it back to white for everything inside them.
+ */
+.bg-black,
+.bg-black\/90,
+.bg-black\/95,
+.bg-accent-primary,
+.bg-accent-danger-fill,
+.btn-primary,
+.btn-danger {
+  --color-overlay-rgb: 255 255 255;
+}

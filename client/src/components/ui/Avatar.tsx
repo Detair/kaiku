@@ -11,7 +11,7 @@ interface AvatarProps {
 }
 
 const sizeClasses = {
-  xs: "w-5 h-5 text-[8px]",
+  xs: "w-5 h-5 text-[10px]",
   sm: "w-8 h-8 text-xs",
   md: "w-10 h-10 text-sm",
   lg: "w-12 h-12 text-base",
@@ -30,25 +30,26 @@ const Avatar: Component<AvatarProps> = (props) => {
     return name.slice(0, 2).toUpperCase();
   };
 
-  // Generate a consistent color from the name
+  // Generate a consistent color from the name. The -700 shades keep the white
+  // initials at 4.5:1 or better (the -500 shades were about 2:1 for yellow/lime).
   const bgColor = () => {
     const colors = [
-      "bg-red-500",
-      "bg-orange-500",
-      "bg-amber-500",
-      "bg-yellow-500",
-      "bg-lime-500",
-      "bg-green-500",
-      "bg-emerald-500",
-      "bg-teal-500",
-      "bg-cyan-500",
-      "bg-sky-500",
-      "bg-blue-500",
-      "bg-indigo-500",
-      "bg-violet-500",
-      "bg-purple-500",
-      "bg-fuchsia-500",
-      "bg-pink-500",
+      "bg-red-700",
+      "bg-orange-700",
+      "bg-amber-700",
+      "bg-yellow-700",
+      "bg-lime-700",
+      "bg-green-700",
+      "bg-emerald-700",
+      "bg-teal-700",
+      "bg-cyan-700",
+      "bg-sky-700",
+      "bg-blue-700",
+      "bg-indigo-700",
+      "bg-violet-700",
+      "bg-purple-700",
+      "bg-fuchsia-700",
+      "bg-pink-700",
     ];
     const name = props.alt || "?";
     let hash = 0;

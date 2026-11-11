@@ -89,6 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android security settings: your phones, passkeys, sessions, recovery codes and recovery contact, each change confirmed with your screen lock; password and authenticator app are shown and changed on the web or desktop.
 - Android shows Kaiku's security notices in the read-only "Kaiku" chat (with "That wasn't me", Cancel, Remove device and "I will help" where they apply) and as private lock-screen notifications, also on a key phone that is signed out, with the security log under Settings > Security and a full-screen prompt for an open request to change how you sign in.
 - **Android: admins set up phones from their own phone.** Create the account (no password), choose "Set up a phone", and type the code the new phone shows; existing accounts wait 24 hours with notices to everyone involved. "Remove device now" for stolen phones. See `docs/admin-guide/ops/phone-setup.md`.
+- **Light theme and "Same as my device":** Settings > Appearance now offers Solarized Light, and an option that switches between light and dark the way your phone or computer does. Nobody's theme changes unless they pick one.
+- **Text size:** three steps (Normal, Large, Very large) in Settings > Appearance make all text bigger.
 
 ### Changed
 - The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
@@ -380,6 +382,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop voice audio is now clear at session start (fixed RTP sequence number regression on reconnect)
 - Desktop screen share now actually reaches other participants (fixed VP8 payload type)
 - UI contrast: selected nav items, active state pills, and warning banners now render with their intended alpha tint instead of silently rendering as solid color. UnoCSS alpha-modifier classes (`bg-accent-primary/20` etc.) had been dropping their alpha because the underlying CSS variables held hex values; switched the affected tokens in `uno.config.ts` to consume new `-rgb` channel variants via the `rgb(var(...) / <alpha-value>)` pattern.
+- Helper text, red error text and the outline of text fields are easier to read in every theme (at least 4.5:1 and 3:1 contrast).
+- Pop-up messages (toasts) use the theme colours with readable labels, and wait while you point at them or tab into them.
+- Pulsing and bouncing animations stop when your device is set to reduce motion; loading spinners keep turning.
+- Pixel theme: buttons and navigation text are larger.
+- Avatar initials are readable on every colour.
 
 ### Security
 - E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting
