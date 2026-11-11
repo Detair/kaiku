@@ -895,6 +895,11 @@ function channelSession(channelId: string): RecoverySession {
         settleConnectedWaiters(false);
         return false;
       }
+      // Deafened stays deafened from the first remote track on (native
+      // plays tracks that arrive before "connected", W1-M10).
+      if (voiceState.deafened && !isVoiceEpochStale(epoch)) {
+        await adapter.setDeafen(true).catch(() => undefined);
+      }
       return (await connected) && !isVoiceEpochStale(epoch);
     },
     abandon: async () => {

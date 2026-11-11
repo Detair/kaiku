@@ -147,7 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
 
 ### Security
-- Images and files in messages now load through short-lived links from the server; your sign-in token is no longer part of image addresses (so "Copy image address" or proxy logs no longer contain it).
+- Images and files in messages now load through short-lived links from the server; your sign-in token is no longer part of image addresses.
 - Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.
 - A session ends automatically when its refresh token is used twice, browser sessions end after 30 days and app sessions after 90 days, and an account can have at most 50 open sessions.
 - Sign-in IP addresses are no longer sent to an external GeoIP service.
@@ -210,13 +210,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Voice no longer goes silent after a short connection hiccup: you keep hearing everyone, and the voice panel shows "Reconnecting..." until the connection is back. This works in the browser and in the desktop app.
-- Voice reconnects by itself after a short connection loss (network change, sleep, server restart): it rejoins the channel with your mute and deafen settings; screen share and camera stay off until you start them again. After three failed tries the voice panel offers "Rejoin".
-- A call you answered on another device stops ringing on this one right away.
+- Voice reconnects by itself after a short connection loss (network change, sleep, server restart): it rejoins the channel with your latest mute and deafen settings; screen share and camera stay off until you start them again. While it reconnects you stay in the channel, see who is there and can mute or leave. After three failed tries, or when the connection stays away for a minute, the microphone is released and the voice panel offers "Rejoin". Leaving or being removed while it reconnects always wins.
+- A call you answered or declined on another device stops ringing on this one right away, and a declined one is not shown as missed.
 - Calls no longer ring forever when the end of a call got lost: a ring stops after 100 seconds at the latest, and after a reconnect the app checks the call with the server. An incoming call that ended this way shows "Missed call from ...". In the desktop app, a direct call you are still in reconnects its voice by itself.
 - Browser: an incoming call now rings audibly even when the page has not played any sound before; the ring is prepared on your first click or key press.
 - Client: for accounts that cannot confirm sign-ins on a phone, the chat-only hint and the empty passkey list now say to ask the admin for a setup link for this computer, instead of pointing to "Add a phone", which these accounts do not have.
 - Client: on servers with the server browser turned off, the setup's "Join a server" step opens on the invite code instead of an empty Discover tab; people who already belong to a server still skip that step.
-- When you are removed from a voice channel (kicked, banned, access lost, channel deleted, or joined from another device) the call ends cleanly with one line saying why, and it does not rejoin by itself.
+- When you are removed from a voice channel or from the voice of a direct call (kicked, banned, access lost, channel deleted, or joined from another device) the call ends cleanly with one line saying why, and it does not rejoin by itself (needs a server that sends this notice).
+- Images that cannot be shown from an expired link load again once, and on servers without short-lived links very large images are no longer loaded into memory to show them inline.
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.
 - Client: in the desktop app and in browsers other than Firefox, avatars are now round, icons have their intended size, selected options and primary buttons show their accent background, QR codes have a white background, and clickable items show a hand cursor. These styles were dropped from the app's CSS; Firefox already showed them.
 - The message for actions that need a full session now says that a computer needs a passkey sign-in and that a phone can do it in the Kaiku app.

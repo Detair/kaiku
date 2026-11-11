@@ -484,4 +484,18 @@ describe("voice rejoin (C32)", () => {
     expect(mockAdapter.join).toHaveBeenCalledTimes(2);
     expect(voiceState.state).toBe("connected");
   });
+
+  it("a deafened rejoin is deafened before it reports connected (W1-M10)", async () => {
+    await inCall();
+    setVoiceState({ muted: true, deafened: true });
+    const hang = joinHangs();
+    void rejoinVoiceAfterReconnect();
+    await vi.advanceTimersByTimeAsync(1000);
+    mockAdapter.setDeafen.mockClear();
+    hang.release();
+    await flush();
+    expect(mockAdapter.setDeafen).toHaveBeenCalledWith(true);
+    expect(voiceState.state).toBe("reconnecting");
+    await leaveVoice();
+  });
 });
