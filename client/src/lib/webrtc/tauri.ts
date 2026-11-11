@@ -21,7 +21,21 @@ import type {
   CaptureSource,
   RawConnectionStats,
 } from "./types";
+import type { VoiceJoinOptions } from "./types";
 import { buildConnectionMetrics, deltaLossPercent } from "./types";
+import {
+  currentVoiceEpoch,
+  isVoiceEpochStale,
+  VOICE_JOIN_CANCELLED,
+} from "./voiceSession";
+
+/** Error text of a native `join_voice` whose epoch went stale (Rust). */
+export const NATIVE_JOIN_CANCELLED = "VOICE_JOIN_CANCELLED";
+
+/** Whether a native join failed only because its session was cancelled. */
+export function isNativeJoinCancelled(err: unknown): boolean {
+  return (typeof err === "string" ? err : String(err)).includes(NATIVE_JOIN_CANCELLED);
+}
 import * as Sentry from "@sentry/browser";
 
 /** Audio device as returned by the `get_audio_devices` command. */
@@ -97,15 +111,27 @@ export class TauriVoiceAdapter implements VoiceAdapter {
 
   // Lifecycle methods
 
-  async join(channelId: string): Promise<VoiceResult<void>> {
+  async join(
+    channelId: string,
+    opts?: VoiceJoinOptions,
+  ): Promise<VoiceResult<void>> {
     console.log(`[TauriVoiceAdapter] Joining channel: ${channelId}`);
+    const epoch = opts?.epoch;
 
     try {
-      await invoke("join_voice", { channelId });
+      // Native checks the epoch after every await and before sending
+      // VoiceJoin (`join_voice`); a leave raises its floor first.
+      await invoke("join_voice", { channelId, epoch });
+      // Cancelled after native finished: the leave or teardown that
+      // cancelled us runs after this join on the native side.
+      if (isVoiceEpochStale(epoch)) return { ok: false, error: { ...VOICE_JOIN_CANCELLED } };
       this.channelId = channelId;
       this.setState("connecting");
       return { ok: true, value: undefined };
     } catch (err) {
+      if (isNativeJoinCancelled(err) || isVoiceEpochStale(epoch)) {
+        return { ok: false, error: { ...VOICE_JOIN_CANCELLED } };
+      }
       return { ok: false, error: this.mapTauriError(err) };
     }
   }
@@ -126,7 +152,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     }
 
     try {
-      await invoke("leave_voice");
+      await invoke("leave_voice", { epoch: currentVoiceEpoch() });
       this.channelId = null;
       this.setState("disconnected");
       return { ok: true, value: undefined };
@@ -140,7 +166,7 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     // Native leave_voice also stops every share and the webcam.
     this.activeScreenShares.clear();
     try {
-      await invoke("leave_voice", { silent: true });
+      await invoke("leave_voice", { silent: true, epoch: currentVoiceEpoch() });
       return { ok: true, value: undefined };
     } catch (err) {
       return { ok: false, error: this.mapTauriError(err) };

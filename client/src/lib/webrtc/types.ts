@@ -35,6 +35,12 @@ export type VoiceError =
   | { type: "constraint_error"; message: string }
   | { type: "unknown"; message: string };
 
+/** Options for `VoiceAdapter.join`. */
+export interface VoiceJoinOptions {
+  /** Voice session epoch this join runs under (cancellation, C32). */
+  epoch?: number;
+}
+
 /**
  * Result type for voice operations
  */
@@ -303,7 +309,12 @@ export interface ParticipantMetrics {
  */
 export interface VoiceAdapter {
   // Lifecycle
-  join(channelId: string): Promise<VoiceResult<void>>;
+  /**
+   * Join a channel. With `epoch` (see `voiceSession.ts`) the join checks
+   * after every await whether its session is still current; a stale join
+   * releases what it acquired and returns a `cancelled` error.
+   */
+  join(channelId: string, opts?: VoiceJoinOptions): Promise<VoiceResult<void>>;
   leave(): Promise<VoiceResult<void>>;
   /**
    * Drop the local call without telling the server (no `voice_leave`): the

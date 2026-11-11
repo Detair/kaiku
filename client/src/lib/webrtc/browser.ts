@@ -17,7 +17,9 @@ import type {
   WebcamOptions,
   ConnectionMetrics,
 } from "./types";
+import type { VoiceJoinOptions } from "./types";
 import { buildConnectionMetrics, deltaLossPercent } from "./types";
+import { isVoiceEpochStale, VOICE_JOIN_CANCELLED } from "./voiceSession";
 import * as Sentry from "@sentry/browser";
 
 /** Bitrate for the highest simulcast layer, keyed by screen-share quality. */
@@ -163,14 +165,36 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
   // Lifecycle methods
 
-  async join(channelId: string): Promise<VoiceResult<void>> {
+  async join(
+    channelId: string,
+    opts?: VoiceJoinOptions,
+  ): Promise<VoiceResult<void>> {
     console.log(`[BrowserVoiceAdapter] Joining channel: ${channelId}`);
+    const epoch = opts?.epoch;
+    const stale = () => isVoiceEpochStale(epoch);
 
-    // Clean up any stale connection (e.g., from WebSocket reconnect)
-    if (this.publisherState || this.subscriberState) {
+    // Clean up any stale connection (e.g., from WebSocket reconnect, or a
+    // join of an older session that is still waiting on the microphone).
+    if (this.localStream || this.publisherState || this.subscriberState) {
       console.log("[BrowserVoiceAdapter] Cleaning up stale connection");
       this.cleanup();
     }
+
+    // What this join acquired. A cancelled join releases exactly these and
+    // never touches resources a newer join may already hold.
+    let stream: MediaStream | null = null;
+    let pub: PcState | null = null;
+    let sub: PcState | null = null;
+    const cancelled = (): VoiceResult<void> => {
+      console.log("[BrowserVoiceAdapter] Join cancelled (session ended)");
+      stream?.getTracks().forEach((track) => track.stop());
+      pub?.pc.close();
+      sub?.pc.close();
+      if (stream && this.localStream === stream) this.localStream = null;
+      if (pub && this.publisherState === pub) this.publisherState = null;
+      if (sub && this.subscriberState === sub) this.subscriberState = null;
+      return { ok: false, error: { ...VOICE_JOIN_CANCELLED } };
+    };
 
     try {
       this.joinStartTime = Date.now();
@@ -179,15 +203,18 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       // Get microphone access
       try {
-        this.localStream = await this.getMicStream(this.inputDeviceId);
+        stream = await this.getMicStream(this.inputDeviceId);
       } catch (err) {
+        if (stale()) return cancelled();
         if (!this.inputDeviceId || !this.isDeviceGoneError(err)) throw err;
         // The remembered device is unplugged or its id rotated: forget it
         // and use the system default so the call still has a microphone.
         console.warn("[BrowserVoiceAdapter] Input device unavailable, using default:", err);
         this.inputDeviceId = null;
-        this.localStream = await this.getMicStream(null);
+        stream = await this.getMicStream(null);
       }
+      if (stale()) return cancelled();
+      this.localStream = stream;
       console.log("[BrowserVoiceAdapter] Got local stream");
       // The adapter is reused across calls and keeps its mute state (and
       // push-to-talk rests muted); a fresh track starts enabled, so apply the
@@ -198,18 +225,21 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       // Fetch ICE servers (STUN + TURN) from the API
       const config = await this.fetchIceConfig();
+      if (stale()) return cancelled();
 
       // Create dual PeerConnections with bundled state for ICE buffering
-      this.publisherState = {
+      pub = {
         pc: new RTCPeerConnection(config),
         remoteDescriptionSet: false,
         pendingCandidates: [],
       };
-      this.subscriberState = {
+      sub = {
         pc: new RTCPeerConnection(config),
         remoteDescriptionSet: false,
         pendingCandidates: [],
       };
+      this.publisherState = pub;
+      this.subscriberState = sub;
       this.setupPublisherPC(channelId);
       this.setupSubscriberPC(channelId);
 
@@ -219,9 +249,11 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
 
       // Ensure WebSocket is connected before sending
       const { wsSend, wsStatus, wsConnect } = await import("@/lib/tauri");
+      if (stale()) return cancelled();
 
       // Check WebSocket status
       let status = await wsStatus();
+      if (stale()) return cancelled();
       console.log("[BrowserVoiceAdapter] WebSocket status:", status);
 
       // If disconnected, try to connect
@@ -234,6 +266,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           status = await wsStatus();
           console.log("[BrowserVoiceAdapter] WebSocket reconnected:", status);
         } catch (err) {
+          if (stale()) return cancelled();
           console.error(
             "[BrowserVoiceAdapter] Failed to connect WebSocket:",
             err,
@@ -243,6 +276,7 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
             { cause: err },
           );
         }
+        if (stale()) return cancelled();
       }
 
       // Wait for WebSocket to be connected (with timeout)
@@ -253,7 +287,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
           throw new Error("WebSocket disconnected unexpectedly.");
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
+        if (stale()) return cancelled();
         status = await wsStatus();
+        if (stale()) return cancelled();
         attempts++;
       }
 
@@ -261,6 +297,9 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         throw new Error("WebSocket connection timeout. Status: " + status.type);
       }
 
+      // Last check before anything reaches the server: no voice_join may
+      // leave this window after the session was cancelled.
+      if (stale()) return cancelled();
       console.log("[BrowserVoiceAdapter] WebSocket ready, sending voice_join");
 
       // Send voice_join message to server
@@ -268,17 +307,23 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
         type: "voice_join",
         channel_id: channelId,
       });
+      // Cancelled while sending: the leave that cancelled us follows the
+      // join on the same socket; only the local resources are left to drop.
+      if (stale()) return cancelled();
 
       // Add mic track to publisherPC — this triggers onnegotiationneeded
       // which creates and sends the publisher offer automatically
-      this.localStream.getTracks().forEach((track) => {
-        this.publisherState!.pc.addTrack(track, this.localStream!);
+      const tracks = stream;
+      const publisher = pub;
+      tracks.getTracks().forEach((track) => {
+        publisher.pc.addTrack(track, tracks);
       });
 
       console.log("[BrowserVoiceAdapter] Mic tracks added, publisher offer will be sent via onnegotiationneeded");
 
       return { ok: true, value: undefined };
     } catch (err) {
+      if (stale()) return cancelled();
       console.error("[BrowserVoiceAdapter] Error during join:", err);
       this.cleanup();
       this.setState("disconnected");

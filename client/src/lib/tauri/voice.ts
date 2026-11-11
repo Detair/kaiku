@@ -3,19 +3,26 @@
  */
 
 import { isTauri } from "./common";
+import { bumpVoiceEpoch, currentVoiceEpoch } from "@/lib/webrtc/voiceSession";
 
-export async function joinVoice(channelId: string): Promise<void> {
+/**
+ * Native join (DM-call voice). Runs under the current voice session epoch
+ * unless one is given; native drops the join when the epoch goes stale.
+ */
+export async function joinVoice(channelId: string, epoch?: number): Promise<void> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("join_voice", { channelId });
+    return invoke("join_voice", { channelId, epoch: epoch ?? currentVoiceEpoch() });
   }
   console.warn("Voice chat requires the native app");
 }
 
+/** Leave native voice. Starts a new voice epoch first: pending joins stop. */
 export async function leaveVoice(): Promise<void> {
+  const epoch = bumpVoiceEpoch();
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("leave_voice");
+    return invoke("leave_voice", { epoch });
   }
 }
 
@@ -26,7 +33,7 @@ export async function leaveVoice(): Promise<void> {
 export async function leaveVoiceSilently(): Promise<void> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    return invoke("leave_voice", { silent: true });
+    return invoke("leave_voice", { silent: true, epoch: currentVoiceEpoch() });
   }
 }
 

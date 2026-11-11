@@ -198,3 +198,41 @@ describe("TauriVoiceAdapter native events", () => {
     adapter.dispose();
   });
 });
+
+describe("TauriVoiceAdapter join epoch (C32 cancellation)", () => {
+  it("passes the epoch to join_voice and to leave/teardown", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { currentVoiceEpoch } = await import("../voiceSession");
+    const adapter = new TauriVoiceAdapter();
+    const epoch = currentVoiceEpoch();
+    await adapter.join("ch", { epoch });
+    expect(invoke).toHaveBeenCalledWith("join_voice", { channelId: "ch", epoch });
+    await adapter.teardown();
+    expect(invoke).toHaveBeenCalledWith("leave_voice", { silent: true, epoch });
+  });
+
+  it("a native VOICE_JOIN_CANCELLED is a cancelled result, not an error", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { currentVoiceEpoch } = await import("../voiceSession");
+    vi.mocked(invoke).mockRejectedValueOnce("VOICE_JOIN_CANCELLED");
+    const adapter = new TauriVoiceAdapter();
+    const result = await adapter.join("ch", { epoch: currentVoiceEpoch() });
+    expect(result).toEqual({ ok: false, error: expect.objectContaining({ type: "cancelled" }) });
+    expect(adapter.getState()).toBe("disconnected");
+  });
+
+  it("a join that returns after its session ended does not claim the channel", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { currentVoiceEpoch, bumpVoiceEpoch } = await import("../voiceSession");
+    let release!: () => void;
+    vi.mocked(invoke).mockImplementationOnce(
+      () => new Promise<undefined>((r) => (release = () => r(undefined))),
+    );
+    const adapter = new TauriVoiceAdapter();
+    const join = adapter.join("ch", { epoch: currentVoiceEpoch() });
+    bumpVoiceEpoch();
+    release();
+    expect((await join).ok).toBe(false);
+    expect(adapter.getChannelId()).toBeNull();
+  });
+});

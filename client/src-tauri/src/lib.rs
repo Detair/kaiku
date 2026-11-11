@@ -359,6 +359,8 @@ pub struct AppState {
     pub websocket: Arc<RwLock<Option<WebSocketManager>>>,
     /// Voice state.
     pub voice: Arc<RwLock<Option<VoiceState>>>,
+    /// Cancels voice joins of sessions the frontend already ended (C32).
+    pub voice_gate: Arc<commands::voice::VoiceEpochGate>,
     /// E2EE crypto manager.
     /// Uses `Mutex` instead of `RwLock` because `rusqlite::Connection` is `Send` but not `Sync`.
     pub crypto: Arc<Mutex<Option<crypto::CryptoManager>>>,
@@ -386,6 +388,7 @@ impl AppState {
             session,
             websocket: Arc::new(RwLock::new(None)),
             voice: Arc::new(RwLock::new(None)),
+            voice_gate: Arc::new(commands::voice::VoiceEpochGate::default()),
             crypto: Arc::new(Mutex::new(None)),
             ui_state: Arc::new(Mutex::new(None)),
         }

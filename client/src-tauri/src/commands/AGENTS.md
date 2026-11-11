@@ -175,8 +175,8 @@ Failures with a server code are returned as the bare code (`OIDC_CLIENT_OUTDATED
 **Purpose:** Voice channel lifecycle and WebRTC signaling.
 
 **Key Commands:**
-- `join_voice(channel_id)`: Initialize WebRTC + Audio, send `VoiceJoin` event
-- `leave_voice()`: Stop audio, disconnect WebRTC, send `VoiceLeave` event
+- `join_voice(channel_id, epoch?)`: Initialize WebRTC + Audio, send `VoiceJoin` event. Cancelled (`VOICE_JOIN_CANCELLED`) when a leave of a newer frontend voice epoch arrived (`VoiceEpochGate`)
+- `leave_voice(silent?, epoch?)`: Stop audio, disconnect WebRTC, send `VoiceLeave` event (not when `silent`); raises the epoch floor first
 - `handle_voice_offer(sdp)`: Process server SDP offer, return SDP answer
 - `handle_voice_ice_candidate(candidate)`: Add ICE candidate from server
 - `set_mute(muted)` / `set_deafen(deafened)`: Audio state

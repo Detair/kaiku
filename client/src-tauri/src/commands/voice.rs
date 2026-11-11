@@ -2,7 +2,7 @@
 //!
 //! Tauri commands for voice chat functionality.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tauri::{command, AppHandle, Emitter, State};
@@ -88,21 +88,73 @@ pub async fn fetch_ice_servers(
     }
 }
 
+/// Error text of a join whose voice session the frontend already ended.
+/// The frontend matches it (`NATIVE_JOIN_CANCELLED` in `lib/webrtc/tauri.ts`).
+pub const JOIN_CANCELLED: &str = "VOICE_JOIN_CANCELLED";
+
+/// Voice session epochs (C32 amendment "leave and `voice_removed` win").
+///
+/// The frontend runs every voice session under a monotonically increasing
+/// epoch. A join passes its epoch and raises the floor to it (a newer join
+/// supersedes an older one); a leave passes the frontend's epoch after its
+/// bump and raises the floor first, before it waits for the voice lock. A
+/// join whose epoch is below the floor is cancelled: it checks after the ICE
+/// server fetch, after taking the lock and right before sending `VoiceJoin`.
+/// Joins without an epoch (older frontends) are never cancelled.
+#[derive(Debug, Default)]
+pub struct VoiceEpochGate {
+    floor: AtomicU64,
+}
+
+impl VoiceEpochGate {
+    /// A join with `epoch` starts: older joins become stale.
+    pub fn begin(&self, epoch: Option<u64>) {
+        if let Some(epoch) = epoch {
+            self.floor.fetch_max(epoch, Ordering::SeqCst);
+        }
+    }
+
+    /// A leave, teardown or cancel at `epoch`: joins below it become stale.
+    pub fn cancel_below(&self, epoch: Option<u64>) {
+        self.begin(epoch);
+    }
+
+    /// Whether a join running under `epoch` may go on.
+    pub fn is_current(&self, epoch: Option<u64>) -> bool {
+        epoch.is_none_or(|epoch| epoch >= self.floor.load(Ordering::SeqCst))
+    }
+
+    /// `Err(JOIN_CANCELLED)` when a join under `epoch` must stop.
+    pub fn check(&self, epoch: Option<u64>) -> Result<(), String> {
+        if self.is_current(epoch) {
+            Ok(())
+        } else {
+            info!(epoch = ?epoch, "Voice join cancelled: its session ended");
+            Err(JOIN_CANCELLED.to_string())
+        }
+    }
+}
+
 /// Join a voice channel.
 ///
 /// Initializes audio pipeline and WebRTC, sends `VoiceJoin` to server.
 /// After joining, the client creates a publisher offer and sends it via
 /// `VoicePublisherOffer`. The server responds with `VoicePublisherAnswer`.
+/// `epoch` is the frontend's voice session epoch ([`VoiceEpochGate`]).
 #[command]
 pub async fn join_voice(
     channel_id: String,
+    epoch: Option<u64>,
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
     info!("Joining voice channel: {}", channel_id);
+    let gate = state.voice_gate.clone();
+    gate.begin(epoch);
 
     // Initialize voice state if needed
     state.ensure_voice().await?;
+    gate.check(epoch)?;
 
     // Server-provided STUN/TURN config (falls back to a public STUN server).
     // Fetched before taking the voice lock so a slow server cannot block it.
@@ -112,8 +164,11 @@ pub async fn join_voice(
         warn!("No active session; using default STUN only, TURN unavailable");
         vec![IceServerConfig::default()]
     };
+    gate.check(epoch)?;
 
     let mut voice = state.voice.write().await;
+    // A leave that raced us took the lock first: nothing was created yet.
+    gate.check(epoch)?;
     let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
 
     // Set app handle for speaking indicator events
@@ -345,6 +400,16 @@ pub async fn join_voice(
         .create_offer()
         .await
         .map_err(|e| e.to_string())?;
+
+    // Last check before anything reaches the server. The lock is still
+    // held, so a leave cannot have torn this connection down: undo it here.
+    if let Err(cancelled) = gate.check(epoch) {
+        voice_state.channel_id = None;
+        if let Err(e) = voice_state.webrtc.disconnect().await {
+            warn!("Disconnect of a cancelled voice join failed: {e}");
+        }
+        return Err(cancelled);
+    }
 
     // Send VoiceJoin to server via WebSocket
     let ws = state.websocket.read().await;
@@ -599,8 +664,15 @@ fn sends_voice_leave(silent: Option<bool>) -> bool {
 
 /// Leave the current voice channel. `silent: true` skips `VoiceLeave`.
 #[command]
-pub async fn leave_voice(silent: Option<bool>, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn leave_voice(
+    silent: Option<bool>,
+    epoch: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     info!(silent = ?silent, "Leaving voice channel");
+    // Before waiting for the lock: a join of an ended session stops at its
+    // next check instead of connecting after this leave.
+    state.voice_gate.cancel_below(epoch);
 
     let mut voice = state.voice.write().await;
     let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
@@ -1271,6 +1343,43 @@ mod tests {
         assert!(sender_rx.is_some());
         assert!(events.is_empty());
         assert!(started.result.is_ok());
+    }
+
+    #[test]
+    fn join_is_cancelled_by_a_leave_of_a_newer_epoch() {
+        let gate = VoiceEpochGate::default();
+        gate.begin(Some(10));
+        assert!(gate.check(Some(10)).is_ok());
+        // Leave (or voice_removed) after the frontend bumped to 11.
+        gate.cancel_below(Some(11));
+        assert_eq!(gate.check(Some(10)), Err(JOIN_CANCELLED.to_string()));
+        // The next session's join goes on.
+        gate.begin(Some(11));
+        assert!(gate.check(Some(11)).is_ok());
+    }
+
+    #[test]
+    fn newer_join_supersedes_older_and_silent_teardown_keeps_current() {
+        let gate = VoiceEpochGate::default();
+        gate.begin(Some(5));
+        gate.begin(Some(6));
+        assert!(!gate.is_current(Some(5)));
+        assert!(gate.is_current(Some(6)));
+        // A silent teardown inside the same session passes the current epoch.
+        gate.cancel_below(Some(6));
+        assert!(gate.is_current(Some(6)));
+        // A late leave of an older epoch never lowers the floor.
+        gate.cancel_below(Some(3));
+        assert!(!gate.is_current(Some(5)));
+    }
+
+    #[test]
+    fn joins_without_epoch_are_never_cancelled() {
+        let gate = VoiceEpochGate::default();
+        gate.cancel_below(Some(100));
+        assert!(gate.check(None).is_ok());
+        gate.cancel_below(None);
+        assert!(gate.is_current(Some(100)));
     }
 
     #[test]
