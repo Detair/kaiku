@@ -103,6 +103,8 @@
   "admin.userSecurity.openRequest": "",
   "admin.userSecurity.passwordNeedsReplacement": "",
   "admin.userSecurity.removeNowNamed": "",
+  "admin.userSecurity.removed": "",
+  "admin.userSecurity.removedState": "",
   "admin.userSecurity.sessions": "",
   "admin.userSecurity.sessionsCount": "",
   "admin.userSecurity.setupPhone": "",
