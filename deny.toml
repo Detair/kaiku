@@ -20,6 +20,31 @@ ignore = [
     # only after their minisign signature is verified; the client only calls
     # downloadAndInstall). Remove with the utoipa 6 / Tauri updater upgrade.
     "RUSTSEC-2026-0429",
+    # actix-http 3.12.1 / actix-web 4.13.0 (2026-11-11): RUSTSEC-2026-0446
+    # (chunked trailer smuggling), -0447 (compressed request bodies), -0448
+    # (unbounded decompression), -0455 (Brotli window limit). The crates are
+    # only in Cargo.lock: they are an optional dependency of utoipa-swagger-ui
+    # 9 (its `actix-web` feature, which we do not enable; we use `axum`) and
+    # are not compiled for any target. Proof:
+    #   cargo tree --locked --offline --target all -i actix-http
+    # prints nothing. Fixes need actix-web >=4.18.2 / actix-http >=3.20.3,
+    # which utoipa-swagger-ui 9 does not allow to lock; 10.x needs utoipa 6.
+    # Remove with the utoipa 6 / utoipa-swagger-ui 10 migration.
+    "RUSTSEC-2026-0446",
+    "RUSTSEC-2026-0447",
+    "RUSTSEC-2026-0448",
+    "RUSTSEC-2026-0455",
+    # libsqlite3-sys 0.36.0 bundles SQLite <3.54 (RUSTSEC-2026-0459 /
+    # CVE-2026-119375, 2026-11-11): a database opened together with a -wal
+    # file of a different page size can return uninitialized memory. Fix is
+    # libsqlite3-sys >=0.39 (rusqlite 0.41), but sqlx-sqlite 0.9.0 (latest)
+    # requires libsqlite3-sys <0.38 and both share the native `sqlite3`
+    # links key, so rusqlite cannot move alone. Only the desktop client
+    # (vc-client, rusqlite for the local E2EE store) is affected; it opens
+    # only its own database in the app data dir, never a file from another
+    # party. Remove when sqlx accepts libsqlite3-sys 0.39+ and rusqlite is
+    # bumped to 0.41 together with it.
+    "RUSTSEC-2026-0459",
     # rsa crate Marvin Attack - no safe upgrade available, used by openidconnect
     "RUSTSEC-2023-0071",
     # crypto-bigint 0.5.5 timing variability (RUSTSEC-2026-0387, 2026-10-24).
