@@ -62,6 +62,45 @@ async function loadRingBuffer(): Promise<AudioBuffer | null> {
 }
 
 // ============================================================================
+// Autoplay policy
+// ============================================================================
+
+const UNLOCK_EVENTS = ["pointerdown", "keydown"] as const;
+
+/**
+ * Create (or resume) the ring's AudioContext and load the ring sound. Runs on
+ * the first click or key press after load: browsers only start audio after a
+ * user gesture, and a context created without one stays suspended, so a call
+ * arriving later would ring silently.
+ */
+export async function primeRingAudio(): Promise<void> {
+  try {
+    const ctx = getAudioContext();
+    if (ctx.state === "suspended") await ctx.resume();
+    await loadRingBuffer();
+  } catch (error) {
+    console.warn("[Ring] Could not prepare ring audio:", error);
+  }
+}
+
+function onFirstGesture(): void {
+  for (const type of UNLOCK_EVENTS) {
+    document.removeEventListener(type, onFirstGesture, true);
+  }
+  void primeRingAudio();
+}
+
+/** Prepare the ring audio on the first user gesture (idempotent). */
+export function installRingAudioUnlock(): void {
+  if (typeof document === "undefined") return;
+  for (const type of UNLOCK_EVENTS) {
+    document.addEventListener(type, onFirstGesture, true);
+  }
+}
+
+installRingAudioUnlock();
+
+// ============================================================================
 // Playback
 // ============================================================================
 
