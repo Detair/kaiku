@@ -96,6 +96,7 @@ import {
   applyStoredNoiseSuppression,
   trayVoiceReport,
   handleTrayVoiceAction,
+  remoteAudioElementCount,
 } from "../voice";
 import { appSettings } from "@/stores/settings";
 import type { VoiceAdapter } from "@/lib/webrtc/types";
@@ -280,6 +281,39 @@ describe("voice store", () => {
       setVoiceState({ localMetrics: metrics });
 
       expect(getLocalMetrics()).toEqual(metrics);
+    });
+  });
+
+  describe("short media outage (A8)", () => {
+    function handlers() {
+      return mockAdapter.setEventHandlers.mock.calls.at(-1)![0] as {
+        onStateChange: (s: string) => void;
+        onRemoteTrack: (t: { userId: string; trackId: string; stream: MediaStream; muted: boolean }) => void;
+      };
+    }
+
+    it("keeps remote audio through disconnected → connected", async () => {
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      const h = handlers();
+      h.onStateChange("connected");
+      const stream = { id: "u2:microphone" } as unknown as MediaStream;
+      vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
+      h.onRemoteTrack({ userId: "u2", trackId: "t1", stream, muted: false });
+      expect(remoteAudioElementCount()).toBe(1);
+
+      h.onStateChange("reconnecting");
+      expect(voiceState.state).toBe("reconnecting");
+      expect(remoteAudioElementCount()).toBe(1);
+      expect(document.querySelectorAll('audio[data-stream-id="u2:microphone"]').length).toBe(1);
+
+      h.onStateChange("connected");
+      expect(voiceState.state).toBe("connected");
+      expect(remoteAudioElementCount()).toBe(1);
+
+      h.onStateChange("disconnected");
+      expect(remoteAudioElementCount()).toBe(0);
+      expect(document.querySelectorAll('audio[data-stream-id="u2:microphone"]').length).toBe(0);
     });
   });
 

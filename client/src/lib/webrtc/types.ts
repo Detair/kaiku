@@ -78,6 +78,12 @@ export interface VoiceAdapterEvents {
   onAudioError?: (error: AudioStreamError) => void;
   /** Native only: audio of `error.kind` works again (withdraws onAudioError). */
   onAudioRecovered?: (error: AudioStreamError) => void;
+  /**
+   * The media connection failed for good (ICE `failed`). The store starts the
+   * rejoin flow (C32); a short `disconnected` is reported as `reconnecting`
+   * through onStateChange instead.
+   */
+  onConnectionLost?: () => void;
 
   // Screen share events
   onScreenShareStarted?: (info: ScreenShareInfo) => void;

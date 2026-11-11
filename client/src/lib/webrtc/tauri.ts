@@ -41,6 +41,29 @@ interface NativeAudioDeviceList {
   outputs: NativeAudioDevice[];
 }
 
+/**
+ * Adapter state for a native `voice:state_change` payload (Rust
+ * `ConnectionState`). `Reconnecting` is a short ICE outage (A8); `Failed`
+ * also shows reconnecting and sets `lost` so the store rejoins (C32).
+ */
+export function mapNativeVoiceState(payload: string): {
+  state: VoiceConnectionState;
+  lost: boolean;
+} {
+  switch (payload) {
+    case "Connected":
+      return { state: "connected", lost: false };
+    case "Connecting":
+      return { state: "connecting", lost: false };
+    case "Reconnecting":
+      return { state: "reconnecting", lost: false };
+    case "Failed":
+      return { state: "reconnecting", lost: true };
+    default:
+      return { state: "disconnected", lost: false };
+  }
+}
+
 export class TauriVoiceAdapter implements VoiceAdapter {
   private state: VoiceConnectionState = "disconnected";
   private channelId: string | null = null;
@@ -618,18 +641,12 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     const settled = await Promise.allSettled([
       listen<string>("voice:state_change", (event) => {
         console.log(`[TauriVoiceAdapter] State change: ${event.payload}`);
-        // Map Rust ConnectionState to VoiceConnectionState
-        const stateMap: Record<string, VoiceConnectionState> = {
-          Disconnected: "disconnected",
-          Connecting: "connecting",
-          Connected: "connected",
-          Failed: "disconnected",
-        };
-        const newState = stateMap[event.payload] || "disconnected";
+        const next = mapNativeVoiceState(event.payload);
         if (event.payload === "Connected") {
           Sentry.addBreadcrumb({ category: "voice", message: "voice_connected_native", data: { channel_id: this.channelId ?? "" }, level: "info" });
         }
-        this.setState(newState);
+        this.setState(next.state);
+        if (next.lost) this.eventHandlers.onConnectionLost?.();
       }),
 
       // Remote audio track events

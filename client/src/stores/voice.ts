@@ -20,6 +20,7 @@ import type {
   ScreenShareInfo,
   ScreenShareQuality,
   VoiceAdapter,
+  VoiceConnectionState,
 } from "@/lib/webrtc/types";
 import type { VoiceParticipant, WebcamServerInfo } from "@/lib/types";
 import { channelsState } from "@/stores/channels";
@@ -34,8 +35,9 @@ import { isTauri } from "@/lib/tauri/common";
 
 const getErrorMessage = voiceErrorText;
 
-// Voice connection state
-type VoiceState = "disconnected" | "connecting" | "connected";
+// Voice connection state. "reconnecting": the media connection had a short
+// outage or the rejoin flow (C32) is running; the call is still on screen.
+type VoiceState = "disconnected" | "connecting" | "connected" | "reconnecting";
 
 interface VoiceStoreState {
   // Current state
@@ -96,6 +98,36 @@ let metricsInterval: number | null = null;
 
 // Guard against concurrent join calls from rapid clicks
 let isJoining = false;
+
+/** Remote `<audio>` elements per user (browser mode), for cleanup. */
+const remoteAudioElements = new Map<string, HTMLAudioElement>();
+
+function removeRemoteAudioElements(): void {
+  for (const [, el] of remoteAudioElements) {
+    el.srcObject = null;
+    el.remove();
+  }
+  remoteAudioElements.clear();
+}
+
+/** Number of remote audio elements currently playing (exported for tests). */
+export function remoteAudioElementCount(): number {
+  return remoteAudioElements.size;
+}
+
+/** Store state for an adapter state. */
+function storeStateFor(state: VoiceConnectionState): VoiceState {
+  switch (state) {
+    case "connected":
+      return "connected";
+    case "reconnecting":
+      return "reconnecting";
+    case "disconnected":
+      return "disconnected";
+    default:
+      return "connecting";
+  }
+}
 
 // Notification state for packet loss incidents
 let currentIncidentStart: number | null = null;
@@ -381,27 +413,13 @@ export async function joinVoice(channelId: string): Promise<void> {
     const adapter = await createVoiceAdapter();
 
     // Set up adapter event handlers
-    // Track remote audio elements for cleanup
-    const remoteAudioElements = new Map<string, HTMLAudioElement>();
-
     adapter.setEventHandlers({
       onStateChange: (state) => {
-        const stateMap = {
-          disconnected: "disconnected" as const,
-          requesting_media: "connecting" as const,
-          connecting: "connecting" as const,
-          connected: "connected" as const,
-          reconnecting: "connecting" as const,
-        };
-        setVoiceState({ state: stateMap[state] });
-        // Clean up audio elements on disconnect
-        if (state === "disconnected") {
-          for (const [, el] of remoteAudioElements) {
-            el.srcObject = null;
-            el.remove();
-          }
-          remoteAudioElements.clear();
-        }
+        setVoiceState({ state: storeStateFor(state) });
+        // A short outage ("reconnecting") keeps every audio element (A8):
+        // when ICE recovers, the same streams play on. Only an ended
+        // connection removes them.
+        if (state === "disconnected") removeRemoteAudioElements();
       },
       onError: (error) => {
         setVoiceState({ error });

@@ -153,6 +153,7 @@ export const voice = {
   "voice.toast.shareStopped.title": "Screen share stopped locally",
   "voice.toast.shareStopped.message": "Server may still show you as sharing. Reconnect if needed.",
   "voice.status.connecting": "Connecting...",
+  "voice.status.reconnecting": "Reconnecting...",
   "voice.audio.captureFailed": "Microphone stopped working. Check your audio settings.",
   "voice.audio.playbackFailed": "Speaker stopped working. Check your audio settings.",
   "voice.audio.inputSwitchFailed": "Couldn't switch to that microphone. Kaiku keeps using the previous one.",

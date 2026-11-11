@@ -39,7 +39,13 @@ const VoicePanel: Component = () => {
   };
 
   const isConnected = () => voiceState.state === "connected";
-  const isConnecting = () => voiceState.state === "connecting";
+  const isConnecting = () =>
+    voiceState.state === "connecting" || voiceState.state === "reconnecting";
+  const statusText = () => {
+    if (voiceState.state === "connected") return t("voice.panel.connected");
+    if (voiceState.state === "reconnecting") return t("voice.status.reconnecting");
+    return t("voice.status.connecting");
+  };
 
   // Elapsed timer — uses the store's authoritative connectedAt timestamp
   const [elapsedTime, setElapsedTime] = createSignal("00:00");
@@ -94,7 +100,7 @@ const VoicePanel: Component = () => {
                   "text-amber-400 animate-pulse": isConnecting(),
                 }}
               >
-                {isConnected() ? t("voice.panel.connected") : t("voice.status.connecting")}
+                {statusText()}
               </div>
               <div class="text-xs text-text-secondary truncate flex items-center gap-1.5">
                 <span class="hover:text-text-primary transition-colors">{channel()?.name || t("voice.panel.fallbackChannel")}</span>

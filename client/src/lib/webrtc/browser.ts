@@ -54,6 +54,30 @@ type AudioElementWithSinkId = HTMLAudioElement & {
 const MAX_PENDING_CANDIDATES = 100;
 
 /**
+ * Adapter state for a publisher `connectionState` (A8). A short ICE outage
+ * (`disconnected`) keeps every media element and reports `reconnecting`;
+ * only `closed` ends the call. `failed` also reports `reconnecting`, with
+ * `lost` set so the store starts the rejoin flow (C32).
+ */
+export function mapPublisherState(state: RTCPeerConnectionState): {
+  state: VoiceConnectionState;
+  lost: boolean;
+} {
+  switch (state) {
+    case "connected":
+      return { state: "connected", lost: false };
+    case "disconnected":
+      return { state: "reconnecting", lost: false };
+    case "failed":
+      return { state: "reconnecting", lost: true };
+    case "closed":
+      return { state: "disconnected", lost: false };
+    default:
+      return { state: "connecting", lost: false };
+  }
+}
+
+/**
  * Bundled peer-connection state: the PC itself plus the flag/queue needed to
  * buffer ICE candidates that arrive before the remote description is applied.
  *
@@ -1462,31 +1486,22 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       const state = this.publisherState?.pc.connectionState;
       console.log(`[BrowserVoiceAdapter] Publisher connection state: ${state}`);
 
-      switch (state) {
-        case "connected":
-          this.setState("connected");
-          {
-            const elapsed = Date.now() - this.joinStartTime;
-            Sentry.addBreadcrumb({ category: "voice", message: "voice_connected", data: { channel_id: this.channelId ?? "", duration_ms: elapsed }, level: "info" });
-          }
-          this.startVAD(); // Start Voice Activity Detection
-          break;
-        case "disconnected":
-        case "closed":
-          this.setState("disconnected");
-          break;
-        case "failed":
-          this.setState("disconnected");
-          this.eventHandlers.onError?.({
-            type: "connection_failed",
-            reason: "Publisher peer connection failed",
-            retriable: true,
-          });
-          break;
-        case "connecting":
-        case "new":
-          this.setState("connecting");
-          break;
+      if (!state) return;
+      const next = mapPublisherState(state);
+      this.setState(next.state);
+      if (state === "connected") {
+        const elapsed = Date.now() - this.joinStartTime;
+        Sentry.addBreadcrumb({ category: "voice", message: "voice_connected", data: { channel_id: this.channelId ?? "", duration_ms: elapsed }, level: "info" });
+        // After a short ICE outage the VAD is still running.
+        if (this.vadInterval === null) this.startVAD();
+      }
+      if (next.lost) {
+        this.eventHandlers.onError?.({
+          type: "connection_failed",
+          reason: "Publisher peer connection failed",
+          retriable: true,
+        });
+        this.eventHandlers.onConnectionLost?.();
       }
     };
   }
