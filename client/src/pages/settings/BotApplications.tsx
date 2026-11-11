@@ -14,8 +14,12 @@ import {
 } from "../../lib/api/bots";
 import { A } from "@solidjs/router";
 import { showToast } from "../../components/ui/Toast";
+import { createConfirm } from "@/components/admin/confirmHost";
+import { actionErrorText } from "@/components/admin/actionErrors";
+import { t } from "@/i18n";
 
 const BotApplications: Component = () => {
+  const confirmDialog = createConfirm();
   const [applications, setApplications] = createSignal<BotApplication[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [showCreateModal, setShowCreateModal] = createSignal(false);
@@ -40,9 +44,7 @@ const BotApplications: Component = () => {
         type: "error",
         title: "Failed to load applications",
         message:
-          error instanceof Error
-            ? error.message
-            : "Failed to load applications",
+          actionErrorText(error),
         duration: 8000,
       });
     } finally {
@@ -82,16 +84,23 @@ const BotApplications: Component = () => {
         type: "error",
         title: "Failed to create application",
         message:
-          error instanceof Error
-            ? error.message
-            : "Failed to create application",
+          actionErrorText(error),
         duration: 8000,
       });
     }
   }
 
-  async function handleCreateBotUser(appId: string) {
-    if (!confirm("Create bot user? The token will only be shown once!")) return;
+  function handleCreateBotUser(appId: string) {
+    confirmDialog.ask({
+      title: t("guildSettings.bots.createUserTitle"),
+      message: t("guildSettings.bots.createUserBody"),
+      confirmLabel: t("guildSettings.bots.createUser"),
+      danger: false,
+      run: () => handleCreateBotUserNow(appId),
+    });
+  }
+
+  async function handleCreateBotUserNow(appId: string) {
 
     try {
       const tokenData = await createBotUser(appId);
@@ -103,17 +112,23 @@ const BotApplications: Component = () => {
         type: "error",
         title: "Failed to create bot user",
         message:
-          error instanceof Error ? error.message : "Failed to create bot user",
+          actionErrorText(error),
         duration: 8000,
       });
     }
   }
 
-  async function handleResetToken(appId: string) {
-    if (
-      !confirm("Reset bot token? The old token will stop working immediately!")
-    )
-      return;
+  function handleResetToken(appId: string) {
+    confirmDialog.ask({
+      title: t("guildSettings.bots.resetTokenTitle"),
+      message: t("guildSettings.bots.resetTokenBody"),
+      confirmLabel: t("guildSettings.bots.resetToken"),
+      danger: true,
+      run: () => handleResetTokenNow(appId),
+    });
+  }
+
+  async function handleResetTokenNow(appId: string) {
 
     try {
       const tokenData = await resetBotToken(appId);
@@ -130,15 +145,23 @@ const BotApplications: Component = () => {
         type: "error",
         title: "Failed to reset token",
         message:
-          error instanceof Error ? error.message : "Failed to reset token",
+          actionErrorText(error),
         duration: 8000,
       });
     }
   }
 
-  async function handleDeleteApplication(appId: string, appName: string) {
-    if (!confirm(`Delete application "${appName}"? This cannot be undone!`))
-      return;
+  function handleDeleteApplication(appId: string, appName: string) {
+    confirmDialog.ask({
+      title: t("guildSettings.bots.deleteAppTitle", { name: appName }),
+      message: t("guildSettings.bots.deleteAppBody", { name: appName }),
+      confirmLabel: t("guildSettings.bots.deleteApp"),
+      danger: true,
+      run: () => handleDeleteApplicationNow(appId, appName),
+    });
+  }
+
+  async function handleDeleteApplicationNow(appId: string, _appName: string) {
 
     try {
       await deleteBotApplication(appId);
@@ -154,9 +177,7 @@ const BotApplications: Component = () => {
         type: "error",
         title: "Failed to delete application",
         message:
-          error instanceof Error
-            ? error.message
-            : "Failed to delete application",
+          actionErrorText(error),
         duration: 8000,
       });
     }
@@ -226,14 +247,14 @@ const BotApplications: Component = () => {
                     when={app.bot_user_id}
                     fallback={
                       <button
-                        class="px-3 py-1 text-sm bg-green-600 hover:bg-green-700 rounded transition-colors"
+                        class="px-3 py-1 text-sm bg-accent-primary hover:bg-accent-primary/90 text-on-accent rounded transition-colors"
                         onClick={() => handleCreateBotUser(app.id)}
                       >
                         Create Bot User
                       </button>
                     }
                   >
-                    <span class="px-3 py-1 text-sm bg-green-900 text-green-200 rounded">
+                    <span class="px-3 py-1 text-sm bg-status-success/20 text-text-primary rounded">
                       ✓ Bot Created
                     </span>
                   </Show>
@@ -249,7 +270,7 @@ const BotApplications: Component = () => {
               <Show when={app.bot_user_id}>
                 <div class="mt-3 pt-3 border-t border-surface-700 flex gap-2">
                   <button
-                    class="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 rounded transition-colors"
+                    class="px-3 py-1 text-sm bg-white/10 hover:bg-white/20 text-text-primary rounded transition-colors"
                     onClick={() => handleResetToken(app.id)}
                   >
                     Reset Token
@@ -359,8 +380,8 @@ const BotApplications: Component = () => {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 class="text-xl font-bold mb-4">Bot Token</h2>
-            <div class="bg-yellow-900/20 border border-yellow-600 rounded p-3 mb-4">
-              <p class="text-yellow-200 text-sm">
+            <div class="bg-status-warning/15 border border-status-warning/50 rounded p-3 mb-4">
+              <p class="text-text-primary text-sm">
                 ⚠️ <strong>Save this token now!</strong> It will only be shown
                 once and cannot be retrieved later.
               </p>
@@ -403,6 +424,7 @@ const BotApplications: Component = () => {
           </div>
         </div>
       </Show>
+      <confirmDialog.Host />
     </div>
   );
 };

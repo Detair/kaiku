@@ -357,7 +357,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                           {info?.label ?? cat}
                         </span>
                         <Show when={local().enabled}>
-                          <span class="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400">
+                          <span class="text-xs px-2 py-0.5 rounded-full bg-status-success/20 text-text-primary">
                             Active
                           </span>
                         </Show>
@@ -387,7 +387,7 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                         aria-pressed={local().enabled}
                         class="text-2xl transition-colors"
                         classList={{
-                          "text-green-400": local().enabled,
+                          "text-accent-success": local().enabled,
                           "text-text-secondary": !local().enabled,
                         }}
                       >
@@ -517,12 +517,12 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                         {pattern.pattern}
                       </code>
                       <Show when={pattern.is_regex}>
-                        <span class="text-xs px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">
+                        <span class="text-xs px-1.5 py-0.5 rounded bg-accent-primary/20 text-text-primary">
                           regex
                         </span>
                       </Show>
                       <Show when={!pattern.enabled}>
-                        <span class="text-xs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400">
+                        <span class="text-xs px-1.5 py-0.5 rounded bg-status-warning/20 text-text-primary">
                           disabled
                         </span>
                       </Show>
@@ -579,16 +579,12 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
               <div
                 class="p-4 rounded-xl border"
                 classList={{
-                  "border-red-500/30 bg-red-500/5": result().blocked,
-                  "border-green-500/30 bg-green-500/5": !result().blocked,
+                  "border-status-error/30 bg-status-error/5": result().blocked,
+                  "border-status-success/30 bg-status-success/5": !result().blocked,
                 }}
               >
                 <p
-                  class="font-medium text-sm"
-                  classList={{
-                    "text-red-400": result().blocked,
-                    "text-green-400": !result().blocked,
-                  }}
+                  class="font-medium text-sm text-text-primary"
                 >
                   {result().blocked ? "Blocked" : "Allowed"} —{" "}
                   {result().matches.length} match
@@ -651,11 +647,11 @@ const SafetyTab: Component<SafetyTabProps> = (props) => {
                       <span
                         class="text-xs px-1.5 py-0.5 rounded"
                         classList={{
-                          "bg-red-500/20 text-red-400":
+                          "bg-status-error/20 text-text-primary":
                             entry.action === "block",
-                          "bg-yellow-500/20 text-yellow-400":
+                          "bg-status-warning/20 text-text-primary":
                             entry.action === "warn",
-                          "bg-blue-500/20 text-blue-400":
+                          "bg-accent-primary/20 text-text-primary":
                             entry.action === "log",
                         }}
                       >

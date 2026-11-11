@@ -559,7 +559,7 @@ const GuildsPanel: Component = () => {
                                 .display_name
                             }
                           </span>
-                          <Crown class="w-3 h-3 text-amber-400 flex-shrink-0" />
+                          <Crown class="w-3 h-3 text-text-primary flex-shrink-0" />
                         </div>
                         <div class="text-xs text-text-secondary">
                           @{adminState.selectedGuildDetails!.owner.username}

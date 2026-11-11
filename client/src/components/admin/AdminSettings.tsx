@@ -28,6 +28,8 @@ import type { AuthMethodsConfig, AdminOidcProvider } from "@/lib/types";
 import { adminState, checkAdminStatus } from "@/stores/admin";
 import ElevateDialog from "./ElevateDialog";
 import { t } from "@/i18n";
+import { createConfirm } from "./confirmHost";
+import { actionErrorText } from "./actionErrors";
 import Toggle from "@/components/ui/Toggle";
 
 function providerIcon(hint: string | null) {
@@ -97,7 +99,7 @@ const AdminSettings: Component = () => {
     } catch (err) {
       setState({
         isLoading: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: actionErrorText(err, "admin.action.failed"),
       });
     }
   };
@@ -156,7 +158,19 @@ const AdminSettings: Component = () => {
     saveAuthSettings(newMethods);
   };
 
+  const confirmDialog = createConfirm();
+  // "Open" lets anyone who finds the address make an account: ask first (ADMIN-17).
   const handlePolicyChange = (policy: string) => {
+    if (policy === "open" && state.registrationPolicy !== "open") {
+      confirmDialog.ask({
+        title: t("admin.settings.openTitle"),
+        message: t("admin.settings.openBody"),
+        confirmLabel: t("admin.settings.openConfirm"),
+        danger: true,
+        run: () => saveAuthSettings(undefined, policy),
+      });
+      return;
+    }
     saveAuthSettings(undefined, policy);
   };
 
@@ -704,6 +718,7 @@ const AdminSettings: Component = () => {
       <Show when={showElevate()}>
         <ElevateDialog onClose={() => setShowElevate(false)} />
       </Show>
+      <confirmDialog.Host />
     </div>
   );
 };

@@ -139,15 +139,15 @@ export default function AcceptanceManager(_props: AcceptanceManagerProps) {
       <Show when={error()}>
         <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div class="absolute inset-0 bg-black/70" />
-          <div class="relative bg-zinc-800 rounded-lg p-6 max-w-md shadow-xl text-center">
-            <p class="text-red-400 mb-4">{error()}</p>
+          <div class="relative bg-surface-layer1 rounded-lg p-6 max-w-md shadow-xl text-center">
+            <p class="text-text-primary mb-4">{error()}</p>
             <button
               type="button"
               onClick={async () => {
                 setError(null);
                 await showNextPage();
               }}
-              class="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-md transition-colors"
+              class="px-4 py-2 bg-surface-layer2 hover:bg-white/15 text-text-primary rounded-md transition-colors"
             >
               Retry
             </button>

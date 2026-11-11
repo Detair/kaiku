@@ -16,6 +16,9 @@ import {
   type CommandOption,
 } from "../../lib/api/bots";
 import { showToast } from "../../components/ui/Toast";
+import { createConfirm } from "@/components/admin/confirmHost";
+import { actionErrorText } from "@/components/admin/actionErrors";
+import { t } from "@/i18n";
 
 const OPTION_TYPES: CommandOption["type"][] = [
   "string",
@@ -27,6 +30,7 @@ const OPTION_TYPES: CommandOption["type"][] = [
 ];
 
 const BotSlashCommands: Component = () => {
+  const confirmDialog = createConfirm();
   const params = useParams<{ id: string }>();
   const [app, setApp] = createSignal<BotApplication | null>(null);
   const [commands, setCommands] = createSignal<SlashCommand[]>([]);
@@ -55,7 +59,7 @@ const BotSlashCommands: Component = () => {
       showToast({
         type: "error",
         title: "Failed to load data",
-        message: error instanceof Error ? error.message : "Failed to load data",
+        message: actionErrorText(error),
         duration: 8000,
       });
     } finally {
@@ -72,7 +76,7 @@ const BotSlashCommands: Component = () => {
         type: "error",
         title: "Failed to load commands",
         message:
-          error instanceof Error ? error.message : "Failed to load commands",
+          actionErrorText(error),
         duration: 8000,
       });
     }
@@ -171,15 +175,23 @@ const BotSlashCommands: Component = () => {
         type: "error",
         title: "Failed to register command",
         message:
-          error instanceof Error ? error.message : "Failed to register command",
+          actionErrorText(error),
         duration: 8000,
       });
     }
   }
 
-  async function handleDeleteCommand(commandId: string, commandName: string) {
-    if (!confirm(`Delete command "/${commandName}"? This cannot be undone!`))
-      return;
+  function handleDeleteCommand(commandId: string, commandName: string) {
+    confirmDialog.ask({
+      title: t("guildSettings.bots.deleteCommandTitle", { name: commandName }),
+      message: t("guildSettings.bots.deleteCommandBody", { name: commandName }),
+      confirmLabel: t("guildSettings.bots.deleteCommand"),
+      danger: true,
+      run: () => handleDeleteCommandNow(commandId, commandName),
+    });
+  }
+
+  async function handleDeleteCommandNow(commandId: string, _commandName: string) {
 
     try {
       await deleteSlashCommand(params.id, commandId);
@@ -195,14 +207,23 @@ const BotSlashCommands: Component = () => {
         type: "error",
         title: "Failed to delete command",
         message:
-          error instanceof Error ? error.message : "Failed to delete command",
+          actionErrorText(error),
         duration: 8000,
       });
     }
   }
 
-  async function handleDeleteAll() {
-    if (!confirm("Delete ALL commands? This cannot be undone!")) return;
+  function handleDeleteAll() {
+    confirmDialog.ask({
+      title: t("guildSettings.bots.deleteAllTitle"),
+      message: t("guildSettings.bots.deleteAllBody"),
+      confirmLabel: t("guildSettings.bots.deleteAll"),
+      danger: true,
+      run: () => handleDeleteAllNow(),
+    });
+  }
+
+  async function handleDeleteAllNow() {
 
     try {
       await deleteAllSlashCommands(params.id);
@@ -218,7 +239,7 @@ const BotSlashCommands: Component = () => {
         type: "error",
         title: "Failed to delete commands",
         message:
-          error instanceof Error ? error.message : "Failed to delete commands",
+          actionErrorText(error),
         duration: 8000,
       });
     }
@@ -263,7 +284,7 @@ const BotSlashCommands: Component = () => {
             </button>
             <Show when={commands().length > 0}>
               <button
-                class="flex items-center gap-2 px-4 py-2 bg-surface-700 hover:bg-surface-600 rounded-md transition-colors text-red-400"
+                class="flex items-center gap-2 px-4 py-2 bg-surface-700 hover:bg-surface-600 rounded-md transition-colors text-text-primary"
                 onClick={handleDeleteAll}
               >
                 <Trash2 class="w-4 h-4" />
@@ -299,7 +320,7 @@ const BotSlashCommands: Component = () => {
                       </p>
                     </div>
                     <button
-                      class="p-2 text-surface-400 hover:text-red-400 hover:bg-surface-700 rounded transition-colors"
+                      class="p-2 text-surface-400 hover:text-text-primary hover:bg-surface-700 rounded transition-colors"
                       onClick={() => handleDeleteCommand(cmd.id, cmd.name)}
                       title="Delete command"
                     >
@@ -320,7 +341,7 @@ const BotSlashCommands: Component = () => {
                               <span class="font-medium">{opt.name}</span>
                               <span class="text-surface-400">({opt.type})</span>
                               <Show when={opt.required}>
-                                <span class="text-red-400">*</span>
+                                <span class="text-text-primary">*</span>
                               </Show>
                             </span>
                           )}
@@ -400,7 +421,7 @@ const BotSlashCommands: Component = () => {
                               Option {index() + 1}
                             </span>
                             <button
-                              class="p-1 text-surface-400 hover:text-red-400 rounded transition-colors"
+                              class="p-1 text-surface-400 hover:text-text-primary rounded transition-colors"
                               onClick={() => removeOption(index())}
                             >
                               <Trash2 class="w-3 h-3" />
@@ -492,6 +513,7 @@ const BotSlashCommands: Component = () => {
           </div>
         </Show>
       </div>
+      <confirmDialog.Host />
     </div>
   );
 };

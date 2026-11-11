@@ -172,4 +172,7 @@ export const admin = {
   "admin.pages.mustAccept": "Must be accepted",
   "admin.userSecurity.removed": "{{label}} was removed",
   "admin.userSecurity.removedState": "removed",
+  "admin.settings.openTitle": "Let anyone make an account?",
+  "admin.settings.openBody": "Everyone who knows the address of this Kaiku can make an account, without an invite. Choose this only if you really want strangers to join.",
+  "admin.settings.openConfirm": "Yes, open for everyone",
 } as const satisfies Record<`admin.${string}`, string>;

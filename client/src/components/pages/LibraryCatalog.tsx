@@ -275,7 +275,7 @@ function CategorySection(props: CategorySectionProps) {
                         </span>
                       </Show>
                       <Show when={page.requires_acceptance}>
-                        <span class="px-2 py-0.5 bg-amber-900/40 text-amber-400 rounded text-xs font-medium">
+                        <span class="px-2 py-0.5 bg-status-warning/20 text-text-primary rounded text-xs font-medium">
                           Requires Acceptance
                         </span>
                       </Show>

@@ -31,7 +31,7 @@ const PAGE_SIZE = 20;
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "text-text-primary bg-status-warning/10 border-status-warning/30",
-  reviewing: "text-text-primary bg-blue-400/10 border-blue-400/30",
+  reviewing: "text-text-primary bg-accent-primary/10 border-accent-primary/30",
   resolved: "text-text-primary bg-status-success/10 border-status-success/30",
   dismissed: "text-text-secondary bg-white/5 border-white/10",
 };
@@ -209,7 +209,7 @@ const ReportsPanel: Component = () => {
                 <span class="px-2 py-1 rounded-full text-xs font-medium bg-status-warning/10 text-text-primary border border-status-warning/30">
                   {stats()!.pending} pending
                 </span>
-                <span class="px-2 py-1 rounded-full text-xs font-medium bg-blue-400/10 text-text-primary border border-blue-400/30">
+                <span class="px-2 py-1 rounded-full text-xs font-medium bg-accent-primary/10 text-text-primary border border-accent-primary/30">
                   {stats()!.reviewing} reviewing
                 </span>
               </div>
@@ -331,7 +331,7 @@ const ReportsPanel: Component = () => {
                                 !adminState.isElevated || actionLoading()
                               }
                               title="Claim"
-                              class="p-1.5 rounded-lg text-text-secondary hover:text-blue-400 hover:bg-blue-400/10 transition-colors state-disabled-quiet"
+                              class="p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-accent-primary/10 transition-colors state-disabled-quiet"
                             >
                               <UserCheck class="w-4 h-4" />
                             </button>
