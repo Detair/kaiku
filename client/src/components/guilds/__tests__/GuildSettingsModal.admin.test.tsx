@@ -16,13 +16,29 @@ const m = vi.hoisted(() => ({
 
 vi.mock("@/components/ui/Toast", () => ({ showToast: m.toast }));
 vi.mock("@/stores/auth", () => ({ authState: { user: { id: "me" } } }));
-vi.mock("@/stores/guilds", () => ({
-  guildsState: { guilds: [{ id: "g1", name: "Familie", icon_url: null, owner_id: "x" }] },
-  isGuildOwner: () => m.owner,
-  leaveGuild: m.leaveGuild,
-  deleteGuild: m.deleteGuild,
-  updateGuild: m.updateGuild,
-}));
+// A real store: deleting or leaving removes the server, as stores/guilds.ts does,
+// so "who is the owner" changes after the call (W2).
+const g = vi.hoisted(() => ({ state: null as unknown as { guilds: { id: string; name: string; icon_url: null; owner_id: string }[] }, set: null as unknown as (k: "guilds", v: unknown) => void }));
+vi.mock("@/stores/guilds", async () => {
+  const { createStore } = await import("solid-js/store");
+  const [state, set] = createStore({ guilds: [] as { id: string; name: string; icon_url: null; owner_id: string }[] });
+  g.state = state;
+  g.set = set as never;
+  const remove = (id: string) => set("guilds", (list) => list.filter((x) => x.id !== id));
+  return {
+    guildsState: state,
+    isGuildOwner: (gid: string, uid: string) => state.guilds.find((x) => x.id === gid)?.owner_id === uid,
+    leaveGuild: async (id: string) => {
+      await m.leaveGuild(id);
+      remove(id);
+    },
+    deleteGuild: async (id: string) => {
+      await m.deleteGuild(id);
+      remove(id);
+    },
+    updateGuild: m.updateGuild,
+  };
+});
 vi.mock("@/stores/channels", () => ({
   channelsState: { selectedChannelId: null },
   clearSelection: vi.fn(),
@@ -43,7 +59,12 @@ import GuildSettingsModal from "../GuildSettingsModal";
 beforeEach(() => {
   vi.clearAllMocks();
   m.owner = false;
+  g.set("guilds", [{ id: "g1", name: "Familie", icon_url: null, owner_id: "x" }]);
 });
+const becomeOwner = () => {
+  m.owner = true;
+  g.set("guilds", [{ id: "g1", name: "Familie", icon_url: null, owner_id: "me" }]);
+};
 afterEach(cleanup);
 
 describe("GuildSettingsModal", () => {
@@ -61,7 +82,7 @@ describe("GuildSettingsModal", () => {
   });
 
   it("lets the owner delete the server only after typing its name, and says why it failed", async () => {
-    m.owner = true;
+    becomeOwner();
     m.deleteGuild.mockRejectedValue(new TypeError("Failed to fetch"));
     render(() => <GuildSettingsModal guildId="g1" onClose={vi.fn()} />);
     fireEvent.click(screen.getByTestId("guild-settings-exit"));
@@ -74,8 +95,21 @@ describe("GuildSettingsModal", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("Can't reach the server");
   });
 
+  it("says the server was deleted, not left, after the owner deletes it (W2)", async () => {
+    becomeOwner();
+    m.deleteGuild.mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    render(() => <GuildSettingsModal guildId="g1" onClose={onClose} />);
+    fireEvent.click(screen.getByTestId("guild-settings-exit"));
+    const dialog = screen.getByTestId("guild-settings-exit-dialog");
+    fireEvent.input(dialog.querySelector("input")!, { target: { value: "Familie" } });
+    fireEvent.click(Array.from(dialog.querySelectorAll("button")).find((b) => b.textContent === "Delete server")!);
+    await waitFor(() => expect(m.toast).toHaveBeenCalled());
+    expect(m.toast.mock.calls[0][0].title).toBe("The server Familie was deleted");
+  });
+
   it("lets the owner rename the server", async () => {
-    m.owner = true;
+    becomeOwner();
     m.updateGuild.mockResolvedValue({});
     render(() => <GuildSettingsModal guildId="g1" onClose={vi.fn()} />);
     fireEvent.input(screen.getByLabelText("Server name"), { target: { value: "Familie Wolf" } });
@@ -85,7 +119,7 @@ describe("GuildSettingsModal", () => {
   });
 
   it("asks before closing with unsaved changes", async () => {
-    m.owner = true;
+    becomeOwner();
     const onClose = vi.fn();
     render(() => <GuildSettingsModal guildId="g1" onClose={onClose} />);
     fireEvent.click(screen.getByRole("button", { name: "Word filter" }));
@@ -98,7 +132,7 @@ describe("GuildSettingsModal", () => {
   });
 
   it("asks before switching tabs with unsaved changes, and switches only after discarding (W3)", async () => {
-    m.owner = true;
+    becomeOwner();
     render(() => <GuildSettingsModal guildId="g1" onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Word filter" }));
     fireEvent.click(screen.getByRole("button", { name: "make a change" }));
@@ -113,7 +147,7 @@ describe("GuildSettingsModal", () => {
   });
 
   it("protects a typed but unsaved server name (K1)", () => {
-    m.owner = true;
+    becomeOwner();
     const onClose = vi.fn();
     render(() => <GuildSettingsModal guildId="g1" onClose={onClose} />);
     fireEvent.input(screen.getByLabelText("Server name"), { target: { value: "Neu" } });
@@ -123,7 +157,7 @@ describe("GuildSettingsModal", () => {
   });
 
   it("puts expert tabs under Advanced", () => {
-    m.owner = true;
+    becomeOwner();
     render(() => <GuildSettingsModal guildId="g1" onClose={vi.fn()} />);
     const nav = screen.getByRole("navigation");
     const text = nav.textContent ?? "";

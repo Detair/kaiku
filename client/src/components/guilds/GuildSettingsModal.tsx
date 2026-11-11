@@ -118,14 +118,26 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
   };
 
 
+  // Who is leaving and what, fixed when the dialog opens: deleting removes
+  // the server from the store, so isOwner() and guild() change mid-way (W2).
+  const [exitTarget, setExitTarget] = createSignal<{ owner: boolean; name: string } | null>(null);
+  const openExit = () => {
+    setExitTarget({ owner: isOwner(), name: guild()?.name ?? "" });
+    setConfirmExit(true);
+  };
+
   const exitServer = async () => {
-    const name = guild()?.name ?? "";
-    if (isOwner()) await deleteServer(props.guildId);
+    const target = exitTarget();
+    if (!target) return;
+    if (target.owner) await deleteServer(props.guildId);
     else await leaveServer(props.guildId);
     reportSuccess(
-      isOwner() ? t("guildSettings.server.deleted", { name }) : t("guildSettings.server.left", { name }),
+      target.owner
+        ? t("guildSettings.server.deleted", { name: target.name })
+        : t("guildSettings.server.left", { name: target.name }),
     );
   };
+
 
   const canManageRoles = () =>
     isOwner() ||
@@ -308,7 +320,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
               {/* Leave or delete (ADMIN-5). */}
               <div class="mt-auto pt-4">
                 <button
-                  onClick={() => setConfirmExit(true)}
+                  onClick={openExit}
                   data-testid="guild-settings-exit"
                   class="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm font-medium text-text-primary hover:bg-status-error/15 transition-colors"
                 >
@@ -404,21 +416,22 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
         )}
       </Show>
 
-      <Show when={confirmExit()}>
+      <Show when={confirmExit() && exitTarget()}>
+        {(target) => (
         <ConfirmActionDialog
           title={
-            isOwner()
-              ? t("guildSettings.server.deleteTitle", { name: guild()?.name ?? "" })
-              : t("guildSettings.server.leaveTitle", { name: guild()?.name ?? "" })
+            target().owner
+              ? t("guildSettings.server.deleteTitle", { name: target().name })
+              : t("guildSettings.server.leaveTitle", { name: target().name })
           }
           message={
-            isOwner()
-              ? t("guildSettings.server.deleteBody", { name: guild()?.name ?? "" })
-              : t("guildSettings.server.leaveBody", { name: guild()?.name ?? "" })
+            target().owner
+              ? t("guildSettings.server.deleteBody", { name: target().name })
+              : t("guildSettings.server.leaveBody", { name: target().name })
           }
-          confirmLabel={isOwner() ? t("guildSettings.server.delete") : t("guildSettings.server.leave")}
+          confirmLabel={target().owner ? t("guildSettings.server.delete") : t("guildSettings.server.leave")}
           danger
-          confirmDisabled={isOwner() && deleteName() !== guild()?.name}
+          confirmDisabled={target().owner && (!target().name || deleteName() !== target().name)}
           onConfirm={exitServer}
           onDone={() => {
             setConfirmExit(false);
@@ -430,10 +443,10 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
           }}
           testId="guild-settings-exit-dialog"
         >
-          <Show when={isOwner()}>
+          <Show when={target().owner}>
             <label class="block space-y-2">
               <span class="text-sm text-text-secondary">
-                {t("guildSettings.server.typeName", { name: guild()?.name ?? "" })}
+                {t("guildSettings.server.typeName", { name: target().name })}
               </span>
               <input
                 type="text"
@@ -444,6 +457,7 @@ const GuildSettingsModal: Component<GuildSettingsModalProps> = (props) => {
             </label>
           </Show>
         </ConfirmActionDialog>
+        )}
       </Show>
     </Portal>
   );
