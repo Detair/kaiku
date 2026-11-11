@@ -255,12 +255,12 @@ const ToastItem: Component<{ toast: ToastInstance }> = (props) => {
       <div class="flex-1 min-w-0">
         <p class="font-medium text-sm">{props.toast.title}</p>
         {props.toast.message && (
-          <p class="text-sm opacity-90 mt-0.5">{props.toast.message}</p>
+          <p class="text-sm mt-0.5">{props.toast.message}</p>
         )}
         {props.toast.action && (
           <button
             type="button"
-            class="mt-2 px-3 py-1 text-xs font-medium bg-black/15 rounded hover:bg-black/25 transition-colors"
+            class="mt-2 px-3 py-1 text-xs font-medium rounded border border-current hover:ring-1 hover:ring-current transition-shadow"
             onClick={handleAction}
           >
             {props.toast.action.label}
@@ -269,7 +269,7 @@ const ToastItem: Component<{ toast: ToastInstance }> = (props) => {
       </div>
       <button
         type="button"
-        class="flex-shrink-0 p-1 rounded hover:bg-black/20 transition-colors"
+        class="flex-shrink-0 p-1 rounded hover:ring-1 hover:ring-current transition-shadow"
         onClick={() => dismissToast(props.toast.id)}
         aria-label={t("common.dismiss")}
       >

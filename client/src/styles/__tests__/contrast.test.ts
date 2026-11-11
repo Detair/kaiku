@@ -273,3 +273,71 @@ describe("code highlighting in the light theme", () => {
     }
   });
 });
+
+/**
+ * Toasts (UX4a W2): the title, the message line and the action button all sit
+ * on the toast fill. The classes are read from Toast.tsx, so an opacity on the
+ * message or a tinted action background (rest or hover) is composited here
+ * before the ratio is taken. Text is 4.5:1, the dismiss icon 3:1.
+ */
+describe("toast text on every toast fill", () => {
+  const toastSrc = readFileSync(join(__dirname, "..", "..", "components", "ui", "Toast.tsx"), "utf8");
+  const fillToken: Record<string, string> = {
+    "accent-primary": "--color-accent-primary",
+    "accent-success": "--color-accent-success",
+    "accent-warning": "--color-accent-warning",
+    "accent-danger-fill": "--color-danger-fill",
+  };
+  const typeStyles = [...toastSrc.matchAll(/^\s*(\w+): "bg-([\w-]+) border-[\w-]+ text-(on-[\w]+)",$/gm)].map(
+    (m) => ({ type: m[1], fill: fillToken[m[2]], label: `--color-text-${m[3]}` }),
+  );
+  const classOf = (re: RegExp, what: string) => {
+    const m = re.exec(toastSrc);
+    if (!m) throw new Error(`${what} not found in Toast.tsx`);
+    return m[1];
+  };
+  const parts = [
+    ["title", classOf(/<p class="([^"]*)">\{props\.toast\.title\}/, "title"), 4.5],
+    ["message", classOf(/<p class="([^"]*)">\{props\.toast\.message\}/, "message"), 4.5],
+    ["action", classOf(/class="([^"]*)"\s*onClick=\{handleAction\}/, "action"), 4.5],
+    ["dismiss icon", classOf(/class="([^"]*)"\s*onClick=\{\(\) => dismissToast/, "dismiss"), 3],
+  ] as const;
+
+  /** Backgrounds drawn by a class list at rest and on hover (black/white tints). */
+  function tints(classes: string): { state: string; rgba: Rgba | null }[] {
+    const tint = (prefix: string) => {
+      const m = new RegExp(`(?:^|\\s)${prefix}bg-(black|white)/(\\d+)(?:\\s|$)`).exec(classes);
+      if (!m) return null;
+      const v = m[1] === "black" ? 0 : 255;
+      return [v, v, v, Number(m[2]) / 100] as Rgba;
+    };
+    const rest = tint("");
+    return [
+      { state: "rest", rgba: rest },
+      { state: "hover", rgba: tint("hover:") ?? rest },
+    ];
+  }
+
+  it("finds all four toast types and their parts", () => {
+    expect(typeStyles.map((t) => t.type)).toEqual(["info", "success", "warning", "error"]);
+    expect(typeStyles.every((t) => t.fill)).toBe(true);
+  });
+
+  describe.each(THEME_NAMES)("%s", (name) => {
+    const theme = themes.get(name)!;
+    for (const { type, fill, label } of typeStyles) {
+      it.each(parts.map((p) => [...p]))(`${type}: %s`, (part, classes, min) => {
+        const opacity = /(?:^|\s)opacity-(\d+)(?:\s|$)/.exec(classes as string);
+        const alpha = opacity ? Number(opacity[1]) / 100 : 1;
+        const base = colour(theme, fill);
+        for (const { state, rgba } of tints(classes as string)) {
+          const bg = rgba ? over(rgba, base) : base;
+          const c = colour(theme, label);
+          const fg = over([c[0], c[1], c[2], alpha], bg);
+          const r = ratio(fg, bg);
+          expect(Number(r.toFixed(2)), `${name} ${type} ${part} (${state})`).toBeGreaterThanOrEqual(min as number);
+        }
+      });
+    }
+  });
+});
