@@ -200,6 +200,12 @@ interface MessagesState {
   loadError: string | null;
   // Last send failure (shown by the composer)
   sendError: string | null;
+  /**
+   * Set while a channel shows an older window (after a far jump): the newest
+   * message of that window. Newer messages are fetched after it; until then
+   * the list does not reach the present.
+   */
+  newerAfter: Record<string, string | undefined>;
 }
 
 // Create the store
@@ -209,6 +215,7 @@ const [messagesState, setMessagesState] = createStore<MessagesState>({
   hasMore: {},
   loadError: null,
   sendError: null,
+  newerAfter: {},
 });
 
 // Default message limit per request
@@ -298,6 +305,7 @@ export async function loadMessagesForJump(
   if (messagesState.loadingChannels[channelId]) return false;
 
   setMessagesState("loadingChannels", channelId, true);
+  const before = new Set((messagesState.byChannel[channelId] ?? []).map((m) => m.id));
   try {
     const window = await fetchAroundWindow(channelId, messageId);
     if (!window.items.some((m) => m.id === messageId)) return false;
@@ -308,9 +316,12 @@ export async function loadMessagesForJump(
     if (newer) {
       setMessagesState("byChannel", channelId, mergeAscending(current, [...window.items, ...newer]));
     } else {
-      // Too far back to bridge: show the window, keep messages sent meanwhile.
-      const pending = current.filter(isPendingMessage);
-      setMessagesState("byChannel", channelId, [...window.items, ...pending]);
+      // Too far back to bridge: show the window and remember that newer
+      // messages follow it (`loadNewerMessages`). Messages that arrived or
+      // were sent while loading stay at the end; newer pages go before them.
+      const arrived = current.filter((m) => !before.has(m.id));
+      setMessagesState("byChannel", channelId, mergeAscending(window.items, arrived));
+      setMessagesState("newerAfter", channelId, window.items[window.items.length - 1].id);
     }
     setMessagesState("hasMore", channelId, window.hasMore);
     return true;
@@ -387,6 +398,7 @@ export async function loadInitialMessages(
 
   initialLoadInProgress[channelId] = true;
   liveBuffers[channelId] = { added: [], updated: new Map(), removed: new Set() };
+  setMessagesState("newerAfter", channelId, undefined);
 
   try {
     setMessagesState("byChannel", channelId, []);
@@ -807,6 +819,38 @@ export function isLoadingMessages(channelId: string): boolean {
 /**
  * Check if a channel has more messages to load.
  */
+/** True while the channel shows an older window that does not reach the newest message. */
+export function hasNewerMessages(channelId: string): boolean {
+  return !!messagesState.newerAfter[channelId];
+}
+
+const loadingNewer: Record<string, boolean> = {};
+
+/**
+ * Fetch the next page after an older window (see `newerAfter`) and merge it
+ * in. Clears `newerAfter` once the newest message is loaded. Errors are
+ * logged; the next scroll tries again.
+ */
+export async function loadNewerMessages(channelId: string): Promise<void> {
+  const cursor = messagesState.newerAfter[channelId];
+  if (!cursor || loadingNewer[channelId]) return;
+  loadingNewer[channelId] = true;
+  try {
+    const page = await tauri.getMessagesAfter(channelId, cursor, CATCH_UP_PAGE_LIMIT);
+    const items = await decryptMessages(page.items);
+    // A reload (jump to newest) while this page was on its way wins.
+    if (messagesState.newerAfter[channelId] !== cursor) return;
+    const current = messagesState.byChannel[channelId] ?? [];
+    setMessagesState("byChannel", channelId, mergeAscending(current, items));
+    const next = page.next_cursor ?? items[items.length - 1]?.id;
+    setMessagesState("newerAfter", channelId, page.has_more && next ? next : undefined);
+  } catch (err) {
+    console.error("Failed to load newer messages:", err);
+  } finally {
+    loadingNewer[channelId] = false;
+  }
+}
+
 export function hasMoreMessages(channelId: string): boolean {
   return messagesState.hasMore[channelId] ?? true;
 }
@@ -817,6 +861,7 @@ export function hasMoreMessages(channelId: string): boolean {
 export function clearChannelMessages(channelId: string): void {
   setMessagesState("byChannel", channelId, undefined!);
   setMessagesState("hasMore", channelId, undefined!);
+  setMessagesState("newerAfter", channelId, undefined);
 }
 
 // Export the store for reading and writing (setMessagesState is used by websocket.ts for reaction updates)

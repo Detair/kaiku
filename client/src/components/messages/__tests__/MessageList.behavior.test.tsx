@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor } from "@solidjs/testing-library";
+import { render, screen, cleanup, waitFor, fireEvent } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 
 type Msg = {
   id: string;
+  channel_id?: string;
   created_at: string;
   author: { id: string; display_name: string; username: string };
   content: string;
@@ -27,6 +29,10 @@ const params = vi.hoisted(() => ({
 const dms = vi.hoisted(() => ({ dms: [] as { id: string }[] }));
 const guildThreads = vi.hoisted(() => ({ enabled: true }));
 const showToast = vi.hoisted(() => vi.fn());
+const markChannelAsRead = vi.hoisted(() => vi.fn());
+const loadInitialMessages = vi.hoisted(() => vi.fn());
+const loadNewerMessages = vi.hoisted(() => vi.fn());
+const newer = vi.hoisted(() => ({ channels: new Set<string>() }));
 
 vi.mock("@/stores/messages", () => {
   const [state, set] = createStore({
@@ -40,17 +46,19 @@ vi.mock("@/stores/messages", () => {
   return {
     messagesState: state,
     setMessagesState: set,
-    loadInitialMessages: vi.fn(),
+    loadInitialMessages: (...a: unknown[]) => loadInitialMessages(...a),
     loadMessages: vi.fn(),
     loadMessagesForJump: (...a: unknown[]) => loadMessagesForJump(...a),
+    loadNewerMessages: (...a: unknown[]) => loadNewerMessages(...a),
+    hasNewerMessages: (id: string) => newer.channels.has(id),
     hasMoreMessages: () => false,
   };
 });
 vi.mock("@/stores/channels", () => ({
   channelsState: { channels: [{ id: "g-chan", guild_id: "g1" }] },
-  markChannelAsRead: vi.fn(),
+  markChannelAsRead: (...a: unknown[]) => markChannelAsRead(...a),
   getChannelLastReadMessageId: () => null,
-  isChannelUnread: () => false,
+  isChannelUnread: () => true,
   getUnreadCount: () => 0,
 }));
 vi.mock("@/stores/guilds", () => ({ areThreadsEnabled: () => guildThreads.enabled }));
@@ -74,8 +82,9 @@ vi.mock("../MessageItem", () => ({
 
 import MessageList from "../MessageList";
 
-const msg = (id: string, iso: string, author = "a", content = `text ${id}`): Msg => ({
+const msg = (id: string, iso: string, author = "a", content = `text ${id}`, channel_id = "live"): Msg => ({
   id,
+  channel_id,
   created_at: iso,
   author: { id: author, display_name: author === "oma" ? "Oma" : author, username: author },
   content,
@@ -101,6 +110,10 @@ beforeEach(() => {
   dms.dms = [];
   guildThreads.enabled = true;
   loadMessagesForJump.mockReset();
+  markChannelAsRead.mockReset();
+  loadInitialMessages.mockReset();
+  loadNewerMessages.mockReset();
+  newer.channels.clear();
   showToast.mockReset();
 });
 afterEach(cleanup);
@@ -204,5 +217,63 @@ describe("MessageList", () => {
         expect.objectContaining({ title: "That message could not be found. It may have been deleted." }),
       ),
     );
+  });
+
+  it("K1: a channel switch drops queued announcements of the old channel", async () => {
+    vi.useFakeTimers();
+    try {
+      store.set("byChannel", "live", [msg("m1", "2026-01-01T10:00:00Z")]);
+      store.set("byChannel", "other", [msg("o1", "2026-01-01T10:00:00Z", "a", "x", "other")]);
+      const [channel, setChannel] = createSignal("live");
+      render(() => <MessageList channelId={channel()} />);
+      await vi.advanceTimersByTimeAsync(10);
+      store.set("byChannel", "live", [
+        ...store.state.byChannel.live,
+        msg("m2", "2026-01-01T10:01:00Z", "oma", "Geheim aus A"),
+      ]);
+      await vi.advanceTimersByTimeAsync(500);
+      setChannel("other");
+      await vi.advanceTimersByTimeAsync(1600);
+      expect(screen.getByTestId("new-message-announcer").textContent).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("W4: an older window never marks read, loads newer at the bottom, and Jump to newest reloads", async () => {
+    vi.useFakeTimers();
+    try {
+      newer.channels.add("old");
+      store.set("byChannel", "old", [
+        msg("m10", "2025-01-01T10:00:00Z", "a", "x", "old"),
+        msg("m11", "2025-01-01T10:01:00Z", "a", "y", "old"),
+      ]);
+      render(() => <MessageList channelId="old" />);
+      await vi.advanceTimersByTimeAsync(10);
+      fireEvent.scroll(screen.getByRole("list"));
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(markChannelAsRead).not.toHaveBeenCalled();
+      expect(loadNewerMessages).toHaveBeenCalledWith("old");
+      loadInitialMessages.mockClear();
+      fireEvent.click(screen.getByTestId("jump-to-latest"));
+      expect(loadInitialMessages).toHaveBeenCalledWith("old");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("W4: at the newest message, reading still marks read", async () => {
+    vi.useFakeTimers();
+    try {
+      store.set("byChannel", "now", [msg("n1", "2026-01-01T10:00:00Z", "a", "x", "now")]);
+      render(() => <MessageList channelId="now" />);
+      await vi.advanceTimersByTimeAsync(10);
+      fireEvent.scroll(screen.getByRole("list"));
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(markChannelAsRead).toHaveBeenCalledWith("now", "n1");
+      expect(loadNewerMessages).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

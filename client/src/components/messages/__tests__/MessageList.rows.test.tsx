@@ -30,6 +30,9 @@ vi.mock("@/stores/messages", () => {
     loadInitialMessages: vi.fn(),
     loadMessages: vi.fn(),
     hasMoreMessages: () => false,
+    hasNewerMessages: () => false,
+    loadNewerMessages: vi.fn(),
+    loadMessagesForJump: vi.fn(),
   };
 });
 

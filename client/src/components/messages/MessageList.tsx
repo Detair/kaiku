@@ -29,7 +29,9 @@ import {
   loadInitialMessages,
   loadMessages,
   loadMessagesForJump,
+  loadNewerMessages,
   hasMoreMessages,
+  hasNewerMessages,
 } from "@/stores/messages";
 import {
   channelsState,
@@ -92,18 +94,32 @@ const MessageList: Component<MessageListProps> = (props) => {
   /** Collect arrivals for a moment so a burst is one short sentence. */
   const queueAnnouncement = (arrived: Message[]) => {
     const me = currentUser()?.id;
+    const channelId = props.channelId;
     const fromOthers = arrived.filter(
-      (m) => !m.id.startsWith("pending:") && m.author.id !== me && m.message_type !== "system",
+      (m) =>
+        m.channel_id === channelId &&
+        !m.id.startsWith("pending:") &&
+        m.author.id !== me &&
+        m.message_type !== "system",
     );
     if (fromOthers.length === 0) return;
     announceQueue.push(...fromOthers);
     if (announceTimer) return;
     announceTimer = setTimeout(() => {
       announceTimer = null;
-      const text = announcementFor(announceQueue);
+      // Only what belongs to the channel on screen now.
+      const queued = announceQueue.filter((m) => m.channel_id === props.channelId);
       announceQueue = [];
+      const text = announcementFor(queued);
       if (text) setAnnouncement(text);
     }, 1500);
+  };
+  /** A new channel starts silent: nothing queued or shown from the last one. */
+  const resetAnnouncements = () => {
+    if (announceTimer) clearTimeout(announceTimer);
+    announceTimer = null;
+    announceQueue = [];
+    setAnnouncement("");
   };
   onCleanup(() => {
     if (announceTimer) clearTimeout(announceTimer);
@@ -248,7 +264,9 @@ const MessageList: Component<MessageListProps> = (props) => {
     if (markAsReadTimer) clearTimeout(markAsReadTimer);
     markAsReadTimer = setTimeout(() => {
       const lastMsg = lastMarkableMessage();
-      if (lastMsg && isAtBottom()) {
+      // An older window (after a far jump) must never move the read marker
+      // back: the server stores whatever id it gets.
+      if (lastMsg && isAtBottom() && !hasNewerMessages(props.channelId)) {
         markChannelAsRead(props.channelId, lastMsg.id);
       }
       markAsReadTimer = null;
@@ -276,6 +294,7 @@ const MessageList: Component<MessageListProps> = (props) => {
 
     const atBottom = checkIfAtBottom();
     setIsAtBottom(atBottom);
+    if (atBottom && hasNewerMessages(props.channelId)) void loadNewer();
     if (atBottom) {
       setHasNewMessages(false);
       setNewMessageCount(0);
@@ -283,6 +302,32 @@ const MessageList: Component<MessageListProps> = (props) => {
     } else {
       cancelMarkAsRead();
     }
+  };
+
+  // --- Newer messages after an older window ---
+  /** True while a page of newer messages is merged: not "new" arrivals. */
+  let isLoadingNewer = false;
+  const loadNewer = async () => {
+    if (isLoadingNewer) return;
+    isLoadingNewer = true;
+    try {
+      await loadNewerMessages(props.channelId);
+    } finally {
+      isLoadingNewer = false;
+    }
+  };
+
+  /** Go to the newest message, reloading when the list shows an older window. */
+  let bottomAfterLoad = false;
+  const jumpToNewest = () => {
+    if (hasNewerMessages(props.channelId)) {
+      bottomAfterLoad = true;
+      setHasNewMessages(false);
+      setNewMessageCount(0);
+      void loadInitialMessages(props.channelId);
+      return;
+    }
+    scrollToBottom(true);
   };
 
   // --- Scroll to bottom ---
@@ -461,7 +506,7 @@ const MessageList: Component<MessageListProps> = (props) => {
       if (isEscapeForOverlay(e)) return;
 
       const lastMsg = lastMarkableMessage();
-      if (lastMsg && isChannelUnread(props.channelId)) {
+      if (lastMsg && isChannelUnread(props.channelId) && !hasNewerMessages(props.channelId)) {
         markChannelAsRead(props.channelId, lastMsg.id);
         scrollToBottom(true);
       }
@@ -513,6 +558,8 @@ const MessageList: Component<MessageListProps> = (props) => {
       (channelId, prevChannelId) => {
         if (channelId && channelId !== prevChannelId) {
           loadedChannelId = channelId;
+          resetAnnouncements();
+          bottomAfterLoad = false;
           setIsAtBottom(true);
           setHasNewMessages(false);
           setNewMessageCount(0);
@@ -536,7 +583,9 @@ const MessageList: Component<MessageListProps> = (props) => {
   createEffect(() => {
     const currentCount = messages().length;
 
-    if (currentCount > prevMessageCount && prevMessageCount > 0) {
+    if (isLoadingNewer && currentCount > prevMessageCount && prevMessageCount > 0) {
+      // A page of older-but-newer history merged in, not new arrivals.
+    } else if (currentCount > prevMessageCount && prevMessageCount > 0) {
       // Check for pending highlight before auto-scrolling
       if (pendingHighlightId) {
         const found = scrollToMessage(pendingHighlightId);
@@ -567,7 +616,13 @@ const MessageList: Component<MessageListProps> = (props) => {
       }
     } else if (currentCount > 0 && prevMessageCount === 0) {
       // Initial load complete — sticky to absorb measurement reflows
-      if (pendingHighlightId) {
+      if (bottomAfterLoad) {
+        bottomAfterLoad = false;
+        requestAnimationFrame(() => {
+          scrollToBottom(true);
+          scheduleMarkAsRead();
+        });
+      } else if (pendingHighlightId) {
         requestAnimationFrame(() => {
           if (pendingHighlightId) {
             const id = pendingHighlightId;
@@ -799,11 +854,16 @@ const MessageList: Component<MessageListProps> = (props) => {
       {/* Back to the newest message: shown whenever the list is scrolled up.
           A zero-height sticky strip keeps it at the bottom of the chat (not
           of the window), centred over the messages. */}
-      <Show when={hasNewMessages() || (!isAtBottom() && messages().length > 0)}>
+      <Show
+        when={
+          hasNewMessages() ||
+          (messages().length > 0 && (!isAtBottom() || hasNewerMessages(props.channelId)))
+        }
+      >
         <div class="sticky bottom-0 h-0 z-10 flex justify-center pointer-events-none">
           <button
             data-testid="jump-to-latest"
-            onClick={() => scrollToBottom(true)}
+            onClick={jumpToNewest}
             class={`absolute bottom-4 pointer-events-auto rounded-full shadow-2xl flex items-center gap-2 transition-all font-medium ${
               hasNewMessages()
                 ? "bg-accent-primary hover:bg-accent-primary/90 text-on-accent px-5 py-2.5"

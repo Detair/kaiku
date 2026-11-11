@@ -47,6 +47,8 @@ import {
   decryptMessageIfNeeded,
   catchUpChannel,
   loadMessagesForJump,
+  loadNewerMessages,
+  hasNewerMessages,
 } from "../messages";
 
 function createMessage(id: string, channelId = "ch-1"): Message {
@@ -748,7 +750,7 @@ describe("editingMessageId", () => {
   describe("loadMessagesForJump", () => {
     beforeEach(() => {
       vi.resetAllMocks();
-      setMessagesState({ byChannel: {}, loadingChannels: {}, hasMore: {}, loadError: null, sendError: null });
+      setMessagesState({ byChannel: {}, loadingChannels: {}, hasMore: {}, loadError: null, sendError: null, newerAfter: {} });
     });
 
     const at = (id: string, minute: number) => ({
@@ -806,6 +808,50 @@ describe("editingMessageId", () => {
       } as PaginatedMessages);
       await expect(loadMessagesForJump("ch-1", "m-10", 2)).resolves.toBe(true);
       expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual(["m-10"]);
+      // The list knows it does not reach the newest message.
+      expect(hasNewerMessages("ch-1")).toBe(true);
+    });
+
+    it("keeps messages that arrive during a far jump", async () => {
+      setMessagesState("byChannel", "ch-1", [at("m-50", 50)]);
+      let release!: () => void;
+      vi.mocked(tauri.getMessages).mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            release = () => r({ items: [at("m-10", 10)], has_more: true, next_cursor: null } as PaginatedMessages);
+          }),
+      );
+      vi.mocked(tauri.getMessagesAfter).mockResolvedValue({
+        items: [at("m-11", 11)], has_more: true, next_cursor: "m-11",
+      } as PaginatedMessages);
+      const jump = loadMessagesForJump("ch-1", "m-10", 1);
+      await Promise.resolve();
+      setMessagesState("byChannel", "ch-1", [...messagesState.byChannel["ch-1"], at("m-60", 60)]);
+      release();
+      await jump;
+      expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual(["m-10", "m-60"]);
+    });
+
+    it("loads newer pages after an older window until the newest", async () => {
+      setMessagesState("byChannel", "ch-1", [at("m-10", 10), at("m-60", 60)]);
+      setMessagesState("newerAfter", "ch-1", "m-10");
+      vi.mocked(tauri.getMessagesAfter)
+        .mockResolvedValueOnce({ items: [at("m-11", 11)], has_more: true, next_cursor: "m-11" } as PaginatedMessages)
+        .mockResolvedValueOnce({ items: [at("m-12", 12), at("m-60", 60)], has_more: false, next_cursor: null } as PaginatedMessages);
+      await loadNewerMessages("ch-1");
+      expect(tauri.getMessagesAfter).toHaveBeenLastCalledWith("ch-1", "m-10", 100);
+      expect(hasNewerMessages("ch-1")).toBe(true);
+      await loadNewerMessages("ch-1");
+      expect(tauri.getMessagesAfter).toHaveBeenLastCalledWith("ch-1", "m-11", 100);
+      expect(messagesState.byChannel["ch-1"].map((m) => m.id)).toEqual(["m-10", "m-11", "m-12", "m-60"]);
+      expect(hasNewerMessages("ch-1")).toBe(false);
+    });
+
+    it("a fresh load leaves the older window", async () => {
+      setMessagesState("newerAfter", "ch-1", "m-10");
+      vi.mocked(tauri.getMessages).mockResolvedValueOnce({ items: [], has_more: false, next_cursor: null } as PaginatedMessages);
+      await loadInitialMessages("ch-1");
+      expect(hasNewerMessages("ch-1")).toBe(false);
     });
 
     it("reports a failed load without touching the list", async () => {
