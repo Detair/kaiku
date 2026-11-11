@@ -121,9 +121,12 @@ export async function loadGuildChannels(guildId: string): Promise<void> {
 /**
  * Select/activate a guild
  * This will trigger channel list reload scoped to guild
+ *
+ * Navigation never ends a voice session (NAV-6/NAV-7): the call keeps running
+ * while the user looks at Home, another server or Explore, and the voice
+ * panel stays on screen in every sidebar. Only "Disconnect" leaves.
  */
 export async function selectGuild(guildId: string): Promise<void> {
-  const previousGuildId = guildsState.activeGuildId;
   setGuildsState({ activeGuildId: guildId });
   // Clear guild-level unread badge when entering the guild
   clearGuildUnread(guildId);
@@ -134,23 +137,6 @@ export async function selectGuild(guildId: string): Promise<void> {
 
   // Load guild members
   await loadGuildMembers(guildId);
-
-  // Check if we need to disconnect from voice
-  // If user is in a voice channel from a different guild, disconnect
-  if (previousGuildId && previousGuildId !== guildId) {
-    const { voiceState } = await import("./voice");
-    const { channelsState } = await import("./channels");
-
-    if (voiceState.channelId) {
-      const currentChannel = channelsState.channels.find(
-        (c) => c.id === voiceState.channelId,
-      );
-      if (currentChannel && currentChannel.guild_id !== guildId) {
-        const { leaveVoice } = await import("./voice");
-        await leaveVoice();
-      }
-    }
-  }
 }
 
 /**
@@ -158,30 +144,11 @@ export async function selectGuild(guildId: string): Promise<void> {
  * This shows DMs, mentions, and cross-server activity
  */
 export async function selectHome(): Promise<void> {
-  const previousGuildId = guildsState.activeGuildId;
   setGuildsState({ activeGuildId: null });
 
   // Load DM channels for home view
   const { loadDMChannels } = await import("./channels");
   await loadDMChannels();
-
-  // Check if we need to disconnect from voice
-  // If user is in a voice channel from a guild, disconnect
-  if (previousGuildId) {
-    const { voiceState } = await import("./voice");
-    const { channelsState } = await import("./channels");
-
-    if (voiceState.channelId) {
-      const currentChannel = channelsState.channels.find(
-        (c) => c.id === voiceState.channelId,
-      );
-      // If the voice channel belongs to a guild, disconnect
-      if (currentChannel && currentChannel.guild_id !== null) {
-        const { leaveVoice } = await import("./voice");
-        await leaveVoice();
-      }
-    }
-  }
 }
 
 /**
@@ -528,37 +495,7 @@ export function getGuildIdForChannel(channelId: string): string | undefined {
  * Select the discovery view (browse public guilds).
  */
 export async function selectDiscovery(): Promise<void> {
-  const previousGuildId = guildsState.activeGuildId;
   setGuildsState({ activeGuildId: DISCOVERY_SENTINEL });
-
-  // Disconnect from voice only if in a guild voice channel (preserve DM calls)
-  if (previousGuildId && previousGuildId !== DISCOVERY_SENTINEL) {
-    const { voiceState } = await import("./voice");
-    const { channelsState } = await import("./channels");
-
-    if (voiceState.channelId) {
-      const currentChannel = channelsState.channels.find(
-        (c) => c.id === voiceState.channelId,
-      );
-      if (currentChannel && currentChannel.guild_id !== null) {
-        try {
-          const { leaveVoice } = await import("./voice");
-          await leaveVoice();
-        } catch (err) {
-          console.error(
-            "Failed to leave voice when switching to discovery:",
-            err,
-          );
-          showToast({
-            type: "warning",
-            title: "Voice Disconnect Failed",
-            message:
-              "Could not disconnect from voice. You may still be in the voice channel.",
-          });
-        }
-      }
-    }
-  }
 }
 
 /**
