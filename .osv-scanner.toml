@@ -221,3 +221,14 @@ reason = "Accepted via deny.toml; actix-http locked but not compiled for any tar
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0459"
 reason = "Accepted via deny.toml; libsqlite3-sys 0.36 blocked by sqlx-sqlite 0.9 (<0.38); desktop client opens only its own database."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0441"
+# pin-utils 0.1.1 (2026-10-01): unmaintained notice only, no vulnerability and
+# no patched release exists (the upgrade to 0.1.1 does not clear it). Pulled in
+# transitively by aws-smithy-http, aws-smithy-runtime, aws-smithy-types (AWS
+# SDK, server) and nix 0.26.4 (webrtc-util), per
+# `cargo tree --locked --offline --target all -i pin-utils`. cargo-audit
+# reports it as a warning and cargo-deny does not gate it, so only OSV needs
+# this entry. Re-check when the AWS SDK / webrtc stack drop pin-utils.
+reason = "pin-utils unmaintained, no patched release; transitive via the AWS SDK smithy crates and nix 0.26 (webrtc-util), no vulnerability."
