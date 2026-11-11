@@ -107,7 +107,18 @@ function pairs(): Pair[] {
     // Documented tiers (CLAUDE.md "UI Contrast Rules").
     { fg: "--color-text-primary", bg: "--color-surface-base", min: 7 },
     { fg: "--color-text-secondary", bg: "--color-surface-layer1", min: 4.5 },
-    { fg: "--color-text-muted", bg: "--color-surface-layer1", min: 3 },
+    // A11Y-3: muted text is used as 12 px helper text, so it needs body-text
+    // contrast (4.5:1) on both panel layers, not only on layer1.
+    { fg: "--color-text-muted", bg: "--color-surface-layer1", min: 4.5 },
+    { fg: "--color-text-muted", bg: "--color-surface-layer2", min: 4.5 },
+    { fg: "--color-text-secondary", bg: "--color-surface-layer2", min: 4.5 },
+    // A11Y-7: red text (text-accent-danger, text-danger, text-status-error are
+    // mapped to --color-danger-text in uno.config.ts) on both panel layers.
+    { fg: "--color-danger-text", bg: "--color-surface-layer1", min: 4.5 },
+    { fg: "--color-danger-text", bg: "--color-surface-layer2", min: 4.5 },
+    // Toast fills (A11Y-8): the label must be readable on every type colour.
+    { fg: "--color-text-on-success", bg: "--color-accent-success", min: 4.5 },
+    { fg: "--color-text-on-warning", bg: "--color-accent-warning", min: 4.5 },
     // Button labels, default state.
     { fg: "--color-text-on-accent", bg: "--color-accent-primary", min: 4.5 },
     // Danger buttons use their own darker fill; accent-danger stays the
@@ -130,11 +141,40 @@ function pairs(): Pair[] {
     list.push({ fg: "--color-text-placeholder", bg: s, min: 3 });
     // Focus indicator.
     list.push({ fg: "--color-focus-ring", bg: s, min: 3 });
+    // A11Y-6: the outline of a text field (input-field) must be findable on
+    // every surface the field can sit on (WCAG 1.4.11, 3:1).
+    list.push({ fg: "--color-border-input", bg: s, min: 3 });
   }
   return list;
 }
 
 const THEME_NAMES = [...themes.keys()];
+
+/**
+ * The light theme is offered to everyone (A11Y-10), so every accent that is
+ * used as text must read on both panel layers, and the text colours must be
+ * dark enough on all four surfaces.
+ */
+describe("solarized-light as a selectable theme", () => {
+  const theme = themes.get("solarized-light")!;
+  it.each([
+    ["--color-accent-primary", "--color-surface-layer1", 4.5],
+    ["--color-accent-primary", "--color-surface-layer2", 4.5],
+    ["--color-accent-success", "--color-surface-layer1", 4.5],
+    ["--color-accent-success", "--color-surface-layer2", 4.5],
+    ["--color-accent-warning", "--color-surface-layer1", 4.5],
+    ["--color-accent-warning", "--color-surface-layer2", 4.5],
+    ["--color-text-primary", "--color-surface-layer2", 7],
+    ["--color-text-primary", "--color-surface-highlight", 4.5],
+    ["--color-text-input", "--color-surface-layer2", 7],
+    ["--color-error-text", "--color-surface-layer2", 4.5],
+    ["--color-text-on-accent", "--color-accent-primary", 4.5],
+    ["--color-text-on-danger", "--color-danger-fill", 4.5],
+  ] as const)("%s on %s", (fg, bg, min) => {
+    const r = ratio(colour(theme, fg), colour(theme, bg));
+    expect(Number(r.toFixed(2)), `${fg} on ${bg}`).toBeGreaterThanOrEqual(min);
+  });
+});
 
 describe("theme contrast", () => {
   it("parses every theme from themes.css", () => {
@@ -161,6 +201,27 @@ describe("theme contrast", () => {
         expect(Number(r.toFixed(2)), `${name}: ${p.fg} on ${p.bg}`).toBeGreaterThanOrEqual(p.min);
       },
     );
+
+    it("text tiers keep their order: primary > secondary > muted", () => {
+      for (const s of ["--color-surface-layer1", "--color-surface-layer2"]) {
+        const bg = colour(theme, s);
+        const p = ratio(colour(theme, "--color-text-primary"), bg);
+        const sec = ratio(colour(theme, "--color-text-secondary"), bg);
+        const mu = ratio(colour(theme, "--color-text-muted"), bg);
+        expect(p, `${name}: primary vs secondary on ${s}`).toBeGreaterThan(sec);
+        expect(sec, `${name}: secondary vs muted on ${s}`).toBeGreaterThan(mu);
+      }
+    });
+
+    it("every colour token has a matching -rgb token", () => {
+      for (const [key, value] of theme) {
+        if (!key.endsWith("-rgb") || !/^\d/.test(value)) continue;
+        const base = key.slice(0, -4);
+        if (!theme.has(base)) continue;
+        const c = colour(theme, base);
+        expect(value.split(/\s+/).map(Number), `${name}: ${key}`).toEqual(c);
+      }
+    });
 
     it("placeholder reads clearly dimmer than typed text", () => {
       for (const s of SURFACES) {

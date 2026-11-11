@@ -113,6 +113,9 @@ Check contrast ratios using [WebAIM Contrast Checker](https://webaim.org/resourc
 | `text-primary` on `surface-base`     | 7:1            | WCAG AAA |
 | `text-secondary` on `surface-layer1` | 4.5:1          | WCAG AA  |
 | `accent-primary` on `surface-base`   | 4.5:1          | WCAG AA  |
+| `text-muted` on `surface-layer1`/`layer2` | 4.5:1     | WCAG AA (12 px helper text) |
+| `danger-text` on `surface-layer1`/`layer2` | 4.5:1    | WCAG AA (red text) |
+| `border-input` on every surface      | 3:1            | WCAG 1.4.11 |
 
 ---
 
