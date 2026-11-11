@@ -5,7 +5,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup } from "@solidjs/testing-library";
 
-const p = vi.hoisted(() => ({ overrides: [] as { role_id: string; allow_permissions: number; deny_permissions: number }[] }));
+type Override = { role_id: string; allow_permissions: number; deny_permissions: number };
+// null = the override list has not been loaded (or the server refused it).
+const p = vi.hoisted(() => ({ overrides: [] as Override[] | null }));
 
 vi.mock("@/stores/channels", () => ({
   channelsState: { channels: [{ id: "c1", name: "allgemein", channel_type: "text" }], selectedChannelId: null },
@@ -26,7 +28,8 @@ vi.mock("@/stores/permissions", async () => {
       { id: "helper", is_default: false, permissions: PermissionBits.MANAGE_CHANNELS },
     ],
     getMemberRoleIds: () => ["helper"],
-    getChannelOverrides: () => p.overrides,
+    getChannelOverrides: () => p.overrides ?? [],
+    getLoadedChannelOverrides: () => p.overrides,
     loadChannelOverrides: vi.fn(),
     memberHasPermission: () => true,
   };
@@ -43,6 +46,12 @@ describe("ChannelSettingsModal channel permission", () => {
     render(() => <ChannelSettingsModal channelId="c1" guildId="g1" onClose={vi.fn()} />);
     expect(screen.queryByRole("button", { name: "Delete channel" })).toBeNull();
     expect(screen.queryByLabelText("Channel name")?.tagName).not.toBe("INPUT");
+  });
+
+  it("hides them while the channel's overrides are not loaded", () => {
+    p.overrides = null;
+    render(() => <ChannelSettingsModal channelId="c1" guildId="g1" onClose={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Delete channel" })).toBeNull();
   });
 
   it("shows them when nothing on this channel denies it", () => {

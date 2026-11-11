@@ -13,7 +13,7 @@ import {
   setChannelsState,
 } from "@/stores/channels";
 import { deleteGuild, leaveGuild, updateGuild } from "@/stores/guilds";
-import { getChannelOverrides, getGuildRoles, getMemberRoleIds } from "@/stores/permissions";
+import { getGuildRoles, getLoadedChannelOverrides, getMemberRoleIds } from "@/stores/permissions";
 import { PermissionBits } from "@/lib/permissionConstants";
 
 /**
@@ -63,8 +63,10 @@ export async function leaveServer(guildId: string): Promise<void> {
  * server's `compute_guild_permissions` with channel overrides (K8):
  * @everyone and role permissions, then the @everyone override's deny, then
  * the member's role overrides (deny, then allow). An @everyone allow is
- * masked by the server and not mirrored here. Overrides that are not loaded
- * count as none, which matches a channel without overrides.
+ * masked by the server and not mirrored here. Without the loaded override
+ * list a per-channel denial cannot be seen, so the answer is no until it is
+ * there; the server refuses the list to members who may not manage the
+ * channel, so a failed load keeps the controls away as well.
  */
 export function canManageChannel(
   guildId: string,
@@ -73,6 +75,8 @@ export function canManageChannel(
   isOwner: boolean,
 ): boolean {
   if (isOwner) return true;
+  const overrides = getLoadedChannelOverrides(channelId);
+  if (!overrides) return false;
   const roles = getGuildRoles(guildId);
   const mine = getMemberRoleIds(guildId, userId);
   const everyone = roles.find((r) => r.is_default);
@@ -80,7 +84,6 @@ export function canManageChannel(
   for (const role of roles) {
     if (mine.includes(role.id)) perms |= role.permissions;
   }
-  const overrides = getChannelOverrides(channelId);
   const everyoneOverride = everyone ? overrides.find((o) => o.role_id === everyone.id) : undefined;
   if (everyoneOverride) perms &= ~everyoneOverride.deny_permissions;
   let allow = 0;

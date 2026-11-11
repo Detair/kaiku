@@ -9,11 +9,20 @@ const m = vi.hoisted(() => ({
   renameChannel: vi.fn(),
   deleteChannel: vi.fn(),
   getGuildChannels: vi.fn(),
+  getGuildRoles: vi.fn(),
+  getMemberRoleIds: vi.fn(),
+  getLoadedChannelOverrides: vi.fn(),
+}));
+vi.mock("@/stores/permissions", () => ({
+  getGuildRoles: m.getGuildRoles,
+  getMemberRoleIds: m.getMemberRoleIds,
+  getLoadedChannelOverrides: m.getLoadedChannelOverrides,
 }));
 vi.mock("@/lib/tauri/channelAdmin", () => ({ renameChannel: m.renameChannel, deleteChannel: m.deleteChannel }));
 vi.mock("@/lib/tauri", async (orig) => ({ ...(await orig<object>()), getGuildChannels: m.getGuildChannels }));
 
-import { renameChannel, deleteChannel } from "../guildAdmin";
+import { renameChannel, deleteChannel, canManageChannel } from "../guildAdmin";
+import { PermissionBits } from "@/lib/permissionConstants";
 import { channelsState, setChannelsState } from "../channels";
 
 beforeEach(() => {
@@ -43,5 +52,38 @@ describe("guildAdmin channel actions", () => {
     m.deleteChannel.mockRejectedValue(new TypeError("Failed to fetch"));
     await expect(deleteChannel("g1", "c1")).rejects.toThrow();
     expect(channelsState.channels).toHaveLength(1);
+  });
+});
+
+describe("canManageChannel", () => {
+  const MANAGE = PermissionBits.MANAGE_CHANNELS;
+  beforeEach(() => {
+    m.getGuildRoles.mockReturnValue([
+      { id: "everyone", is_default: true, permissions: 0 },
+      { id: "mods", is_default: false, permissions: MANAGE },
+    ]);
+    m.getMemberRoleIds.mockReturnValue(["mods"]);
+  });
+
+  it("the owner may always", () => {
+    m.getLoadedChannelOverrides.mockReturnValue(null);
+    expect(canManageChannel("g1", "c1", "owner", true)).toBe(true);
+  });
+
+  it("says no until the channel's overrides are loaded", () => {
+    m.getLoadedChannelOverrides.mockReturnValue(null);
+    expect(canManageChannel("g1", "c1", "u1", false)).toBe(false);
+  });
+
+  it("a role with the right may, once the list is loaded and denies nothing", () => {
+    m.getLoadedChannelOverrides.mockReturnValue([]);
+    expect(canManageChannel("g1", "c1", "u1", false)).toBe(true);
+  });
+
+  it("a denial on this channel wins over the server-wide right", () => {
+    m.getLoadedChannelOverrides.mockReturnValue([
+      { role_id: "mods", allow_permissions: 0, deny_permissions: MANAGE },
+    ]);
+    expect(canManageChannel("g1", "c1", "u1", false)).toBe(false);
   });
 });
