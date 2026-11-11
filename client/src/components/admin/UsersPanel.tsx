@@ -107,7 +107,7 @@ const UsersPanel: Component = () => {
   // Bulk ban: names everyone, reports who could not be banned (ADMIN-7).
   const handleBulkBan = async () => {
     const targets = bulkTargets();
-    const result = await bulkBanUsers(bulkBanReason());
+    const result = await bulkBanUsers(targets.map((u) => u.id), bulkBanReason());
     const failedIds = new Set(result.failed.map((f) => f.id));
     const failedNames = targets.filter((u) => failedIds.has(u.id)).map(nameOf);
     setBulkFailures(failedNames);

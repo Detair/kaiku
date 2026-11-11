@@ -93,7 +93,7 @@ const GuildsPanel: Component = () => {
   // Bulk suspend: names every server, reports which could not be suspended.
   const handleBulkSuspend = async () => {
     const targets = bulkTargets();
-    const result = await bulkSuspendGuilds(bulkSuspendReason());
+    const result = await bulkSuspendGuilds(targets.map((g) => g.id), bulkSuspendReason());
     const failedIds = new Set(result.failed.map((f) => f.id));
     const failedNames = targets.filter((g) => failedIds.has(g.id)).map((g) => g.name);
     setBulkSuspendReason("");
@@ -299,14 +299,13 @@ const GuildsPanel: Component = () => {
             <div class="flex items-center justify-between px-4 py-3 bg-accent-primary/20 border-b border-accent-primary/30">
               <div class="flex items-center gap-3">
                 <span class="text-sm font-medium text-text-primary">
-                  {getSelectedGuildCount()} guild
-                  {getSelectedGuildCount() !== 1 ? "s" : ""} selected
+                  {plural(getSelectedGuildCount(), { one: "admin.servers.selected.one", other: "admin.servers.selected.other" })}
                 </span>
                 <button
                   onClick={clearGuildSelection}
                   class="text-sm text-text-secondary hover:text-text-primary transition-colors"
                 >
-                  Clear selection
+                  {t("admin.users.clearSelection")}
                 </button>
               </div>
               <div class="flex items-center gap-2">
@@ -318,7 +317,7 @@ const GuildsPanel: Component = () => {
                   class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-accent-danger-fill text-on-danger text-sm font-medium transition-colors hover:bg-accent-danger-fill/90 state-disabled"
                 >
                   <Ban class="w-4 h-4" />
-                  Bulk Suspend
+                  {t("admin.servers.bulkSuspend")}
                 </button>
               </div>
             </div>
@@ -386,6 +385,8 @@ const GuildsPanel: Component = () => {
                         e.stopPropagation();
                         toggleGuildSelection(guild.id);
                       }}
+                      aria-label={t("admin.users.selectNamed", { name: guild.name })}
+                      aria-pressed={isGuildSelected(guild.id)}
                       class="p-1 text-text-secondary hover:text-text-primary transition-colors"
                     >
                       <Show

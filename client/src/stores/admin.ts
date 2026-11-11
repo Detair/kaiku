@@ -622,10 +622,13 @@ export async function exportUsersCsv(): Promise<void> {
  * Ban the selected users. Throws when the call fails. Who could not be
  * banned stays selected and is in `failed` (ADMIN-7).
  */
-export async function bulkBanUsers(reason: string): Promise<BulkBanResponse> {
+export async function bulkBanUsers(
+  userIds: string[],
+  reason: string,
+): Promise<BulkBanResponse> {
   setAdminState({ isBulkActionLoading: true, error: null });
   try {
-    const userIds = Array.from(adminState.selectedUserIds);
+    // Exactly the people the dialog named, never a stale selection (W1).
     const result = await tauri.adminBulkBanUsers(userIds, reason);
     const failed = new Set(result.failed.map((f) => f.id));
 
@@ -661,6 +664,11 @@ export async function loadGuilds(
   // Update search state if provided
   if (search !== undefined) {
     setAdminState({ guildsSearch: search });
+  }
+
+  // As for users (ADMIN-7): a selection only covers visible servers.
+  if (page !== adminState.guildsPagination.page || search !== undefined) {
+    setAdminState({ selectedGuildIds: new Set() });
   }
 
   setAdminState({ isGuildsLoading: true, error: null });
@@ -859,10 +867,13 @@ export async function exportGuildsCsv(): Promise<void> {
  * Suspend the selected servers. Throws when the call fails; servers that
  * could not be suspended stay selected and are in `failed`.
  */
-export async function bulkSuspendGuilds(reason: string): Promise<BulkSuspendResponse> {
+export async function bulkSuspendGuilds(
+  guildIds: string[],
+  reason: string,
+): Promise<BulkSuspendResponse> {
   setAdminState({ isBulkActionLoading: true, error: null });
   try {
-    const guildIds = Array.from(adminState.selectedGuildIds);
+    // Exactly the servers the dialog named, never a stale selection (W1).
     const result = await tauri.adminBulkSuspendGuilds(guildIds, reason);
     const failed = new Set(result.failed.map((f) => f.id));
     setAdminState("guilds", (guilds) =>
