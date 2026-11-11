@@ -21,7 +21,6 @@ pub mod queries;
 pub mod reactions;
 pub mod read_only;
 pub mod s3;
-pub(crate) mod screenshare;
 pub mod send;
 pub mod types;
 pub mod unread;
@@ -53,10 +52,6 @@ pub fn channels_router(state: &AppState) -> Router<AppState> {
         )
         // Read state
         .route("/{id}/read", post(channels::mark_as_read))
-        // Screen Share
-        .route("/{id}/screenshare/check", post(screenshare::check))
-        .route("/{id}/screenshare/start", post(screenshare::start))
-        .route("/{id}/screenshare/stop", post(screenshare::stop))
         // Forum posts + tags and announcement follows are optional features.
         .merge(gated(
             state,

@@ -148,10 +148,9 @@ impl TestApp {
     /// Pool-injecting constructor wired with a real `ScreenShareLimiter`
     /// backed by the shared Redis.
     ///
-    /// Use this for screen share integration tests that call the
-    /// `/screenshare/check`, `/screenshare/start`, or `/screenshare/stop`
-    /// endpoints — those handlers return 500 when `screen_share_limiter`
-    /// is `None`.
+    /// Use this for screen share tests over the WebSocket
+    /// (`voice_screen_share_start` is refused while `screen_share_limiter` is
+    /// `None`).
     pub async fn with_pool_and_screen_share_limiter(pool: PgPool) -> Self {
         let config = Config::default_for_test();
         let redis = db::create_redis_client(&config.redis_url)

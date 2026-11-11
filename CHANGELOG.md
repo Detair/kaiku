@@ -198,6 +198,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Android app no longer accepts sign-in tokens from a link; single sign-on returns only a one-time code.
 
 ### Removed
+- The unused REST endpoints `POST /api/channels/{id}/screenshare/check`, `/start` and `/stop`. Screen sharing is started and stopped over the WebSocket voice connection, as all clients already do.
 - Temporary passwords for admin-created accounts (`POST /api/admin/users` refuses `temporary_password`).
 - Password reset by e-mail. A forgotten password is replaced through an account recovery with a recovery code, or by an admin.
 - The old QR login that signed a phone in without confirmation (`/auth/qr/create`, `/auth/qr/redeem`).

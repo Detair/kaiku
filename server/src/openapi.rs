@@ -54,7 +54,6 @@ use utoipa::{Modify, OpenApi};
         (name = "setup", description = "Initial server setup"),
         (name = "uploads", description = "File upload operations"),
         (name = "overrides", description = "Channel permission overrides"),
-        (name = "screenshare", description = "Screen sharing"),
     ),
     modifiers(&SecurityAddon),
     paths(
@@ -318,10 +317,6 @@ use utoipa::{Modify, OpenApi};
         crate::voice::call_handlers::join_call,
         crate::voice::call_handlers::decline_call,
         crate::voice::call_handlers::leave_call,
-        // Screen share
-        crate::chat::screenshare::check,
-        crate::chat::screenshare::start,
-        crate::chat::screenshare::stop,
         // Crypto
         crate::crypto::upload_keys,
         crate::crypto::get_backup,

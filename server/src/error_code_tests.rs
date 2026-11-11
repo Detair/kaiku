@@ -708,21 +708,27 @@ async fn rate_limit_voice_and_call_codes_are_upper_snake() {
     )
     .await;
 
-    assert_codes(
-        "ScreenShareError",
-        "error",
-        [
-            ScreenShareError::NoPermission,
-            ScreenShareError::LimitReached,
-            ScreenShareError::NotInChannel,
-            ScreenShareError::QualityNotAllowed,
-            ScreenShareError::RenegotiationFailed,
-            ScreenShareError::InternalError,
-            ScreenShareError::InvalidSourceLabel,
-            ScreenShareError::AlreadySharing,
-        ],
-    )
-    .await;
+    // Not an HTTP response any more (the REST routes are gone); its codes
+    // still travel in serialized payloads.
+    for e in [
+        ScreenShareError::NoPermission,
+        ScreenShareError::LimitReached,
+        ScreenShareError::NotInChannel,
+        ScreenShareError::QualityNotAllowed,
+        ScreenShareError::RenegotiationFailed,
+        ScreenShareError::InternalError,
+        ScreenShareError::InvalidSourceLabel,
+        ScreenShareError::AlreadySharing,
+    ] {
+        let code = e.code();
+        assert!(
+            !code.is_empty()
+                && code
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
+            "ScreenShareError code {code:?} is not UPPER_SNAKE"
+        );
+    }
 
     // The call API carries its machine code in `code`; `error` is free text.
     assert_codes(
