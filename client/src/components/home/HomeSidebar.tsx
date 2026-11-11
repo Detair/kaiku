@@ -15,7 +15,6 @@ import UserPanel from "@/components/layout/UserPanel";
 import VoicePanel from "@/components/voice/VoicePanel";
 import { getIncomingRequestCount } from "@/stores/friends";
 import { voiceState } from "@/stores/voice";
-import { getGuildIdForChannel } from "@/stores/guilds";
 import AddFriend from "@/components/social/AddFriend";
 import SearchPanel from "@/components/search/SearchPanel";
 import { createVirtualizer } from "@/lib/virtualizer";
@@ -31,15 +30,16 @@ const HomeSidebar: Component = () => {
     loadDMs();
   });
 
-  // Voice bar on Home only for a server voice channel (NAV-6). A direct
-  // call has its own banner, and the bar's hang-up would end it only half
-  // (W1: it leaves voice but not the call).
+  // Voice bar on Home for every voice channel that is not a direct call
+  // (NAV-6). A direct call has its own banner, and the bar's hang-up would
+  // end it only half (W1). No server lookup: a channel created during the
+  // session is not in the channel→server map yet (N2).
   const inServerVoice = () => {
     const id = voiceState.channelId;
     if (!id) return false;
-    if (dmsState.dms.some((d) => d.id === id)) return false;
-    return getGuildIdForChannel(id) !== undefined;
+    return !dmsState.dms.some((d) => d.id === id);
   };
+
 
   // Sort DMs by last_message timestamp (descending)
   const sortedDMs = createMemo(() => {

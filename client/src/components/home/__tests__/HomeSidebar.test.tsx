@@ -10,9 +10,6 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("@/stores/voice", () => ({ voiceState: state.voice }));
-vi.mock("@/stores/guilds", () => ({
-  getGuildIdForChannel: (id: string) => (id === "server-voice" ? "g1" : undefined),
-}));
 vi.mock("@/stores/dms", () => ({
   dmsState: {
     get dms() {
@@ -43,8 +40,9 @@ describe("HomeSidebar", () => {
     state.dms = [];
   });
 
-  it("keeps the voice panel on Home while in a server voice channel", () => {
-    state.voice.channelId = "server-voice";
+  it("keeps the voice panel on Home while in a server voice channel, also a new one (N2)", () => {
+    // Created during the session: not in any channel→server map.
+    state.voice.channelId = "new-server-voice";
     render(() => <HomeSidebar />);
     expect(screen.getByTestId("voice-panel-slot")).toBeTruthy();
   });

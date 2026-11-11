@@ -6,6 +6,17 @@ import MobileDrawer from "../MobileDrawer";
 afterEach(cleanup);
 
 describe("MobileDrawer", () => {
+  it("keeps the close button inside the drawer, so it is on screen at 320 px (N5)", () => {
+    render(() => (
+      <MobileDrawer open onClose={() => {}}>
+        <div data-testid="content" />
+      </MobileDrawer>
+    ));
+    const panel = screen.getByTestId("content").parentElement!.parentElement!;
+    expect(panel.contains(screen.getByTestId("mobile-drawer-close"))).toBe(true);
+    expect(panel.className).toContain("max-w-[100vw]");
+  });
+
   it("closes with Escape and with the close button", () => {
     const onClose = vi.fn();
     render(() => (
@@ -28,6 +39,7 @@ describe("MobileDrawer", () => {
     ));
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("mobile-drawer-close")).toBeNull();
+    // The close button sits in the drawer, which is closed (and inert).
+    expect(screen.getByTestId("mobile-drawer-close").closest("[data-drawer-open]")?.getAttribute("data-drawer-open")).toBe("false");
   });
 });

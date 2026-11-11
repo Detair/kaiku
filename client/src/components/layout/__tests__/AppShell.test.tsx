@@ -49,9 +49,9 @@ describe("AppShell", () => {
   it("closes the drawer when a conversation is opened from it", () => {
     render(() => <AppShell sidebar={<div />} />);
     fireEvent.click(screen.getByTestId("open-menu"));
-    expect(screen.getByTestId("mobile-drawer-close")).toBeTruthy();
+    expect(screen.getByTestId("mobile-drawer-close").closest("[data-drawer-open]")?.getAttribute("data-drawer-open")).toBe("true");
     setDmsState({ selectedDMId: "dm-1", isShowingFriends: false, navigationCount: 1 });
-    expect(screen.queryByTestId("mobile-drawer-close")).toBeNull();
+    expect(screen.getByTestId("mobile-drawer-close").closest("[data-drawer-open]")?.getAttribute("data-drawer-open")).toBe("false");
   });
 
   it("closes the drawer when the conversation already open is tapped again (K2)", () => {
@@ -60,7 +60,7 @@ describe("AppShell", () => {
     fireEvent.click(screen.getByTestId("open-menu"));
     // Same conversation: only the navigation counter moves.
     setDmsState({ navigationCount: dmsState.navigationCount + 1 });
-    expect(screen.queryByTestId("mobile-drawer-close")).toBeNull();
+    expect(screen.getByTestId("mobile-drawer-close").closest("[data-drawer-open]")?.getAttribute("data-drawer-open")).toBe("false");
   });
 
   it("ignores unread counts of servers from a previous account (W3)", () => {

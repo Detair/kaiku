@@ -31,7 +31,6 @@ import { isGuildDiscoveryOff } from "@/stores/serverFeatures";
 import { bindDMsToAccount, loadDMs, getTotalUnreadCount } from "@/stores/dms";
 import {
   bindFriendsToAccount,
-  forgetSeenRequests,
   getIncomingRequestCount,
   loadPendingRequests,
 } from "@/stores/friends";
@@ -114,15 +113,15 @@ const ServerRail: Component<ServerRailProps> = (props) => {
   };
 
   onMount(() => {
-    // The rail mounts once per signed-in session. Drop data of a previous
-    // account in this tab (W3), then load the counts for the Home badge
-    // before Home is ever opened, always, not only when the store is empty.
+    // Desktop and phone layouts each mount their own rail, so this runs
+    // again when the window crosses the phone width. Load once per signed-in
+    // account (W3): a different account resets the stores and loads afresh;
+    // the same account keeps its data and the "already announced" requests.
     const userId = currentUser()?.id ?? null;
-    bindDMsToAccount(userId);
-    if (!bindFriendsToAccount(userId)) forgetSeenRequests();
-    void loadPendingRequests();
-    void loadDMs();
+    if (bindDMsToAccount(userId)) void loadDMs();
+    if (bindFriendsToAccount(userId)) void loadPendingRequests();
   });
+
 
   /** Icon button size classes based on compact prop */
   const iconSize = () => (props.compact ? "w-9 h-9" : "w-12 h-12");

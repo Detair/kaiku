@@ -6,7 +6,7 @@
  * Prevents body scroll while open.
  */
 
-import { Component, JSX, Show, createEffect, onCleanup } from "solid-js";
+import { Component, JSX, createEffect, onCleanup } from "solid-js";
 import { X } from "lucide-solid";
 import { t } from "@/i18n";
 
@@ -60,6 +60,7 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
 
   return (
     <div
+      data-drawer-open={props.open ? "true" : "false"}
       class="fixed inset-0 z-50"
       classList={{ "pointer-events-none": !props.open }}
       inert={!props.open ? true : undefined}
@@ -74,9 +75,10 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
         onClick={() => props.onClose()}
       />
 
-      {/* Drawer panel */}
+      {/* Drawer panel: a slim top bar holds the close button, so it is on
+          screen at every width (320 px too) and covers nothing (N5) */}
       <div
-        class="absolute top-0 left-0 h-full w-[300px] flex transition-transform duration-200 bg-surface-base"
+        class="absolute top-0 left-0 h-full w-[300px] max-w-[100vw] flex flex-col transition-transform duration-200 bg-surface-base"
         classList={{
           "translate-x-0": props.open,
           "-translate-x-full": !props.open,
@@ -84,21 +86,19 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
         onPointerDown={onPointerDown}
         onPointerUp={onPointerUp}
       >
-        {props.children}
+        <div class="flex justify-end flex-shrink-0 border-b border-border-subtle">
+            <button
+              type="button"
+              data-testid="mobile-drawer-close"
+              class="w-11 h-11 flex items-center justify-center text-text-primary hover:bg-white/10"
+              aria-label={t("common.close")}
+              onClick={() => props.onClose()}
+            >
+              <X class="w-5 h-5" aria-hidden="true" />
+            </button>
+        </div>
+        <div class="flex flex-1 min-h-0">{props.children}</div>
       </div>
-
-      {/* Close button on the dimmed area next to the drawer (NAV-12) */}
-      <Show when={props.open}>
-        <button
-          type="button"
-          data-testid="mobile-drawer-close"
-          class="absolute top-2 left-[min(308px,calc(100vw-3.25rem))] w-11 h-11 flex items-center justify-center rounded-full bg-surface-base/90 text-text-primary"
-          aria-label={t("common.close")}
-          onClick={() => props.onClose()}
-        >
-          <X class="w-5 h-5" aria-hidden="true" />
-        </button>
-      </Show>
     </div>
   );
 };

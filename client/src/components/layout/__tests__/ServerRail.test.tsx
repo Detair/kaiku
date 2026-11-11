@@ -11,8 +11,8 @@ const state = vi.hoisted(() => ({
 const loaders = vi.hoisted(() => ({
   loadDMs: vi.fn(),
   loadPendingRequests: vi.fn(),
-  bindDMsToAccount: vi.fn(),
-  bindFriendsToAccount: vi.fn(() => false),
+  bindDMsToAccount: vi.fn(() => true),
+  bindFriendsToAccount: vi.fn(() => true),
 }));
 vi.mock("@/stores/dms", () => ({
   bindDMsToAccount: loaders.bindDMsToAccount,
@@ -21,7 +21,6 @@ vi.mock("@/stores/dms", () => ({
 }));
 vi.mock("@/stores/friends", () => ({
   bindFriendsToAccount: loaders.bindFriendsToAccount,
-  forgetSeenRequests: vi.fn(),
   loadPendingRequests: loaders.loadPendingRequests,
   getIncomingRequestCount: () => state.incoming,
 }));
@@ -58,13 +57,26 @@ describe("ServerRail", () => {
     vi.clearAllMocks();
   });
 
-  it("binds the stores to the signed-in account and always loads the counts (W3, K13)", () => {
+  it("loads the counts for a newly signed-in account (W3, K13)", () => {
     render(() => <ServerRail />);
     expect(loaders.bindDMsToAccount).toHaveBeenCalledWith("matthias");
     expect(loaders.bindFriendsToAccount).toHaveBeenCalledWith("matthias");
-    // The DM store may still hold a previous account's list: load anyway.
     expect(loaders.loadDMs).toHaveBeenCalledTimes(1);
     expect(loaders.loadPendingRequests).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reload when the rail is mounted again for the same account", () => {
+    // Crossing the phone width mounts the other layout's rail.
+    loaders.bindDMsToAccount.mockReturnValue(false);
+    loaders.bindFriendsToAccount.mockReturnValue(false);
+    try {
+      render(() => <ServerRail />);
+      expect(loaders.loadDMs).not.toHaveBeenCalled();
+      expect(loaders.loadPendingRequests).not.toHaveBeenCalled();
+    } finally {
+      loaders.bindDMsToAccount.mockReturnValue(true);
+      loaders.bindFriendsToAccount.mockReturnValue(true);
+    }
   });
 
   it("shows unread direct messages and friend requests on Home", () => {
