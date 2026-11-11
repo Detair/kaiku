@@ -78,6 +78,8 @@ export const DEFAULT_FOCUS_PREFERENCES: FocusPreferences = {
 
 export const DEFAULT_PREFERENCES: UserPreferences = {
   theme: "focused-hybrid",
+  theme_follow_system: false,
+  font_size: "default",
   sound: {
     enabled: true,
     volume: 80,

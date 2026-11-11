@@ -5,11 +5,11 @@
  * Theme data is synced across devices through the preferences system.
  */
 
-import { createEffect } from "solid-js";
+import { createEffect, createSignal } from "solid-js";
 import { preferences, updatePreference } from "./preferences";
-import type { ThemeName } from "@/lib/types";
+import type { FontSize, ThemeName } from "@/lib/types";
 
-export type { ThemeName };
+export type { ThemeName, FontSize };
 
 export type ThemeFamily = "standard" | "pixel";
 
@@ -73,8 +73,7 @@ export const availableThemes: ThemeDefinition[] = [
     description: "Warm light theme for daytime use",
     isDark: false,
     family: "standard",
-    hidden: true,
-    preview: { surface: "#fdf6e3", accent: "#1f6fa8", text: "#3d555c" },
+    preview: { surface: "#fdf6e3", accent: "#1d689e", text: "#2b434a" },
   },
   {
     id: "pixel-cozy",
@@ -96,7 +95,7 @@ export const selectableThemes: ThemeDefinition[] = availableThemes.filter(
  * hidden so a stored choice stays visible and keeps working.
  */
 export function pickerThemes(): ThemeDefinition[] {
-  const current = getCurrentTheme();
+  const current = availableThemes.find((t) => t.id === storedTheme());
   return current?.hidden ? [...selectableThemes, current] : selectableThemes;
 }
 
@@ -107,22 +106,83 @@ export const THEME_IDS = availableThemes.map((t) => t.id);
 // Derived Signals
 // ============================================================================
 
+/** The light theme "Same as system" switches to by day. */
+export const SYSTEM_LIGHT_THEME: ThemeName = "solarized-light";
+/** The dark theme used when the stored choice is a light one. */
+export const SYSTEM_DARK_FALLBACK: ThemeName = "focused-hybrid";
+
 /**
- * Get the current theme name from preferences.
+ * Which theme is shown. Pure, so public/theme-preload.js (which has to repeat
+ * this before the app loads, to avoid a flash) can be tested against it.
+ *
+ * - Not following the system: the stored theme.
+ * - Following the system: by day the light theme; at night the stored theme,
+ *   unless that one is light, then the dark fallback.
  */
-export const theme = () => preferences().theme;
+export function resolveTheme(
+  stored: ThemeName,
+  followSystem: boolean,
+  systemPrefersDark: boolean,
+): ThemeName {
+  if (!followSystem) return stored;
+  if (!systemPrefersDark) return SYSTEM_LIGHT_THEME;
+  const isDark = availableThemes.find((t) => t.id === stored)?.isDark ?? true;
+  return isDark ? stored : SYSTEM_DARK_FALLBACK;
+}
+
+/** Root font-size per step, as a percentage of the browser's own size. */
+export const FONT_SIZE_PERCENT: Record<FontSize, number> = {
+  default: 100,
+  large: 115,
+  xlarge: 130,
+};
+
+const darkQuery =
+  typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-color-scheme: dark)")
+    : null;
+
+const [systemPrefersDark, setSystemPrefersDark] = createSignal(
+  darkQuery ? darkQuery.matches : true,
+);
+darkQuery?.addEventListener?.("change", (e) => setSystemPrefersDark(e.matches));
+
+/**
+ * The theme the user picked (what the picker marks as selected).
+ */
+export const storedTheme = () => preferences().theme;
+
+/** True when the theme follows the system light/dark setting. */
+export const followSystemTheme = () => preferences().theme_follow_system === true;
+
+/**
+ * The theme that is actually shown (what `data-theme` says). Differs from
+ * `storedTheme()` only while "Same as system" is on.
+ */
+export const theme = (): ThemeName =>
+  resolveTheme(storedTheme(), followSystemTheme(), systemPrefersDark());
+
+/** Current text size step. */
+export const fontSize = (): FontSize => {
+  const f = preferences().font_size;
+  return f === "large" || f === "xlarge" ? f : "default";
+};
+
+function applyToDocument(): void {
+  const root = document.documentElement;
+  root.setAttribute("data-theme", theme());
+  if (fontSize() === "default") root.removeAttribute("data-font-size");
+  else root.setAttribute("data-font-size", fontSize());
+}
 
 export function applyInitialTheme(): void {
   if (typeof document === "undefined") {
     return;
   }
-
-  const currentTheme = theme();
-  if (!currentTheme) {
+  if (!storedTheme()) {
     return;
   }
-
-  document.documentElement.setAttribute("data-theme", currentTheme);
+  applyToDocument();
 }
 
 // ============================================================================
@@ -130,12 +190,11 @@ export function applyInitialTheme(): void {
 // ============================================================================
 
 /**
- * Apply theme to document whenever it changes.
+ * Apply theme and text size to the document whenever they change.
  * This effect runs automatically when preferences are initialized or updated.
  */
 createEffect(() => {
-  const currentTheme = theme();
-  document.documentElement.setAttribute("data-theme", currentTheme);
+  applyToDocument();
 });
 
 // ============================================================================
@@ -148,6 +207,8 @@ createEffect(() => {
  * When switching between theme families, applies a brief fade transition.
  */
 export function setTheme(newTheme: ThemeName): void {
+  // Picking a theme by hand ends "Same as system".
+  if (followSystemTheme()) updatePreference("theme_follow_system", false);
   const currentDef = getCurrentTheme();
   const newDef = availableThemes.find((t) => t.id === newTheme);
 
@@ -164,6 +225,20 @@ export function setTheme(newTheme: ThemeName): void {
     // Same family: instant switch
     updatePreference("theme", newTheme);
   }
+}
+
+/**
+ * Turn "Same as system" on or off. Turning it on keeps the stored theme as the
+ * dark choice; the light side is always SYSTEM_LIGHT_THEME.
+ */
+export function setFollowSystemTheme(on: boolean): void {
+  if (followSystemTheme() === on) return;
+  updatePreference("theme_follow_system", on);
+}
+
+/** Set the text size step. */
+export function setFontSize(size: FontSize): void {
+  updatePreference("font_size", size);
 }
 
 /**

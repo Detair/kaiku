@@ -416,3 +416,48 @@ pre code {
     animation: none !important;
   }
 }
+
+/*
+ * Text size (A11Y-5). The whole interface is sized in rem, so changing the
+ * root font size scales it. Percentages keep the browser's own text-size
+ * setting as the starting point. Set by stores/theme.ts and by
+ * public/theme-preload.js (before first paint).
+ */
+:root[data-font-size="large"] {
+  font-size: 115%;
+}
+
+:root[data-font-size="xlarge"] {
+  font-size: 130%;
+}
+
+/*
+ * Light theme: components draw faint borders and hover fills with white
+ * overlays (border-white/10, bg-white/5, ...). White on a cream surface is
+ * invisible, so in the light theme the same classes are drawn with the text
+ * colour instead, at the same strength. Stronger fills (bg-white/20 and up)
+ * are left alone: they sit on coloured buttons and images.
+ */
+:root[data-theme="solarized-light"] .border-white\/3 { border-color: rgb(var(--color-text-primary-rgb) / 0.03); }
+:root[data-theme="solarized-light"] .border-white\/5 { border-color: rgb(var(--color-text-primary-rgb) / 0.05); }
+:root[data-theme="solarized-light"] .border-white\/8 { border-color: rgb(var(--color-text-primary-rgb) / 0.08); }
+:root[data-theme="solarized-light"] .border-white\/10 { border-color: rgb(var(--color-text-primary-rgb) / 0.1); }
+:root[data-theme="solarized-light"] .border-white\/15 { border-color: rgb(var(--color-text-primary-rgb) / 0.15); }
+:root[data-theme="solarized-light"] .border-white\/20 { border-color: rgb(var(--color-text-primary-rgb) / 0.2); }
+:root[data-theme="solarized-light"] .border-white\/30 { border-color: rgb(var(--color-text-primary-rgb) / 0.3); }
+:root[data-theme="solarized-light"] .border-white\/40 { border-color: rgb(var(--color-text-primary-rgb) / 0.4); }
+:root[data-theme="solarized-light"] .bg-white\/3 { background-color: rgb(var(--color-text-primary-rgb) / 0.03); }
+:root[data-theme="solarized-light"] .hover\:bg-white\/3:hover { background-color: rgb(var(--color-text-primary-rgb) / 0.03); }
+:root[data-theme="solarized-light"] .bg-white\/5 { background-color: rgb(var(--color-text-primary-rgb) / 0.05); }
+:root[data-theme="solarized-light"] .hover\:bg-white\/5:hover { background-color: rgb(var(--color-text-primary-rgb) / 0.05); }
+:root[data-theme="solarized-light"] .bg-white\/8 { background-color: rgb(var(--color-text-primary-rgb) / 0.08); }
+:root[data-theme="solarized-light"] .hover\:bg-white\/8:hover { background-color: rgb(var(--color-text-primary-rgb) / 0.08); }
+:root[data-theme="solarized-light"] .bg-white\/10 { background-color: rgb(var(--color-text-primary-rgb) / 0.1); }
+:root[data-theme="solarized-light"] .hover\:bg-white\/10:hover { background-color: rgb(var(--color-text-primary-rgb) / 0.1); }
+:root[data-theme="solarized-light"] .bg-white\/15 { background-color: rgb(var(--color-text-primary-rgb) / 0.15); }
+:root[data-theme="solarized-light"] .hover\:bg-white\/15:hover { background-color: rgb(var(--color-text-primary-rgb) / 0.15); }
+:root[data-theme="solarized-light"] .hover\:border-white\/5:hover { border-color: rgb(var(--color-text-primary-rgb) / 0.05); }
+:root[data-theme="solarized-light"] .hover\:border-white\/10:hover { border-color: rgb(var(--color-text-primary-rgb) / 0.1); }
+:root[data-theme="solarized-light"] .hover\:border-white\/15:hover { border-color: rgb(var(--color-text-primary-rgb) / 0.15); }
+:root[data-theme="solarized-light"] .hover\:border-white\/20:hover { border-color: rgb(var(--color-text-primary-rgb) / 0.2); }
+:root[data-theme="solarized-light"] .hover\:border-white\/30:hover { border-color: rgb(var(--color-text-primary-rgb) / 0.3); }

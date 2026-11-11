@@ -86,21 +86,22 @@
 }
 
 /*
- * VT323 renders well at larger sizes (16px+). Use integer pixel sizes.
+ * VT323 renders well at larger sizes (18px+). Sizes are in rem so the text-size
+ * setting scales them; at the default size they land on whole pixels.
  * Fallback Press Start 2P works best at 8px multiples (8, 16, 24, 32).
  */
 
 /* Apply pixel font to UI elements with INTEGER pixel sizes */
 [data-theme^="pixel-"] h1 {
   font-family: var(--font-ui);
-  font-size: 28px;
+  font-size: 1.75rem; /* 28px at the default text size */
   line-height: 1.4;
   letter-spacing: 1px;
 }
 
 [data-theme^="pixel-"] h2 {
   font-family: var(--font-ui);
-  font-size: 22px;
+  font-size: 1.375rem; /* 22px */
   line-height: 1.4;
   letter-spacing: 1px;
 }
@@ -108,7 +109,7 @@
 [data-theme^="pixel-"] h3,
 [data-theme^="pixel-"] h4 {
   font-family: var(--font-ui);
-  font-size: 18px;
+  font-size: 1.125rem; /* 18px */
   line-height: 1.4;
   letter-spacing: 1px;
 }
@@ -116,7 +117,7 @@
 [data-theme^="pixel-"] button,
 [data-theme^="pixel-"] [class*="btn"] {
   font-family: var(--font-ui);
-  font-size: 16px;
+  font-size: 1.125rem; /* 18px: VT323 at 16px reads small (A11Y-11) */
   line-height: 1.4;
   letter-spacing: 1px;
 }
@@ -127,7 +128,7 @@
 [data-theme^="pixel-"] [class*="channel-name"],
 [data-theme^="pixel-"] [class*="guild-name"] {
   font-family: var(--font-ui);
-  font-size: 16px;
+  font-size: 1.125rem; /* 18px: VT323 at 16px reads small (A11Y-11) */
   line-height: 1.4;
   letter-spacing: 1px;
 }
