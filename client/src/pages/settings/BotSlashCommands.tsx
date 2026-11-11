@@ -192,20 +192,15 @@ const BotSlashCommands: Component = () => {
   }
 
   async function handleDeleteCommandNow(commandId: string, _commandName: string) {
-
-    try {
-      await deleteSlashCommand(params.id, commandId);
-      showToast({
-        type: "success",
-        title: "Command deleted",
-        message: "Command deleted successfully",
-        duration: 3000,
-      });
-      loadCommands();
-    } catch (error) {
-      // The dialog stays open and says why (K2).
-      throw error;
-    }
+    // Failures reach the dialog, which stays open and says why (K2).
+    await deleteSlashCommand(params.id, commandId);
+    showToast({
+      type: "success",
+      title: "Command deleted",
+      message: "Command deleted successfully",
+      duration: 3000,
+    });
+    loadCommands();
   }
 
   function handleDeleteAll() {
@@ -219,20 +214,15 @@ const BotSlashCommands: Component = () => {
   }
 
   async function handleDeleteAllNow() {
-
-    try {
-      await deleteAllSlashCommands(params.id);
-      showToast({
-        type: "success",
-        title: "All commands deleted",
-        message: "All commands deleted successfully",
-        duration: 3000,
-      });
-      loadCommands();
-    } catch (error) {
-      // The dialog stays open and says why (K2).
-      throw error;
-    }
+    // Failures reach the dialog, which stays open and says why (K2).
+    await deleteAllSlashCommands(params.id);
+    showToast({
+      type: "success",
+      title: "All commands deleted",
+      message: "All commands deleted successfully",
+      duration: 3000,
+    });
+    loadCommands();
   }
 
   return (

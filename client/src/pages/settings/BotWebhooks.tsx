@@ -151,14 +151,10 @@ const BotWebhooks: Component = () => {
   }
 
   async function handleDeleteNow(webhookId: string) {
-    try {
-      await deleteWebhook(params.id, webhookId);
-      await loadData();
-      showToast({ type: "success", title: "Webhook deleted", duration: 3000 });
-    } catch (error) {
-      // The dialog stays open and says why (K2).
-      throw error;
-    }
+    // Failures reach the dialog, which stays open and says why (K2).
+    await deleteWebhook(params.id, webhookId);
+    await loadData();
+    showToast({ type: "success", title: "Webhook deleted", duration: 3000 });
   }
 
   async function handleToggleActive(wh: WebhookType) {

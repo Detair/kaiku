@@ -115,9 +115,6 @@ const CategoryManager: Component<CategoryManagerProps> = (props) => {
     setLoading(true);
     try {
       await props.onDeleteCategory(categoryId);
-    } catch (err) {
-      // The dialog stays open and says why (K2).
-      throw err;
     } finally {
       setLoading(false);
     }

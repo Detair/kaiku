@@ -101,16 +101,11 @@ const BotApplications: Component = () => {
   }
 
   async function handleCreateBotUserNow(appId: string) {
-
-    try {
-      const tokenData = await createBotUser(appId);
-      setCurrentToken(tokenData);
-      setShowTokenModal(true);
-      loadApplications();
-    } catch (error) {
-      // The dialog stays open and says why (K2).
-      throw error;
-    }
+    // Failures reach the dialog, which stays open and says why (K2).
+    const tokenData = await createBotUser(appId);
+    setCurrentToken(tokenData);
+    setShowTokenModal(true);
+    loadApplications();
   }
 
   function handleResetToken(appId: string) {
@@ -124,21 +119,16 @@ const BotApplications: Component = () => {
   }
 
   async function handleResetTokenNow(appId: string) {
-
-    try {
-      const tokenData = await resetBotToken(appId);
-      setCurrentToken(tokenData);
-      setShowTokenModal(true);
-      showToast({
-        type: "success",
-        title: "Token reset",
-        message: "Token reset successfully",
-        duration: 3000,
-      });
-    } catch (error) {
-      // The dialog stays open and says why (K2).
-      throw error;
-    }
+    // Failures reach the dialog, which stays open and says why (K2).
+    const tokenData = await resetBotToken(appId);
+    setCurrentToken(tokenData);
+    setShowTokenModal(true);
+    showToast({
+      type: "success",
+      title: "Token reset",
+      message: "Token reset successfully",
+      duration: 3000,
+    });
   }
 
   function handleDeleteApplication(appId: string, appName: string) {
@@ -152,20 +142,15 @@ const BotApplications: Component = () => {
   }
 
   async function handleDeleteApplicationNow(appId: string, _appName: string) {
-
-    try {
-      await deleteBotApplication(appId);
-      showToast({
-        type: "success",
-        title: "Application deleted",
-        message: "Application deleted successfully",
-        duration: 3000,
-      });
-      loadApplications();
-    } catch (error) {
-      // The dialog stays open and says why (K2).
-      throw error;
-    }
+    // Failures reach the dialog, which stays open and says why (K2).
+    await deleteBotApplication(appId);
+    showToast({
+      type: "success",
+      title: "Application deleted",
+      message: "Application deleted successfully",
+      duration: 3000,
+    });
+    loadApplications();
   }
 
   function copyToken() {
