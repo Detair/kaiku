@@ -190,11 +190,13 @@ class KaikuWebSocketTest {
     }
 
     @Test
-    fun `sendTracked says whether a frame went out before or after authentication`() = runTest {
+    fun `sendIfAuthenticated sends nothing before Ready and names the socket after it`() = runTest {
         val authenticated = CountDownLatch(1)
+        val received = java.util.Collections.synchronizedList(mutableListOf<String>())
         mockServer.enqueue(
             MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                 override fun onMessage(webSocket: WebSocket, text: String) {
+                    received += text
                     // Answer Ready only when the test says so.
                     if (text.contains("authenticate")) {
                         Thread {
@@ -208,18 +210,21 @@ class KaikuWebSocketTest {
 
         ws.events.test(timeout = 10.seconds) {
             ws.connect(serverUrl(), TOKEN)
-            // Still authenticating: the frame is queued, but the server would drop it.
-            val early = ws.sendTracked(ClientEvent.VoiceJoin("ch-1"))
-            assertTrue(early.sent)
-            assertEquals(null, early.authenticatedSocket)
+            // Still authenticating: nothing is sent.
+            assertEquals(null, ws.sendIfAuthenticated(ClientEvent.VoiceJoin("ch-1")))
             assertEquals(null, ws.authenticatedSocket)
 
             authenticated.countDown()
             awaitItem() // Ready
-            val late = ws.sendTracked(ClientEvent.VoiceJoin("ch-1"))
-            assertTrue(late.sent)
-            assertEquals(1L, late.authenticatedSocket)
+            assertEquals(1L, ws.sendIfAuthenticated(ClientEvent.VoiceJoin("ch-1")))
             assertEquals(1L, ws.authenticatedSocket)
+
+            val deadline = System.currentTimeMillis() + 5_000
+            while (received.none { it.contains("voice_join") } && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10)
+            }
+            // Exactly one voice_join reached the server: the one sent after Ready.
+            assertEquals(1, received.count { it.contains("voice_join") })
 
             cancelAndIgnoreRemainingEvents()
         }

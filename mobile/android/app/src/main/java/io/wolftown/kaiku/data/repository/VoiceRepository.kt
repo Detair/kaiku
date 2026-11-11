@@ -37,6 +37,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -105,10 +106,14 @@ class VoiceRepository @Inject constructor(
 
     /**
      * The authenticated socket the session's last `voice_join` went out on, or
-     * null if it went out before authentication (the server dropped it) or
-     * not at all. Guarded by [sessionLock].
+     * null while none went out (the join is held until the socket's Ready).
+     * Guarded by [sessionLock].
      */
     private var joinedOnSocket: Long? = null
+
+    /** The [joinChannel] that is still setting up the session (its join may be held for Ready). */
+    @Volatile
+    private var initialJoin: Job? = null
 
     /** Thrown inside a join when its session ended meanwhile. */
     private class SessionEnded : CancellationException("voice session ended")
@@ -148,17 +153,32 @@ class VoiceRepository @Inject constructor(
         }
 
     /**
-     * Sends `voice_join` only while [channelId] is live for [job] and records
-     * whether it went out on an authenticated socket (and which one); null if
-     * the session is not live.
+     * Sends `voice_join` (then the current mute state) once the
+     * socket is authenticated, and records on which socket it went out.
+     * Voice signalling waits for Ready: while the socket is Connecting or
+     * absent the join is held, so it goes out exactly once, on the
+     * authenticated socket. Returns false if the session ended meanwhile (then
+     * nothing was sent). If no Ready comes, the offline rules end the session.
      */
-    private fun sendJoinIfLive(channelId: String, job: Job?): Boolean? =
-        synchronized(sessionLock) {
-            if (liveChannel != channelId || job?.isActive == false) return null
-            val receipt = webSocket.sendTracked(ClientEvent.VoiceJoin(channelId))
-            joinedOnSocket = receipt.authenticatedSocket
-            receipt.sent
+    private suspend fun sendJoinWhenAuthenticated(channelId: String, job: Job?): Boolean {
+        while (true) {
+            webSocket.connectionState.first { it == ConnectionState.Connected }
+            val sentOn = synchronized(sessionLock) {
+                if (liveChannel != channelId || job?.isActive == false) return false
+                webSocket.sendIfAuthenticated(ClientEvent.VoiceJoin(channelId))?.also { joinedOnSocket = it }
+            }
+            if (sentOn != null) {
+                // The new server-side peer starts unmuted; the local track stays disabled.
+                if (_isMuted.value) sendIfLive(channelId, job, ClientEvent.VoiceMute(channelId))
+                return true
+            }
+            // Not sent (the socket went away meanwhile): wait for the next Ready.
+            webSocket.connectionState.first { it != ConnectionState.Connected }
         }
+    }
+
+    /** Whether this session's `voice_join` went out at all (nothing to leave otherwise). */
+    private fun joinWentOut(): Boolean = synchronized(sessionLock) { joinedOnSocket != null }
 
     /**
      * Whether the session's `voice_join` went out on the socket that is
@@ -285,6 +305,7 @@ class VoiceRepository @Inject constructor(
 
         val job = currentCoroutineContext()[Job]
         val guard = guardFor(channelId, job)
+        initialJoin = job
         try {
             openSession(channelId)
             _currentChannelId.value = channelId
@@ -322,8 +343,7 @@ class VoiceRepository @Inject constructor(
             }
 
             // 4. Send VoiceJoin
-            sendJoinIfLive(channelId, job) ?: throw SessionEnded()
-            if (muted) sendIfLive(channelId, job, ClientEvent.VoiceMute(channelId))
+            if (!sendJoinWhenAuthenticated(channelId, job)) throw SessionEnded()
 
             // 5. Create the publisher offer (Android-initiated).
             // This adds the mic track, creates an SDP offer, and fires
@@ -362,6 +382,8 @@ class VoiceRepository @Inject constructor(
             logger.log(Level.SEVERE, "Failed to join voice channel: $channelId", e)
             endFailedJoin(channelId)
             throw e
+        } finally {
+            if (initialJoin === job) initialJoin = null
         }
     }
 
@@ -443,10 +465,13 @@ class VoiceRepository @Inject constructor(
             val channelId = _currentChannelId.value ?: joiningOrJoined ?: return@withLock
             _currentChannelId.value = null
 
-            try {
-                webSocket.send(ClientEvent.VoiceLeave(channelId))
-            } catch (e: Exception) {
-                logger.log(Level.WARNING, "Failed to send VoiceLeave", e)
+            // A join still held for Ready never reached the server: nothing to leave.
+            if (joinWentOut()) {
+                try {
+                    webSocket.send(ClientEvent.VoiceLeave(channelId))
+                } catch (e: Exception) {
+                    logger.log(Level.WARNING, "Failed to send VoiceLeave", e)
+                }
             }
 
             cleanUp()
@@ -481,10 +506,16 @@ class VoiceRepository @Inject constructor(
         webRtcManager.setMuted(newMuted)
         _isMuted.value = newMuted
 
-        if (newMuted) {
-            webSocket.send(ClientEvent.VoiceMute(channelId))
-        } else {
-            webSocket.send(ClientEvent.VoiceUnmute(channelId))
+        // Only to the peer our voice_join created on the socket that is up now.
+        // While the join is held (or a rejoin is pending) the state goes out
+        // right after the next voice_join instead.
+        synchronized(sessionLock) {
+            if (!joinedOnCurrentSocket()) return
+            if (newMuted) {
+                webSocket.send(ClientEvent.VoiceMute(channelId))
+            } else {
+                webSocket.send(ClientEvent.VoiceUnmute(channelId))
+            }
         }
     }
 
@@ -590,7 +621,7 @@ class VoiceRepository @Inject constructor(
         val guard = guardFor(channelId, job)
         // A Ready during the first join: let the join finish its setup first,
         // so the attempt never closes connections the join is still creating.
-        val join = synchronized(joinLock) { joinJob }
+        val join = initialJoin
         if (join != null && join !== job) join.join()
         if (!isLive(channelId, job)) return false
         logger.info("Rejoining voice channel: $channelId")
@@ -599,11 +630,7 @@ class VoiceRepository @Inject constructor(
         var connected = false
         try {
             if (!webRtcManager.createSubscriberPeerConnection(guard)) return false
-            if (sendJoinIfLive(channelId, job) != true) return false
-            if (_isMuted.value) {
-                // The new server-side peer starts unmuted; the local track stays disabled.
-                sendIfLive(channelId, job, ClientEvent.VoiceMute(channelId))
-            }
+            if (!sendJoinWhenAuthenticated(channelId, job)) return false
             if (!webRtcManager.createPublisherOffer(guard)) return false
             // Already connected before we started waiting?
             webRtcManager.publisherLink.value.let { link ->
@@ -642,10 +669,12 @@ class VoiceRepository @Inject constructor(
             leaveMutex.withLock {
                 if (_currentChannelId.value != channelId) return@withLock
                 _currentChannelId.value = null
-                try {
-                    webSocket.send(ClientEvent.VoiceLeave(channelId))
-                } catch (e: Exception) {
-                    logger.log(Level.WARNING, "Failed to send VoiceLeave", e)
+                if (joinWentOut()) {
+                    try {
+                        webSocket.send(ClientEvent.VoiceLeave(channelId))
+                    } catch (e: Exception) {
+                        logger.log(Level.WARNING, "Failed to send VoiceLeave", e)
+                    }
                 }
                 cleanUp()
                 _endNotice.value = VoiceEndNotice.RejoinFailed(channelId, wasMuted)
@@ -746,12 +775,13 @@ class VoiceRepository @Inject constructor(
     /**
      * A socket is authenticated. It needs a rejoin unless the session's
      * `voice_join` already went out on this very socket (decided by that fact,
-     * not by timing): a join queued before authentication was dropped by the
-     * server, so then the rejoin is the only effective join. If the first join
-     * has not sent its `voice_join` yet, decide once it has.
+     * not by timing). Voice signalling waits for Ready, so a live session's
+     * join always went out on an authenticated socket; a different socket
+     * number means a real socket loss. If the first join has not sent its
+     * `voice_join` yet (held for this Ready), decide once it has.
      */
     private fun onSocketReady() {
-        val join = synchronized(joinLock) { joinJob?.takeIf { it.isActive } }
+        val join = initialJoin?.takeIf { it.isActive }
         if (join == null) {
             recovery.onSocketReady(startRejoin = !joinedOnCurrentSocket())
             return

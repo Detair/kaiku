@@ -126,20 +126,25 @@ class KaikuWebSocket @Inject constructor(
     }
 
     /**
-     * Like [send], but also says on which authenticated socket the frame went
-     * out ([SendReceipt.authenticatedSocket]); null when it was queued before
-     * the socket's Ready. The server drops every frame that arrives before
-     * authentication, so such a frame never takes effect.
+     * Sends [event] only on an authenticated socket (its Ready was received)
+     * and returns that socket's number, or null without sending anything.
+     *
+     * Voice signalling uses this so nothing voice-related goes out while the
+     * socket is still Connecting: such a frame may or may not reach the server
+     * (it is processed when it arrives after the Authenticate frame, dropped
+     * when sent before the socket opened), so its effect would be unknown.
      */
-    fun sendTracked(event: ClientEvent): SendReceipt {
-        val (socket, authenticated) = synchronized(lock) {
-            webSocket to (if (_connectionState.value == ConnectionState.Connected) authenticatedSockets else null)
+    fun sendIfAuthenticated(event: ClientEvent): Long? {
+        val (socket, number) = synchronized(lock) {
+            if (_connectionState.value != ConnectionState.Connected) return null
+            webSocket to authenticatedSockets
         }
         val sent = socket?.send(json.encodeToString<ClientEvent>(event)) ?: false
         if (!sent) {
             logger.warning("send failed (not connected): ${event::class.simpleName}")
+            return null
         }
-        return SendReceipt(sent, if (sent) authenticated else null)
+        return number
     }
 
     // -- Internal -------------------------------------------------------------
@@ -224,6 +229,3 @@ class KaikuWebSocket @Inject constructor(
         }
     }
 }
-
-/** Result of [KaikuWebSocket.sendTracked]. */
-data class SendReceipt(val sent: Boolean, val authenticatedSocket: Long?)

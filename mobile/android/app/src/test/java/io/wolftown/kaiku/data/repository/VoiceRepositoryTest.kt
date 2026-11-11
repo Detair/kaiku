@@ -26,7 +26,6 @@ import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.ConnectionState
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.VoiceRemovedReason
-import io.wolftown.kaiku.data.ws.SendReceipt
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.service.VoiceCallService
 import kotlinx.coroutines.CoroutineScope
@@ -142,13 +141,14 @@ class VoiceRepositoryTest {
         // Peer connections are installed unless the session ended (the guard says no).
         coEvery { webRtcManager.createSubscriberPeerConnection(any()) } answers { firstArg<SessionGuard>().runIfCurrent {} }
         coEvery { webRtcManager.createPublisherOffer(any()) } answers { firstArg<SessionGuard>().runIfCurrent {} }
-        // voice_join goes through sendTracked: same mock send, plus the socket it went out on.
+        // voice_join goes out only on an authenticated socket (like KaikuWebSocket),
+        // through the same mock send, and reports which socket.
         every { webSocket.authenticatedSocket } answers {
             if (connectionState.value == ConnectionState.Connected) authSeq else null
         }
-        every { webSocket.sendTracked(any()) } answers {
-            val sent = webSocket.send(firstArg())
-            SendReceipt(sent, if (sent) webSocket.authenticatedSocket else null)
+        every { webSocket.sendIfAuthenticated(any()) } answers {
+            if (connectionState.value != ConnectionState.Connected) null
+            else if (webSocket.send(firstArg())) authSeq else null
         }
         every { voiceServiceEvents.events } returns MutableSharedFlow()
 
@@ -315,7 +315,8 @@ class VoiceRepositoryTest {
         advanceUntilIdle()
 
         assertEquals(null, repository.currentChannelId.value)
-        verify { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+        // The join never sent voice_join, so there is nothing to leave.
+        verify(exactly = 0) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
         verify(exactly = 0) { webSocket.send(ClientEvent.VoiceJoin("ch-1")) }
         verify(atLeast = 1) { webRtcManager.closePeerConnections() }
         verify(atLeast = 1) { VoiceCallService.stop(any()) }
@@ -1051,22 +1052,121 @@ class VoiceRepositoryTest {
         assertEquals("ch-1", repository.currentChannelId.value)
     }
 
+    // -- Fix round 3: voice signalling waits for Ready ------------------------
+
+    private fun verifyNoVoiceFrames() {
+        verify(exactly = 0) { webSocket.send(ofType<ClientEvent.VoiceJoin>()) }
+        verify(exactly = 0) { webSocket.send(ofType<ClientEvent.VoiceLeave>()) }
+        verify(exactly = 0) { webSocket.send(ofType<ClientEvent.VoiceMute>()) }
+        verify(exactly = 0) { webSocket.send(ofType<ClientEvent.VoiceUnmute>()) }
+        verify(exactly = 0) { webSocket.send(ofType<ClientEvent.VoicePublisherOffer>()) }
+        verify(exactly = 0) { webSocket.send(ofType<ClientEvent.VoiceIceCandidate>()) }
+    }
+
     @Test
-    fun `a join queued before authentication is sent again after Ready`() = runTest {
-        // The socket is open but not authenticated: the server drops this voice_join.
+    fun `a join requested while the socket authenticates is held and sent once after Ready`() = runTest {
+        // Authenticate is out, Ready not yet: a frame now would reach the server
+        // with unknown timing, so nothing voice-related is sent.
         connectionState.value = ConnectionState.Connecting
-        repository.joinChannel("ch-1")
-        runCurrent() // not advanceUntilIdle: the 60 s offline cap runs
-        verifyJoins(1)
+        repository.startJoin("ch-1")
+        advanceTimeBy(5_000); runCurrent()
+        verifyNoVoiceFrames()
+        assertEquals("ch-1", repository.currentChannelId.value)
+        assertFalse(repository.isConnected.value) // the UI shows "connecting"
+        coVerify(exactly = 0) { webRtcManager.createPublisherOffer(any()) }
 
-        connectionState.value = ConnectionState.Connected // first authentication, socket 1
+        // Ready of socket 1 (its first authentication).
+        connectionState.value = ConnectionState.Connected
         wsEvents.emit(ServerEvent.Ready(userId = "me"))
-        advanceTimeBy(1_000); runCurrent()
+        runCurrent()
+        verifyJoins(1)
+        coVerify(exactly = 1) { webRtcManager.createPublisherOffer(any()) }
 
-        verifyJoins(2)
+        // That Ready starts no recovery: no second join, connections untouched.
+        advanceTimeBy(60_000); runCurrent()
+        verifyJoins(1)
+        verify(exactly = 0) { webRtcManager.closePeerConnections() }
         setPublisher(true)
         runCurrent()
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        assertTrue(repository.isConnected.value)
+    }
+
+    @Test
+    fun `a join requested without a socket is held and sent once on Ready`() = runTest {
+        connectionState.value = ConnectionState.Disconnected
+        repository.startJoin("ch-1")
+        advanceTimeBy(5_000); runCurrent()
+        connectionState.value = ConnectionState.Connecting
+        advanceTimeBy(1_000); runCurrent()
+        verifyNoVoiceFrames()
+
+        connectionState.value = ConnectionState.Connected
+        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        advanceTimeBy(60_000); runCurrent()
+
+        verifyJoins(1)
+        verify(exactly = 0) { webRtcManager.closePeerConnections() }
+        assertEquals("ch-1", repository.currentChannelId.value)
+    }
+
+    @Test
+    fun `leaving while the join is held sends nothing`() = runTest {
+        connectionState.value = ConnectionState.Connecting
+        repository.startJoin("ch-1")
+        advanceTimeBy(5_000); runCurrent()
+
+        repository.leaveChannel()
+        connectionState.value = ConnectionState.Connected
+        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        advanceTimeBy(60_000); runCurrent()
+
+        verifyNoVoiceFrames()
+        assertEquals(null, repository.currentChannelId.value)
+        verify(atLeast = 1) { VoiceCallService.stop(any()) }
+    }
+
+    @Test
+    fun `a mute toggled while the join is held goes out right after the join`() = runTest {
+        recordWebRtcAndSocket()
+        connectionState.value = ConnectionState.Connecting
+        repository.startJoin("ch-1")
+        advanceTimeBy(1_000); runCurrent()
+        repository.toggleMute()
+        verifyNoVoiceFrames()
+
+        connectionState.value = ConnectionState.Connected
+        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        runCurrent()
+
+        assertEquals(log.indexOf("send:VoiceJoin") + 1, log.indexOf("send:VoiceMute"))
+        verify(exactly = 1) { webSocket.send(ClientEvent.VoiceMute("ch-1")) }
+    }
+
+    @Test
+    fun `a full channel cannot destroy a call whose join was held for Ready`() = runTest {
+        // The server would refuse any second voice_join of this user (full channel).
+        var joins = 0
+        every { webSocket.send(ofType<ClientEvent.VoiceJoin>()) } answers {
+            if (++joins > 1) {
+                wsEvents.tryEmit(ServerEvent.VoiceError(code = "VOICE_ERROR", message = "Channel is full"))
+            }
+            true
+        }
+        connectionState.value = ConnectionState.Connecting
+        repository.startJoin("ch-1")
+        runCurrent()
+        connectionState.value = ConnectionState.Connected
+        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        runCurrent()
+        setPublisher(true)
+        advanceTimeBy(120_000); runCurrent()
+
+        assertEquals(1, joins)
+        assertEquals("ch-1", repository.currentChannelId.value)
+        assertTrue(repository.isConnected.value)
+        assertEquals(null, repository.endNotice.value)
+        verify(exactly = 0) { webRtcManager.closePeerConnections() }
     }
 
     @Test
@@ -1074,13 +1174,12 @@ class VoiceRepositoryTest {
         // Socket 1's Ready is handled (collector thread) right before the
         // join (IO thread) sends its voice_join on that same socket.
         var first = true
-        every { webSocket.sendTracked(ClientEvent.VoiceJoin("ch-1")) } answers {
+        every { webSocket.sendIfAuthenticated(ClientEvent.VoiceJoin("ch-1")) } answers {
             if (first) {
                 first = false
                 repository.handleServerEventNow("ch-1", ServerEvent.Ready(userId = "me"))
             }
-            val sent = webSocket.send(firstArg())
-            SendReceipt(sent, webSocket.authenticatedSocket)
+            if (webSocket.send(firstArg())) authSeq else null
         }
         repository.startJoin("ch-1")
         advanceTimeBy(60_000); runCurrent()
@@ -1112,14 +1211,22 @@ class VoiceRepositoryTest {
         repository.startJoin("ch-2")
         runCurrent()
         advanceTimeBy(30_000); runCurrent() // give-up of channel 1 at 60 s
-        verify { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+        verify(atLeast = 1) { VoiceCallService.stop(any()) }
 
         gate.complete(Unit)
         advanceTimeBy(1_000); runCurrent()
 
-        // Channel 1 is torn down and the tap on channel 2 was not lost.
+        // Channel 1 is torn down (its join never went out: nothing to leave)
+        // and the tap on channel 2 was not lost.
         assertEquals("ch-2", repository.currentChannelId.value)
-        verify { webSocket.send(ClientEvent.VoiceJoin("ch-2")) }
+        verify(exactly = 0) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+
+        // Channel 2's join is held until the socket is authenticated.
+        connectionState.value = ConnectionState.Connected
+        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        runCurrent()
+        verify(exactly = 1) { webSocket.send(ClientEvent.VoiceJoin("ch-2")) }
+        verify(exactly = 0) { webSocket.send(ClientEvent.VoiceJoin("ch-1")) }
     }
 
     @Test
