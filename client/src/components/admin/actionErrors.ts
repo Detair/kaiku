@@ -5,6 +5,9 @@
  */
 import { errorText } from "@/i18n/errors";
 import type { MessageKey } from "@/i18n";
+import { HttpError } from "@/lib/tauri/common";
+import { codeIs } from "@/lib/errorCode";
+import { markElevationEnded } from "@/stores/admin";
 
 const BY_CODE: Partial<Record<string, MessageKey>> = {
   ELEVATION_REQUIRED: "admin.mode.expiredRetry",
@@ -19,10 +22,21 @@ const BY_STATUS: Partial<Record<number, MessageKey>> = {
   404: "guildSettings.error.gone",
 };
 
+/**
+ * The server says admin mode is over (Redis TTL, clock skew, another tab):
+ * switch the display off too, so the header never says "on" after this (K3).
+ */
+export function noteElevationEnded(err: unknown): void {
+  if (err instanceof HttpError && (codeIs(err.code, "ELEVATION_REQUIRED") || codeIs(err.code, "ADMIN_NOT_ELEVATED"))) {
+    markElevationEnded();
+  }
+}
+
 /** Sentence for a failed action; `fallback` when the cause is unknown. */
 export function actionErrorText(
   err: unknown,
   fallback: MessageKey = "guildSettings.error.tryAgain",
 ): string {
+  noteElevationEnded(err);
   return errorText(err, fallback, BY_CODE, BY_STATUS);
 }

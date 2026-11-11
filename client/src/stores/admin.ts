@@ -371,6 +371,19 @@ export function getElevationTimeRemaining(): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+/** Turn admin mode off locally and say it ended (time up or server refusal). */
+export function markElevationEnded(): void {
+  if (!adminState.isElevated && !adminState.elevationExpiresAt) return;
+  setAdminState({ isElevated: false, elevationExpiresAt: null, elevationExpired: true });
+  stopElevationTimer();
+}
+
+/** Called by every countdown tick: ends admin mode the moment it is due (K3). */
+export function expireElevationIfDue(): void {
+  const at = adminState.elevationExpiresAt;
+  if (at && Date.now() >= new Date(at).getTime()) markElevationEnded();
+}
+
 /** Hide the "admin mode has ended" notice. */
 export function dismissElevationExpired(): void {
   setAdminState({ elevationExpired: false });

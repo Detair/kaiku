@@ -31,6 +31,7 @@ import {
   loadAdminStats,
   deElevateSession,
   getElevationTimeRemaining,
+  expireElevationIfDue,
   ADMIN_MODE_MINUTES,
 } from "@/stores/admin";
 import { t } from "@/i18n";
@@ -55,6 +56,7 @@ const AdminQuickModal: Component<AdminQuickModalProps> = (props) => {
   createEffect(() => {
     if (adminState.isElevated) {
       const interval = setInterval(() => {
+        expireElevationIfDue();
         setTimeRemaining(getElevationTimeRemaining());
       }, 1000);
 

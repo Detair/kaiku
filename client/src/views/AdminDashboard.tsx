@@ -38,6 +38,7 @@ import {
   getElevationTimeRemaining,
   deElevateSession,
   dismissElevationExpired,
+  expireElevationIfDue,
   ADMIN_MODE_MINUTES,
 } from "@/stores/admin";
 import {
@@ -81,6 +82,7 @@ const AdminDashboard: Component = () => {
     if (adminState.isElevated) {
       setTimeRemaining(getElevationTimeRemaining());
       timerInterval = setInterval(() => {
+        expireElevationIfDue();
         setTimeRemaining(getElevationTimeRemaining());
       }, 1000);
     } else {
