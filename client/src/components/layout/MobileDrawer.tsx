@@ -6,7 +6,9 @@
  * Prevents body scroll while open.
  */
 
-import { Component, JSX, createEffect, onCleanup } from "solid-js";
+import { Component, JSX, Show, createEffect, onCleanup } from "solid-js";
+import { X } from "lucide-solid";
+import { t } from "@/i18n";
 
 interface MobileDrawerProps {
   open: boolean;
@@ -38,6 +40,15 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
       savedOverflow = null;
     }
   });
+
+  // Escape closes an open drawer (NAV-12)
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Escape" && props.open && !e.defaultPrevented) {
+      props.onClose();
+    }
+  };
+  document.addEventListener("keydown", onKeyDown);
+  onCleanup(() => document.removeEventListener("keydown", onKeyDown));
 
   onCleanup(() => {
     // Component disposed mid-lock: restore so we don't leave the page locked
@@ -75,6 +86,19 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
       >
         {props.children}
       </div>
+
+      {/* Close button on the dimmed area next to the drawer (NAV-12) */}
+      <Show when={props.open}>
+        <button
+          type="button"
+          data-testid="mobile-drawer-close"
+          class="absolute top-2 left-[308px] w-11 h-11 flex items-center justify-center rounded-full bg-surface-base/90 text-text-primary"
+          aria-label={t("common.close")}
+          onClick={() => props.onClose()}
+        >
+          <X class="w-5 h-5" aria-hidden="true" />
+        </button>
+      </Show>
     </div>
   );
 };

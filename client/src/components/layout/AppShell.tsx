@@ -24,7 +24,13 @@ import {
   lazy,
   Suspense,
   createSignal,
+  createEffect,
+  on,
+  onCleanup,
 } from "solid-js";
+import { dmsState, getTotalUnreadCount } from "@/stores/dms";
+import { guildsState } from "@/stores/guilds";
+import { APP_NAME } from "@/lib/brand";
 import { useIsMobile } from "@/lib/useBreakpoint";
 import ServerRail from "./ServerRail";
 import Sidebar from "./Sidebar";
@@ -52,6 +58,29 @@ const AppShell: Component<AppShellProps> = (props) => {
   const [drawerOpen, setDrawerOpen] = createSignal(false);
 
   const closeDrawer = () => setDrawerOpen(false);
+
+  // NAV-12: the Home sidebar comes in as finished JSX, so it cannot get an
+  // onNavigate callback. Opening a conversation or the friends page from the
+  // drawer is a navigation, so the drawer closes on it.
+  createEffect(
+    on(
+      [() => dmsState.selectedDMId, () => dmsState.isShowingFriends],
+      () => closeDrawer(),
+      { defer: true },
+    ),
+  );
+
+  // NAV-16: a background tab says how much is unread ("(3) Kaiku").
+  const unreadTotal = () =>
+    getTotalUnreadCount() +
+    Object.values(guildsState.guildUnreadCounts).reduce((sum, n) => sum + (n ?? 0), 0);
+  createEffect(() => {
+    const n = unreadTotal();
+    document.title = n > 0 ? `(${n > 99 ? "99+" : n}) ${APP_NAME}` : APP_NAME;
+  });
+  onCleanup(() => {
+    document.title = APP_NAME;
+  });
 
   // Swipe-right-to-open on the content area's left edge
   let edgeStartX: number | null = null;
