@@ -17,9 +17,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.liveRegion
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.data.repository.PendingMessage
@@ -82,11 +79,8 @@ fun PendingMessageItem(
                 )
             }
 
-            PendingMessage.State.FAILED -> Column(
-                modifier = Modifier
-                    .padding(top = 2.dp)
-                    .semantics { liveRegion = LiveRegionMode.Polite },
-            ) {
+            // No live region: the snackbar already says it once (review K9).
+            PendingMessage.State.FAILED -> Column(modifier = Modifier.padding(top = 2.dp)) {
                 Text(
                     text = stringResource(pendingFailureRes(item.failure)),
                     style = MaterialTheme.typography.labelMedium,

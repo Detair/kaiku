@@ -50,6 +50,12 @@ class TextChannelViewModel @Inject constructor(
     companion object {
         private val logger = Logger.getLogger("TextChannelViewModel")
         private const val KEY_DRAFT = "draft"
+
+        /**
+         * Longer drafts are kept only in memory, not in the saved state: the
+         * saved state goes through a ~1 MB binder transaction (AND-B-19 / K6).
+         */
+        const val MAX_SAVED_DRAFT_CHARS = 16_000
     }
 
     private val channelId: String = savedStateHandle["channelId"]!!
@@ -178,7 +184,8 @@ class TextChannelViewModel @Inject constructor(
 
     private fun setInput(text: String) {
         _messageInput.value = text
-        savedStateHandle[KEY_DRAFT] = text
+        if (text.length <= MAX_SAVED_DRAFT_CHARS) savedStateHandle[KEY_DRAFT] = text
+        else savedStateHandle.remove<String>(KEY_DRAFT)
         outgoing.setDraft(channelId, text)
     }
 
@@ -215,8 +222,17 @@ class TextChannelViewModel @Inject constructor(
     /** "Retry" in the snackbar: every message of this chat that was not sent. */
     fun onRetryFailed() = outgoing.retryAll(channelId)
 
-    /** "Delete" on a message that was not sent. */
-    fun onDiscardPending(localId: String) = outgoing.discard(localId)
+    /**
+     * "Delete" on a message that was not sent. The caption of a photo or video
+     * that could not go out (too large, refused type) comes back into an empty
+     * field, so it can still be sent as text.
+     */
+    fun onDiscardPending(localId: String) {
+        val dropped = outgoing.discard(localId) ?: return
+        if (dropped.attachment != null && dropped.text.isNotBlank() && _messageInput.value.isEmpty()) {
+            setInput(dropped.text)
+        }
+    }
 
     fun onEditMessage(messageId: String, content: String) {
         viewModelScope.launch {

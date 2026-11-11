@@ -129,7 +129,9 @@ fun TextChannelScreen(
     LaunchedEffect(atBottom) { if (atBottom) unseenCount = 0 }
 
     // AND-B-11: a short, polite TalkBack announcement for new messages of others.
-    var announcement by remember { mutableStateOf("") }
+    val announcer = remember { LiveAnnouncer() }
+    LaunchedEffect(announcer) { announcer.run() }
+    val announcement by announcer.text.collectAsState()
 
     // Jump to the newest message on the first non-empty load; afterwards
     // auto-scroll only when a genuinely new message arrives and the user is
@@ -145,11 +147,13 @@ fun TextChannelScreen(
         lastMessageId = newLastId
 
         if (incoming.isNotEmpty()) {
-            announcement = if (incoming.size == 1) {
-                context.getString(R.string.chat_new_message_from, incoming[0].author.displayName)
-            } else {
-                context.resources.getQuantityString(R.plurals.chat_new_messages, incoming.size, incoming.size)
-            }
+            announcer.announce(
+                if (incoming.size == 1) {
+                    context.getString(R.string.chat_new_message_from, incoming[0].author.displayName)
+                } else {
+                    context.resources.getQuantityString(R.plurals.chat_new_messages, incoming.size, incoming.size)
+                }
+            )
         }
         if (!initialScrollDone) {
             initialScrollDone = true
@@ -479,29 +483,6 @@ fun TextChannelScreen(
 internal fun isSecurityNotice(isKaikuDm: Boolean, message: io.wolftown.kaiku.domain.model.Message): Boolean =
     isKaikuDm && message.author.isSystem && message.messageType == "security"
 
-/**
- * While shown, the window resizes for the keyboard (`adjustResize`) instead of
- * panning, so the IME insets reach [imePadding] on every Android version and the
- * title bar stays put. The previous mode is restored on leave, so screens that
- * rely on panning are unchanged.
- */
-@Composable
-private fun KeyboardResizesWindow() {
-    val view = androidx.compose.ui.platform.LocalView.current
-    DisposableEffect(view) {
-        val window = (view.context.findActivity())?.window
-        val previous = window?.attributes?.softInputMode
-        @Suppress("DEPRECATION")
-        window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        onDispose { if (previous != null) window.setSoftInputMode(previous) }
-    }
-}
-
-private tailrec fun android.content.Context.findActivity(): android.app.Activity? = when (this) {
-    is android.app.Activity -> this
-    is android.content.ContextWrapper -> baseContext.findActivity()
-    else -> null
-}
 
 /** A centered day label between messages of different days (AND-B-21). */
 @Composable
