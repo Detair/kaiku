@@ -80,7 +80,7 @@ export async function loadGuilds(): Promise<void> {
   } catch (err) {
     console.error("Failed to load guilds:", err);
     setGuildsState({
-      error: err instanceof Error ? err.message : "Failed to load servers",
+      error: t("home.rail.loadFailed"),
       isLoading: false,
     });
   }

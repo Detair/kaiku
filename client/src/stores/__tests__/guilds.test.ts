@@ -174,7 +174,7 @@ describe("guilds store", () => {
 
       await loadGuilds();
 
-      expect(guildsState.error).toBe("fail");
+      expect(guildsState.error).toBe("Could not load your servers. Click to try again.");
       expect(guildsState.isLoading).toBe(false);
     });
   });

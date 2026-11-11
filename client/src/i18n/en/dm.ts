@@ -32,4 +32,11 @@ export const dm = {
   "dm.new.create": "Create DM",
   "dm.new.createFailed": "Failed to create conversation",
   "dm.list.markAllReadFailed": "Could not mark all DMs as read. Please try again.",
+  "dm.userMenu.sendMessage": "Send Message",
+  "dm.userMenu.addFriend": "Add Friend",
+  "dm.userMenu.requestSentTitle": "Friend request sent",
+  "dm.userMenu.requestSent": "{{name}} gets your request. You will be friends once they accept.",
+  "dm.userMenu.report": "Report",
+  "dm.userMenu.block": "Block",
+  "dm.userMenu.copyId": "Copy User ID",
 } as const satisfies Record<`dm.${string}`, string>;
