@@ -401,3 +401,18 @@ pre code {
     background-color: transparent;
   }
 }
+
+/*
+ * Reduced motion (A11Y-9): people who ask their system for less motion get no
+ * pulsing or bouncing. These classes carry the incoming-call ring, the
+ * speaking indicator, "connecting…" text and the typing dots, and all of them
+ * also show their state without moving. Loading spinners (.animate-spin) are
+ * left alone on purpose: a still circle looks like a frozen app.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse,
+  .animate-bounce,
+  .animate-ping {
+    animation: none !important;
+  }
+}
