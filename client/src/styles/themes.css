@@ -20,14 +20,16 @@
  * --color-text-primary       Main text, headings (high contrast required)
  * --color-text-secondary     Secondary text: timestamps, hints, descriptions
  * --color-text-muted         Tertiary text: helper hints, optional labels, de-emphasized captions.
- *                            >= 4.5:1 on layer1 and layer2 (it is used as 12 px text)
+ *                            >= 4.5:1 on layer1 and layer2 (it is used as 12 px text), and on
+ *                            surface-highlight (selected rows) except pixel-cozy, see contrast.test.ts
  * --color-text-input         Text inside input fields
  * --color-accent-primary     Buttons, links, active indicators
  * --color-accent-primary-hover  Hovered state of accent-primary
  * --color-accent-danger      Delete actions, errors, destructive UI
  * --color-danger-text        Red as TEXT (text-accent-danger/text-danger/text-status-error map
  *                            here, see uno.config.ts). Same hue as accent-danger, >= 4.5:1
- *                            on layer1 and layer2. accent-danger itself stays a fill colour.
+ *                            on layer1 and layer2, also on red-tinted panels (accent-danger /10
+ *                            to /20 and error-bg over them). accent-danger itself stays a fill.
  * --color-danger-fill        Danger button fill (darker, >= 4.5:1 with text-on-danger)
  * --color-accent-success     Online status, success messages, confirmations
  * --color-accent-warning     Warnings, pending states, caution indicators
@@ -85,8 +87,8 @@
   --color-text-primary-rgb: 236 239 244;
   --color-text-secondary: #D8DEE9;
   --color-text-secondary-rgb: 216 222 233;
-  --color-text-muted: #a6afbf;
-  --color-text-muted-rgb: 166 175 191;
+  --color-text-muted: #b4bcc9;
+  --color-text-muted-rgb: 180 188 201;
   --color-text-input: #eceff4;
   --color-text-input-rgb: 236 239 244;
   --color-accent-primary: #88c0d0;
@@ -113,8 +115,8 @@
   --color-error-bg: rgba(191, 97, 106, 0.15);
   --color-error-border: rgba(191, 97, 106, 0.4);
   --color-error-text: #f4b8bf;
-  --color-danger-text: #d9a0a6;
-  --color-danger-text-rgb: 217 160 166;
+  --color-danger-text: #e0b1b6;
+  --color-danger-text-rgb: 224 177 182;
 
   /* UI Icons */
   --icon-accept: url('../assets/icons/accept_request_icon.png');
@@ -154,8 +156,8 @@
   --color-text-primary-rgb: 232 239 239;
   --color-text-secondary: #c3d0d2;
   --color-text-secondary-rgb: 195 208 210;
-  --color-text-muted: #a8b6b9;
-  --color-text-muted-rgb: 168 182 185;
+  --color-text-muted: #b8c3c6;
+  --color-text-muted-rgb: 184 195 198;
   --color-text-input: #fdf6e3;
   --color-text-input-rgb: 253 246 227;
   --color-accent-primary: #4fa6ea;
@@ -215,8 +217,8 @@
   --color-text-primary-rgb: 43 67 74;
   --color-text-secondary: #3f5258;
   --color-text-secondary-rgb: 63 82 88;
-  --color-text-muted: #59666a;
-  --color-text-muted-rgb: 89 102 106;
+  --color-text-muted: #535f63;
+  --color-text-muted-rgb: 83 95 99;
   --color-text-input: #073642;
   --color-text-input-rgb: 7 54 66;
   --color-accent-primary: #1d689e;
@@ -243,8 +245,8 @@
   --color-error-bg: rgba(220, 50, 47, 0.12);
   --color-error-border: rgba(220, 50, 47, 0.35);
   --color-error-text: #a01a18;
-  --color-danger-text: #c22321;
-  --color-danger-text-rgb: 194 35 33;
+  --color-danger-text: #a31d1c;
+  --color-danger-text-rgb: 163 29 28;
   /* White overlays (border-white/N, bg-white/N) are drawn in the text colour. */
   --color-overlay-rgb: var(--color-text-primary-rgb);
 
@@ -324,8 +326,8 @@
   --color-error-bg: rgba(192, 96, 80, 0.15);
   --color-error-border: rgba(192, 96, 80, 0.4);
   --color-error-text: #e8a090;
-  --color-danger-text: #d89e94;
-  --color-danger-text-rgb: 216 158 148;
+  --color-danger-text: #dfb0a8;
+  --color-danger-text-rgb: 223 176 168;
 
   /* States — placeholder, disabled controls, toggles, focus (see header) */
   --color-text-placeholder: #a89c88;
@@ -357,8 +359,8 @@
   --color-text-primary-rgb: 236 239 244;
   --color-text-secondary: #D8DEE9;
   --color-text-secondary-rgb: 216 222 233;
-  --color-text-muted: #a6afbf;
-  --color-text-muted-rgb: 166 175 191;
+  --color-text-muted: #b4bcc9;
+  --color-text-muted-rgb: 180 188 201;
   --color-text-input: #eceff4;
   --color-text-input-rgb: 236 239 244;
   --color-accent-primary: #88c0d0;
@@ -385,8 +387,8 @@
   --color-error-bg: rgba(191, 97, 106, 0.15);
   --color-error-border: rgba(191, 97, 106, 0.4);
   --color-error-text: #f4b8bf;
-  --color-danger-text: #d9a0a6;
-  --color-danger-text-rgb: 217 160 166;
+  --color-danger-text: #e0b1b6;
+  --color-danger-text-rgb: 224 177 182;
 
   /* UI Icons */
   --icon-accept: url('../assets/icons/accept_request_icon.png');
