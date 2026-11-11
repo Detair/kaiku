@@ -251,11 +251,15 @@ const MessageInput: Component<MessageInputProps> = (props) => {
 
   // Remove file from pending list
   const removePendingFile = (id: number) => {
-    setPendingFiles((prev) => {
-      const removed = prev.find((pf) => pf.id === id);
-      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
-      return prev.filter((pf) => pf.id !== id);
-    });
+    const removed = allPendingFiles().find((pf) => pf.id === id);
+    if (!removed) return;
+    if (removed.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+    setPendingFiles((prev) => prev.filter((pf) => pf.id !== id));
+    // The hint under the box names the rejected files: it goes with the last of them.
+    const rejectedLeft = allPendingFiles().some(
+      (pf) => pf.channelId === removed.channelId && pf.error,
+    );
+    if (removed.error && !rejectedLeft) setUploadErrorIn(removed.channelId, null);
   };
 
   /** Cancel only the uploads of the channel on screen. */
@@ -455,6 +459,8 @@ const MessageInput: Component<MessageInputProps> = (props) => {
     const channelId = props.channelId;
     const channelName = props.channelName;
     setSendingIn(channelId, true);
+    // A new send starts clean: an old file problem must not outlive it.
+    setUploadErrorIn(channelId, null);
     const sentRaw = content();
     try {
       const textSent = files.length > 0

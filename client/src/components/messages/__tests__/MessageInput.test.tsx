@@ -458,5 +458,34 @@ describe("MessageInput", () => {
       await waitFor(() => expect(sendMessage).toHaveBeenLastCalledWith("c2", "Hallo B"));
       first.resolve({ id: "m1" });
     });
+
+    it("N5: the file hint goes when the rejected file is removed", async () => {
+      uploadMessageWithFile.mockRejectedValueOnce(new HttpError(415, "x", "INVALID_MIME_TYPE"));
+      const { container } = render(() => (
+        <MessageInput channelId="c1" channelName="general" guildId="g1" />
+      ));
+      const form = container.querySelector("form")!;
+      dropFiles(form, [new File(["a"], "a.heic", { type: "image/heic" })]);
+      fireEvent.submit(form);
+      expect((await screen.findByRole("alert")).textContent).toContain("a.heic was not sent.");
+      fireEvent.click(screen.getByRole("button", { name: "Remove file" }));
+      await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    });
+
+    it("N5: the file hint goes when the next send works", async () => {
+      uploadMessageWithFile
+        .mockRejectedValueOnce(new HttpError(503, "x", "STORAGE_NOT_CONFIGURED"))
+        .mockResolvedValueOnce({ id: "m1" });
+      const { container } = render(() => (
+        <MessageInput channelId="c1" channelName="general" guildId="g1" />
+      ));
+      const form = container.querySelector("form")!;
+      dropFiles(form, [new File(["a"], "a.png", { type: "image/png" })]);
+      fireEvent.submit(form);
+      expect((await screen.findByRole("alert")).textContent).toContain("a.png was not sent.");
+      fireEvent.submit(form);
+      await waitFor(() => expect(uploadMessageWithFile).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    });
   });
 });
