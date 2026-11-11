@@ -41,7 +41,8 @@ internal class LiveAnnouncer(
     }
 
     private companion object {
-        const val GAP_MS = 100L
+        // Compose sends accessibility events about every 100 ms; a shorter gap could merge two equal announcements.
+        const val GAP_MS = 400L
         const val HOLD_MS = 4_000L
     }
 }

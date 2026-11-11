@@ -39,9 +39,20 @@ class AttachmentFilesTest {
     }
     private val seen = mutableListOf<Request>()
 
+    /** Real session state; observers run at once (unconfined). */
+    private val scope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined
+    )
+    private val auth = io.wolftown.kaiku.data.local.AuthState(scope).apply { setLoggedIn("anna") }
+
+    /** Runs inside the network call, before the body is read (a race at the worst moment). */
+    private var duringCall: (AttachmentFiles) -> Unit = {}
+    private lateinit var current: AttachmentFiles
+
     private fun files(body: () -> ResponseBody): AttachmentFiles {
         val transport = Interceptor { chain ->
             seen += chain.request()
+            duringCall(current)
             Response.Builder()
                 .request(chain.request())
                 .protocol(Protocol.HTTP_1_1)
@@ -50,8 +61,11 @@ class AttachmentFilesTest {
                 .body(body())
                 .build()
         }
-        return AttachmentFiles(context, OkHttpClient(), tokens, transport)
+        current = AttachmentFiles(context, OkHttpClient(), tokens, auth, scope, transport)
+        return current
     }
+
+    private fun attachmentsDir() = File(cache, "attachments")
 
     private fun attachment(url: String, size: Long, id: String = "a1") =
         Attachment(id = id, filename = "photo.jpg", mimeType = "image/jpeg", size = size, url = url)
@@ -121,5 +135,75 @@ class AttachmentFilesTest {
             override fun contentLength() = -1L
             override fun source(): BufferedSource = source
         }
+    }
+
+    @Test
+    fun `clearing the cache during a download leaves nothing of it behind`() = runTest {
+        duringCall = { it.clearCache() } // logout teardown while the server is answering
+        val result = runCatching {
+            files { ByteArray(10).toResponseBody(null) }.download(attachment("/api/files/a1", size = 10))
+        }
+
+        assertTrue(result.isFailure) // cancelled call or dropped claim
+        assertFalse(attachmentsDir().exists())
+        assertTrue(partFiles().isEmpty())
+    }
+
+    @Test
+    fun `a download paused before its folder exists cannot bring back a cleared cache`() = runTest {
+        // Teardown clears the cache after the download started but before it created its folder.
+        var cleared = false
+        every { tokens.getServerUrl() } answers {
+            if (!cleared) {
+                cleared = true
+                current.clearCache()
+            }
+            "https://kaiku.test"
+        }
+        val f = files { ByteArray(10).toResponseBody(null) }
+
+        val result = runCatching { f.download(attachment("/api/files/a1", size = 10)) }
+
+        assertTrue(result.isFailure)
+        assertTrue(seen.isEmpty())
+        assertFalse(attachmentsDir().exists())
+    }
+
+    @Test
+    fun `ending the session during a download leaves nothing of it behind`() = runTest {
+        duringCall = { auth.setLoggedOut() }
+        val result = runCatching {
+            files { ByteArray(10).toResponseBody(null) }.download(attachment("/api/files/a1", size = 10))
+        }
+
+        assertTrue(result.isFailure)
+        assertFalse(attachmentsDir().exists())
+    }
+
+    @Test
+    fun `a download of account A started before switching to B is never sent`() = runTest {
+        // The switch lands after the download took its claim, before the request goes out.
+        every { tokens.getServerUrl() } answers {
+            if (auth.currentUserId.value == "anna") auth.setLoggedIn("bert")
+            "https://kaiku.test"
+        }
+        val f = files { ByteArray(3).toResponseBody(null) }
+
+        val result = runCatching { f.download(attachment("/api/files/a1", size = 3)) }
+
+        assertTrue(result.isFailure)
+        assertTrue(seen.isEmpty()) // never reached the network, so never with B's token
+        assertFalse(attachmentsDir().exists())
+    }
+
+    @Test
+    fun `clearing moves the folder away at once and deletes it in the background`() = runTest {
+        val f = files { ByteArray(4).toResponseBody(null) }
+        f.download(attachment("/api/files/a1", size = 4))
+
+        f.clearCache()
+
+        assertFalse(attachmentsDir().exists())
+        assertTrue(cache.listFiles().orEmpty().none { it.name.startsWith("attachments") })
     }
 }
