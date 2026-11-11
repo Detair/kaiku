@@ -170,6 +170,8 @@ const ChannelList: Component<ChannelListProps> = (props) => {
   const handleVoiceChannelClick = (channelId: string) => {
     // Just select the channel — VoiceChannelView handles join/leave
     selectChannel(channelId);
+    // Close the mobile drawer like text channels do (NAV-12)
+    props.onNavigate?.();
   };
 
   const openCreateModal = (
@@ -419,16 +421,14 @@ const ChannelList: Component<ChannelListProps> = (props) => {
         >
           <div class="flex items-center group">
             <Show when={draggable}>
-              <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity mr-1">
+              <div class="cursor-grab text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity mr-1" aria-hidden="true">
                 <GripVertical class="w-3 h-3" />
               </div>
             </Show>
             <div class="flex-1">
               <ChannelItem
                 channel={channel}
-                isSelected={
-                  !isVoice && channelsState.selectedChannelId === channel.id
-                }
+                isSelected={channelsState.selectedChannelId === channel.id}
                 onClick={
                   isVoice
                     ? () => handleVoiceChannelClick(channel.id)
@@ -624,22 +624,26 @@ const ChannelList: Component<ChannelListProps> = (props) => {
             <span class="text-xs font-bold text-text-secondary uppercase tracking-wider group-hover:text-text-primary transition-colors">
               {t("channels.list.uncategorized")}
             </span>
-            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            {/* Visible on hover, keyboard focus and touch screens (NAV-19) */}
+            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100 transition-opacity">
               <button
                 class="p-1 text-text-secondary hover:text-accent-primary rounded-lg hover:bg-white/10 transition-all duration-200"
                 title={t("channels.list.testMicrophone")} aria-label={t("channels.list.testMicrophone")}
                 onClick={() => setShowMicTest(true)}
               >
-                <Mic class="w-4 h-4" />
+                <Mic class="w-4 h-4" aria-hidden="true" />
               </button>
-              <button
-                class="p-1 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
-                data-testid="create-channel-button"
-                title={t("channels.list.createChannel")} aria-label={t("channels.list.createChannel")}
-                onClick={() => openCreateModal("text", null)}
-              >
-                <Plus class="w-4 h-4" />
-              </button>
+              {/* Only for people who may create channels (NAV-18) */}
+              <Show when={canManageChannels()}>
+                <button
+                  class="p-1 text-text-secondary hover:text-text-primary rounded-lg hover:bg-white/10 transition-all duration-200"
+                  data-testid="create-channel-button"
+                  title={t("channels.list.createChannel")} aria-label={t("channels.list.createChannel")}
+                  onClick={() => openCreateModal("text", null)}
+                >
+                  <Plus class="w-4 h-4" aria-hidden="true" />
+                </button>
+              </Show>
             </div>
           </div>
           <div class="space-y-0.5">

@@ -396,6 +396,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Chat: opening an older search result or pinned message loads the messages around it and scrolls there; "Show in chat" in the pin panel works.
 - Direct messages no longer offer "Reply in Thread", which did nothing there.
 - Search, pinned messages, threads and the emoji picker are translated; the search filter lists people by name instead of asking for an internal user ID.
+- New Message lists everyone you share a server with, friends first, so family members can write to each other without a friend request.
+- Joining through an invite link opens the server instead of stopping at "Redirecting…".
+- Opening Home, another server or Explore Servers keeps you in the voice call, and the call controls stay visible on Home.
+- Friends can be written to from the friends list; new friend requests show a notice and a count on Home, and unread direct messages show on the Home icon.
+- "New Message" is always visible, signing out asks first, and the phone menu closes after picking a conversation or voice channel.
+- Channel lists work by keyboard, touch and screen reader: category headers are buttons, hidden buttons appear on focus and touch, unread dots are announced. The browser tab shows the number of unread messages.
 
 ### Security
 - E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting

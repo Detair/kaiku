@@ -33,6 +33,7 @@ import CustomStatusModal from "@/components/ui/CustomStatusModal";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { CustomStatus } from "@/lib/types";
 import { truncate } from "@/lib/utils";
+import LogoutConfirmDialog from "./LogoutConfirmDialog";
 
 const SettingsModal = lazy(() => import("@/components/settings/SettingsModal"));
 const AdminQuickModal = lazy(
@@ -54,6 +55,7 @@ const UserPanel: Component = () => {
   const [showAdmin, setShowAdmin] = createSignal(false);
   const [showStatusPicker, setShowStatusPicker] = createSignal(false);
   const [showCustomStatusModal, setShowCustomStatusModal] = createSignal(false);
+  const [confirmLogout, setConfirmLogout] = createSignal(false);
 
   // Get current custom status from presence store
   const currentCustomStatus = () => {
@@ -107,11 +109,13 @@ const UserPanel: Component = () => {
           />
         </Show>
 
-        <div class="flex items-center gap-3">
+        {/* Wraps the buttons below the name when space runs out (large
+            text), so the name never shrinks to nothing */}
+        <div class="flex flex-wrap items-center gap-x-1 gap-y-1">
           {/* User info - Click to change status */}
           <Show when={user()}>
             <button
-              class="flex items-center gap-2.5 flex-1 min-w-0 text-left hover:bg-white/5 p-1 rounded-lg transition-colors -ml-1"
+              class="flex items-center gap-2.5 flex-1 min-w-[6.5rem] text-left hover:bg-white/5 p-1 rounded-lg transition-colors -ml-1"
               data-testid="change-status-button"
               data-current-status={user()?.status || "online"}
               onClick={() => setShowStatusPicker(!showStatusPicker())}
@@ -140,7 +144,8 @@ const UserPanel: Component = () => {
             </button>
           </Show>
 
-          {/* Action buttons */}
+          {/* Action buttons: compact group, sign-out kept apart (NAV-9) */}
+          <div class="flex items-center gap-0.5 ml-auto">
           <Show when={adminState.isAdmin}>
             <button
               class="p-1.5 hover:bg-white/10 rounded-lg transition-all duration-200"
@@ -164,16 +169,29 @@ const UserPanel: Component = () => {
           >
             <Settings class="w-4 h-4" />
           </button>
+          {/* Sign out sits apart from the gear and asks first (NAV-9, KONTO-7) */}
           <button
             data-testid="logout-button"
-            class="p-1.5 text-text-secondary hover:text-accent-danger hover:bg-white/10 rounded-lg transition-all duration-200"
+            class="ml-1.5 p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-all duration-200"
             title={t("home.userPanel.logout")} aria-label={t("home.userPanel.logout")}
-            onClick={() => logout()}
+            aria-haspopup="dialog"
+            onClick={() => setConfirmLogout(true)}
           >
-            <LogOut class="w-4 h-4" />
+            <LogOut class="w-4 h-4" aria-hidden="true" />
           </button>
+          </div>
         </div>
       </div>
+
+      <Show when={confirmLogout()}>
+        <LogoutConfirmDialog
+          onCancel={() => setConfirmLogout(false)}
+          onConfirm={() => {
+            setConfirmLogout(false);
+            void logout();
+          }}
+        />
+      </Show>
 
       {/* Settings Modal */}
       <Show when={showSettings()}>

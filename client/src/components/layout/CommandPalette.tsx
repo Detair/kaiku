@@ -6,7 +6,7 @@
  *
  * Features:
  * - Global keyboard trigger (Ctrl/Cmd + K)
- * - Fuzzy search for channels, users, and commands
+ * - Search for channels of the current server and commands
  * - Keyboard navigation (Up/Down/Enter/Esc)
  * - Command execution (> prefix for actions like "> Mute")
  * - Optimized search (memoized item list, only filters on keystroke)
@@ -27,6 +27,7 @@ import {
   onCleanup,
 } from "solid-js";
 import { Hash, Volume2, Search, Mic, MicOff, VolumeX } from "lucide-solid";
+import { t } from "@/i18n";
 import { channelsState, selectChannel, visibleChannels } from "@/stores/channels";
 import { setShowGlobalSearch } from "@/stores/search";
 import { toggleMute, toggleDeafen, voiceState } from "@/stores/voice";
@@ -68,7 +69,7 @@ const CommandPalette: Component = () => {
     items.push({
       id: "cmd-search-everywhere",
       type: "command",
-      label: "Search Everywhere",
+      label: t("home.palette.searchEverywhere"),
       icon: Search,
       action: () => {
         setIsOpen(false);
@@ -81,7 +82,7 @@ const CommandPalette: Component = () => {
       items.push({
         id: "cmd-mute",
         type: "command",
-        label: voiceState.muted ? "Unmute Microphone" : "Mute Microphone",
+        label: voiceState.muted ? t("home.palette.unmute") : t("home.palette.mute"),
         icon: voiceState.muted ? MicOff : Mic,
         action: () => {
           toggleMute();
@@ -91,7 +92,7 @@ const CommandPalette: Component = () => {
       items.push({
         id: "cmd-deafen",
         type: "command",
-        label: voiceState.deafened ? "Undeafen" : "Deafen",
+        label: voiceState.deafened ? t("home.palette.undeafen") : t("home.palette.deafen"),
         icon: VolumeX,
         action: () => {
           toggleDeafen();
@@ -193,7 +194,7 @@ const CommandPalette: Component = () => {
         {/* Command Palette Dialog */}
         <div
           data-testid="command-palette"
-          class="w-[600px] border border-white/10 shadow-2xl rounded-xl overflow-hidden animate-slide-up"
+          class="w-[600px] max-w-[calc(100vw-2rem)] border border-white/10 shadow-2xl rounded-xl overflow-hidden animate-slide-up"
           style={{"background-color":"var(--color-surface-layer2)"}}
         >
           {/* Input */}
@@ -202,7 +203,8 @@ const CommandPalette: Component = () => {
               ref={inputRef}
               data-testid="command-palette-input"
               type="text"
-              placeholder="Search channels, users, or type > for commands..."
+              placeholder={t("home.palette.placeholder")}
+              aria-label={t("home.palette.placeholder")}
               class="w-full px-6 py-4 bg-transparent text-xl text-text-input outline-none placeholder:text-text-placeholder"
               value={query()}
               onInput={(e) => setQuery(e.currentTarget.value)}
@@ -215,7 +217,7 @@ const CommandPalette: Component = () => {
               when={filteredItems().length > 0}
               fallback={
                 <div class="px-6 py-8 text-center text-text-secondary">
-                  No results found
+                  {t("home.palette.noResults")}
                 </div>
               }
             >
@@ -239,7 +241,7 @@ const CommandPalette: Component = () => {
                     </span>
                     <Show when={item.type === "command"}>
                       <span class="ml-auto text-xs text-text-secondary">
-                        Command
+                        {t("home.palette.command")}
                       </span>
                     </Show>
                   </button>
@@ -255,19 +257,19 @@ const CommandPalette: Component = () => {
                 <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">
                   ↑↓
                 </kbd>
-                <span class="ml-1">Navigate</span>
+                <span class="ml-1">{t("home.palette.hintNavigate")}</span>
               </div>
               <div>
                 <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">
                   Enter
                 </kbd>
-                <span class="ml-1">Select</span>
+                <span class="ml-1">{t("home.palette.hintSelect")}</span>
               </div>
               <div>
                 <kbd class="px-1.5 py-0.5 bg-surface-layer2 rounded border border-white/10">
                   Esc
                 </kbd>
-                <span class="ml-1">Close</span>
+                <span class="ml-1">{t("common.close")}</span>
               </div>
             </div>
           </div>

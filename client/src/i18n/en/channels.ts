@@ -3,9 +3,11 @@ export const channels = {
   "channels.category.voiceOnly": "Voice only",
   "channels.category.createChannel": "Create Channel",
   "channels.category.settings": "Category Settings",
+  "channels.category.hasUnread": "Unread messages",
 
-  "channels.item.disconnectHint": "Click to disconnect",
-  "channels.item.joinVoiceHint": "Click to join voice",
+  "channels.item.inVoiceHint": "You are in this voice channel. Click to open it.",
+  "channels.item.openVoiceHint": "Open voice channel",
+  "channels.item.unread": "Unread messages",
   "channels.item.muted": "Notifications muted",
   "channels.item.removeFavorite": "Remove from favorites",
   "channels.item.addFavorite": "Add to favorites",

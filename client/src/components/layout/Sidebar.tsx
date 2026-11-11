@@ -148,13 +148,13 @@ const Sidebar: Component<SidebarProps> = (props) => {
             class="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-text-muted border border-white/5 hover:border-white/10 transition-colors"
             style={{"background-color":"var(--color-surface-base)"}}
           >
-            <Search class="w-4 h-4" />
-            <span>{t("home.guildSidebar.searchMessages")}</span>
+            <Search class="w-4 h-4 flex-shrink-0" />
+            <span class="min-w-0 truncate whitespace-nowrap">{t("home.guildSidebar.searchMessages")}</span>
           </button>
         </Show>
         <Show when={!activeGuild()}>
           <div
-            class="w-full px-3 py-2 rounded-xl text-sm text-text-muted border border-white/5"
+            class="w-full px-3 py-2 rounded-xl text-sm text-text-muted border border-white/5 truncate whitespace-nowrap"
             style={{"background-color":"var(--color-surface-base)"}}
           >
             {t("home.guildSidebar.search")}
