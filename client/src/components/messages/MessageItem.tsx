@@ -946,6 +946,8 @@ const MessageItem: Component<MessageItemProps> = (props) => {
                             loading="lazy"
                             onError={onImgError}
                             onLoad={(e) => {
+                              // Loaded: a later expiry may refresh once again.
+                              refreshedAfterError = false;
                               (
                                 e.target as HTMLImageElement
                               ).classList.remove("opacity-0");

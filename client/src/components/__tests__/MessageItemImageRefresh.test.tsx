@@ -76,4 +76,20 @@ describe("MessageItem image URL refresh (R5)", () => {
     expect(urls.getAttachmentUrl).toHaveBeenCalledTimes(2);
     expect(urls.invalidateAttachmentUrl).toHaveBeenCalledTimes(1);
   });
+
+  it("a successful load allows one more refresh later (W1-N6)", async () => {
+    urls.getAttachmentUrl
+      .mockResolvedValueOnce("https://s3.example/one")
+      .mockResolvedValueOnce("https://s3.example/two")
+      .mockResolvedValueOnce("https://s3.example/three");
+    const { container } = render(() => <MessageItem message={imageMessage()} />);
+    const img = () => container.querySelector("img[alt='cat.png']") as HTMLImageElement;
+    await waitFor(() => expect(img()?.getAttribute("src")).toBe("https://s3.example/one"));
+    fireEvent.error(img());
+    await waitFor(() => expect(img().getAttribute("src")).toBe("https://s3.example/two"));
+    fireEvent.load(img());
+    fireEvent.error(img());
+    await waitFor(() => expect(img().getAttribute("src")).toBe("https://s3.example/three"));
+    expect(urls.invalidateAttachmentUrl).toHaveBeenCalledTimes(2);
+  });
 });

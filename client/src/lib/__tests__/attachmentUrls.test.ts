@@ -117,8 +117,13 @@ describe("attachment URLs (C24)", () => {
 });
 
 describe("attachment URL cache is bound to the session (R5)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getSignedUrl).mockReset();
     clearAttachmentUrls();
     created.length = 0;
     revoked.length = 0;
@@ -195,6 +200,16 @@ describe("attachment URL cache is bound to the session (R5)", () => {
     clearAttachmentUrls();
     await expect(getAttachmentUrl("gone1")).rejects.toThrow(/404/);
     expect(getSignedUrl).toHaveBeenCalledTimes(2);
+  });
+
+  it("forgets 'gone' after five minutes (access may be granted later, W1-N7)", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getSignedUrl).mockRejectedValueOnce(new HttpError(403, "forbidden"));
+    await expect(getAttachmentUrl("later1")).rejects.toThrow(/403/);
+    vi.advanceTimersByTime(5 * 60_000 + 1);
+    vi.mocked(getSignedUrl).mockResolvedValueOnce({ url: "https://s3.example/now", expires_in: 300 });
+    expect(await getAttachmentUrl("later1")).toBe("https://s3.example/now");
+    vi.useRealTimers();
   });
 
   it("does not load a file above the byte limit into a blob", async () => {

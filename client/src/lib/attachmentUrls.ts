@@ -21,6 +21,8 @@ import { getAuthContext, HttpError } from "@/lib/tauri/common";
 
 /** Ask again this long before the presigned URL expires. */
 const REFRESH_MARGIN_MS = 60_000;
+/** "Gone" (403/404) is remembered this long; access may be granted later. */
+const GONE_TTL_MS = 5 * 60_000;
 /** At most this many cached URLs; the least recently used go first. */
 const MAX_ENTRIES = 200;
 /**
@@ -64,7 +66,7 @@ type Entry =
       /** A blob URL this cache created and must revoke. */
       blob: boolean;
     }
-  | { kind: "gone"; status: number };
+  | { kind: "gone"; status: number; until: number };
 
 const cache = new Map<string, Entry>();
 const inFlight = new Map<string, Promise<string>>();
@@ -157,8 +159,8 @@ async function load(
     }
     const gone = isGoneStatus(err);
     if (gone !== null) {
-      // Deleted or not visible: remembered for this session, not retried.
-      remember(key, { kind: "gone", status: gone });
+      // Deleted or not visible: not retried for GONE_TTL_MS.
+      remember(key, { kind: "gone", status: gone, until: Date.now() + GONE_TTL_MS });
       throw new AttachmentGoneError(gone);
     }
     if ((opts.sizeHint ?? 0) > BLOB_FALLBACK_MAX_BYTES) throw new AttachmentTooLargeError();
@@ -168,7 +170,11 @@ async function load(
       blob = await fetchAsBlob(attachmentId, variant);
     } catch (fallbackErr) {
       if (current() && fallbackErr instanceof AttachmentGoneError) {
-        remember(key, { kind: "gone", status: fallbackErr.status });
+        remember(key, {
+          kind: "gone",
+          status: fallbackErr.status,
+          until: Date.now() + GONE_TTL_MS,
+        });
       }
       throw fallbackErr;
     }
@@ -192,8 +198,10 @@ export function getAttachmentUrl(
 ): Promise<string> {
   const key = keyOf(attachmentId, variant);
   const cached = cache.get(key);
-  if (cached?.kind === "gone") return Promise.reject(new AttachmentGoneError(cached.status));
-  if (cached && Date.now() < cached.refreshAt) {
+  if (cached?.kind === "gone" && Date.now() < cached.until) {
+    return Promise.reject(new AttachmentGoneError(cached.status));
+  }
+  if (cached?.kind === "url" && Date.now() < cached.refreshAt) {
     touch(key, cached);
     return Promise.resolve(cached.url);
   }
