@@ -5,13 +5,18 @@
  */
 
 import { Component, createSignal, For, onMount, Show } from "solid-js";
-import { Users, Search, UserPlus } from "lucide-solid";
+import { Users, Search, UserPlus, MessageSquare } from "lucide-solid";
+import { t, plural } from "@/i18n";
+import type { MessageKey } from "@/i18n";
+import { showToast } from "@/components/ui/Toast";
+import { openDirectMessage } from "@/stores/dms";
 import {
   friendsState,
   loadFriends,
   loadPendingRequests,
   loadBlocked,
   getOnlineFriends,
+  getIncomingRequestCount,
   acceptFriendRequest,
   rejectFriendRequest,
   cancelFriendRequest,
@@ -28,6 +33,27 @@ import flokiThinking from "@/assets/emotes/floki_emote_2.webp";
 import flokiCool from "@/assets/emotes/floki_emote_4.webp";
 
 type FriendsTab = "online" | "all" | "pending" | "blocked";
+
+const TAB_LABEL: Record<FriendsTab, MessageKey> = {
+  online: "home.friends.tab.online",
+  all: "home.friends.tab.all",
+  pending: "home.friends.tab.pending",
+  blocked: "home.friends.tab.blocked",
+};
+
+const EMPTY_TITLE: Record<FriendsTab, MessageKey> = {
+  online: "home.friends.empty.onlineTitle",
+  all: "home.friends.empty.allTitle",
+  pending: "home.friends.empty.pendingTitle",
+  blocked: "home.friends.empty.blockedTitle",
+};
+
+const EMPTY_HINT: Record<FriendsTab, MessageKey> = {
+  online: "home.friends.empty.onlineHint",
+  all: "home.friends.empty.allHint",
+  pending: "home.friends.empty.pendingHint",
+  blocked: "home.friends.empty.blockedHint",
+};
 
 const FriendsList: Component = () => {
   const [tab, setTab] = createSignal<FriendsTab>("online");
@@ -94,12 +120,27 @@ const FriendsList: Component = () => {
 
   const handleRemove = async (friendshipId: string) => {
     try {
-      if (confirm("Are you sure you want to remove this friend?")) {
+      if (confirm(t("home.friends.removeConfirm"))) {
         await removeFriend(friendshipId);
       }
     } catch (err) {
       // Store already shows toast; just log here
       console.error("Failed to remove friend:", err);
+    }
+  };
+
+  // NAV-3: a friend is someone you can write to.
+  const handleMessage = async (userId: string) => {
+    try {
+      await openDirectMessage([userId]);
+    } catch (err) {
+      console.error("Failed to open conversation:", err);
+      showToast({
+        type: "error",
+        title: t("home.friends.toast.messageFailedTitle"),
+        message: t("home.friends.toast.messageFailed"),
+        duration: 8000,
+      });
     }
   };
 
@@ -114,18 +155,18 @@ const FriendsList: Component = () => {
 
   return (
     <div class="flex-1 flex flex-col h-full">
-      {/* Tab bar with Search */}
-      <div class="flex items-center gap-4 px-4 py-3 border-b border-white/10">
+      {/* Tab bar with Search: wraps on narrow windows (NAV-13, LIVE-8) */}
+      <div data-testid="friends-header" class="flex flex-wrap items-center gap-x-2 gap-y-2 px-4 py-3 border-b border-white/10">
         <div class="flex items-center gap-1 text-text-primary mr-2">
-          <Users class="w-5 h-5" />
-          <span class="font-bold">Friends</span>
+          <Users class="w-5 h-5" aria-hidden="true" />
+          <h2 class="font-bold">{t("home.sidebar.friends")}</h2>
         </div>
 
-        <div class="h-6 w-px bg-white/10 mx-2" />
-
+        <div class="flex flex-wrap items-center gap-1">
         <button
           data-testid="friends-tab-online"
           onClick={() => setTab("online")}
+          aria-pressed={tab() === "online"}
           class="px-3 py-1 rounded-lg font-medium transition-colors text-sm"
           classList={{
             "bg-white/10 text-text-primary": tab() === "online",
@@ -133,11 +174,12 @@ const FriendsList: Component = () => {
               tab() !== "online",
           }}
         >
-          Online
+          {t(TAB_LABEL.online)}
         </button>
         <button
           data-testid="friends-tab-all"
           onClick={() => setTab("all")}
+          aria-pressed={tab() === "all"}
           class="px-3 py-1 rounded-lg font-medium transition-colors text-sm"
           classList={{
             "bg-white/10 text-text-primary": tab() === "all",
@@ -145,11 +187,12 @@ const FriendsList: Component = () => {
               tab() !== "all",
           }}
         >
-          All
+          {t(TAB_LABEL.all)}
         </button>
         <button
           data-testid="friends-tab-pending"
           onClick={() => setTab("pending")}
+          aria-pressed={tab() === "pending"}
           class="px-3 py-1 rounded-lg font-medium transition-colors text-sm"
           classList={{
             "bg-white/10 text-text-primary": tab() === "pending",
@@ -157,16 +200,17 @@ const FriendsList: Component = () => {
               tab() !== "pending",
           }}
         >
-          Pending
-          <Show when={friendsState.pendingRequests.length > 0}>
-            <span class="ml-2 px-1.5 py-0.5 bg-accent-danger text-white text-[10px] rounded-full">
-              {friendsState.pendingRequests.length}
+          {t(TAB_LABEL.pending)}
+          <Show when={getIncomingRequestCount() > 0}>
+            <span class="ml-2 px-1.5 py-0.5 bg-accent-primary text-on-accent text-xs font-bold rounded-full">
+              {getIncomingRequestCount()}
             </span>
           </Show>
         </button>
         <button
           data-testid="friends-tab-blocked"
           onClick={() => setTab("blocked")}
+          aria-pressed={tab() === "blocked"}
           class="px-3 py-1 rounded-lg font-medium transition-colors text-sm"
           classList={{
             "bg-white/10 text-text-primary": tab() === "blocked",
@@ -174,33 +218,57 @@ const FriendsList: Component = () => {
               tab() !== "blocked",
           }}
         >
-          Blocked
+          {t(TAB_LABEL.blocked)}
         </button>
+        </div>
 
         <div class="flex-1" />
 
         <Show when={tab() !== "pending" && tab() !== "blocked"}>
-          <div class="relative w-48">
+          <div class="relative w-48 max-w-full">
             <input
               type="text"
-              placeholder="Search friends..."
+              placeholder={t("home.friends.searchPlaceholder")}
+              aria-label={t("home.friends.searchPlaceholder")}
               value={filterQuery()}
               onInput={(e) => setFilterQuery(e.currentTarget.value)}
               class="w-full pl-8 pr-3 py-1 bg-surface-base rounded-md text-sm text-text-input outline-none border border-white/5 focus:border-accent-primary/50 transition-colors"
             />
-            <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary" />
+            <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary" aria-hidden="true" />
           </div>
         </Show>
 
         <button
           data-testid="add-friend-button"
           onClick={() => setShowAddFriend(true)}
-          class="btn-primary py-1 px-3 text-sm flex items-center gap-2"
+          class="btn-primary py-1 px-3 text-sm flex items-center gap-2 whitespace-nowrap"
         >
-          <UserPlus class="w-4 h-4" />
-          Add Friend
+          <UserPlus class="w-4 h-4" aria-hidden="true" />
+          {t("home.sidebar.addFriend")}
         </button>
       </div>
+
+      {/* Requests waiting for me, at every window width (NAV-4, NAV-17) */}
+      <Show when={tab() !== "pending" && getIncomingRequestCount() > 0}>
+        <div
+          data-testid="friends-request-banner"
+          class="mx-4 mt-3 flex items-center gap-3 px-3 py-2 rounded-lg bg-accent-primary/20 border border-accent-primary/30"
+        >
+          <UserPlus class="w-4 h-4 text-text-primary flex-shrink-0" aria-hidden="true" />
+          <span class="flex-1 text-sm text-text-primary">
+            {plural(getIncomingRequestCount(), {
+              one: "home.friends.requestBanner.one",
+              other: "home.friends.requestBanner.other",
+            })}
+          </span>
+          <button
+            class="px-3 py-1 rounded-lg text-sm font-medium bg-white/10 text-text-primary hover:bg-white/20 transition-colors"
+            onClick={() => setTab("pending")}
+          >
+            {t("home.friends.requestBannerShow")}
+          </button>
+        </div>
+      </Show>
 
       {/* Friend list */}
       <div class="flex-1 overflow-y-auto">
@@ -210,7 +278,7 @@ const FriendsList: Component = () => {
             <div class="flex flex-col items-center justify-center h-full py-12">
               <Show
                 when={!friendsState.isLoading}
-                fallback={<div class="text-text-secondary">Loading...</div>}
+                fallback={<div class="text-text-secondary">{t("common.loading")}</div>}
               >
                 <img
                   src={
@@ -225,30 +293,18 @@ const FriendsList: Component = () => {
                   loading="lazy"
                 />
                 <div class="text-sm font-medium text-text-primary mb-1">
-                  {tab() === "online"
-                    ? "No one's online right now"
-                    : tab() === "pending"
-                      ? "No pending requests"
-                      : tab() === "blocked"
-                        ? "No blocked users"
-                        : "No friends yet"}
+                  {t(EMPTY_TITLE[tab()])}
                 </div>
-                <p class="text-xs text-text-muted">
-                  {tab() === "online"
-                    ? "When friends come online, they'll appear here"
-                    : tab() === "pending"
-                      ? "Friend requests you send or receive will show up here"
-                      : tab() === "blocked"
-                        ? "Users you block won't be able to message or call you"
-                        : "Add friends to start chatting, calling, and gaming together"}
+                <p class="text-xs text-text-secondary text-center px-4">
+                  {t(EMPTY_HINT[tab()])}
                 </p>
-                <Show when={tab() === "all"}>
+                <Show when={tab() === "all" || tab() === "online"}>
                   <button
                     onClick={() => setShowAddFriend(true)}
                     class="mt-3 btn-primary py-1.5 px-4 text-sm flex items-center gap-2"
                   >
-                    <UserPlus class="w-4 h-4" />
-                    Add Friend
+                    <UserPlus class="w-4 h-4" aria-hidden="true" />
+                    {t("home.sidebar.addFriend")}
                   </button>
                 </Show>
               </Show>
@@ -257,7 +313,7 @@ const FriendsList: Component = () => {
         >
           <div class="space-y-2 p-4">
             <div class="text-xs font-semibold text-text-secondary uppercase tracking-wide mb-2 px-2">
-              {tab()} — {filteredFriends().length}
+              {t("home.friends.sectionCount", { tab: t(TAB_LABEL[tab()]), count: filteredFriends().length })}
             </div>
             <For each={filteredFriends()}>
               {(friend) => (
@@ -268,6 +324,7 @@ const FriendsList: Component = () => {
                   onReject={handleReject}
                   onCancel={handleCancel}
                   onRemove={handleRemove}
+                  onMessage={handleMessage}
                   onUnblock={handleUnblock}
                 />
               )}
@@ -291,6 +348,7 @@ interface FriendItemProps {
   onReject: (friendshipId: string) => void;
   onCancel: (friendshipId: string) => void;
   onRemove: (friendshipId: string) => void;
+  onMessage: (userId: string) => void;
   onUnblock: (userId: string) => void;
 }
 
@@ -319,13 +377,24 @@ const FriendItem: Component<FriendItemProps> = (props) => {
       return null;
     }
 
-    return `Last seen ${formatRelativeTime(lastSeen)}`;
+    return t("home.friends.lastSeen", { time: formatRelativeTime(lastSeen) });
   };
 
+  const canMessage = () => props.tab === "all" || props.tab === "online";
+
   return (
-    <div class="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 transition-colors">
+    <div data-testid="friend-item" class="flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 transition-colors">
+      {/* Avatar and name open the conversation for friends (NAV-3) */}
+      <button
+        type="button"
+        data-testid="friend-open"
+        class="flex items-center gap-3 flex-1 min-w-0 text-left rounded-lg disabled:cursor-default focus-visible:ring-2 focus-visible:ring-accent-primary/50 outline-none"
+        disabled={!canMessage()}
+        onClick={() => props.onMessage(props.friend.user_id)}
+        aria-label={canMessage() ? t("home.friends.messageTo", { name: props.friend.display_name }) : undefined}
+      >
       {/* Avatar */}
-      <div class="relative">
+      <div class="relative" aria-hidden="true">
         <div class="w-10 h-10 rounded-full bg-accent-primary flex items-center justify-center font-semibold text-on-accent">
           {props.friend.display_name.charAt(0).toUpperCase()}
         </div>
@@ -358,6 +427,7 @@ const FriendItem: Component<FriendItemProps> = (props) => {
           />
         </Show>
       </div>
+      </button>
 
       {/* Actions */}
       <div class="flex gap-2">
@@ -369,14 +439,16 @@ const FriendItem: Component<FriendItemProps> = (props) => {
                 <button
                   onClick={() => props.onAccept(props.friend.friendship_id)}
                   class="p-1.5 bg-white/5 rounded-lg hover:bg-status-success/20 transition-colors flex items-center justify-center w-9 h-9"
-                  title="Accept Request"
+                  title={t("home.pending.accept")}
+                  aria-label={t("home.pending.accept")}
                 >
                   <div style={{ "background-image": "var(--icon-accept)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
                 </button>
                 <button
                   onClick={() => props.onReject(props.friend.friendship_id)}
                   class="p-1.5 bg-white/5 rounded-lg hover:bg-status-error/20 transition-colors flex items-center justify-center w-9 h-9"
-                  title="Decline Request"
+                  title={t("home.pending.decline")}
+                  aria-label={t("home.pending.decline")}
                 >
                   <div style={{ "background-image": "var(--icon-decline)" }} class="w-5 h-5 bg-contain bg-center bg-no-repeat opacity-80 hover:opacity-100" />
                 </button>
@@ -386,18 +458,29 @@ const FriendItem: Component<FriendItemProps> = (props) => {
             <button
               onClick={() => props.onCancel(props.friend.friendship_id)}
               class="px-3 py-1.5 bg-white/10 text-text-secondary rounded-lg text-sm font-medium hover:bg-status-error/20 hover:text-text-primary transition-colors"
-              title="Cancel request"
+              title={t("home.pending.cancelRequest")}
             >
-              Cancel
+              {t("home.pending.cancelRequest")}
             </button>
           </Show>
         </Show>
-        <Show when={props.tab === "all" || props.tab === "online"}>
+        <Show when={canMessage()}>
           <button
-            onClick={() => props.onRemove(props.friend.friendship_id)}
-            class="px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 transition-colors"
+            data-testid="friend-message"
+            onClick={() => props.onMessage(props.friend.user_id)}
+            class="px-3 py-1.5 bg-accent-primary text-on-accent rounded-lg text-sm font-medium hover:opacity-90 transition-opacity flex items-center gap-1.5"
           >
-            Remove
+            <MessageSquare class="w-4 h-4" aria-hidden="true" />
+            {t("home.friends.message")}
+          </button>
+          {/* Quiet, not the loudest button on the page (NAV-3); asks first */}
+          <button
+            data-testid="friend-remove"
+            onClick={() => props.onRemove(props.friend.friendship_id)}
+            class="px-3 py-1.5 text-text-secondary rounded-lg text-sm hover:text-text-primary hover:bg-white/10 transition-colors"
+            aria-label={t("home.friends.removeNamed", { name: props.friend.display_name })}
+          >
+            {t("home.friends.remove")}
           </button>
         </Show>
         <Show when={props.tab === "blocked"}>
@@ -405,7 +488,7 @@ const FriendItem: Component<FriendItemProps> = (props) => {
             onClick={() => props.onUnblock(props.friend.user_id)}
             class="px-3 py-1.5 bg-white/10 text-text-primary rounded-lg text-sm font-medium hover:bg-white/20 transition-colors"
           >
-            Unblock
+            {t("home.friends.unblock")}
           </button>
         </Show>
       </div>
