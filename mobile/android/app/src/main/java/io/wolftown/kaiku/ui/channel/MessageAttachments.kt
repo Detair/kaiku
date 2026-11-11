@@ -1,6 +1,19 @@
 package io.wolftown.kaiku.ui.channel
 
+import android.text.format.Formatter
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Icon
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import io.wolftown.kaiku.R
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.heightIn
@@ -22,19 +35,21 @@ import kotlin.math.ln
 import kotlin.math.pow
 
 /**
- * Renders a message's attachments: images as inline thumbnails (tappable
- * via the surrounding message), everything else as a compact file chip
- * with name and human-readable size.
+ * Renders a message's attachments: images as inline thumbnails, everything
+ * else as a compact file chip with name and size. Tapping one calls [onOpen]
+ * (photo viewer, or the system app for videos and files; AND-B-4).
  */
 @Composable
 fun MessageAttachments(
     attachments: List<Attachment>,
     modifier: Modifier = Modifier,
+    onOpen: (Attachment) -> Unit = {},
 ) {
     if (attachments.isEmpty()) return
     Column(modifier = modifier.padding(top = 4.dp)) {
         for (att in attachments) {
             if (att.isImage()) {
+                val openLabel = stringResource(R.string.chat_attachment_view_photo)
                 AsyncImage(
                     model = resolveServerUrl(att.mediumUrl ?: att.url),
                     contentDescription = att.filename,
@@ -43,25 +58,39 @@ fun MessageAttachments(
                         .padding(vertical = 2.dp)
                         .widthIn(max = 240.dp)
                         .heightIn(max = 240.dp)
-                        .clip(RoundedCornerShape(8.dp)),
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClickLabel = openLabel, role = Role.Image) { onOpen(att) },
                 )
             } else {
-                FileChip(att)
+                FileChip(att, onOpen)
             }
         }
     }
 }
 
 @Composable
-private fun FileChip(att: Attachment) {
+private fun FileChip(att: Attachment, onOpen: (Attachment) -> Unit) {
+    val context = LocalContext.current
+    val openLabel = stringResource(R.string.chat_attachment_open)
     Row(
         modifier = Modifier
             .padding(vertical = 2.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClickLabel = openLabel, role = Role.Button) { onOpen(att) }
             .padding(horizontal = 12.dp, vertical = 8.dp)
             .widthIn(max = 280.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (att.isVideo()) {
+            Icon(
+                Icons.Filled.PlayArrow,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(24.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+        }
         Column {
             Text(
                 text = att.filename,
@@ -71,13 +100,17 @@ private fun FileChip(att: Attachment) {
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = humanReadableSize(att.size),
+                // In the device's language and number format (AND-B-25).
+                text = Formatter.formatShortFileSize(context, att.size.coerceAtLeast(0)),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
 }
+
+/** True for videos (shown with a play symbol, opened with the system player). */
+fun Attachment.isVideo(): Boolean = mimeType.startsWith("video/", ignoreCase = true)
 
 /** True when the attachment is an image we can render inline. */
 fun Attachment.isImage(): Boolean = mimeType.startsWith("image/", ignoreCase = true)

@@ -287,9 +287,16 @@ class TextChannelViewModel @Inject constructor(
         }
     }
 
-    fun onLoadMore() {
-        if (!_canLoadMore.value) return
-        val oldestMessage = messages.value.firstOrNull() ?: return
+    private val _isLoadingMore = MutableStateFlow(false)
+
+    /** True while an older page is loading; reaching the top again does not start another. */
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
+
+    /** Loads the page before the oldest message; returns whether a load started. */
+    fun onLoadMore(): Boolean {
+        if (!_canLoadMore.value || _isLoadingMore.value) return false
+        val oldestMessage = messages.value.firstOrNull() ?: return false
+        _isLoadingMore.value = true
         viewModelScope.launch {
             try {
                 _canLoadMore.value = chatRepository.loadMessages(channelId, before = oldestMessage.id)
@@ -298,8 +305,11 @@ class TextChannelViewModel @Inject constructor(
             } catch (e: Exception) {
                 _error.value = R.string.chat_load_failed
                 logger.log(Level.WARNING, "Failed to load more messages", e)
+            } finally {
+                _isLoadingMore.value = false
             }
         }
+        return true
     }
 
     fun clearError() {

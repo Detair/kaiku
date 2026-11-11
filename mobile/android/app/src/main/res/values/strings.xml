@@ -679,4 +679,27 @@
     <string name="chat_pending_sending">Sending…</string>
     <string name="chat_pending_attachment">Photo or video</string>
     <string name="chat_pending_discard">Delete</string>
+    <string name="chat_copy_text">Copy text</string>
+    <string name="chat_copied">Copied</string>
+    <string name="chat_message_actions">Show actions</string>
+    <string name="chat_replying_to_named">Reply to %1$s: %2$s</string>
+    <string name="chat_new_message_from">New message from %1$s</string>
+    <plurals name="chat_new_messages">
+        <item quantity="one">%1$d new message</item>
+        <item quantity="other">%1$d new messages</item>
+    </plurals>
+    <string name="chat_jump_to_newest">Go to newest message</string>
+    <string name="chat_day_today">Today</string>
+    <string name="chat_day_yesterday">Yesterday</string>
+    <string name="chat_delete_confirm_title">Delete this message?</string>
+    <string name="chat_delete_confirm_text">It will be gone for everyone in this chat.</string>
+    <string name="chat_attachment_view_photo">View photo</string>
+    <string name="chat_attachment_open">Open</string>
+    <string name="chat_attachment_share">Share</string>
+    <string name="chat_attachment_save">Save</string>
+    <string name="chat_attachment_saved">Saved to your phone.</string>
+    <string name="chat_attachment_save_failed">Couldn\'t save it. Try again.</string>
+    <string name="chat_attachment_open_failed">Couldn\'t load the file. Check your connection and try again.</string>
+    <string name="chat_attachment_no_app">No app on this phone can open this file.</string>
+    <string name="common_close">Close</string>
 </resources>

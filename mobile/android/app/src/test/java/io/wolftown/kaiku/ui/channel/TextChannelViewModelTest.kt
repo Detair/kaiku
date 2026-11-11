@@ -609,6 +609,28 @@ class TextChannelViewModelTest {
     }
 
     @Test
+    fun `reaching the top twice while loading starts one load`() = runTest {
+        coEvery { chatRepository.loadMessages("ch-1", null) } coAnswers {
+            messagesFlow.value = sampleMessages
+            true
+        }
+        val gate = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        coEvery { chatRepository.loadMessages("ch-1", "msg-1") } coAnswers { gate.await() }
+        viewModel = createViewModel()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.onLoadMore())
+        assertFalse(viewModel.onLoadMore())
+        advanceUntilIdle()
+        assertTrue(viewModel.isLoadingMore.value)
+        gate.complete(false)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.isLoadingMore.value)
+        coVerify(exactly = 1) { chatRepository.loadMessages("ch-1", "msg-1") }
+    }
+
+    @Test
     fun `edit failure exposes error`() = runTest {
         viewModel = loadedViewModel()
         advanceUntilIdle()
