@@ -277,6 +277,20 @@ const MessageList: Component<MessageListProps> = (props) => {
     }, 3000);
   };
 
+  // When the newest markable message changes while the list sits at the
+  // bottom (a send confirmed after the timer ran, a live message in place),
+  // start the guarded timer again so the marker reaches it. Not on channel
+  // switches or the first load: those have their own paths.
+  createEffect(
+    on(
+      () => [props.channelId, lastMarkableMessage()?.id] as const,
+      ([channelId, id], prev) => {
+        if (!prev || prev[0] !== channelId || !prev[1] || !id || id === prev[1]) return;
+        if (isAtBottom()) scheduleMarkAsRead();
+      },
+    ),
+  );
+
   const cancelMarkAsRead = () => {
     if (markAsReadTimer) {
       clearTimeout(markAsReadTimer);

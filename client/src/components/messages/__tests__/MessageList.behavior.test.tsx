@@ -367,5 +367,29 @@ describe("MessageList", () => {
       vi.useRealTimers();
     }
   });
+
+  it("a send confirmed after the read timer ran still moves the marker to it", async () => {
+    vi.useFakeTimers();
+    try {
+      store.set("byChannel", "slow", [msg("s1", "2026-01-01T10:00:00Z", "a", "x", "slow")]);
+      render(() => <MessageList channelId="slow" />);
+      await vi.advanceTimersByTimeAsync(3500);
+      markChannelAsRead.mockClear();
+      store.set("byChannel", "slow", [
+        ...store.state.byChannel.slow,
+        msg("pending:1", "2026-01-01T10:01:00Z", "me", "hi", "slow"),
+      ]);
+      // The server takes longer than the timer.
+      await vi.advanceTimersByTimeAsync(3500);
+      store.set("byChannel", "slow", [
+        store.state.byChannel.slow[0],
+        msg("s2", "2026-01-01T10:01:00Z", "me", "hi", "slow"),
+      ]);
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(markChannelAsRead).toHaveBeenLastCalledWith("slow", "s2");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
