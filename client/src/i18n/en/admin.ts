@@ -175,4 +175,7 @@ export const admin = {
   "admin.settings.openTitle": "Let anyone make an account?",
   "admin.settings.openBody": "Everyone who knows the address of this Kaiku can make an account, without an invite. Choose this only if you really want strangers to join.",
   "admin.settings.openConfirm": "Yes, open for everyone",
+  "admin.servers.search": "Search servers",
+  "admin.servers.empty": "No servers found",
+  "admin.servers.details": "Server details",
 } as const satisfies Record<`admin.${string}`, string>;

@@ -249,7 +249,7 @@ const GuildsPanel: Component = () => {
       <div class="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <div class="flex items-center justify-between p-4 border-b border-white/10">
-          <h2 class="text-lg font-bold text-text-primary">Guilds</h2>
+          <h2 class="text-lg font-bold text-text-primary">{t("admin.nav.servers")}</h2>
 
           <div class="flex items-center gap-3">
             {/* Export Button */}
@@ -272,7 +272,8 @@ const GuildsPanel: Component = () => {
               <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary" />
               <input
                 type="text"
-                placeholder="Search guilds..."
+                placeholder={t("admin.servers.search")}
+                aria-label={t("admin.servers.search")}
                 value={searchQuery()}
                 onInput={(e) => handleSearchInput(e.currentTarget.value)}
                 class="pl-9 pr-4 py-2 w-64 rounded-lg bg-white/5 border border-white/10 text-text-primary placeholder-text-placeholder focus:outline-none focus:border-accent-primary text-sm"
@@ -358,7 +359,7 @@ const GuildsPanel: Component = () => {
               each={filteredGuilds()}
               fallback={
                 <div class="flex items-center justify-center py-12">
-                  <div class="text-text-secondary">No guilds found</div>
+                  <div class="text-text-secondary">{t("admin.servers.empty")}</div>
                 </div>
               }
             >
@@ -488,7 +489,7 @@ const GuildsPanel: Component = () => {
             {/* Detail Header */}
             <div class="flex items-center justify-between p-4 border-b border-white/10">
               <h3 class="text-sm font-medium text-text-secondary uppercase tracking-wide">
-                Guild Details
+                {t("admin.servers.details")}
               </h3>
               <button
                 onClick={() => selectGuild(null)}

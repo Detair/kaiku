@@ -89,6 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android security settings: your phones, passkeys, sessions, recovery codes and recovery contact, each change confirmed with your screen lock; password and authenticator app are shown and changed on the web or desktop.
 - Android shows Kaiku's security notices in the read-only "Kaiku" chat (with "That wasn't me", Cancel, Remove device and "I will help" where they apply) and as private lock-screen notifications, also on a key phone that is signed out, with the security log under Settings > Security and a full-screen prompt for an open request to change how you sign in.
 - **Android: admins set up phones from their own phone.** Create the account (no password), choose "Set up a phone", and type the code the new phone shows; existing accounts wait 24 hours with notices to everyone involved. "Remove device now" for stolen phones. See `docs/admin-guide/ops/phone-setup.md`.
+- Server and channel settings: rename and delete a channel, rename or delete your server (owner), leave a server (everyone else). Each asks first and names what it removes.
 
 ### Changed
 - The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
@@ -145,6 +146,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - "New Messages" divider shows where you left off when returning to a channel
 - Opening a channel with unreads scrolls to your last read position
 - Password and single sign-on sign-ins on a second phone are confirmed by scanning with your key phone.
+- Admin area and server settings tell the truth: ban, lift ban, suspend and delete report success only after the server did it and otherwise say why (for example that admin mode ended); invites, roles, kick, filters, bots, webhooks and emojis show a failed change instead of doing nothing.
+- Admin mode has one name, says it lasts 15 minutes before you turn it on, turns on from the header badge in one step, can be turned off there, and announces when it runs out. The bulk ban names everyone, never includes people on other pages and lists who could not be banned.
+- Removing something in the admin area or server settings asks in one dialog that names it; opening registration to everyone asks first; closing server settings with unsaved changes asks first; expert tabs moved under "Advanced". Rules and info pages and the admin area follow the chosen theme's colors.
 
 ### Security
 - Repeated wrong passwords or codes for one account slow further tries (from the 5th: 30 seconds, doubling up to an hour) and are reported to the account and the admins; after 100 the password or code is blocked. Signing in with a passkey or your phone is never blocked by this.
