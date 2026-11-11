@@ -589,10 +589,18 @@ pub async fn handle_voice_ice_candidate(
     Ok(())
 }
 
-/// Leave the current voice channel.
+/// Whether leaving sends `VoiceLeave`. A silent leave (C31 `voice_removed`,
+/// C32 rejoin after a new socket) only drops the local call: the server
+/// already removed this peer, and a `VoiceLeave` from this socket could
+/// remove the user's peer on another device (peers are keyed by user).
+fn sends_voice_leave(silent: Option<bool>) -> bool {
+    !silent.unwrap_or(false)
+}
+
+/// Leave the current voice channel. `silent: true` skips `VoiceLeave`.
 #[command]
-pub async fn leave_voice(state: State<'_, AppState>) -> Result<(), String> {
-    info!("Leaving voice channel");
+pub async fn leave_voice(silent: Option<bool>, state: State<'_, AppState>) -> Result<(), String> {
+    info!(silent = ?silent, "Leaving voice channel");
 
     let mut voice = state.voice.write().await;
     let voice_state = voice.as_mut().ok_or("Voice not initialized")?;
@@ -655,7 +663,7 @@ pub async fn leave_voice(state: State<'_, AppState>) -> Result<(), String> {
     voice_state.connection_stats.clear();
 
     // Send VoiceLeave to server
-    if let Some(channel_id) = channel_id {
+    if let Some(channel_id) = channel_id.filter(|_| sends_voice_leave(silent)) {
         let ws = state.websocket.read().await;
         if let Some(ws_manager) = ws.as_ref() {
             let _ = ws_manager
@@ -1263,6 +1271,13 @@ mod tests {
         assert!(sender_rx.is_some());
         assert!(events.is_empty());
         assert!(started.result.is_ok());
+    }
+
+    #[test]
+    fn leave_sends_voice_leave_unless_silent() {
+        assert!(sends_voice_leave(None));
+        assert!(sends_voice_leave(Some(false)));
+        assert!(!sends_voice_leave(Some(true)));
     }
 
     #[tokio::test]

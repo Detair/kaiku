@@ -305,6 +305,12 @@ export interface VoiceAdapter {
   // Lifecycle
   join(channelId: string): Promise<VoiceResult<void>>;
   leave(): Promise<VoiceResult<void>>;
+  /**
+   * Drop the local call without telling the server (no `voice_leave`): the
+   * server already removed this peer (C31) or the socket was replaced (C32).
+   * A `voice_leave` here could remove the user's peer on another device.
+   */
+  teardown(): Promise<VoiceResult<void>>;
 
   // Audio control
   setMute(muted: boolean): Promise<VoiceResult<void>>;

@@ -135,6 +135,21 @@ export class TauriVoiceAdapter implements VoiceAdapter {
     }
   }
 
+  async teardown(): Promise<VoiceResult<void>> {
+    console.log("[TauriVoiceAdapter] Tearing down voice without signalling");
+    // Native leave_voice also stops every share and the webcam.
+    this.activeScreenShares.clear();
+    try {
+      await invoke("leave_voice", { silent: true });
+      return { ok: true, value: undefined };
+    } catch (err) {
+      return { ok: false, error: this.mapTauriError(err) };
+    } finally {
+      this.channelId = null;
+      this.setState("disconnected");
+    }
+  }
+
   // Audio control
 
   async setMute(muted: boolean): Promise<VoiceResult<void>> {

@@ -574,6 +574,12 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       }
       break;
 
+    case "voice_removed": {
+      const { handleVoiceRemoved } = await import("@/stores/voice");
+      await handleVoiceRemoved(event.channel_id, event.reason);
+      break;
+    }
+
     // Call events
     case "incoming_call": {
       const me = currentUser();
@@ -1121,6 +1127,12 @@ async function handleReconnect(): Promise<void> {
 
   // Signal connection ready after subscriptions are restored
   window.dispatchEvent(new Event("ws-connected"));
+
+  // C32: the server dropped our voice peer with the old socket; rejoin the
+  // voice channel the user is still in (after the text re-subscription).
+  void import("@/stores/voice")
+    .then(({ rejoinVoiceAfterReconnect }) => rejoinVoiceAfterReconnect())
+    .catch((err) => console.error("[WS] Voice rejoin after reconnect failed:", err));
 }
 
 /** Browser transport for the reconnect supervisor. */
@@ -1245,7 +1257,17 @@ function getSupervisor(): ConnectionSupervisor {
     mode: isTauri() ? "external" : "managed",
     onStatus: (status, attempt) => {
       // A new connection must deliver its own `ready` before catch-up.
-      if (status !== "connected") readyReceived = false;
+      if (status !== "connected") {
+        readyReceived = false;
+        // The voice peer goes with the socket: show "reconnecting" (C32).
+        void import("@/stores/voice").then(({ noteSignallingLost }) =>
+          noteSignallingLost(),
+        );
+      } else {
+        void import("@/stores/voice").then(({ noteSignallingUp }) =>
+          noteSignallingUp(),
+        );
+      }
       setWsState({
         status,
         reconnectAttempt: attempt,

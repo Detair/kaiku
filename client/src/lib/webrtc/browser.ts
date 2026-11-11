@@ -315,6 +315,16 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
     return { ok: true, value: undefined };
   }
 
+  async teardown(): Promise<VoiceResult<void>> {
+    console.log("[BrowserVoiceAdapter] Tearing down voice without signalling");
+    if (this.webcamStream) this.cleanupWebcamState();
+    this.cleanup();
+    this.setState("disconnected");
+    this.channelId = null;
+    this.prevStats = null;
+    return { ok: true, value: undefined };
+  }
+
   // Audio control
 
   async setMute(muted: boolean): Promise<VoiceResult<void>> {
@@ -1563,6 +1573,8 @@ export class BrowserVoiceAdapter implements VoiceAdapter {
       } else {
         // Audio track = voice (Microphone) or screen audio (ScreenAudio)
         this.remoteStreams.set(userId, stream);
+        // Tracks that arrive while deafened (e.g. after a rejoin) stay silent.
+        track.enabled = !this.deafened;
 
         const remoteTrack: RemoteTrack = {
           trackId: track.id,

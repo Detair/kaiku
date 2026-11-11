@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockAdapter = {
   join: vi.fn(),
   leave: vi.fn(),
+  teardown: vi.fn().mockResolvedValue({ ok: true }),
   setMute: vi.fn(),
   setDeafen: vi.fn(),
   setEventHandlers: vi.fn(),
@@ -97,6 +98,8 @@ import {
   trayVoiceReport,
   handleTrayVoiceAction,
   remoteAudioElementCount,
+  handleVoiceRemoved,
+  wasRemovedFrom,
 } from "../voice";
 import { appSettings } from "@/stores/settings";
 import type { VoiceAdapter } from "@/lib/webrtc/types";
@@ -286,7 +289,8 @@ describe("voice store", () => {
 
   describe("short media outage (A8)", () => {
     function handlers() {
-      return mockAdapter.setEventHandlers.mock.calls.at(-1)![0] as {
+      const calls = mockAdapter.setEventHandlers.mock.calls;
+      return calls[calls.length - 1][0] as {
         onStateChange: (s: string) => void;
         onRemoteTrack: (t: { userId: string; trackId: string; stream: MediaStream; muted: boolean }) => void;
       };
@@ -314,6 +318,55 @@ describe("voice store", () => {
       h.onStateChange("disconnected");
       expect(remoteAudioElementCount()).toBe(0);
       expect(document.querySelectorAll('audio[data-stream-id="u2:microphone"]').length).toBe(0);
+    });
+  });
+
+  describe("voice_removed (C31)", () => {
+    it("tears down without voice_leave, clears state and says why", async () => {
+      const { showToast } = await import("@/components/ui/Toast");
+      const { wsSend } = await import("@/lib/tauri");
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      setVoiceState({ state: "connected", participants: { u2: { user_id: "u2", muted: false, speaking: false, screen_sharing: false } } });
+
+      await handleVoiceRemoved("ch-1", "channel_deleted");
+
+      expect(mockAdapter.teardown).toHaveBeenCalledTimes(1);
+      expect(mockAdapter.leave).not.toHaveBeenCalled();
+      expect(wsSend).not.toHaveBeenCalledWith(expect.objectContaining({ type: "voice_leave" }));
+      expect(voiceState.state).toBe("disconnected");
+      expect(voiceState.channelId).toBeNull();
+      expect(voiceState.participants).toEqual({});
+      expect(wasRemovedFrom("ch-1")).toBe(true);
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "The voice channel was deleted." }),
+      );
+    });
+
+    it("treats an unknown reason like kicked", async () => {
+      const { showToast } = await import("@/components/ui/Toast");
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      await handleVoiceRemoved("ch-1", "something_new");
+      expect(showToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "You were removed from the voice channel." }),
+      );
+    });
+
+    it("ignores a removal for another channel", async () => {
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      await handleVoiceRemoved("ch-2", "kicked");
+      expect(mockAdapter.teardown).not.toHaveBeenCalled();
+      expect(voiceState.channelId).toBe("ch-1");
+    });
+
+    it("an own join clears the removal mark", async () => {
+      mockAdapter.join.mockResolvedValue({ ok: true });
+      await joinVoice("ch-1");
+      await handleVoiceRemoved("ch-1", "kicked");
+      await joinVoice("ch-1");
+      expect(wasRemovedFrom("ch-1")).toBe(false);
     });
   });
 
