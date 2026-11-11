@@ -222,12 +222,15 @@ describe("theme contrast", () => {
     );
 
     // K2: muted text inside a selected or hovered row (surface-highlight).
-    // pixel-cozy is left out: its secondary text is 4.45 there, and lifting
-    // muted to 4.5 would make it brighter than secondary on layer2 (5.87 vs
-    // 5.74), so the tiers would collapse. Measured 3.53 (UX4a ledger).
-    it.skipIf(name === "pixel-cozy")("muted text on surface-highlight", () => {
+    // pixel-cozy keeps a lower floor: its secondary text is 4.45 there, and
+    // lifting muted to 4.5 would make it brighter than secondary on layer2
+    // (5.87 vs 5.74), so the tiers would collapse. Measured 3.53 (UX4a
+    // ledger). The floor stops it from getting worse until the pixel text
+    // tiers are retuned.
+    it("muted text on surface-highlight", () => {
+      const min = name === "pixel-cozy" ? 3.5 : 4.5;
       const r = ratio(colour(theme, "--color-text-muted"), colour(theme, "--color-surface-highlight"));
-      expect(Number(r.toFixed(2)), `${name}: muted on highlight`).toBeGreaterThanOrEqual(4.5);
+      expect(Number(r.toFixed(2)), `${name}: muted on highlight`).toBeGreaterThanOrEqual(min);
     });
 
     it("text tiers keep their order: primary > secondary > muted", () => {

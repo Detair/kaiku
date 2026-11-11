@@ -327,7 +327,9 @@ Before submitting a community theme:
   `--color-overlay-rgb: var(--color-text-primary-rgb)` in its block. Surfaces that stay dark or coloured in every
   theme (`bg-black`, `bg-black/90`, `bg-accent-primary`, ...) put it back to white in `global.css`; add a class
   there if a new media surface needs it. Do not redraw overlay classes with theme-scoped selectors: they beat every
-  state utility. A new light theme also needs its own block in `highlight-theme.css`.
+  state utility. Because the overlay classes sit before the other utilities, a breakpoint variant such as
+  `md:bg-white/10` loses against a plain background colour on the same element; put the overlay on its own element
+  instead. A new light theme also needs its own block in `highlight-theme.css`.
 - Text size is `data-font-size="large|xlarge"` on `<html>` (115 % / 130 % root font size). Size things in `rem`,
   not `px`, or they will not follow.
 - Contrast for a selectable light theme is enforced by the "solarized-light as a selectable theme" tests.
