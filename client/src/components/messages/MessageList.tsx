@@ -262,14 +262,18 @@ const MessageList: Component<MessageListProps> = (props) => {
 
   const scheduleMarkAsRead = () => {
     if (markAsReadTimer) clearTimeout(markAsReadTimer);
+    const channelId = props.channelId;
     markAsReadTimer = setTimeout(() => {
+      markAsReadTimer = null;
+      // The timer belongs to the channel it was started in: after a switch
+      // the new channel has not been on screen for three seconds yet.
+      if (props.channelId !== channelId) return;
       const lastMsg = lastMarkableMessage();
       // An older window (after a far jump) must never move the read marker
       // back: the server stores whatever id it gets.
-      if (lastMsg && isAtBottom() && checkIfAtBottom() && !hasNewerMessages(props.channelId)) {
-        markChannelAsRead(props.channelId, lastMsg.id);
+      if (lastMsg && isAtBottom() && checkIfAtBottom() && !hasNewerMessages(channelId)) {
+        markChannelAsRead(channelId, lastMsg.id);
       }
-      markAsReadTimer = null;
     }, 3000);
   };
 

@@ -281,6 +281,8 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl);
     });
     setPendingFiles((prev) => prev.filter((pf) => !visible.has(pf.id)));
+    // With the files gone, the hint about them has nothing left to say.
+    setUploadError(null);
   };
 
   const isStillPending = (id: number) => allPendingFiles().some((pf) => pf.id === id);

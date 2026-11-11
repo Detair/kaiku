@@ -262,6 +262,25 @@ describe("MessageList", () => {
     }
   });
 
+  it("R3-1: a read timer started in one channel never marks another", async () => {
+    vi.useFakeTimers();
+    try {
+      store.set("byChannel", "a", [msg("a1", "2026-01-01T10:00:00Z", "x", "x", "a")]);
+      store.set("byChannel", "b", [msg("b1", "2026-01-01T10:00:00Z", "x", "x", "b")]);
+      const [channel, setChannel] = createSignal("a");
+      render(() => <MessageList channelId={channel()} />);
+      await vi.advanceTimersByTimeAsync(10);
+      fireEvent.scroll(screen.getByRole("list"));
+      await vi.advanceTimersByTimeAsync(1000);
+      setChannel("b");
+      // The timer from channel a is due now; b has been open for 2 s only.
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(markChannelAsRead).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("W4: at the newest message, reading still marks read", async () => {
     vi.useFakeTimers();
     try {

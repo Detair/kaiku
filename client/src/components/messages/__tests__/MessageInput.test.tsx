@@ -472,6 +472,19 @@ describe("MessageInput", () => {
       await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     });
 
+    it("R3-2: Clear all takes the file hint with it", async () => {
+      uploadMessageWithFile.mockRejectedValueOnce(new HttpError(415, "x", "INVALID_MIME_TYPE"));
+      const { container } = render(() => (
+        <MessageInput channelId="c1" channelName="general" guildId="g1" />
+      ));
+      const form = container.querySelector("form")!;
+      dropFiles(form, [new File(["a"], "a.heic", { type: "image/heic" })]);
+      fireEvent.submit(form);
+      expect((await screen.findByRole("alert")).textContent).toContain("a.heic was not sent.");
+      fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+      await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    });
+
     it("N5: the file hint goes when the next send works", async () => {
       uploadMessageWithFile
         .mockRejectedValueOnce(new HttpError(503, "x", "STORAGE_NOT_CONFIGURED"))
