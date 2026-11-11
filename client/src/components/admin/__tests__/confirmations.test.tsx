@@ -57,6 +57,9 @@ describe("confirmations stay open on failure (K2)", () => {
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(alert.textContent).not.toContain("raw server text");
     expect(document.body.textContent).not.toContain("raw server text");
+    // Admin area: a 403 does not send the admin to "the owner of the server" (K6).
+    expect(alert.textContent).toContain("still an admin");
+    expect(alert.textContent).not.toContain("owner of the server");
   });
 
   it("deleting a page: a failure keeps the dialog open", async () => {

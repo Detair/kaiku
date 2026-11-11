@@ -32,11 +32,24 @@ export function noteElevationEnded(err: unknown): void {
   }
 }
 
-/** Sentence for a failed action; `fallback` when the cause is unknown. */
+const ADMIN_BY_CODE: Partial<Record<string, MessageKey>> = {
+  ...BY_CODE,
+  FORBIDDEN: "admin.error.notAllowed",
+  PERMISSION_DENIED: "admin.error.notAllowed",
+  NOT_ADMIN: "admin.error.notAllowed",
+};
+const ADMIN_BY_STATUS: Partial<Record<number, MessageKey>> = { ...BY_STATUS, 403: "admin.error.notAllowed" };
+
+/**
+ * Sentence for a failed action; `fallback` when the cause is unknown.
+ * Fallbacks from the admin area (`admin.*`) get admin sentences for a 403,
+ * not "ask the owner of the server" (K6).
+ */
 export function actionErrorText(
   err: unknown,
   fallback: MessageKey = "guildSettings.error.tryAgain",
 ): string {
   noteElevationEnded(err);
-  return errorText(err, fallback, BY_CODE, BY_STATUS);
+  const admin = fallback.startsWith("admin.");
+  return errorText(err, fallback, admin ? ADMIN_BY_CODE : BY_CODE, admin ? ADMIN_BY_STATUS : BY_STATUS);
 }

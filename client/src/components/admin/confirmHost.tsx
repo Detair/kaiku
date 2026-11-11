@@ -6,12 +6,15 @@
  */
 import { Component, Show, createSignal } from "solid-js";
 import ConfirmActionDialog from "./ConfirmActionDialog";
+import type { MessageKey } from "@/i18n";
 
 export interface ConfirmRequest {
   title: string;
   message: string;
   confirmLabel: string;
   danger?: boolean;
+  /** Fallback sentence; an `admin.*` key also picks the admin-area 403 sentence. */
+  failureFallback?: MessageKey;
   run: () => Promise<unknown> | unknown;
 }
 
@@ -25,6 +28,7 @@ export function createConfirm(): { ask: (req: ConfirmRequest) => void; Host: Com
           message={req().message}
           confirmLabel={req().confirmLabel}
           danger={req().danger}
+          failureFallback={req().failureFallback}
           onConfirm={async () => {
             await req().run();
           }}

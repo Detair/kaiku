@@ -26,6 +26,7 @@ import * as tauri from "@/lib/tauri";
 import { adminState } from "@/stores/admin";
 import { showToast } from "@/components/ui/Toast";
 import Skeleton from "@/components/ui/Skeleton";
+import { t } from "@/i18n";
 
 const PAGE_SIZE = 20;
 
@@ -83,7 +84,7 @@ const ReportsPanel: Component = () => {
       setTotal(result.total);
     } catch (err) {
       console.error("[Admin] Failed to load reports:", err);
-      setLoadError("Failed to load reports. Ensure your session is elevated.");
+      setLoadError(t("admin.reports.loadFailed"));
       showToast({
         type: "error",
         title: "Failed to load reports",

@@ -46,6 +46,7 @@ import {
   getSelectedGuildCount,
   exportGuildsCsv,
   bulkSuspendGuilds,
+  ADMIN_MODE_MINUTES,
 } from "@/stores/admin";
 import Avatar from "@/components/ui/Avatar";
 import TableRowSkeleton from "./TableRowSkeleton";
@@ -709,7 +710,7 @@ const GuildsPanel: Component = () => {
 
                 <Show when={!adminState.isElevated}>
                   <div class="p-3 rounded-lg bg-status-warning/10 border border-status-warning/30 text-text-primary text-xs">
-                    {t("admin.mode.neededServers")}
+                    {t("admin.mode.neededServers", { minutes: ADMIN_MODE_MINUTES })}
                   </div>
                 </Show>
 

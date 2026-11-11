@@ -25,7 +25,7 @@ import {
   adminDeleteOidcProvider,
 } from "@/lib/tauri";
 import type { AuthMethodsConfig, AdminOidcProvider } from "@/lib/types";
-import { adminState, checkAdminStatus } from "@/stores/admin";
+import { adminState, checkAdminStatus, ADMIN_MODE_MINUTES } from "@/stores/admin";
 import ElevateDialog from "./ElevateDialog";
 import { t } from "@/i18n";
 import { createConfirm } from "./confirmHost";
@@ -170,6 +170,7 @@ const AdminSettings: Component = () => {
         message: t("admin.settings.openBody"),
         confirmLabel: t("admin.settings.openConfirm"),
         danger: true,
+        failureFallback: "admin.action.failed",
         run: () => saveAuthSettings(undefined, policy, true),
       });
       return;
@@ -299,8 +300,7 @@ const AdminSettings: Component = () => {
             <div class="flex items-center gap-3">
               <AlertTriangle class="w-5 h-5 text-accent-warning" />
               <p class="text-sm text-text-primary">
-                Settings require an elevated session. Elevate your session to
-                make changes.
+                {t("admin.settings.needsMode", { minutes: ADMIN_MODE_MINUTES })}
               </p>
               <button
                 type="button"
