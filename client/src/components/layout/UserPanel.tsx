@@ -33,6 +33,7 @@ import CustomStatusModal from "@/components/ui/CustomStatusModal";
 import { ModalFallback, LazyErrorBoundary } from "@/components/ui/LazyFallback";
 import type { CustomStatus } from "@/lib/types";
 import { truncate } from "@/lib/utils";
+import LogoutConfirmDialog from "./LogoutConfirmDialog";
 
 const SettingsModal = lazy(() => import("@/components/settings/SettingsModal"));
 const AdminQuickModal = lazy(
@@ -54,6 +55,7 @@ const UserPanel: Component = () => {
   const [showAdmin, setShowAdmin] = createSignal(false);
   const [showStatusPicker, setShowStatusPicker] = createSignal(false);
   const [showCustomStatusModal, setShowCustomStatusModal] = createSignal(false);
+  const [confirmLogout, setConfirmLogout] = createSignal(false);
 
   // Get current custom status from presence store
   const currentCustomStatus = () => {
@@ -164,16 +166,29 @@ const UserPanel: Component = () => {
           >
             <Settings class="w-4 h-4" />
           </button>
+          {/* Sign out sits apart from the gear and asks first (NAV-9, KONTO-7) */}
+          <div class="w-px h-5 bg-white/10" aria-hidden="true" />
           <button
             data-testid="logout-button"
-            class="p-1.5 text-text-secondary hover:text-accent-danger hover:bg-white/10 rounded-lg transition-all duration-200"
+            class="p-1.5 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-all duration-200"
             title={t("home.userPanel.logout")} aria-label={t("home.userPanel.logout")}
-            onClick={() => logout()}
+            aria-haspopup="dialog"
+            onClick={() => setConfirmLogout(true)}
           >
-            <LogOut class="w-4 h-4" />
+            <LogOut class="w-4 h-4" aria-hidden="true" />
           </button>
         </div>
       </div>
+
+      <Show when={confirmLogout()}>
+        <LogoutConfirmDialog
+          onCancel={() => setConfirmLogout(false)}
+          onConfirm={() => {
+            setConfirmLogout(false);
+            void logout();
+          }}
+        />
+      </Show>
 
       {/* Settings Modal */}
       <Show when={showSettings()}>

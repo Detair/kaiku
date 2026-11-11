@@ -93,7 +93,10 @@ export const home = {
   "home.userPanel.adminPanel": "Admin Panel",
   "home.userPanel.adminPanelElevated": "Admin Panel (Elevated)",
   "home.userPanel.settings": "User Settings",
-  "home.userPanel.logout": "Logout",
+  "home.userPanel.logout": "Sign out",
+  "home.logout.title": "Sign out of Kaiku?",
+  "home.logout.body": "To sign in again you need your phone or passkey. Messages you started but did not send are deleted on this device.",
+  "home.logout.confirm": "Sign out",
 
   "home.mobile.openNavigation": "Open navigation",
 
