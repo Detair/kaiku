@@ -250,3 +250,26 @@ describe("theme contrast", () => {
     });
   });
 });
+
+describe("code highlighting in the light theme", () => {
+  const hl = readFileSync(join(__dirname, "..", "highlight-theme.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const theme = themes.get("solarized-light")!;
+  const colours = [
+    ...hl.matchAll(/:root\[data-theme="solarized-light"\][^{]*\{\s*color:\s*(#[0-9a-f]{6});/gi),
+  ].map((m) => m[1]);
+
+  it("overrides every highlight colour group", () => {
+    expect(colours.length).toBe(6);
+  });
+
+  it.each(colours)("%s reads on the code block (layer2) and layer1", (hex) => {
+    for (const s of ["--color-surface-layer1", "--color-surface-layer2"]) {
+      const c = parseColor(hex);
+      const r = ratio([c[0], c[1], c[2]], colour(theme, s));
+      expect(Number(r.toFixed(2)), `${hex} on ${s}`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+});
