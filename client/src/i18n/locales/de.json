@@ -363,6 +363,7 @@
   "chat.message.editedBadge": "",
   "chat.message.encryptedPlaceholder": "",
   "chat.message.imageFailed": "",
+  "chat.message.imageTooLarge": "",
   "chat.message.menu.copyId": "",
   "chat.message.menu.copyLink": "",
   "chat.message.menu.copyText": "",

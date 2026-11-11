@@ -47,6 +47,7 @@ export const chat = {
   "chat.message.webhookApp": "App",
   "chat.message.webhookTitle": "Posted by an incoming webhook",
   "chat.message.imageFailed": "Failed to load image",
+  "chat.message.imageTooLarge": "This image is too large to show here. Use the download button.",
   "chat.message.downloadOriginal": "Download original",
   "chat.message.menu.copyText": "Copy Text",
   "chat.message.menu.copyLink": "Copy Message Link",
