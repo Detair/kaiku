@@ -224,7 +224,7 @@ class VoiceCallService : Service() {
         )
 
         return NotificationCompat.Builder(this, NotificationChannels.VOICE)
-            .setContentTitle(getString(if (reconnecting) R.string.voice_reconnecting else R.string.voice_in_channel))
+            .setContentTitle(getString(if (reconnecting) R.string.voice_call_reconnecting else R.string.voice_in_channel))
             .setContentText(channelName)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(contentPendingIntent)

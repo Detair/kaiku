@@ -6,6 +6,7 @@
     <string name="common_back">Back</string>
     <string name="common_retry">Retry</string>
     <string name="common_cancel">Cancel</string>
+    <string name="common_dismiss">Dismiss</string>
     <string name="common_username">Username</string>
     <string name="common_error_generic">Something went wrong.</string>
     <string name="common_avatar_description">%1$s\'s avatar</string>
@@ -232,10 +233,9 @@
     <string name="voice_join_failed">Couldn\'t join the voice channel.</string>
     <string name="voice_start_failed">Couldn\'t start the voice call. Check that Kaiku may use the microphone and run in the background.</string>
     <string name="voice_connection_error">Voice connection problem.</string>
-    <string name="voice_reconnecting">Reconnecting…</string>
-    <string name="voice_rejoin">Rejoin</string>
-    <string name="voice_rejoin_failed">Couldn\'t reconnect to the voice channel.</string>
-    <string name="voice_notice_dismiss">Dismiss</string>
+    <string name="voice_call_reconnecting">Reconnecting…</string>
+    <string name="voice_call_rejoin">Rejoin</string>
+    <string name="voice_call_rejoin_failed">Couldn\'t reconnect to the voice channel.</string>
     <string name="voice_removed_kicked">You were removed from the voice channel.</string>
     <string name="voice_removed_banned">You were banned from this server and removed from the voice channel.</string>
     <string name="voice_removed_permission_lost">You can no longer use this voice channel.</string>

@@ -208,8 +208,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
-- Android: when you are removed from a voice channel (kicked, banned, lost access, channel deleted, or joined from another device) the call ends with a short explanation and does not reconnect by itself.
-- Android: a voice call now reconnects by itself after a short connection loss (network change, brief outage, server restart). It shows "Reconnecting…" in the call screen, the call bar and the notification, tries up to three times, and offers "Rejoin" if that fails. Your mute setting is kept.
+- Android: when you are removed from a voice channel (kicked, banned, lost access, channel deleted, or joined from another device) the call ends with a short explanation and does not reconnect by itself (needs a server that reports the removal).
+- Android: a voice call now reconnects by itself after a short connection loss (network change, brief outage, server restart). It shows "Reconnecting…" in the call screen, the call bar and the notification, tries up to three times, and offers "Rejoin" if that fails or if the connection stays away for a minute. This also works when you are alone in the channel. Your mute setting is kept, also when you tap "Rejoin".
 - Android: muting yourself in a voice channel now reaches the server, so others see you as muted.
 - Android: screen shares of other people are now shown in a voice channel; the app had no video decoder before.
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.

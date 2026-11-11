@@ -223,7 +223,7 @@ fun VoiceChannelScreen(
             }
             if (isInChannel && linkState != VoiceLinkState.Stable) {
                 Text(
-                    text = stringResource(R.string.voice_reconnecting),
+                    text = stringResource(R.string.voice_call_reconnecting),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier

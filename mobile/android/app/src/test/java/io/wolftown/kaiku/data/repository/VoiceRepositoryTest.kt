@@ -31,6 +31,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -83,7 +84,7 @@ class VoiceRepositoryTest {
     // / subscriber-side ICE-connected StateFlow. Tests drive these to simulate
     // server events and dual-PC state transitions.
     private val wsEvents = MutableSharedFlow<ServerEvent>(extraBufferCapacity = 8)
-    private val voiceIceConnected = MutableStateFlow(false)
+    private val publisherConnected = MutableStateFlow(false)
 
     // Callback slots that capture what VoiceRepository wires into WebRtcManager.
     private val onPublisherOfferSlot = slot<(String) -> Unit>()
@@ -117,7 +118,10 @@ class VoiceRepositoryTest {
         every { webSocket.connectionState } returns connectionState
         every { webSocket.send(any()) } returns true
         every { webRtcManager.onIceTrouble = any() } answers { iceTrouble = firstArg() }
-        every { webRtcManager.voiceIceConnected } returns voiceIceConnected
+        every { webRtcManager.publisherConnected } returns publisherConnected
+        // Peer connections are installed unless the session ended (the guard says no).
+        coEvery { webRtcManager.createSubscriberPeerConnection(any()) } answers { firstArg<() -> Boolean>().invoke() }
+        coEvery { webRtcManager.createPublisherOffer(any()) } answers { firstArg<() -> Boolean>().invoke() }
         every { voiceServiceEvents.events } returns MutableSharedFlow()
 
         // Capture the callbacks so tests can invoke them directly.
@@ -238,19 +242,19 @@ class VoiceRepositoryTest {
     }
 
     @Test
-    fun `_isConnected follows WebRtcManager voiceIceConnected StateFlow`() = runTest {
+    fun `_isConnected follows WebRtcManager publisherConnected StateFlow`() = runTest {
         repository.joinChannel("ch-1")
         advanceUntilIdle()
 
         repository.isConnected.test {
-            // Initial: both PCs not yet connected.
+            // Initial: the publisher PC is not yet connected.
             assertFalse(awaitItem())
 
-            voiceIceConnected.value = true
+            publisherConnected.value = true
             advanceUntilIdle()
             assertTrue(awaitItem())
 
-            voiceIceConnected.value = false
+            publisherConnected.value = false
             advanceUntilIdle()
             assertFalse(awaitItem())
 
@@ -273,7 +277,7 @@ class VoiceRepositoryTest {
 
     @Test
     fun `leave during join cancels the join and cleans up`() = runTest {
-        coEvery { webRtcManager.createSubscriberPeerConnection() } coAnswers { awaitCancellation() }
+        coEvery { webRtcManager.createSubscriberPeerConnection(any()) } coAnswers { awaitCancellation() }
 
         repository.startJoin("ch-1")
         advanceUntilIdle()
@@ -344,11 +348,11 @@ class VoiceRepositoryTest {
 
         verifyJoins(2)
         verify(exactly = 1) { webRtcManager.closePeerConnections() }
-        coVerify(exactly = 2) { webRtcManager.createSubscriberPeerConnection() }
-        coVerify(exactly = 2) { webRtcManager.createPublisherOffer() }
+        coVerify(exactly = 2) { webRtcManager.createSubscriberPeerConnection(any()) }
+        coVerify(exactly = 2) { webRtcManager.createPublisherOffer(any()) }
 
         // Both peer connections connect: back to stable, service untouched.
-        voiceIceConnected.value = true
+        publisherConnected.value = true
         runCurrent()
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
         assertEquals("ch-1", repository.currentChannelId.value)
@@ -411,8 +415,8 @@ class VoiceRepositoryTest {
         advanceUntilIdle()
         reconnect()
 
-        // 1 s + 10 s timeout, 3 s + 10 s, 9 s + 10 s
-        advanceTimeBy(43_000); runCurrent()
+        // 1 s + 15 s timeout, 3 s + 15 s, 9 s + 15 s
+        advanceTimeBy(58_000); runCurrent()
 
         verifyJoins(4)
         assertEquals(null, repository.currentChannelId.value)
@@ -431,7 +435,7 @@ class VoiceRepositoryTest {
         repository.joinChannel("ch-1")
         advanceUntilIdle()
         reconnect()
-        advanceTimeBy(43_000); runCurrent()
+        advanceTimeBy(58_000); runCurrent()
 
         repository.rejoin()
         advanceUntilIdle()
@@ -441,7 +445,7 @@ class VoiceRepositoryTest {
     }
 
     @Test
-    fun `server still holding the old peer gets one leave and join`() = runTest {
+    fun `a voice_error during an attempt fails it without a leave or a snackbar`() = runTest {
         repository.joinChannel("ch-1")
         advanceUntilIdle()
         reconnect()
@@ -451,16 +455,12 @@ class VoiceRepositoryTest {
         wsEvents.emit(ServerEvent.VoiceError(code = "VOICE_ERROR", message = "Already in voice channel"))
         runCurrent()
 
-        verify(exactly = 1) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
-        verifyJoins(3)
-        // The error belongs to the attempt, not to the user.
+        // No special "already joined" handling: the attempt just failed.
+        verify(exactly = 0) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+        verifyJoins(2)
         assertEquals(null, repository.error.value)
-
-        // A second "already joined" in the same attempt fails it (no loop).
-        wsEvents.emit(ServerEvent.VoiceError(code = "VOICE_ERROR", message = "Already in voice channel"))
-        runCurrent()
+        advanceTimeBy(3_000); runCurrent()
         verifyJoins(3)
-        verify(exactly = 1) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
     }
 
     @Test
@@ -475,7 +475,7 @@ class VoiceRepositoryTest {
         verifyJoins(1)
         verify(exactly = 0) { webRtcManager.closePeerConnections() }
 
-        voiceIceConnected.value = true
+        publisherConnected.value = true
         runCurrent()
         assertEquals(VoiceLinkState.Stable, repository.linkState.value)
     }
@@ -606,5 +606,355 @@ class VoiceRepositoryTest {
         repository.joinChannel("ch-1")
 
         assertEquals(null, repository.endNotice.value)
+    }
+
+    // -- Fix round 1: session end always wins over a rejoin attempt -----------
+    //
+    // The log records what reached the WebRTC layer and the socket, in order.
+    // A step hook runs a leave or a removal *inside* a rejoin step, the way a
+    // second thread would interleave with the attempt in production.
+
+    private val log = mutableListOf<String>()
+    private val stepHooks = mutableMapOf<String, () -> Unit>()
+    private val stepCounts = mutableMapOf<String, Int>()
+
+    private fun step(name: String) {
+        val n = (stepCounts[name] ?: 0) + 1
+        stepCounts[name] = n
+        stepHooks.remove("$name#$n")?.invoke()
+    }
+
+    private fun recordWebRtcAndSocket() {
+        every { webRtcManager.closePeerConnections() } answers { step("close"); log += "close" }
+        // Like WebRtcManager: the native create runs (a leave or removal may
+        // happen meanwhile), then the guard decides whether the PC is installed
+        // or closed again.
+        coEvery { webRtcManager.createSubscriberPeerConnection(any()) } coAnswers {
+            step("createSub")
+            val installed = firstArg<() -> Boolean>().invoke()
+            log += if (installed) "createSub" else "createSub-discarded"
+            installed
+        }
+        coEvery { webRtcManager.createPublisherOffer(any()) } coAnswers {
+            step("createPub")
+            val installed = firstArg<() -> Boolean>().invoke()
+            log += if (installed) "createPub" else "createPub-discarded"
+            installed
+        }
+        every { webSocket.send(any()) } answers {
+            val name = firstArg<ClientEvent>()::class.simpleName!!
+            log += "send:$name"
+            step("send:$name")
+            true
+        }
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.leaveNow() {
+        log += "LEAVE"
+        backgroundScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            repository.leaveChannel()
+        }
+    }
+
+    private fun removeNow() {
+        log += "REMOVED"
+        repository.handleServerEventNow("ch-1", ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "kicked"))
+    }
+
+    /** Joins, loses the socket, and lets the first rejoin attempt start (it stops at [hook]). */
+    private suspend fun kotlinx.coroutines.test.TestScope.runAttemptWith(
+        hook: String,
+        muted: Boolean = false,
+        end: () -> Unit,
+    ) {
+        recordWebRtcAndSocket()
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        if (muted) repository.toggleMute()
+        stepHooks[hook] = end
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        advanceUntilIdle()
+    }
+
+    private fun assertSessionEndWon(marker: String) {
+        val at = log.indexOf(marker)
+        assertTrue("marker $marker missing: $log", at >= 0)
+        val after = log.drop(at + 1)
+        assertFalse("voice_join after $marker: $log", "send:VoiceJoin" in after)
+        assertFalse("voice_mute after $marker: $log", "send:VoiceMute" in after)
+        assertFalse("subscriber PC installed after $marker: $log", "createSub" in after)
+        assertFalse("publisher PC installed after $marker: $log", "createPub" in after)
+        val lastCreate = maxOf(log.lastIndexOf("createSub"), log.lastIndexOf("createPub"))
+        assertTrue("a created PC was never closed: $log", log.lastIndexOf("close") > lastCreate)
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        verify(atLeast = 1) { VoiceCallService.stop(any()) }
+    }
+
+    @Test
+    fun `leave before the rejoin creates its peer connections wins`() = runTest {
+        runAttemptWith("close#1") { leaveNow() }
+        assertSessionEndWon("LEAVE")
+    }
+
+    @Test
+    fun `leave while the subscriber PC is being created wins`() = runTest {
+        runAttemptWith("createSub#2") { leaveNow() }
+        assertSessionEndWon("LEAVE")
+    }
+
+    @Test
+    fun `leave right after the rejoin sent voice_join wins`() = runTest {
+        runAttemptWith("send:VoiceJoin#2", muted = true) { leaveNow() }
+        assertSessionEndWon("LEAVE")
+    }
+
+    @Test
+    fun `leave waits for the attempt to finish before the teardown`() = runTest {
+        runAttemptWith("createSub#2") { leaveNow() }
+        // The attempt's last step comes before voice_leave and the teardown.
+        val leaveAt = log.indexOf("send:VoiceLeave")
+        val lastAttemptStep = log.indexOfLast { it.startsWith("createSub") || it.startsWith("createPub") }
+        assertTrue("teardown ran before the attempt finished: $log", lastAttemptStep < leaveAt)
+    }
+
+    @Test
+    fun `voice_removed before the rejoin creates its peer connections wins`() = runTest {
+        runAttemptWith("close#1") { removeNow() }
+        assertSessionEndWon("REMOVED")
+    }
+
+    @Test
+    fun `voice_removed while the subscriber PC is being created wins`() = runTest {
+        runAttemptWith("createSub#2") { removeNow() }
+        assertSessionEndWon("REMOVED")
+    }
+
+    @Test
+    fun `voice_removed right after the rejoin sent voice_join wins`() = runTest {
+        runAttemptWith("send:VoiceJoin#2") { removeNow() }
+        assertSessionEndWon("REMOVED")
+    }
+
+    // -- Fix round 1: attempt timeout, socket loss, offline cap ---------------
+
+    @Test
+    fun `an attempt times out after 15 s and its connections are closed at once`() = runTest {
+        recordWebRtcAndSocket()
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        verifyJoins(2)
+        val closesAtStart = log.count { it == "close" }
+
+        advanceTimeBy(14_999); runCurrent()
+        assertEquals(closesAtStart, log.count { it == "close" })
+        advanceTimeBy(1); runCurrent()
+        // Timed out at 16 s: closed now, not when attempt 2 starts at 19 s.
+        assertEquals(closesAtStart + 1, log.count { it == "close" })
+        verifyJoins(2)
+        advanceTimeBy(3_000); runCurrent()
+        verifyJoins(3)
+    }
+
+    @Test
+    fun `socket loss during attempt 3 keeps the budget and the next Ready recovers`() = runTest {
+        recordWebRtcAndSocket()
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+        // Attempts 1 and 2 time out: 1 s + 15 s, 3 s + 15 s; attempt 3 starts at 43 s.
+        advanceTimeBy(43_000); runCurrent()
+        verifyJoins(4)
+        assertEquals(VoiceLinkState.Rejoining(3), repository.linkState.value)
+        val closes = log.count { it == "close" }
+
+        advanceTimeBy(5_000); runCurrent()
+        connectionState.value = ConnectionState.Disconnected
+        runCurrent()
+        // The attempt is cancelled and its connections discarded at once.
+        assertEquals(closes + 1, log.count { it == "close" })
+
+        // Its timeout (58 s) passes without a give-up.
+        advanceTimeBy(20_000); runCurrent()
+        assertEquals("ch-1", repository.currentChannelId.value)
+        assertEquals(null, repository.endNotice.value)
+        verify(exactly = 0) { VoiceCallService.stop(any()) }
+
+        connectionState.value = ConnectionState.Connected
+        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        advanceTimeBy(9_000); runCurrent()
+        verifyJoins(5)
+        connectPublisher()
+        runCurrent()
+
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        assertEquals("ch-1", repository.currentChannelId.value)
+        verify(exactly = 0) { VoiceCallService.stop(any()) }
+    }
+
+    @Test
+    fun `60 s without an authenticated socket gives up like the third failure`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+
+        connectionState.value = ConnectionState.Disconnected
+        runCurrent()
+        advanceTimeBy(59_999); runCurrent()
+        assertEquals("ch-1", repository.currentChannelId.value)
+
+        advanceTimeBy(1); runCurrent()
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(VoiceEndNotice.RejoinFailed("ch-1", wasMuted = false), repository.endNotice.value)
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        verify(atLeast = 1) { VoiceCallService.stop(any()) }
+        verify(atLeast = 1) { webRtcManager.closePeerConnections() }
+
+        // A socket that comes back later does not pull the user back in.
+        connectionState.value = ConnectionState.Connected
+        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        advanceTimeBy(60_000); runCurrent()
+        verifyJoins(1)
+    }
+
+    // -- Fix round 1: success criterion ---------------------------------------
+
+    @Test
+    fun `a rejoin into an empty channel succeeds on the publisher alone`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        verifyJoins(2)
+
+        // Nobody else publishes, so the server sends no subscriber offer.
+        connectPublisher()
+        runCurrent()
+
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+        assertTrue(repository.isConnected.value)
+        advanceTimeBy(120_000); runCurrent()
+        verifyJoins(2)
+        assertEquals("ch-1", repository.currentChannelId.value)
+    }
+
+    // -- Fix round 1: mute state agrees in both layers ------------------------
+
+    private var rtcMuted = false
+
+    /** The publisher PC reports connected; the subscriber stays new (empty room). */
+    private fun connectPublisher() {
+        publisherConnected.value = true
+    }
+
+    private fun trackRtcMute() {
+        every { webRtcManager.setMuted(any()) } answers { rtcMuted = firstArg() }
+        every { webRtcManager.isMuted } answers { rtcMuted }
+    }
+
+    @Test
+    fun `give-up while muted resets both layers and Rejoin restores the mute`() = runTest {
+        trackRtcMute()
+        recordWebRtcAndSocket()
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        repository.toggleMute()
+        assertTrue(rtcMuted && repository.isMuted.value)
+
+        reconnect()
+        advanceTimeBy(70_000); runCurrent()
+        assertEquals(null, repository.currentChannelId.value)
+        // Nothing is captured after the give-up; both layers say "not muted".
+        assertEquals(repository.isMuted.value, rtcMuted)
+        assertFalse(rtcMuted)
+
+        log.clear()
+        repository.rejoin()
+        advanceUntilIdle()
+
+        // The user's last choice is back in both layers, before the mic track exists.
+        assertTrue(repository.isMuted.value)
+        assertTrue(rtcMuted)
+        val joinAt = log.indexOf("send:VoiceJoin")
+        val muteAt = log.indexOf("send:VoiceMute")
+        assertTrue("server not told about the mute: $log", joinAt in 0 until muteAt)
+    }
+
+    @Test
+    fun `kick and leave while muted leave both layers unmuted`() = runTest {
+        trackRtcMute()
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        repository.toggleMute()
+        wsEvents.emit(ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "kicked"))
+        advanceUntilIdle()
+        assertFalse(repository.isMuted.value)
+        assertFalse(rtcMuted)
+
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        repository.toggleMute()
+        repository.leaveChannel()
+        assertFalse(repository.isMuted.value)
+        assertFalse(rtcMuted)
+    }
+
+    // -- Fix round 1: minor findings ------------------------------------------
+
+    @Test
+    fun `a WebRTC error during a rejoin attempt fails the attempt without a snackbar`() = runTest {
+        var onError: ((String) -> Unit)? = null
+        every { webRtcManager.onError = any() } answers { onError = firstArg() }
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(1_000); runCurrent()
+        verifyJoins(2)
+
+        onError!!.invoke("SDP setPublisherRemoteDesc failed")
+        runCurrent()
+
+        assertEquals(null, repository.error.value)
+        // The attempt failed at once: attempt 2 follows 3 s later, not after the timeout.
+        advanceTimeBy(3_000); runCurrent()
+        verifyJoins(3)
+    }
+
+    @Test
+    fun `logout clears the end notice`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(70_000); runCurrent()
+        assertTrue(repository.endNotice.value is VoiceEndNotice.RejoinFailed)
+
+        // SessionTeardown.onLogout calls leaveChannel().
+        repository.leaveChannel()
+
+        assertEquals(null, repository.endNotice.value)
+    }
+
+    @Test
+    fun `a Ready during the first join waits for the join before rejoining`() = runTest {
+        recordWebRtcAndSocket()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { webRtcManager.createPublisherOffer(any()) } coAnswers {
+            gate.await()
+            log += "createPub"
+            true
+        }
+        repository.startJoin("ch-1")
+        runCurrent()
+        reconnect()
+        advanceTimeBy(5_000); runCurrent()
+        // The join is still creating its publisher: the attempt has not touched anything.
+        assertFalse("close" in log)
+
+        gate.complete(Unit)
+        runCurrent()
+        val pubAt = log.indexOf("createPub")
+        assertTrue("attempt closed the join's connections: $log", pubAt in 0 until log.indexOf("close"))
     }
 }

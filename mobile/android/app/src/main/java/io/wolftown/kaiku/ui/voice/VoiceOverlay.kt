@@ -53,7 +53,7 @@ fun VoiceOverlay(
             ) {
                 Text(
                     text = if (reconnecting) {
-                        stringResource(R.string.voice_reconnecting)
+                        stringResource(R.string.voice_call_reconnecting)
                     } else if (channelName != null) {
                         stringResource(R.string.voice_overlay_connected, channelName)
                     } else {
@@ -121,9 +121,9 @@ fun VoiceEndNoticeBar(
                 modifier = Modifier.weight(1f)
             )
             if (notice.canRejoin) {
-                TextButton(onClick = onRejoin) { Text(stringResource(R.string.voice_rejoin)) }
+                TextButton(onClick = onRejoin) { Text(stringResource(R.string.voice_call_rejoin)) }
             }
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.voice_notice_dismiss)) }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_dismiss)) }
         }
     }
 }

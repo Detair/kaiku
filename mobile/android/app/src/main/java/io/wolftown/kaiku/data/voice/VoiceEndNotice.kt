@@ -16,9 +16,15 @@ sealed interface VoiceEndNotice {
 
     val canRejoin: Boolean
 
-    /** C32: three rejoin attempts failed. */
-    data class RejoinFailed(override val channelId: String) : VoiceEndNotice {
-        override val message: Int get() = R.string.voice_rejoin_failed
+    /**
+     * C32: the rejoin gave up (three failed attempts, or no connection for
+     * 60 s). [wasMuted] is the user's last mute choice; "Rejoin" restores it.
+     */
+    data class RejoinFailed(
+        override val channelId: String,
+        val wasMuted: Boolean = false,
+    ) : VoiceEndNotice {
+        override val message: Int get() = R.string.voice_call_rejoin_failed
         override val canRejoin: Boolean get() = true
     }
 

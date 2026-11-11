@@ -3,6 +3,7 @@ package io.wolftown.kaiku.data.voice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
@@ -113,8 +114,8 @@ class VoiceRecoveryTest {
 
         advanceTimeBy(60_000); runCurrent()
 
-        // 1 s delay + 10 s timeout, then the 3 s delay of attempt 2.
-        assertEquals(listOf(1_000L, 14_000L), h.attemptTimes)
+        // 1 s delay + 15 s timeout, then the 3 s delay of attempt 2.
+        assertEquals(listOf(1_000L, 19_000L), h.attemptTimes)
         assertEquals(VoiceLinkState.Stable, h.recovery.state.value)
     }
 
@@ -202,7 +203,7 @@ class VoiceRecoveryTest {
         h.recovery.onSocketLost()
 
         h.recovery.onIceFailed()
-        advanceTimeBy(60_000); runCurrent()
+        advanceTimeBy(30_000); runCurrent()
         assertTrue(h.attemptTimes.isEmpty())
         assertEquals(VoiceLinkState.Interrupted, h.recovery.state.value)
 
@@ -224,9 +225,10 @@ class VoiceRecoveryTest {
         assertTrue(h.attemptTimes.isEmpty())
         assertTrue(h.gaveUp.isEmpty())
 
+        // The delay starts again with the new socket (time for the text re-subscription).
         h.recovery.onSocketReady()
-        runCurrent()
-        assertEquals(listOf(30_100L), h.attemptTimes)
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(listOf(31_100L), h.attemptTimes)
         assertEquals(VoiceLinkState.Stable, h.recovery.state.value)
     }
 
@@ -260,5 +262,160 @@ class VoiceRecoveryTest {
 
         assertEquals(3, calls)
         assertEquals(listOf("ch"), gaveUp)
+    }
+
+    // -- Fix round 1 (C32 amendments) -----------------------------------------
+
+    @Test
+    fun `the attempt timeout is 15 s and the attempt is cancelled before the next starts`() = runTest {
+        val cancelledAt = mutableListOf<Long>()
+        var calls = 0
+        val starts = mutableListOf<Long>()
+        val recovery = VoiceRecovery(
+            scope = backgroundScope,
+            rejoin = {
+                starts += currentTime
+                if (++calls == 1) {
+                    try { delay(Long.MAX_VALUE) } finally { cancelledAt += currentTime }
+                }
+                true
+            },
+            onGaveUp = {},
+        )
+        recovery.begin("ch", socketUp = true)
+        recovery.onSocketReady()
+
+        advanceTimeBy(60_000); runCurrent()
+
+        assertEquals(listOf(16_000L), cancelledAt)
+        assertEquals(listOf(1_000L, 19_000L), starts)
+        assertEquals(VoiceLinkState.Stable, recovery.state.value)
+    }
+
+    @Test
+    fun `socket loss during attempt 3 cancels it without using it up`() = runTest {
+        val h = harness()
+        h.results += false
+        h.results += false
+        h.results += HANG
+        h.results += true
+        h.recovery.begin("ch", socketUp = true)
+        h.recovery.onSocketReady()
+        advanceTimeBy(13_000); runCurrent()
+        assertEquals(listOf(1_000L, 4_000L, 13_000L), h.attemptTimes)
+
+        advanceTimeBy(1_000); runCurrent()
+        h.recovery.onSocketLost()
+        // Attempt 3 would have timed out at 28 s; nothing gives up.
+        advanceTimeBy(30_000); runCurrent()
+        assertTrue(h.gaveUp.isEmpty())
+        assertEquals(VoiceLinkState.Rejoining(3), h.recovery.state.value)
+
+        h.recovery.onSocketReady() // at 44 s
+        advanceTimeBy(9_000); runCurrent()
+
+        // Attempt 3 runs again with its own delay after the new socket.
+        assertEquals(listOf(1_000L, 4_000L, 13_000L, 53_000L), h.attemptTimes)
+        assertEquals(VoiceLinkState.Stable, h.recovery.state.value)
+        assertTrue(h.gaveUp.isEmpty())
+    }
+
+    @Test
+    fun `60 s without an authenticated socket gives up`() = runTest {
+        val h = harness()
+        h.recovery.begin("ch", socketUp = true)
+        h.recovery.onSocketLost()
+
+        advanceTimeBy(59_999); runCurrent()
+        assertTrue(h.gaveUp.isEmpty())
+        assertEquals(VoiceLinkState.Interrupted, h.recovery.state.value)
+        advanceTimeBy(1); runCurrent()
+
+        assertEquals(listOf("ch"), h.gaveUp)
+        assertEquals(VoiceLinkState.Stable, h.recovery.state.value)
+        h.recovery.onSocketReady()
+        advanceTimeBy(60_000); runCurrent()
+        assertTrue(h.attemptTimes.isEmpty())
+    }
+
+    @Test
+    fun `60 s offline during a rejoin loop gives up once`() = runTest {
+        val h = harness()
+        h.recovery.begin("ch", socketUp = true)
+        h.recovery.onSocketReady()
+        advanceTimeBy(500); runCurrent()
+        h.recovery.onSocketLost()
+
+        advanceTimeBy(60_000); runCurrent()
+
+        assertEquals(listOf("ch"), h.gaveUp)
+        assertTrue(h.attemptTimes.isEmpty())
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals(1, h.gaveUp.size)
+    }
+
+    @Test
+    fun `a socket that comes back within 60 s keeps the session`() = runTest {
+        val h = harness()
+        h.results += true
+        h.recovery.begin("ch", socketUp = true)
+        h.recovery.onSocketLost()
+        advanceTimeBy(59_000); runCurrent()
+        h.recovery.onSocketReady()
+        advanceTimeBy(60_000); runCurrent()
+
+        assertTrue(h.gaveUp.isEmpty())
+        assertEquals(1, h.attemptTimes.size)
+        assertEquals(VoiceLinkState.Stable, h.recovery.state.value)
+    }
+
+    @Test
+    fun `the state stays reconnecting until the give-up teardown ran`() = runTest {
+        val statesAtGiveUp = mutableListOf<VoiceLinkState>()
+        lateinit var recovery: VoiceRecovery
+        recovery = VoiceRecovery(
+            scope = backgroundScope,
+            rejoin = { false },
+            onGaveUp = { statesAtGiveUp += recovery.state.value },
+        )
+        recovery.begin("ch", socketUp = true)
+        recovery.onSocketReady()
+
+        advanceTimeBy(60_000); runCurrent()
+
+        assertEquals(listOf<VoiceLinkState>(VoiceLinkState.Rejoining(3)), statesAtGiveUp)
+        assertEquals(VoiceLinkState.Stable, recovery.state.value)
+    }
+
+    @Test
+    fun `endAndJoin returns only after the running attempt finished cancelling`() = runTest {
+        var cleanedAt = -1L
+        val recovery = VoiceRecovery(
+            scope = backgroundScope,
+            rejoin = {
+                try {
+                    delay(Long.MAX_VALUE)
+                } finally {
+                    // Clean-up that takes time even when cancelled (closing connections).
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { delay(500) }
+                    cleanedAt = currentTime
+                }
+                true
+            },
+            onGaveUp = {},
+        )
+        recovery.begin("ch", socketUp = true)
+        recovery.onSocketReady()
+        advanceTimeBy(2_000); runCurrent()
+
+        var endedAt = -1L
+        backgroundScope.launch { recovery.endAndJoin(); endedAt = currentTime }
+        runCurrent()
+        assertEquals(-1L, endedAt)
+        advanceTimeBy(500); runCurrent()
+
+        assertEquals(2_500L, cleanedAt)
+        assertEquals(2_500L, endedAt)
+        assertEquals(VoiceLinkState.Stable, recovery.state.value)
     }
 }
