@@ -18,6 +18,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import io.wolftown.kaiku.R
 import io.wolftown.kaiku.domain.typingNames
 import io.wolftown.kaiku.ui.shared.ConnectionBanner
+import io.wolftown.kaiku.ui.shared.NotificationsOffBanner
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
 
@@ -164,6 +165,7 @@ fun TextChannelScreen(
                 .padding(paddingValues)
         ) {
         ConnectionBanner(status = connectionStatus)
+        if (!isKaikuDm) NotificationsOffBanner()
         Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             when {
                 isLoading && messages.isEmpty() -> {

@@ -93,6 +93,8 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
         ) {
+            io.wolftown.kaiku.ui.shared.NotificationsOffBanner(modifier = Modifier.padding(top = 8.dp))
+
             // Account section
             Text(
                 text = stringResource(R.string.settings_section_account),
