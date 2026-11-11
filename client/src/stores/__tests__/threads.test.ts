@@ -6,11 +6,16 @@ vi.mock("@/lib/tauri", () => ({
   markThreadRead: vi.fn(),
 }));
 
+vi.mock("@/components/ui/Toast", () => ({ showToast: vi.fn() }));
+
 import * as tauri from "@/lib/tauri";
+import { HttpError } from "@/lib/tauri/common";
+import { showToast } from "@/components/ui/Toast";
 import type { Message } from "@/lib/types";
 import {
   loadMoreThreadReplies,
   markThreadRead,
+  sendThreadReply,
   setThreadReadState,
   setThreadsState,
   threadsState,
@@ -104,5 +109,17 @@ describe("threads store", () => {
 
     expect(tauri.markThreadRead).toHaveBeenCalledWith(parentId);
     expect(threadsState.lastReadMessageByThread[parentId]).toBe("m2");
+  });
+
+  it("a failed reply reports a translated reason and returns null", async () => {
+    vi.mocked(tauri.sendThreadReply).mockRejectedValueOnce(
+      new HttpError(403, "Forbidden", "FORBIDDEN"),
+    );
+    const result = await sendThreadReply("parent-1", "channel-1", "hello");
+    expect(result).toBeNull();
+    expect(threadsState.error).toBe("You can't send messages here.");
+    expect(showToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Reply not sent", message: "You can't send messages here." }),
+    );
   });
 });

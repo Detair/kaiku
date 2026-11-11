@@ -10,6 +10,8 @@ import type { Message, ThreadInfo } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 import { showToast } from "@/components/ui/Toast";
 import { messagesState, setMessagesState } from "./messages";
+import { t } from "@/i18n";
+import { CHAT_SEND_ERRORS, errorText } from "@/i18n/errors";
 
 // ============================================================================
 // State
@@ -98,8 +100,8 @@ export async function loadThreadReplies(parentId: string): Promise<void> {
     console.error("Failed to load thread replies:", error);
     showToast({
       type: "error",
-      title: "Thread Load Failed",
-      message: "Could not load thread replies.",
+      title: t("chat.thread.loadFailed.title"),
+      message: errorText(err, "chat.thread.loadFailed.message"),
       duration: 8000,
     });
     setThreadsState("error", error);
@@ -172,13 +174,19 @@ export async function sendThreadReply(
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error("Failed to send thread reply:", error);
+    const text = errorText(
+      err,
+      "chat.thread.replyFailed.message",
+      CHAT_SEND_ERRORS.byCode,
+      CHAT_SEND_ERRORS.byStatus,
+    );
     showToast({
       type: "error",
-      title: "Reply Failed",
-      message: "Could not send thread reply. Please try again.",
+      title: t("chat.thread.replyFailed.title"),
+      message: text,
       duration: 8000,
     });
-    setThreadsState("error", error);
+    setThreadsState("error", text);
     return null;
   }
 }

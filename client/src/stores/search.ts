@@ -7,6 +7,7 @@
 
 import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
+import { errorText } from "@/i18n/errors";
 import type {
   SearchResult,
   SearchFilters,
@@ -123,7 +124,7 @@ export async function search(
     setSearchState({
       results: [],
       total: 0,
-      error: err instanceof Error ? err.message : "Search failed",
+      error: errorText(err, "chat.search.failed"),
       isSearching: false,
     });
   }
@@ -181,7 +182,7 @@ export async function searchDMs(
     setSearchState({
       results: [],
       total: 0,
-      error: err instanceof Error ? err.message : "Search failed",
+      error: errorText(err, "chat.search.failed"),
       isSearching: false,
     });
   }
@@ -246,7 +247,7 @@ export async function searchGlobal(
     setSearchState({
       results: [],
       total: 0,
-      error: err instanceof Error ? err.message : "Search failed",
+      error: errorText(err, "chat.search.failed"),
       isSearching: false,
     });
   }
@@ -304,7 +305,7 @@ export async function loadMore(): Promise<void> {
   } catch (err) {
     console.error("Load more failed:", err);
     setSearchState({
-      error: err instanceof Error ? err.message : "Load more failed",
+      error: errorText(err, "chat.search.failed"),
       isSearching: false,
     });
   }

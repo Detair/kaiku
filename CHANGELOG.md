@@ -91,6 +91,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Android: admins set up phones from their own phone.** Create the account (no password), choose "Set up a phone", and type the code the new phone shows; existing accounts wait 24 hours with notices to everyone involved. "Remove device now" for stolen phones. See `docs/admin-guide/ops/phone-setup.md`.
 - **Light theme and "Same as my device":** Settings > Appearance now offers Solarized Light, and an option that switches between light and dark the way your phone or computer does. Nobody's theme changes unless they pick one.
 - **Text size:** three steps (Normal, Large, Very large) in Settings > Appearance make all text bigger.
+- Chat: progress and a Cancel button while files upload; paste a screenshot with Ctrl+V to attach it; the attachment tray says which kinds of files can be sent.
+- Chat: day separators (Today, Yesterday, date), a "Jump to newest" button whenever you have scrolled up, and names in the typing line ("Oma is typing...").
+- Screen readers hear new messages from others and who is typing; reactions say who reacted and whether yours is set.
 
 ### Changed
 - The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
@@ -387,6 +390,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pulsing and bouncing animations stop when your device is set to reduce motion; loading spinners keep turning.
 - Pixel theme: buttons and navigation text are larger.
 - Avatar initials are readable on every colour.
+- Chat: a message or thread reply that fails to send stays in the text box and in its draft instead of disappearing.
+- Chat: a file the server refuses (wrong type, too big, empty) says why in one sentence and stays in the attachment tray; files already sent are not sent again when you retry.
+- Chat: the actions on a message (react, reply in thread, edit, more) appear when you reach them with the keyboard and cannot be tapped while hidden.
+- Chat: opening an older search result or pinned message loads the messages around it and scrolls there; "Show in chat" in the pin panel works.
+- Direct messages no longer offer "Reply in Thread", which did nothing there.
+- Search, pinned messages, threads and the emoji picker are translated; the search filter lists people by name instead of asking for an internal user ID.
 
 ### Security
 - E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting

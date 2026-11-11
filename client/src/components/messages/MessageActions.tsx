@@ -32,6 +32,18 @@ interface MessageActionsProps {
 // Quick reaction emojis
 export const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮"];
 
+const ACTION_BAR_BASE =
+  "absolute top-0 right-4 -translate-y-1/2 flex items-center gap-1 bg-surface-layer2 border border-white/10 rounded-lg shadow-xl px-1 py-1 transition-opacity";
+/**
+ * Hidden until the message is hovered or anything in the bar has keyboard
+ * focus. While hidden it takes no taps: on a touchscreen the first tap on a
+ * message reveals the bar (sticky hover) instead of hitting an unseen button.
+ */
+export const ACTION_BAR_HIDDEN =
+  "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto focus-within:opacity-100 focus-within:pointer-events-auto";
+/** While the emoji picker is open the bar stays put. */
+const ACTION_BAR_SHOWN = "opacity-100";
+
 const MessageActions: Component<MessageActionsProps> = (props) => {
   const [showEmojiPicker, setShowEmojiPicker] = createSignal(false);
   let emojiButtonRef: HTMLButtonElement | undefined;
@@ -46,7 +58,12 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
   };
 
   return (
-    <div data-testid="message-action-bar" class="absolute top-0 right-4 -translate-y-1/2 flex items-center gap-1 bg-surface-layer2 border border-white/10 rounded-lg shadow-xl px-1 py-1 opacity-0 group-hover:opacity-100 transition-opacity">
+    <div
+      data-testid="message-action-bar"
+      role="toolbar"
+      aria-label={t("chat.message.actions")}
+      class={`${ACTION_BAR_BASE} ${showEmojiPicker() ? ACTION_BAR_SHOWN : ACTION_BAR_HIDDEN}`}
+    >
       {/* Quick emoji reactions */}
       <For each={QUICK_EMOJIS}>{(emoji) => (
         <button
@@ -120,7 +137,7 @@ const MessageActions: Component<MessageActionsProps> = (props) => {
       <button
         class="w-7 h-7 flex items-center justify-center rounded hover:bg-white/10 text-text-secondary hover:text-text-primary transition-colors"
         data-testid="message-action-more"
-        onClick={props.onShowContextMenu}
+        onClick={(e) => props.onShowContextMenu(e)}
         title={t("chat.message.moreActions")}
         aria-label={t("chat.message.moreActions")}
       >
