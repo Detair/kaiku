@@ -47,8 +47,8 @@ import {
   removeReaction,
   deleteMessage,
   editMessage,
-  getAccessToken,
 } from "@/lib/tauri";
+import { getAttachmentUrl } from "@/lib/attachmentUrls";
 import {
   showContextMenu,
   showContextMenuAt,
@@ -207,18 +207,12 @@ interface TextBlock {
 
 type ContentBlock = CodeBlockData | TextBlock;
 
-async function fetchSignedUrl(
-  attachmentId: string,
-  variant?: string,
-): Promise<string> {
-  // Use the download endpoint with ?token= for <img src> auth.
-  // Browser img tags can't send Authorization headers, so we pass JWT as query param.
-  const token = getAccessToken() || "";
-  const params = new URLSearchParams();
-  if (variant) params.set("variant", variant);
-  if (token) params.set("token", token);
-  const qs = params.toString();
-  return `/api/messages/attachments/${attachmentId}/download${qs ? `?${qs}` : ""}`;
+/**
+ * URL for an attachment or its variant without the access token in it
+ * (C24): a cached presigned URL, or a blob URL when presigning fails.
+ */
+function fetchSignedUrl(attachmentId: string, variant?: string): Promise<string> {
+  return getAttachmentUrl(attachmentId, variant);
 }
 
 

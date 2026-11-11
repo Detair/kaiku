@@ -15,6 +15,7 @@ import {
   type User,
 } from "@/lib/types";
 import { resetMeSecurity } from "./security";
+import { clearAttachmentUrls } from "@/lib/attachmentUrls";
 import * as tauri from "@/lib/tauri";
 import {
   initWebSocket,
@@ -289,6 +290,7 @@ async function endSession(reason: tauri.SessionEndReason): Promise<void> {
   passwordChangeSaved = false;
   // The ended session's overview and prompts go with it (Argon review 6 #4).
   resetMeSecurity();
+  clearAttachmentUrls();
   endSignInChoices();
   setAuthState({
     user: null,
@@ -866,6 +868,7 @@ export async function logout(): Promise<void> {
   endSignInChoices();
   resetServerFeatures();
   resetMeSecurity();
+  clearAttachmentUrls();
   pendingTemporaryPassword = null;
   stepPassword = null;
   passwordChangeSaved = false;
