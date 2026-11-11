@@ -1,5 +1,9 @@
 /**
  * InvitesTab - Invite management for guild owners
+ *
+ * A new code is shown large and copied right away, with one sentence on how
+ * to pass it on (ADMIN-16). Failures show a toast (ADMIN-6); removing a code
+ * asks in a dialog that names it (ADMIN-13).
  */
 
 import { Component, createSignal, For, Show, onMount } from "solid-js";
@@ -12,26 +16,29 @@ import {
   getGuildInvites,
 } from "@/stores/guilds";
 import { secureCopy } from "@/lib/clipboard";
-import { t } from "@/i18n";
+import { plural, t, type MessageKey } from "@/i18n";
 import type { InviteExpiry } from "@/lib/types";
+import ConfirmActionDialog from "@/components/admin/ConfirmActionDialog";
+import { reportFailure } from "./settingsAction";
 
 interface InvitesTabProps {
   guildId: string;
 }
 
-const EXPIRY_OPTIONS: { value: InviteExpiry; label: string }[] = [
-  { value: "30m", label: "30 minutes" },
-  { value: "1h", label: "1 hour" },
-  { value: "1d", label: "1 day" },
-  { value: "7d", label: "7 days" },
-  { value: "never", label: "Never" },
+const EXPIRY_OPTIONS: { value: InviteExpiry; label: MessageKey }[] = [
+  { value: "30m", label: "guildSettings.invites.expiry.halfHour" },
+  { value: "1h", label: "guildSettings.invites.expiry.oneHour" },
+  { value: "1d", label: "guildSettings.invites.expiry.oneDay" },
+  { value: "7d", label: "guildSettings.invites.expiry.sevenDays" },
+  { value: "never", label: "guildSettings.invites.expiry.never" },
 ];
 
 const InvitesTab: Component<InvitesTabProps> = (props) => {
   const [expiresIn, setExpiresIn] = createSignal<InviteExpiry>("7d");
   const [isCreating, setIsCreating] = createSignal(false);
   const [copiedCode, setCopiedCode] = createSignal<string | null>(null);
-  const [deletingCode, setDeletingCode] = createSignal<string | null>(null);
+  const [newCode, setNewCode] = createSignal<string | null>(null);
+  const [deleting, setDeleting] = createSignal<string | null>(null);
 
   onMount(() => {
     loadGuildInvites(props.guildId);
@@ -39,55 +46,45 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
 
   const invites = () => getGuildInvites(props.guildId);
 
+  const copy = async (code: string) => {
+    // The code, not a link: the family server has no browser client to open one.
+    await secureCopy(code, "invite_link");
+    setCopiedCode(code);
+    setTimeout(() => setCopiedCode((c) => (c === code ? null : c)), 2000);
+  };
+
   const handleCreate = async () => {
     setIsCreating(true);
     try {
-      await createInvite(props.guildId, expiresIn());
+      const invite = await createInvite(props.guildId, expiresIn());
+      setNewCode(invite.code);
+      await copy(invite.code);
     } catch (err) {
-      console.error("Failed to create invite:", err);
+      reportFailure(t("guildSettings.invites.createFailed"), err);
     } finally {
       setIsCreating(false);
     }
   };
 
-  const handleCopy = async (code: string) => {
-    // The code, not a link: the family server has no browser client to open one.
-    await secureCopy(code, "invite_link");
-    setCopiedCode(code);
-    setTimeout(() => setCopiedCode(null), 2000);
-  };
-
-  const handleDelete = async (code: string) => {
-    if (deletingCode() === code) {
-      // Confirmed, delete it
-      try {
-        await deleteInvite(props.guildId, code);
-      } catch (err) {
-        console.error("Failed to delete invite:", err);
-      }
-      setDeletingCode(null);
-    } else {
-      // First click, show confirmation
-      setDeletingCode(code);
-      setTimeout(() => setDeletingCode(null), 3000);
-    }
+  const removeCode = async (code: string) => {
+    await deleteInvite(props.guildId, code);
+    if (newCode() === code) setNewCode(null);
   };
 
   const formatExpiry = (expiresAt: string | null): string => {
-    if (!expiresAt) return "Never expires";
-    const expires = new Date(expiresAt);
-    const now = new Date();
-    const diff = expires.getTime() - now.getTime();
-
-    if (diff <= 0) return "Expired";
+    if (!expiresAt) return t("guildSettings.invites.neverExpires");
+    const diff = new Date(expiresAt).getTime() - Date.now();
+    if (diff <= 0) return t("guildSettings.invites.expired");
 
     const minutes = Math.floor(diff / 60000);
     const hours = Math.floor(diff / 3600000);
     const days = Math.floor(diff / 86400000);
 
-    if (days > 0) return `Expires in ${days} day${days > 1 ? "s" : ""}`;
-    if (hours > 0) return `Expires in ${hours} hour${hours > 1 ? "s" : ""}`;
-    return `Expires in ${minutes} minute${minutes > 1 ? "s" : ""}`;
+    if (days > 0)
+      return plural(days, { one: "guildSettings.invites.expiresDays.one", other: "guildSettings.invites.expiresDays.other" });
+    if (hours > 0)
+      return plural(hours, { one: "guildSettings.invites.expiresHours.one", other: "guildSettings.invites.expiresHours.other" });
+    return plural(minutes, { one: "guildSettings.invites.expiresMinutes.one", other: "guildSettings.invites.expiresMinutes.other" });
   };
 
   return (
@@ -98,14 +95,15 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
         style={{"background-color":"var(--color-surface-layer1)"}}
       >
         <h3 class="text-sm font-semibold text-text-primary mb-3">
-          Create New Invite
+          {t("guildSettings.invites.createTitle")}
         </h3>
         <div class="flex items-center gap-3">
           <div class="flex-1">
-            <label class="text-xs text-text-secondary mb-1 block">
-              Expires after
+            <label for="invite-expiry" class="text-xs text-text-secondary mb-1 block">
+              {t("guildSettings.invites.expiresAfter")}
             </label>
             <select
+              id="invite-expiry"
               value={expiresIn()}
               onChange={(e) =>
                 setExpiresIn(e.currentTarget.value as InviteExpiry)
@@ -114,7 +112,7 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
               style={{"background-color":"var(--color-surface-layer2)"}}
             >
               <For each={EXPIRY_OPTIONS}>
-                {(opt) => <option value={opt.value}>{opt.label}</option>}
+                {(opt) => <option value={opt.value}>{t(opt.label)}</option>}
               </For>
             </select>
           </div>
@@ -125,22 +123,52 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
             class="flex items-center gap-2 px-4 py-2 bg-accent-primary text-on-accent rounded-lg font-medium hover:opacity-90 mt-5 state-disabled"
           >
             <Plus class="w-4 h-4" />
-            {isCreating() ? "Creating..." : "Create"}
+            {isCreating() ? t("guildSettings.working") : t("guildSettings.invites.create")}
           </button>
         </div>
+
+        {/* The code just created: large, copied, with how to pass it on. */}
+        <Show when={newCode()}>
+          {(code) => (
+            <div
+              data-testid="new-invite"
+              role="status"
+              class="mt-4 p-4 rounded-lg bg-accent-primary/20 border border-accent-primary/40 space-y-2"
+            >
+              <div class="text-sm text-text-primary">
+                {copiedCode() === code()
+                  ? t("guildSettings.invites.newCopied")
+                  : t("guildSettings.invites.newCode")}
+              </div>
+              <div class="flex items-center gap-3">
+                <code class="text-2xl font-mono font-bold tracking-wider text-text-primary select-all">
+                  {code()}
+                </code>
+                <button
+                  type="button"
+                  onClick={() => copy(code())}
+                  class="px-3 py-1.5 rounded-lg bg-white/10 text-sm text-text-primary hover:bg-white/20"
+                >
+                  {t("guildSettings.invites.copy")}
+                </button>
+              </div>
+              <p class="text-sm text-text-secondary">{t("guildSettings.invites.howToShare")}</p>
+            </div>
+          )}
+        </Show>
       </div>
 
       {/* Active Invites */}
       <div class="mt-6">
         <h3 class="text-sm font-semibold text-text-primary mb-3">
-          Active Invites ({invites().length})
+          {t("guildSettings.invites.active", { count: invites().length })}
         </h3>
 
         <Show
           when={invites().length > 0}
           fallback={
             <div class="text-center py-8 text-text-secondary">
-              No active invites. Create one to let people join!
+              {t("guildSettings.invites.empty")}
             </div>
           }
         >
@@ -152,48 +180,35 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
                   style={{"background-color":"var(--color-surface-layer1)"}}
                 >
                   <div class="flex-1 min-w-0">
-                    <code data-testid="invite-code" class="text-sm text-accent-primary font-mono truncate block">
+                    <code data-testid="invite-code" class="text-sm text-text-primary font-mono truncate block">
                       {invite.code}
                     </code>
                     <div class="text-xs text-text-secondary mt-1">
                       {formatExpiry(invite.expires_at)} &bull;{" "}
-                      {invite.use_count} use{invite.use_count !== 1 ? "s" : ""}
+                      {plural(invite.use_count, { one: "guildSettings.invites.uses.one", other: "guildSettings.invites.uses.other" })}
                     </div>
                   </div>
                   <div class="flex items-center gap-2 ml-3">
                     <button
-                      onClick={() => handleCopy(invite.code)}
-                      class="p-2 text-text-secondary hover:text-accent-primary hover:bg-white/10 rounded-lg transition-colors"
+                      onClick={() => copy(invite.code)}
+                      class="p-2 text-text-secondary hover:text-text-primary hover:bg-white/10 rounded-lg transition-colors"
                       title={t("settings.invites.copyCode")}
+                      aria-label={t("settings.invites.copyCode")}
                     >
                       <Show
                         when={copiedCode() === invite.code}
                         fallback={<Copy class="w-4 h-4" />}
                       >
-                        <span class="text-xs text-accent-primary">Copied!</span>
+                        <span class="text-xs text-text-primary">{t("guildSettings.invites.copied")}</span>
                       </Show>
                     </button>
                     <button
-                      onClick={() => handleDelete(invite.code)}
-                      class="p-2 rounded-lg transition-colors"
-                      classList={{
-                        "bg-accent-danger text-white":
-                          deletingCode() === invite.code,
-                        "text-text-secondary hover:text-accent-danger hover:bg-white/10":
-                          deletingCode() !== invite.code,
-                      }}
-                      title={
-                        deletingCode() === invite.code
-                          ? "Click again to confirm"
-                          : "Delete invite"
-                      }
+                      onClick={() => setDeleting(invite.code)}
+                      class="p-2 rounded-lg transition-colors text-text-secondary hover:text-text-primary hover:bg-white/10"
+                      title={t("guildSettings.invites.deleteNamed", { code: invite.code })}
+                      aria-label={t("guildSettings.invites.deleteNamed", { code: invite.code })}
                     >
-                      <Show
-                        when={deletingCode() === invite.code}
-                        fallback={<Trash2 class="w-4 h-4" />}
-                      >
-                        <span class="text-xs">Confirm?</span>
-                      </Show>
+                      <Trash2 class="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -206,8 +221,22 @@ const InvitesTab: Component<InvitesTabProps> = (props) => {
       {/* Loading state */}
       <Show when={guildsState.isInvitesLoading}>
         <div class="text-center py-4 text-text-secondary">
-          Loading invites...
+          {t("guildSettings.loading")}
         </div>
+      </Show>
+
+      <Show when={deleting()}>
+        {(code) => (
+          <ConfirmActionDialog
+            title={t("guildSettings.invites.deleteTitle")}
+            message={t("guildSettings.invites.deleteBody", { code: code() })}
+            confirmLabel={t("guildSettings.invites.deleteConfirm")}
+            danger
+            onConfirm={() => removeCode(code())}
+            onDone={() => setDeleting(null)}
+            onCancel={() => setDeleting(null)}
+          />
+        )}
       </Show>
     </div>
   );

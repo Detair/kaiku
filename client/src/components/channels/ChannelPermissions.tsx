@@ -28,6 +28,8 @@ import {
   hasPermission,
 } from "@/lib/permissionConstants";
 import type { ChannelOverride } from "@/lib/types";
+import { reportFailure } from "@/components/guilds/settingsAction";
+import { t } from "@/i18n";
 
 interface ChannelPermissionsProps {
   channelId: string;
@@ -123,7 +125,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
       await setChannelOverride(props.channelId, roleId, { allow, deny });
       setEditingRoleId(null);
     } catch (err) {
-      console.error("Failed to save override:", err);
+      reportFailure(t("guildSettings.channel.permissionSaveFailed"), err);
     } finally {
       setIsSaving(false);
     }
@@ -135,7 +137,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
       setShowRolePicker(false);
       setEditingRoleId(roleId);
     } catch (err) {
-      console.error("Failed to add override:", err);
+      reportFailure(t("guildSettings.channel.permissionSaveFailed"), err);
     }
   };
 
@@ -146,7 +148,7 @@ const ChannelPermissions: Component<ChannelPermissionsProps> = (props) => {
         setEditingRoleId(null);
       }
     } catch (err) {
-      console.error("Failed to delete override:", err);
+      reportFailure(t("guildSettings.channel.permissionRemoveFailed"), err);
     }
   };
 

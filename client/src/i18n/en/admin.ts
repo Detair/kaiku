@@ -50,4 +50,5 @@ export const admin = {
   "admin.createAccount.recoveryContact": "Recovery contact (optional)",
   "admin.createAccount.noContact": "None",
   "admin.createAccount.phoneHint": "Now set up their phone from the Kaiku app on your phone.",
+  "admin.mode.expiredRetry": "Admin mode has ended. Turn it on again, then try once more.",
 } as const satisfies Record<`admin.${string}`, string>;
