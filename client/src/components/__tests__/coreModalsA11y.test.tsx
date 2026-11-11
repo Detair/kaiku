@@ -33,7 +33,13 @@ vi.mock("@/stores/channels", () => ({
   createChannel: vi.fn(),
 }));
 vi.mock("@/stores/categories", () => ({ getCategory: () => undefined }));
-vi.mock("@/stores/permissions", () => ({ memberHasPermission: () => false }));
+vi.mock("@/stores/permissions", () => ({
+  memberHasPermission: () => false,
+  getGuildRoles: () => [],
+  getMemberRoleIds: () => [],
+  getChannelOverrides: () => [],
+  loadChannelOverrides: vi.fn(),
+}));
 vi.mock("@/stores/guilds", () => ({
   guildsState: { guilds: [] },
   isGuildOwner: () => false,

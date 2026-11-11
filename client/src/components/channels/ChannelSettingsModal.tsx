@@ -2,14 +2,14 @@
  * ChannelSettingsModal - Channel settings with permissions tab
  */
 
-import { Component, createSignal, Show } from "solid-js";
+import { Component, createSignal, onMount, Show } from "solid-js";
 import ConfirmActionDialog from "@/components/admin/ConfirmActionDialog";
-import { renameChannel, deleteChannel } from "@/stores/guildAdmin";
+import { renameChannel, deleteChannel, canManageChannel as canEditChannelFor } from "@/stores/guildAdmin";
 import { reportFailure, reportSuccess } from "@/components/guilds/settingsAction";
 import { Portal } from "solid-js/web";
 import { X, Hash, Settings, Shield, Check, Bell, BellOff, Trash2 } from "lucide-solid";
 import { channelsState } from "@/stores/channels";
-import { memberHasPermission } from "@/stores/permissions";
+import { memberHasPermission, loadChannelOverrides } from "@/stores/permissions";
 import { authState } from "@/stores/auth";
 import { isGuildOwner } from "@/stores/guilds";
 import { PermissionBits } from "@/lib/permissionConstants";
@@ -79,6 +79,13 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
     deletedName = channel()?.name ?? "";
     await deleteChannel(props.guildId, props.channelId);
   };
+
+  // Rename and delete follow the server's per-channel rule (K8).
+  const canEditChannel = () =>
+    canEditChannelFor(props.guildId, props.channelId, authState.user?.id || "", isOwner());
+  onMount(() => {
+    if (!isOwner()) void loadChannelOverrides(props.channelId);
+  });
 
   const handleBackdropClick = (e: MouseEvent) => {
     if (e.target === e.currentTarget) {
@@ -160,7 +167,7 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
               <div class="p-6 space-y-6">
                 {/* Channel Name: editable for people who manage channels (ADMIN-5). */}
                 <Show
-                  when={canManageChannel()}
+                  when={canEditChannel()}
                   fallback={
                     <div>
                       <div class="block text-sm font-medium text-text-secondary mb-2">
@@ -238,7 +245,7 @@ const ChannelSettingsModal: Component<ChannelSettingsModalProps> = (props) => {
                 </div>
 
                 {/* Delete (ADMIN-5): asks first, names the channel. */}
-                <Show when={canManageChannel()}>
+                <Show when={canEditChannel()}>
                   <div class="pt-4 border-t border-white/10">
                     <button
                       type="button"
