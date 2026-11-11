@@ -21,6 +21,7 @@ import io.wolftown.kaiku.data.ws.KaikuWebSocket
 import io.wolftown.kaiku.data.ws.ScreenShareInfo
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.data.ws.VoiceParticipant
+import io.wolftown.kaiku.data.ws.VoiceRemovedReason
 import io.wolftown.kaiku.di.VoiceCoroutineScope
 import io.wolftown.kaiku.service.VoiceCallService
 import kotlinx.coroutines.CancellationException
@@ -520,6 +521,26 @@ class VoiceRepository @Inject constructor(
         }
     }
 
+    /**
+     * C31: the server removed us from the call. Ends it locally without a
+     * `voice_leave` (the peer is gone), never rejoins, and says why.
+     */
+    private fun onRemovedByServer(channelId: String, reason: VoiceRemovedReason) {
+        // Cancel any pending rejoin before the (asynchronous) teardown.
+        recovery.end()
+        // Own job: the teardown cancels the collector this event arrived on.
+        scope.launch {
+            cancelJoin()
+            leaveMutex.withLock {
+                if (_currentChannelId.value != channelId) return@withLock
+                _currentChannelId.value = null
+                cleanUp()
+                _endNotice.value = VoiceEndNotice.Removed(channelId, reason)
+                logger.info("Removed from voice channel $channelId by the server: $reason")
+            }
+        }
+    }
+
     /** The "Rejoin" action of [endNotice]: joins the same channel again. */
     fun rejoin() {
         val notice = _endNotice.value as? VoiceEndNotice.RejoinFailed ?: return
@@ -704,6 +725,13 @@ class VoiceRepository @Inject constructor(
                     }.forEach { trackId ->
                         webRtcManager.removeVideoTrack(trackId)
                     }
+                }
+            }
+
+            is ServerEvent.VoiceRemoved -> {
+                // No channel id: the event only goes to the socket that owned the peer.
+                if (event.channelId == null || event.channelId == channelId) {
+                    onRemovedByServer(channelId, event.removedReason)
                 }
             }
 

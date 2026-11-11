@@ -23,6 +23,7 @@ import io.wolftown.kaiku.data.voice.WebRtcManager
 import io.wolftown.kaiku.data.ws.ClientEvent
 import io.wolftown.kaiku.data.ws.ConnectionState
 import io.wolftown.kaiku.data.ws.KaikuWebSocket
+import io.wolftown.kaiku.data.ws.VoiceRemovedReason
 import io.wolftown.kaiku.data.ws.ServerEvent
 import io.wolftown.kaiku.service.VoiceCallService
 import kotlinx.coroutines.CoroutineScope
@@ -489,5 +490,121 @@ class VoiceRepositoryTest {
 
         verifyJoins(2)
         verify(exactly = 1) { webRtcManager.closePeerConnections() }
+    }
+
+    // -- Forced leave (C31) ---------------------------------------------------
+
+    @Test
+    fun `voice_removed tears down clears state stops the service and says why`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+
+        wsEvents.emit(ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "banned"))
+        advanceUntilIdle()
+
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(
+            VoiceEndNotice.Removed("ch-1", VoiceRemovedReason.Banned),
+            repository.endNotice.value
+        )
+        assertFalse(repository.endNotice.value!!.canRejoin)
+        verify(atLeast = 1) { webRtcManager.closePeerConnections() }
+        verify(atLeast = 1) { VoiceCallService.stop(any()) }
+        // The server already removed the peer: no voice_leave.
+        verify(exactly = 0) { webSocket.send(ClientEvent.VoiceLeave("ch-1")) }
+    }
+
+    @Test
+    fun `no rejoin after voice_removed even when the socket reconnects`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+
+        wsEvents.emit(ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "kicked"))
+        advanceUntilIdle()
+        connectionState.value = ConnectionState.Disconnected
+        runCurrent()
+        connectionState.value = ConnectionState.Connected
+        wsEvents.emit(ServerEvent.Ready(userId = "me"))
+        advanceTimeBy(60_000); runCurrent()
+
+        verifyJoins(1)
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(VoiceLinkState.Stable, repository.linkState.value)
+    }
+
+    @Test
+    fun `voice_removed while a rejoin is pending cancels it`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        reconnect()
+        advanceTimeBy(500); runCurrent()
+
+        wsEvents.emit(ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "permission_lost"))
+        advanceTimeBy(60_000); runCurrent()
+
+        verifyJoins(1)
+        assertEquals(
+            VoiceEndNotice.Removed("ch-1", VoiceRemovedReason.PermissionLost),
+            repository.endNotice.value
+        )
+    }
+
+    @Test
+    fun `voice_removed with an unknown reason ends the call like kicked`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+
+        wsEvents.emit(ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "from_the_future"))
+        advanceUntilIdle()
+
+        assertEquals(
+            VoiceEndNotice.Removed("ch-1", VoiceRemovedReason.Kicked),
+            repository.endNotice.value
+        )
+    }
+
+    @Test
+    fun `voice_removed without a channel id applies to the current call`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+
+        wsEvents.emit(ServerEvent.VoiceRemoved(channelId = null, reason = "channel_deleted"))
+        advanceUntilIdle()
+
+        assertEquals(null, repository.currentChannelId.value)
+        assertEquals(
+            VoiceEndNotice.Removed("ch-1", VoiceRemovedReason.ChannelDeleted),
+            repository.endNotice.value
+        )
+    }
+
+    @Test
+    fun `voice_removed for another channel is ignored`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+
+        wsEvents.emit(ServerEvent.VoiceRemoved(channelId = "ch-2", reason = "kicked"))
+        advanceUntilIdle()
+
+        assertEquals("ch-1", repository.currentChannelId.value)
+        assertEquals(null, repository.endNotice.value)
+    }
+
+    @Test
+    fun `every removal reason has its own line of text`() {
+        val texts = VoiceRemovedReason.entries.map { VoiceEndNotice.Removed("c", it).message }
+        assertEquals(VoiceRemovedReason.entries.size, texts.toSet().size)
+    }
+
+    @Test
+    fun `a new join clears the removal notice`() = runTest {
+        repository.joinChannel("ch-1")
+        advanceUntilIdle()
+        wsEvents.emit(ServerEvent.VoiceRemoved(channelId = "ch-1", reason = "kicked"))
+        advanceUntilIdle()
+
+        repository.joinChannel("ch-1")
+
+        assertEquals(null, repository.endNotice.value)
     }
 }
