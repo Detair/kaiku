@@ -52,6 +52,7 @@ import {
   loadMessagesForJump,
   loadNewerMessages,
   hasNewerMessages,
+  bufferLiveEdit,
 } from "../messages";
 
 function createMessage(id: string, channelId = "ch-1"): Message {
@@ -970,6 +971,66 @@ describe("fix round 3", () => {
     const list = messagesState.byChannel["ch-1"];
     expect(list.map((m) => m.id)).toEqual(["m-10", "m-50"]);
     expect(list[0].content).toBe("new");
+  });
+});
+
+describe("fix round 4: live edits of messages that are still loading", () => {
+  const at = (id: string, minute: number, content = `content-${id}`): Message => ({
+    ...createMessage(id),
+    content,
+    created_at: new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString(),
+  });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setMessagesState({ byChannel: {}, loadingChannels: {}, hasMore: {}, loadError: null, sendError: null, newerAfter: {} });
+  });
+
+  const pendingPage = () => {
+    let release!: () => void;
+    vi.mocked(tauri.getMessagesAfter).mockImplementationOnce(
+      () =>
+        new Promise((r) => {
+          release = () =>
+            r({ items: [at("m-11", 11, "old text")], has_more: false, next_cursor: null } as PaginatedMessages);
+        }),
+    );
+    return () => release();
+  };
+
+  it("an edit event for a message on a loading page is kept and applied", async () => {
+    setMessagesState("byChannel", "ch-1", [at("m-10", 10)]);
+    setMessagesState("newerAfter", "ch-1", "m-10");
+    const release = pendingPage();
+    const load = loadNewerMessages("ch-1");
+    await Promise.resolve();
+    expect(bufferLiveEdit("ch-1", "m-11", "edited text", "2026-01-02T00:00:00Z")).toBe(true);
+    release();
+    await load;
+    const m11 = messagesState.byChannel["ch-1"].find((m) => m.id === "m-11")!;
+    expect(m11.content).toBe("edited text");
+    expect(m11.edited_at).toBe("2026-01-02T00:00:00Z");
+  });
+
+  it("without a load in flight nothing is kept", () => {
+    expect(bufferLiveEdit("ch-1", "m-11", "x", "2026-01-02T00:00:00Z")).toBe(false);
+  });
+
+  // Tripwire: the WebSocket handler (`stores/websocket/messageEvents.ts`,
+  // `applyMessageEdit`) drops edits for messages that are not loaded and does
+  // not call `bufferLiveEdit` yet. That file belongs to another package. Once
+  // it calls `bufferLiveEdit`, this test fails: then turn `it.fails` into `it`.
+  it.fails("KNOWN GAP: the WebSocket edit handler reaches the buffer", async () => {
+    const { applyMessageEdit } = await import("@/stores/websocket/messageEvents");
+    setMessagesState("byChannel", "ch-1", [at("m-10", 10)]);
+    setMessagesState("newerAfter", "ch-1", "m-10");
+    const release = pendingPage();
+    const load = loadNewerMessages("ch-1");
+    await Promise.resolve();
+    await applyMessageEdit("ch-1", "m-11", "edited text", "2026-01-02T00:00:00Z");
+    release();
+    await load;
+    expect(messagesState.byChannel["ch-1"].find((m) => m.id === "m-11")!.content).toBe("edited text");
   });
 });
 

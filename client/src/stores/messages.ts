@@ -314,8 +314,8 @@ export async function loadMessagesForJump(
     const anchor = fetched.items[fetched.items.length - 1].id;
     const newerRaw = await fetchMessagesAfter(channelId, anchor, maxPages);
     // Edits and deletions that came in while loading win over the pages.
-    const window = { ...fetched, items: withPageEdits(edits, fetched.items) };
-    const newer = newerRaw && withPageEdits(edits, newerRaw);
+    const window = { ...fetched, items: await withPageEdits(edits, fetched.items) };
+    const newer = newerRaw && (await withPageEdits(edits, newerRaw));
     if (!window.items.some((m) => m.id === messageId)) return false;
     const current = messagesState.byChannel[channelId] ?? [];
     if (newer) {
@@ -384,12 +384,14 @@ const liveBuffers: Record<string, LiveBuffer | undefined> = {};
 interface PageEdits {
   users: number;
   updated: Map<string, Message>;
+  /** Edit events (`message_edit`) for messages not in the list yet. */
+  patches: Map<string, { content: string; edited_at: string }>;
   removed: Set<string>;
 }
 const pageEdits: Record<string, PageEdits | undefined> = {};
 
 function beginPageEdits(channelId: string): PageEdits {
-  const edits = pageEdits[channelId] ?? { users: 0, updated: new Map(), removed: new Set() };
+  const edits = pageEdits[channelId] ?? { users: 0, updated: new Map(), patches: new Map(), removed: new Set() };
   edits.users += 1;
   pageEdits[channelId] = edits;
   return edits;
@@ -403,10 +405,45 @@ function endPageEdits(channelId: string): void {
 }
 
 /** The page as it is now: buffered edits applied, deleted messages dropped. */
-function withPageEdits(edits: PageEdits, items: Message[]): Message[] {
-  return items
-    .filter((m) => !edits.removed.has(m.id))
-    .map((m) => edits.updated.get(m.id) ?? m);
+async function withPageEdits(edits: PageEdits, items: Message[]): Promise<Message[]> {
+  const result: Message[] = [];
+  for (const m of items) {
+    if (edits.removed.has(m.id)) continue;
+    const full = edits.updated.get(m.id);
+    if (full) {
+      result.push(full);
+      continue;
+    }
+    const patch = edits.patches.get(m.id);
+    if (!patch) {
+      result.push(m);
+      continue;
+    }
+    const content = m.encrypted
+      ? (await decryptMessageIfNeeded({ ...m, content: patch.content })).content
+      : patch.content;
+    result.push({ ...m, content, edited_at: patch.edited_at });
+  }
+  return result;
+}
+
+/**
+ * Keep a live edit (`message_edit`) for a message that is not in the list
+ * but may be on a page that is loading right now (jump, newer messages).
+ * Returns whether it was kept. The WebSocket handler (`applyMessageEdit`)
+ * must call this when the message is not loaded; it edits loaded ones itself.
+ */
+export function bufferLiveEdit(
+  channelId: string,
+  messageId: string,
+  content: string,
+  editedAt: string,
+): boolean {
+  const edits = pageEdits[channelId];
+  if (!edits) return false;
+  edits.updated.delete(messageId);
+  edits.patches.set(messageId, { content, edited_at: editedAt });
+  return true;
 }
 
 /** Merge buffered live changes into `messages` and drop the buffer. */
@@ -805,6 +842,7 @@ export function updateMessage(raw: Message): void {
     if (i !== -1) buf.added[i] = message;
     else buf.updated.set(message.id, message);
   }
+  pageEdits[channelId]?.patches.delete(message.id);
   pageEdits[channelId]?.updated.set(message.id, message);
   const messages = messagesState.byChannel[channelId];
 
@@ -841,6 +879,7 @@ export function removeMessage(channelId: string, messageId: string): void {
   const edits = pageEdits[channelId];
   if (edits) {
     edits.updated.delete(messageId);
+    edits.patches.delete(messageId);
     edits.removed.add(messageId);
   }
   const existing = messagesState.byChannel[channelId];
@@ -890,7 +929,8 @@ export async function loadNewerMessages(channelId: string): Promise<void> {
     // A reload (jump to newest) while this page was on its way wins.
     if (messagesState.newerAfter[channelId] !== cursor) return;
     // Edits and deletions that came in while loading win over the page.
-    const items = withPageEdits(edits, fetched);
+    const items = await withPageEdits(edits, fetched);
+    if (messagesState.newerAfter[channelId] !== cursor) return;
     const current = messagesState.byChannel[channelId] ?? [];
     setMessagesState("byChannel", channelId, mergeAscending(current, items));
     const next = page.next_cursor ?? fetched[fetched.length - 1]?.id;
