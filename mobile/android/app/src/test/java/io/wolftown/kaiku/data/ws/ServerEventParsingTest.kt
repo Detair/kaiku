@@ -506,4 +506,14 @@ class ServerEventParsingTest {
         assertEquals("m1", n.messageId)
         assertEquals(3, n.securityNotice.count)
     }
+
+    @Test
+    fun `ClientEvent VoiceMute and VoiceUnmute use the server's event names`() {
+        // The server knows `voice_mute` / `voice_unmute`; a wrong name is dropped as unknown.
+        val mute = WsJson.encodeToString<ClientEvent>(ClientEvent.VoiceMute("voice-001"))
+        assertTrue(mute, mute.contains(""""type":"voice_mute""""))
+        assertTrue(mute.contains(""""channel_id":"voice-001""""))
+        val unmute = WsJson.encodeToString<ClientEvent>(ClientEvent.VoiceUnmute("voice-001"))
+        assertTrue(unmute.contains(""""type":"voice_unmute""""))
+    }
 }
