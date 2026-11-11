@@ -210,6 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Voice no longer goes silent after a short connection hiccup: you keep hearing everyone, and the voice panel shows "Reconnecting..." until the connection is back. This works in the browser and in the desktop app.
 - Voice reconnects by itself after a short connection loss (network change, sleep, server restart): it rejoins the channel with your mute and deafen settings; screen share and camera stay off until you start them again. After three failed tries the voice panel offers "Rejoin".
+- A call you answered on another device stops ringing on this one right away.
 - When you are removed from a voice channel (kicked, banned, access lost, channel deleted, or joined from another device) the call ends cleanly with one line saying why, and it does not rejoin by itself.
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.
 - Client: in the desktop app and in browsers other than Firefox, avatars are now round, icons have their intended size, selected options and primary buttons show their accent background, QR codes have a white background, and clickable items show a hand cursor. These styles were dropped from the app's CSS; Firefox already showed them.

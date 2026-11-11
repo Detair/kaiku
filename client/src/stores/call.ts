@@ -257,6 +257,20 @@ export function connectOnFirstJoin(
 }
 
 /**
+ * C2/C33: our own user joined this DM's call on another device. A ring here
+ * stops at once (answered elsewhere, not missed); nothing else changes.
+ */
+export function answeredElsewhere(channelId: string, callId?: string): void {
+  if (isStaleCallEvent(channelId, callId)) return;
+  const current = callState.currentCall;
+  if (current.status !== "incoming_ringing" || current.channelId !== channelId) {
+    return;
+  }
+  stopRinging();
+  setCallState("currentCall", { status: "idle" });
+}
+
+/**
  * A participant joined the call.
  */
 export function participantJoined(

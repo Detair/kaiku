@@ -33,6 +33,7 @@ import {
   setChannelCallId,
   participantJoined,
   participantLeft,
+  answeredElsewhere,
   type EndReason,
 } from "../call";
 import {
@@ -614,13 +615,19 @@ export async function handleServerEvent(event: ServerEvent): Promise<void> {
       );
       break;
 
-    case "call_participant_joined":
+    case "call_participant_joined": {
       console.log("[WebSocket] Participant joined call:", event.username);
       participantJoined(event.channel_id, event.user_id, event.call_id);
+      // C2: our own user answered on another device; stop ringing here.
+      const me = currentUser();
+      if (me && event.user_id === me.id) {
+        answeredElsewhere(event.channel_id, event.call_id);
+      }
       // Only transition to connected on the first join (not on subsequent
       // participants) and only for the call we are actually in.
       connectOnFirstJoin(event.channel_id, event.user_id, event.call_id);
       break;
+    }
 
     case "call_participant_left":
       console.log("[WebSocket] Participant left call:", event.user_id);

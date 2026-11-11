@@ -97,6 +97,8 @@ vi.mock("@/stores/call", () => ({
   setChannelCallId: vi.fn(),
   participantJoined: vi.fn(),
   participantLeft: vi.fn(),
+  answeredElsewhere: vi.fn(),
+  resyncCallAfterReconnect: vi.fn(),
 }));
 
 vi.mock("@/stores/friends", () => ({
@@ -736,6 +738,27 @@ describe("websocket store", () => {
         username: "bob",
       });
       expect(call.connectOnFirstJoin).toHaveBeenCalledWith("dm-y", "u2", "c1");
+    });
+
+    it("call_participant_joined naming the own user stops the ring (C2)", async () => {
+      const call = await import("@/stores/call");
+      await fire("ws:server_event", {
+        type: "call_participant_joined",
+        channel_id: "dm-y",
+        call_id: "c1",
+        user_id: "me",
+        username: "me",
+      });
+      expect(call.answeredElsewhere).toHaveBeenCalledWith("dm-y", "c1");
+      vi.mocked(call.answeredElsewhere).mockClear();
+      await fire("ws:server_event", {
+        type: "call_participant_joined",
+        channel_id: "dm-y",
+        call_id: "c1",
+        user_id: "u2",
+        username: "bob",
+      });
+      expect(call.answeredElsewhere).not.toHaveBeenCalled();
     });
 
     it("call_ended passes the call_id to the store", async () => {

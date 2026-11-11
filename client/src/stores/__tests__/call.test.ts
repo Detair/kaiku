@@ -20,7 +20,9 @@ import {
   endCall,
   abortOutgoingCall,
   connectOnFirstJoin,
+  answeredElsewhere,
 } from "../call";
+import { stopRinging } from "@/lib/sound/ring";
 
 function reset() {
   setCallState({ currentCall: { status: "idle" }, activeCallsByChannel: {}, callIds: {}, endedCallIds: {} });
@@ -269,5 +271,35 @@ describe("call_ended after our own decline or end", () => {
     callEndedExternally("dm-x", "all_declined", undefined, "old");
     expect(callState.activeCallsByChannel["dm-x"]).toBeDefined();
     expect(callState.currentCall.status).toBe("incoming_ringing");
+  });
+});
+
+describe("answered on another device (C2)", () => {
+  beforeEach(() => {
+    reset();
+    vi.clearAllMocks();
+  });
+
+  it("stops the ring when the own user joins elsewhere", () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    answeredElsewhere("dm-x", "call-1");
+    expect(stopRinging).toHaveBeenCalled();
+    expect(callState.currentCall.status).toBe("idle");
+    // The call itself goes on (sidebar indicator stays).
+    expect(callState.activeCallsByChannel["dm-x"]).toBeDefined();
+  });
+
+  it("ignores another DM or an older call", () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    answeredElsewhere("dm-y", "call-1");
+    answeredElsewhere("dm-x", "call-0");
+    expect(callState.currentCall.status).toBe("incoming_ringing");
+  });
+
+  it("leaves a call this device answered alone", () => {
+    receiveIncomingCall("dm-x", "u2", "Bob", "call-1");
+    setCallState("currentCall", { status: "connecting", channelId: "dm-x" });
+    answeredElsewhere("dm-x", "call-1");
+    expect(callState.currentCall.status).toBe("connecting");
   });
 });
