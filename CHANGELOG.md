@@ -89,6 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android security settings: your phones, passkeys, sessions, recovery codes and recovery contact, each change confirmed with your screen lock; password and authenticator app are shown and changed on the web or desktop.
 - Android shows Kaiku's security notices in the read-only "Kaiku" chat (with "That wasn't me", Cancel, Remove device and "I will help" where they apply) and as private lock-screen notifications, also on a key phone that is signed out, with the security log under Settings > Security and a full-screen prompt for an open request to change how you sign in.
 - **Android: admins set up phones from their own phone.** Create the account (no password), choose "Set up a phone", and type the code the new phone shows; existing accounts wait 24 hours with notices to everyone involved. "Remove device now" for stolen phones. See `docs/admin-guide/ops/phone-setup.md`.
+- Chat: progress and a Cancel button while files upload; paste a screenshot with Ctrl+V to attach it; the attachment tray says which kinds of files can be sent.
+- Chat: day separators (Today, Yesterday, date), a "Jump to newest" button whenever you have scrolled up, and names in the typing line ("Oma is typing...").
+- Screen readers hear new messages from others and who is typing; reactions say who reacted and whether yours is set.
 
 ### Changed
 - The sign-in page puts passkey and phone first; the password field opens with "Sign in with a password".
@@ -378,6 +381,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Desktop voice audio is now clear at session start (fixed RTP sequence number regression on reconnect)
 - Desktop screen share now actually reaches other participants (fixed VP8 payload type)
 - UI contrast: selected nav items, active state pills, and warning banners now render with their intended alpha tint instead of silently rendering as solid color. UnoCSS alpha-modifier classes (`bg-accent-primary/20` etc.) had been dropping their alpha because the underlying CSS variables held hex values; switched the affected tokens in `uno.config.ts` to consume new `-rgb` channel variants via the `rgb(var(...) / <alpha-value>)` pattern.
+- Chat: a message or thread reply that fails to send stays in the text box and in its draft instead of disappearing.
+- Chat: a file the server refuses (wrong type, too big, empty) says why in one sentence and stays in the attachment tray; files already sent are not sent again when you retry.
+- Chat: the actions on a message (react, reply in thread, edit, more) appear when you reach them with the keyboard and cannot be tapped while hidden.
+- Chat: opening an older search result or pinned message loads the messages around it and scrolls there; "Show in chat" in the pin panel works.
+- Direct messages no longer offer "Reply in Thread", which did nothing there.
+- Search, pinned messages, threads and the emoji picker are translated; the search filter lists people by name instead of asking for an internal user ID.
 
 ### Security
 - E2EE Megolm session cache is now cleared on logout — prevents stale session keys from persisting

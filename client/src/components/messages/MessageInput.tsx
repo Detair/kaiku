@@ -58,6 +58,10 @@ const MessageInput: Component<MessageInputProps> = (props) => {
       ? plural(pendingFiles().length, { one: "chat.composer.sendFiles.one", other: "chat.composer.sendFiles.other" })
       : t("chat.composer.send");
   const [isComposing, setIsComposing] = createSignal(false);
+  const placeholder = () =>
+    props.guildId
+      ? t("chat.composer.placeholder", { channel: props.channelName })
+      : t("chat.composer.placeholderDm", { name: props.channelName });
   // Autocomplete state
   const [autocompleteType, setAutocompleteType] = createSignal<"user" | "emoji" | "channel" | "command" | null>(null);
   // True only while the autocomplete popup has suggestions to navigate
@@ -751,11 +755,10 @@ const MessageInput: Component<MessageInputProps> = (props) => {
             onPaste={handlePaste}
             class="flex-1 bg-transparent py-3 text-text-input placeholder-text-placeholder focus:outline-none resize-none overflow-y-auto"
             style={{ "min-height": "24px", "max-height": "192px" }}
-            placeholder={
-              props.guildId
-                ? t("chat.composer.placeholder", { channel: props.channelName })
-                : t("chat.composer.placeholderDm", { name: props.channelName })
-            }
+            placeholder={placeholder()}
+            aria-label={placeholder()}
+            aria-autocomplete="list"
+            aria-expanded={autocompleteActive()}
             rows={1}
           />
 
