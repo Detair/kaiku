@@ -16,7 +16,7 @@ use super::rate_limit::EventClass;
 use super::screen_share::{
     validate_source_label, ScreenShareError, ScreenShareInfo, ScreenShareLimiter,
 };
-use super::sfu::SfuServer;
+use super::sfu::{ReplacedMedia, Room, SfuServer};
 use super::stats::VoiceStats;
 use super::track::spawn_subscriber_remb_reader;
 use super::track_types::{LayerPreference, TrackSource};
@@ -84,7 +84,8 @@ pub async fn handle_voice_event(
 
     match event {
         ClientEvent::VoiceJoin { channel_id } => {
-            let result = handle_join(sfu, pool, user_id, channel_id, tx).await;
+            let result =
+                handle_join(sfu, pool, user_id, channel_id, tx, screen_share_limiter).await;
             crate::observability::metrics::record_voice_join(result.is_ok());
             result
         }
@@ -189,6 +190,7 @@ async fn handle_join(
     user_id: Uuid,
     channel_id: Uuid,
     tx: &mpsc::Sender<OutboundMsg>,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
 ) -> Result<(), VoiceError> {
     info!(user_id = %user_id, channel_id = %channel_id, "User joining voice channel");
 
@@ -222,7 +224,9 @@ async fn handle_join(
     sfu.setup_ice_handler(&peer);
     sfu.setup_track_handler(&peer, &room);
 
-    room.add_peer(peer.clone()).await?;
+    if let Some(replaced) = room.add_peer(peer.clone()).await? {
+        release_replaced_media(&room, user_id, replaced, screen_share_limiter).await;
+    }
 
     // In the dual-PC model, the server does NOT send an initial offer.
     // The client will send a VoicePublisherOffer after joining, which
@@ -275,6 +279,50 @@ async fn handle_join(
     crate::observability::metrics::record_voice_session_start();
 
     Ok(())
+}
+
+/// End the screen shares and webcam of a peer that a new join of the same
+/// user replaced: release their slots and tell the other participants, so no
+/// ghost share remains.
+async fn release_replaced_media(
+    room: &Room,
+    user_id: Uuid,
+    replaced: ReplacedMedia,
+    screen_share_limiter: Option<&ScreenShareLimiter>,
+) {
+    let channel_id = room.channel_id;
+    if !replaced.screen_shares.is_empty() {
+        if let Some(limiter) = screen_share_limiter {
+            limiter
+                .stop_n(channel_id, replaced.screen_shares.len())
+                .await;
+        } else {
+            warn!("Screen share limiter unavailable — replaced shares not released");
+        }
+    }
+    for share in &replaced.screen_shares {
+        room.broadcast_except(
+            user_id,
+            ServerEvent::ScreenShareStopped {
+                channel_id,
+                user_id,
+                stream_id: share.stream_id,
+                reason: "replaced".to_string(),
+            },
+        )
+        .await;
+    }
+    if replaced.webcam.is_some() {
+        room.broadcast_except(
+            user_id,
+            ServerEvent::WebcamStopped {
+                channel_id,
+                user_id,
+                reason: "replaced".to_string(),
+            },
+        )
+        .await;
+    }
 }
 
 /// Handle a user leaving a voice channel.

@@ -172,6 +172,15 @@ async fn main() -> Result<()> {
         match limiter.init().await {
             Ok(()) => {
                 info!("Screen share limiter initialized");
+                // Single node: voice rooms start empty, so every slot counter
+                // left by the previous process is stale.
+                match limiter.clear_all().await {
+                    Ok(n) => info!(cleared = n, "Cleared stale screen share slots"),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "Failed to clear stale screen share slots"
+                    ),
+                }
                 Some(limiter)
             }
             Err(e) => {

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use fred::clients::Client;
-use fred::interfaces::LuaInterface;
+use fred::interfaces::{KeysInterface, LuaInterface};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{error, warn};
@@ -174,15 +174,54 @@ const SCREEN_SHARE_LIMIT_SCRIPT: &str = include_str!("screen_share_limit.lua");
 pub struct ScreenShareLimiter {
     redis: Client,
     script_sha: Arc<RwLock<String>>,
+    /// Prefix of the per-channel counter keys (`{prefix}{channel_id}`).
+    key_prefix: Arc<str>,
 }
+
+/// Prefix of the per-channel slot counters in Valkey.
+pub const SCREEN_SHARE_KEY_PREFIX: &str = "screenshare:limit:";
+
+/// Keys deleted per `DEL` when clearing counters.
+const CLEAR_BATCH: usize = 100;
 
 impl ScreenShareLimiter {
     /// Create a new limiter. Call [`init`] before use to load the script.
     pub fn new(redis: Client) -> Self {
+        Self::with_key_prefix(redis, SCREEN_SHARE_KEY_PREFIX)
+    }
+
+    /// A limiter whose counters live under `prefix` instead of
+    /// [`SCREEN_SHARE_KEY_PREFIX`] (tests isolate their counters this way).
+    #[doc(hidden)]
+    pub fn with_key_prefix(redis: Client, prefix: impl Into<String>) -> Self {
         Self {
             redis,
             script_sha: Arc::new(RwLock::new(String::new())),
+            key_prefix: Arc::from(prefix.into()),
         }
+    }
+
+    /// Delete every slot counter (all channels). Returns how many were
+    /// deleted.
+    ///
+    /// Run at startup: the server is a single node and its voice rooms live
+    /// in memory, so after a restart no share is running and any counter left
+    /// by the previous process is stale. Uses `SCAN`, never `KEYS`.
+    pub async fn clear_all(&self) -> Result<usize, fred::error::Error> {
+        use futures::TryStreamExt;
+
+        let pattern = format!("{}*", self.key_prefix);
+        let keys: Vec<fred::types::Key> = self
+            .redis
+            .scan_buffered(pattern, Some(CLEAR_BATCH as u32), None)
+            .try_collect()
+            .await?;
+        let mut deleted = 0;
+        for batch in keys.chunks(CLEAR_BATCH) {
+            let n: i64 = self.redis.del(batch.to_vec()).await?;
+            deleted += usize::try_from(n).unwrap_or(0);
+        }
+        Ok(deleted)
     }
 
     /// Load the Lua script into Redis. Must be called at startup.
@@ -219,7 +258,7 @@ impl ScreenShareLimiter {
         op: &str,
         extra_args: &[String],
     ) -> Result<(bool, i64), ScreenShareError> {
-        let key = format!("screenshare:limit:{channel_id}");
+        let key = format!("{}{channel_id}", self.key_prefix);
         let sha = self.script_sha.read().await.clone();
         let mut args: Vec<String> = vec![max_shares.to_string(), op.to_string()];
         args.extend_from_slice(extra_args);

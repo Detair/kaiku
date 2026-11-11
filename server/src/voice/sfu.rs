@@ -103,6 +103,15 @@ pub struct ParticipantInfo {
     pub webcam_active: bool,
 }
 
+/// Screen shares and webcam of a peer that [`Room::add_peer`] replaced.
+#[derive(Debug, Default)]
+pub struct ReplacedMedia {
+    /// The replaced peer's screen shares (their slots are still counted).
+    pub screen_shares: Vec<ScreenShareInfo>,
+    /// The replaced peer's webcam, if it was on.
+    pub webcam: Option<WebcamInfo>,
+}
+
 /// Voice channel room with all participants.
 pub struct Room {
     /// Channel ID.
@@ -134,10 +143,16 @@ impl Room {
     }
 
     /// Add a peer to the room.
-    pub async fn add_peer(&self, peer: Arc<Peer>) -> Result<(), VoiceError> {
+    ///
+    /// If the user already has a peer here (a stale session or a join from
+    /// another socket), that peer is closed and replaced, and its screen
+    /// shares and webcam are removed from the room. They are returned so the
+    /// caller can release their slots and tell the others.
+    pub async fn add_peer(&self, peer: Arc<Peer>) -> Result<Option<ReplacedMedia>, VoiceError> {
         let mut peers = self.peers.write().await;
 
-        if peers.len() >= self.max_participants {
+        let replacing = peers.contains_key(&peer.user_id);
+        if !replacing && peers.len() >= self.max_participants {
             return Err(VoiceError::ChannelFull {
                 max_participants: self.max_participants,
             });
@@ -145,14 +160,31 @@ impl Room {
 
         // If the user already has a peer (stale session from a previous connection),
         // remove it and replace with the new one instead of rejecting
-        if let Some(old_peer) = peers.remove(&peer.user_id) {
+        let replaced = if let Some(old_peer) = peers.remove(&peer.user_id) {
             tracing::info!(user_id = %peer.user_id, "Replacing stale voice peer");
+            // Lock order as in `get_participant_info`: peers, shares, webcams.
+            let screen_shares = {
+                let mut shares = self.screen_shares.write().await;
+                let ids: Vec<Uuid> = shares
+                    .values()
+                    .filter(|s| s.user_id == peer.user_id)
+                    .map(|s| s.stream_id)
+                    .collect();
+                ids.iter().filter_map(|id| shares.remove(id)).collect()
+            };
+            let webcam = self.webcams.write().await.remove(&peer.user_id);
             // Close old peer connections
             old_peer.close().await;
-        }
+            Some(ReplacedMedia {
+                screen_shares,
+                webcam,
+            })
+        } else {
+            None
+        };
 
         peers.insert(peer.user_id, peer);
-        Ok(())
+        Ok(replaced)
     }
 
     /// Remove a peer from the room.

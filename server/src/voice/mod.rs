@@ -37,7 +37,7 @@ pub use screen_share::{
     ScreenShareCheckResponse, ScreenShareError, ScreenShareInfo, ScreenShareLimiter,
     ScreenShareStartRequest, ScreenShareStopRequest,
 };
-pub use sfu::{ParticipantInfo, Room, SfuServer, StalePeer, PEER_FAILED_GRACE};
+pub use sfu::{ParticipantInfo, ReplacedMedia, Room, SfuServer, StalePeer, PEER_FAILED_GRACE};
 pub use stats::{UserStats, VoiceStats};
 pub use track_types::{Layer, LayerPreference, TrackInfo, TrackKind, TrackSource};
 pub use webcam::WebcamInfo;

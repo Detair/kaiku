@@ -208,6 +208,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Android: signing the phone in by scanning a QR code from the desktop without any confirmation. The phone's scanner now only reads Kaiku sign-in and setup codes of its own server.
 
 ### Fixed
+- Stopping the server (for example `docker stop` or a Kubernetes rollout, which send SIGTERM) now shuts it down cleanly within a few seconds instead of waiting to be killed.
+- Screen share slots no longer stay taken after a server restart, and joining a voice channel again from another device ends the screen share and camera of the previous connection instead of leaving them behind.
 - Client: a chat-only sign-in without a passkey now says exactly how to add a passkey for the computer, in the banner and in the security settings.
 - Client: in the desktop app and in browsers other than Firefox, avatars are now round, icons have their intended size, selected options and primary buttons show their accent background, QR codes have a white background, and clickable items show a hand cursor. These styles were dropped from the app's CSS; Firefox already showed them.
 - The message for actions that need a full session now says that a computer needs a passkey sign-in and that a phone can do it in the Kaiku app.
