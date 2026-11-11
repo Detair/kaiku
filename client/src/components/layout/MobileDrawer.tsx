@@ -92,7 +92,7 @@ const MobileDrawer: Component<MobileDrawerProps> = (props) => {
         <button
           type="button"
           data-testid="mobile-drawer-close"
-          class="absolute top-2 left-[308px] w-11 h-11 flex items-center justify-center rounded-full bg-surface-base/90 text-text-primary"
+          class="absolute top-2 left-[min(308px,calc(100vw-3.25rem))] w-11 h-11 flex items-center justify-center rounded-full bg-surface-base/90 text-text-primary"
           aria-label={t("common.close")}
           onClick={() => props.onClose()}
         >
