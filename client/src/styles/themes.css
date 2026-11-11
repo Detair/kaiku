@@ -245,6 +245,8 @@
   --color-error-text: #a01a18;
   --color-danger-text: #c22321;
   --color-danger-text-rgb: 194 35 33;
+  /* White overlays (border-white/N, bg-white/N) are drawn in the text colour. */
+  --color-overlay-rgb: var(--color-text-primary-rgb);
 
   /* States — placeholder, disabled controls, toggles, focus (see header) */
   --color-text-placeholder: #6a7c80;

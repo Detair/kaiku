@@ -162,7 +162,24 @@ export default defineConfig({
       },
     },
   ],
+  layers: {
+    // White overlay classes (see the rule below) sit before the shortcuts and
+    // the default utilities, so every side, state or variant colour on the
+    // same element wins over them.
+    overlay: -20,
+  },
   rules: [
+    // Faint white overlays (border-white/10, bg-white/5, ... up to /40) are
+    // drawn with --color-overlay-rgb: white by default, the text colour in
+    // the light theme (themes.css), and white again on surfaces that stay
+    // dark or coloured in every theme, like the image viewer (global.css).
+    // The rule lives in its own layer before the shortcuts and utilities and
+    // has the specificity of a single class, so border-t-*, border-l-*,
+    // hover:, focus: and checked: colours on the same element still win.
+    [/^(bg|border)-white\/(3|5|8|10|15|20|30|40)$/, ([, kind, alpha]) => ({
+      [kind === "bg" ? "background-color" : "border-color"]:
+        `rgb(var(--color-overlay-rgb, 255 255 255) / ${Number(alpha) / 100})`,
+    }), { layer: "overlay" }],
     // Full-page heights follow the visible viewport (100dvh: phone address
     // bars), with 100vh first for webviews that predate dvh.
     ["h-dvh", [["height", "100vh"], ["height", "100dvh"]]],
