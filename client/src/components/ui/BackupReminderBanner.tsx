@@ -14,9 +14,9 @@ interface BackupReminderBannerProps {
 
 const BackupReminderBanner: Component<BackupReminderBannerProps> = (props) => {
   return (
-    <div class="bg-yellow-500/10 border-b border-yellow-500/30 px-4 py-2 flex items-center gap-3">
-      <AlertTriangle class="w-4 h-4 text-yellow-400 flex-shrink-0" />
-      <p class="text-sm text-yellow-200 flex-1">
+    <div class="bg-accent-warning/10 border-b border-accent-warning/30 px-4 py-2 flex items-center gap-3">
+      <AlertTriangle class="w-4 h-4 text-accent-warning flex-shrink-0" />
+      <p class="text-sm text-text-primary flex-1">
         Your encryption keys are not backed up.{" "}
         <button
           onClick={props.onSetup}
@@ -27,7 +27,7 @@ const BackupReminderBanner: Component<BackupReminderBannerProps> = (props) => {
       </p>
       <button
         onClick={props.onDismiss}
-        class="p-1 text-yellow-400 hover:text-yellow-200 transition-colors"
+        class="p-1 text-text-secondary hover:text-text-primary transition-colors"
         title="Remind me later"
       >
         <X class="w-4 h-4" />
