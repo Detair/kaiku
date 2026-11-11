@@ -204,7 +204,6 @@ export const guildSettings = {
   "guildSettings.pages.deleteTitle": "Delete the page “{{title}}”?",
   "guildSettings.pages.deleteBody": "The page “{{title}}” and its history are deleted for everyone. This cannot be undone.",
   "guildSettings.pages.delete": "Delete page",
-  "guildSettings.pages.deleteFailed": "Could not delete the page.",
   "guildSettings.pages.saveFailed": "Could not save the page.",
   "guildSettings.pages.restoreTitle": "Go back to version {{number}}?",
   "guildSettings.pages.restoreBody": "The page gets the text of version {{number}} again. Nothing is lost: the current text stays in the history.",
