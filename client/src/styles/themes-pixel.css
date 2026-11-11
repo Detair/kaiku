@@ -122,6 +122,13 @@
   letter-spacing: 1px;
 }
 
+/* Buttons that ask to be small (text-xs, text-sm: chips, toast actions,
+   inline links) stay at 16px, the size they had before A11Y-11, so they
+   still fit their rows. (0,3,0) beats the 18px rule above. */
+[data-theme^="pixel-"] :is(button, [class*="btn"]):is(.text-xs, .text-sm) {
+  font-size: 1rem; /* 16px */
+}
+
 /* Sidebar and navigation elements */
 [data-theme^="pixel-"] nav,
 [data-theme^="pixel-"] [class*="sidebar"] [class*="header"],
